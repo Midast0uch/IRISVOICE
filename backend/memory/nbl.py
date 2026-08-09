@@ -46,17 +46,27 @@ def build_nbl(
 
     try:
         # ── Gate progress ────────────────────────────────────────────────
+        # D4a: mycelium_nodes has no `activation_count` column — the actual
+        # per-node activity counter in this schema is `access_count`
+        # (backend/memory/db.py initialise_mycelium_schema); "activation_count"
+        # was a name mismatch, not a missing metric. mycelium_nodes also has
+        # no `session_id` (it is a shared coordinate graph, not scoped to a
+        # session), so gate progress is measured globally rather than
+        # per-session — the WHERE session_id filter never matched.
         gate_row = conn.execute(
-            "SELECT MAX(activation_count) FROM mycelium_nodes WHERE session_id = ?",
-            (session_id,),
+            "SELECT MAX(access_count) FROM mycelium_nodes",
         ).fetchone()
         activation_max = int(gate_row[0] or 0) if gate_row else 0
         gate_n = max(1, min(5, activation_max // 4 + 1))
         gate_prog = round(min(1.0, activation_max / max(1, gate_n * 4)), 2)
 
         # ── Landmark density ─────────────────────────────────────────────
+        # mycelium_landmarks also has no session_id column, but
+        # `conversation_ref` carries the session a landmark was crystallized
+        # under (mycelium/landmark.py: conversation_ref=session_id at
+        # creation) — the correct session-scoping column here.
         lm_row = conn.execute(
-            "SELECT COUNT(*) FROM mycelium_landmarks WHERE session_id = ?",
+            "SELECT COUNT(*) FROM mycelium_landmarks WHERE conversation_ref = ?",
             (session_id,),
         ).fetchone()
         landmark_count = int(lm_row[0] or 0) if lm_row else 0
@@ -71,20 +81,28 @@ def build_nbl(
         session_depth = round(min(1.0, traversal_count / 20.0), 2)
 
         # ── Confidence ───────────────────────────────────────────────────
+        # Same session-scoping gap as gate progress above — global average.
         conf_row = conn.execute(
-            "SELECT AVG(confidence) FROM mycelium_nodes WHERE session_id = ?",
-            (session_id,),
+            "SELECT AVG(confidence) FROM mycelium_nodes",
         ).fetchone()
         confidence = round(float(conf_row[0] or 0.10), 2) if conf_row else 0.10
 
         # ── Tool path (last 3 tool names from traversals) ────────────────
-        tool_rows = conn.execute(
-            "SELECT tool_name FROM mycelium_traversals "
-            "WHERE session_id = ? ORDER BY created_at DESC LIMIT 3",
-            (session_id,),
-        ).fetchall()
-        tools = [r[0] for r in tool_rows if r[0]] if tool_rows else []
-        toolpath = ",".join(tools[:3]) if tools else ""
+        # mycelium_traversals carries no `tool_name` column (only
+        # path_node_ids/task_summary/outcome) — guarded independently, same
+        # pattern as the CHAIN block below, so a schema gap here degrades to
+        # "no toolpath" instead of failing the whole NBL build.
+        toolpath = ""
+        try:
+            tool_rows = conn.execute(
+                "SELECT tool_name FROM mycelium_traversals "
+                "WHERE session_id = ? ORDER BY created_at DESC LIMIT 3",
+                (session_id,),
+            ).fetchall()
+            tools = [r[0] for r in tool_rows if r[0]] if tool_rows else []
+            toolpath = ",".join(tools[:3]) if tools else ""
+        except Exception:
+            pass
 
         # ── Build string ─────────────────────────────────────────────────
         coord = f"[{gate_prog:.2f},{landmark_density:.2f},{session_depth:.2f}]"

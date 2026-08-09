@@ -13,16 +13,18 @@ on_page_done callback so the UI still shows live "Reading <host> (N/M)" updates.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import subprocess
 import sys
 import tempfile
+from collections import deque
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
-from .crawler_engine import CrawlResult, PageData
+from .crawler_engine import CrawlResult, PageData, _coerce_headers, _write_har_file
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +33,38 @@ _REPO_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
 
+# D3 (T36 live smoke, 2026-08-09): was 45s. The REAL cause of the 45s timeouts
+# was the stdout read-buffer deadlock fixed by _STDIO_LIMIT below (see that
+# comment) — raising the timeout alone would NOT have fixed it (a deadlock
+# just re-hits whatever ceiling is set). This is still raised, on separate,
+# real evidence: a COLD Playwright/Chromium launch (AsyncWebCrawler.start() in
+# crawler_engine.py) measured 16.76s here vs 2.25s once the OS file cache was
+# warm. crawl_runner spawns a brand-new worker subprocess per crawl (isolation
+# for crash safety), so that cold-start cost is paid on every call, not
+# amortized, and 45s left too little margin over it once page-fetch time is
+# added. Raised to give headroom for a cold launch (~25s conservative ceiling)
+# + up to 5 page fetches at the 10s per-page ceiling (_TIMEOUT_MS) + delays.
 _DEFAULT_TIMEOUT_S = float(os.environ.get("CRAWL_SUBPROCESS_TIMEOUT_S", "90"))
+
+# D3 root cause: asyncio.create_subprocess_exec()'s StreamReader defaults to a
+# 64 KiB (65536-byte) line-length limit (asyncio default `limit=`). The worker
+# emits its ENTIRE crawl result as ONE JSON line on stdout (crawl_worker.py
+# _emit); a real multi-page crawl routinely exceeds 64 KiB — e.g. a single
+# Wikipedia article's extracted markdown alone measured 221KB in a live run
+# here. When the result line exceeds the limit, proc.stdout.readline() raises
+# LimitOverrunError -> ValueError (CPython asyncio/streams.py), which
+# _drain()'s `except (ValueError, OSError)` below treats as "pipe closed" and
+# breaks the read loop — but the CHILD process is still alive and blocked
+# writing the rest of that oversized line into a pipe nobody is draining
+# anymore (Windows anonymous-pipe write() blocks once the OS buffer fills).
+# The child never reaches process exit, so `await proc.wait()` hangs until the
+# OUTER asyncio.wait_for(..., timeout=timeout_s) fires — which is why the
+# worker looked "stuck" for exactly the timeout duration regardless of its
+# value: it wasn't slow, it was deadlocked. Verified live: 4/4 page-fetch
+# progress events arrived in <20s every time; the timeout only ever fired
+# waiting on the oversized result line. 20 MiB comfortably covers a full
+# max_pages batch of large real pages while staying bounded (not unlimited).
+_STDIO_LIMIT = 20 * 1024 * 1024
 
 # Concurrency cap (REQ-17 AC3): parallel DER Sub-Loop children must not OOM the
 # host. Bound simultaneous crawl subprocesses. Override via env for testing.
@@ -75,6 +108,28 @@ def _safe_unlink(path: str) -> None:
     try:
         os.remove(path)
     except Exception:
+        pass
+
+
+async def _drain_stderr(proc, ring: deque) -> None:
+    """Drain the worker's stderr into a bounded ring buffer.
+
+    The buffer is logged when the worker fails (see run_crawl_subprocess), so a
+    crash traceback is never lost to DEVNULL. Tolerates test fakes without a
+    stderr stream, and pipes that close mid-read (worker died).
+    """
+    stream = getattr(proc, "stderr", None)
+    if stream is None:
+        return
+    try:
+        while True:
+            line = await stream.readline()
+            if not line:
+                break
+            text = line.decode("utf-8", "replace").rstrip()
+            if text:
+                ring.append(text)
+    except Exception:  # noqa: BLE001 — stderr capture must never fail the crawl
         pass
 
 
@@ -167,6 +222,8 @@ async def run_crawl_subprocess(
     proc = None
     result: Optional[CrawlResult] = None
     error_msg: Optional[str] = None
+    stderr_task: Optional[asyncio.Task] = None
+    stderr_ring: deque = deque(maxlen=200)
     # Concurrency cap (REQ-17 AC3): block until a crawl slot is free so parallel
     # DER Sub-Loop children cannot exhaust host memory.
     async with _get_crawl_semaphore():
@@ -174,13 +231,18 @@ async def run_crawl_subprocess(
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
                 cwd=_REPO_ROOT,
                 env=env,
                 creationflags=_SPAWN_FLAGS,
+                limit=_STDIO_LIMIT,
             )
 
             assert proc.stdout is not None
+
+            # Drain worker stderr into a ring buffer (previously DEVNULL —
+            # every crash was an unexplained "pipe closed" with no traceback).
+            stderr_task = asyncio.create_task(_drain_stderr(proc, stderr_ring))
 
             async def _drain() -> None:
                 nonlocal result, error_msg
@@ -249,19 +311,77 @@ async def run_crawl_subprocess(
                 await _kill_tree(proc)
             error_msg = f"crawl runner error: {exc}"
         finally:
+            if stderr_task is not None:
+                stderr_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await stderr_task
+            # Explicitly close the pipe transports. When the worker is killed
+            # (timeout / tree-kill) the pipe handles close abruptly and the
+            # transports linger until GC, emitting noisy
+            # "Exception ignored in: _ProactorBasePipeTransport.__del__ /
+            #  I/O operation on closed pipe" warnings on every crawl. Closing
+            # them here suppresses that noise and frees the handles promptly.
+            if proc is not None:
+                for _stream in (getattr(proc, "stdout", None), getattr(proc, "stderr", None)):
+                    if _stream is None:
+                        continue
+                    try:
+                        _tr = getattr(_stream, "_transport", None)
+                        if _tr is not None:
+                            _tr.close()
+                    except Exception:  # noqa: BLE001 — best effort
+                        pass
             _safe_unlink(params_path)
 
+        # Diagnosability: if the worker died without producing a result, the
+        # stderr ring buffer holds its real traceback — log it so the cause is
+        # in the backend log instead of an unexplained pipe-closed line.
+        if result is None and stderr_ring:
+            logger.error(
+                "[crawl_runner] worker failed; stderr tail (%d lines):\n%s",
+                len(stderr_ring),
+                "\n".join(list(stderr_ring)[-50:]),
+            )
+
         _usable_pages = result.pages if result is not None else None
-        if not _usable_pages:
-            # Worker subprocess failed (crash / chunking error / browser death)
-            # OR returned an empty result (all fetches failed). Last-resort
-            # fallback: fetch the planned URLs over plain HTTP and strip tags
-            # so the DER step still gets usable content.
-            _fb = await _plain_http_fallback(urls)
-            if _fb:
+        _good_pages = [p for p in (_usable_pages or []) if p.markdown]
+        if _usable_pages is not None and _good_pages:
+            # Partial success: re-fetch ONLY the URLs crawl4ai failed on over
+            # plain HTTP and merge them in, so a single broken page (huge /
+            # separator-less / JS-heavy) no longer silently starves DER.
+            _failed = [p for p in _usable_pages if not p.markdown and p.url]
+            if _failed:
+                _fb_pages, _fb_har = await _plain_http_fetch(
+                    [p.url for p in _failed], job_id=job_id, on_page_done=on_page_done,
+                )
+                if _fb_pages:
+                    result.pages = _good_pages + _fb_pages
+                    result.har_entries = (result.har_entries or []) + _fb_har
+                    if job_id:
+                        result.har_path = _write_har_file(job_id, result.har_entries)
+                    logger.info(
+                        "[crawl_runner] plain-HTTP merge recovered %d/%d failed URLs",
+                        len(_fb_pages), len(_failed),
+                    )
+            return result
+
+        if not _good_pages:
+            # Worker subprocess failed (crash / browser death / timeout) OR
+            # returned zero usable pages. Last-resort fallback: fetch the
+            # planned URLs over plain HTTP. This path has zero
+            # crawl4ai/browser dependency (it cannot hit the crawl4ai chunking
+            # failure), and it now emits the FULL result contract (HAR
+            # evidence + metadata + har_path) so the downstream DER summarize /
+            # citation / frontend pipeline is fed exactly as if crawl4ai had
+            # succeeded.
+            _fb_pages, _fb_har = await _plain_http_fetch(
+                urls, job_id=job_id, on_page_done=on_page_done,
+            )
+            if _fb_pages:
+                _har_path = _write_har_file(job_id, _fb_har) if job_id else None
                 return CrawlResult(
                     query=query,
-                    pages=_fb,
+                    pages=_fb_pages,
                     duration_ms=0,
                     crawled_at=_now_iso(),
                     error=None,
@@ -270,8 +390,8 @@ async def run_crawl_subprocess(
                     cited_markdown=None,
                     credibility_map=None,
                     citation_index=None,
-                    har_entries=[],
-                    har_path=None,
+                    har_entries=_fb_har,
+                    har_path=_har_path,
                 )
             return CrawlResult(
                 query=query,
@@ -283,18 +403,62 @@ async def run_crawl_subprocess(
         return result
 
 
-async def _plain_http_fallback(urls: list) -> list:
-    """Fetch URLs over plain HTTP and strip HTML tags. Returns list of dicts
-    shaped like PageData (url/title/markdown/html/metadata/error). Empty if all
-    fetches fail. Used when the crawl4ai worker subprocess crashes — this path
-    has zero crawl4ai/browser dependency, so it cannot hit the chunking bug."""
+_BOT_CHALLENGE_SIGNATURES = (
+    # Cloudflare: interstitial JS challenge, the "Just a moment..." page
+    "cf-chl-",
+    "challenge-platform",
+    "cf-mitigated",
+    "__cf_chl",
+    "just a moment...",
+    # Turnstile (Cloudflare's anti-bot widget) — a CAPTCHA the crawler cannot
+    # solve; content behind it is NOT the page's real content.
+    "cf-turnstile",
+    "turnstile",
+    "challenges.cloudflare.com",
+    # Generic bot-challenge interstitials
+    "challenge-form",
+    "verify you are human",
+    "you are being redirected",
+)
+
+
+def _is_challenge_page(html: str) -> bool:
+    """REQ-10 (T12): detect a bot-challenge interstitial (Cloudflare/Turnstile).
+
+    A challenged page is NOT the page's real content — saving it would poison
+    the capture store and the DER summarize pipeline with the challenge's
+    boilerplate. Returns True when any signature matches (case-insensitive).
+    """
+    if not html:
+        return False
+    _low = html.lower()
+    return any(_sig in _low for _sig in _BOT_CHALLENGE_SIGNATURES)
+
+
+async def _plain_http_fetch(
+    urls: list,
+    job_id: Optional[str] = None,
+    on_page_done: Optional[Callable[..., None]] = None,
+) -> "tuple[list, list]":
+    """Fetch URLs over plain HTTP and strip HTML tags.
+
+    Returns (pages, har_entries): PageData objects plus light HAR evidence per
+    request (REQ-13), so the fallback emits the FULL CrawlResult contract and
+    the downstream DER summarize / citation / frontend pipeline is fed exactly
+    as if crawl4ai had succeeded. Zero crawl4ai/browser dependency — this path
+    cannot hit the crawl4ai chunking failure. All fetches run in parallel and
+    are individually bounded (30s), so the fallback completes in ~30s worst
+    case regardless of page count. ``job_id`` (when known) keys capture-store
+    writes for the browser panel replay (REQ-1).
+    """
+    import hashlib as _hashlib
     import re as _re
+    import time as _time
 
     import httpx as _httpx
 
-    pages: list = []
-
-    async def _one(url: str) -> dict:
+    async def _one(url: str, page_number: int):
+        t0 = _time.monotonic()
         try:
             async with _httpx.AsyncClient(follow_redirects=True, timeout=30.0) as _hc:
                 _resp = await _hc.get(
@@ -308,28 +472,87 @@ async def _plain_http_fallback(urls: list) -> list:
             )
             _stripped = _re.sub(r"<[^>]+>", " ", _stripped)
             _text = _re.sub(r"\s+", " ", _stripped).strip()
-            if not _text:
-                return None
             _m = _re.search(r"<title[^>]*>([^<]+)</title>", _html, _re.IGNORECASE)
-            return {
-                "url": url,
-                "title": (_m.group(1).strip() if _m else url),
-                "markdown": _text,
-                "html": None,
-                "metadata": {},
+            _har = {
+                "url": url, "method": "GET", "status": _resp.status_code,
+                "response_headers": _coerce_headers(dict(_resp.headers)),
+                "duration_ms": int((_time.monotonic() - t0) * 1000),
+                "content_length": len(_html),
+                "body_sha256": _hashlib.sha256(_html.encode("utf-8", "replace")).hexdigest(),
                 "error": None,
             }
+            # REQ-10 (T12): a bot-challenge interstitial (Cloudflare/Turnstile)
+            # is NOT the page's content — do NOT save it to the capture store,
+            # and mark the page so the orchestrator can penalize the source.
+            _challenged = _is_challenge_page(_html)
+            if _challenged:
+                logger.warning(
+                    "[crawl_runner] CHALLENGE url=%s status=%s — page not saved",
+                    url, _resp.status_code,
+                )
+                _har["error"] = "challenge"
+            _page = PageData(
+                url=url,
+                title=(_m.group(1).strip() if _m else url),
+                markdown=_text,
+                html=None,
+                metadata={},
+                error="challenge" if _challenged else None,
+                html_bytes=len(_html),
+            )
+            # T5 (REQ-1 AC1/AC2): persist raw captured HTML for the browser
+            # panel replay. Best-effort; never fails the fetch. SKIPPED for
+            # challenge pages (REQ-10 T12) — their boilerplate is not content.
+            if not _challenged:
+                try:
+                    from .capture_store import get_capture_store
+
+                    get_capture_store().save(
+                        job_id=job_id,
+                        page_number=page_number,
+                        url=url,
+                        html=_html,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+            # Report progress exactly as the crawl4ai worker does. Without this
+            # the fallback fetched pages SILENTLY: the UI got CRAWLER_STARTED
+            # and CRAWLER_COMPLETE but no CRAWLER_PAGE_FETCHED in between, so
+            # the browser panel could not show pages arriving. The fallback is
+            # not a rare path — the worker times out on multi-URL crawls and
+            # this runs most of the time.
+            if on_page_done:
+                try:
+                    on_page_done(
+                        url, page_number, len(urls),
+                        (_m.group(1).strip() if _m else url), "",
+                    )
+                except Exception:  # noqa: BLE001
+                    pass  # never fail a fetch on a progress emit
+            return _page, _har
         except Exception as _e:  # noqa: BLE001
             logger.warning("[crawl_runner] plain-HTTP fallback fetch failed %s: %s", url, _e)
-            return None
+            _har = {
+                "url": url, "method": "GET", "status": None,
+                "response_headers": {}, "duration_ms": int((_time.monotonic() - t0) * 1000),
+                "content_length": 0, "body_sha256": "",
+                "error": str(_e),
+            }
+            return None, _har
 
-    _results = await asyncio.gather(*[_one(u) for u in urls], return_exceptions=True)
+    _results = await asyncio.gather(*[_one(u, i + 1) for i, u in enumerate(urls)], return_exceptions=True)
+    _pages: list = []
+    _har_entries: list = []
     for _r in _results:
-        if isinstance(_r, dict) and _r.get("markdown"):
-            pages.append(PageData(**_clean_page(_r)))
-    if pages:
+        if isinstance(_r, Exception):
+            continue
+        _page, _har = _r
+        _har_entries.append(_har)
+        if _page is not None:
+            _pages.append(_page)
+    if _pages:
         logger.info(
             "[crawl_runner] plain-HTTP fallback produced %d pages (worker failed)",
-            len(pages),
+            len(_pages),
         )
-    return pages
+    return _pages, _har_entries

@@ -25,6 +25,20 @@ _sqlcipher_warned: bool = False
 DEFAULT_CIPHER_PAGE_SIZE = 4096
 DEFAULT_KDF_ITERATIONS = 64000
 
+# D4g: EpisodicStore, SemanticStore, and MemoryInterface's Mycelium layer each
+# open their OWN connection to the same data/memory.db (see episodic.py /
+# semantic.py / interface.py — all three call open_encrypted_memory()
+# independently). WAL mode (set below) lets readers proceed without
+# blocking, but two of these connections writing at nearly the same moment
+# (e.g. _store_document_data's episodic.fragment_and_store racing a Mycelium
+# write from another DER step) still serialize on the single-writer lock.
+# SQLite's default busy_timeout is 0ms, so the loser raised "database is
+# locked" immediately instead of waiting the other transaction out — exactly
+# the T36 smoke evidence (document_data + episodic chunk store, 07:45:28-44).
+# 5s covers the write path here (single INSERT/UPDATE statements, not long
+# scans) without risking a hung request.
+DEFAULT_BUSY_TIMEOUT_MS = 5000
+
 # Set IRIS_MEMORY_ENCRYPTION=1 to disable fallback and require sqlcipher3.
 _REQUIRE_ENCRYPTION = os.environ.get("IRIS_MEMORY_ENCRYPTION", "0") == "1"
 
@@ -68,6 +82,9 @@ def open_encrypted_memory(db_path: str, biometric_key: bytes):
             conn.execute("PRAGMA cache_size=-20000;")
             conn.execute("PRAGMA temp_store=MEMORY;")
             conn.execute("PRAGMA mmap_size=268435456;")
+            # D4g: wait for a competing writer instead of failing immediately
+            # (see DEFAULT_BUSY_TIMEOUT_MS comment above).
+            conn.execute(f"PRAGMA busy_timeout={DEFAULT_BUSY_TIMEOUT_MS};")
             conn.execute("SELECT count(*) FROM sqlite_master")
             logger.info(f"[db] Opened encrypted memory database: {db_path}")
             return conn
@@ -98,6 +115,10 @@ def open_encrypted_memory(db_path: str, biometric_key: bytes):
         conn.execute("PRAGMA cache_size=-20000;")
         conn.execute("PRAGMA temp_store=MEMORY;")
         conn.execute("PRAGMA mmap_size=268435456;")
+        # D4g: same busy_timeout as the encrypted branch above — this is the
+        # branch actually active on this dev machine (no sqlcipher3 wheel),
+        # so it is the one that produced the "database is locked" evidence.
+        conn.execute(f"PRAGMA busy_timeout={DEFAULT_BUSY_TIMEOUT_MS};")
         conn.execute("SELECT count(*) FROM sqlite_master")
         logger.info(f"[db] Opened unencrypted (dev) memory database: {db_path}")
         return conn
@@ -195,6 +216,13 @@ def initialise_mycelium_schema(conn) -> None:
             decay_rate       REAL DEFAULT 0.005,
             created_at       REAL NOT NULL,
             last_traversed   REAL,
+            -- REQ-26 (T40): observation count — the evidence the score
+            -- expresses. The update magnitude diminishes as it grows
+            -- (alpha = 1/(1+count)), so the 100th observation moves belief
+            -- less than the 1st: a posterior, not a reinforcement rule.
+            -- Decay NEVER touches this column (decay is forgetting, not an
+            -- observation — REQ-26 AC7).
+            observation_count INTEGER DEFAULT 0,
             UNIQUE(from_node_id, to_node_id)
         );
 
@@ -504,6 +532,24 @@ def initialise_mycelium_schema(conn) -> None:
         CREATE INDEX IF NOT EXISTS idx_signals_collab ON swarm_join_signals(collab_id);
         CREATE INDEX IF NOT EXISTS idx_signals_type   ON swarm_join_signals(signal_type);
     """)
+
+    # -------------------------------------------------------------------------
+    # Block 5 — Idempotent column ALTERs for LIVE stores (REQ-26/T40)
+    # -------------------------------------------------------------------------
+    # CREATE TABLE IF NOT EXISTS above only covers NEW databases; an existing
+    # store keeps its old mycelium_edges shape. Probe the live columns and add
+    # the missing ones — same pattern as the episodic ALTERs (episodic.py) and
+    # the iris_ffi memory_chain ALTER.
+    try:
+        _edge_cols = {r[1] for r in conn.execute("PRAGMA table_info(mycelium_edges)")}
+        if "observation_count" not in _edge_cols:
+            conn.execute(
+                "ALTER TABLE mycelium_edges "
+                "ADD COLUMN observation_count INTEGER DEFAULT 0"
+            )
+            logger.info("[db] mycelium_edges ALTER added column observation_count")
+    except Exception as _oc_exc:
+        logger.warning("[db] mycelium_edges observation_count ALTER skipped: %s", _oc_exc)
 
     conn.commit()
     logger.info("[db] Mycelium schema initialised: 18 tables, 36 indexes")

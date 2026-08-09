@@ -38,6 +38,9 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_PAGES = int(os.environ.get("CRAWL4AI_MAX_PAGES", "5"))
 _DEFAULT_MIN_PAGES = int(os.environ.get("CRAWL_MIN_PAGES", "3"))
+# D3 fix (T36 live smoke, 2026-08-09): kept in lockstep with crawl_runner.py's
+# _DEFAULT_TIMEOUT_S (same env var, same fallback) — see that module for the
+# cold-vs-warm browser-launch measurement behind the 45s->90s change.
 _DEFAULT_TIMEOUT_S = float(os.environ.get("CRAWL_SUBPROCESS_TIMEOUT_S", "90"))
 
 
@@ -169,9 +172,10 @@ class CrawlOrchestrator:
         plan: CrawlPlan = await self._plan(query)
         if not plan.urls:
             _emit("CRAWLER_ERROR", {"message": "no candidate urls"})
+            await self._drain_log_tasks()
             return self._empty(query, t_start, "no candidate urls")
 
-        _emit("CRAWLER_STARTED", {"query": query, "url_count": len(plan.urls), "session_id": session_id})
+        _emit("CRAWLER_STARTED", {"query": query, "url_count": len(plan.urls), "session_id": session_id, "job_id": job_id})
         # REQ-4 AC1/AC3: emit phase transition — moving into search.
         _emit("CRAWLER_PHASE", {"phase": "searching", "phase_sequence": PHASE_SEARCHING})
 
@@ -180,7 +184,12 @@ class CrawlOrchestrator:
         fetched: CrawlResult = await backend.fetch(
             query=query, urls=plan.urls, instructions=plan.instructions,
             max_pages=max_pages,
-            on_page_done=self._page_emitter(_emit),
+            # job_id is REQUIRED here: it is what lets the browser panel build
+            # /api/browser/capture/{job_id}/{page_number}. The retry and
+            # single-URL paths below already passed it; this PRIMARY path did
+            # not, so every normal crawl emitted job_id="" and the panel could
+            # not resolve a capture to display (REQ-1 AC1).
+            on_page_done=self._page_emitter(_emit, job_id),
             timeout_s=timeout_s,
             job_id=job_id,
         )
@@ -207,7 +216,7 @@ class CrawlOrchestrator:
                 fetched = await backend.fetch(
                     query=broader_query, urls=plan.urls, instructions=plan.instructions,
                     max_pages=max_pages,
-                    on_page_done=self._page_emitter(_emit),
+on_page_done=self._page_emitter(_emit, job_id),
                     timeout_s=timeout_s,
                     job_id=f"{job_id}_retry",
                 )
@@ -217,11 +226,13 @@ class CrawlOrchestrator:
 
         if fetched.error:
             _emit("CRAWLER_ERROR", {"message": fetched.error})
+            await self._drain_log_tasks()
             return self._finalize(fetched, query, t_start, error=fetched.error)
 
         ok_pages = [p for p in fetched.pages if not p.error]
         if not ok_pages:
             _emit("CRAWLER_ERROR", {"message": "all pages failed to fetch"})
+            await self._drain_log_tasks()
             return self._finalize(fetched, query, t_start, error="all pages failed to fetch")
 
         # REQ-4 AC1/AC3: emit phase transition — moving into extraction.
@@ -262,16 +273,72 @@ class CrawlOrchestrator:
         _emit("OPEN_TAB", {
             "tab_type": "dashboard", "id": session_id or query,
             "title": plan.title, "data": dashboard_data,
+            # REQ-11 (T13): the OPEN_TAB payload carries url + job_id so the
+            # frontend can tell a content tab from a url-less dashboard tab —
+            # and never force-activate a tab that has nothing to show.
+            "url": None,
+            "job_id": job_id,
         })
         # REQ-29/30: signal completion so a reconnecting client (SSE/WS) knows
         # the job finished and can fetch the result without re-crawling.
         _emit("CRAWLER_COMPLETE", {
             "query": query,
             "summary": dashboard_data.get("summary", ""),
-            "cited_markdown": cited_markdown,
-            "credibility_top_score": cred_map.top_score,
+            "page_count": len(ok_pages),
+            "session_id": session_id,
+            "job_id": job_id,
         })
+        await self._drain_log_tasks()
         return result
+
+    async def fetch_url(
+        self,
+        url: str,
+        *,
+        session_id: str = "",
+        on_progress: Optional[Callable[[CrawlProgress], None]] = None,
+        timeout_s: float = _DEFAULT_TIMEOUT_S,
+        job_id: Optional[str] = None,
+    ) -> CrawlResult:
+        """Direct single-URL fetch (REQ-16 open_url path). No LLM planning.
+
+        Fetches exactly ``url`` through the swappable fetch backend (agent =
+        crash-isolated subprocess) and returns the CrawlResult with the page
+        content. Emits CRAWLER_STARTED + CRAWLER_PAGE_FETCHED so the in-app
+        browser surface sees the page load. Never raises for fetch failures
+        (REQ-17 AC1). Does NOT plan URLs or run extraction — open_url wants
+        the raw page, not a research dashboard.
+        """
+        t_start = time.monotonic()
+        if not job_id:
+            job_id = uuid.uuid4().hex
+        _emit = self._make_emitter(on_progress, session_id)
+
+        _emit("CRAWLER_STARTED", {"query": url, "url_count": 1, "session_id": session_id})
+        _emit("CRAWLER_PHASE", {"phase": "searching", "phase_sequence": PHASE_SEARCHING})
+
+        try:
+            backend = self._backend_override or _BACKENDS["agent"]()
+            fetched: CrawlResult = await backend.fetch(
+                query=url,
+                urls=[url],
+                instructions="Extract the full page content as markdown.",
+                max_pages=1,
+on_page_done=self._page_emitter(_emit, job_id),
+                timeout_s=timeout_s,
+                job_id=job_id,
+            )
+        except Exception as exc:  # REQ-17 AC1: never raise for fetch failures
+            logger.error("[orchestrator.fetch_url] fetch failed: %s", exc)
+            return self._empty(url, t_start, f"fetch failed: {exc}")
+
+        if fetched.error:
+            _emit("CRAWLER_ERROR", {"message": fetched.error})
+            await self._drain_log_tasks()
+            return self._finalize(fetched, url, t_start, error=fetched.error)
+
+        await self._drain_log_tasks()
+        return fetched
 
     # -- helpers ----------------------------------------------------------
     async def _plan(self, query: str) -> CrawlPlan:
@@ -304,11 +371,19 @@ class CrawlOrchestrator:
         # server-side event log so a disconnecting/reconnecting client can
         # replay missed events (partial replay, not full re-crawl).
         log = get_event_log() if session_id else None
+        # Fire-and-forget appends can be cancelled when the loop tears down
+        # (asyncio.run/_go patterns) before they execute, silently losing
+        # events (REQ-31 replay gap). Track them so research() can drain
+        # them on every return path.
+        self._pending_log_tasks: list = []
 
         def _emit(event: str, payload: dict) -> None:
             if log is not None:
                 try:
-                    asyncio.ensure_future(log.append(session_id, event, payload))
+                    task = asyncio.ensure_future(
+                        log.append(session_id, event, payload)
+                    )
+                    self._pending_log_tasks.append(task)
                 except Exception:  # noqa: BLE001
                     pass  # never block the funnel on a log write failure
             if on_progress is not None:
@@ -316,13 +391,46 @@ class CrawlOrchestrator:
 
         return _emit
 
-    def _page_emitter(self, emit):
+    async def _drain_log_tasks(self) -> None:
+        """Await all pending event-log appends (REQ-31: never lose events).
+
+        research() calls this before every return path; the appends were
+        scheduled fire-and-forget from sync callbacks (on_page_done), so they
+        need an explicit await point to complete before the loop may close.
+        """
+        pending = getattr(self, "_pending_log_tasks", None)
+        if not pending:
+            return
+        self._pending_log_tasks = []
+        await asyncio.gather(*pending, return_exceptions=True)
+
+    def _page_emitter(self, emit, job_id: str = ""):
+        # REQ-11 (T14): SINGLE emission authority — the same (job_id,
+        # page_number) must never emit twice. The crawl4ai worker path and the
+        # plain-HTTP fallback (crawl_runner) can both reach this callback for
+        # the same page (worker times out -> fallback re-fetches the same
+        # URLs), which used to duplicate CRAWLER_PAGE_FETCHED and made the
+        # browser panel show the page twice. First emitter wins; later
+        # duplicates are dropped (the bytes are identical for the same page).
+        _seen: set = set()
+
         def _cb(url, page_number, total, title="", snippet=""):
+            _key = (job_id, page_number)
+            if _key in _seen:
+                logger.info(
+                    "[CrawlOrchestrator] CRAWLER_PAGE_FETCHED dedup drop "
+                    "job=%s page=%s", job_id, page_number,
+                )
+                return
+            _seen.add(_key)
             emit("CRAWLER_PAGE_FETCHED", {
                 "url": url, "page_number": page_number, "total": total,
                 "host": _host(url),
                 "title": title,
                 "snippet": snippet,
+                # T5 (REQ-1 AC1): job_id lets the in-app browser panel build the
+                # capture-replay URL /api/browser/capture/{job_id}/{page_number}.
+                "job_id": job_id,
             })
         return _cb
 
@@ -359,12 +467,23 @@ class CrawlOrchestrator:
             status = e.get("status")
             err = (e.get("error") or "").lower()
             is_dead = status in (403, 404) or "timeout" in err or "timed out" in err
-            if not is_dead:
+            # REQ-10 (T12): a bot-challenge interstitial is dead content — the
+            # page returned boilerplate, not the page. Penalize with the
+            # challenge reason so the outer loop can distinguish CAPTCHA blocks.
+            is_challenge = "challenge" in err
+            if not is_dead and not is_challenge:
                 continue
             try:
-                reg.penalize_url(e.get("url", ""), topics=[query])
+                reg.penalize_url(
+                    e.get("url", ""),
+                    topics=[query],
+                    last_error="challenge" if is_challenge else "crawl_failed",
+                )
                 logger.info(
-                    "SRC PENALIZE url=%s status=%s query=%s", e.get("url"), status, query
+                    "SRC PENALIZE url=%s status=%s reason=%s query=%s",
+                    e.get("url"), status,
+                    "challenge" if is_challenge else "crawl_failed",
+                    query,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[CrawlOrchestrator] penalize_url failed: %s", exc)

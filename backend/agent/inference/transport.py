@@ -137,6 +137,34 @@ def _sleep_on_429(
     _perf_t.sleep(_delay)
 
 
+def _record_attempt(transport: "object") -> None:
+    """REQ-9 / root-cause of the 429 storm: record a logical LLM call attempt
+    in the rate window BEFORE sending.
+
+    The window-aware scheduler gate (phase_manager) paces admissions against
+    ``window_stats.requests >= ceiling`` — but requests were recorded only on
+    SUCCESS (``_record_success``), so every 429'd call was invisible to the
+    window, the gate saw infinite headroom and admitted straight into an
+    exhausted quota, and the transport's blind 3x retries (30s each, bypassing
+    the gate) turned one logical call into 90s of dead time + amplified
+    traffic. Recording the ATTEMPT (once per logical call; retries of the same
+    call do not double-count) lets the gate actually hold new admissions while
+    the provider is saturated. Best-effort — metering must never break a call.
+    """
+    try:
+        _qid = getattr(transport, "_quota_id", None)
+        if _qid:
+            get_rate_meter().record_request(
+                _qid,
+                0,
+                priority=priority_index(call_class()),
+                estimated=True,
+                label=getattr(transport, "_provider_id", "unknown"),
+            )
+    except Exception:  # pragma: no cover — metering is best-effort
+        pass
+
+
 # ---------------------------------------------------------------------------
 # Thinking/reasoning extraction  (preserved from AgentKernel._parse_thinking)
 # ---------------------------------------------------------------------------
@@ -210,21 +238,31 @@ class Transport(Protocol):
         """Run inference and return ``(text, thinking, tool_calls)``."""
         ...
 
-    def _record_success(self, text: str) -> None:
+    def _record_success(
+        self, text: str, usage: Optional[Dict[str, int]] = None
+    ) -> None:
         """Record a completed (non-429) request against the meter.
 
         Called by subclasses after a successful ``generate``. Keyed by
-        ``self._quota_id``; unmetered quotas are ignored by the meter. Metering
-        must NEVER break a call, so all errors are swallowed (T2.2 / T2.5).
+        ``self._quota_id``; unmetered quotas are ignored by the meter. When
+        *usage* holds real provider-reported tokens (D1), it is recorded with
+        ``estimated=False``; otherwise the char/4 estimate is recorded with
+        ``estimated=True`` — so real and estimated samples stay distinguishable
+        in the meter. Metering must NEVER break a call, so all errors are
+        swallowed (T2.2 / T2.5).
         """
         if self._quota_id is None:
             return
         try:
+            if usage and usage.get("total_tokens"):
+                _tokens, _estimated = usage["total_tokens"], False
+            else:
+                _tokens, _estimated = max(1, len(text) // 4), True  # estimated tokens: 4 chars ≈ 1 token
             get_rate_meter().record_request(
                 self._quota_id,
-                max(1, len(text) // 4),  # estimated tokens: 4 chars ≈ 1 token
+                _tokens,
                 priority=priority_index(call_class()),  # F9: thread real call class from context
-                estimated=True,
+                estimated=_estimated,
                 label=getattr(self, "_provider_id", "unknown"),
             )
         except Exception as _e:  # pragma: no cover — metering is best-effort
@@ -261,6 +299,72 @@ def _accumulate_tool_calls(
 
 
 # ---------------------------------------------------------------------------
+# Real token-usage extraction (D1 fix)
+# ---------------------------------------------------------------------------
+#
+# The pill on the frontend reads AgentKernel._tokens_used, which was only ever
+# set from a restored conversation-context snapshot — never from a live
+# inference call, because the API response's `usage` block was parsed nowhere
+# in this module. These two helpers parse REAL provider-reported usage so the
+# estimate (`len(text) // 4`) is used ONLY as a fallback when a provider
+# genuinely omits usage — never as a substitute for it.
+
+
+def _extract_usage(payload: Dict[str, Any]) -> Optional[Dict[str, int]]:
+    """Parse the OpenAI-shaped ``usage`` block from a chat/completions response.
+
+    Returns ``{"prompt_tokens", "completion_tokens", "total_tokens"}`` when the
+    provider reported real usage, or ``None`` when it is absent/malformed.
+    Callers MUST treat ``None`` as "no real usage available" and fall back to
+    the char/4 estimate rather than fabricating a number.
+    """
+    _usage = payload.get("usage") if isinstance(payload, dict) else None
+    if not isinstance(_usage, dict):
+        return None
+    try:
+        _prompt = int(_usage.get("prompt_tokens") or 0)
+        _completion = int(_usage.get("completion_tokens") or 0)
+        _total = int(_usage.get("total_tokens") or (_prompt + _completion))
+    except (TypeError, ValueError):
+        return None
+    if _total <= 0:
+        return None
+    return {
+        "prompt_tokens": _prompt,
+        "completion_tokens": _completion,
+        "total_tokens": _total,
+    }
+
+
+def _extract_ollama_usage(payload: Dict[str, Any]) -> Optional[Dict[str, int]]:
+    """Parse Ollama's native (non-OpenAI-shaped) usage fields.
+
+    Ollama's ``/api/chat`` response reports ``prompt_eval_count`` /
+    ``eval_count`` at the top level instead of a nested ``usage`` object, so it
+    needs its own extractor rather than ``_extract_usage``.
+    """
+    if not isinstance(payload, dict):
+        return None
+    _prompt_raw = payload.get("prompt_eval_count")
+    _completion_raw = payload.get("eval_count")
+    if _prompt_raw is None and _completion_raw is None:
+        return None
+    try:
+        _prompt = int(_prompt_raw or 0)
+        _completion = int(_completion_raw or 0)
+    except (TypeError, ValueError):
+        return None
+    _total = _prompt + _completion
+    if _total <= 0:
+        return None
+    return {
+        "prompt_tokens": _prompt,
+        "completion_tokens": _completion,
+        "total_tokens": _total,
+    }
+
+
+# ---------------------------------------------------------------------------
 # ApiHttpxTransport  — extracted from ``_dispatch_api`` (httpx, Bearer)
 # ---------------------------------------------------------------------------
 
@@ -285,22 +389,40 @@ class ApiHttpxTransport:
         self._api_base_url = api_base_url.rstrip("/")
         self._api_key = api_key
         self._quota_id = quota_id
+        # D1: real usage (prompt/completion/total tokens) parsed from the last
+        # response, or None when the provider omitted it. Read by
+        # InferenceRouter.generate() after each call so the kernel can credit
+        # the pill's counter with a REAL number instead of an estimate.
+        self.last_usage: Optional[Dict[str, int]] = None
 
-    def _record_success(self, text: str) -> None:
+    def _record_success(
+        self, text: str, usage: Optional[Dict[str, int]] = None
+    ) -> None:
         """Record a completed (non-429) request against the meter.
 
         Keyed by ``self._quota_id``; unmetered quotas are ignored by the meter.
-        Metering must NEVER break a call, so all errors are swallowed.
+        When *usage* holds real provider-reported tokens (D1), it is recorded
+        with ``estimated=False``; otherwise the char/4 estimate is recorded
+        with ``estimated=True``. Metering must NEVER break a call, so all
+        errors are swallowed.
         """
         if self._quota_id is None:
             return
         try:
+            if usage and usage.get("total_tokens"):
+                _tokens, _estimated = usage["total_tokens"], False
+            else:
+                _tokens, _estimated = max(1, len(text) // 4), True  # estimated tokens: 4 chars ≈ 1 token
             get_rate_meter().record_request(
                 self._quota_id,
-                max(1, len(text) // 4),  # estimated tokens: 4 chars ≈ 1 token
+                _tokens,
                 priority=priority_index(call_class()),  # F9: thread real call class from context
-                estimated=True,
+                estimated=_estimated,
                 label=getattr(self, "_provider_id", "unknown"),
+            )
+            logger.info(
+                "[ApiHttpxTransport] tokens recorded=%d estimated=%s provider=%s",
+                _tokens, _estimated, getattr(self, "_provider_id", "unknown"),
             )
         except Exception as _e:  # pragma: no cover — metering is best-effort
             logger.debug("[transport] meter record failed: %s", _e)
@@ -318,6 +440,10 @@ class ApiHttpxTransport:
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         import httpx as _httpx
         from backend.utils.ssl_context import get_ssl_context
+
+        # D1: reset per-call so a call that gets no usage (e.g. a stream the
+        # provider didn't annotate) never inherits a PREVIOUS call's numbers.
+        self.last_usage = None
 
         # Guard against unset model
         if model in (
@@ -377,7 +503,7 @@ class ApiHttpxTransport:
             _text, _think, _tools = self._nonstream(
                 url, headers, body, model, messages
             )
-        self._record_success(_text)
+        self._record_success(_text, self.last_usage)
         return _text, _think, _tools
 
     # -- streaming path -------------------------------------------------
@@ -403,6 +529,7 @@ class ApiHttpxTransport:
         _rate_limited = False
 
         for attempt in range(3):
+            _record_attempt(self)
             _stream_ok = False
             try:
                 with _httpx.Client(
@@ -459,6 +586,15 @@ class ApiHttpxTransport:
                             if _data == "[DONE]":
                                 break
                             _chunk = _json.loads(_data)
+                            # D1: some providers (when include_usage is
+                            # requested, or unconditionally) send usage on a
+                            # final chunk that carries an EMPTY choices list —
+                            # so this check must happen BEFORE the
+                            # `not _choices` skip below, or that chunk's usage
+                            # is silently dropped.
+                            _chunk_usage = _extract_usage(_chunk)
+                            if _chunk_usage:
+                                self.last_usage = _chunk_usage
                             _choices = _chunk.get("choices", [])
                             if not _choices:
                                 continue
@@ -540,6 +676,7 @@ class ApiHttpxTransport:
         result = None
         _rate_limited = False
         for attempt in range(3):
+            _record_attempt(self)
             try:
                 with _httpx.Client(
                     timeout=_httpx.Timeout(60.0), verify=get_ssl_context()
@@ -588,6 +725,9 @@ class ApiHttpxTransport:
                 )
             raise RuntimeError("API request failed after retries")
 
+        # D1: real usage lives on the top-level response, not per-choice.
+        self.last_usage = _extract_usage(result)
+
         _msg = result.get("choices", [{}])[0].get("message", {})
         _reply = _msg.get("content", "")
         _tool_calls = _msg.get("tool_calls") or []
@@ -618,18 +758,36 @@ class OpenAICompatTransport:
     def __init__(self, endpoint: str, quota_id: Optional[str] = None) -> None:
         self._endpoint = endpoint.rstrip("/")
         self._quota_id = quota_id
+        # D1: real usage parsed from the last response, or None when the
+        # local server omitted it. Read by InferenceRouter.generate().
+        self.last_usage: Optional[Dict[str, int]] = None
 
-    def _record_success(self, text: str) -> None:
-        """Record a completed (non-429) request against the meter."""
+    def _record_success(
+        self, text: str, usage: Optional[Dict[str, int]] = None
+    ) -> None:
+        """Record a completed (non-429) request against the meter.
+
+        When *usage* holds real provider-reported tokens (D1), it is recorded
+        with ``estimated=False``; otherwise the char/4 estimate is recorded
+        with ``estimated=True``.
+        """
         if self._quota_id is None:
             return
         try:
+            if usage and usage.get("total_tokens"):
+                _tokens, _estimated = usage["total_tokens"], False
+            else:
+                _tokens, _estimated = max(1, len(text) // 4), True  # estimated tokens: 4 chars ≈ 1 token
             get_rate_meter().record_request(
                 self._quota_id,
-                max(1, len(text) // 4),  # estimated tokens: 4 chars ≈ 1 token
+                _tokens,
                 priority=priority_index(call_class()),  # F9: thread real call class from context
-                estimated=True,
+                estimated=_estimated,
                 label=getattr(self, "_provider_id", "unknown"),
+            )
+            logger.info(
+                "[OpenAICompatTransport] tokens recorded=%d estimated=%s provider=%s",
+                _tokens, _estimated, getattr(self, "_provider_id", "unknown"),
             )
         except Exception as _e:  # pragma: no cover — metering is best-effort
             logger.debug("[transport] meter record failed: %s", _e)
@@ -647,6 +805,9 @@ class OpenAICompatTransport:
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         import httpx as _httpx
         from backend.utils.ssl_context import get_ssl_context
+
+        # D1: reset per-call (see ApiHttpxTransport.generate for rationale).
+        self.last_usage = None
 
         _url = f"{self._endpoint}/v1/chat/completions"
         _url_v1 = f"{self._endpoint}/chat/completions"
@@ -678,7 +839,7 @@ class OpenAICompatTransport:
             )
         else:
             _text, _think, _tools = self._nonstream(_url, _url_v1, _body)
-        self._record_success(_text)
+        self._record_success(_text, self.last_usage)
         return _text, _think, _tools
 
     # -- streaming path -------------------------------------------------
@@ -702,6 +863,7 @@ class OpenAICompatTransport:
         _rate_limited = False
 
         for attempt in range(3):
+            _record_attempt(self)
             _stream_ok = False
             try:
                 with _httpx.Client(
@@ -764,6 +926,11 @@ class OpenAICompatTransport:
                             if _data == "[DONE]":
                                 break
                             _chunk = _json.loads(_data)
+                            # D1: see ApiHttpxTransport._stream — usage may
+                            # ride an empty-choices final chunk.
+                            _chunk_usage = _extract_usage(_chunk)
+                            if _chunk_usage:
+                                self.last_usage = _chunk_usage
                             _choices = _chunk.get("choices", [])
                             if not _choices:
                                 continue
@@ -837,6 +1004,7 @@ class OpenAICompatTransport:
         result = None
         _rate_limited = False
         for attempt in range(3):
+            _record_attempt(self)
             try:
                 with _httpx.Client(
                     timeout=_httpx.Timeout(60.0), verify=get_ssl_context()
@@ -905,6 +1073,9 @@ class OpenAICompatTransport:
                     getattr(self, "_provider_id", "unknown"), 3
                 )
             raise RuntimeError("LM Studio request failed after retries")
+
+        # D1: real usage (when the local server reports it).
+        self.last_usage = _extract_usage(result)
 
         _msg = result.get("choices", [{}])[0].get("message", {})
         _reply = _msg.get("content", "")
@@ -1007,6 +1178,9 @@ class OllamaTransport:
     ) -> None:
         self._endpoint = endpoint.rstrip("/")
         self._quota_id = quota_id
+        # D1: real usage parsed from the last response (Ollama's own
+        # prompt_eval_count/eval_count fields — not OpenAI-shaped), or None.
+        self.last_usage: Optional[Dict[str, int]] = None
 
     def generate(
         self,
@@ -1020,6 +1194,9 @@ class OllamaTransport:
         reasoning_callback: Optional[Callable[[str], None]] = None,
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         import httpx as _httpx
+
+        # D1: reset per-call (see ApiHttpxTransport.generate for rationale).
+        self.last_usage = None
 
         url = f"{self._endpoint}/api/chat"
         payload = {
@@ -1037,6 +1214,7 @@ class OllamaTransport:
                         f"{_resp.text[:200]}"
                     )
                 result = _resp.json()
+                self.last_usage = _extract_ollama_usage(result)
                 _reply = result.get("message", {}).get("content", "")
         except Exception:
             logger.warning(

@@ -204,10 +204,23 @@ class LandmarkMerger:
             (absorbed.landmark_id,),
         )
 
-        # Re-point all landmark edges from absorbed → survivor (skip self-loops)
+        # Re-point all landmark edges from absorbed → survivor (skip self-loops).
+        #
+        # D4f: this was a plain UPDATE. If the survivor ALREADY had an edge to
+        # the same neighbour (a landmark both survivor and absorbed pointed
+        # at/from — common, since they were similar enough to merge), the
+        # re-point collided with the (from_landmark_id, to_landmark_id)
+        # UNIQUE constraint and raised IntegrityError, which
+        # MemoryInterface.store_episode swallowed as "Mycelium episode wiring
+        # failed" — silently dropping the merge mid-transaction. UPDATE OR
+        # IGNORE (SQLite conflict-resolution clause, same idempotent pattern
+        # as landmark.py's INSERT OR IGNORE) skips rows that would collide
+        # instead of raising; the row is left pointing at the now-absorbed
+        # landmark and is swept up by the cleanup DELETE below rather than
+        # lost.
         conn.execute(
             """
-            UPDATE mycelium_landmark_edges
+            UPDATE OR IGNORE mycelium_landmark_edges
             SET from_landmark_id = ?
             WHERE from_landmark_id = ? AND to_landmark_id != ?
             """,
@@ -215,7 +228,7 @@ class LandmarkMerger:
         )
         conn.execute(
             """
-            UPDATE mycelium_landmark_edges
+            UPDATE OR IGNORE mycelium_landmark_edges
             SET to_landmark_id = ?
             WHERE to_landmark_id = ? AND from_landmark_id != ?
             """,
@@ -224,6 +237,15 @@ class LandmarkMerger:
         # Remove self-loops created by re-point
         conn.execute(
             "DELETE FROM mycelium_landmark_edges WHERE from_landmark_id = to_landmark_id"
+        )
+        # D4f cleanup: any edge still touching the now-absorbed landmark is a
+        # duplicate the OR IGNORE above declined to re-point (survivor already
+        # carries that relationship) — drop it rather than leave a dangling
+        # reference to a landmark that absorbed=1 just retired.
+        conn.execute(
+            "DELETE FROM mycelium_landmark_edges "
+            "WHERE from_landmark_id = ? OR to_landmark_id = ?",
+            (absorbed.landmark_id, absorbed.landmark_id),
         )
 
         # Log merge

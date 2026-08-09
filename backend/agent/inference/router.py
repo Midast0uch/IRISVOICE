@@ -100,6 +100,13 @@ class InferenceRouter:
         self._inprocess_mgr: Any = None
         # Default role used when an unbound role is requested (set in _apply_config)
         self._default_role: Optional[str] = None
+        # D1: real usage from the LAST generate() call, or None when the
+        # transport/provider didn't report it. Per-kernel (this router is not
+        # a singleton — see AgentKernel.__init__), so there is no cross-session
+        # leakage. Callers (AgentKernel, ToolDecisionBox, batch_dispatch) read
+        # this immediately after generate() returns to credit the real token
+        # count instead of an estimate.
+        self.last_usage: Optional[Dict[str, int]] = None
 
         # ── Auto-apply config defaults ──────────────────────────────
         self._apply_config(config)
@@ -587,7 +594,7 @@ class InferenceRouter:
             quota_id=getattr(transport, "_quota_id", None),
         )
 
-        return transport.generate(
+        result = transport.generate(
             effective_model,
             messages,
             normalized_tools,
@@ -596,6 +603,29 @@ class InferenceRouter:
             chunk_callback=chunk_callback,
             reasoning_callback=reasoning_callback,
         )
+
+        # D1: surface the transport's real usage (if any) for THIS call.
+        # Deliberately does NOT change the return signature (8+ call sites
+        # depend on the 3-tuple) — callers read router.last_usage right after
+        # generate() returns instead.
+        self.last_usage = getattr(transport, "last_usage", None)
+        if self.last_usage:
+            logger.info(
+                "[InferenceRouter] real usage role=%s provider=%s "
+                "prompt=%d completion=%d total=%d",
+                role, inst.id,
+                self.last_usage.get("prompt_tokens", 0),
+                self.last_usage.get("completion_tokens", 0),
+                self.last_usage.get("total_tokens", 0),
+            )
+        else:
+            logger.debug(
+                "[InferenceRouter] no real usage reported role=%s provider=%s "
+                "-- caller falls back to char/4 estimate",
+                role, inst.id,
+            )
+
+        return result
 
     @staticmethod
     def _normalize_tools(tools: Optional[List[Dict[str, Any]]]) -> Optional[List[Dict[str, Any]]]:
@@ -658,3 +688,48 @@ class InferenceRouter:
             "role_bindings": [b.to_dict() for b in self._roles.list()],
             "default_role": self._default_role,
         }
+
+    def rate_window_probe(self, role: str) -> Optional[Dict[str, Any]]:
+        """Side-effect-free saturation probe for a role's provider quota.
+
+        Resolves the SAME instance the transport would use for ``role`` and
+        reads the rate meter's current window WITHOUT sending a request or
+        taking a slot. Returns None when the window cannot be assessed
+        (unmetered provider, unknown role, meter error) — callers must treat
+        None as "unknown, proceed" (fail-open; a probe bug may never turn into
+        an outage).
+
+        This exists so pre-flight checkers (e.g. the crawl planner, whose
+        only URL source is an LLM call) can avoid burning the transport's
+        blind 3x retry loop (up to ~90s of Retry-After sleeps) when the
+        window is already saturated — they fall back to an honest empty
+        result instead.
+        """
+        try:
+            inst = self.resolve(role)
+            transport = self._build_transport(inst)
+            quota_id = getattr(transport, "_quota_id", None)
+            if not quota_id:
+                return None  # unmetered transport — nothing to probe
+            from ..rate_meter import get_rate_meter
+
+            meter = get_rate_meter()
+            win = meter.draw(quota_id)
+            ceiling_rpm = meter.get_ceiling(quota_id)
+            if ceiling_rpm is None or ceiling_rpm <= 0:
+                return None  # no learned ceiling yet — cannot judge saturation
+            requests = float(win.get("requests", 0))
+            window_s = float(win.get("window_s", 60.0))
+            # Saturated when the window already holds at/over the ceiling's
+            # share of the window (ceiling is per-minute).
+            saturated = requests >= ceiling_rpm * (window_s / 60.0)
+            return {
+                "saturated": saturated,
+                "requests": requests,
+                "ceiling_rpm": ceiling_rpm,
+                "window_s": window_s,
+                "quota_id": quota_id,
+            }
+        except Exception as exc:  # noqa: BLE001 — fail-open, always
+            logger.warning("[InferenceRouter] rate_window_probe failed open: %s", exc)
+            return None

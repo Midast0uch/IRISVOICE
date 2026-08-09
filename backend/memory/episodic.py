@@ -292,6 +292,10 @@ class EpisodicStore:
                 embedding          BLOB,
                 embedding_backend  TEXT NOT NULL DEFAULT 'bge-m3',
                 retrieval_count    INTEGER NOT NULL DEFAULT 0,
+                -- D4d / REQ-23 mediator work: the tool that produced this
+                -- fragment (pacman_fragment.py). NULL for conversational
+                -- fragments and rows written before this column existed.
+                tool_name          TEXT,
                 timestamp          TEXT DEFAULT CURRENT_TIMESTAMP
             );
 
@@ -321,6 +325,12 @@ class EpisodicStore:
         migrations = [
             ("zone",            "TEXT NOT NULL DEFAULT 'trusted'"),
             ("retrieval_count", "INTEGER NOT NULL DEFAULT 0"),
+            # D4d: pacman_fragment.py call sites have passed tool_name=... to
+            # fragment_and_store() since the REQ-23 mediator work, but the
+            # column never got an idempotent migration for existing stores —
+            # every call raised "unexpected keyword argument 'tool_name'"
+            # before the column even mattered. Preserves existing rows (NULL).
+            ("tool_name",       "TEXT"),
         ]
         for col, col_def in migrations:
             if col not in existing:
@@ -725,6 +735,7 @@ class EpisodicStore:
         session_id: str,
         chunk_type: str = "context_fragment",
         zone: Optional[str] = None,
+        tool_name: Optional[str] = None,
     ) -> List[str]:
         """
         Digest raw text into overlapping vector chunks and store in context_chunks.
@@ -741,6 +752,11 @@ class EpisodicStore:
             chunk_type: 'context_fragment' (conversation) | 'der_output' (DER step).
             zone:       PACMAN zone override. Defaults: context_fragment → 'trusted',
                         der_output → 'tool'.  Pass explicitly to override.
+            tool_name:  D4d — the REQ-23 mediator call sites (pacman_fragment.py)
+                        pass the originating tool so a fragment can be traced
+                        back to the tool that produced it. Optional; NULL on
+                        rows written before this column existed or by callers
+                        that omit it.
 
         Returns:
             List of stored chunk IDs (empty on error or empty input).
@@ -810,7 +826,7 @@ class EpisodicStore:
             chunk_id = str(uuid.uuid4())
             embedding_blob = _pack_embedding(embedding)
             batch_rows.append((chunk_id, session_id, chunk_type, _zone, chunk,
-                               embedding_blob, chunk_backend))
+                               embedding_blob, chunk_backend, tool_name))
             stored_ids.append(chunk_id)
 
         # Batch insert all non-duplicate chunks
@@ -819,8 +835,8 @@ class EpisodicStore:
                 with self.db:
                     self.db.executemany(
                         """INSERT INTO context_chunks
-                           (id, session_id, chunk_type, zone, content, embedding, embedding_backend)
-                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                           (id, session_id, chunk_type, zone, content, embedding, embedding_backend, tool_name)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                         batch_rows
                     )
             except Exception as e:
@@ -830,8 +846,8 @@ class EpisodicStore:
                     try:
                         self.db.execute(
                             """INSERT INTO context_chunks
-                               (id, session_id, chunk_type, zone, content, embedding, embedding_backend)
-                               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                               (id, session_id, chunk_type, zone, content, embedding, embedding_backend, tool_name)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                             row
                         )
                         self.db.commit()

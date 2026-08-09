@@ -560,11 +560,86 @@ class _PythonCaduceanFallbackState:
         return (score, int(state["x"]), int(state["y"]))
 
 
+# D4b/D4c (T19 REQ-18 AC4 + T37 REQ-23 AC2): idempotent memory_chain column
+# migration, factored out of _PythonFallbackEngine so it can also run when
+# the native C++ core is active. The compiled DLL creates/owns its own
+# memory_chain rows via a FIXED C struct (immortus_chain_append argtypes,
+# see _IrisFFI above) that predates node_type/topic_domain/execution_domain
+# — it was last recompiled after the REQ-23 mediator columns landed but
+# before REQ-18/T19 added the typed-node columns. Previously this ALTER only
+# ran inside _PythonFallbackEngine.__init__, which is never instantiated once
+# iris_core.dll loads (IrisCoreEngine.init() returns early on native success)
+# — so on a machine with the compiled core present, node_type/topic_domain/
+# execution_domain never reached the live memory_chain table, and any reader
+# (ontology_recall.filtered_chain_recall) crashed with
+# "no such column: node_type" on every call.
+def _is_forbidden_store_path(db_path: str) -> bool:
+    """True if db_path resolves to BUILD memory or the decoy store — this
+    migration must NEVER touch .mcm/coordinates.db or backend/data/memory.db,
+    only the application store resolved from memory_config.json db_path (see
+    backend/agent/memory.py:339-342)."""
+    _resolved = str(db_path or "").replace("\\", "/")
+    return any(_tok in _resolved for _tok in (".mcm/", "backend/data/", "/.mcm/"))
+
+
+def migrate_memory_chain_schema(conn, db_path: str) -> None:
+    """Idempotent ALTERs bringing memory_chain to the coordinate + typed-node
+    shape, preserving existing rows (new columns default NULL). Safe to call
+    on every engine init — PRAGMA table_info is probed before each ALTER, so
+    re-running on an already-migrated store is a no-op.
+    """
+    if conn is None:
+        return
+    if _is_forbidden_store_path(db_path):
+        logger.warning(
+            "[iris_ffi] SKIPPED memory_chain migration: path is not the "
+            "application store: %s",
+            db_path,
+        )
+        return
+    try:
+        existing = {r[1] for r in conn.execute("PRAGMA table_info(memory_chain)")}
+    except Exception:
+        return  # table does not exist yet — the owning engine will create it
+    for _col in (
+        # REQ-2 AC3/AC5 (T6): coordinate shape.
+        "chain_id", "coords_from", "coords_to", "nbl_outcome",
+        "insight", "file_path", "landmark_id", "stale",
+        # REQ-23 AC2 (T37): mediator causal triple.
+        "mediator", "mediator_source",
+        # REQ-18 AC4 (T19): typed node + both domain axes.
+        "node_type", "topic_domain", "execution_domain",
+    ):
+        if _col in existing:
+            continue
+        try:
+            conn.execute(
+                f"ALTER TABLE memory_chain ADD COLUMN {_col} "
+                + ("INTEGER DEFAULT 0" if _col == "stale" else "TEXT")
+            )
+            conn.commit()
+            logger.info("[iris_ffi] memory_chain ALTER added column %s", _col)
+        except Exception as exc:
+            logger.warning("[iris_ffi] memory_chain ALTER %s skipped: %s", _col, exc)
+
+    # REQ-2 AC4 (OQ-5 RESOLVED: DROP): memory_chain_v2 is an orphan — 0 rows,
+    # no writer, present in two DBs. A third empty shape shall not survive.
+    try:
+        conn.execute("DROP TABLE IF EXISTS memory_chain_v2")
+        conn.commit()
+    except Exception as _v2_exc:
+        logger.warning("[iris_ffi] memory_chain_v2 drop failed: %s", _v2_exc)
+
+
 class _PythonFallbackEngine:
     """Pure Python fallback — uses sqlite3 (or sqlcipher3 if available)."""
 
     def __init__(self, db_path: str, key_hex: str):
         self.db_path = db_path
+        # Dilithium migration: key_hex must be retained for the SQLCipher
+        # `PRAGMA key` (used in _init_db). Without it, the fallback engine
+        # crashed with AttributeError on any encrypted-DB init.
+        self.key_hex = key_hex
         self._conn = None
         self.caducean = _PythonCaduceanFallbackState()
         self._init_db()
@@ -579,6 +654,16 @@ class _PythonFallbackEngine:
             import sqlite3
 
             self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        # D4g: this connection writes system_events/memory_chain to the SAME
+        # file as EpisodicStore/SemanticStore/Mycelium's connections
+        # (backend/memory/db.py open_encrypted_memory, which sets the same
+        # PRAGMA). Without it, a write here racing one of those raised
+        # "database is locked" immediately (default busy_timeout=0) instead
+        # of waiting the other transaction out.
+        try:
+            self._conn.execute("PRAGMA busy_timeout=5000;")
+        except Exception:
+            pass
         # Run migrations
         self._run_migrations()
 
@@ -608,10 +693,14 @@ class _PythonFallbackEngine:
             insight TEXT,
             file_path TEXT,
             landmark_id TEXT,
+            mediator TEXT,
+            mediator_source TEXT,
+            node_type TEXT,
+            topic_domain TEXT,
+            execution_domain TEXT,
             stale INTEGER DEFAULT 0,
             created_at REAL NOT NULL
-        );
-        """
+        );        """
         self._conn.executescript(sql)
         # Add screenshot BLOB column (idempotent — SQLite has no IF NOT EXISTS
         # for columns, so guard with try/except). Vision/screenshot tool events
@@ -622,6 +711,13 @@ class _PythonFallbackEngine:
         except Exception:
             # Column already exists — harmless.
             pass
+
+        # REQ-2 AC3/AC5 (T6) / D4b / D4c: bring a LEGACY memory_chain to the
+        # coordinate + typed-node schema by IDEMPOTENT ALTER, preserving
+        # existing rows. AC5 guard (never touch BUILD memory / the decoy
+        # store) lives inside migrate_memory_chain_schema() — see its
+        # docstring above _PythonFallbackEngine for why this is factored out.
+        migrate_memory_chain_schema(self._conn, self.db_path)
 
     def ingest_event(
         self, session_id, domain, event_type, actor, outcome, summary, payload_json,
@@ -690,26 +786,127 @@ class _PythonFallbackEngine:
         import uuid
         import time
 
+        # REQ-2 AC1/T6: the memory_chain table may be EITHER the legacy form
+        # (entry_id/sequence/role/content — preserved with 1825 rows by the
+        # idempotent coordinate ALTER) OR the fresh coordinate shape. The old
+        # fixed INSERT failed on legacy tables with "NOT NULL constraint
+        # failed: memory_chain.sequence" (and role/content). Introspect the
+        # columns once and build a shape-agnostic INSERT so an append can
+        # never fail against either schema.
+        if getattr(self, "_chain_cols", None) is None:
+            self._chain_cols = {
+                r[1] for r in self._conn.execute("PRAGMA table_info(memory_chain)")
+            }
+        cols = self._chain_cols
+
         chain_id = str(uuid.uuid4())
+        now = time.time()
+        insert_cols = [
+            "chain_id", "thread_id", "result", "coords_from", "coords_to",
+            "nbl_outcome", "insight", "file_path", "landmark_id", "created_at",
+        ]
+        vals = [
+            chain_id, thread_id, result,
+            kwargs.get("coords_from"), kwargs.get("coords_to"),
+            kwargs.get("nbl_outcome"), kwargs.get("insight"),
+            kwargs.get("file_path"), kwargs.get("landmark_id"), now,
+        ]
+        # REQ-23 AC2 (T37): mediator + mediator_source land on the row when the
+        # schema carries them (the shape-agnostic insert never assumes a
+        # column — a store that predates the ALTER writes NULL, which the
+        # REQ-2 AC3 null-tolerance covers).
+        if "mediator" in cols:
+            insert_cols.append("mediator")
+            vals.append(kwargs.get("mediator"))
+        if "mediator_source" in cols:
+            insert_cols.append("mediator_source")
+            vals.append(kwargs.get("mediator_source"))
+        # REQ-18 AC4 (T19): node type + both domain axes ride the chain row
+        # when the schema carries them — recall (REQ-20) and per-domain
+        # aggregation (REQ-21) key on the row without joining back to the
+        # in-memory record. Shape-agnostic like mediator: a pre-T19 store
+        # writes NULL (REQ-2 AC3 null-tolerance), never fails the append.
+        if "node_type" in cols:
+            insert_cols.append("node_type")
+            vals.append(kwargs.get("node_type"))
+        if "topic_domain" in cols:
+            insert_cols.append("topic_domain")
+            vals.append(kwargs.get("topic_domain"))
+        if "execution_domain" in cols:
+            insert_cols.append("execution_domain")
+            vals.append(kwargs.get("execution_domain"))
+        if "entry_id" in cols:
+            insert_cols.append("entry_id")
+            vals.append(str(uuid.uuid4()))
+        if "sequence" in cols:
+            # Legacy PK is (thread_id, sequence): next sequence per thread.
+            cur = self._conn.cursor()
+            cur.execute(
+                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM memory_chain "
+                "WHERE thread_id = ?",
+                (thread_id,),
+            )
+            insert_cols.append("sequence")
+            vals.append(cur.fetchone()[0])
+        if "role" in cols:
+            insert_cols.append("role")
+            vals.append(kwargs.get("role") or "agent")
+        if "content" in cols:
+            insert_cols.append("content")
+            vals.append(result or "")
         self._conn.execute(
-            "INSERT INTO memory_chain (chain_id, thread_id, result, coords_from, "
-            "coords_to, nbl_outcome, insight, file_path, landmark_id, created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (
-                chain_id,
-                thread_id,
-                result,
-                kwargs.get("coords_from"),
-                kwargs.get("coords_to"),
-                kwargs.get("nbl_outcome"),
-                kwargs.get("insight"),
-                kwargs.get("file_path"),
-                kwargs.get("landmark_id"),
-                time.time(),
+            "INSERT INTO memory_chain ({}) VALUES ({})".format(
+                ", ".join(insert_cols), ", ".join("?" for _ in vals)
             ),
+            vals,
         )
         self._conn.commit()
         return 0
+
+    def immortus_chain_query_mediators(
+        self, thread_id: str, region_coords: Optional[str] = None
+    ) -> List[dict]:
+        """REQ-23 AC4 (T38): "which mediators were tried for this objective,
+        and how did each fare by coordinate region" — answerable as a query.
+
+        Returns the causal triples recorded per REQ-23 AC2, newest first:
+        each row is
+            {mediator, mediator_source, result, coords_from, coords_to,
+             created_at}
+        Optionally filtered to a coordinate REGION string (the canonical
+        format_coords "x,y,xi,u" form, e.g. "(0.1234,0.4567,0.8000,0.1000)")
+        so "how did each fare in the region I am in now" is a single call.
+
+        Tolerates pre-migration stores (no mediator column) by returning an
+        empty list — a store that never recorded mediators cannot answer.
+        """
+        if not self._conn:
+            return []
+        cols = {r[1] for r in self._conn.execute("PRAGMA table_info(memory_chain)")}
+        if "mediator" not in cols:
+            return []
+        sql = (
+            "SELECT mediator, mediator_source, result, coords_from, coords_to, "
+            "created_at FROM memory_chain "
+            "WHERE thread_id = ?"
+        )
+        params: list = [thread_id]
+        if region_coords:
+            sql += " AND coords_from = ?"
+            params.append(region_coords)
+        sql += " ORDER BY created_at DESC LIMIT 200"
+        rows = self._conn.execute(sql, params).fetchall()
+        return [
+            {
+                "mediator": r[0],
+                "mediator_source": r[1],
+                "result": r[2],
+                "coords_from": r[3],
+                "coords_to": r[4],
+                "created_at": r[5],
+            }
+            for r in rows
+        ]
 
     def immortus_chain_keep_latest(self, thread_id: str, keep_count: int) -> int:
         if not self._conn:
@@ -854,6 +1051,60 @@ class IrisCoreEngine:
                 rc = self._ffi.init_core_engine(db_path, key_hex)
                 if rc == 0:
                     logger.info(f"[iris_ffi] C++ core loaded from {dll_path}")
+                    # D4b/D4c: the native core creates/owns memory_chain via a
+                    # fixed C struct that predates node_type/topic_domain/
+                    # execution_domain (see migrate_memory_chain_schema()
+                    # docstring). Run the same idempotent ALTER Python would
+                    # have run in the fallback path, via a short-lived
+                    # connection to the SAME file the native core just
+                    # initialized, so readers never see a missing column
+                    # regardless of which engine is serving writes.
+                    self._migrate_native_memory_chain(db_path, key_hex)
+                    # ALSO build the Python engine, even though the native core
+                    # loaded. It is NOT a "fallback" in that case — it is the
+                    # only engine that can carry the shape-agnostic columns.
+                    #
+                    # The native writer takes a FIXED 8-arg C struct
+                    # (immortus_chain_append argtypes, :220-230) that predates
+                    # mediator/mediator_source (REQ-23) and node_type/
+                    # topic_domain/execution_domain (REQ-18). Returning early
+                    # here left self._fallback = None on every machine where
+                    # the DLL loads, which meant:
+                    #   * immortus_chain_append silently DROPPED all five of
+                    #     those fields (the native branch simply does not pass
+                    #     them), so the 4D chain recorded rows with no mediator
+                    #     and no ontology; and
+                    #   * immortus_chain_query_mediators — the REQ-23 AC4
+                    #     mediator-by-region query the whole Bayesian/region-
+                    #     scoped learning loop reads from — tests only
+                    #     `if self._fallback:` and therefore ALWAYS returned [].
+                    # So the learning loop could not work by construction, and
+                    # failed silently rather than erroring.
+                    #
+                    # Native still wins for the physics/EML/coordinate paths
+                    # below (every one of those checks `if self._ffi:` first,
+                    # so their behaviour is unchanged). This only makes the
+                    # Python engine AVAILABLE for the shape-agnostic writes and
+                    # reads that the C struct cannot express.
+                    try:
+                        self._fallback = _PythonFallbackEngine(db_path, key_hex)
+                        logger.info(
+                            "[iris_ffi] Python engine also active alongside C++ "
+                            "core (carries mediator/ontology columns the fixed "
+                            "C struct cannot)"
+                        )
+                    except Exception as _pe:  # noqa: BLE001
+                        # Never block startup on this — but say so loudly,
+                        # because without it the mediator/ontology chain is
+                        # silently inert, which is the exact failure this
+                        # block exists to remove.
+                        logger.error(
+                            "[iris_ffi] Python engine unavailable alongside C++ "
+                            "core (%s) — mediator + ontology chain columns will "
+                            "NOT be written and mediator-by-region queries will "
+                            "return empty",
+                            _pe,
+                        )
                     self._initialized = True
                     return True
                 else:
@@ -876,6 +1127,36 @@ class IrisCoreEngine:
         except Exception as e:
             logger.error(f"[iris_ffi] Python fallback failed: {e}")
             return False
+
+    @staticmethod
+    def _migrate_native_memory_chain(db_path: str, key_hex: str) -> None:
+        """Open a short-lived connection to the native core's db_path and run
+        migrate_memory_chain_schema() against it (D4b/D4c). Mirrors
+        _PythonFallbackEngine._init_db's connection strategy (sqlcipher3 with
+        the same PRAGMA key if available, else plain sqlite3) so this reaches
+        an encrypted store exactly like the fallback engine would. Never
+        raises — a failure here must not block native-core startup.
+        """
+        conn = None
+        try:
+            try:
+                import sqlcipher3  # type: ignore[import]
+
+                conn = sqlcipher3.connect(db_path)
+                conn.execute(f"PRAGMA key = \"x'{key_hex}'\";")
+            except ImportError:
+                import sqlite3
+
+                conn = sqlite3.connect(db_path, check_same_thread=False)
+            migrate_memory_chain_schema(conn, db_path)
+        except Exception as exc:
+            logger.warning("[iris_ffi] native memory_chain migration failed: %s", exc)
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
     def shutdown(self) -> bool:
         if self._ffi:
@@ -1035,8 +1316,66 @@ class IrisCoreEngine:
         insight: Optional[str] = None,
         file_path: Optional[str] = None,
         landmark_id: Optional[str] = None,
+        mediator: Optional[str] = None,
+        mediator_source: Optional[str] = None,
+        # D4c fix: the module-level ffi_immortus_chain_append() wrapper has
+        # accepted node_type/topic_domain/execution_domain since REQ-18 AC4
+        # (T19) and always forwards them here as kwargs — but this dispatcher
+        # method never grew the matching parameters, so every call raised
+        # "immortus_chain_append() got unexpected keyword argument 'node_type'"
+        # (durability write never reached either engine).
+        node_type: Optional[str] = None,
+        topic_domain: Optional[str] = None,
+        execution_domain: Optional[str] = None,
     ) -> bool:
+        # PYTHON ENGINE FIRST for this one call — deliberately inverted vs
+        # every other method on this class.
+        #
+        # This is a durability write on a background queue (durability_queue),
+        # NOT a hot path, so the C++ speed advantage is worth nothing here.
+        # What it costs is correctness: the native branch below takes a fixed
+        # 8-arg C struct and cannot carry mediator/mediator_source (REQ-23) or
+        # node_type/topic_domain/execution_domain (REQ-18), so it wrote rows
+        # with those columns NULL and no error. Worse, the only reader for
+        # them — immortus_chain_query_mediators — answers from the Python
+        # engine alone, so region-scoped mediator learning read back nothing.
+        # Prefer the engine that can actually represent the row.
+        if self._fallback:
+            rc = self._fallback.immortus_chain_append(
+                thread_id,
+                result,
+                coords_from=coords_from,
+                coords_to=coords_to,
+                nbl_outcome=nbl_outcome,
+                insight=insight,
+                file_path=file_path,
+                landmark_id=landmark_id,
+                # REQ-23 AC2 (T37): mediator + source ride the chain row on
+                # the fallback (shape-agnostic) engine. The native C++ DLL is
+                # left untouched (fixed arity; cannot be recompiled here) — a
+                # native write simply leaves the columns NULL, which recall
+                # tolerates (REQ-2 AC3).
+                mediator=mediator,
+                mediator_source=mediator_source,
+                # REQ-18 AC4 (T19): same shape-agnostic treatment as mediator
+                # above — the fallback engine's **kwargs INSERT already
+                # handles these (iris_ffi.py _PythonFallbackEngine.immortus_
+                # chain_append), they just never reached it through this
+                # dispatcher.
+                node_type=node_type,
+                topic_domain=topic_domain,
+                execution_domain=execution_domain,
+            )
+            return rc == 0
+        # Native SECOND, not first — a degraded write (mediator + ontology
+        # columns left NULL by the fixed C struct) beats no write at all if the
+        # Python engine could not be constructed. Losing five columns is
+        # recoverable; losing the row is not.
         if self._ffi:
+            logger.warning(
+                "[iris_ffi] chain append via native core only — mediator and "
+                "ontology columns will be NULL (Python engine unavailable)"
+            )
             rc = self._ffi.immortus_chain_append(
                 thread_id,
                 result,
@@ -1048,19 +1387,20 @@ class IrisCoreEngine:
                 landmark_id,
             )
             return rc == 0
-        if self._fallback:
-            rc = self._fallback.immortus_chain_append(
-                thread_id,
-                result,
-                coords_from=coords_from,
-                coords_to=coords_to,
-                nbl_outcome=nbl_outcome,
-                insight=insight,
-                file_path=file_path,
-                landmark_id=landmark_id,
-            )
-            return rc == 0
         return False
+
+    def immortus_chain_query_mediators(
+        self,
+        thread_id: str,
+        region_coords: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """REQ-23 AC4 (T38): mediator-by-region query — the fallback engine
+        answers; the native path cannot (returns [])."""
+        if self._fallback:
+            return self._fallback.immortus_chain_query_mediators(
+                thread_id, region_coords
+            )
+        return []
 
     def immortus_chain_keep_latest(self, thread_id: str, keep_count: int) -> int:
         if self._ffi:
@@ -1251,14 +1591,42 @@ def ffi_immortus_chain_append(
     insight: Optional[str] = None,
     file_path: Optional[str] = None,
     landmark_id: Optional[str] = None,
+    mediator: Optional[str] = None,
+    mediator_source: Optional[str] = None,
+    node_type: Optional[str] = None,
+    topic_domain: Optional[str] = None,
+    execution_domain: Optional[str] = None,
 ) -> int:
-    """Append an entry to the Immortus chain. No-op if engine not loaded."""
+    """Append an entry to the Immortus chain. No-op if engine not loaded.
+
+    REQ-23 AC2 (T37): ``mediator`` / ``mediator_source`` ride the same row as
+    the Σ coords so the causal triple is queryable (see
+    ``immortus_chain_query_mediators``).
+    REQ-18 AC4 (T19): ``node_type`` / ``topic_domain`` / ``execution_domain``
+    ride the same row so recall (REQ-20) and aggregation (REQ-21) key on the
+    typed node without a join.
+    """
     if _engine is None:
         return -1
     return _engine.immortus_chain_append(
-        thread_id, result, coords_from, coords_to,
-        nbl_outcome, insight, file_path, landmark_id,
+        thread_id, result,
+        coords_from=coords_from, coords_to=coords_to,
+        nbl_outcome=nbl_outcome, insight=insight,
+        file_path=file_path, landmark_id=landmark_id,
+        mediator=mediator, mediator_source=mediator_source,
+        node_type=node_type, topic_domain=topic_domain,
+        execution_domain=execution_domain,
     )
+
+
+def ffi_immortus_chain_query_mediators(
+    thread_id: str,
+    region_coords: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """REQ-23 AC4 (T38): mediator-by-region query. No-op if engine not loaded."""
+    if _engine is None:
+        return []
+    return _engine.immortus_chain_query_mediators(thread_id, region_coords)
 
 
 def ffi_immortus_chain_keep_latest(thread_id: str, keep_count: int) -> int:

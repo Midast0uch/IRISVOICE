@@ -69,6 +69,7 @@ try:
         DER_MAX_GRAFTS,
         DER_MAX_CONCURRENT_STEPS,
         DER_MAX_UNVERIFIED_REPROPOSE,
+        DER_FOLD_BACK_MAX,
         DER_EMERGENCY_STOP,
         DER_TOKEN_BUDGETS,
         TRAILING_GAP_MIN,
@@ -78,12 +79,12 @@ try:
         resolve_der_token_budget,
         ResolvedWindow,
         ExecutionMode,
-        is_shallow_verified,
     )
 except Exception:
     DER_MAX_CYCLES = 40
     DER_MAX_VETO_PER_ITEM = 2
     DER_MAX_GRAFTS = 3
+    DER_FOLD_BACK_MAX = 3
     DER_MAX_UNVERIFIED_REPROPOSE = 1
     DER_EMERGENCY_STOP = 200
     DER_TOKEN_BUDGETS: Dict[str, int] = {
@@ -115,14 +116,6 @@ except Exception:
         ):
             return False
         return depth_layer <= 1 and result_tokens < 400
-
-try:
-    from backend.agent.trailing_director import TrailingDirector as _TrailingDirector
-
-    _TRAILING_DIRECTOR_AVAILABLE = True
-except Exception:
-    _TRAILING_DIRECTOR_AVAILABLE = False
-
 
 @dataclass
 class TaskContext:
@@ -454,15 +447,6 @@ class AgentKernel:
             logger.warning(f"[AgentKernel] Reviewer unavailable: {_rv_err}")
 
         try:
-            from backend.agent.trailing_director import TrailingDirector as _TD
-
-            # memory_interface wired later via set_memory_interface()
-            self._trailing_director = _TD(adapter=self, memory_interface=None)
-            logger.info("[AgentKernel] TrailingDirector initialized (DER)")
-        except Exception as _td_err:
-            logger.warning(f"[AgentKernel] TrailingDirector unavailable: {_td_err}")
-
-        try:
             from backend.agent.mode_detector import ModeDetector as _MD
 
             self._mode_detector = _MD()
@@ -490,9 +474,6 @@ class AgentKernel:
         # Wire Reviewer's memory reference now that it's available
         if self._reviewer is not None:
             self._reviewer.memory = memory_interface
-        # Wire TrailingDirector's memory reference
-        if self._trailing_director is not None:
-            self._trailing_director.memory = memory_interface
         logger.info("[AgentKernel] Memory interface connected")
         try:
             from backend.agent.mcm_protocol import MCMOrchestrator
@@ -625,6 +606,43 @@ class AgentKernel:
                 f"for conv={self.conversation_id}: {exc}"
             )
 
+    def _accrue_tokens(
+        self,
+        response_text: str,
+        usage: Optional[Dict[str, Any]] = None,
+        *,
+        source: str = "",
+    ) -> None:
+        """Add this inference call's cost to the pill's real counter (D1 fix).
+
+        The ContextPill reads ``self._tokens_used`` (see ``_emit_context_usage``),
+        but nothing ever incremented it from a LIVE call — only
+        ``restore_context_from_store`` ever set it (from a persisted snapshot),
+        so a brand-new or freshly-restored turn stayed frozen at whatever it
+        was restored to, through an entire real turn.
+
+        *usage* is the REAL per-call usage dict parsed by the transport
+        (``InferenceRouter.last_usage`` — prompt/completion/total tokens from
+        the provider's own response). It always wins when present. Only when
+        the provider/local model omits usage entirely do we fall back to the
+        char/4 heuristic — and that fallback is logged as an estimate so real
+        and estimated increments are never silently blended.
+        """
+        try:
+            if usage and usage.get("total_tokens"):
+                _add = int(usage["total_tokens"])
+                _kind = "real"
+            else:
+                _add = max(1, len(response_text or "") // 4)
+                _kind = "estimate"
+            self._tokens_used = int(getattr(self, "_tokens_used", 0) or 0) + _add
+            logger.info(
+                "[AgentKernel._accrue_tokens] +%d (%s, source=%s) tokens_used=%d",
+                _add, _kind, source or "?", self._tokens_used,
+            )
+        except Exception as _e:  # pragma: no cover — accounting must never break a turn
+            logger.debug("[AgentKernel._accrue_tokens] failed: %s", _e)
+
     def infer(
         self,
         prompt: str,
@@ -651,6 +669,9 @@ class AgentKernel:
             text, _thinking, _tool_calls = self._router.generate(
                 role, messages,
                 max_tokens=max_tokens, temperature=temperature,
+            )
+            self._accrue_tokens(
+                text, getattr(self._router, "last_usage", None), source="infer"
             )
             return _InferResult(raw_text=text)
         except Exception as _inf_err:
@@ -980,6 +1001,29 @@ class AgentKernel:
         ("local", "gemma2", 8_192),
     ]
 
+    def _provider_string_for_instance(self, inst: Any) -> str:
+        """Map a bound ``ProviderInstance`` to the provider-string used by
+        ``_KNOWN_CONTEXT_WINDOWS`` (REQ-1 AC1). API instances use their own id
+        (e.g. ``"cerebras"``); local families normalize to the table keys
+        ``"local"`` / ``"lmstudio"`` / ``"iris_local"``.
+        """
+        try:
+            from backend.agent.inference.provider import ProviderKind
+
+            kind = getattr(inst, "kind", None)
+            if kind == ProviderKind.OLLAMA:
+                return "local"
+            if kind == ProviderKind.LOCAL_OPENAI:
+                return "lmstudio"
+            if kind == ProviderKind.INPROCESS:
+                return "iris_local"
+            if kind == ProviderKind.API:
+                return getattr(inst, "id", "") or ""
+        except Exception:
+            pass
+        # Fall back to instance id or the legacy string convention.
+        return getattr(inst, "id", "") or ""
+
     def resolve_context_window_with_source(self) -> "ResolvedWindow":
         """Resolve the effective context window, tagging the source that won.
 
@@ -996,6 +1040,21 @@ class AgentKernel:
         """
         provider = self._model_provider or ""
         model = self._selected_reasoning_model or ""
+
+        # REQ-1 AC1: the ACTIVE reasoning binding is authoritative over the
+        # legacy fields. Consult the InferenceRouter first — a role binding
+        # (esp. role-bindings-only startup) is the truth, and the legacy
+        # _model_provider field may be stale/unset. Fall back to legacy only
+        # when the binding is unbound or carries no model.
+        _router = getattr(self, "_router", None)
+        if _router is not None:
+            try:
+                _inst = _router.resolve("reasoning")
+                if _inst is not None and getattr(_inst, "model", None):
+                    provider = self._provider_string_for_instance(_inst)
+                    model = _inst.model or ""
+            except Exception:
+                pass  # unbound → legacy fields below
 
         # 1. User override (highest precedence)
         if model in self._context_window_overrides:
@@ -1034,15 +1093,19 @@ class AgentKernel:
 
             mgr = LocalModelManager()
             for profile in mgr.profiles:
-                if profile.id in model_lower or model_lower in profile.id:
+                # REQ-1 AC4: a vacuous guard on an empty profile.id
+                # ("..." in model_lower is ALWAYS True) used to short-circuit
+                # resolution to the first empty-id profile. Skip empty ids.
+                if profile.id and (profile.id in model_lower or model_lower in profile.id):
                     return ResolvedWindow(profile.n_ctx, "table")
         except Exception:
             pass
 
         # 5. Safe default — 8k for unknown models. Tagged so it is VISIBLE, not silent.
-        logger.info(
-            f"[AgentKernel] No context window known for provider={provider} "
-            f"model={model} — using default 8192 (source=default)"
+        #    REQ-1 AC3: WARN-level, naming provider+model+source — loudly, not silently.
+        logger.warning(
+            "[AgentKernel] WARN source=default: no context window known for "
+            f"provider={provider} model={model} — falling back to 8192"
         )
         return ResolvedWindow(8_192, "default")
 
@@ -2242,6 +2305,10 @@ class AgentKernel:
                 "reasoning", _msgs, tools=_tools_arg,
                 max_tokens=_max_tokens, temperature=_temperature,
                 chunk_callback=chunk_callback, reasoning_callback=reasoning_callback,
+            )
+            self._accrue_tokens(
+                _text, getattr(self._router, "last_usage", None),
+                source="_respond_direct",
             )
             return _text, _thinking, _tool_calls
 
@@ -3597,6 +3664,26 @@ class AgentKernel:
     _MIN_CAPTURE_CHARS = 50       # below this, a result is "trivial"
     _RELEVANCE_THRESHOLD = 0.30   # results carrying a score below this are skipped
 
+    @staticmethod
+    def _json_default(obj: Any) -> Any:
+        """json.dumps ``default=`` for tool-result payloads that carry
+        non-JSON-native objects (D4e — e.g. crawler CredibilityMap nested
+        inside a web_search/crawler_query result dict, which raised "Object
+        of type CredibilityMap is not JSON serializable" and dropped the
+        whole DER tool-result capture).
+
+        Dataclasses (CredibilityMap included) serialize field-by-field via
+        asdict() so the JSON stays structured (per_source/unsourced_claims/
+        top_score), not an opaque repr string. Falls back to vars()/str()
+        for plain objects so nothing this touches can raise again.
+        """
+        import dataclasses
+        if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+            return dataclasses.asdict(obj)
+        if hasattr(obj, "__dict__"):
+            return {k: v for k, v in vars(obj).items() if not k.startswith("_")}
+        return str(obj)
+
     def _is_capture_worthy(self, tool_name: str, result: Any) -> bool:
         """Cheap, deterministic gate (no I/O, no LLM) for whether to persist a result.
 
@@ -3619,7 +3706,10 @@ class AgentKernel:
             payload = result
         import json
 
-        text = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
+        text = (
+            payload if isinstance(payload, str)
+            else json.dumps(payload, ensure_ascii=False, default=self._json_default)
+        )
         if len(text) < self._MIN_CAPTURE_CHARS:
             return False
         return True
@@ -3660,7 +3750,10 @@ class AgentKernel:
 
         document_id = str(uuid.uuid4())
         fmt = "json" if isinstance(result, (dict, list)) else "text"
-        content = json.dumps(result, ensure_ascii=False) if isinstance(result, (dict, list)) else str(result)
+        content = (
+            json.dumps(result, ensure_ascii=False, default=self._json_default)
+            if isinstance(result, (dict, list)) else str(result)
+        )
         show = {
             "format": fmt,
             "content": content,
@@ -4102,6 +4195,59 @@ class AgentKernel:
             pass
         return "None"
 
+    def _der_recall_neighborhood(self, item, session_id: str = "") -> list:
+        """REQ-20 AC3 (T21): filtered ontology-neighborhood chain recall.
+
+        Builds RecallFilters from THIS node's record (node_type + both
+        domain axes) and queries the shared chain with the widen-order
+        (relationship -> type -> domain, winning scope logged). Returns
+        chain-row dicts, or [] on any failure — the step proceeds on live
+        state, never an error. Cross-conversation by default (AC1b):
+        thread_id ranks, never filters.
+        """
+        try:
+            from backend.agent.ontology_recall import (
+                RecallFilters,
+                filtered_chain_recall,
+                record_widening_telemetry,
+            )
+
+            _rec = getattr(item, "node_record", None) or getattr(
+                item, "footprint", None
+            )
+            _filters = RecallFilters(
+                node_type=getattr(_rec, "node_type", None)
+                or getattr(item, "node_type", None),
+                topic_domain=getattr(_rec, "topic_domain", None)
+                or getattr(item, "topic_domain", None),
+                execution_domain=getattr(_rec, "execution_domain", None)
+                or getattr(item, "execution_domain", None),
+                thread_id=session_id or getattr(item, "session_id", None) or None,
+                limit=3,
+            )
+            if not _filters.has_any:
+                return []  # no ontology axes on this node — nothing to filter
+
+            _conn = None
+            if (
+                self._memory_interface is not None
+                and hasattr(self._memory_interface, "_mycelium")
+                and self._memory_interface._mycelium is not None
+            ):
+                _myc = self._memory_interface._mycelium
+                # mycelium exposes the shared connection as `_conn`; some
+                # call sites alias it `.conn` — accept either.
+                _conn = getattr(_myc, "conn", None) or getattr(_myc, "_conn", None)
+            if _conn is None:
+                return []
+
+            rows, _scope = filtered_chain_recall(_conn, _filters)
+            record_widening_telemetry(_scope, _filters)
+            return rows or []
+        except Exception as exc:
+            logger.debug("[DER] ontology neighborhood recall failed: %s", exc)
+            return []
+
     def _plan_task(
         self,
         text: str,
@@ -4244,6 +4390,10 @@ class AgentKernel:
                     [{"role": "user", "content": full_prompt}],
                     max_tokens=4096,
                     temperature=temperature,
+                )
+                self._accrue_tokens(
+                    _rt_text, getattr(self._router, "last_usage", None),
+                    source="_plan_task",
                 )
                 if _rt_text:
                     plan_raw = _rt_text
@@ -4420,6 +4570,15 @@ class AgentKernel:
 
         task_id = turn_id or str(uuid.uuid4())
         metrics = TurnMetrics(turn_id=task_id)
+        # REQ-3 T8b AC5: per-turn prompt-token counter accumulated at each DER
+        # step's context assembly (forgetting bound), recorded into TurnMetrics.
+        self._der_step_prompt_tokens = 0
+        # REQ-7 AC3 (T25): per-turn DER call counter (batched groups count once).
+        self._der_turn_calls = 0
+        # T11 (REQ-12): per-turn DER step count, wired from the DER loop's
+        # completed_items at finalize so [LAYERS] der_steps is an observation,
+        # not the declared-never-assigned 0 it was until 2026-08-06.
+        self._der_step_count = 0
         try:
             from backend.gateway.iris_ffi import _engine
 
@@ -4872,6 +5031,73 @@ class AgentKernel:
                     loud_error(_mem_exc, "conversation_memory.add_message (der)")
                 metrics.path = "der"
                 logger.info(f"[AgentKernel] DER response: {_der_response[:200]}...")
+                metrics.step_prompt_tokens = getattr(
+                    self, "_der_step_prompt_tokens", 0
+                )
+                # REQ-7 AC3 (T25): record the per-turn DER call count so the
+                # loop's actual call count is visible against the T3 baseline.
+                metrics.der_calls = getattr(self, "_der_turn_calls", 0)
+                # T11 (REQ-12): record the completed-step count — wired at the
+                # DER loop finalize (was declared-never-assigned before
+                # 2026-08-06, so [LAYERS] reported der_steps=0 while steps ran).
+                metrics.der_steps = getattr(self, "_der_step_count", 0)
+                # REQ-6 AC1/AC3 (T18): governance-source counts for the [LAYERS]
+                # line — which signal governed this turn's steering decisions
+                # (past-memory / live-state / both) and the alternation ratio
+                # (computed in to_log_line).
+                _gov = getattr(self, "_der_governance_counts", None) or {}
+                metrics.gov_past = int(_gov.get("past", 0) or 0)
+                metrics.gov_live = int(_gov.get("live", 0) or 0)
+                metrics.gov_both = int(_gov.get("both", 0) or 0)
+                # REQ-17 AC1 (T34): the REAL budget source (the source that
+                # won in resolve_context_window_with_source — override /
+                # authoritative / table / default), never a silent 8192.
+                try:
+                    metrics.budget_source = (
+                        self.resolve_context_window_with_source().source or "default"
+                    )
+                except Exception:
+                    metrics.budget_source = "default"
+                # REQ-17 AC1 (T34): chain-drop count + 429 count this turn.
+                metrics.chain_drop_count = int(
+                    getattr(self, "_der_chain_drops", 0) or 0
+                )
+                # 429 count: the rate meter's per-quota 429 frequency, summed
+                # across metered windows (the transport observes 429s there;
+                # the kernel never counts them itself). 0 when no metered
+                # quota exists or the meter is unavailable — never raises.
+                metrics.count_429 = 0
+                try:
+                    from backend.agent.rate_meter import get_rate_meter
+
+                    _meter = get_rate_meter()
+                    for _qid, _w in _meter._windows.items():
+                        if _w.metered:
+                            metrics.count_429 += int(
+                                _meter.rate_health(_qid).get(
+                                    "count_429_in_window", 0
+                                )
+                                or 0
+                            )
+                except Exception:
+                    metrics.count_429 = 0
+                # REQ-17 AC1 (T34): narration decisions this turn (0 when none).
+                # Counts the conversation's narration JSONL entries — read-only,
+                # best-effort, never raises; a missing log file = 0.
+                try:
+                    from backend.agent.narration import _NARRATION_LOG_DIR
+                    import os as _os
+
+                    _npath = _os.path.join(
+                        _NARRATION_LOG_DIR, f"{self.conversation_id}.jsonl"
+                    )
+                    if _os.path.exists(_npath):
+                        with open(_npath, "r", encoding="utf-8") as _nf:
+                            metrics.narration_decisions = sum(
+                                1 for _l in _nf if _l.strip()
+                            )
+                except Exception:
+                    metrics.narration_decisions = 0
                 logger.info(metrics.to_log_line())
                 # Log DER metrics to structured logger for verifiable backend data
                 try:
@@ -5435,6 +5661,22 @@ Respond with a JSON object:
         # (explorer.propose) can apply the capability-gated web fallback.
         self._der_task_class = _der_task_class
 
+        # REQ-19 (T20): one DerLinkWriter per DER run — writes structural
+        # links (part_of / depends_on / relevant_to / failed_like) into the
+        # SHARED mycelium link store at finalize. Wired here so it exists for
+        # the whole plan; bound to this run's kernel (no cross-session shared
+        # mutable state).
+        try:
+            from backend.agent.der_links import DerLinkWriter
+
+            _mi = getattr(self, "_memory_interface", None)
+            _myc = getattr(_mi, "_mycelium", None) if _mi is not None else None
+            _store = getattr(_myc, "_store", None)
+            self._der_links = DerLinkWriter(_store) if _store is not None else None
+        except Exception as _dl_exc:
+            logger.debug("[DER] link-writer init failed: %s", _dl_exc)
+            self._der_links = None
+
         # Phase 2 (D2.4): unified termination resource DER_WORK_UNITS_0 derived
         # from the LIVE context window (System Invariant: work units and context
         # window are the SAME resource). Split prepays width; complete/fail/veto
@@ -5546,6 +5788,7 @@ Respond with a JSON object:
             logger.debug("[DER] batcher flush_expired failed", exc_info=True)
         from backend.agent.der_loop import (
             DirectorQueue,
+            NodeRecord,
             QueueItem,
             Reviewer,
             ReviewVerdict,
@@ -5622,6 +5865,37 @@ Respond with a JSON object:
                     getattr(context_package, "topology_position", "") or ""
                     if context_package
                     else ""
+                ),
+                # REQ-3 (T8): EVERY node carries its compressed memory record —
+                # top-level plan steps included, not just split children. The
+                # record's Understanding/Awareness/Direction fields are derived
+                # from the plan step itself (the node's initial position), and
+                # the finalize site stamps outcome/fraction/mediator/coords_to
+                # onto it. Without this, plan steps were always memory-sparse
+                # and the node record existed only for sub-loop children.
+                node_record=NodeRecord(
+                    step_id=step.step_id,
+                    parent_step_id="",
+                    node_type="step",
+                    objective_anchor=plan.original_task,
+                    content_summary=(step.description or "")[:300],
+                    prior_summary="",  # no prior attempts on first landing
+                    expected_output=step.expected_output or "",
+                    remaining=step.description or "",
+                    ruled_out="",
+                    coordinate_ref=None,
+                    coords_from="",
+                    # REQ-18 (T19): both domain axes resolved at construction —
+                    # topic from the step's own text via the mycelium registry,
+                    # execution from the active winding. Registry-backed, never
+                    # free text (AC2/AC3). The finalize site re-stamps with the
+                    # full step result text so later steps carry the richer
+                    # signal; this seed keeps the record typed even if the
+                    # step never finalizes.
+                    topic_domain=self._der_topic_domain(step.description or ""),
+                    execution_domain=self._der_execution_domain(from_voice),
+                    committed_decision=False,
+                    size_bytes=len((step.description or "").encode("utf-8", "replace")),
                 ),
             )
             for step in plan.steps
@@ -5927,6 +6201,145 @@ Respond with a JSON object:
                             ).strip()
                     except Exception as _fw_exc:
                         loud_error(_fw_exc, "failure_warning_mid_loop")
+
+                    # ── REQ-20 AC3 (T21): the filtered ontology neighborhood
+                    # is a first-class step input. Query the DER chain with
+                    # THIS node's type + both domain axes and surface the
+                    # relevant neighbor records into the step context — the
+                    # relevant neighborhood, not the whole graph. Zero-hit
+                    # widens (relationship -> type -> domain, logged) and
+                    # falls back to the live-state-only step (never an error).
+                    try:
+                        _nb = self._der_recall_neighborhood(item, _session)
+                        if _nb:
+                            _nb_parts = []
+                            for _n in _nb[:3]:
+                                _n_sum = (_n.get("result") or "")[:120]
+                                _n_id = _n.get("chain_id") or ""
+                                _n_td = _n.get("topic_domain") or "?"
+                                _n_ed = _n.get("execution_domain") or "?"
+                                if _n_sum:
+                                    _nb_parts.append(
+                                        f"{_n_id} ({_n_td}/{_n_ed}): {_n_sum}"
+                                    )
+                            if _nb_parts:
+                                _prior = getattr(item, "coordinate_signal", "") or ""
+                                item.coordinate_signal = (
+                                    _prior
+                                    + "\nRELEVANT NEIGHBORS: "
+                                    + " | ".join(_nb_parts)
+                                ).strip()
+                    except Exception as _nb_exc:
+                        loud_error(_nb_exc, "ontology_recall_neighborhood")
+
+                    # ── REQ-3 T8 AC1/AC3: the node's compressed memory record is
+                    # a FIRST-CLASS step input (not opt-in). If this item carries
+                    # a NodeRecord (every node does from split/creation on), its
+                    # Understanding/Awareness/Direction + the compressed Σ
+                    # position are injected into the step input alongside the
+                    # episodic hints. When the store has no record for the
+                    # node's coordinate, the step proceeds on the live state
+                    # alone and is marked memory-sparse in the observability log
+                    # (AC3) — never an error.
+                    try:
+                        _rec = getattr(item, "node_record", None) or getattr(
+                            item, "footprint", None
+                        )
+                        # REQ-6 AC1 (T18): OBSERVE which signal governed this
+                        # step's steering — past-memory (compressed node
+                        # record present) vs live-state (memory-sparse: no
+                        # record, the decision runs on the live Σ alone). A
+                        # record present AND live Σ consumed is the "both"
+                        # (equal-signals) edge. No hardcoded authority (AC2).
+                        try:
+                            self._der_record_governance(
+                                "both" if _rec is not None else "live"
+                            )
+                        except Exception:
+                            pass
+                        if _rec is not None:
+                            _rec_parts = []
+                            if getattr(_rec, "prior_summary", ""):
+                                _rec_parts.append(
+                                    f"UNDERSTANDING: {_rec.prior_summary[:300]}"
+                                )
+                            if getattr(_rec, "ruled_out", ""):
+                                _rec_parts.append(f"RULED OUT: {_rec.ruled_out[:200]}")
+                            if getattr(_rec, "expected_output", ""):
+                                _rec_parts.append(
+                                    f"EXPECTED: {_rec.expected_output[:200]}"
+                                )
+                            if getattr(_rec, "coords_from", ""):
+                                _rec_parts.append(f"BRANCH COORDS: {_rec.coords_from}")
+                            # REQ-4 AC4 (T16b): the fold-back observations from
+                            # this node's sub-loop children are first-class
+                            # step context (REQ-3 AC1) — the parent's next
+                            # decision reads what the children resolved.
+                            if getattr(_rec, "folded_back", None):
+                                _rec_parts.append(
+                                    "FOLDED-BACK: " + "; ".join(_rec.folded_back[-3:])
+                                )
+                            if _rec_parts:
+                                _prior = getattr(item, "coordinate_signal", "") or ""
+                                item.coordinate_signal = (
+                                    _prior + "\nNODE RECORD: " + "; ".join(_rec_parts)
+                                ).strip()
+
+                            # ── REQ-5 AC1/AC3 (T17): SURFACE the branch
+                            # candidates to the deciding step. Retrieval ranks
+                            # the relevant branches (physics + evidence) and
+                            # puts ALL of them in front of the step — never
+                            # pre-selecting one by score. The step decides with
+                            # both branches in view; the chosen one is recorded
+                            # at commit (_der_record_coupling_decision).
+                            try:
+                                _cands = self._der_surface_branch_candidates(item)
+                                if _cands:
+                                    _cand_parts = [
+                                        f"{i+1}. {c.get('label','')}"
+                                        for i, c in enumerate(_cands)
+                                    ]
+                                    _prior = (
+                                        getattr(item, "coordinate_signal", "") or ""
+                                    )
+                                    item.coordinate_signal = (
+                                        _prior
+                                        + "\nBRANCH CANDIDATES: "
+                                        + " | ".join(_cand_parts)
+                                    ).strip()
+                                    # remember for the commit-time decision
+                                    # record (AC2/AC4) — bounded provenance.
+                                    try:
+                                        item._coupled_candidates = list(_cands)
+                                    except Exception:
+                                        pass
+                            except Exception as _surf_exc:
+                                logger.debug(
+                                    "[DER] branch surfacing failed: %s", _surf_exc
+                                )
+
+                            # ── REQ-3 T8b AC4/AC5/AC6: wire the FORGETTING. The
+                            # step's working context (coordinate_signal) is bounded
+                            # to a fraction of the REQ-1 resolved window (OQ-6:
+                            # derived, never a literal) — content beyond the bound is
+                            # DROPPED from the working context and re-read later
+                            # only when retrieval selects the node record. The
+                            # per-step prompt token count is recorded so the
+                            # reduction is a measured number (AC5). AC6: if the
+                            # node's chain write FAILED (durability drop counter),
+                            # the working context is the ONLY copy — do NOT bound
+                            # (forget) it. Extracted to _der_bound_step_context so
+                            # the contract test drives the REAL code (T8b).
+                            self._der_bound_step_context(item)
+                        else:
+                            # AC3: memory-sparse — no record, proceed on live state.
+                            logger.info(
+                                "[DER] step memory-sparse step_id=%s (no node record "
+                                "for this coordinate) — proceeding on live state",
+                                getattr(item, "step_id", "?"),
+                            )
+                    except Exception as _rec_exc:
+                        loud_error(_rec_exc, "node_record_step_input")
             except Exception as _explore_exc:
                 loud_error(_explore_exc, "explorer_sub_episodes")
 
@@ -6278,6 +6691,11 @@ Respond with a JSON object:
             logger.debug("[DER] task lifecycle write failed: %s", _lc_exc)
 
         # ── EventBus: emit task:done / task:fail ────────────────────────
+        # T11 (REQ-12): record the completed-step count on the kernel so the
+        # caller's TurnMetrics block (metrics.der_steps) reads a real number.
+        # len(completed_items) is authoritative here — it is appended only in
+        # _der_finalize_step, one per actually-completed step.
+        self._der_step_count = len(completed_items)
         try:
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
             get_event_bus().emit(
@@ -6431,6 +6849,8 @@ Respond with a JSON object:
         # Phase 1.5: if any step failed, synthesize a user-facing summary
         # that explains what worked, what failed, and what to do next.
         if queue.failed_ids:
+            # REQ-16 AC2 (T32): a task with failed steps did NOT exit naturally.
+            self._der_stamp_session_exit(False)
             _synthesis = self._der_synthesize_outcome(
                 plan, completed_items, queue, _session
             )
@@ -6455,6 +6875,9 @@ Respond with a JSON object:
             )
 
         if step_outputs:
+            # REQ-16 AC2 (T32): a task that ran steps to completion exited
+            # naturally.
+            self._der_stamp_session_exit(True)
             # REQ-12 (AC1/AC2/AC3): synthesize the gathered evidence into a
             # final answer instead of raw-concatenating step outputs. Consumes
             # the same evidence the failure path consumes (plan.original_task
@@ -6488,6 +6911,8 @@ Respond with a JSON object:
         # by BOT_BLOCKED_DOMAINS, or the LLM couldn't generate any). Return
         # a descriptive message so _plan_task's post-processing can surface
         # an actionable explanation instead of the generic "couldn't generate".
+        # REQ-16 AC2 (T32): zero usable steps is NOT a natural exit.
+        self._der_stamp_session_exit(False)
         return (
             f"[DER] {plan.strategy} — "
             f"{len(completed_items)}/{len(plan.steps)} steps completed.  "
@@ -6976,19 +7401,34 @@ Respond with a JSON object:
             try:
                 _cad = self._der_live_cad_state(_session)
                 _wu = getattr(self, "_der_work_units", 0)
-                _children = self._split_step(item, "verify_failed", _cad, _wu)
+                # REQ-4 AC1 (T16): continuous verified fraction as a GRADED
+                # steering input at the split decision (mid-band -> bounded
+                # probe). Never crash the split on fraction failure.
+                try:
+                    _vf_split = self._verified_fraction(
+                        getattr(item, "expected_output", None),
+                        str(step_result or ""),
+                    )
+                except Exception:
+                    _vf_split = 0.0
+                _children = self._split_step(
+                    item,
+                    "verify_failed",
+                    _cad,
+                    _wu,
+                    step_result=step_result,
+                    verified_fraction=_vf_split,
+                )
                 if _children:
                     queue.graft_attempts += 1
-                    # T6.8: route subloop children through the batcher for
-                    # BATCH_WINDOW_RAD grouping and BATCH_MAX_HOLD_S enforcement.
-                    for _c in _children:
-                        _batch = get_batcher().offer(_c)
-                        if _batch is not None:
-                            # BatchGroup exposes its pending children via
-                            # `.children` — it is NOT iterable itself
-                            # ('BatchGroup' object is not iterable regression).
-                            for _batch_item in _batch.children:
-                                queue.add_item(_batch_item)
+                    # REQ-7 AC1/AC2/AC3 (T25): route subloop children through
+                    # the batcher — each ready group (full OR force-flushed at
+                    # the join point) dispatches as ONE batched call via
+                    # dispatch_batch, with results routed back per node;
+                    # parse-failure children fall back to individual execution.
+                    self._der_route_subloop_children(
+                        _children, queue, _session, _turn_id
+                    )
                     # REQ-3: debit measured tokens, not a flat child count.
                     _result_len = len(step_result) if step_result else 0
                     _measured = max(200, _result_len // 4)
@@ -7097,6 +7537,392 @@ Respond with a JSON object:
             return 1  # atomic; verification strictness handled by D2.3
         return 1
 
+    def _der_split_width(self, u: float, verified_fraction: float) -> int:
+        """REQ-4 AC1/AC2 (T16): GRADED split width — a continuous function of
+        BOTH |u| and the verified fraction, not a |u|-only gate.
+
+        The pre-T16 split width was binary in the verification dimension:
+        ``_growth_width(u)`` returned 3 (wide) or 1 (atomic) purely from |u|,
+        while ``verified_fraction`` was computed and then thrown away at the
+        split decision. REQ-4 AC1 requires the continuous fraction to be a
+        steering input; AC2 requires the graded middle path when the signal is
+        mid-band — never a threshold coin-flip.
+
+        Bands:
+          verified_fraction <= 0.25            -> strong failure: |u| governs
+                                                  (delegate to _growth_width)
+          0.25 < verified_fraction < 0.75      -> MID-BAND (AC2): bounded probe
+                                                  (width 1, probe=True) — the
+                                                  step produced meaningful but
+                                                  insufficient content; a wide
+                                                  split would be a retry wearing
+                                                  a split costume. The child
+                                                  resolves the specific blocker
+                                                  (REQ-4 AC4/T16b) at width 1.
+          verified_fraction >= 0.75            -> near-pass: atomic (1) — the
+                                                  result satisfied most of the
+                                                  expected output; a wide split
+                                                  spends budget re-attempting a
+                                                  step that nearly passed.
+
+        The caller marks the child ``probe=True`` when this method returns a
+        width-1 mid-band probe (see _split_step).
+        """
+        if verified_fraction > 0.25:
+            if verified_fraction < 0.75:
+                return 1  # AC2 graded middle path: bounded probe, not a flip
+            return 1  # near-pass: atomic
+        return self._growth_width(u)  # strong failure: |u| bands govern
+
+    # ── REQ-5 (T17): coupling as decision-provenance ────────────────────────
+    # Retrieval RANKS relevant branches (physics- and evidence-driven, AC3) and
+    # SURFACES ALL of them (bounded by the candidate cap) to the deciding step
+    # (AC1) — never silently pre-selecting one by score. When the step commits,
+    # the edge to the branch that informed it is written/strengthened with the
+    # decision as provenance (AC2), and the per-decision record (how many
+    # candidates surfaced, which was chosen) is stored on the node record (AC4).
+
+    def _der_surface_branch_candidates(
+        self, item, cad: Optional[Dict[str, float]] = None, max_candidates: int = 0
+    ) -> List[dict]:
+        """REQ-5 AC1/AC3 (T17): rank relevant branch candidates and return ALL
+        of them (bounded by the candidate cap) — never one, never pre-selected.
+
+        Ranking is physics- and evidence-driven (AC3):
+          - coordinate proximity to the step's live Σ position,
+          - learned score of the region->candidate edge (if one exists),
+          - compression/expansion state via the EXISTING coupling kernel
+            ``trig_coupling.align_force`` (AC6 — reuse, do not write a second
+            implementation): the u term biases candidates whose phase aligns
+            with the step's current direction.
+
+        SELECTION is NOT made here — the step decides with all candidates in
+        view; the chosen one is recorded at commit (see
+        ``_der_record_coupling_decision``).
+
+        Returns a list of dicts ``{"node_id", "label", "score"}`` capped at
+        ``max_candidates`` (0 -> DER_COUPLING_CANDIDATE_CAP). Never raises:
+        any failure returns [] so coupling can never block a step (REQ-10 AC5).
+        """
+        from backend.agent.der_constants import DER_COUPLING_CANDIDATE_CAP
+        from backend.agent.trig_coupling import align_force
+
+        cap = max_candidates or DER_COUPLING_CANDIDATE_CAP
+        if cap < 1:
+            return []
+        if not getattr(self, "_memory_interface", None):
+            return []
+        try:
+            _cad = cad if cad is not None else self._der_live_cad_state(
+                self.session_id or ""
+            )
+            _vec = [
+                _cad.get("x", 0.0), _cad.get("y", 0.0),
+                _cad.get("xi", 0.0), _cad.get("u", 0.0),
+            ]
+            _u = _cad.get("u", 0.0)
+            # AC6: the EXISTING coupling kernel — the u-term in the ranking is
+            # align_force as WIRED at coupled_registry.py:287 (full phase list
+            # [self, other], N=2 satisfies the mean-field guard; the self term
+            # contributes sin(0)=0). The u-term is the signed attraction of the
+            # step's phase toward the converged phase 0.0 — NOT a new formula.
+            _align = align_force(_u, [_u, 0.0], k=1.0)
+            # physics term normalized to [0, 1]: aligned (u>0, expanding toward
+            # convergence) scores higher; anti-aligned (u<0, compressing) lower.
+            _phys = 0.5 + 0.5 * max(-1.0, min(1.0, _align))
+            _session = self.session_id or ""
+            myc = getattr(self._memory_interface, "_mycelium", None)
+            if myc is None:
+                return []
+            _store = getattr(myc, "_store", None)
+            _nav = getattr(myc, "_navigator", None)
+            _nodes = []
+            # Primary candidate source: the highest-confidence node from each
+            # space (navigate_all_spaces) — the relevant BRANCHES, one per
+            # space. Fallback: active registry nodes.
+            try:
+                if _nav is not None and hasattr(_nav, "navigate_all_spaces"):
+                    _nodes = list(_nav.navigate_all_spaces(_session))
+            except Exception:
+                _nodes = []
+            if not _nodes:
+                try:
+                    _reg = getattr(myc, "_registry", None)
+                    _nids = list(getattr(_reg, "get_active", lambda s: [])(_session))
+                    if _nids and _store is not None:
+                        _nodes = [
+                            _store.get_node_by_id(_nid)
+                            for _nid in _nids
+                            if _store.get_node_by_id(_nid) is not None
+                        ]
+                except Exception:
+                    _nodes = []
+            _nodes = [_c for _c in (_nodes or []) if getattr(_c, "coordinates", None)]
+            if not _nodes:
+                return []
+
+            _scored = []
+            for _n in _nodes:
+                try:
+                    _coords = list(getattr(_n, "coordinates", None) or [])
+                    if len(_coords) < 4:
+                        continue
+                    _d = sum((a - b) ** 2 for a, b in zip(_vec, _coords[:4])) ** 0.5
+                    _prox = max(0.0, 1.0 - _d / 4.0)  # normalized proximity
+                    _learned = 0.0
+                    _nid = getattr(_n, "node_id", "") or getattr(_n, "id", "") or ""
+                    # learned edge score from the region node -> candidate, if
+                    # the edge exists (evidence-driven ranking).
+                    try:
+                        _reg_nid = self._der_region_node_id(_session)
+                        if _reg_nid and _nid:
+                            _edge = _store.get_edge_by_id(
+                                f"{_reg_nid}:{_nid}"
+                            ) if hasattr(_store, "get_edge_by_id") else None
+                            if _edge is not None:
+                                _learned = float(getattr(_edge, "score", 0.0) or 0.0)
+                    except Exception:
+                        _learned = 0.0
+                    _score = _prox * 0.6 + _learned * 0.3 + _phys * 0.1
+                    _scored.append({
+                        "node_id": _nid,
+                        "label": (getattr(_n, "label", None) or _nid)[:120],
+                        "score": _score,
+                    })
+                except Exception:
+                    continue
+            _scored.sort(key=lambda c: c["score"], reverse=True)
+            # REQ-5 AC5 (T17b): record the TOTAL number of relevant branches
+            # found (BEFORE the cap) on the item — the coverage DENOMINATOR
+            # for candidate-surfacing coverage ("how often a decision saw >=2
+            # candidates when >=2 EXISTED"). candidates_surfaced is the capped
+            # return; candidates_existed is the uncapped count. Both are needed
+            # or the coverage metric cannot be measured.
+            try:
+                item._coupled_candidates_existed = len(_scored)
+            except Exception:
+                pass
+            return _scored[:cap]
+        except Exception as _cp_exc:  # noqa: BLE001 — coupling never blocks
+            logger.debug("[DER] branch-candidate surfacing failed: %s", _cp_exc)
+            return []
+
+    def _der_region_node_id(self, session_id: str) -> str:
+        """The mycelium node_id of the session's CURRENT region node (the ONE
+        active node nearest the live Σ position — REQ-26 AC1 region scoping).
+        Empty string if none resolvable. Never raises."""
+        try:
+            myc = getattr(self._memory_interface, "_mycelium", None)
+            if myc is None:
+                return ""
+            _reg = getattr(myc, "_registry", None)
+            if _reg is None:
+                return ""
+            _nids = list(getattr(_reg, "get_active", lambda s: [])(session_id))
+            if not _nids:
+                return ""
+            _store = getattr(myc, "_store", None)
+            if _store is None or not hasattr(_store, "get_node_by_id"):
+                return ""
+            _cad = self._der_live_cad_state(session_id)
+            _vec = [
+                _cad.get("x", 0.0), _cad.get("y", 0.0),
+                _cad.get("xi", 0.0), _cad.get("u", 0.0),
+            ]
+            _best, _best_d = "", None
+            for _nid in _nids:
+                try:
+                    _n = _store.get_node_by_id(_nid)
+                    if _n is None:
+                        continue
+                    _c = list(getattr(_n, "coordinates", None) or [])
+                    if len(_c) < 4:
+                        continue
+                    _d = sum((a - b) ** 2 for a, b in zip(_vec, _c[:4])) ** 0.5
+                    if _best_d is None or _d < _best_d:
+                        _best, _best_d = _nid, _d
+                except Exception:
+                    continue
+            return _best
+        except Exception as _reg_exc:  # noqa: BLE001
+            logger.debug("[DER] region-node resolve failed: %s", _reg_exc)
+            return ""
+
+    def _der_record_governance(self, source: str) -> None:
+        """REQ-6 AC1/AC3 (T18): record WHICH signal governed a steering
+        decision — past-memory | live-state | both.
+
+        Increments the per-turn governance counter on the kernel (read by the
+        caller's TurnMetrics block into the [LAYERS] line). Off the hot path
+        and lossy-safe: any failure is logged at debug and never raises, and a
+        missing counter silently re-initializes (AC1 edge: high-volume turns).
+        The alternation ratio (AC3) is derived in TurnMetrics.to_log_line from
+        the same counts.
+
+        No decision path hardcodes which signal is authoritative (AC2): the
+        recorded source is OBSERVED at the decision point — a step whose
+        context carried a compressed node record (past-memory) AND live Σ is
+        "both"; memory-sparse (no record) is "live"; record present but no
+        live signal is "past".
+        """
+        try:
+            _gov = getattr(self, "_der_governance_counts", None)
+            if _gov is None:
+                _gov = {"past": 0, "live": 0, "both": 0}
+            if source == "past":
+                _gov["past"] = _gov.get("past", 0) + 1
+            elif source == "live":
+                _gov["live"] = _gov.get("live", 0) + 1
+            else:  # "both" (and any unknown -> both, the equal-signals edge)
+                _gov["both"] = _gov.get("both", 0) + 1
+            self._der_governance_counts = _gov
+        except Exception as _gov_exc:  # noqa: BLE001
+            logger.debug("[DER] governance record failed: %s", _gov_exc)
+
+    def _der_choose_coupling_branch(
+        self, item, candidates: List[dict]
+    ) -> str:
+        """REQ-5 AC4 (T17): determine which surfaced branch the step CHOSE.
+
+        Selection is the step's, not the system's (the rewritten REQ-5 story:
+        "awareness of the alternatives, and a recorded decision, is [the
+        system's business]"). The step's choice is observed from the outcome:
+        the chosen branch is the candidate whose coordinates are nearest the
+        step's final Σ position (``coords_to``), i.e. the branch the step's
+        result actually moved toward. Empty string when no candidate is
+        nearest (no branches existed / no coords). Never raises.
+        """
+        from backend.agent.der_constants import DER_COUPLING_CANDIDATE_CAP
+
+        if not candidates:
+            return ""
+        try:
+            _coords_to = getattr(item, "coords_to", "") or ""
+            _session = self.session_id or ""
+            myc = getattr(self._memory_interface, "_mycelium", None)
+            _store = getattr(myc, "_store", None) if myc else None
+            if _coords_to and _store is not None and hasattr(
+                _store, "get_node_by_id"
+            ):
+                _v = []
+                for _part in _coords_to.strip("()").split(","):
+                    try:
+                        _v.append(float(_part))
+                    except Exception:
+                        break
+                if len(_v) >= 4:
+                    _best, _best_d = "", None
+                    for _c in candidates[:DER_COUPLING_CANDIDATE_CAP]:
+                        _nid = _c.get("node_id", "")
+                        if not _nid:
+                            continue
+                        try:
+                            _n = _store.get_node_by_id(_nid)
+                            _cvec = list(getattr(_n, "coordinates", None) or [])
+                            if len(_cvec) < 4:
+                                continue
+                            _d = sum(
+                                (a - b) ** 2 for a, b in zip(_v, _cvec[:4])
+                            ) ** 0.5
+                            if _best_d is None or _d < _best_d:
+                                _best, _best_d = _nid, _d
+                        except Exception:
+                            continue
+                    return _best
+            # No resolvable coordinates: fall back to the top-ranked candidate
+            # (the ranking is physics- and evidence-driven, AC3) so a decision
+            # is still RECORDED — an empty choice would be an unrecorded one.
+            return (candidates[0].get("node_id", "") if candidates else "")
+        except Exception as _ch_exc:  # noqa: BLE001
+            logger.debug("[DER] coupling-branch choice failed: %s", _ch_exc)
+            return ""
+
+    def _der_record_coupling_decision(
+        self,
+        item,
+        candidates: List[dict],
+        chosen_node_id: str = "",
+        record: Optional["NodeRecord"] = None,
+    ) -> None:
+        """REQ-5 AC2/AC4 (T17): record a coupling decision AFTER the step
+        commits. ``candidates`` is the surfaced list (all of them, capped);
+        ``chosen_node_id`` is the branch the step actually committed to.
+
+        AC2: write/strengthen the coupling edge from the step's region node to
+        the chosen branch — the decision IS the edge's provenance. Uses the
+        SAME edge store/scorer as the region->mediator learning (one store,
+        one scorer — REQ-19 AC4); a decision is a strengthenable observation,
+        not a new edge kind.
+        AC4: candidates_surfaced / chosen_branch / surfaced_branches are
+        stamped on the node record so "was the agent aware of both branches"
+        is answerable from data. Never raises: coupling is off the critical
+        path (REQ-10 AC5).
+        """
+        from backend.agent.der_constants import DER_COUPLING_PROVENANCE_MAX
+
+        try:
+            _count = len(candidates or [])
+            _chosen = chosen_node_id or ""
+            if not _count and not _chosen:
+                return  # no coupling decision at this node
+            _rec = record or getattr(item, "node_record", None)
+            if _rec is not None:
+                _rec.candidates_surfaced = _count
+                _rec.chosen_branch = _chosen
+                # REQ-18 AC1b (T19): a node that SURFACED >=1 candidate and
+                # CHOSE one is a node that COMMITTED A DECISION — a valid
+                # coupling endpoint. This is the ROLE marker that makes
+                # "which decisions were informed by branch X" a relationship
+                # lookup (REQ-20) instead of a table scan. Set only here, at
+                # the coupling-decision site, so gathering/executing nodes
+                # stay unmarked.
+                if _count > 0:
+                    _rec.committed_decision = True
+                _rec.surfaced_branches = [
+                    c.get("label", "") for c in (candidates or [])
+                ][:DER_COUPLING_PROVENANCE_MAX]
+                # REQ-5 AC5 (T17b): the DENOMINATOR for candidate-surfacing
+                # coverage — how many relevant branches EXISTED before the cap.
+                # candidates_surfaced / candidates_existed is the coverage ratio
+                # ("saw >=2 when >=2 existed").
+                try:
+                    _rec.candidates_existed = int(
+                        getattr(item, "_coupled_candidates_existed", _count) or _count
+                    )
+                except Exception:
+                    _rec.candidates_existed = _count
+            if _chosen:
+                try:
+                    _session = self.session_id or ""
+                    _reg_nid = self._der_region_node_id(_session)
+                    if _reg_nid:
+                        myc = getattr(self._memory_interface, "_mycelium", None)
+                        _store = getattr(myc, "_store", None) if myc else None
+                        if _store is not None and hasattr(
+                            _store, "record_observation"
+                        ) and hasattr(_store, "get_edge_by_id"):
+                            _edge_id = f"{_reg_nid}:{_chosen}"
+                            _existing = _store.get_edge_by_id(_edge_id)
+                            if _existing is not None:
+                                # decision PROVENANCE: the informed-branch edge
+                                # is strengthened by a decision observation
+                                # (REQ-5 AC2) — delta positive, modest.
+                                _store.record_observation(_edge_id, 0.1)
+                            elif hasattr(_store, "upsert_edge"):
+                                _new_eid = _store.upsert_edge(
+                                    _reg_nid, _chosen, "informed", 0.5
+                                )
+                                if _new_eid:
+                                    _store.record_observation(
+                                        _new_eid or _edge_id, 0.1
+                                    )
+                except Exception as _edge_exc:  # noqa: BLE001
+                    logger.debug(
+                        "[DER] coupling-edge write failed: %s", _edge_exc
+                    )
+        except Exception as _cd_exc:  # noqa: BLE001
+            logger.debug("[DER] coupling-decision record failed: %s", _cd_exc)
+
     def _der_verify_strictness(self, u: float) -> str:
         """Adaptive verification strictness by |u| band (D2.3).
 
@@ -7116,12 +7942,61 @@ Respond with a JSON object:
             return "rubric"
         return "atomic"
 
+    def _der_split_blocker(
+        self,
+        item: "QueueItem",
+        trigger: str,
+        step_result: str = "",
+    ) -> str:
+        """REQ-4 AC4 (T16b): name the SPECIFIC blocker this split resolves.
+
+        Deterministic extraction from the failure evidence (no LLM call on the
+        split hot path — the blocker is derived, not generated):
+
+          1. error-prefixed step_result  -> the tool failure itself
+          2. verify_failed               -> the acceptance criterion that was
+             NOT satisfied (expected_output, else the produced result) — names
+             the specific gap, never the parent goal
+          3. unresolved_u (physics)      -> the oscillating state itself
+             (decomposition, not a failure — still names WHAT it resolves)
+          4. empty evidence AND no expected_output -> "" (UNNAMED blocker) —
+             the split cannot name what it resolves; recorded as such via
+             blocker_named=False, surfaced as evidence the failure was not
+             understood.
+
+        Returns the blocker text, or "" when nothing can be named.
+        """
+        _res = (step_result or "").strip()
+        _low = _res.lower()
+        if _low.startswith("error") or _low.startswith("[step error") or _low.startswith(
+            "duplicate"
+        ):
+            return f"the tool reported: {_res[:200]}"
+        if _low.startswith("ratelimited") or _low.startswith("timeout") or _low.startswith(
+            "connection"
+        ):
+            return f"transient infrastructure failure: {_res[:200]}"
+        if trigger == "verify_failed":
+            _exp = (item.expected_output or "").strip()
+            if _exp:
+                return f"result did not satisfy expected output: {_exp[:200]}"
+            if _res:
+                return f"result was not verified against the expected output: {_res[:200]}"
+            return ""  # UNNAMED — no expected output AND no evidence
+        if trigger == "unresolved_u":
+            return "unresolved oscillating state (|u| below the split threshold)"
+        if _res:
+            return f"the produced result was judged insufficient: {_res[:200]}"
+        return ""
+
     def _split_step(
         self,
         item: "QueueItem",
         trigger: str,
         cad: Dict[str, float],
         work_units: int,
+        step_result: str = "",
+        verified_fraction: float = 0.0,
     ) -> List["QueueItem"]:
         """Stateful, physics-driven split operator (D2.1).
 
@@ -7134,6 +8009,18 @@ Respond with a JSON object:
                         work_units >= width; split PREPAYS ``width`` units up
                         front (this is what makes the Lyapunov potential Phi
                         strictly decrease — see Appendix B).
+            step_result: the failure evidence (produced result / error text).
+                        REQ-4 AC4 (T16b): used to name the SPECIFIC blocker the
+                        children exist to resolve — the child's objective_anchor
+                        is NEVER a restatement of the parent goal.
+            verified_fraction: REQ-4 AC1/AC2 (T16): the continuous verification
+                        fraction of this step (0..1), consumed as a GRADED
+                        steering input at the split decision. Mid-band
+                        (0.25 < vf < 0.75) selects the bounded probe path
+                        (width 1, probe=True) instead of a full-width
+                        re-attempt; strong failure (< 0.25) lets |u| govern.
+                        Default 0.0 preserves the pre-T16 binary behavior for
+                        callers that do not have the fraction.
 
         Returns:
             List of child QueueItems (Sub-Loops that collapse back to the parent
@@ -7145,13 +8032,43 @@ Respond with a JSON object:
         )
 
         u = cad.get("u", 0.0)
-        width = self._growth_width(u)
+        # REQ-4 AC1/AC2 (T16): the width is now a GRADED function of BOTH |u|
+        # and the verified fraction — the continuous signal is a steering
+        # input, not a post-hoc label. Mid-band -> bounded probe (width 1).
+        width = self._der_split_width(u, verified_fraction)
         # Cap at DER_MAX_GRAFTS AND bounded by remaining work units.
         width = min(width, DER_MAX_GRAFTS, max(0, work_units))
         if width < 1 or item.depth_layer >= MAX_DEPTH:
             return []  # refused -> step forced atomic
 
-        from backend.agent.der_loop import QueueItem, SubLoopFootprint
+        from backend.agent.der_loop import QueueItem, NodeRecord
+
+        # REQ-4 AC2 (T16): a mid-band verified fraction selects the graded
+        # middle path — a BOUNDED PROBE (width 1, probe=True), not a threshold
+        # coin-flip. The child resolves the specific blocker at width 1.
+        _probe = 0.25 < verified_fraction < 0.75 and trigger == "verify_failed"
+
+        from backend.agent.der_loop import QueueItem, NodeRecord
+
+        # REQ-4 AC4 (T16b): name the SPECIFIC blocker the split exists to
+        # resolve — deterministically extracted from the failure evidence (no
+        # LLM call on the split hot path). A split that cannot name what it
+        # resolves records an UNNAMED blocker (blocker_named=False) — surfaced
+        # as evidence the failure was not understood, never hidden behind a
+        # fresh node id.
+        _blocker = self._der_split_blocker(item, trigger, step_result)
+        if _blocker:
+            _child_anchor = f"RESOLVE: {_blocker}"
+            _blocker_named = True
+        else:
+            _child_anchor = f"[UNNAMED_BLOCKER] {item.description[:160]}"
+            _blocker_named = False
+            logger.warning(
+                "[DER] _split_step trigger=%s step=%s produced an UNNAMED "
+                "blocker — the split cannot name what it resolves; recorded "
+                "as evidence (REQ-4 AC4)",
+                trigger, item.step_id,
+            )
 
         # REQ-21 (T41): the compressed footprint each child carries —
         # Understanding (what has been attempted/gathered for this goal across
@@ -7186,26 +8103,60 @@ Respond with a JSON object:
             _coordinate_ref = None
 
         children: List["QueueItem"] = []
+        # REQ-3 T8: capture the pre-split compressed position so every child's
+        # NodeRecord carries the SAME coords_from (the branch point) and each
+        # lands a distinct coords_to when it finalizes (REQ-2 chain append).
+        _coords_before = ""
+        try:
+            _live = self._der_live_cad_state(self.session_id or "")
+            if _live:
+                _coords_before = f"({_live.get('x', 0.0):.4f},{_live.get('y', 0.0):.4f}," \
+                                 f"{_live.get('xi', 0.0):.4f},{_live.get('u', 0.0):.4f})"
+        except Exception:
+            pass
         for i in range(width):
             child = QueueItem(
                 step_id=f"{item.step_id}_s{i}",
                 step_number=item.step_number,
-                description=f"{item.description} (sub {i + 1})",
-                objective_anchor=item.objective_anchor,
+                # REQ-4 AC4 (T16b): the child's description/objective names the
+                # SPECIFIC blocker it resolves — NOT a restatement of the
+                # parent goal. This is what makes a split a RESOLVE, not a
+                # retry wearing a new node id.
+                description=f"{_child_anchor} (sub {i + 1})",
+                objective_anchor=_child_anchor,
                 depth_layer=item.depth_layer + 1,
                 expected_output=item.expected_output,
                 is_subloop=True,  # collapses back to parent as one COMPRESS
                 critical=item.critical,
                 independent=True,  # T6.8: subloop children are independent per REQ-18 AC1
-                # REQ-21 (T41): carry the compressed footprint on the child.
-                footprint=SubLoopFootprint(
+                # REQ-3 T8: EVERY node carries its memory record — the
+                # generalized NodeRecord (was SubLoopFootprint, sub-loop-only).
+                node_record=NodeRecord(
                     step_id=f"{item.step_id}_s{i}",
                     parent_step_id=item.step_id,
-                    objective_anchor=item.objective_anchor,
+                    node_type="sub_loop",
+                    objective_anchor=_child_anchor,
+                    content_summary=_prior_summary,
                     prior_summary=_prior_summary,
-                    remaining=item.description,
+                    expected_output=item.expected_output,
+                    remaining=_child_anchor,
                     ruled_out="",  # no path is closed until a child proves it
                     coordinate_ref=_coordinate_ref,
+                    coords_from=_coords_before,
+                    blocker=_blocker,
+                    blocker_named=_blocker_named,
+                    probe=_probe,
+                    # REQ-18 (T19): children INHERIT the parent's two domain
+                    # axes — they are the same task (topic) run in the same
+                    # winding (execution). Registry values by construction.
+                    topic_domain=getattr(
+                        getattr(item, "node_record", None), "topic_domain", "general"
+                    ) or "general",
+                    execution_domain=getattr(
+                        getattr(item, "node_record", None),
+                        "execution_domain",
+                        "der",
+                    ) or "der",
                     size_bytes=len(_prior_summary.encode("utf-8", "replace")),
                 ),
             )
@@ -7221,6 +8172,147 @@ Respond with a JSON object:
         except Exception:
             pass
         return children
+
+    def _der_route_subloop_children(
+        self, _children: List["QueueItem"], queue, _session: str, _turn_id: str
+    ) -> None:
+        """REQ-7 AC1/AC2/AC3 (T25): route split children through the batcher.
+
+        Each ready group (full from ``offer()`` OR force-flushed at the join
+        point) is dispatched as ONE batched call via ``dispatch_batch``, with
+        results routed back per node. Guarantees:
+
+        - AC1: children in a ready group share a single LLM call.
+        - AC2: NO child is ever silently lost — full groups dispatch now,
+          width-1/2 groups are force-flushed at the join point, and children
+          the batcher declined (phase outside window / not independent) are
+          queued directly. A child whose batched segment parsed is queued
+          WITH its answer pre-seeded (item.result), so its execution
+          short-circuits to the verify/finalize path; a child whose segment
+          failed to parse is queued WITHOUT a result and executes individually.
+        - AC3: each dispatched group increments the per-turn call counter
+          (self._der_turn_calls), recorded against the T3 baseline.
+        """
+        from backend.agent.batch_dispatch import BatchGroup, dispatch_batch
+
+        # Use the module-level `get_batcher` (imported above) — NOT a local
+        # import — so tests that patch agent_kernel.get_batcher keep working.
+        _batcher = get_batcher()
+        _join = ""
+        _ready: List[BatchGroup] = []
+        for _c in _children:
+            _g = _batcher.offer(_c)
+            if _g is not None:
+                _ready.append(_g)
+            _sid = getattr(_c, "step_id", "")
+            if not _join and _sid:
+                _join = _sid.rsplit("_s", 1)[0] if "_s" in _sid else _sid
+        # Force-flush the join point so a width-1/2 group (offer() returned
+        # None because the group was not full) is ALSO dispatched now instead
+        # of being silently dropped by the next flush_expired().
+        _tail = _batcher.flush(_join) if _join else None
+        if _tail is not None:
+            _ready.append(_tail)
+        _routed: set = set()
+        for _g in _ready:
+            _routed.update(
+                self._der_dispatch_batch_group(_g, queue, _session, _turn_id)
+            )
+        # Children never grouped (declined / not independent) run individually.
+        for _c in _children:
+            if getattr(_c, "step_id", "") not in _routed:
+                queue.add_item(_c)
+
+    def _der_dispatch_batch_group(
+        self, group, queue, _session: str, _turn_id: str
+    ) -> set:
+        """Execute one ready BatchGroup as a single batched call and route
+        each child's answer back to its node. Returns the set of step_ids
+        queued. AC3: each dispatched group increments the per-turn call
+        counter."""
+        from backend.agent.batch_dispatch import BatchGroup, dispatch_batch
+
+        # Defensive: never iterate a non-BatchGroup. A patched/mocked batcher
+        # (unit tests) may return an auto-created MagicMock from flush() —
+        # treat it as "no group" so children fall through to the caller's
+        # per-child fallback instead of crashing on a non-iterable group.
+        if not isinstance(group, BatchGroup):
+            return set()
+
+        _queued: set = set()
+        _results: dict = {}
+        _router = getattr(self, "_router", None)
+        if _router is not None:
+            try:
+                # REQ-1 AC2 / T25: route the batched call through the ROUTER's
+                # role binding ("reasoning"), exactly like the per-step path
+                # (box.resolve → router.generate("reasoning")). Passing a model
+                # STRING here is a real bug: router.generate's first arg is a
+                # ROLE, so a model id fails resolve() and falls back to the
+                # legacy default (provider='ollama') — observed live 2026-08-06:
+                # "der_batch_dispatch failed: Ollama returned 500" while
+                # per-step calls routed to cerebras. The role form makes the
+                # batched call use the SAME bound provider as its siblings.
+                _messages = self._der_batch_base_messages(_session)
+                _results = (
+                    dispatch_batch(group, _router, "reasoning", _messages) or {}
+                )
+                # D1: dispatch_batch() calls router.generate() directly with
+                # this SAME router instance — credit its real (or, absent
+                # that, estimated-from-combined-children) usage here.
+                self._accrue_tokens(
+                    " ".join(_results.values()) if _results else "",
+                    getattr(_router, "last_usage", None),
+                    source="_der_dispatch_batch_group",
+                )
+                # REQ-7 AC3 (T25): record the batched call against the
+                # per-turn baseline so the loop shows call-count reduction.
+                self._der_turn_calls = getattr(self, "_der_turn_calls", 0) + 1
+            except Exception as _bexc:  # noqa: BLE001
+                loud_error(_bexc, "der_batch_dispatch")
+                _results = {}
+        for _child in getattr(group, "children", None) or []:
+            _sid = getattr(_child, "step_id", "")
+            _res = (_results or {}).get(_sid, "")
+            if _res and _res.strip():
+                _child.result = _res.strip()  # pre-seed → execution short-circuits
+                logger.info(
+                    "[DER] BATCH_ROUTED child=%s len=%d", _sid, len(_res)
+                )
+            else:
+                logger.warning(
+                    "[DER] BATCH_PARSE_FALLBACK child=%s -> individual", _sid
+                )
+            queue.add_item(_child)
+            _queued.add(_sid)
+        return _queued
+
+    def _der_batch_base_messages(self, _session: str) -> list:
+        """Base messages for a batched sub-loop call: the shared context each
+        child would otherwise receive (system zone + working memory)."""
+        _msgs = []
+        try:
+            _cp = ""
+            if getattr(self, "_live_ctx", None) is not None and hasattr(
+                self._live_ctx, "get_system_zone_content"
+            ):
+                _cp = self._live_ctx.get_system_zone_content() or ""
+            _wm = ""
+            if getattr(self, "_memory_interface", None) is not None:
+                _wm = self._memory_interface.get_assembled_context(_session) or ""
+            _sys = "\n\n".join(x for x in (_cp, _wm) if x).strip()
+            if _sys:
+                _msgs.append({"role": "system", "content": _sys})
+        except Exception:
+            pass
+        if not _msgs:
+            _msgs.append(
+                {
+                    "role": "system",
+                    "content": "You are a precise sub-query executor.",
+                }
+            )
+        return _msgs
 
     def _der_live_cad_state(self, session_id: str) -> Dict[str, float]:
         """Live Caducean state for the split decision (D2.2).
@@ -7375,6 +8467,64 @@ Respond with a JSON object:
             logger.warning("[DER] graft recovery parse failed: %s", _e)
             return []
 
+    def _der_stamp_session_exit(self, natural_exit: bool) -> None:
+        """REQ-16 AC2 (T32): stamp the session's exit nature on the
+        conversation memory so ``archive_on_session_end`` records an HONEST
+        ``natural_exit`` when the session ends (the DER loop is the source of
+        truth for whether the task completed).
+
+        Success path -> natural_exit=True (task ran to completion); failure /
+        zero-step path -> natural_exit=False (task did NOT complete). Best-
+        effort, off the hot path, never raises — a missing conversation memory
+        is simply skipped.
+        """
+        try:
+            _mem = getattr(self, "_conversation_memory", None)
+            if _mem is not None:
+                _mem.natural_exit = bool(natural_exit)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _der_node_record_evidence(item) -> str:
+        """REQ-8 AC1 (T26): compressed synthesis evidence from a node record.
+
+        Returns the node's COMPRESSED memory record (REQ-3) — the bounded
+        content summary, what "done" means, what remains, what was ruled
+        out — instead of the raw step output, so the final synthesis is
+        built from the node records, not the full step history. When the
+        item carries no node_record (empty memory edge case, REQ-8), falls
+        back to the raw result truncated to a bounded window so a step is
+        never silent.
+        """
+        try:
+            _rec = getattr(item, "node_record", None) or getattr(
+                item, "footprint", None
+            )
+            if _rec is not None:
+                _parts = []
+                _cs = getattr(_rec, "content_summary", "") or ""
+                if _cs:
+                    _parts.append(f"summary: {_cs[:300]}")
+                _eo = getattr(_rec, "expected_output", "") or ""
+                if _eo:
+                    _parts.append(f"done-when: {_eo[:200]}")
+                _rm = getattr(_rec, "remaining", "") or ""
+                if _rm:
+                    _parts.append(f"remaining: {_rm[:200]}")
+                _ro = getattr(_rec, "ruled_out", "") or ""
+                if _ro:
+                    _parts.append(f"ruled-out: {_ro[:200]}")
+                if _parts:
+                    return " | ".join(_parts)
+            # No node record — bounded raw fallback (REQ-8 edge case).
+            _raw = getattr(item, "result", "") or ""
+            if _raw:
+                return _raw[:400]
+        except Exception:
+            pass
+        return ""
+
     def _der_synthesize_outcome(
         self,
         plan,
@@ -7388,8 +8538,14 @@ Respond with a JSON object:
         to do next. Returns "" on any failure (caller falls back to raw output).
         """
         try:
+            # REQ-8 AC1 (T26): build the synthesis from COMPRESSED node records
+            # (content summary / done-when / remaining / ruled-out), not the raw
+            # step outputs. Keeps the final summary bounded and free of
+            # interleaved tool noise, and avoids replaying raw history into the
+            # model.
             _done = "\n".join(
-                f"[Step {ci.step_number}] {ci.description}: {ci.result or '(no result)'}"
+                f"[Step {ci.step_number}] {ci.description}: "
+                f"{self._der_node_record_evidence(ci) or '(no result)'}"
                 for ci in completed_items
             ) or "(none)"
             _failed_lines = []
@@ -7437,7 +8593,10 @@ Respond with a JSON object:
                 {
                     "tool": getattr(ci, "tool", None),
                     "action": getattr(ci, "description", ""),
-                    "result": getattr(ci, "result", "") or "",
+                    # REQ-8 AC1 (T26): compressed node-record evidence instead of
+                    # the raw step output. The brain synthesis reads the bounded
+                    # memory record, never the full raw history.
+                    "result": self._der_node_record_evidence(ci) or "",
                     "success": True,
                 }
                 for ci in completed_items
@@ -7481,7 +8640,8 @@ Respond with a JSON object:
                 for _it in queue.items:
                     if _it.step_id == _fi:
                         _desc = _it.description or _fi
-                        _reason = (_it.result or "")[:300]
+                        # REQ-8 AC1 (T26): compressed node-record evidence, not raw.
+                        _reason = AgentKernel._der_node_record_evidence(_it)
                         break
                 _failed.append(f"- {_desc}" + (f": {_reason}" if _reason else ""))
             _failed_txt = "\n".join(_failed) or "(unknown step)"
@@ -7512,7 +8672,8 @@ Respond with a JSON object:
         try:
             _done_lines = []
             for _ci in completed_items:
-                _res = (getattr(_ci, "result", "") or "")[:300]
+                # REQ-8 AC1 (T26): compressed node-record evidence, not raw.
+                _res = AgentKernel._der_node_record_evidence(_ci)
                 _done_lines.append(
                     f"- {getattr(_ci, 'description', '') or _ci}"
                     + (f": {_res}" if _res else "")
@@ -7992,6 +9153,12 @@ Respond with a JSON object:
         Returns (step_result: str, step_success: bool).
         Faithful extraction of the inline execution block from _execute_plan_der.
         """
+        # REQ-7 AC1 (T25): a batched sub-loop child already carries its answer
+        # (pre-seeded by _der_dispatch_batch_group via dispatch_batch). Skip
+        # the per-child resolve + LLM call; verification/finalize still run
+        # below so each child still credits its own mediator (REQ-26 edge).
+        if getattr(item, "is_subloop", False) and getattr(item, "result", None):
+            return item.result, True
         step_result = ""
         step_success = True
         try:
@@ -8011,6 +9178,16 @@ Respond with a JSON object:
                         },
                         session_id=_session,
                         conversation_id=self.conversation_id,
+                    )
+                    # D1: ToolDecisionBox.resolve() calls self._router.generate()
+                    # directly (it shares this kernel's router instance), so its
+                    # cost must be credited here — it is the DOMINANT call site
+                    # for a real multi-step DER turn and was previously invisible
+                    # to the pill entirely.
+                    self._accrue_tokens(
+                        getattr(_decision, "rationale", "") or "",
+                        getattr(self._router, "last_usage", None),
+                        source="_der_run_step_execution:box.resolve",
                     )
                 except Exception as _box_err:
                     logger.warning(
@@ -8448,6 +9625,36 @@ Respond with a JSON object:
         return "UNVERIFIED" if len(_without_marker) >= 200 else "FAILED"
 
     # ── REQ-1 AC2/AC3/AC4: per-step edge scoring ────────────────────────────
+    @staticmethod
+    def _der_mediator_for(item: "QueueItem") -> tuple:
+        """REQ-23 (T37): resolve the MEDIATOR for a finalized step.
+
+        Returns (mediator, source):
+          - mediator: ``"<tool>:<args_hash>"`` — the resolved tool/action
+            identifier plus a stable hash of its arguments (AC1). The args
+            hash is the separator between "the same tool with materially
+            different arguments" (REQ-23 edge case).
+          - source:   ``"explicit"`` (tool chosen by the normal resolver /
+                      plan), ``"none"`` (a pure decision/synthesis node with
+                      no tool — recorded EXPLICITLY, never empty, per AC5).
+
+        The DER loop resolves tools through the plan/explorer path today, so
+        the source is always ``"explicit"`` or ``"none"``; the ``"predictor"``
+        / ``"fallback"`` sources are reserved for the T17 mediator-ranking
+        wiring, which must record WHICH chooser picked the tool or the
+        learning credits the wrong one (REQ-23 edge case).
+        """
+        tool = getattr(item, "tool", None) or ""
+        if not tool:
+            return "none", "none"
+        try:
+            _params = getattr(item, "params", None) or {}
+            _blob = json.dumps(_params, sort_keys=True, default=str)
+            _args_hash = hashlib.sha256(_blob.encode("utf-8")).hexdigest()[:12]
+        except Exception:
+            _args_hash = "unhashable"
+        return f"{tool}:{_args_hash}", "explicit"
+
     def _der_score_step_outcome(
         self,
         item: "QueueItem",
@@ -8459,15 +9666,25 @@ Respond with a JSON object:
         AVOID header.
 
         This is deliberately a thin wiring call, not a new scorer: the deltas
-        below are the SAME generic table already defined in
+        are the SAME generic table already defined in
         ``EdgeScorer._OUTCOME_DELTAS`` (scorer.py) — hit=+0.05, partial=+0.02,
-        miss=-0.08. That mechanism predates this phase and was never
-        structurally wrong; it was simply never invoked per DER step. The
-        edges scored are the outbound edges of this session's currently
-        active Mycelium nodes (``SessionRegistry.get_active`` — the same
-        source ``evidence.py._predicted_next`` already reads for the same
-        session), so no second notion of "the edge for this step" is
-        invented here.
+        miss=-0.08 — now applied EVIDENCE-WEIGHTED (REQ-26/T40): the first
+        observation on an edge moves it fully, later observations move it
+        less, so belief converges instead of oscillating.
+
+        REQ-26 AC1 (T40c): the scored edge is the (coordinate-region,
+        mediator) pair for THIS step, selected by the CALLER — not every
+        outbound edge of every active node. The REGION is the single active
+        Mycelium node whose coordinates are nearest the step's live Caducean
+        position Σ = (x, y, ξ, u) (the same state the chain row records):
+        a step's outcome updates the region it was IN, and only that region.
+        Scoring every active node would re-create the global fan-out the
+        amendment removes — a step cannot fail "in two regions at once".
+        The mediator is ``_der_mediator_for(item)`` (REQ-23/T37).
+        ``EdgeScorer.record_region_mediator_outcome`` finds-or-creates that
+        edge and updates ONLY it, so a tool that works in one region and
+        fails in another is representable (a single global score cannot
+        express that).
 
         REQ-1 AC2: VERIFIED  -> hit-scoring only (no crystallization change —
                    out of scope; no per-step crystallization exists today).
@@ -8514,23 +9731,51 @@ Respond with a JSON object:
         myc = getattr(self._memory_interface, "_mycelium", None) if self._memory_interface else None
         if myc is not None:
             try:
+                _mediator, _mediator_source = self._der_mediator_for(item)
+                if _mediator == "none":
+                    # REQ-23 AC5: a node with NO mediator records "none" —
+                    # there is no (region, mediator) edge to score. Pure
+                    # decision/synthesis nodes are not learning events.
+                    return
+                _mediator_tool = _mediator.split(":", 1)[0]
                 node_ids = list(myc._registry.get_active(session_id))
-            except Exception:
-                node_ids = []
-            edge_ids: List[str] = []
-            if node_ids:
+                # REQ-26 AC1: the step's REGION is the ONE active node whose
+                # coordinates are nearest its live Σ position — not every
+                # active node (that would be a fan-out in region clothing).
                 try:
-                    for _nid in node_ids:
-                        edge_ids.extend(
-                            e.edge_id for e in myc._store.get_outbound_edges(_nid)
-                        )
-                except Exception as _edge_exc:
-                    logger.debug("[DER] edge lookup for scoring failed: %s", _edge_exc)
-                    edge_ids = []
-            if edge_ids:
-                from backend.memory.mycelium.scorer import EdgeScorer
+                    _cad = self._der_live_cad_state(session_id)
+                    _cad_vec = [
+                        _cad.get("x", 0.0), _cad.get("y", 0.0),
+                        _cad.get("xi", 0.0), _cad.get("u", 0.0),
+                    ]
 
-                EdgeScorer(myc._store).record_outcome(edge_ids, outcome)
+                    def _dist(nid: str) -> float:
+                        _n = myc._store.get_node_by_id(nid)
+                        if _n is None or not _n.coordinates:
+                            return float("inf")
+                        _c = list(_n.coordinates)[: len(_cad_vec)]
+                        _v = _cad_vec[: len(_c)]
+                        return sum((a - b) ** 2 for a, b in zip(_c, _v)) ** 0.5
+
+                    _region_node = min(node_ids, key=_dist) if node_ids else None
+                except Exception:
+                    _region_node = node_ids[0] if node_ids else None
+            except Exception:
+                _region_node = None
+                _mediator_tool = ""
+            if _region_node and _mediator_tool:
+                try:
+                    from backend.memory.mycelium.scorer import EdgeScorer
+
+                    # REQ-26 AC1/T40c: the (coordinate-region, mediator)
+                    # edge for THIS step — never the global fan-out.
+                    EdgeScorer(myc._store).record_region_mediator_outcome(
+                        region_node_id=_region_node,
+                        mediator=_mediator_tool,
+                        outcome=outcome,
+                    )
+                except Exception as _edge_exc:
+                    logger.debug("[DER] region-scoped edge scoring failed: %s", _edge_exc)
 
         if verified_label == "FAILED":
             try:
@@ -8548,7 +9793,47 @@ Respond with a JSON object:
                     "[DER] FAILED-step AVOID episode write failed: %s", _ep_exc
                 )
 
+    def _der_topic_domain(self, text: str) -> str:
+        """REQ-18 AC2/AC3 (T19): resolve free text to a registry topic_domain.
+
+        Thin wrapper over the mycelium registry resolver (extractor.py
+        ``resolve_topic_domain``) so the kernel never touches keyword patterns
+        directly and unknown text resolves to the registry's ``general`` bucket
+        with a logged mismatch — never invented free text. Lazy import keeps
+        the mycelium extractor off the module import path (heavy-import rule).
+        """
+        try:
+            from backend.memory.mycelium.extractor import resolve_topic_domain
+
+            return resolve_topic_domain(text or "")
+        except Exception as _td_exc:  # noqa: BLE001 — never block a step
+            logger.debug(
+                "[DER] topic_domain resolve failed (%s) — falling back to "
+                "'general'",
+                _td_exc,
+            )
+            return "general"
+
+    def _der_execution_domain(self, from_voice: bool = False) -> str:
+        """REQ-18 AC2 (T19): resolve the node's execution_domain axis.
+
+        Registry-backed: one of ``voice | der | research`` from the ACTIVE
+        winding. ``voice`` when the turn entered via voice; ``research`` when
+        the task class is research-shaped (research|explore|investigate, the
+        same set der_loop._decide_mode uses); otherwise ``der``. This is the
+        request-domain axis — how the node RUNS, distinct from ``topic_domain``
+        (what it is ABOUT). Unknown windings resolve to the session default
+        (``der``) — never invented free text (REQ-18 AC3).
+        """
+        if from_voice:
+            return "voice"
+        _tc = str(getattr(self, "_der_task_class", "") or "").lower()
+        if _tc in ("research", "explore", "investigate"):
+            return "research"
+        return "der"
+
     # ── Phase 4: shared per-step finalize (extracted from _execute_plan_der)
+
     def _der_finalize_step(
         self,
         item: "QueueItem",
@@ -8765,8 +10050,9 @@ Respond with a JSON object:
         except Exception as _wm2_exc:
             loud_error(_wm2_exc, "append_working_history")
 
-        # Phase 0 fix (Gap 5): populate step result on the QueueItem so the
-        # TrailingDirector's gap analysis reads real output instead of "no result".
+        # Phase 0 fix (Gap 5): populate step result on the QueueItem so
+        # downstream consumers (reviewer, trace) read real output instead of
+        # "no result".
         item.result = step_result
 
         # DER Phase 0 (D0.1): verify the result. A stub pattern with no real output
@@ -8901,7 +10187,25 @@ Respond with a JSON object:
                 try:
                     _cad_split = self._der_live_cad_state(_session)
                     _wu = getattr(self, "_der_work_units", 0)
-                    _children = self._split_step(item, "verify_failed", _cad_split, _wu)
+                    # REQ-4 AC1 (T16): the continuous verified fraction is a
+                    # GRADED steering input at the split decision — mid-band
+                    # selects a bounded probe (width 1) instead of a full-width
+                    # re-attempt. Never crash the split on fraction failure.
+                    try:
+                        _vf_split = self._verified_fraction(
+                            getattr(item, "expected_output", None),
+                            str(step_result or ""),
+                        )
+                    except Exception:
+                        _vf_split = 0.0
+                    _children = self._split_step(
+                        item,
+                        "verify_failed",
+                        _cad_split,
+                        _wu,
+                        step_result=step_result,
+                        verified_fraction=_vf_split,
+                    )
                     # REQ-3: debit measured tokens, not a flat child count.
                     # _measured must be bound for the debit even when no child was
                     # created (empty split) — a NameError here was silently swallowed
@@ -8909,15 +10213,12 @@ Respond with a JSON object:
                     # (NORTHSTAR defect-shape #1).
                     _measured = 0
                     if _children:
-                        # T6.8: route subloop children through the batcher.
-                        for _c in _children:
-                            _batch = get_batcher().offer(_c)
-                            if _batch is not None:
-                                # BatchGroup exposes its pending children via
-                                # `.children` — it is NOT iterable itself
-                                # ('BatchGroup' object is not iterable regression).
-                                for _batch_item in _batch.children:
-                                    queue.add_item(_batch_item)
+                        # REQ-7 AC1/AC2/AC3 (T25): one batched call per ready
+                        # group (dispatch_batch), results routed per node;
+                        # parse-failure children execute individually (AC2).
+                        self._der_route_subloop_children(
+                            _children, queue, _session, _turn_id
+                        )
                         # REQ-3: debit measured tokens, not a flat child count.
                         _measured = max(200, len(step_result) // 4)
                         # REQ-14 (AC1/AC5, T23): a sub-loop split REVISES the
@@ -9210,6 +10511,12 @@ Respond with a JSON object:
                 outcome="success" if step_success else "failure",
                 eml_after=_eml_score,
                 recommendation=_rec,
+                # REQ-21 (T22): carry the two ontology axes on the trajectory
+                # row so per-domain physics aggregation keys on how the step
+                # RAN (execution_domain) and what it was ABOUT (topic_domain).
+                execution_domain=getattr(item, "execution_domain", None)
+                or ("voice" if from_voice else "der"),
+                topic_domain=getattr(item, "topic_domain", None) or "general",
             )
 
             # v2: handle TOPO_VIOLATION (rec=3) by recording the anomaly
@@ -9299,6 +10606,126 @@ Respond with a JSON object:
                 _state_snapshot.get("xi", 0.0),
                 _state_snapshot.get("u", 0.0),
             )
+            # REQ-23 (T37): the causal triple — resolve the MEDIATOR once and
+            # bind it to a VALUE (the write runs later; `item` must not be
+            # read from another thread after the loop moves on). AC1: written
+            # at the same finalize point as the outcome; AC5: "none" is the
+            # explicit value for mediator-less (decision/synthesis) nodes,
+            # never empty — so they do not rank as failed actions.
+            _mediator, _mediator_source = self._der_mediator_for(item)
+            # REQ-3 AC2 (T37 completion): stamp the node's memory record at
+            # finalize — outcome, continuous fraction, mediator, and the
+            # landing coordinate — so the record is complete for the causal
+            # vocabulary (Treatment -> Mediator -> Outcome) and for the
+            # REQ-26 posterior reader. Off the critical path; never fails the
+            # step.
+            try:
+                _rec = getattr(item, "node_record", None) or getattr(
+                    item, "footprint", None
+                )
+                if _rec is not None:
+                    _rec.outcome = _verified
+                    # REQ-18 (T19): stamp the two domain axes at the same
+                    # finalize point as the outcome — topic re-resolved from
+                    # the FULL step result text (richer signal than the seed
+                    # description; registry-backed, general + logged on miss),
+                    # execution from the active winding. AC4: these ride the
+                    # node record AND the chain row.
+                    _rec.topic_domain = self._der_topic_domain(
+                        f"{item.description or ''} {step_result or ''}"
+                    ) or "general"
+                    _rec.execution_domain = (
+                        self._der_execution_domain(from_voice) or "der"
+                    )
+                    # REQ-4: continuous verified fraction, recomputed at the
+                    # finalize point (the verifier's decisive fraction is not
+                    # otherwise surfaced here). Fallback: the label's canonical
+                    # continuous value so the record is never NaN/0.0 for a
+                    # VERIFIED step.
+                    try:
+                        _vf = self._verified_fraction(
+                            item.expected_output, str(step_result or "")
+                        )
+                    except Exception:
+                        _vf = {"VERIFIED": 1.0, "UNVERIFIED": 0.5, "FAILED": 0.0}.get(
+                            _verified, 0.0
+                        )
+                    _rec.verified_fraction = _vf
+                    _rec.mediator = _mediator
+                    _rec.mediator_source = _mediator_source
+                    _rec.coords_to = _coords_to
+                    _rec.edge_ids = _rec.edge_ids or []
+                    # ── REQ-5 AC2/AC4 (T17): record the COUPLING DECISION at
+                    # commit. The branches surfaced to this step (all of them,
+                    # capped — AC1) plus the one it chose are stamped on the
+                    # node record, and the edge to the chosen branch is
+                    # written/strengthened with the decision as provenance.
+                    # Off the critical path; never raises.
+                    try:
+                        _cands = getattr(item, "_coupled_candidates", None) or []
+                        if _cands:
+                            _chosen = self._der_choose_coupling_branch(item, _cands)
+                            self._der_record_coupling_decision(
+                                item, _cands, chosen_node_id=_chosen, record=_rec
+                            )
+                    except Exception as _cc_exc:
+                        logger.debug(
+                            "[DER] coupling-decision record failed: %s", _cc_exc
+                        )
+                    # ── REQ-19 (T20): persist the DER structural links into
+                    # the SHARED link store at the same finalize point — the
+                    # node's memory record AND its edges land together (DAG =
+                    # memory = DAG). part_of (sub-loop containment, child ->
+                    # parent), depends_on (plan dependency), relevant_to
+                    # (branches actually surfaced to a decision — provenance,
+                    # not affinity), failed_like (same failure class, so AVOID
+                    # recall is a graph walk). Off the critical path; the
+                    # writer itself never raises.
+                    try:
+                        if self._der_links is not None:
+                            self._der_links.write_node_links(
+                                item,
+                                _rec,
+                                step_success=step_success,
+                                step_result=str(step_result or ""),
+                                execution_domain=_rec.execution_domain,
+                                session_id=_session or "",
+                            )
+                    except Exception as _dl_exc:
+                        logger.debug(
+                            "[DER] structural link write failed: %s", _dl_exc
+                        )
+            except Exception as _rec_exc:
+                logger.debug(
+                    "[DER] node_record finalize stamp failed: %s", _rec_exc
+                )
+            # ── REQ-4 AC4 (T16b): FOLD-BACK — a sub-loop child folds back as
+            # a compressed observation that CHANGES the parent's state: the
+            # parent's node_record gains the child's verified outcome (REQ-3
+            # AC1: the parent's next decision reads node records that now
+            # include what the children resolved). Bounded (DER_FOLD_BACK_MAX);
+            # off the critical path; never raises.
+            if getattr(item, "is_subloop", False):
+                try:
+                    _parent_step_id = getattr(
+                        getattr(item, "node_record", None), "parent_step_id", ""
+                    ) or ""
+                    if _parent_step_id:
+                        for _qi in getattr(queue, "items", None) or []:
+                            if getattr(_qi, "step_id", "") == _parent_step_id:
+                                _prec = getattr(_qi, "node_record", None)
+                                if _prec is not None:
+                                    _fbs = list(
+                                        getattr(_prec, "folded_back", None) or []
+                                    )
+                                    _fbs.append(
+                                        f"[{item.step_id}] {_verified}: "
+                                        f"{item.description[:160]}"
+                                    )
+                                    _prec.folded_back = _fbs[-DER_FOLD_BACK_MAX:]
+                                break
+                except Exception as _fb_exc:  # noqa: BLE001
+                    logger.debug("[DER] fold-back write failed: %s", _fb_exc)
             # OFF THE CRITICAL PATH — the THIRD inline durability write found
             # on this path (after tool_bridge._record_tool_event and
             # _store_document_data). Per the note left on the second one, the
@@ -9323,6 +10750,17 @@ Respond with a JSON object:
                 insight=item.description[:120],
                 file_path=item.params.get("path", "") if item.params else "",
                 landmark_id="",
+                # REQ-23 AC2: mediator + source ride the same chain row as the
+                # Σ coords, so (Treatment -> Mediator -> Outcome) is queryable
+                # together with the coordinates that were in force.
+                mediator=_mediator,
+                mediator_source=_mediator_source,
+                # REQ-18 AC4 (T19): node type + both domain axes ride the
+                # chain row so recall (REQ-20) and aggregation (REQ-21) can
+                # key on them without a join back to the in-memory record.
+                node_type=getattr(_rec, "node_type", "step") or "step",
+                topic_domain=getattr(_rec, "topic_domain", "general") or "general",
+                execution_domain=getattr(_rec, "execution_domain", "der") or "der",
             )
         except Exception as _cad_exc:
             loud_error(_cad_exc, "caducean_trajectory_immortus")
@@ -9539,36 +10977,17 @@ Respond with a JSON object:
             except Exception:
                 pass
 
-        # ── TRAILING DIRECTOR: analyze gaps every TRAILING_GAP_MIN steps ─
-        # Domain 19: phase 4 (crystallization) forces gap analysis;
-        # phase 3 (strict) suppresses adding new gap items.
-        try:
-            _force_gap = _phase == 3
-            _suppress_new = _phase == 2
-            # REQ-5 AC1: a VERIFIED step that is measurably SHALLOW (top-level
-            # depth_layer + thin token investment for its task class) must not
-            # pass silently just because it landed outside the TRAILING_GAP_MIN
-            # cadence — "verified but inadequate" is exactly the gap this check
-            # exists to catch. Excluded task classes (AC3) never trigger this;
-            # see der_constants.DEPTH_EXCLUDED_TASK_CLASSES.
-            _shallow_verified = _verified == "VERIFIED" and is_shallow_verified(
-                getattr(item, "depth_layer", 1),
-                len(step_result or "") // 4,
-                getattr(self, "_der_task_class", "full"),
-            )
-            if self._trailing_director is not None and (
-                _force_gap
-                or _shallow_verified
-                or len(completed_items) % TRAILING_GAP_MIN == 0
-            ):
-                gap_items = self._trailing_director.analyze_gaps(
-                    item, plan, context_package, is_mature
-                )
-                if not _suppress_new:
-                    for gap_item in gap_items:
-                        queue.add_item(gap_item)
-        except Exception as _gap_exc:
-            loud_error(_gap_exc, "trailing_director_gaps")
+        # ── TRAILING DIRECTOR gap-fill REMOVED (2026-08-06) ──────────────
+        # The gap-fill ran SEQUENTIALLY after the user's task: it was invoked
+        # synchronously in _der_finalize_step and its gap items were queued
+        # into the SAME turn, re-executing completed steps' work after the plan
+        # finished (live turn 95cbe698-342: 5 planned steps then gap-s2-*
+        # extended the turn; turn fc2a1a48-ddf looped unbounded on gap-on-gap).
+        # It never ran in parallel with the task, so it only added latency and
+        # unsolicited steps. Decision: remove the gap-fill entirely.
+        # _trailing_director stays None (init no longer constructs it); the
+        # REQ-5 AC1 shallow-verified check is intentionally dropped with it
+        # (it existed only to feed gap analysis).
 
         # NOTE: the verify_failed -> split-into-sub-loops step (Phase 2 D2.1)
         # used to live here. It computed `_children`, which the REQ-8
@@ -9579,6 +10998,46 @@ Respond with a JSON object:
         # before its first reader. See the bugfix note there.
 
         return _tokens_used
+
+    def _der_bound_step_context(self, item: "QueueItem") -> None:
+        """REQ-3 T8b AC4/AC5/AC6: bound the step's working context (forgetting).
+
+        Extracted from _der_finalize_step's step-input section so the contract
+        test drives the REAL code. Never raises — the caller's step must not
+        fail on a forgetting error.
+
+        AC4: content beyond the OQ-6 derived bound is dropped from the step's
+        working context (coordinate_signal) — the node record is the re-read
+        point.
+        AC5: the per-step prompt token count is recorded (measured reduction);
+        the bound is DERIVED from the REQ-1 resolved window, never a literal.
+        AC6: when the node's chain write FAILED (durability drop counter > 0),
+        the working context is the ONLY copy — never bounded/dropped.
+        """
+        try:
+            _window = self.resolve_context_window() or 8192
+            # OQ-6: 15% of the resolved window, derived — never a hardcoded
+            # literal (a literal re-creates the 8192 collapse REQ-1 fixes).
+            _step_budget = max(512, int(_window * 0.15))
+            _sig = getattr(item, "coordinate_signal", "") or ""
+            _step_tokens = max(1, len(_sig) // 4)  # chars→tokens ≈ 4:1
+            # AC6: never forget content whose write failed. BUGFIX 2026-08-06:
+            # the old guard `_der_chain_drops == 0 or not
+            # step_id.startswith("immortus")` made AC6 vacuously true — the
+            # `or` second clause was True for EVERY non-immortus step, so a
+            # regular DER step whose chain write FAILED (drops>0) still had
+            # its only copy dropped. Contract
+            # test_der_t8b_forgetting_contract.py caught it. The ONLY safe
+            # condition is: no drops.
+            _write_ok = getattr(self, "_der_chain_drops", 0) == 0
+            if _write_ok and len(_sig) > _step_budget:
+                # AC4: drop the overflowing tail; the NODE RECORD (compressed)
+                # is the re-read point.
+                item.coordinate_signal = _sig[:_step_budget]
+            if hasattr(self, "_der_step_prompt_tokens"):
+                self._der_step_prompt_tokens += _step_tokens
+        except Exception as _forget_exc:
+            loud_error(_forget_exc, "step_forgetting_bound")
 
     # ── Phase 3: explorer methods ──────────────────────────────────────
 
@@ -9845,9 +11304,14 @@ If any tools failed, address those issues in your response.
                 )
 
             if reasoning_model:
-                # Call the loaded local/LFM model for synthesis
-                response = self._strip_thinking(
-                    reasoning_model.generate(synthesis_prompt)
+                # Call the loaded local/LFM model for synthesis. In-process
+                # local models never report a usage block (no HTTP response to
+                # parse), so this is an ESTIMATE-only accrual (D1 item 4/5) —
+                # there is no real number available to prefer here.
+                _raw_reply = reasoning_model.generate(synthesis_prompt)
+                response = self._strip_thinking(_raw_reply)
+                self._accrue_tokens(
+                    _raw_reply, None, source="_synthesize_response:local"
                 )
                 logger.info(
                     "[AgentKernel] Brain synthesized response with tool results context"
@@ -9858,6 +11322,22 @@ If any tools failed, address those issues in your response.
             # API providers (Cerebras, OpenAI, …) are used for the brain answer,
             # not just local/Ollama models. Legacy LM Studio / Ollama branches
             # below remain as fallbacks for local-model configurations.
+            #
+            # REQ-8 AC3 (T26): when the ROUTER holds the primary provider (its
+            # health check reports ok), a router failure degrades DIRECTLY to the
+            # compressed-summary fallback — we do NOT replay the giant synthesis
+            # prompt through the LM Studio / Ollama chain (the 429-stall
+            # behaviour REQ-8 fixes). LM Studio / Ollama are only tried when the
+            # router has NO bound provider (local-only configurations), where
+            # they ARE the primary path.
+            _router_primary = False
+            try:
+                if self._router is not None:
+                    _router_primary = bool(
+                        self._router.health_check_provider("reasoning").get("ok")
+                    )
+            except Exception:
+                _router_primary = False
             try:
                 _syn_text, _syn_think, _syn_tools = self._router.generate(
                     "reasoning",
@@ -9865,15 +11345,36 @@ If any tools failed, address those issues in your response.
                     max_tokens=4096,
                     temperature=0.6,
                 )
+                self._accrue_tokens(
+                    _syn_text, getattr(self._router, "last_usage", None),
+                    source="_synthesize_response:router",
+                )
                 if _syn_text:
                     logger.info(
                         "[AgentKernel] Brain synthesized response via InferenceRouter"
                     )
                     return self._strip_thinking(_syn_text)
+                if _router_primary:
+                    # Empty response from the primary provider counts as failure
+                    # (the health check reports ok even when the endpoint returns
+                    # nothing — reachability is only proven at execution time).
+                    logger.warning(
+                        "[AgentKernel] router (primary) returned empty synthesis — "
+                        "degrading to compressed-summary fallback (REQ-8 AC3)"
+                    )
+                    return ""
             except Exception as _syn_err:
                 logger.warning(
                     f"[AgentKernel] router synthesis failed: {_syn_err}"
                 )
+                if _router_primary:
+                    # REQ-8 AC3 (T26): primary provider failed — degrade to the
+                    # deterministic compressed summary, no giant-prompt replay.
+                    logger.warning(
+                        "[AgentKernel] router is the primary provider and failed — "
+                        "degrading to compressed-summary fallback (REQ-8 AC3)"
+                    )
+                    return ""
 
             # Try LM Studio synthesis
             _sel_synth = self._selected_reasoning_model or ""
@@ -10349,6 +11850,16 @@ If any tools failed, address those issues in your response.
             # Keep legacy field assignments in sync for any code that reads them.
             if role == "reasoning":
                 self._selected_reasoning_model = instance_id
+                # REQ-1 AC2: keep the provider field in sync with the binding so
+                # context-window resolution / scheduler labels agree with actual
+                # routing — the resolver now reads the router first, but legacy
+                # readers still rely on this field.
+                try:
+                    _bound = _r.resolve("reasoning")
+                    if _bound is not None:
+                        self._model_provider = self._provider_string_for_instance(_bound)
+                except Exception:
+                    pass
             elif role == "tool_execution":
                 self._selected_tool_execution_model = instance_id
             return True

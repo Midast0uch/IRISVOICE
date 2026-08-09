@@ -34,6 +34,44 @@ from typing import Dict, Any, Optional, List, Union, Iterator, Callable
 from backend.utils.observability import get_turn_id, loud_error
 
 # ---------------------------------------------------------------------------
+# REQ-8 AC2 (T26): spoken-text normalization for the streaming TTS path.
+#
+# The sentence-flush point feeds the TTS engine directly. Raw model output may
+# contain markdown/code that must not be read aloud. This helper produces the
+# companion-style spoken form (REQ-8 AC2 edge case: truncated spoken text while
+# the FULL text remains in the chat display — the display path is untouched).
+# It is intentionally permissive: any failure returns the ORIGINAL text so a
+# flush is never dropped silently.
+# ---------------------------------------------------------------------------
+
+
+def _normalize_spoken_sentence(text: str) -> str:
+    """Companion-style normalization for one flushed TTS sentence.
+
+    Strips code fences/inline code/markdown headers/bullets and runs the speech
+    normalizer (URLs, paths, symbols -> spoken form). Returns the original text
+    unchanged if normalization fails, so the TTS queue never goes silent.
+    """
+    if not text:
+        return text
+    try:
+        import re as _re
+
+        _cleaned = _re.sub(r"```[\s\S]*?```", "", text)
+        _cleaned = _re.sub(r"`[^`]+`", "", _cleaned)
+        _cleaned = _re.sub(r"^#{1,6}\s+", "", _cleaned, flags=_re.MULTILINE)
+        _cleaned = _re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", _cleaned)
+        _cleaned = _re.sub(r"^\s*[-*•]\s+", "", _cleaned, flags=_re.MULTILINE)
+        from backend.voice.tts_normalizer import normalize_for_speech
+
+        _spoken = normalize_for_speech(_cleaned)
+        return _spoken if _spoken.strip() else text
+    except Exception:
+        # Never drop a flush — degrade to the raw sentence.
+        return text
+
+
+# ---------------------------------------------------------------------------
 # Port config accessor â€” read from env-var-aware config, cached after first
 # call so we don't re-load the JSON file on every reference.
 # ---------------------------------------------------------------------------
@@ -2680,6 +2718,12 @@ class IRISGateway:
                 _log_timing("llm_start")
                 _first_chunk_seen = False
                 _first_sentence_seen = False
+                # D2: did ANY spoken text reach the TTS queue this turn?
+                # Set at every real sentence_queue.put below (not the sentinel).
+                # Without this the DER path could render a card and say nothing
+                # at all — see the guaranteed-utterance block at the end of
+                # this function for the full explanation.
+                _spoken_queued = False
 
                 def chunk_callback(chunk: str):
                     sentence_buf.append(chunk)
@@ -2708,6 +2752,7 @@ class IRISGateway:
                     nonlocal _sentence_buf_words
                     nonlocal _first_chunk_seen
                     nonlocal _first_sentence_seen
+                    nonlocal _spoken_queued
                     if not _first_chunk_seen:
                         _first_chunk_seen = True
                         _log_timing("first_chunk")
@@ -2721,7 +2766,10 @@ class IRISGateway:
                             _log_timing("first_sentence")
                         # Flush on hard stops (. ! ?) or soft pauses (; , :) or 30+ chars at word boundary
                         complete = text[: m.end()]
-                        sentence_queue.put(complete)
+                        # REQ-8 AC2 (T26): spoken companion-style form into TTS;
+                        # the display path above still streams the raw chunk.
+                        sentence_queue.put(_normalize_spoken_sentence(complete))
+                        _spoken_queued = True
                         remainder = text[m.end() :]
                         sentence_buf[:] = [remainder]
                         _sentence_buf_words = remainder.count(" ") + (
@@ -2732,7 +2780,8 @@ class IRISGateway:
                             _first_sentence_seen = True
                             _log_timing("first_sentence")
                         # Flush oversized sentence to avoid infinite buffering
-                        sentence_queue.put(text)
+                        sentence_queue.put(_normalize_spoken_sentence(text))
+                        _spoken_queued = True
                         sentence_buf.clear()
                         _sentence_buf_words = 0
 
@@ -2780,10 +2829,50 @@ class IRISGateway:
                         except Exception:
                             _speak = None
                         if _speak is not None:
-                            sentence_queue.put(_speak)
+                            # REQ-8 AC2 (T26): spoken companion-style form.
+                            sentence_queue.put(_normalize_spoken_sentence(_speak))
+                            _spoken_queued = True
                         elif not _final.lstrip().startswith("{"):
-                            sentence_queue.put(_final)
+                            sentence_queue.put(_normalize_spoken_sentence(_final))
+                            _spoken_queued = True
                     spoken = agent_kernel.prepare_spoken_text(resp, enriched)
+
+                    # ── D2: GUARANTEED UTTERANCE ────────────────────────────
+                    # A rendered answer must never be silently unspoken.
+                    #
+                    # The DER path calls chunk_callback(_der_response) with the
+                    # RAW response (agent_kernel.py ~:5081, before
+                    # _process_structured_response runs), so for a structured
+                    # reply chunk_callback sees text starting with '{' and
+                    # deliberately returns early without queuing — on the
+                    # promise that the final flush above will parse it and
+                    # speak the `speak` field.
+                    #
+                    # That promise has no fallback. If parse_structured_response
+                    # returns no `speak`, or raises (the except sets _speak =
+                    # None), then `_speak is not None` is False AND the elif is
+                    # rejected for starting with '{' — so NOTHING is queued and
+                    # the turn is silent. Observed live in the T36 smoke test:
+                    # der_response_len=2601, "chunk_callback invoked OK", card
+                    # rendered with data, and zero SPEAK / synthesize_stream /
+                    # PLAYBACK entries for the final answer.
+                    #
+                    # `spoken` above is the correctly normalised companion-style
+                    # form and was already being computed here — it was simply
+                    # returned and never queued. Use it as the backstop.
+                    #
+                    # Gated on _spoken_queued (set at every real put, including
+                    # the streaming ones) so a normal streaming reply that
+                    # already spoke its sentences is NOT repeated in full.
+                    if not _spoken_queued and spoken and spoken.strip():
+                        sentence_queue.put(_normalize_spoken_sentence(spoken))
+                        _spoken_queued = True
+                        self._logger.warning(
+                            "[DER-TTS-FIX] nothing reached TTS during the turn "
+                            "(resp_len=%d) — speaking the prepared text as a "
+                            "backstop",
+                            len(resp or ""),
+                        )
                     return resp, spoken
                 finally:
                     # ALWAYS put sentinel — even if agent throws, the TTS thread
@@ -6888,6 +6977,51 @@ class IRISGateway:
                     engine.model_manager.reset_session(session_id)
             except Exception:
                 pass
+
+            # ── REQ-16 (T32): real session-end wiring for the outer loop. ──
+            # cleanup_session is the production session boundary (WS disconnect
+            # / session teardown). This is where the outer loop's observations
+            # become LIVE: archive the session (record_session_exit via
+            # ConversationMemory.archive_on_session_end — memory.py:342 path,
+            # previously with ZERO production callers) and then fire
+            # run_outer_loop — previously ZERO production call sites (REQ-16
+            # Verified). Strictly off the critical path; never raises.
+            try:
+                from backend.agent import get_active_kernel
+
+                _kernel = get_active_kernel(session_id)
+                _mem = getattr(_kernel, "_conversation_memory", None)
+                if _mem is not None and (
+                    getattr(_mem, "messages", None)
+                    or getattr(_mem, "task_records", None)
+                ):
+                    # AC2: record_session_exit from a REAL session end.
+                    _archived = _mem.archive_on_session_end()
+                    self._logger.info(
+                        f"[Session: {session_id}] archive_on_session_end="
+                        f"{_archived} (REQ-16 AC2)"
+                    )
+            except Exception as _arch_exc:
+                self._logger.debug(
+                    f"[Session: {session_id}] session-end archive failed: "
+                    f"{_arch_exc}"
+                )
+
+            try:
+                # AC1: the outer loop fires at a real session boundary.
+                from backend.agent.outer_loop import run_outer_loop
+
+                _ol = run_outer_loop(session_id)
+                if _ol:
+                    self._logger.info(
+                        f"[Session: {session_id}] outer loop ran: "
+                        f"applied={_ol.get('applied')} "
+                        f"key={_ol.get('key')} value={_ol.get('value')}"
+                    )
+            except Exception as _ol_exc:
+                self._logger.debug(
+                    f"[Session: {session_id}] outer loop skipped: {_ol_exc}"
+                )
 
             self._logger.info(f"[Session: {session_id}] Session cleanup completed")
 

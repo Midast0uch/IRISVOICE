@@ -42,6 +42,11 @@ _STEALTH_USER_AGENTS = (
 )
 _USER_AGENT = _STEALTH_USER_AGENTS[0]  # backward compat
 _STEALTH_INDEX = 0
+# NOTE (D3, T36 live smoke 2026-08-09): not currently wired to a live crawl4ai
+# 0.8.6 call — CrawlerRunConfig has no per-request `headers` param in this
+# version (extra headers are BrowserConfig-level, set once at launch). Kept
+# for a future BrowserConfig-level stealth pass; do not pass this to
+# CrawlerRunConfig(...) — it raises TypeError (see the 403-retry site below).
 _STEALTH_EXTRA_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -119,6 +124,11 @@ class PageData:
     html: Optional[str]      # Fallback raw HTML if markdown empty
     metadata: dict           # og tags, dates, authors, etc.
     error: Optional[str] = None
+    # T1 (in-app-browser-surface): raw captured-HTML byte size, recorded for
+    # EVERY page regardless of markdown presence. The replay store (T5) must
+    # retain the raw HTML the agent reasoned over; this is the measured basis
+    # for the REQ-1 AC5 retention bound and the srcdoc-vs-HTTP transport choice.
+    html_bytes: Optional[int] = None
 
 
 @dataclass
@@ -261,6 +271,7 @@ class CrawlerEngine:
             )
 
             t0 = time.monotonic()
+            gen_exc: Optional[Exception] = None
             try:
                 result = None
                 status = None
@@ -279,11 +290,22 @@ class CrawlerEngine:
                             url, old_ua[:60], self._current_ua[:60],
                         )
                         await asyncio.sleep(2.0)
+                        # D3 (T36 live smoke, 2026-08-09): this used to pass
+                        # headers=_STEALTH_EXTRA_HEADERS here, but crawl4ai 0.8.6's
+                        # CrawlerRunConfig has NO `headers` parameter (verified via
+                        # inspect.signature — extra headers are a BrowserConfig-level
+                        # concept in this version, set once at browser launch, not
+                        # per-run). Every 403 retry raised
+                        # "CrawlerRunConfig.__init__() got an unexpected keyword
+                        # argument 'headers'" immediately, so the retry NEVER
+                        # actually re-navigated — it always fell straight to the
+                        # except-generation-failed branch below and the T13 retry
+                        # was a no-op. Dropped the invalid kwarg so the retry
+                        # attempt (new UA, fresh arun()) actually runs.
                         request_config = CrawlerRunConfig(
                             markdown_generator=md_generator,
                             page_timeout=_TIMEOUT_MS,
                             user_agent=self._current_ua,
-                            headers=_STEALTH_EXTRA_HEADERS,
                         )
                         result = await self._crawler.arun(url=url, config=request_config)
                         status = getattr(result, "status_code", None)
@@ -308,40 +330,29 @@ class CrawlerEngine:
                         url, exc,
                     )
                     status = None
+                    gen_exc = exc
 
                 body = md or ""
+                _page_error: Optional[str] = None
                 if not body:
-                    # Plain-HTTP fallback: fetch raw HTML and strip tags.
-                    # Handles JS-light pages crawl4ai's generator chokes on.
-                    try:
-                        import httpx as _httpx
-                        import re as _re
-                        async with _httpx.AsyncClient(
-                            follow_redirects=True, timeout=30.0
-                        ) as _hc:
-                            _resp = await _hc.get(
-                                url, headers={"User-Agent": self._current_ua}
-                            )
-                        status = _resp.status_code
-                        _html = _resp.text
-                        _stripped = _re.sub(
-                            r"<script[\s\S]*?</script>|<style[\s\S]*?</style>",
-                            " ", _html, flags=_re.IGNORECASE,
-                        )
-                        _stripped = _re.sub(r"<[^>]+>", " ", _stripped)
-                        body = _re.sub(r"\s+", " ", _stripped).strip()
-                        if body:
-                            md = body
-                            logger.info(
-                                "[CrawlerEngine] plain-HTTP fallback ok url=%s chars=%d",
-                                url, len(body),
-                            )
-                    except Exception as exc2:
-                        logger.warning(
-                            "[CrawlerEngine] plain-HTTP fallback failed for %s: %s",
-                            url, exc2,
-                        )
-                        body = ""
+                    # crawl4ai failed or produced no markdown for this URL
+                    # (generation crash on huge / separator-less / JS-heavy
+                    # pages — the historical "Separator is not found, and chunk
+                    # exceed the limit" family). Record the failure; the runner
+                    # re-fetches failed URLs over plain HTTP with the full
+                    # contract (HAR evidence + metadata), so DER still gets
+                    # content and the citation pipeline stays fed. The original
+                    # exception is preserved for diagnostics.
+                    # The original exception message is preserved verbatim as
+                    # the page error (contract: page.error == str(exception)).
+                    _page_error = (
+                        str(gen_exc) if gen_exc is not None
+                        else "no usable markdown from crawl4ai"
+                    )
+                    logger.warning(
+                        "[CrawlerEngine] no usable markdown for %s (status=%s): %s",
+                        url, status, _page_error,
+                    )
 
                 har_entries.append({
                     "url": url, "method": "GET",
@@ -350,16 +361,40 @@ class CrawlerEngine:
                     "duration_ms": int((time.monotonic() - t0) * 1000),
                     "content_length": len(body),
                     "body_sha256": hashlib.sha256(body.encode("utf-8", "replace")).hexdigest(),
+                    "error": _page_error,
                 })
                 metadata = (result.metadata if result is not None else {}) or {}
                 title = metadata.get("title", "") or ""
+                # T1: the raw HTML byte size is recorded for EVERY page. The
+                # replay store (T5) must retain the raw HTML the agent reasoned
+                # over, so we measure it even when markdown succeeded (where
+                # `html` itself is still discarded to keep payloads small).
+                _raw_html = getattr(result, "html", None) or None
                 pages.append(PageData(
                     url=url,
                     title=title,
                     markdown=md,
-                    html=result.html if not md else None,
+                    html=result.html if (result is not None and not md) else None,
                     metadata=metadata,
+                    error=_page_error,
+                    html_bytes=len(_raw_html) if isinstance(_raw_html, str) else 0,
                 ))
+                # T5 (REQ-1 AC1/AC2): persist the raw captured HTML keyed by
+                # job_id+page_number for the browser panel replay. OFF the hot
+                # path: save() is best-effort, never raises, and a storage
+                # failure never fails the fetch (REQ-1 AC5).
+                if isinstance(_raw_html, str) and _raw_html:
+                    try:
+                        from .capture_store import get_capture_store
+
+                        get_capture_store().save(
+                            job_id=job_id,
+                            page_number=i + 1,
+                            url=url,
+                            html=_raw_html,
+                        )
+                    except Exception:  # noqa: BLE001 — capture write must not fail the crawl
+                        pass
                 logger.debug(
                     "[CrawlerEngine] fetched %s ua=%s... (%d chars)",
                     url, self._current_ua[:60], len(md),
