@@ -104,6 +104,64 @@ def register_tool(spec: ToolSpec) -> ToolSpec:
     return spec
 
 
+# ── Node metadata (REQ-2, specs/dag-node-execution-model) ─────────────────
+# The registry carries OPTIONAL node metadata. A tool that never declares a
+# NodeSpec behaves exactly as it does today (REQ-7 AC1 — strangler-fig); a
+# declared node gains routable outcomes, artifact types, and advertised
+# recovery (REQ-2 AC2). REQ-2 AC1: this extends the EXISTING registry — no
+# third registry.
+_NODE_SPECS: Dict[str, "NodeSpec"] = {}
+
+
+def register_node(spec: "NodeSpec") -> "NodeSpec":
+    """Register node metadata for an already-registered tool.
+
+    REQ-2 edge / CT-8: two nodes registering the same name is forbidden —
+    registration FAILS LOUDLY at startup rather than silently shadowing.
+    (Deliberately NOT idempotent, unlike ``register_tool``: a duplicate node
+    declaration is a programming error, not a rebuild artifact.)
+
+    The underlying ToolSpec must already exist in the registry (its fields are
+    the node's execution contract); registering node metadata for an unknown
+    tool is also a loud failure, never a silent orphan.
+    """
+    from backend.agent.nodes.spec import NodeSpec  # lazy — no import cycle
+
+    if not isinstance(spec, NodeSpec):
+        raise TypeError(
+            f"register_node requires a NodeSpec, got {type(spec).__name__}"
+        )
+    if spec.name not in _REGISTRY:
+        raise ValueError(
+            f"register_node({spec.name!r}): no ToolSpec registered for this name; "
+            f"register the tool first"
+        )
+    if spec.name in _NODE_SPECS:
+        raise ValueError(
+            f"register_node({spec.name!r}): duplicate node registration — a node "
+            f"name may be registered exactly once (REQ-2 edge, CT-8)"
+        )
+    _NODE_SPECS[spec.name] = spec
+    # Wire the node into the router's advertisement table (REQ-4 AC1).
+    try:
+        from backend.agent.nodes.router import get_node_router
+
+        get_node_router().register_node(spec)
+    except Exception:  # pragma: no cover - router wiring is best-effort
+        logger.warning("register_node(%s): router wiring deferred", spec.name)
+    return spec
+
+
+def get_node_spec(name: str) -> Optional["NodeSpec"]:
+    """Node metadata for *name*, or None when the tool is undeclared (REQ-2 AC5)."""
+    return _NODE_SPECS.get(name)
+
+
+def get_all_node_specs() -> List["NodeSpec"]:
+    """Every declared node spec (REQ-2 AC2/AC3 introspection)."""
+    return list(_NODE_SPECS.values())
+
+
 def resolve_tool(name: str) -> Optional[ToolSpec]:
     """Normalize a tool name (alias-aware) to its canonical ToolSpec.
 
@@ -154,6 +212,22 @@ def capability_allowed(spec: ToolSpec) -> bool:
     if spec.requires_desktop and not _desktop_provider():
         return False
     return True
+
+
+def capability_denied_by(spec: ToolSpec) -> Optional[str]:
+    """Name the capability that actually denies a spec, or None if allowed.
+
+    Unlike ``capability_allowed`` (a boolean), this tells the caller WHICH
+    gate closed — "internet" or "desktop" — so the error message matches the
+    real cause. REQ-16/T29: ``open_url`` now sets BOTH flags, so a
+    flag-presence check alone cannot tell internet-denied from
+    desktop-denied; the dispatcher uses this to report the true blocker.
+    """
+    if spec.requires_internet and not _internet_provider():
+        return "internet"
+    if spec.requires_desktop and not _desktop_provider():
+        return "desktop"
+    return None
 
 
 def is_parallel_safe(tool_name: Optional[str]) -> bool:
@@ -333,9 +407,14 @@ def register_builtin_tools() -> None:
         ),
         ToolSpec(
             name="open_url",
-            description="Open URL in browser",
+            description="Open URL in the in-app browser surface",
             parameters={"url": {"type": "string"}},
             category="web", executor="mcp", mcp_server="browser", mcp_tool="open_url",
+            # REQ-16 AC3 (T29): open_url is gated like every other network tool —
+            # requires internet access. requires_desktop stays True (the tool is
+            # still listed under desktop-control tools); the gate reports the
+            # ACTUAL denying capability via capability_denied_by().
+            requires_internet=True,
             requires_desktop=True,
         ),
         ToolSpec(
@@ -582,11 +661,18 @@ def register_builtin_tools() -> None:
         ),
         ToolSpec(
             name="ask_user_question",
-            description="Ask the user a question mid-task. Requires user input.",
+            description="Ask the user a question mid-task. Requires user input. "
+                        "Pass non_blocking=true (with parked_url + run_id) to raise the "
+                        "question card and return immediately so the task keeps going; "
+                        "the parked source is resumed when the answer arrives.",
             parameters={
                 "text": {"type": "string", "description": "The question to ask"},
                 "options": {"type": "array", "items": {"type": "string"}, "description": "Optional: multiple-choice options"},
                 "allow_other": {"type": "boolean", "description": "Allow free-form input (default: true)"},
+                "non_blocking": {"type": "boolean", "description": "If true, raise the card and return immediately (REQ-13 AC1)"},
+                "parked_url": {"type": "string", "description": "Source URL to park behind the question (REQ-13 AC2)"},
+                "run_id": {"type": "string", "description": "Research run id for the parked-source registry (REQ-13 AC6)"},
+                "wall_kind": {"type": "string", "enum": ["captcha", "login", "paywall", "unknown"], "description": "Wall that blocked the source (REQ-13)"},
             },
             category="system", executor="internal", permission_tier="read_only", parallel_safe=False,
         ),

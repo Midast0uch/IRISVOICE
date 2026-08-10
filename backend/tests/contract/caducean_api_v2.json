@@ -1,0 +1,89 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Caducean v2 API Contract (FROZEN)",
+  "description": "FROZEN response/request schemas for /api/caducean/* endpoints. Any drift here fails the API contract test. Update only via PR review.",
+  "version": "2.0.0",
+  "endpoints": {
+    "GET /api/caducean/state": {
+      "query_params": {
+        "session_id": {"type": "string", "required": true}
+      },
+      "response_200": {
+        "type": "object",
+        "required": ["session_id", "engine_live", "x", "y", "xi", "u", "a", "b", "s", "c_eff"],
+        "properties": {
+          "session_id": {"type": "string"},
+          "engine_live": {"type": "boolean"},
+          "x": {"type": "integer"},
+          "y": {"type": "integer"},
+          "xi": {"type": "number", "minimum": 0, "maximum": 6.2832},
+          "u": {"type": "number", "minimum": -1, "maximum": 1},
+          "a": {"type": "number", "minimum": 1, "maximum": 4},
+          "b": {"type": "number", "minimum": 1, "maximum": 4},
+          "s": {"type": "number", "minimum": 0.1, "maximum": 0.8},
+          "c_eff": {"type": "number", "minimum": 0}
+        }
+      }
+    },
+    "GET /api/caducean/direction": {
+      "query_params": {
+        "session_id": {"type": "string", "required": true},
+        "balance": {"type": "number", "required": false, "default": 1.0, "minimum": 0.1, "maximum": 3.0}
+      },
+      "response_200": {
+        "type": "object",
+        "required": ["session_id", "target_u", "force_magnitude", "u_current", "phase", "balance"],
+        "properties": {
+          "session_id": {"type": "string"},
+          "target_u": {"type": "number", "enum": [-1, 1]},
+          "force_magnitude": {"type": "number", "minimum": 0},
+          "u_current": {"type": "number", "minimum": -1, "maximum": 1},
+          "phase": {"type": "number", "minimum": 0, "maximum": 6.2832},
+          "balance": {"type": "number", "minimum": 0.1, "maximum": 3.0}
+        }
+      }
+    },
+    "POST /api/caducean/params": {
+      "request_body": {
+        "type": "object",
+        "required": ["session_id", "a", "b", "s"],
+        "properties": {
+          "session_id": {"type": "string"},
+          "a": {"type": "number", "minimum": 1, "maximum": 4},
+          "b": {"type": "number", "minimum": 1, "maximum": 4},
+          "s": {"type": "number", "minimum": 0.1, "maximum": 0.8}
+        }
+      },
+      "response_200": {
+        "type": "object",
+        "required": ["ok", "session_id"],
+        "properties": {
+          "ok": {"type": "boolean"},
+          "session_id": {"type": "string"},
+          "applied": {
+            "type": ["object", "null"],
+            "properties": {
+              "a": {"type": "number"},
+              "b": {"type": "number"},
+              "s": {"type": "number"}
+            }
+          }
+        }
+      },
+      "response_422": {
+        "type": "object",
+        "description": "Validation error (missing or wrong-type fields)"
+      }
+    },
+    "GET /api/caducean/health": {
+      "response_200": {
+        "type": "object",
+        "required": ["engine_live"],
+        "properties": {
+          "engine_live": {"type": "boolean"},
+          "engine_initialized_at": {"type": ["string", "null"]}
+        }
+      }
+    }
+  }
+}
