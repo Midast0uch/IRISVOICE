@@ -162,6 +162,72 @@ def get_all_node_specs() -> List["NodeSpec"]:
     return list(_NODE_SPECS.values())
 
 
+def declare_default_node_metadata() -> int:
+    """Declare NodeSpecs for tools that are first-class nodes by registration
+    alone (REQ-6 AC4 — no backend code change; the modules stay untouched).
+
+    This is the REQ-6 proof: the five ``vision.*`` MCP tools, the media
+    (audio/parakeet) tools, and the web tools become nodes purely by declaring
+    their artifact types and advertised recovery here. Registration is
+    idempotent (a tool already declared is skipped). Returns the number of
+    declarations applied.
+    """
+    from backend.agent.nodes.outcome import Reason  # lazy — no import cycle
+    from backend.agent.nodes.spec import NodeSpec
+
+    _declared = 0
+    # Artifact kind per tool: what the node produces (REQ-6 AC2).
+    # NOTE: crawler_query's NodeSpec is owned by the capabilities facade
+    # (_register_crawler_query_composite — it carries composite_of metadata);
+    # declaring it here too would trip register_node's duplicate guard (CT-8).
+    _produce: Dict[str, str] = {
+        # vision.* MCP tools -> "frames" / "text" artifacts
+        "vision_detect_element": "text",
+        "vision_analyze_screen": "text",
+        "vision_validate_action": "text",
+        "vision_get_context": "text",
+        # media / parakeet pipeline -> large artifacts by REFERENCE (D7)
+        "transcribe_media": "audio_ref",
+        "analyze_video_frames": "video_ref",
+        "clip_video": "video_ref",
+        # web tools
+        "search": "pages",
+        # memory / research
+        "recall_memory": "text",
+        "improve_self": "text",
+    }
+    # Nodes whose backing service can be absent -> UNAVAILABLE + route around
+    # (REQ-6 AC5): vision tools emit UPSTREAM_ERROR when the vision server is
+    # down; media tools likewise.
+    _emits: Dict[str, frozenset] = {
+        "vision_detect_element": frozenset({Reason.UPSTREAM_ERROR}),
+        "vision_analyze_screen": frozenset({Reason.UPSTREAM_ERROR}),
+        "vision_validate_action": frozenset({Reason.UPSTREAM_ERROR}),
+        "vision_get_context": frozenset({Reason.UPSTREAM_ERROR}),
+        "transcribe_media": frozenset({Reason.UPSTREAM_ERROR, Reason.NO_CANDIDATES}),
+        "analyze_video_frames": frozenset({Reason.UPSTREAM_ERROR, Reason.NO_CANDIDATES}),
+        "clip_video": frozenset({Reason.UPSTREAM_ERROR}),
+        "search": frozenset({Reason.NO_CANDIDATES, Reason.TRANSPORT_ERROR}),
+    }
+    for _name, _prod in _produce.items():
+        if _name in _NODE_SPECS:
+            continue
+        _spec = _REGISTRY.get(_name)
+        if _spec is None:
+            continue  # tool not registered — nothing to declare
+        try:
+            register_node(NodeSpec(
+                tool=_spec,
+                produces=_prod,
+                emits_reasons=_emits.get(_name, frozenset()),
+                recovers_reasons=frozenset(),
+            ))
+            _declared += 1
+        except Exception:  # pragma: no cover - best-effort declaration
+            logger.warning("declare_default_node_metadata(%s) failed", _name)
+    return _declared
+
+
 def resolve_tool(name: str) -> Optional[ToolSpec]:
     """Normalize a tool name (alias-aware) to its canonical ToolSpec.
 
@@ -840,6 +906,10 @@ def register_builtin_tools() -> None:
 
     for spec in specs:
         register_tool(spec)
+    # REQ-6 AC4 / T14: vision.* MCP tools + media/parakeet + web tools become
+    # nodes by registration alone — no backend code change. Runs after the
+    # tools exist so register_node's tool-must-exist guard passes.
+    declare_default_node_metadata()
 
 
 # Populate the registry on import — pure data, no heavy side-effects.

@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 import hashlib
 import threading
+import os
 
 from .model_conversation import ModelConversation
 from .inter_model_communication import InterModelCommunicator
@@ -3395,6 +3396,24 @@ class AgentKernel:
             pass
         return sources
 
+    @staticmethod
+    def _apply_trust_ceiling(trust: str, content_origin: str) -> str:
+        """REQ-18 AC3: vision-derived content is never stored above the trust of
+        equivalent crawled web content (which is ``untrusted``).
+
+        Extracted as a pure function so the ceiling is directly assertable and
+        so there is exactly ONE place that decides it. A caller passing
+        ``trust="trusted"`` for vision output is downgraded, not honoured —
+        provenance beats the caller's claim.
+        """
+        if content_origin in ("vision", "reconciled") and trust != "untrusted":
+            logger.info(
+                "[AgentKernel] document_data trust ceiling: origin=%s trust=%s "
+                "-> untrusted (REQ-18 AC3)", content_origin, trust,
+            )
+            return "untrusted"
+        return trust
+
     def _store_document_data(
         self,
         document_id: str,
@@ -3426,6 +3445,16 @@ class AgentKernel:
         variants = dict(show.get("variants", {}) or {})
         variants[fmt] = content
 
+        # REQ-18 AC2/AC3: provenance travels with the content, and vision-derived
+        # content is never stored at a HIGHER trust than equivalent crawled web
+        # content. The ceiling is enforced HERE, at the single choke point every
+        # document passes through, rather than at each call site — one guard
+        # cannot be forgotten by a future caller. ContentOrigin previously lived
+        # only inside frame_extraction.py and never reached the store at all, so
+        # vision output was indistinguishable from DOM text once persisted.
+        content_origin = str(show.get("content_origin") or "crawl")
+        trust = self._apply_trust_ceiling(trust, content_origin)
+
         canonical = {
             "document_id": document_id,
             "format": fmt,
@@ -3433,6 +3462,7 @@ class AgentKernel:
             "variants": variants,
             "alternatives": show.get("alternatives", []),
             "trust": trust,
+            "content_origin": content_origin,
             "conversation_id": conversation_id,
             "turn_id": turn_id,
         }
@@ -4518,6 +4548,112 @@ class AgentKernel:
         ]
         return any(t in _lower for t in _triggers)
 
+    def _looks_informational(self, text: str) -> bool:
+        """Conservative fact-seeking intent signal (used ONLY with web mode ON).
+
+        _is_web_search_request() requires an explicit search phrase, which
+        misses factual questions that arrive without one — e.g. the frontend
+        strips the "websearch:" prefix, so "what are the latest NASA Mars
+        rover discoveries this month?" has no trigger phrase (T36 finding
+        2026-08-09). This helper catches question-word / current-info
+        phrasing so the DER-skip gate does not misroute them as chit-chat.
+
+        Deliberately narrow: it must NOT match greetings or small talk
+        ("hello", "how are you", "tell me a joke") — those stay on the fast
+        path even when web mode is ON.
+        """
+        if not text:
+            return False
+        _lower = text.lower().strip()
+        _triggers = [
+            # question-word openers (fact-seeking, not chit-chat)
+            "what is", "what are", "what's", "what was", "when was",
+            "when did", "when is", "where is", "where are", "why did",
+            "why is", "how many", "how much", "how long", "how big",
+            "how far", "how does", "how do", "is there", "are there",
+            "what happened", "what's happening", "what's new", "who won",
+            # current-info / news phrasing
+            "latest", "news", "recent", "today", "this month",
+            "this week", "this year", "weather", "forecast", "score",
+            "election", "population", "capital of", "price of", "stock",
+            "launch", "discovery", "announce", "update on", "status of",
+        ]
+        return any(t in _lower for t in _triggers)
+
+    def _should_skip_der(
+        self,
+        plan_steps: list,
+        task_clean: str,
+        web_on: bool,
+    ) -> bool:
+        """DER-skip gate (extracted for contract testing, T36 2026-08-09).
+
+        Returns True when the plan may be answered on the direct fast path
+        without the DER card machinery:
+          - empty plan (nothing to execute), or
+          - voice-only plan (only speak steps) AND no web-search intent AND
+            NOT (web mode ON + factual/informational question).
+
+        The web-mode clause is the T36 fix: with internet access toggled ON,
+        a factual question (which the frontend may strip of its "websearch:"
+        prefix) must reach DER so the crawler path stays available. Chit-chat
+        still skips DER regardless of web mode.
+        """
+        _voice_only = bool(plan_steps) and all(
+            (s.tool or "").lower() in ("speak", "speak_tool", "tts", "")
+            for s in plan_steps
+        )
+        _is_websearch = self._is_web_search_request(task_clean)
+        _informational = self._looks_informational(task_clean)
+        return (
+            not plan_steps
+            or (
+                _voice_only
+                and not _is_websearch
+                and not (web_on and _informational)
+            )
+        )
+
+    def _empty_der_fallback_message(
+        self,
+        text: str,
+        web_on: bool,
+        der_err_text: str = "",
+    ) -> str:
+        """Empty-DER fallback wording (extracted for contract testing, T36 2026-08-09).
+
+        Produces an AWARE message instead of the old blind
+        "IRIS couldn't generate a response. Please try again.":
+          - real upstream error detail → surface it (retry / switch model)
+          - search-intent turn + web OFF → advise toggling internet access
+          - search-intent turn + web ON → honest incomplete-search message
+          - otherwise → neutral rephrase guidance
+        Never contains the phrase "couldn't generate" (contract: it must not
+        reach a chat_message content on a healthy path).
+        """
+        _searchy = self._is_web_search_request(text) or self._looks_informational(text)
+        if der_err_text:
+            return (
+                f"I hit an error while working on that ({der_err_text}). "
+                f"You can try again, or ask me in a different way."
+            )
+        if _searchy and not web_on:
+            return (
+                "Web search is currently disabled. You can toggle internet "
+                "access on via the dashboard (the web button) to enable "
+                "web features."
+            )
+        if _searchy:
+            return (
+                "I couldn't complete the web search for that — the search "
+                "returned nothing usable. Please try again, or ask me "
+                "without the web."
+            )
+        return (
+            "I wasn't able to put together an answer for that. You can "
+            "try again, or rephrase your question."
+        )
+
     @restores_call_class
     def process_text_message(
         self,
@@ -4914,13 +5050,26 @@ class AgentKernel:
                     for s in _plan.steps
                 )
                 _is_websearch = self._is_web_search_request(_task_clean)
-                if not _plan.steps or (_voice_only and not _is_websearch):
+                # T36 finding (2026-08-09): the skip gate ignored the
+                # internet-access toggle. With web mode ON, a factual
+                # question ("what are the latest NASA Mars rover
+                # discoveries this month?") must reach DER so the crawler
+                # path is available — even when the text heuristic misses
+                # (frontend strips the "websearch:" prefix). Chit-chat
+                # ("hello", "how are you") still skips DER on the fast path.
+                _web_on = get_global_internet_access()
+                _skip_der = self._should_skip_der(
+                    _plan.steps, _task_clean, _web_on
+                )
+                if _skip_der:
                     logger.info(
                         "[AgentKernel] voice-only/trivial plan (steps=%d, "
-                        "websearch=%s) — skipping DER/card, falling through "
-                        "to direct response",
+                        "websearch=%s, web_on=%s, informational=%s) — skipping "
+                        "DER/card, falling through to direct response",
                         len(_plan.steps),
                         _is_websearch,
+                        _web_on,
+                        self._looks_informational(_task_clean),
                     )
                     _der_response = ""  # forces the direct path below
                 else:
@@ -5171,14 +5320,18 @@ class AgentKernel:
         )
         logger.info(metrics.to_log_line())
 
-        # Return specific error to user so they can fix it immediately
-        if _der_err_text:
-            _err_msg = f"IRIS couldn't generate a response. API error: {_der_err_text}"
-            if chunk_callback:
-                chunk_callback(_err_msg)
-                chunk_callback("")
-            return _err_msg
-        _fallback_msg = "IRIS couldn't generate a response. Please try again."
+        # Aware empty-DER fallback (T36 finding 2026-08-09): never return a
+        # blind generic error. The agent knows WHY it produced nothing, so it
+        # responds usefully: surface the real error, advise the web-mode
+        # toggle when the turn clearly wanted a search, or rephrase guidance.
+        # Note: message text deliberately avoids the phrase "couldn't
+        # generate" (test_model_routing_contract asserts it never reaches a
+        # chat_message content on a healthy path).
+        _fallback_msg = self._empty_der_fallback_message(
+            text,
+            web_on=get_global_internet_access(),
+            der_err_text=_der_err_text,
+        )
         if chunk_callback:
             chunk_callback(_fallback_msg)
             chunk_callback("")
@@ -6518,31 +6671,43 @@ Respond with a JSON object:
                     step_result = str(_retry_exc)
 
             if not step_success:
-                # C1 FIX: preserve the real error so the graft recovery prompt
-                # receives it (item.result is otherwise only set on success).
-                item.result = step_result
-                # A3 FIX: fragment the failed output here (the shared
-                # _der_finalize_step helper is only reached for successful
-                # steps, so failures would otherwise never be stored).
-                try:
-                    if self._memory_interface and step_result:
-                        _ep = self._memory_interface.episodic
-                        if hasattr(_ep, "fragment_and_store"):
-                            _ep.fragment_and_store(
-                                content=f"[DER FAIL Step {item.step_number}: "
-                                        f"{item.description[:80]}]\n{step_result[:500]}",
-                                session_id=_session,
-                                chunk_type="der_failure",
-                                zone="tool",
-                            )
-                except Exception:
-                    pass
-                # Step failed after retry — mark, abort downstream, graft.
-                self._der_handle_step_failure(
-                    item, queue, plan, _session, _turn_id, context_package,
-                    step_result=step_result,
+                # REQ-4 (specs/dag-node-execution-model): before the graft
+                # handler runs, consult the node router. A recovery node that
+                # advertises this failure's reason executes in place of the
+                # failing node; a recovered step finalizes normally below
+                # (no branch was written in the failing node's module).
+                _recovered = self._der_route_step_failure(
+                    item, step_result, _session, _turn_id, plan,
                 )
-                continue  # re-enter loop; grafted steps are now in the queue
+                if _recovered is not None:
+                    step_result = _recovered
+                    step_success = True
+                else:
+                    # C1 FIX: preserve the real error so the graft recovery prompt
+                    # receives it (item.result is otherwise only set on success).
+                    item.result = step_result
+                    # A3 FIX: fragment the failed output here (the shared
+                    # _der_finalize_step helper is only reached for successful
+                    # steps, so failures would otherwise never be stored).
+                    try:
+                        if self._memory_interface and step_result:
+                            _ep = self._memory_interface.episodic
+                            if hasattr(_ep, "fragment_and_store"):
+                                _ep.fragment_and_store(
+                                    content=f"[DER FAIL Step {item.step_number}: "
+                                            f"{item.description[:80]}]\n{step_result[:500]}",
+                                    session_id=_session,
+                                    chunk_type="der_failure",
+                                    zone="tool",
+                                )
+                    except Exception:
+                        pass
+                    # Step failed after retry — mark, abort downstream, graft.
+                    self._der_handle_step_failure(
+                        item, queue, plan, _session, _turn_id, context_package,
+                        step_result=step_result,
+                    )
+                    continue  # re-enter loop; grafted steps are now in the queue
 
             # ── Phase 4: finalize this step via the shared helper ──
             _tokens_used = self._der_finalize_step(
@@ -7153,6 +7318,159 @@ Respond with a JSON object:
             logger.debug("[DER] steering revision failed: %s", _steer_exc)
             return False
 
+    # ── REQ-5 (specs/dag-node-execution-model): bounded mid-execution
+    # amendment ─────────────────────────────────────────────────────────────
+    # The executing graph may be EXTENDED between steps based on outcomes
+    # already observed (AC1). Planner-driven ONLY (design D6) — a node
+    # proposing its own successor would reintroduce hidden control flow.
+    # Amendments append fresh steps; they never re-execute satisfied nodes
+    # (AC2) and the existing step budget / token accounting stays
+    # authoritative (AC4). Bounded per task (AC3) and every amendment /
+    # refused amendment is recorded (REQ-9 AC3).
+    _AMENDMENT_BOUND = int(os.environ.get("IRIS_NODE_AMENDMENT_BOUND", "3"))
+
+    def _der_amend_graph(
+        self,
+        new_steps,
+        _session: str,
+        plan,
+        queue,
+        _token_budget: int = 0,
+        _tokens_used: int = 0,
+    ) -> bool:
+        """Extend the executing graph with *new_steps* (REQ-5).
+
+        Returns True when the amendment was applied. Refused amendments are
+        recorded with their cause (REQ-5 AC5, REQ-9 AC3) and execution
+        continues on the existing graph — never a hang, never a silent skip.
+        """
+        from backend.agent.nodes.telemetry import log_amendment
+
+        _task_id = self.conversation_id or _session
+        try:
+            if not new_steps:
+                return False
+            # AC3: per-task bound on amendments.
+            _used = getattr(self, "_der_amendment_count", 0)
+            if _used >= self._AMENDMENT_BOUND:
+                log_amendment(
+                    task_id=_task_id, kind="refused",
+                    cause="amendment_bound",
+                    detail=f"used={_used} bound={self._AMENDMENT_BOUND}",
+                )
+                return False
+            # AC4: the task budget is authoritative — an amendment cannot
+            # exceed it. (Amendments add steps; if the budget is already
+            # exhausted, adding work would violate the ceiling.)
+            if _token_budget > 0 and _tokens_used >= _token_budget:
+                log_amendment(
+                    task_id=_task_id, kind="refused",
+                    cause="budget_exceeded",
+                    detail=f"used={_tokens_used} budget={_token_budget}",
+                )
+                return False
+
+            # AC2: satisfied nodes are preserved. New steps may only depend on
+            # already-terminal ids (completed/vetoed/failed); a dependency on a
+            # pending node that may never run would stall the graph — refuse
+            # (REQ-5 edge: amendment that removes/consumes a live node is
+            # rejected, recorded, execution unchanged).
+            from backend.agent.der_loop import QueueItem
+
+            _done = (
+                set(queue.completed_ids)
+                | set(queue.vetoed_ids)
+                | set(queue.failed_ids)
+            )
+            _pending = {it.step_id for it in queue.items if it.step_id not in _done}
+            for _s in new_steps:
+                _deps = list(getattr(_s, "depends_on", None) or [])
+                _bad = [d for d in _deps if d in _pending]
+                if _bad:
+                    log_amendment(
+                        task_id=_task_id, kind="refused",
+                        cause="invalid_dependency",
+                        detail=f"step={getattr(_s, 'description', '')[:60]} deps={_bad}",
+                    )
+                    return False
+
+            # Append the fresh steps — completed work is untouched (AC2).
+            _base = len(queue.items) + 1
+            _fresh: List["QueueItem"] = []
+            for _i, _s in enumerate(new_steps):
+                _fresh.append(
+                    QueueItem(
+                        step_id=f"amend-{_base + _i}",
+                        step_number=_base + _i,
+                        description=getattr(_s, "description", ""),
+                        tool=getattr(_s, "tool", None),
+                        params=dict(getattr(_s, "params", None) or {}),
+                        depends_on=[
+                            d for d in (getattr(_s, "depends_on", None) or [])
+                            if d in _done
+                        ],
+                        critical=getattr(_s, "critical", True),
+                        objective_anchor=(
+                            getattr(plan, "original_task", "") if plan else ""
+                        ),
+                    )
+                )
+            queue.items.extend(_fresh)
+            self._der_amendment_count = _used + 1
+            log_amendment(
+                task_id=_task_id, kind="amend",
+                cause="planner_driven",
+                detail=f"steps={len(_fresh)} count={_used + 1}",
+            )
+            logger.info(
+                "[DER] amendment applied: +%d step(s) (count=%d) task=%s",
+                len(_fresh), _used + 1, _task_id,
+            )
+
+            # Revision signal so the frontend card reflects the extended plan —
+            # SAME payload shape as steering (no new event types; REQ-3 AC4).
+            try:
+                from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+
+                _mode = queue.mode.value if getattr(queue, "mode", None) else "full"
+                get_event_bus().emit(
+                    IRISStreamEvent.TASK_START,
+                    data=self._task_start_payload(
+                        task_id=_task_id,
+                        description=(
+                            getattr(plan, "original_task", "") or ""
+                        )[:120],
+                        plan_title=(
+                            (getattr(plan, "plan_title", "") or "")[:80]
+                            if plan else ""
+                        ),
+                        mode=_mode,
+                        steps=[
+                            {
+                                "id": it.step_id,
+                                "description": it.description,
+                                "status": "pending",
+                                "toolName": it.tool,
+                            }
+                            for it in _fresh
+                        ],
+                        total_steps=len(_fresh),
+                        origin="amendment",
+                    ),
+                    turn_id=_task_id,
+                    conversation_id=self.conversation_id,
+                    session_id=_session,
+                )
+            except Exception:
+                pass  # never block an amendment on an emit failure
+            return True
+        except Exception as _amend_exc:  # noqa: BLE001 — refusal, never a crash
+            log_amendment(
+                task_id=_task_id, kind="refused",
+                cause="error", detail=str(_amend_exc)[:200],
+            )
+            return False
+
     def _emit_steering_ack(self, channel, message_id, status, _session) -> None:
         """REQ-15 AC5 (T26): visible acknowledgement that a steering message
         landed ("queued") or was considered at a step boundary ("considered").
@@ -7288,6 +7606,143 @@ Respond with a JSON object:
             f"such as news articles or Wikipedia."
         )
         return _msg[:400]
+
+    # ── REQ-4 (specs/dag-node-execution-model): outcome-driven routing ─────
+    # The DER seam the node model adds: when a step fails with a typed reason,
+    # consult the router BEFORE the graft/split handler. A recovery node that
+    # advertises the reason runs in place of the failing node — no branch is
+    # written in the failing node's module (design D4). Returns the recovered
+    # step result on success, None when routing is disabled / declined / no
+    # candidate — in which case the caller proceeds exactly as today (REQ-7
+    # AC4/AC5 kill-switch parity).
+    def _der_route_step_failure(
+        self,
+        item: "QueueItem",
+        step_result: str,
+        _session: str,
+        _turn_id: Optional[str],
+        plan,
+    ) -> Optional[str]:
+        try:
+            from backend.agent.nodes.outcome import NodeOutcome, NodeStatus, Reason
+            from backend.agent.nodes.router import (
+                RouteRequest,
+                get_node_router,
+                routing_enabled,
+            )
+            from backend.agent.nodes.runner import (
+                get_node_runner,
+                outcome_from_crawler_error,
+            )
+            from backend.agent.nodes.telemetry import log_node_execution, log_routing_decision
+            from backend.agent.tool_registry import get_node_spec, resolve_tool
+
+            if not routing_enabled():
+                return None  # kill switch — today's path (REQ-7 AC4/AC5)
+            tool = getattr(item, "tool", None)
+            if not tool:
+                return None  # reasoning steps have no tool to route on
+            spec = resolve_tool(tool)
+            if spec is None:
+                return None  # undeclared legacy tool — adapter path (REQ-7 AC1)
+            node_spec = get_node_spec(tool)
+            if node_spec is None:
+                return None  # tool exists but never declared node metadata
+
+            # Map the free-form failure text to a typed reason (REQ-1 AC3).
+            outcome = outcome_from_crawler_error(step_result or "", time.time())
+            # CT-3 (REQ-1 AC5): the typed reason reaches the EXISTING
+            # node-record/error_type machinery, not a parallel structure.
+            item.error_type = outcome.reason.value
+
+            req = RouteRequest(
+                task_id=self.conversation_id or _session,
+                step_id=item.step_id,
+                node=tool,
+                outcome=outcome,
+                # REQ-8 AC1/AC2: a recovery node may not exceed the tier the
+                # user approved for THIS step — the failing node's own tier.
+                approved_tier=node_spec.permission_tier,
+            )
+            decision = get_node_router().route(req)
+            if decision is None or decision.selected is None:
+                return None  # honest no-candidate (REQ-4 AC6) or blocked
+            if decision.blocked_by in ("permission", "terminal", "bound"):
+                # REQ-8 edge: a permission-blocked route is surfaced, never
+                # taken silently — the caller proceeds on today's path and the
+                # normal failure handling (graft / ask) applies.
+                return None
+
+            recovery = decision.selected
+            # Run the recovery node through the node RUNNER (CT-4 caller
+            # existence) with the tool_bridge as its executor — the SAME
+            # dispatch path the failing node used, with the same params: the
+            # route is an alternative execution of the intent.
+            try:
+                self._tool_bridge._active_conversation_id[_session] = (
+                    self.conversation_id or ""
+                )
+            except Exception:
+                pass
+            import asyncio
+
+            _runner = get_node_runner()
+            _runner.set_executor(self._tool_bridge.execute_tool)
+            try:
+                _outcome = asyncio.run(
+                    _runner.run(
+                        recovery.name,
+                        dict(item.params or {}),
+                        node_spec=recovery,
+                        session_id=_session,
+                        plan_title=(getattr(plan, "plan_title", "") or ""),
+                    )
+                )
+            except Exception as _route_exc:  # noqa: BLE001 — recovery must not crash the loop
+                logger.warning(
+                    "[DER] routing recovery %s for %s crashed: %s",
+                    recovery.name, tool, _route_exc,
+                )
+                log_routing_decision(
+                    task_id=self.conversation_id or _session,
+                    step_id=item.step_id, node=tool,
+                    reason=outcome.reason.value,
+                    candidates=[recovery.name],
+                    selected=None, blocked_by="upstream_error",
+                )
+                return None
+            log_node_execution(
+                task_id=self.conversation_id or _session,
+                node=recovery.name,
+                status=_outcome.status.value,
+                reason=_outcome.reason.value,
+                duration_ms=0,
+            )
+            if _outcome.succeeded:
+                logger.info(
+                    "[DER] routed %s failure reason=%s -> recovery node %s (step %s)",
+                    tool, outcome.reason.value, recovery.name, item.step_id,
+                )
+                # Recover the formatted tool result from the outcome artifact
+                # (the runner already adapted the raw dict).
+                _raw = (
+                    _outcome.artifact.value
+                    if _outcome.artifact is not None else None
+                )
+                return self._format_tool_result(_raw) if _raw is not None else ""
+            # Recovery node failed identically — the router's attempt bound
+            # makes the second identical failure terminal (REQ-4 AC3).
+            log_routing_decision(
+                task_id=self.conversation_id or _session,
+                step_id=item.step_id, node=tool,
+                reason=outcome.reason.value,
+                candidates=[recovery.name],
+                selected=recovery.name, bound_hit=True,
+            )
+            return None
+        except Exception as _route_err:  # noqa: BLE001 — routing must never break the loop
+            logger.warning("[DER] routing consultation failed: %s", _route_err)
+            return None
 
     def _der_handle_step_failure(
         self,
@@ -10637,6 +11092,18 @@ Respond with a JSON object:
                     _rec.execution_domain = (
                         self._der_execution_domain(from_voice) or "der"
                     )
+                    # T36-FIX (content_summary): the L6014 construction comment
+                    # promised "the finalize site re-stamps with the full step
+                    # result text" — but content_summary was NEVER re-stamped, so
+                    # _der_node_record_evidence fed the synthesis LLM only the
+                    # step DESCRIPTION (plan sentence), not the actual tool output.
+                    # Live T36 smoke: crawl stored 17 chunks + rendered the prism
+                    # card, yet synthesis said "search tool did not return any
+                    # actual results" (synthesis prompt was ~111 tokens). Re-stamp
+                    # here with the real step result so the synthesis evidence is
+                    # the actual crawl content, not the plan text. Bounded to 300
+                    # chars to keep the record bounded (same as the seed).
+                    _rec.content_summary = (step_result or "")[:300]
                     # REQ-4: continuous verified fraction, recomputed at the
                     # finalize point (the verifier's decisive fraction is not
                     # otherwise surfaced here). Fallback: the label's canonical
@@ -12037,6 +12504,23 @@ def get_agent_kernel(
     _sid = session_id or conversation_id
 
     if conversation_id not in _agent_kernel_instances:
+        # DIAGNOSTIC: kernels are cached BY conversation_id, so a conversation
+        # id that drifts mid-turn silently constructs a SECOND kernel and
+        # orphans the first one's in-turn state (tokens, node records, DER
+        # bookkeeping). That was observed live: a fresh kernel for conv-1 was
+        # initialised AFTER turn 1 had already completed, while the turn itself
+        # ran under session_iris. Log every construction with BOTH ids and the
+        # existing keys so a mid-turn rebuild is visible instead of inferred.
+        # Note some keys are pseudo-conversations by design (crawl_planner,
+        # data_extractor, default) — those are expected; a real thread id
+        # appearing twice, or appearing late, is not.
+        logger.info(
+            "[AgentKernel] CONSTRUCTING kernel conv=%r session=%r "
+            "(existing keys: %s)",
+            conversation_id,
+            _sid,
+            sorted(_agent_kernel_instances.keys()),
+        )
         kernel = AgentKernel(
             session_id=_sid,
             conversation_id=conversation_id,

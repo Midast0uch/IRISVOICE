@@ -46,13 +46,17 @@ def adapt_legacy_outcome(
     Deterministic mapping of today's result shapes — never blocks an undeclared
     tool, never requires its module to change:
       * ``{"success": True, "result": ...}``            -> OK
-      * ``{"success": False, "error": ...}``            -> FAILED / TRANSPORT_ERROR
-      * ``{"error": ...}`` (no success key)             -> FAILED / TRANSPORT_ERROR
+      * ``{"success": False, "error": ...}``            -> FAILED / typed reason
+      * ``{"error": ...}`` (no success key)             -> FAILED / typed reason
       * anything else (raw text, dict without markers)  -> OK (best-effort)
 
-    A node that returned a bare ``error`` key is mapped to TRANSPORT_ERROR so a
-    caller that wants to route on it can; legacy consumers see the identical
-    free-form result they always saw.
+    Failure error strings are mapped through the crawler vocabulary (T11
+    boundary): "challenge detected" -> CHALLENGE, "no candidate urls" ->
+    NO_CANDIDATES, "robots.txt refused" -> ROBOTS_REFUSED, etc. — the same
+    mapping the DER seam and crawler use, so a legacy tool's failure becomes
+    a routable reason (REQ-1 AC3). Unknown errors fall back to
+    TRANSPORT_ERROR, and a legacy consumer still sees the identical free-form
+    result it always saw.
     """
     detail = ""
     if isinstance(result, dict):
@@ -67,11 +71,7 @@ def adapt_legacy_outcome(
             )
         else:
             detail = str(error) if error else "legacy tool returned failure"
-            outcome = NodeOutcome(
-                status=NodeStatus.FAILED,
-                reason=Reason.TRANSPORT_ERROR,
-                detail=detail,
-            )
+            outcome = outcome_from_crawler_error(detail, started)
     else:
         # Raw non-dict result (str / None / list) — treat as success with the
         # value as artifact, exactly as today's callers consume it.
