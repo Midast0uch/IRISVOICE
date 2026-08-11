@@ -695,10 +695,27 @@ on_page_done=self._page_emitter(_emit, job_id),
                     # CrawlProgress consumer that feeds our (event, payload)
                     # emitter. Optional kwarg, tolerated if a capability
                     # implements only the bare 3-arg protocol (REQ-6 AC1).
+                    # FILTER, don't forward wholesale. fetch_url runs a
+                    # single-URL research of its own and emits its OWN lifecycle
+                    # events — CRAWLER_STARTED with url_count=1, plus COMPLETE /
+                    # OPEN_TAB / ERROR. Forwarding those let each per-URL fetch
+                    # restart the outer run in the UI: the overlay reset to
+                    # `loading` (killing the shutter animation and wiping the
+                    # cursor), pagesDone reset to 0, and pagesTotal became 1 —
+                    # which is what rendered as "3/1" live on 2026-08-11 09:18.
+                    # The OUTER run owns the lifecycle; only the per-page signal
+                    # belongs to it, renumbered to this URL's real slot.
+                    def _forward(p, _i=idx):
+                        if p.event != "CRAWLER_PAGE_FETCHED":
+                            return
+                        payload = dict(p.payload or {})
+                        payload["page_number"] = _i + 1
+                        payload["total"] = len(capped)
+                        _emit("CRAWLER_PAGE_FETCHED", payload)
+
                     try:
                         outcome = await crawl_cap.fetch_one(
-                            url, query, job_id,
-                            on_progress=lambda p: _emit(p.event, p.payload),
+                            url, query, job_id, on_progress=_forward,
                         )
                     except TypeError:
                         outcome = await crawl_cap.fetch_one(url, query, job_id)

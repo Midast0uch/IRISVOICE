@@ -16,6 +16,7 @@ feeds T14 (REQ-7): CAPTCHA / LOGIN / PAYWALL are returned in FetchOutcome.wall.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -276,7 +277,16 @@ class FetchVisionCapability(FetchCapability):
             img = await session.screenshot()
             if img is None:
                 return {"action": "error", "target": "", "reasoning": "no browser frame"}
-            return provider.suggest_action(img, goal) or {}
+            # to_thread, NOT a direct call. suggest_action is SYNCHRONOUS and
+            # reaches _ensure_vision_server_running, whose readiness loop sleeps
+            # 0.5s x 60 = up to THIRTY SECONDS, followed by a blocking httpx
+            # call with a 30s timeout. Called inline from this already-running
+            # event loop it froze the whole backend — WebSocket, TTS and all —
+            # which is the "app stopped responding when the vision server
+            # launched" observed live on 2026-08-11. SessionVisionAdapter
+            # already dispatches every provider call this way; this was the one
+            # provider call that had been left on the loop.
+            return await asyncio.to_thread(provider.suggest_action, img, goal) or {}
         except Exception as exc:  # noqa: BLE001
             logger.info("[fetch.vision] suggest failed: %s", exc)
             return {"action": "error", "target": "", "reasoning": str(exc)}

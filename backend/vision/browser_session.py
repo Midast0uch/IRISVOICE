@@ -519,6 +519,17 @@ class BrowserSession:
         action suggestion / triage. None on a closed session — never raises."""
         if self._page is None:
             return None
+        # Renew the pool lease on activity: a session that outlives its initial
+        # lease window would otherwise have the shared browser closed under it
+        # by the idle watchdog (see BrowserLease.renew). screenshot() is the
+        # loop's heartbeat — it runs before every action decision and every
+        # extraction frame — so renewing here keeps any LIVE session pinned
+        # while an abandoned one still expires.
+        if self._lease is not None:
+            try:
+                self._lease.renew(self._bounds.max_wall_ms + 30_000)
+            except Exception:  # noqa: BLE001 — renewal must never fail a frame
+                pass
         try:
             return await self._page.screenshot(type="png")
         except Exception as exc:  # noqa: BLE001 — a lost frame degrades the loop, not the page

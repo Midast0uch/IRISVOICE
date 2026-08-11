@@ -176,6 +176,27 @@ class BrowserLease:
             return False
         return True
 
+    def renew(self, max_ms: float = 60_000.0) -> None:
+        """Push the hard expiry out from NOW — call on session activity.
+
+        The expiry exists so a crashed holder cannot pin the browser forever,
+        but a LIVE session that simply runs longer than the initial window must
+        not lose its lease: once it lapses, ``has_active_browser_lease()`` goes
+        False and the idle watchdog is free to close the browser mid-session.
+        That is what produced "Target page, context or browser has been closed"
+        live on 2026-08-11 09:18, immediately after "[browser_pool] shared
+        browser stopped", while three escalations were still running.
+
+        Renewing on activity keeps the leak guard intact — an abandoned session
+        stops renewing and still expires on schedule.
+        """
+        if not self._active:
+            return
+        self._deadline = time.monotonic() + max(1.0, max_ms) / 1000.0
+        with _LEASE_LOCK:
+            if self._lease_id in _BROWSER_LEASES:
+                _BROWSER_LEASES[self._lease_id] = self._deadline
+
     def release(self) -> None:
         if not self._active:
             return
