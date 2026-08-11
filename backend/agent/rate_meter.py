@@ -26,7 +26,7 @@ import os
 import threading
 import time as _perf_t
 from dataclasses import dataclass, field
-from typing import Deque, Dict, List, Optional
+from typing import Any, Deque, Dict, List, Optional
 
 from backend.agent.inference.provider import ProviderInstance, ProviderKind
 from backend.agent.inference.keyring import get_secret
@@ -93,6 +93,17 @@ class ProviderWindow:
     last_429_at: Optional[float] = None
     count_429_in_window: int = 0
     configured_max_rpm: Optional[float] = None
+    # REQ-9 AC3 (T27): read-only rate-health inputs. 429 observation timestamps
+    # feed the windowed 429 frequency; ceiling_trajectory records (ts, rpm)
+    # change points (each 429 decay + each post-probe recovery) so the outer
+    # loop can see the trajectory, not just the current value. Both bounded —
+    # memory footprint is capped regardless of session length.
+    _429_ts: Deque[float] = field(
+        default_factory=lambda: collections.deque(maxlen=METER_MAX_SAMPLES)
+    )
+    ceiling_trajectory: Deque[tuple] = field(
+        default_factory=lambda: collections.deque(maxlen=128)
+    )
 
 
 def quota_key(inst: ProviderInstance) -> str:
@@ -140,6 +151,7 @@ class ProviderRateMeter:
             _w.metered = metered_flag
 
     def _new_window(self, quota_id: str) -> ProviderWindow:
+        _now = _perf_t.time()
         return ProviderWindow(
             quota_id=quota_id,
             metered=True,  # overridden by ensure_window when known
@@ -151,6 +163,13 @@ class ProviderRateMeter:
             last_429_at=None,
             count_429_in_window=0,
             configured_max_rpm=None,
+            _429_ts=collections.deque(maxlen=METER_MAX_SAMPLES),
+            # REQ-9 AC3 (T27): seed the trajectory with the starting ceiling so
+            # the trend has a reference. With CEILING_MD=0.5 and a MIN floor of
+            # 15, the FIRST 429 already floors the ceiling (30 -> 15); without
+            # the seed, a quota pinned at the floor under continued pressure
+            # would read "stable" instead of "falling".
+            ceiling_trajectory=collections.deque([(_now, CEILING_INIT_RPM)], maxlen=128),
         )
 
     # ── recording (T2.2) ─────────────────────────────────────────────────
@@ -178,8 +197,13 @@ class ProviderRateMeter:
             _now = _perf_t.time()
             if _w.last_429_at is not None and (_now - _w.last_429_at) > CEILING_PROBE_S:
                 _cap = min(CEILING_MAX_RPM, _w.configured_max_rpm or CEILING_MAX_RPM)
+                _before = _w.ceiling_rpm
                 _w.ceiling_rpm = min(_w.ceiling_rpm + CEILING_AI_RPM, _cap)
                 _w.last_429_at = None  # probe succeeded; arm again on next 429
+                # REQ-9 AC3 (T27): trajectory change point for the recovery
+                # half of the AIMD cycle.
+                if _w.ceiling_rpm != _before:
+                    _w.ceiling_trajectory.append((_now, _w.ceiling_rpm))
             self._evict(_w, _now)
             _w.samples.append(Sample(_now, int(tokens), bool(estimated), int(priority)))
             if label and label not in _w.label_ids:
@@ -243,6 +267,85 @@ class ProviderRateMeter:
                     _tok += _s.tokens
             return {"requests": _req, "tokens": _tok, "window_s": METER_WINDOW_S}
 
+    # ── rate-health surface (REQ-9 AC3 / T27) ───────────────────────────────
+    def rate_health(self, quota_id: str) -> Dict[str, Any]:
+        """REQ-9 AC3: read-only per-quota rate-health signal for the outer loop.
+
+        Exposes the two quantities REQ-9 AC3 names — 429 frequency and ceiling
+        trajectory — plus the current effective ceiling, for the outer loop to
+        consume WITHOUT changing rate-limit semantics (AC1: single-debit + the
+        Retry-After clamp are untouched; AC2: no ceiling constant is raised).
+
+        Returns:
+          - metered            : whether this quota is gated (unmetered local /
+                                 Ollama quotas report metered=False and are
+                                 never fabricated as saturated — REQ-9 edge
+                                 case).
+          - count_429_in_window: 429 observations within METER_WINDOW_S.
+          - 429_per_min        : frequency = count_429_in_window / window
+                                 minutes (0.0 for unmetered).
+          - last_429_at        : epoch of the most recent 429 (None if never).
+          - ceiling_rpm        : effective ceiling (same min-with-rail /
+                                 configured-max logic as get_ceiling).
+          - ceiling_trajectory : [(ts, ceiling_rpm)] change points, oldest
+                                 first — each AIMD decay and recovery. Bounded.
+          - ceiling_trend      : "falling" | "rising" | "stable" — direction of
+                                 the last trajectory movement.
+          - window_s           : the metering window.
+
+        Side-effect free (strictly read-only): samples, timestamps and
+        trajectory are never evicted or mutated here — polling this cannot
+        perturb the behavior being measured.
+        """
+        with self._lock:
+            _w = self._windows.get(quota_id)
+            if _w is None or not _w.metered:
+                return {
+                    "metered": False,
+                    "count_429_in_window": 0,
+                    "429_per_min": 0.0,
+                    "last_429_at": None,
+                    "ceiling_rpm": float("inf"),
+                    "ceiling_trajectory": [],
+                    "ceiling_trend": "stable",
+                    "window_s": METER_WINDOW_S,
+                }
+            _now = _perf_t.time()
+            _cutoff = _now - METER_WINDOW_S
+            _c429 = sum(1 for _ts in _w._429_ts if _ts >= _cutoff)
+            _eff = min(_w.ceiling_rpm, PHASE_HARD_MAX_RPM)
+            if _w.configured_max_rpm is not None:
+                _eff = min(_eff, _w.configured_max_rpm)
+            _traj = list(_w.ceiling_trajectory)
+            _trend = "stable"
+            # Direction of the LAST NON-FLAT movement. Floor-pinned pressure
+            # points (repeated 429s at CEILING_MIN_RPM append 15 -> 15) are
+            # skipped so a saturated quota still reads "falling"; a recovery
+            # spike (15 -> 17 after the probe) reads "rising" even though it
+            # is still below the seeded initial ceiling.
+            for _i in range(len(_traj) - 1, 0, -1):
+                _prev_rpm = _traj[_i - 1][1]
+                _cur_rpm = _traj[_i][1]
+                if abs(_cur_rpm - _prev_rpm) > 1e-9:
+                    _trend = (
+                        "falling" if _cur_rpm < _prev_rpm else "rising"
+                    )
+                    break
+            return {
+                "metered": True,
+                "count_429_in_window": _c429,
+                "429_per_min": round(
+                    _c429 / max(METER_WINDOW_S, 1e-9) * 60.0, 4
+                ),
+                "last_429_at": _w.last_429_at,
+                "ceiling_rpm": _eff,
+                "ceiling_trajectory": [
+                    (round(ts, 3), round(rpm, 3)) for ts, rpm in _traj
+                ],
+                "ceiling_trend": _trend,
+                "window_s": METER_WINDOW_S,
+            }
+
     # ── 429 observation (T2.3 / T2.5) ───────────────────────────────────────
     def observe_429(self, quota_id: str, retry_after: Optional[float] = None) -> None:
         """Multiplicative-decrease the ceiling on a 429 (T2.3).
@@ -260,6 +363,10 @@ class ProviderRateMeter:
             _w.ceiling_rpm = max(CEILING_MIN_RPM, _w.ceiling_rpm * CEILING_MD)
             _w.last_429_at = _perf_t.time()
             _w.count_429_in_window += 1
+            # REQ-9 AC3 (T27): timestamp + trajectory change point for the
+            # read-only rate-health surface.
+            _w._429_ts.append(_w.last_429_at)
+            _w.ceiling_trajectory.append((_w.last_429_at, _w.ceiling_rpm))
             self._save_ceilings()
 
     # ── ceiling read (T2.3 / T2.6) ──────────────────────────────────────────
@@ -276,6 +383,19 @@ class ProviderRateMeter:
             _eff = min(_w.ceiling_rpm, PHASE_HARD_MAX_RPM)
             if _w.configured_max_rpm is not None:
                 _eff = min(_eff, _w.configured_max_rpm)
+            # APPLY THE FLOOR ON READ, not only on decay.
+            # _record_429 clamps with max(CEILING_MIN_RPM, ...) when it halves,
+            # but the ceiling is PERSISTED (see _load) and restored verbatim on
+            # the next start. A ceiling learned under an older, lower floor
+            # therefore survived a restart and was returned unchanged — raising
+            # CEILING_MIN_RPM had NO effect on an existing window, which is
+            # exactly how a 3.0 rpm ceiling kept starving every crawl after the
+            # floor was raised to 15. The floor must never exceed the rails
+            # above it, so clamp it by them first.
+            _floor = min(CEILING_MIN_RPM, PHASE_HARD_MAX_RPM)
+            if _w.configured_max_rpm is not None:
+                _floor = min(_floor, _w.configured_max_rpm)
+            _eff = max(_eff, _floor)
             # Log once per provider when the rail is the binding constraint
             if _w.ceiling_rpm > PHASE_HARD_MAX_RPM and _w.quota_id not in self._rail_logged:
                 logger.warning(

@@ -94,85 +94,16 @@ def _main() -> int:
         _emit({"type": "error", "error": str(exc)})
         return 4
     except Exception as exc:  # noqa: BLE001
-        # Last-resort fallback: crawl4ai (DefaultMarkdownGenerator) can throw
-        # "Separator is not found, and chunk exceed the limit" on pages with no
-        # clean separators. Rather than failing the whole research task, fetch
-        # each URL over plain HTTP and strip tags so the DER step still gets
-        # usable content.
-        _emit({"type": "progress", "url": "", "page_number": 0, "total": len(urls),
-               "title": "plain-HTTP fallback after crawl4ai failure"})
-        _fallback_pages = []
-        try:
-            import asyncio as _asyncio
-            import re as _re
-
-            import httpx as _httpx
-
-            async def _plain_fetch_all(urls_: list) -> list:
-                async def _plain_fetch(url: str) -> dict:
-                    async with _httpx.AsyncClient(
-                        follow_redirects=True, timeout=30.0
-                    ) as _hc:
-                        _resp = await _hc.get(
-                            url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-                        )
-                    _html = _resp.text
-                    _stripped = _re.sub(
-                        r"<script[\s\S]*?</script>|<style[\s\S]*?</style>",
-                        " ", _html, flags=_re.IGNORECASE,
-                    )
-                    _stripped = _re.sub(r"<[^>]+>", " ", _stripped)
-                    _text = _re.sub(r"\s+", " ", _stripped).strip()
-                    _m = _re.search(r"<title[^>]*>([^<]+)</title>", _html, _re.IGNORECASE)
-                    return {
-                        "url": url,
-                        "title": (_m.group(1).strip() if _m else url),
-                        "markdown": _text,
-                        "html": None,
-                        "metadata": {},
-                        "error": None,
-                    }
-
-                _res = await _asyncio.gather(
-                    *[_plain_fetch(u) for u in urls_], return_exceptions=True
-                )
-                return [
-                    p for p in _res if isinstance(p, dict) and p.get("markdown")
-                ]
-
-            _fallback_pages = _asyncio.run(_plain_fetch_all(urls))
-        except Exception as fexc:  # noqa: BLE001
-            _emit(
-                {
-                    "type": "error",
-                    "error": f"crawl failed: {exc}; plain-HTTP fallback also failed: {fexc}",
-                }
-            )
-            return 6
-
-        if not _fallback_pages:
-            _emit({"type": "error", "error": f"crawl failed: {exc}"})
-            return 5
-        result = type(
-            "FallbackResult",
-            (),
-            {
-                "query": query,
-                "pages": [__import__("types").SimpleNamespace(**p) for p in _fallback_pages],
-                "duration_ms": 0,
-                "crawled_at": __import__(
-                    "datetime"
-                ).datetime.now(__import__("datetime").timezone.utc).isoformat(),
-                "error": None,
-                "passages": [],
-                "dashboard_data": {},
-                "cited_markdown": None,
-                "credibility_map": None,
-                "citation_index": None,
-                "har_entries": [],
-                "har_path": None,
-            },
-        )()
+        # Worker-level failure (crawl4ai/browser crash, launch failure, ...).
+        # The fallback lives in ONE place — the runner's plain-HTTP path, which
+        # re-fetches with the full contract (HAR evidence + metadata). Emit the
+        # error so the runner fails fast, and print the traceback to stderr:
+        # the runner drains stderr into a ring buffer and logs it on failure,
+        # so the REAL cause lands in the backend log (stderr used to go to
+        # DEVNULL, turning every crash into an unexplained pipe-close).
+        _emit({"type": "error", "error": f"crawl worker failed: {exc}"})
+        traceback.print_exc()
+        return 5
 
     pages = [
         {

@@ -89,8 +89,9 @@ describe("TaskListCard â€” honest display (REQ-8 / T17a)", () => {
     expect(hasWorking).toBe(true);
     expect(hasPending).toBe(true);
 
-    // Real tool is shown (not fabricated).
-    expect(screen.getByText(/read_file/)).toBeInTheDocument();
+    // Real tool is shown as its human label (not fabricated, not the raw id):
+    // read_file renders as "Reading File" via the TOOL_TITLES map.
+    expect(screen.getByText(/reading file/i)).toBeInTheDocument();
 
     // The real result preview is shown once the step is expanded.
     const stepBtn = screen.getByText("Read the config file");

@@ -5,7 +5,6 @@ import asyncio
 import json
 import os
 import subprocess
-import webbrowser
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 
@@ -107,18 +106,39 @@ class BrowserServer(BuiltinServer):
 
     async def execute_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
         if name == "open_url":
+            # REQ-16 (T27/T28): agent-initiated navigation is in-app only.
+            # AgentToolBridge intercepts "open_url" BEFORE this MCP dispatch
+            # table (tool_bridge.py _execute_open_url -> in-app open_tab + headless
+            # fetch). This branch is unreachable from the live agent path; it is
+            # dead-code-guarded so a direct MCP caller can never hijack the user's
+            # OS browser (webbrowser.open is banned for agent-initiated navigation).
             url = arguments.get("url", "")
             if not url.startswith(("http://", "https://")):
                 url = "https://" + url
-            webbrowser.open(url)
-            return {"success": True, "message": f"Opened {url}"}
+            return {
+                "success": False,
+                "error": (
+                    "open_url is handled in-app (REQ-16). AgentToolBridge routes "
+                    "it to the in-app browser surface; the OS browser is never "
+                    "launched by the agent."
+                ),
+                "url": url,
+            }
 
         elif name == "search":
             query = arguments.get("query", "")
-            # Use Google search
-            url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
-            webbrowser.open(url)
-            return {"success": True, "message": f"Searched for: {query}"}
+            # REQ-16 (T28): the tool_bridge search interception (_execute_web_search)
+            # is the pattern reference for in-app routing. This raw branch keeps the
+            # same in-app-only guard: never webbrowser.open for agent navigation.
+            return {
+                "success": False,
+                "error": (
+                    "search is handled in-app (REQ-16). AgentToolBridge routes "
+                    "it to the in-app browser surface; the OS browser is never "
+                    "launched by the agent."
+                ),
+                "query": query,
+            }
 
         elif name == "open_incognito":
             url = arguments.get("url", "")

@@ -67,6 +67,135 @@ class ModeChange:
 
 
 @dataclass
+class NodeRecord:
+    """REQ-3 (T8): the compressed, memory-addressed record EVERY node carries.
+
+    Generalized from ``SubLoopFootprint`` (which was sub-loop-child-only and
+    write-once) to ALL nodes — step, split child, and sub-loop. It is the
+    node's memory record: the compressed context (Σ position + what has been
+    attempted/ruled-out + coordinate ref) plus the outcome and edges that
+    later steps, coupling, and recall consume (design.md Data Models).
+
+    THREE memory parts (design.md:172-187):
+      Understanding — ``content_summary`` / ``prior_summary``: what has been
+                      attempted/gathered for this goal (bounded, not a truncated
+                      sample — coverage stays complete, the bound is on cost).
+      Awareness     — ``objective_anchor`` / ``expected_output``: what "done"
+                      means.
+      Direction     — ``remaining`` / ``ruled_out``: what remains and what has
+                      already been closed, so the node does not re-attempt a
+                      path already ruled out.
+      Coordinate ref — ``coordinate_ref`` / ``coords_from`` / ``coords_to``:
+                      memory lookup keys that survive DCP pruning (durable
+                      structured data on the queue item, REQ-3 AC3).
+
+    Bounded: ``size_bytes`` enforces the AC2 cost cap. Degradation: if the
+    referenced memory entry is pruned or unavailable, the node falls back to
+    its inherited text fields rather than failing (REQ-3 Edge Cases).
+    """
+
+    step_id: str
+    parent_step_id: str
+    node_type: str = "step"  # task | step | sub_loop (REQ-18 AC1 — typed in Wave 5 T19)
+    objective_anchor: str = ""
+    content_summary: str = ""
+    prior_summary: str = ""
+    expected_output: str = ""
+    remaining: str = ""
+    ruled_out: str = ""
+    coordinate_ref: Optional[str] = None
+    coords_from: str = ""
+    coords_to: str = ""
+    outcome: str = ""  # VERIFIED | UNVERIFIED | FAILED (label, REQ-3)
+    verified_fraction: float = 0.0  # continuous, 0..1 (REQ-4)
+    # REQ-23 (T37): the MEDIATOR — the resolved tool/action identifier plus a
+    # stable hash of its arguments — written at the same finalize point as
+    # ``outcome``. The causal triple is (Treatment -> Mediator -> Outcome); the
+    # mediator is the ONLY variable the agent controls, so it is the only thing
+    # the graph can learn about (design.md "The causal vocabulary").
+    # AC5: a node with NO mediator records "none" EXPLICITLY — never empty —
+    # so pure decision/synthesis nodes do not rank as failed actions. The
+    # '' default here is the dataclass-construction sentinel only; the
+    # finalize site writes "none" for mediator-less nodes.
+    mediator: str = ""
+    # Where the mediator came from: "explicit" | "predictor" | "fallback" |
+    # "none". Must be recorded or the learning credits the wrong chooser
+    # (REQ-23 edge case: mediator chosen by fallback rather than by the
+    # predictor).
+    mediator_source: str = ""
+    edge_ids: List[str] = field(default_factory=list)  # coupling edges (REQ-5)
+    size_bytes: int = 0
+    created_at: float = field(default_factory=time.time)
+    # REQ-4 AC4 (T16b): the SPECIFIC blocker this split child exists to
+    # resolve — NEVER a restatement of the parent goal. A split that cannot
+    # name what it is resolving records ``blocker=""`` with
+    # ``blocker_named=False``: an unnamed blocker is evidence the failure was
+    # not understood, surfaced (never hidden behind a fresh node id).
+    blocker: str = ""
+    blocker_named: bool = True
+    # REQ-4 AC4 (T16b): FOLD-BACK — sub-loop children fold back as compressed
+    # observations that CHANGED the parent's state (REQ-3 AC1: the parent's
+    # next decision reads node records that now include the children's
+    # outcomes). Bounded by DER_FOLD_BACK_MAX — keep the most recent
+    # outcomes; never a growing log.
+    folded_back: List[str] = field(default_factory=list)
+    # REQ-4 AC1/AC2 (T16): GRADED split marker — a mid-band verified fraction
+    # at the split decision selects a BOUNDED PROBE (width 1) instead of a
+    # full-width re-attempt. The child carries probe=True so the record (and
+    # the FOLD-BACK it folds into the parent) distinguishes a probe from a
+    # genuine wide split — the graded middle path, never a threshold
+    # coin-flip. probe=False does NOT mean "not a probe child" for non-split
+    # nodes (top-level steps are not probes by construction).
+    probe: bool = False
+    # REQ-5 AC4 (T17): coupling-decision provenance. When this step's
+    # retrieval surfaced relevant branches, ``candidates_surfaced`` records how
+    # many were put in front of the deciding step (never pre-selected), and
+    # ``chosen_branch`` records which the step committed to. The coupling edge
+    # to the chosen branch carries the decision as its provenance (AC2). 0 / ""
+    # means no coupling decision occurred at this node (no branches existed).
+    candidates_surfaced: int = 0
+    chosen_branch: str = ""
+    # REQ-5 AC5 (T17b): how many relevant branches EXISTED (before the cap)
+    # when this step's retrieval ran — the DENOMINATOR for candidate-surfacing
+    # coverage ("how often a decision saw >=2 candidates when >=2 existed").
+    # coverage = candidates_surfaced >= 2 among decisions where
+    # candidates_existed >= 2. 0 when no coupling decision occurred.
+    candidates_existed: int = 0
+    # REQ-5 AC4 (T17): the labels of the branches surfaced to this step
+    # (bounded by DER_COUPLING_PROVENANCE_MAX) — "was the agent aware of both
+    # branches" is answerable from the record, not assumed.
+    surfaced_branches: List[str] = field(default_factory=list)
+    # REQ-18 AC2 (T19): the two domain axes — BOTH registry-backed, never free
+    # text. topic_domain is a value from the mycelium DOMAIN_IDS registry
+    # (spaces.py — 13 canonical topics); execution_domain is one of
+    # voice | der | research from the active winding (coupled_registry.py
+    # domain_windings). Registry misses resolve to the registry's
+    # general/unknown bucket and are LOGGED, never invented (AC3). These
+    # default to the general/der sentinels at construction; the finalize site
+    # stamps the resolved registry values onto the record.
+    topic_domain: str = "general"
+    execution_domain: str = "der"
+    # REQ-18 AC1b (T19): ROLE marker — True when this node COMMITTED A DECISION
+    # (surfaced >=1 candidate branch and chose one, REQ-5 AC2), making it a
+    # valid coupling endpoint. {task, step, sub_loop} describes WHERE a node
+    # sits in the tree; this describes WHAT it did, so "which decisions were
+    # informed by branch X" is a lookup (REQ-20 relationship filters) instead
+    # of a table scan.
+    committed_decision: bool = False
+
+
+@dataclass
+class SubLoopFootprint(NodeRecord):
+    """Backward-compatible alias for the generalized NodeRecord.
+
+    Kept so existing call sites / callers of the old name keep working; new
+    code uses NodeRecord (REQ-3 T8).
+    """
+
+    pass
+
+
+@dataclass
 class QueueItem:
     """
     One item in the Director's broadcast queue.
@@ -91,6 +220,20 @@ class QueueItem:
     expected_output: Optional[str] = None  # DER Phase 0: explicit success criterion; consumed by TrailingDirector.analyze_gaps
     is_subloop: bool = False  # DER Phase 2: child of a growth-width split; collapses to parent as one COMPRESS
     independent: bool = False  # Wave 4 / REQ-18 AC1: safe to batch with siblings
+    # REQ-21 (T40): compressed context for sub-loop children — survives DCP
+    # pruning, carries Understanding/Awareness/Direction + coordinate_ref.
+    # Defaults to None for non-split-created steps (every existing call site
+    # is unaffected — the field is only populated by _split_step, T41).
+    node_record: Optional[NodeRecord] = None  # REQ-3 T8: EVERY node carries its memory record
+
+    @property
+    def footprint(self) -> Optional[NodeRecord]:
+        """Backward-compatible alias: footprint == node_record (REQ-3 T8)."""
+        return self.node_record
+
+    @footprint.setter
+    def footprint(self, value: Optional[NodeRecord]) -> None:
+        self.node_record = value
 
 
 # ── DirectorQueue ──────────────────────────────────────────────────────────

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useSyncExternalStore } from "react"
-import type { OpenTabMsg, CloseTabMsg, CrawlerStartedMsg, CrawlerPageMsg, CrawlerErrorMsg, CrawlerCompleteMsg } from "@/types/iris"
+import type { OpenTabMsg, CloseTabMsg, CrawlerStartedMsg, CrawlerPageMsg, CrawlerErrorMsg, CrawlerCompleteMsg, CrawlerProgressMsg, CrawlerPhaseMsg, CrawlerVisionActionMsg, CrawlerSourceParkedMsg } from "@/types/iris"
 
 // WebSocket connection states
 type ConnectionState = "connecting" | "connected" | "disconnected" | "error"
@@ -1302,6 +1302,70 @@ export function useIRISWebSocket(
         break
       }
 
+      // ── Crawler live detail (REQ-11/12, T17/T19) ─────────────────────────
+      // In-flight stage message + structured phase. The SSE fallback emits the
+      // SAME CustomEvent names (useCrawlSSE re-dispatches `iris:${type}`), so
+      // the two transports stay on one event contract (REQ-31 AC4). The WS
+      // handlers today do NOT send these types (phases arrive as `task:progress`
+      // via WSEventBridge); the cases are wired so a future ux_map-routed WS
+      // message lands in the same place — and the SSE path already delivers.
+      case "crawler_progress": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:crawler_progress', {
+            detail: message as unknown as CrawlerProgressMsg
+          }))
+        }
+        break
+      }
+
+      case "crawler_phase": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:crawler_phase', {
+            detail: message as unknown as CrawlerPhaseMsg
+          }))
+        }
+        break
+      }
+
+      // ux_map.py maps CRAWLER_PHASE -> msg_type "task:event" (the SSE contract).
+      // Forward the same name over WS so useCrawl's phase listener fires
+      // regardless of transport.
+      case "task:event": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:task:event', {
+            detail: message as unknown as CrawlerPhaseMsg
+          }))
+        }
+        break
+      }
+
+      case "crawler_vision_action": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:crawler_vision_action', {
+            detail: message as unknown as CrawlerVisionActionMsg
+          }))
+        }
+        break
+      }
+
+      case "crawler_source_parked": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:crawler_source_parked', {
+            detail: message as unknown as CrawlerSourceParkedMsg
+          }))
+        }
+        break
+      }
+
+      case "crawler_sync_required": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:crawler_sync_required', {
+            detail: message as unknown as { session_id: string }
+          }))
+        }
+        break
+      }
+
       // ── Mode change ────────────────────────────────────────────────────────
       // Broadcast from /api/mode POST — iris-launcher set a new mode.
       // Forwarded so useLauncherMode can react without polling.
@@ -1531,7 +1595,76 @@ export function useIRISWebSocket(
   }, [])
 
   // Send message helper — Fix 3 (queue) + Fix 4 (sequence numbers)
+  // Message types that belong to a conversation thread. Anything here MUST
+  // carry a conversation_id or the backend falls back to session_id
+  // (iris_gateway :4454 `payload.get("conversation_id") or session_id`).
+  const CONVERSATION_SCOPED = new Set([
+    'text_message',
+    'voice_command_start',
+    'get_documents',
+    'sync_state',
+    // LEARN from thread changes too, so the stored id tracks the active
+    // thread instead of going stale (a stale id is what caused the merge).
+    'new_conversation',
+    'switch_conversation',
+  ])
+  // Only these may have an id INJECTED when absent — see the note in
+  // sendMessage. Everything else must carry its own or surface the gap.
+  const SUPPLY_IF_MISSING = new Set(['voice_command_start', 'sync_state'])
+
   const sendMessage = useCallback((type: string, payload: Record<string, unknown> = {}) => {
+    // ── CONVERSATION IDENTITY IS OWNED BY THE SOCKET, NOT BY A COMPONENT ──
+    // chat-view.tsx keeps its own activeConversationId in component state and
+    // sends that on text_message. This app is a HANDS-FREE WIDGET: ChatView is
+    // usually CLOSED and the user is speaking, so that state does not exist for
+    // most turns — the id was omitted and the backend fell back to session_id.
+    //
+    // Kernels are cached BY conversation_id (agent_kernel get_agent_kernel), so
+    // a drifting id does not just fragment memory, it CONSTRUCTS A NEW KERNEL
+    // mid-turn and orphans the previous one's in-turn state. Measured live in a
+    // single turn: session_iris -> conv_1786308248687_l669rs2kj -> conv-1 ->
+    // conv_1786321564292_haw9swbjx, four full kernels for one question.
+    //
+    // Fix, same principle as the web-mode resync: the socket owns the identity.
+    // It is localStorage-backed (ACTIVE_ID_KEY), restored on mount, re-synced on
+    // reconnect, and survives every component unmount — which is exactly what a
+    // widget needs. Two directions:
+    //   LEARN  — a caller that DOES supply an id becomes the new current one.
+    //   SUPPLY — a caller that omits one gets the durable id injected.
+    if (CONVERSATION_SCOPED.has(type)) {
+      const supplied = payload.conversation_id
+      if (typeof supplied === 'string' && supplied) {
+        // LEARN — always safe: the caller knows which thread it is in, so the
+        // socket just mirrors it for the paths that cannot know.
+        if (supplied !== currentConversationIdRef.current) {
+          currentConversationIdRef.current = supplied
+          try { localStorage.setItem(ACTIVE_ID_KEY, supplied) } catch { /* ignore */ }
+          setCurrentConversationId(supplied)
+        }
+      } else if (
+        currentConversationIdRef.current &&
+        SUPPLY_IF_MISSING.has(type)
+      ) {
+        // SUPPLY — NARROWED. An earlier revision injected the stored id into
+        // ANY conversation-scoped message that omitted one. That was wrong and
+        // caused real damage: when ChatView had no active thread yet, a
+        // text_message was silently filed into whatever stale thread was last
+        // in localStorage, MERGING separate conversations. Observed live as a
+        // spurious `conv-1` kernel appearing between two freshly created
+        // threads, and as prompts aggregating into one thread after a refresh.
+        //
+        // A wrong-but-plausible id is worse than a missing one: a missing id
+        // is a visible fallback, a wrong one silently corrupts thread history.
+        // So only supply where the caller GENUINELY cannot know the thread —
+        // voice turns (ChatView unmounted, which is the normal state for this
+        // hands-free widget) and reconnect re-binding. text_message and
+        // get_documents always come from a mounted ChatView that knows its own
+        // thread; if they arrive without an id that is a bug to surface, not to
+        // paper over.
+        payload = { ...payload, conversation_id: currentConversationIdRef.current }
+      }
+    }
+
     const seq = seqRef.current++;
     const message = JSON.stringify({ type, payload, seq });
 

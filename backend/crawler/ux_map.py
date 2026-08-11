@@ -30,7 +30,41 @@ UX_MAP: Dict[str, UXMapping] = {
     "CRAWLER_STARTED": UXMapping(
         msg_type="crawler_started",
         component="Orb/ContextPill",
-        action="enter processing_tool (SEARCHING); show source-count badge",
+        action="signal crawl start; payload carries query + url_count + job_id",
+    ),
+    "CRAWLER_PHASE": UXMapping(
+        msg_type="task:event",
+        component="Orb/ContextPill",
+        action="update phase (searching/reading/synthesizing); "
+        "payload carries phase + phase_sequence (REQ-4 AC1/AC3)",
+    ),
+    "CRAWLER_PROGRESS": UXMapping(
+        msg_type="crawler_progress",
+        component="Orb/ContextPill",
+        action="update in-flight stage message (narrowing/refining); "
+        "payload carries stage + message",
+    ),
+    "CRAWLER_VISION_ACTION": UXMapping(
+        msg_type="crawler_vision_action",
+        component="Dashboard/BrowserPanel",
+        action="annotate the existing browser animation surface with the action "
+        "vision just performed (REQ-11 AC4); payload carries job_id + url + "
+        "kind + reason + action_index + total, plus OPTIONAL best-effort "
+        "cursor coordinates (REQ-16 AC7) for the particle-trail cursor mirror: "
+        "click/type carry x + y (normalised 0..1 viewport fractions) + "
+        "viewport_w + viewport_h; scroll carries scroll_dx + scroll_dy instead "
+        "of a point (a point would drift as the page scrolls under it). "
+        "Coordinates are reconstructed from the Playwright DOM target's "
+        "bounding box for the frontend mirror ONLY — the vision model itself "
+        "has no mouse and never sees them. Additive only — the panel's "
+        "visual design and animation timing are unchanged (REQ-11 AC3)",
+    ),
+    "CRAWLER_SOURCE_PARKED": UXMapping(
+        msg_type="crawler_source_parked",
+        component="Chat/PlanCard",
+        action="surface a parked source (REQ-13 AC4): a wall blocked it, one "
+        "question was raised per domain; synthesis lists it as parked, never "
+        "blocks. payload carries url + domain + wall_kind",
     ),
     "CRAWLER_PAGE_FETCHED": UXMapping(
         msg_type="crawler_page_fetched",

@@ -57,7 +57,10 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
             miss_count    INTEGER DEFAULT 0,
             decay_rate    REAL DEFAULT 0.01,
             created_at    REAL,
-            last_traversed REAL
+            last_traversed REAL,
+            -- REQ-26 (T40): observation_count — mirror of db.py's schema;
+            -- the scorer's evidence-weighted update reads and bumps it.
+            observation_count INTEGER DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS mycelium_traversals (

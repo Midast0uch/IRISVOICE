@@ -5,7 +5,7 @@ import { useWorkspaceStore, type WorkspaceState } from '@/stores/workspaceStore'
 
 const SAVE_DEBOUNCE_MS = 2000
 const STORAGE_KEY = 'iris_workspace_state'
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000'
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8090'
 
 interface PendingOp {
   type: 'save'

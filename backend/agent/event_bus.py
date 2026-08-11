@@ -84,6 +84,16 @@ class IRISStreamEvent(enum.Enum):
     # MUST NOT silently report partial completion — it escalates to the user
     # with concrete alternative options (see agent_kernel._der_handle_step_failure).
     TASK_BLOCKED = "task:blocked"
+    # REQ-15 (T26): pause/resume lifecycle state (AC4). Mirrors the ledger
+    # lifecycle values persisted under REQ-9 (paused / running) so the
+    # frontend can render the suspended state.
+    TASK_PAUSED = "task:paused"
+    TASK_RESUMED = "task:resumed"
+    # REQ-15 (T26): steering acknowledgement (AC5). data carries
+    # {channel, message_id, status} with status "queued" (landed in the
+    # steering inbox — not silently queued behind the running turn) or
+    # "considered" (consumed at a step boundary).
+    STEERING_ACK = "steering:ack"
 
     # ── Permissions ─────────────────────────────────────────────────────
     PERMISSION_REQUEST = "permission:request"

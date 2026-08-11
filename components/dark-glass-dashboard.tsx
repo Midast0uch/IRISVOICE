@@ -20,6 +20,7 @@ import { ModelBrowserPanel } from './dashboard/ModelBrowserPanel';
 import { MarketplaceScreen } from './integrations/MarketplaceScreen';
 import { useLauncherMode } from '@/hooks/useLauncherMode';
 import { useInferenceState } from '@/hooks/useInferenceState';
+import { useCrawlContext } from '@/hooks/CrawlProvider';
 import { DCPStatsPanel } from '@/components/dev/DCPStatsPanel';
 import { MonitorTabContainer } from '@/components/dashboard/MonitorTabContainer';
 import { BrowserNavigationOverlay } from '@/components/iris/browser/BrowserNavigationOverlay';
@@ -442,6 +443,13 @@ export function DarkGlassDashboard({
   // useLauncherMode fetches /api/mode so this works even when iris-launcher ran before IRISVOICE loaded.
   const { mode: irisMode } = useLauncherMode();
 
+  // ── REQ-12 (T17): crawl state is hoisted into CrawlProvider ABOVE this
+  // component's unmount boundary (mounted in app/layout.tsx). The panel may
+  // unmount/remount freely; crawl state, its listeners and the SSE fallback
+  // all live up there. We consume the provider's state here instead of
+  // registering our own iris:crawler_* listeners (deleted — the duplicates).
+  const { state: crawlState } = useCrawlContext();
+
   const {
     providers,
     role_bindings,
@@ -463,6 +471,11 @@ export function DarkGlassDashboard({
   // (between the sub-app title and the notification button). Owned here rather
   // than in dashboard-wing because the header lives here — the wing could only
   // render a band ABOVE the header, which is what it used to do.
+  //
+  // The REAL crawl state lives in CrawlProvider (useCrawl). This local state is
+  // a display mirror synced from the provider (see the sync effect below); it
+  // exists only so the finished-pill timeout can clear the pill without touching
+  // provider state. Visuals are unchanged (REQ-11 AC3).
   const [crawler, setCrawler] = useState<{
     active: boolean
     query: string
@@ -588,7 +601,11 @@ export function DarkGlassDashboard({
       }
       return [...prev, tab]
     })
-    setActiveTabId(msg.id)
+    // REQ-11 (T13): never force the ACTIVE tab to a url-less dashboard tab
+    // that has nothing to show — that is how the panel got hijacked to a
+    // blank/empty view while the crawl's real content lived elsewhere.
+    const isContentless = msg.tab_type === 'dashboard' && !msg.url && !msg.data
+    if (!isContentless) setActiveTabId(msg.id)
   }, [])
 
   // ── REQ-1 AC1/AC2: navigate the panel to each page the agent reads ───────
@@ -601,29 +618,42 @@ export function DarkGlassDashboard({
   // Each fetched page becomes a WEB tab carrying its capture provenance, so
   // the frame loads /api/browser/capture/{job_id}/{page_number} — the exact
   // bytes the agent read, not a second live fetch.
+  //
+  // REQ-12 (T17): crawl state now lives in CrawlProvider. Instead of a raw
+  // iris:crawler_page_fetched listener (deleted), derive the tabs from the
+  // provider's pages array. Only pages with a job_id have capture bytes to
+  // show. A seen-set keeps this idempotent across re-renders; a remount
+  // (fresh ref) re-derives the tabs from restored provider state (AC3).
+  const processedCrawlTabsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    const onPageFetched = (e: Event) => {
-      const d = (e as CustomEvent<{
-        url?: string; page_number?: number; total?: number
-        title?: string; job_id?: string
-      }>).detail ?? {}
-      if (!d.url || !d.job_id || d.page_number == null) return  // no capture to show
+    for (const p of crawlState.pages) {
+      if (!p.jobId || p.pageNumber == null) continue  // no capture to show
+      const key = `${p.jobId}:${p.pageNumber}`
+      if (processedCrawlTabsRef.current.has(key)) continue
+      processedCrawlTabsRef.current.add(key)
+      const tabId = `crawl-${p.jobId}-${p.pageNumber}`
       openTab({
-        id: `crawl-${d.job_id}-${d.page_number}`,
+        id: tabId,
         tab_type: 'web',
-        title: d.title || d.url,
-        url: d.url,
+        title: p.title || p.url,
+        url: p.url,
       } as OpenTabMsg)
       setTabs(prev => prev.map(t =>
-        t.id === `crawl-${d.job_id}-${d.page_number}`
-          ? { ...t, captureJobId: d.job_id, capturePageNumber: d.page_number,
+        t.id === tabId
+          ? { ...t, captureJobId: p.jobId, capturePageNumber: p.pageNumber,
+              captureFetchedAt: new Date().toISOString() }
+          : t,
+      ))
+      // Also attach provenance to any existing web tab for the same URL — an
+      // open_tab may have created it before the page event arrived.
+      setTabs(prev => prev.map(t =>
+        t.type === 'web' && t.url === p.url
+          ? { ...t, captureJobId: p.jobId, capturePageNumber: p.pageNumber,
               captureFetchedAt: new Date().toISOString() }
           : t,
       ))
     }
-    window.addEventListener('iris:crawler_page_fetched', onPageFetched)
-    return () => window.removeEventListener('iris:crawler_page_fetched', onPageFetched)
-  }, [openTab])
+  }, [crawlState.pages, openTab])
 
   const closeTab = useCallback((tabId: string) => {
     setTabs(prev => {
@@ -766,35 +796,14 @@ export function DarkGlassDashboard({
       onOpenTab(e)
       if (activeSubApp !== 'browser') setActiveSubApp('browser')
     }
-    // REQ-1 AC2 (T5): when the crawler reports a page fetch, attach the
-    // capture provenance to the matching web tab so the iframe can replay
-    // /api/browser/capture/{job_id}/{page_number} instead of a second live
-    // fetch. Matches by URL (the crawler reports the page it actually read).
-    const onCrawlerPageFetched = (e: Event) => {
-      const d = (e as CustomEvent).detail
-      if (!d || typeof d !== 'object') return
-      const { url, page_number, job_id } = d as { url?: string; page_number?: number; job_id?: string }
-      if (!url || !job_id || typeof page_number !== 'number') return
-      setTabs(prev =>
-        prev.map(t =>
-          t.type === 'web' && t.url === url
-            ? {
-                ...t,
-                captureJobId: job_id,
-                capturePageNumber: page_number,
-                captureFetchedAt: new Date().toISOString(),
-              }
-            : t,
-        ),
-      )
-    }
+    // REQ-12 (T17): capture-provenance attachment for web tabs is now derived
+    // from CrawlProvider's pages array (see the tab-creation effect above);
+    // the duplicated iris:crawler_page_fetched listener was deleted.
     window.addEventListener('iris:open_tab', onOpenTabBrowser)
     window.addEventListener('iris:close_tab', onCloseTab)
-    window.addEventListener('iris:crawler_page_fetched', onCrawlerPageFetched)
     return () => {
       window.removeEventListener('iris:open_tab', onOpenTabBrowser)
       window.removeEventListener('iris:close_tab', onCloseTab)
-      window.removeEventListener('iris:crawler_page_fetched', onCrawlerPageFetched)
     }
   }, [openTab, closeTab, activeSubApp])
 
@@ -987,49 +996,32 @@ export function DarkGlassDashboard({
   //
   // handleSubAppChange (not setActiveSubApp) so the sidebar collapses exactly
   // as it does when the browser is opened by hand.
+  //
+  // REQ-12 (T17): crawl events now flow through CrawlProvider (the duplicated
+  // iris:crawler_started / iris:crawler_page_fetched / iris:crawler_complete /
+  // iris:crawler_error listeners were deleted). Edge-detect the provider's
+  // active flag so the browser surfaces once per crawl start.
+  const wasCrawlActiveRef = useRef(false);
   useEffect(() => {
-    const onStarted = (e: Event) => {
-      const d = (e as CustomEvent<{ query?: string; url_count?: number }>).detail ?? {}
-      setCrawler({
-        active: true,
-        query: d.query ?? '',
-        pagesDone: 0,
-        pagesTotal: d.url_count ?? 0,
-        error: null,
-      })
+    if (crawlState.active && !wasCrawlActiveRef.current) {
       handleSubAppChange('browser')
     }
-    const onPage = (e: Event) => {
-      const d = (e as CustomEvent<{ page_number?: number; total?: number }>).detail ?? {}
-      setCrawler(prev => ({
-        ...prev,
-        // A page can arrive without a preceding `started` (reconnect, or a
-        // cached job replaying); treat it as proof a crawl is running.
-        active: true,
-        pagesDone: d.page_number ?? prev.pagesDone + 1,
-        pagesTotal: d.total ?? prev.pagesTotal,
-      }))
-    }
-    const onComplete = () => setCrawler(prev => ({ ...prev, active: false }))
-    const onError = (e: Event) => {
-      const d = (e as CustomEvent<{ message?: string }>).detail ?? {}
-      setCrawler(prev => ({
-        ...prev,
-        active: false,
-        error: d.message ?? 'Web search failed',
-      }))
-    }
-    window.addEventListener('iris:crawler_started', onStarted)
-    window.addEventListener('iris:crawler_page_fetched', onPage)
-    window.addEventListener('iris:crawler_complete', onComplete)
-    window.addEventListener('iris:crawler_error', onError)
-    return () => {
-      window.removeEventListener('iris:crawler_started', onStarted)
-      window.removeEventListener('iris:crawler_page_fetched', onPage)
-      window.removeEventListener('iris:crawler_complete', onComplete)
-      window.removeEventListener('iris:crawler_error', onError)
-    }
-  }, [handleSubAppChange])
+    wasCrawlActiveRef.current = crawlState.active
+  }, [crawlState.active, handleSubAppChange])
+
+  // Mirror provider crawl state into the header pill's local display state.
+  // The provider (useCrawl) is the single source of truth; this local copy
+  // exists so the finished-pill timeout below can clear the pill without
+  // touching provider state. Visuals are unchanged (REQ-11 AC3).
+  useEffect(() => {
+    setCrawler({
+      active: crawlState.active,
+      query: crawlState.query,
+      pagesDone: crawlState.pages.length,
+      pagesTotal: crawlState.total,
+      error: crawlState.error,
+    })
+  }, [crawlState.active, crawlState.query, crawlState.pages.length, crawlState.total, crawlState.error])
 
   // Clear a finished search's pill so a stale error does not sit in the header
   // forever. Only the settled states time out — an active crawl never does.
@@ -1601,6 +1593,13 @@ export function DarkGlassDashboard({
                pagesTotal={navOverlay.pagesTotal}
                glowColor={glowColor}
                chromeInset={browserChromeInset}
+               // REQ-11 AC4: the centre orb becomes the vision cursor. Passed
+               // straight through — the overlay owns the motion, this site only
+               // supplies the live action.
+               visionAction={navOverlay.visionAction}
+               visionX={navOverlay.visionX}
+               visionY={navOverlay.visionY}
+               visionStep={navOverlay.visionStep}
              />
 
              {/* ── Tab bar ─────────────────────────────────────────────────── */}

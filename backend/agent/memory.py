@@ -321,8 +321,9 @@ class ConversationMemory:
             # learns U_SPLIT/width/verify-strictness from the ledgers.
             try:
                 from backend.agent.caducean_trajectory import (
-                    CaduceanTrajectoryRecorder,
+                    get_trajectory_recorder,
                 )
+                from backend.memory import get_memory_interface
 
                 _domain = getattr(self, "domain", None) or "general"
                 _natural = bool(getattr(self, "natural_exit", False))
@@ -335,7 +336,10 @@ class ConversationMemory:
                     _tokens_total = float(self.get_token_count().get("total_tokens", 0.0))
                 except Exception:
                     _tokens_total = 0.0
-                CaduceanTrajectoryRecorder().record_session_exit(
+                # REQ-20: bind to the APPLICATION store via MemoryInterface.
+                # If no interface is live, get_trajectory_recorder degrades to
+                # the no-op recorder (never the BUILD-memory .mcm/coordinates.db).
+                get_trajectory_recorder(get_memory_interface()).record_session_exit(
                     session_id=self.session_id,
                     domain=_domain,
                     natural_exit=_natural,
@@ -343,6 +347,20 @@ class ConversationMemory:
                     drift=float(getattr(self, "drift", 0.0) or 0.0),
                     tokens_total=_tokens_total,
                 )
+                # REQ-18 AC1c (T19): at the SAME session boundary, run the
+                # topic_domain coverage check — the falsifiable measurement
+                # that the typed topic axis carries information (modal bucket
+                # does not dominate). Same recorder, same store, never raises.
+                try:
+                    get_trajectory_recorder(
+                        get_memory_interface()
+                    ).record_topic_domain_coverage(self.session_id)
+                except Exception as _cov_exc:
+                    logger.debug(
+                        "[ConversationMemory] topic_domain coverage check "
+                        "failed: %s",
+                        _cov_exc,
+                    )
             except Exception as _se_exc:
                 logger.debug("[ConversationMemory] record_session_exit failed: %s", _se_exc)
             return True

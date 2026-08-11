@@ -814,6 +814,18 @@ async def lifespan(app: FastAPI):
         except Exception:
             pass
 
+        # Close the pooled vision browser. Its idle watchdog handles the normal
+        # case, but on shutdown there is no later tick to fire — without this an
+        # owned Chromium survives the backend as an orphan. Ownership-gated
+        # inside the pool: it only ever closes a browser it started itself.
+        try:
+            from backend.vision.browser_pool import shutdown_browser_pool
+
+            await shutdown_browser_pool()
+            logger.info("  - [CLEANUP] Pooled vision browser closed")
+        except Exception:
+            pass
+
         logger.info("IRIS Backend shutdown completed successfully!")
     except Exception as e:
         logger.error(f"[ERROR] Error during shutdown: {e}")
@@ -876,11 +888,14 @@ from backend.api.crawl_stream import router as crawl_stream_router
 # and multi-session coupling ship DISABLED, and their metrics are otherwise
 # in-process only — this is how a live run is verified by hand.
 from backend.api.caducean_debug import router as caducean_debug_router
+# In-app browser surface: capture replay (REQ-1) + fetch proxy (REQ-2/REQ-5).
+from backend.api.browser_surface import router as browser_surface_router
 
 app.include_router(status_snapshot_router)
 app.include_router(chat_router)
 app.include_router(crawl_stream_router)
 app.include_router(caducean_debug_router)
+app.include_router(browser_surface_router)
 
 
 # ── Idle tracker middleware ────────────────────────────────────────────────
@@ -2134,6 +2149,30 @@ _client_tasks: Dict[str, Set[asyncio.Task]] = {}
 # Message types that are handled immediately (lightweight control frames)
 _CONTROL_FRAMES = {"ping", "pong", "request_state"}
 
+# REQ-15 (T25/T26): steer / pause / stop / resume ride a dedicated channel so
+# they reach the RUNNING DER loop at its next step boundary instead of
+# queueing behind a running turn's handle_message (_session_message_locks).
+try:
+    from backend.agent.steering import (
+        STEERING_CHANNELS,
+        CHANNEL_RESUME,
+        get_steering_inbox,
+        emit_queued_ack,
+        resend_stale_acks,
+    )
+except Exception:  # pragma: no cover — import must never break startup
+    STEERING_CHANNELS = frozenset()
+    CHANNEL_RESUME = "resume"
+
+    def get_steering_inbox(*_a, **_k):  # type: ignore[no-redef]
+        return None
+
+    def emit_queued_ack(*_a, **_k):  # type: ignore[no-redef]
+        return None
+
+    def resend_stale_acks(*_a, **_k):  # type: ignore[no-redef]
+        return []
+
 
 @app.websocket("/ws/{client_id}")
 async def websocket_endpoint(
@@ -2180,6 +2219,14 @@ async def websocket_endpoint(
                 pass  # never block the message loop
             logger.info(f"[WS] Processing msg_type={msg_type} from {client_id}")
 
+            # REQ-15 AC5: any frame is a chance to re-send an unacknowledged
+            # steering record's "queued" ack (cheap; off the critical path).
+            try:
+                if active_session_id:
+                    resend_stale_acks(active_session_id)
+            except Exception:
+                pass
+
             if msg_type in _CONTROL_FRAMES:
                 # Control frames: handle immediately inline
                 try:
@@ -2187,6 +2234,31 @@ async def websocket_endpoint(
                 except Exception as exc:
                     logger.error(
                         f"[WS] Error in control frame handler for {client_id}: {exc}",
+                        exc_info=True,
+                    )
+            elif msg_type in STEERING_CHANNELS or msg_type == CHANNEL_RESUME:
+                # REQ-15 (T25/T26): steer / pause / stop / resume — push into
+                # the steering inbox NOW (not behind the session lock) so the
+                # RUNNING DER loop consumes them at its next step boundary
+                # (AC1). AC5: acknowledge the landing immediately ("queued")
+                # and re-send any still-unacknowledged (stale) records.
+                try:
+                    _rec = get_steering_inbox().push(
+                        channel=msg_type,
+                        session_id=active_session_id,
+                        text=message.get("text", ""),
+                        message_id=message.get("message_id"),
+                    )
+                    emit_queued_ack(_rec)
+                    # AC5: an unacknowledged steering message SHALL be re-sent.
+                    resend_stale_acks(active_session_id)
+                    logger.info(
+                        f"[WS] {msg_type} queued for session {active_session_id} "
+                        f"(REQ-15 steering channel)"
+                    )
+                except Exception as exc:
+                    logger.error(
+                        f"[WS] Error queueing {msg_type} for {client_id}: {exc}",
                         exc_info=True,
                     )
             else:
@@ -2336,7 +2408,7 @@ async def handle_memory_message(client_id: str, session_id: str, message: dict):
 # The Tauri Rust shell calls these via the caducean.rs commands; the
 # frontend calls them indirectly via Tauri invoke() (not directly).
 #
-# Contract: see backend/tests/contracts/caducean_api_v2.json and
+# Contract: see backend/tests/contract/caducean_api_v2.json and
 # backend/tests/test_caducean_api_contract.py for the FROZEN schema.
 #
 # Design notes:

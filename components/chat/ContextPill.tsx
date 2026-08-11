@@ -83,9 +83,9 @@ export default function ContextPill({
   const actionText = truncatedAction || phaseCode
 
   return (
-    <div
-      className="flex items-center gap-2 px-2 py-1 rounded-lg max-w-[200px]"
-      style={{
+      <div
+        className="flex items-center justify-end gap-1.5 px-1.5 py-1 pr-3 -ml-2 rounded-full max-w-[200px]"
+        style={{
         background: "rgba(10,11,22,0.55)",
         backdropFilter: "blur(12px)",
         WebkitBackdropFilter: "blur(12px)",
@@ -97,12 +97,6 @@ export default function ContextPill({
           : `Context: ${usedTokens} / ${maxTokens} tokens — ${fullPhase}`
       }
     >
-      <span
-        className="text-[9px] font-mono tabular-nums tracking-wide whitespace-nowrap"
-        style={{ color: "rgba(255,255,255,0.7)" }}
-      >
-        {formatTokens(usedTokens)} / {formatTokens(maxTokens)}
-      </span>
       <div
         className="w-12 h-[3px] rounded-full overflow-hidden shrink-0"
         style={{ background: "rgba(255,255,255,0.1)" }}
@@ -112,6 +106,12 @@ export default function ContextPill({
           style={{ width: `${pct * 100}%`, background: color }}
         />
       </div>
+      <span
+        className="text-[9px] font-mono tabular-nums tracking-wide whitespace-nowrap"
+        style={{ color: "rgba(255,255,255,0.7)" }}
+      >
+        {formatTokens(usedTokens)} / {formatTokens(maxTokens)}
+      </span>
       <span
         className="text-[9px] font-mono uppercase tracking-wide truncate"
         style={{ color: glowColor }}

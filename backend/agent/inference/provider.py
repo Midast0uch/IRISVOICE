@@ -107,6 +107,8 @@ PROVIDER_PRESETS: list[dict] = [
      "api_base_url": "https://api.deepseek.com"},
     {"id": "anthropic", "label": "Anthropic", "kind": "api", "needs_key": True,
      "api_base_url": "https://api.anthropic.com/v1"},
+    {"id": "venice", "label": "Venice AI", "kind": "api", "needs_key": True,
+     "api_base_url": "https://api.venice.ai/api/v1"},
     {"id": "lmstudio", "label": "LM Studio", "kind": "local_openai", "needs_key": False,
      "api_base_url": "http://localhost:1234"},
 ]

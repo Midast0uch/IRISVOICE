@@ -13,6 +13,7 @@ import signal
 import subprocess
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Tuple
@@ -73,7 +74,100 @@ def should_idle_stop() -> bool:
     """Pure predicate: is the owned server idle past the timeout?"""
     if _VISION_SERVER_PID is None:
         return False
+    if has_active_lease():
+        return False  # REQ-9: never idle-stop a server under an active lease
     return (time.monotonic() - _last_vision_use) >= _IDLE_TIMEOUT
+
+
+# --- Vision lease (T9, REQ-7/REQ-9) ------------------------------------------
+# A counted lease with a hard expiry. While any lease is active the idle
+# watchdog defers the stop, so a fetch.vision session (multi-action loop,
+# possibly > 120 s wall time) cannot be killed mid-task. Leases are pure
+# bookkeeping here — no server calls — and expire lazily.
+
+_VISION_LEASES: dict[str, float] = {}  # lease_id -> monotonic deadline
+_LEASE_LOCK = threading.Lock()
+
+
+class VisionLease:
+    """Context-managed vision lease with hard expiry.
+
+    Usable as ``with acquire_vision_lease(max_ms=...) as lease:`` so the
+    lease is ALWAYS released on exception. ``active`` is checked lazily
+    against the deadline, so an abandoned lease self-expires.
+    """
+
+    __slots__ = ("_lease_id", "_deadline", "_active")
+
+    def __init__(self, lease_id: str, deadline: float):
+        self._lease_id = lease_id
+        self._deadline = deadline
+        self._active = True
+
+    @property
+    def lease_id(self) -> str:
+        return self._lease_id
+
+    @property
+    def deadline(self) -> float:
+        return self._deadline
+
+    @property
+    def expired(self) -> bool:
+        return time.monotonic() >= self._deadline
+
+    @property
+    def active(self) -> bool:
+        if not self._active:
+            return False
+        if self.expired:
+            self.release()
+            return False
+        return True
+
+    def release(self) -> None:
+        if not self._active:
+            return
+        self._active = False
+        with _LEASE_LOCK:
+            _VISION_LEASES.pop(self._lease_id, None)
+
+    def __enter__(self) -> "VisionLease":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.release()  # releases on exception (REQ-9 AC3) and on normal exit
+
+
+def acquire_vision_lease(max_ms: float = 60_000.0) -> Optional[VisionLease]:
+    """Acquire a vision lease that hard-expires after ``max_ms``.
+
+    Returns None when the owned vision server is not running (nothing to
+    protect) — callers treat None as "no lease needed, proceed".
+    """
+    _prune_expired_leases()
+    if _VISION_SERVER_PID is None:
+        return None
+    deadline = time.monotonic() + max(1.0, max_ms) / 1000.0
+    lease_id = uuid.uuid4().hex
+    with _LEASE_LOCK:
+        _VISION_LEASES[lease_id] = deadline
+    return VisionLease(lease_id, deadline)
+
+
+def has_active_lease() -> bool:
+    """True while at least one unexpired lease is held (REQ-9 AC2)."""
+    _prune_expired_leases()
+    with _LEASE_LOCK:
+        return bool(_VISION_LEASES)
+
+
+def _prune_expired_leases() -> None:
+    now = time.monotonic()
+    with _LEASE_LOCK:
+        expired = [lid for lid, dl in _VISION_LEASES.items() if now >= dl]
+        for lid in expired:
+            _VISION_LEASES.pop(lid, None)
 
 
 def _stop_owned_vision_server() -> None:
@@ -102,7 +196,7 @@ def _idle_stop() -> None:
     with _idle_lock:
         _idle_timer = None
     if not should_idle_stop():
-        return
+        return  # REQ-9: active lease -> defer; _touch_vision_use reschedules
     _stop_owned_vision_server()
     cb = _vision_idle_callback
     if cb is not None:
@@ -227,9 +321,18 @@ def _ensure_vision_server_running(base_url: str = "") -> bool:
 
     try:
         import httpx
-        # Use the provided base_url, or construct one from the config port
+        # base_url ALREADY ENDS IN /v1 (LFMVLConfig.base_url is
+        # "http://localhost:<port>/v1"), so the endpoint is "/models" — NOT
+        # "/v1/models". Appending /v1 again produced .../v1/v1/models, which
+        # 404s forever: the health check therefore reported "not running" for a
+        # server that was up, then the readiness loop below made the SAME
+        # mistake and timed out after 30s. Live proof 2026-08-10:
+        # GET /v1/models -> 200, GET /v1/v1/models -> 404, while the server
+        # logged "server is listening on http://127.0.0.1:18181" in under 2s.
+        # `_call()` at the bottom of this file always got this right
+        # (f"{base_url}/models") — only these two probes were wrong.
         check_url = base_url or f"http://localhost:{requested_port}/v1"
-        r = httpx.get(f"{check_url}/v1/models", timeout=2.0)
+        r = httpx.get(f"{check_url}/models", timeout=2.0)
         if r.status_code == 200:
             return True
     except Exception:
@@ -278,11 +381,15 @@ def _ensure_vision_server_running(base_url: str = "") -> bool:
         )
         global _VISION_SERVER_PID
         _VISION_SERVER_PID = proc.pid
-        # Wait up to 30s for server to be ready
+        # Wait up to 30s for server to be ready. Probe the SAME url the health
+        # check uses — `base_url` may be empty (the parameter defaults to "")
+        # in which case f"{base_url}/..." is not even a valid URL, so every
+        # iteration raised and the loop always fell through to the 30s warning.
+        ready_url = base_url or f"http://localhost:{requested_port}/v1"
         for _ in range(60):
             time.sleep(0.5)
             try:
-                r = httpx.get(f"{base_url}/v1/models", timeout=1.0)
+                r = httpx.get(f"{ready_url}/models", timeout=1.0)
                 if r.status_code == 200:
                     logger.info("[LFMVLProvider] Vision server ready.")
                     return True

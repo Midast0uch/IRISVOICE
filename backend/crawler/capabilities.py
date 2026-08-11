@@ -65,7 +65,24 @@ class FetchCrawlCapability:
         # Headless extraction is always available; no external server needed.
         return True
 
-    async def fetch_one(self, url: str, goal: str, job_id: str) -> FetchOutcome:
+    async def fetch_one(
+        self,
+        url: str,
+        goal: str,
+        job_id: str,
+        on_progress=None,
+    ) -> FetchOutcome:
+        """Fetch one URL through the crawl path.
+
+        ``on_progress`` is an OPTIONAL keyword (the protocol call stays
+        3-positional so capabilities remain interchangeable, REQ-6 AC1). It is
+        load-bearing for the UI: without it ``fetch_url`` builds a no-op emitter
+        and CRAWLER_PAGE_FETCHED never reaches the browser panel. That is
+        exactly what happened when per-URL dispatch moved onto capabilities —
+        live 2026-08-10 23:27, five real Exa URLs fetched and ZERO
+        `[crawl-ui] CRAWLER_PAGE_FETCHED` events emitted, so the panel showed no
+        URL progression and the nav overlay's animation had nothing to advance.
+        """
         from backend.crawler.capture_store import _safe_job  # noqa: F401  (typing only)
         from backend.crawler.orchestrator import CrawlOrchestrator
         from backend.crawler.usability import page_is_usable
@@ -75,6 +92,7 @@ class FetchCrawlCapability:
             url=url,
             session_id=job_id,
             job_id=job_id,
+            on_progress=on_progress,
         )
         duration_ms = int((time.monotonic() - t_start) * 1000)
 

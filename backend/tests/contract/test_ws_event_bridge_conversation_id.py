@@ -22,6 +22,12 @@ except ImportError:
 class _CaptureWS:
     def __init__(self):
         self.broadcasts = []
+        self._sessions = {"c1"}
+
+    def session_exists(self, session_id):
+        # Mirrors ws_manager.WSManager.session_exists (the bridge now checks
+        # it before routing to a session-scoped broadcast).
+        return session_id in self._sessions
 
     async def broadcast_to_session(self, session_id, msg):
         self.broadcasts.append((session_id, msg))

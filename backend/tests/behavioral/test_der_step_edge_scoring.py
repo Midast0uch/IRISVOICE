@@ -1,4 +1,4 @@
-"""Behavioral: REQ-1 AC2/AC3/AC4 — the per-step edge-score consequence of a
+﻿"""Behavioral: REQ-1 AC2/AC3/AC4 â€” the per-step edge-score consequence of a
 step's ``verified_label``, driven through the REAL
 ``AgentKernel._der_finalize_step`` (same harness pattern as
 test_failed_step_writes_commit_row.py).
@@ -7,14 +7,14 @@ Spec: specs/phase-6-der-integrity/requirements.md REQ-1 AC2, AC3, AC4.
 
 The gap this file closes: the commit ledger (REQ-1 AC1) already wrote a row
 for every VERIFIED/UNVERIFIED/FAILED step, but nothing fed that label into
-the pre-existing, generic scoring mechanisms — ``EdgeScorer`` (scorer.py,
+the pre-existing, generic scoring mechanisms â€” ``EdgeScorer`` (scorer.py,
 the hit/partial/miss delta table) and the episodes-table AVOID section
 (evidence.py's ``_avoid_list`` / ``assemble_evidence``). Both of those
-mechanisms are exercised here UNCHANGED — only the missing per-step call
+mechanisms are exercised here UNCHANGED â€” only the missing per-step call
 (``AgentKernel._der_score_step_outcome``) is new.
 
 Every assertion is on the EFFECT (a real edge score in a real
-CoordinateStore, a real line in a real ``assemble_evidence`` block) —
+CoordinateStore, a real line in a real ``assemble_evidence`` block) â€”
 never on whether a function was called.
 """
 
@@ -40,7 +40,7 @@ from backend.memory.mycelium.store import CoordinateStore
 
 # ---------------------------------------------------------------------------
 # Minimal in-memory Mycelium schema (mirrors backend/memory/tests/
-# test_mycelium_scorer.py's helpers) — only the two tables
+# test_mycelium_scorer.py's helpers) â€” only the two tables
 # CoordinateStore/SessionRegistry actually touch.
 # ---------------------------------------------------------------------------
 
@@ -59,7 +59,10 @@ def _make_mem_conn() -> sqlite3.Connection:
             score REAL DEFAULT 0.5, edge_type TEXT DEFAULT 'traversal',
             traversal_count INTEGER DEFAULT 0, hit_count INTEGER DEFAULT 0,
             miss_count INTEGER DEFAULT 0, decay_rate REAL DEFAULT 0.01,
-            created_at REAL, last_traversed REAL
+            created_at REAL, last_traversed REAL,
+            -- REQ-26 (T40): observation_count — mirror of db.py's schema;
+            -- the scorer's evidence-weighted update reads and bumps it.
+            observation_count INTEGER DEFAULT 0
         );
         """
     )
@@ -101,7 +104,7 @@ def _edge_score(conn: sqlite3.Connection, edge_id: str) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Duck-typed stand-ins — only the surface _der_score_step_outcome and
+# Duck-typed stand-ins â€” only the surface _der_score_step_outcome and
 # evidence.py's AVOID/prediction helpers actually touch (._store, ._registry,
 # plus the episode write path AC4 depends on). Real CoordinateStore /
 # SessionRegistry underneath, so score deltas and AVOID rows are real.
@@ -119,7 +122,7 @@ class _FakeMemoryInterface:
     without raising, plus the episode-store write AC4's AVOID path depends
     on. ``store_episode`` writes directly into an `episodes` table on the
     SAME connection real evidence.py._avoid_list reads, mirroring the shape
-    EpisodicStore.store() persists (id/session/task/tool_sequence/type) —
+    EpisodicStore.store() persists (id/session/task/tool_sequence/type) â€”
     without pulling the encrypted, embedding-backed store into this test.
     """
 
@@ -160,7 +163,7 @@ class _FakeMemoryInterface:
 
 
 class _NoOpRecorder:
-    """Stub CaduceanTrajectoryRecorder — the commit ledger itself is
+    """Stub CaduceanTrajectoryRecorder â€” the commit ledger itself is
     REQ-1 AC1, already covered elsewhere; not re-tested here."""
 
     def __init__(self, *a, **kw):
@@ -186,8 +189,8 @@ def _make_kernel(conn: sqlite3.Connection, verdict_label: str):
     k._der_last_u_mag = None
     k._der_work_units = 10
     k._der_live_cad_state = lambda session: {"u": 0.5, "xi": 0.1}
-    k._split_step = lambda item, reason, cad, wu: []
-    k._verify_step_result = lambda goal, expected, result: verdict_label
+    k._split_step = lambda item, reason, cad, wu, step_result="": []
+    k._verify_step_result = lambda goal, expected, result, tool=None, success=False: verdict_label
     return k, myc
 
 
@@ -217,7 +220,7 @@ def _finalize(kernel, item, result: str = "step output text long enough", succes
 @pytest.fixture(autouse=True)
 def _patch_ledger(monkeypatch):
     # The commit-ledger write (REQ-1 AC1) is orthogonal to this file's
-    # concern (the per-step scoring consequence) — stub it out exactly like
+    # concern (the per-step scoring consequence) â€” stub it out exactly like
     # test_failed_step_writes_commit_row.py does, so a real sqlite3 backing
     # isn't needed for der_commits here.
     monkeypatch.setattr(_ct_module, "CaduceanTrajectoryRecorder", _NoOpRecorder)
@@ -232,28 +235,64 @@ def _make_step_item(step_id: str, tool: str = "run_command", description: str = 
     )
 
 
+def _region_mediator_edge(conn: sqlite3.Connection, from_id: str, mediator: str) -> Optional[str]:
+    """Resolve the (coordinate-region, mediator) edge created by the REQ-26
+    region-scoped scorer: the edge from the region node to the toolpath node
+    whose label is the mediator tool."""
+    row = conn.execute(
+        """SELECT e.edge_id FROM mycelium_edges e
+           JOIN mycelium_nodes m ON m.node_id = e.to_node_id
+           WHERE e.from_node_id = ? AND m.label = ? AND m.space_id = 'toolpath'""",
+        (from_id, mediator),
+    ).fetchone()
+    return row[0] if row else None
+
+
 class TestVerifiedStepHitScores:
-    """REQ-1 AC2: VERIFIED steps remain hit-scored — no regression from
-    adding UNVERIFIED/FAILED wiring."""
+    """REQ-1 AC2 (as amended by REQ-26 AC1): VERIFIED steps remain hit-scored.
+
+    The scored edge is now the (coordinate-region, mediator) pair — the edge
+    from the session's active region node to the toolpath node for the step's
+    tool (REQ-26 AC1: "not a global per-tool score"). The same +0.05 first-
+    observation impact applies (REQ-26 AC1 keeps the first observation at
+    full strength: alpha = 1/(1+0) = 1.0)."""
 
     def test_verified_step_applies_hit_delta(self):
         conn = _make_mem_conn()
         kernel, myc = _make_kernel(conn, "VERIFIED")
         n_from = _insert_node(conn)
         n_to = _insert_node(conn)
+        # A pre-existing outbound edge that is NOT the (region, mediator)
+        # pair must stay untouched (the pre-REQ-26 global fan-out scored it;
+        # REQ-26 AC1 replaced that with the caller-selected pair edge).
         edge_id = _insert_edge(conn, n_from, n_to, score=0.5)
         myc._registry.register("sess-scoring", [n_from])
 
         _finalize(kernel, _make_step_item("step-v1"))
 
-        assert _edge_score(conn, edge_id) == pytest.approx(0.55, abs=1e-6), (
-            "VERIFIED must still hit-score (EdgeScorer +0.05) — no regression"
+        assert _edge_score(conn, edge_id) == pytest.approx(0.5, abs=1e-6), (
+            "an unrelated outbound edge must NOT be scored (REQ-26 AC1: the "
+            "caller selects the (region, mediator) edge, never the fan-out)"
+        )
+        _rm_edge = _region_mediator_edge(conn, n_from, "run_command")
+        assert _rm_edge is not None, (
+            "the (region, mediator) edge must exist after a VERIFIED step"
+        )
+        assert _edge_score(conn, _rm_edge) == pytest.approx(0.55, abs=1e-6), (
+            "VERIFIED must hit-score the (region, mediator) edge "
+            "(EdgeScorer +0.05, first observation full strength)"
         )
 
 
 class TestUnverifiedPartialCreditAndCap:
-    """REQ-1 AC3: +0.02 partial credit, capped at
-    DER_MAX_UNVERIFIED_REPROPOSE + 1 scored attempts per step_id."""
+    """REQ-1 AC3 (as amended by REQ-26 AC1/AC2): +0.02 partial credit on the
+    (region, mediator) edge, capped at DER_MAX_UNVERIFIED_REPROPOSE + 1
+    scored attempts per step_id.
+
+    AC2 diminishes the update as the edge's observation count grows:
+    alpha = 1/(1+count) computed before each observation lands, so the FIRST
+    partial moves +0.02 and the SECOND moves +0.02*0.5 = +0.01 (a posterior
+    converges; a fixed-delta reinforcement rule does not)."""
 
     def test_unverified_step_applies_partial_credit(self):
         conn = _make_mem_conn()
@@ -265,8 +304,14 @@ class TestUnverifiedPartialCreditAndCap:
 
         _finalize(kernel, _make_step_item("step-u1"))
 
-        assert _edge_score(conn, edge_id) == pytest.approx(0.52, abs=1e-6), (
-            "UNVERIFIED must apply the +0.02 partial-credit delta (REQ-1 AC3)"
+        assert _edge_score(conn, edge_id) == pytest.approx(0.5, abs=1e-6), (
+            "an unrelated outbound edge must NOT be scored (REQ-26 AC1)"
+        )
+        _rm_edge = _region_mediator_edge(conn, n_from, "run_command")
+        assert _rm_edge is not None
+        assert _edge_score(conn, _rm_edge) == pytest.approx(0.52, abs=1e-6), (
+            "UNVERIFIED must apply the +0.02 partial-credit delta on the "
+            "(region, mediator) edge (REQ-1 AC3)"
         )
 
     def test_repropose_cap_blocks_further_credit(self):
@@ -283,20 +328,27 @@ class TestUnverifiedPartialCreditAndCap:
 
         item = _make_step_item("step-u-cap")
 
-        # Attempt 1 (the original commit) — scores.
+        # Attempt 1 (the original commit) — scores on the (region, mediator)
+        # edge at full strength (alpha = 1/(1+0) = 1.0): 0.50 + 0.02 = 0.52.
         _finalize(kernel, item)
-        after_1 = _edge_score(conn, edge_id)
+        _rm_edge = _region_mediator_edge(conn, n_from, "run_command")
+        assert _rm_edge is not None
+        after_1 = _edge_score(conn, _rm_edge)
         assert after_1 == pytest.approx(0.52, abs=1e-6)
 
         # Attempt 2 (the one permitted re-propose, DER_MAX_UNVERIFIED_REPROPOSE=1)
-        # — scores again.
+        # — scores again, but EVIDENCE-WEIGHTED (REQ-26 AC2): the edge now has
+        # 1 observation, so alpha = 1/(1+1) = 0.5 → +0.02*0.5 = +0.01 →
+        # 0.53, NOT the fixed-delta 0.54. Stated reason: the second
+        # observation of the same belief must move it less or the score can
+        # never converge (a posterior, not a reinforcement rule).
         _finalize(kernel, item)
-        after_2 = _edge_score(conn, edge_id)
-        assert after_2 == pytest.approx(0.54, abs=1e-6)
+        after_2 = _edge_score(conn, _rm_edge)
+        assert after_2 == pytest.approx(0.53, abs=1e-6)
 
         # Attempt 3 — past the cap. Must NOT accrue further credit.
         _finalize(kernel, item)
-        after_3 = _edge_score(conn, edge_id)
+        after_3 = _edge_score(conn, _rm_edge)
         assert after_3 == after_2, (
             f"re-propose cap (DER_MAX_UNVERIFIED_REPROPOSE={DER_MAX_UNVERIFIED_REPROPOSE}) "
             "must block scoring past the cap, else an UNVERIFIED step could farm "
@@ -305,12 +357,13 @@ class TestUnverifiedPartialCreditAndCap:
 
         # Attempt 4 — still capped (monotonic, not a one-off off-by-one).
         _finalize(kernel, item)
-        assert _edge_score(conn, edge_id) == after_2
+        assert _edge_score(conn, _rm_edge) == after_2
 
 
 class TestFailedStepMissScoresAndAvoids:
-    """REQ-1 AC4: -0.08 miss delta, and the outcome reaches the tier-3 AVOID
-    header (evidence.py's real, unmodified assemble_evidence)."""
+    """REQ-1 AC4 (as amended by REQ-26 AC1/AC2): -0.08 miss delta on the
+    (region, mediator) edge, and the outcome reaches the tier-3 AVOID header
+    (evidence.py's real, unmodified assemble_evidence)."""
 
     def test_failed_step_applies_miss_delta(self):
         conn = _make_mem_conn()
@@ -322,8 +375,14 @@ class TestFailedStepMissScoresAndAvoids:
 
         _finalize(kernel, _make_step_item("step-f1"), result="it did not work")
 
-        assert _edge_score(conn, edge_id) == pytest.approx(0.42, abs=1e-6), (
-            "FAILED must apply the -0.08 miss delta (REQ-1 AC4)"
+        assert _edge_score(conn, edge_id) == pytest.approx(0.5, abs=1e-6), (
+            "an unrelated outbound edge must NOT be scored (REQ-26 AC1)"
+        )
+        _rm_edge = _region_mediator_edge(conn, n_from, "run_command")
+        assert _rm_edge is not None
+        assert _edge_score(conn, _rm_edge) == pytest.approx(0.42, abs=1e-6), (
+            "FAILED must apply the -0.08 miss delta on the (region, mediator) "
+            "edge (REQ-1 AC4)"
         )
 
     def test_failed_step_appears_in_avoid_header(self):

@@ -33,6 +33,9 @@ logger = logging.getLogger(__name__)
 ASK_USER_QUESTION_TIMEOUT = 120  # seconds
 FILLER_INTERVAL = 30  # seconds between filler re-prompts
 MAX_FILLERS = 2
+# T15 (REQ-14 AC3): a voice answer resolves the question only at/above this
+# fuzzy-match confidence. Below it -> AC4 (ask to repeat, never guess).
+_VOICE_RESOLVE_THRESHOLD = 0.7
 
 
 @dataclass
@@ -124,6 +127,120 @@ class AskUserTool:
         )
         return question
 
+    # ── T13 (REQ-13): non-blocking mode + first-wins funnel ────────────────
+
+    def ask_non_blocking(
+        self,
+        text: str,
+        options: Optional[List[str]] = None,
+        allow_other: bool = False,
+        timeout_seconds: int = ASK_USER_QUESTION_TIMEOUT,
+        turn_id: Optional[str] = None,
+        run_id: Optional[str] = None,
+        parked_url: Optional[str] = None,
+        wall_kind: str = "unknown",
+    ) -> Question:
+        """Ask and return immediately with a handle (REQ-13 AC1).
+
+        Unlike `ask()` + `wait_for_answer()`, the caller is NOT expected to
+        block. If `parked_url` is given, the source is parked in the
+        ParkedSourceRegistry (REQ-13 AC2) so it can be resumed when the answer
+        arrives (AC3) — one question per domain per run (AC6).
+        """
+        question = self.ask(
+            text=text, options=options, allow_other=allow_other,
+            timeout_seconds=timeout_seconds, turn_id=turn_id,
+        )
+        if parked_url:
+            from urllib.parse import urlparse
+
+            domain = urlparse(parked_url).netloc or parked_url
+            registry = get_parked_source_registry()
+            registry.park(
+                run_id=run_id or "",
+                url=parked_url,
+                wall_kind=wall_kind,
+                question_id=question.question_id,
+            )
+            logger.info(
+                "[AskUser] Parked source url=%s domain=%s qid=%s run=%s (REQ-13)",
+                parked_url, domain, question.question_id, run_id,
+            )
+        return question
+
+    def resolve_answer(self, question_id: str, answer: str) -> Optional[Question]:
+        """SINGLE resolution funnel (REQ-14 AC5, CT-4 first-wins).
+
+        Card click and voice BOTH route through here. First caller wins:
+        `receive_answer` pops the question from `_pending`, so a second answer
+        (e.g. voice after click) is a no-op. A parked source linked to the
+        question is resumed (REQ-13 AC3) so the research run can pick it up.
+        """
+        question = self.receive_answer(question_id, answer)
+        if question is not None:
+            registry = get_parked_source_registry()
+            source = registry.resume(question_id, answer=answer)
+            if source is not None:
+                logger.info(
+                    "[AskUser] Resumed parked source url=%s (REQ-13 AC3)",
+                    source.url,
+                )
+        return question
+
+    # ── T15 (REQ-14): answer a question card by voice ─────────────────────
+
+    def pending_for_session(self, session_id: str) -> Optional[Question]:
+        """Most-recent pending question for a session (REQ-14 edge:
+        two questions pending -> most recent wins; the other stays pending).
+
+        Questions are linked to a session via ``turn_id == session_id`` (set by
+        tool_bridge when it asks). Returns the newest, or None.
+        """
+        candidates = [
+            q for q in self._pending.values()
+            if q.turn_id == session_id and q.status == "pending"
+        ]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda q: q.created_at)
+
+    def resolve_via_voice(self, transcript: str, session_id: str) -> dict:
+        """Route a completed voice transcript as a candidate answer to a
+        pending question (REQ-14 AC1-AC6).
+
+        Returns:
+          {"handled": False}                 -> no pending question; the caller
+                                                routes the transcript to the
+                                                normal command path (AC6)
+          {"handled": True, "resolved": opt} -> matched at/above threshold and
+                                                resolved via the single funnel
+                                                (AC3, first-wins)
+          {"handled": False, "repeat": True} -> below threshold; question stays
+                                                pending, user asked to repeat
+                                                (AC4); transcript still falls
+                                                through to the normal path
+        """
+        question = self.pending_for_session(session_id)
+        if question is None:
+            return {"handled": False}
+        # AC2: match against the question's options with fuzzy_match_answer.
+        option, confidence, _exact = fuzzy_match_answer(transcript, question.options)
+        if option is not None and confidence >= _VOICE_RESOLVE_THRESHOLD:
+            resolved = self.resolve_answer(question.question_id, option)
+            if resolved is not None:
+                logger.info(
+                    "[AskUser] Voice answered qid=%s -> %r (conf=%.2f, REQ-14 AC3)",
+                    question.question_id, option, confidence,
+                )
+                return {"handled": True, "resolved": option}
+        # AC4: below threshold -> leave pending, ask to repeat, don't guess.
+        self.send_filler(question.question_id)
+        logger.info(
+            "[AskUser] Voice below threshold qid=%s conf=%.2f -> repeat (REQ-14 AC4)",
+            question.question_id, confidence,
+        )
+        return {"handled": False, "repeat": True}
+
     def send_filler(self, question_id: str) -> Optional[str]:
         """Send a filler prompt for an unanswered question.
 
@@ -152,7 +269,6 @@ class AskUserTool:
         filler_interval: float = FILLER_INTERVAL,
     ) -> Question:
         """Block until the question is answered or times out.
-
         Sends filler prompts at intervals.
         """
         start = time.time()
@@ -240,3 +356,108 @@ def get_ask_user_tool() -> AskUserTool:
 def reset_ask_user_tool_for_testing() -> None:
     global _tool_instance
     _tool_instance = None
+
+
+# ── T13 (REQ-13): parked sources + non-blocking ask ────────────────────────
+
+
+@dataclass
+class ParkedSource:
+    """A source the research run could not pass, parked for a human answer.
+
+    One question per domain per run (REQ-13 AC6): the registry dedupes on
+    (run_id, domain) so a repeated blocked source does not re-ask.
+    """
+
+    url: str
+    domain: str
+    run_id: str
+    question_id: str
+    wall_kind: str = "unknown"  # captcha | login | paywall | unknown
+    status: str = "parked"      # parked | resumed | timed_out
+    answer: Optional[str] = None
+    parked_at: float = field(default_factory=time.time)
+    resumed_at: Optional[float] = None
+
+
+class ParkedSourceRegistry:
+    """Per-run registry of sources parked behind walls (REQ-13 AC2/AC6).
+
+    The registry is the record that lets AC3 resume a parked source WITHOUT
+    restarting the research run: `resume()` returns the source the run can
+    re-dispatch, and `timed_out()` is logged (REQ-16) when no answer arrived.
+    """
+
+    def __init__(self) -> None:
+        self._parked: Dict[str, ParkedSource] = {}  # question_id -> source
+        self._run_domain: Dict[str, str] = {}       # "run_id|domain" -> question_id
+
+    @staticmethod
+    def _key(run_id: str, domain: str) -> str:
+        return f"{run_id}|{domain}"
+
+    def park(self, run_id: str, url: str, wall_kind: str = "unknown", question_id: str = "") -> Optional[ParkedSource]:
+        """Register a parked source. Returns None if (run_id, domain) already
+        has a pending question (REQ-13 AC6 — no duplicate questions)."""
+        from urllib.parse import urlparse
+
+        domain = urlparse(url).netloc or url
+        key = self._key(run_id, domain)
+        existing_qid = self._run_domain.get(key)
+        if existing_qid and existing_qid in self._parked:
+            return None  # already asked about this domain this run
+        source = ParkedSource(
+            url=url, domain=domain, run_id=run_id,
+            question_id=question_id or f"parked_{uuid.uuid4().hex[:8]}",
+            wall_kind=wall_kind,
+        )
+        self._parked[source.question_id] = source
+        self._run_domain[key] = source.question_id
+        return source
+
+    def get(self, question_id: str) -> Optional[ParkedSource]:
+        return self._parked.get(question_id)
+
+    def resume(self, question_id: str, answer: Optional[str] = None) -> Optional[ParkedSource]:
+        """Mark the parked source resumed (REQ-13 AC3). Returns it for
+        re-dispatch, or None if it was never parked / already resolved."""
+        source = self._parked.pop(question_id, None)
+        if source is None:
+            return None
+        source.status = "resumed"
+        source.answer = answer
+        source.resumed_at = time.time()
+        self._run_domain.pop(self._key(source.run_id, source.domain), None)
+        return source
+
+    def mark_timed_out(self, question_id: str) -> Optional[ParkedSource]:
+        source = self._parked.pop(question_id, None)
+        if source is None:
+            return None
+        source.status = "timed_out"
+        self._run_domain.pop(self._key(source.run_id, source.domain), None)
+        return source
+
+    def pending(self, run_id: Optional[str] = None) -> List[ParkedSource]:
+        if run_id is None:
+            return list(self._parked.values())
+        return [s for s in self._parked.values() if s.run_id == run_id]
+
+    def clear(self) -> None:
+        self._parked.clear()
+        self._run_domain.clear()
+
+
+_parked_registry: Optional[ParkedSourceRegistry] = None
+
+
+def get_parked_source_registry() -> ParkedSourceRegistry:
+    global _parked_registry
+    if _parked_registry is None:
+        _parked_registry = ParkedSourceRegistry()
+    return _parked_registry
+
+
+def reset_parked_source_registry_for_testing() -> None:
+    global _parked_registry
+    _parked_registry = None

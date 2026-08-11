@@ -27,7 +27,7 @@ def _kernel_with_split():
     kernel._der_work_units = 12
     captured = {"split_called": False, "children": []}
 
-    def _split_step(item, trigger, cad, work_units):
+    def _split_step(item, trigger, cad, work_units, step_result=""):
         captured["split_called"] = True
         captured["trigger"] = trigger
         # Children mirror the unified operator: GOAL ONLY (no tool).

@@ -336,6 +336,61 @@ only copy of a failure.
     trust is assigned by provenance and enforced by the existing `kyudo.py` zone rules,
     which DER adopts rather than redefines (REQ-22).
 
+## Browser Navigation Overlay (REQ-16 AC6-AC9) — particle-shutter design
+
+The overlay on the in-app browser surface reuses the SAME canvas particle engine as
+`XurOrb`/`OrbCanvas` (`components/iris/orb/OrbCanvas.tsx`) — the 3-shell epitrochoid
+particle system (`curvePoint(t,s) = 50 + (7·cos t − 3·s·cos 9t)·3.9`, shells at
+105%/70%/42% scale, 80/56/32 particles, per-particle `trailOffset`/`depthWave`/
+`breathAlphaMult` fade, bright lead particle, center core dot). It is NOT a new
+narration channel and NOT a flat progress bar — it is the orb's own physics,
+transplanted onto the browser surface. Three choreographed states:
+
+1. **Loading — center orb.** On `open_url`/`crawler_query` (`iris:open_tab` /
+   `iris:crawler_started`), the 3-shell particle orb materializes at the iframe
+   center (~140px). The `detailScale` sine (`0.52 + 0.48·(0.5+0.5·sin(2πt/PULSE))`)
+   breathes at crawl cadence. A single micro text line under the orb carries the
+   sub-goal ("looking for the pricing table · page 2/3") — the ONLY text element;
+   it lives only inside this loading moment, so it never fights the particles.
+   (AC8 sub-goal intent; AC9 state transitions recorded in the REQ-18 trace.)
+
+2. **Page-found — outward dispersion.** When a page is found
+   (`iris:crawler_page_fetched` / `crawler_complete`), the C-opening transition
+   (`getTransitionState`: shellScale 0.7→1.05, bloom→1.18, speedMult→2.5) is
+   repurposed as DISPERSION: each particle continues along its epitrochoid while
+   the shell scale ramps up, so particles fly outward past the orb into the iframe
+   viewport — "reaching out to touch the page." Each shell's lead particle becomes
+   a "toucher" that travels to a DOM coordinate seeded from the crawler's per-page
+   data, then the orb dissolves. A radial "touch" flash (the `drawBreathHalo`
+   expanding ring, `maxRadius = SIZE·1.2·(1+level·0.8)`) fires at each contact.
+   (AC6 visible navigation, AC7 visible scrape cue.)
+
+3. **Actively crawling — SHUTTER border pulse.** While the agent crawls, the
+   iframe's OUTER BORDER runs a shutter sequence: the border (a canvas ring or
+   4 edge divs) draws particles along the frame edges that pulse with the Mode-D
+   cadence ripple (`sin((i/count)·4π − elapsed·0.004)·waveLevel·2.5`) — a
+   traveling flash sequence around the frame, one flash per `page_fetched`
+   heartbeat. The shutter casts a SLIGHT INWARD SHADOW into the iframe viewport
+   (a soft inset gradient/glow that deepens with each flash) — deliberately NOT
+   a bright overbearing flash; the shadow is the cue. The `detailScale` sine sets
+   the shutter rate to match the crawl cadence. (AC6/AC7 continuous visibility.)
+
+Implementation constraints (all inherited from the orb engine):
+- Same `requestAnimationFrame` loop, `useReducedMotion` respected, DPR-aware
+  canvas, `globalCompositeOperation='lighter'`, transparent background.
+- Off the critical response path; a canvas failure never blocks the iframe or
+  the crawl (wrapped, best-effort).
+- Every state transition (loading → dispatching → crawling → complete/error) is
+  written to the REQ-18 per-task trace (T31's `der_trace`) so behavioral tests
+  assert on structured state, not pixels (AC9).
+- Data sources: existing `iris:open_tab` / `iris:crawler_started` /
+  `iris:crawler_page_fetched` / `iris:crawler_error` / `iris:crawler_complete`
+  CustomEvents (wired in `hooks/useIRISWebSocket.ts`); vision `ToolSpec` calls
+  are an optional enrichment source (no-op fallback when unavailable).
+- The iframe, address bar, and "open externally" button are UNCHANGED
+  (`dark-glass-dashboard.tsx:1345-1380`); the overlay is a sibling layer
+  absolutely positioned over the browser panel.
+
 ## Canonical Vocabulary (REQ-19)
 
 Four mechanisms in this codebase share overlapping informal names ("expand," "compress,"

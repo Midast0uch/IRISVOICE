@@ -629,27 +629,44 @@ class ToolExecutor:
             return {"success": False, "error": str(e)}
 
     def _open_url(self, params: Dict, context: Dict) -> Dict[str, Any]:
-        """Open a URL in browser."""
-        import webbrowser
+        """Open a URL — DEAD-CODE-GUARDED (REQ-16/T28, AC2).
+
+        Agent-initiated navigation is in-app only: AgentToolBridge.execute_tool
+        intercepts ``open_url`` BEFORE the MCP dispatch table and routes it to
+        the in-app browser surface (``_execute_open_url``). This legacy handler
+        is reached only when the bridge already FAILED to execute — it must
+        NEVER fall back to launching the user's OS browser (``webbrowser.open``
+        is banned for agent-initiated navigation). It returns an explicit
+        in-app guidance error instead.
+        """
         url = params.get("url", "")
         if not url.startswith(("http://", "https://")):
             url = "https://" + url
-        try:
-            webbrowser.open(url)
-            return {"success": True, "message": f"Opened {url}"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+        return {
+            "success": False,
+            "error": (
+                "open_url is handled in-app (REQ-16); the OS browser is never "
+                "launched by the agent. Retry through AgentToolBridge."
+            ),
+            "url": url,
+        }
 
     def _search(self, params: Dict, context: Dict) -> Dict[str, Any]:
-        """Search using default search engine."""
-        import webbrowser
+        """Search — DEAD-CODE-GUARDED (REQ-16/T28, AC2).
+
+        Same guard as ``_open_url``: the live path is the tool_bridge ``search``
+        interception (``_execute_web_search``, in-app). This fallback never
+        launches the OS browser.
+        """
         query = params.get("query", "")
-        url = f"https://www.google.com/search?q={query.replace(' ', '+')}"
-        try:
-            webbrowser.open(url)
-            return {"success": True, "message": f"Searched for: {query}"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+        return {
+            "success": False,
+            "error": (
+                "search is handled in-app (REQ-16); the OS browser is never "
+                "launched by the agent. Retry through AgentToolBridge."
+            ),
+            "query": query,
+        }
 
     def _launch_app(self, params: Dict, context: Dict) -> Dict[str, Any]:
         """Launch an application."""

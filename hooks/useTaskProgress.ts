@@ -1,9 +1,9 @@
-"use client"
+﻿"use client"
 
 import { useEffect, useRef, useState } from "react"
 
 export type TaskStepStatus =
-  /** Step has no event record at all — semantically absent but visually pending. */
+  /** Step has no event record at all â€” semantically absent but visually pending. */
   | "unknown"
   | "pending"
   | "working"
@@ -16,7 +16,7 @@ export type TaskStepStatus =
 export interface TaskStep {
   id: string
   /**
-   * The PLAN text — what the agent set out to do. Stable for the life of the
+   * The PLAN text â€” what the agent set out to do. Stable for the life of the
    * step. Live progress never overwrites this; it goes to `activeDetail` so the
    * dropdown keeps showing the plan while the card header shows the activity.
    */
@@ -24,13 +24,19 @@ export interface TaskStep {
   status: TaskStepStatus
   toolName?: string
   /**
-   * Live, rotating detail for the step currently executing — the source being
+   * Live, rotating detail for the step currently executing â€” the source being
    * read (e.g. "example.com"), shown beside `toolName`. Cleared when the step
    * resolves, so a finished step never appears to still be working on a page.
    */
   activeDetail?: string
   /** Progress within the active detail, e.g. "2/5". */
   activeProgress?: string
+  /**
+   * pin_517dfcbda150 (F1): the URL of the page currently being read â€”
+   * the crawler's per-page TASK_PROGRESS carries `detail_url`; previously
+   * the frontend dropped it (only `detail`/title was consumed).
+   */
+  url?: string
   resultPreview?: string
 }
 
@@ -69,7 +75,7 @@ interface TaskUpdateDetail {
   plan_title?: string
   action?: string
   update_step?: boolean
-  /** Structured live detail (host/title being read) — preferred over parsing `description`. */
+  /** Structured live detail (host/title being read) â€” preferred over parsing `description`. */
   detail?: string
   detail_url?: string
   detail_progress?: string
@@ -84,6 +90,9 @@ interface TaskUpdateDetail {
   total_steps?: number
   tool_name?: string
   step_number?: number
+  /** pin_517dfcbda150: unique backend step id for add_step / step_done â€” plan
+   * steps carry planner ids (r1, step_1), split children carry parent_s{i}. */
+  step_id?: string
   result_summary?: string
   error?: string
   outcome?: string
@@ -112,10 +121,6 @@ const TOOL_TITLES: Record<string, string> = {
   run_command: "Running Command",
   ask_user_question: "Asking You",
   speak: "Speaking",
-  // Mode-name fallbacks for when the backend mode leaks as tool_name.
-  agentic: "WebSearch",
-  quick: "Respond",
-  direct: "Tool",
 }
 
 // Title-case fallback for any tool not in the map above.
@@ -124,6 +129,43 @@ function titleCaseTool(tool: string): string {
     .split(/[_\s-]+/)
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
     .join(" ")
+}
+
+// Mode names that can leak as tool_name (the step ran as REASON under a mode
+// like "direct"/"agentic") — treated as placeholders; the label is DERIVED
+// from the step description instead (pin_42ddd255162d: a web step must never
+// read as bare "Tool", for any task type).
+const MODE_PLACEHOLDERS = new Set([
+  "tool",
+  "direct",
+  "auto",
+  "background",
+  "tool_execution",
+  "agentic",
+  "quick",
+  "none",
+])
+
+/**
+ * pin_42ddd255162d: human-readable tool label for the plan card.
+ * Known tools use the TOOL_TITLES map; a placeholder/unknown tool name
+ * ("tool", missing, or a mode name) is DERIVED from the step description so a
+ * web step NEVER reads as bare "Tool" — the label stays meaningful for every
+ * task type, not just websearch.
+ */
+export function toolLabel(step: TaskStep): string {
+  const t = (step.toolName ?? "").trim()
+  if (t && !MODE_PLACEHOLDERS.has(t.toLowerCase())) {
+    return TOOL_TITLES[t] ?? titleCaseTool(t)
+  }
+  const d = (step.description ?? "").toLowerCase()
+  if (/(search|web|research|find|look up|documentation|information about|crawl|browse)/.test(d)) {
+    return "WebSearch"
+  }
+  if (/(summar|synthesi[sz]e|analy[sz]e|explain|compare)/.test(d)) return "Reasoning"
+  if (/(write|create|draft|build|compose)/.test(d)) return "Drafting"
+  if (/(file|read|edit|code)/.test(d)) return "File"
+  return "Tool"
 }
 
 /**
@@ -156,10 +198,10 @@ export function useTaskProgress(): TaskProgress {
             .slice(0, MAX_STEPS)
             // REQ-1 AC5: honor the backend-provided status; default to "unknown" for
             // steps without a record. "unknown" renders identically to "pending" but
-            // is semantically distinct — it means no tool:call event was ever received.
+            // is semantically distinct â€” it means no tool:call event was ever received.
             .map((s) => ({ ...s, status: (s.status as TaskStepStatus) ?? "unknown" as TaskStepStatus }))
           // If a task is already active with the same id, RECONCILE instead of
-          // wiping. The backend emits task:start twice for one task — an early
+          // wiping. The backend emits task:start twice for one task â€” an early
           // LLM-plan skeleton at plan time, then the DER queue at execution
           // start. A full reset there makes the plan card flicker. Merging also
           // lets the agent revise the plan at any time: a later task:start
@@ -252,6 +294,7 @@ export function useTaskProgress(): TaskProgress {
               resultPreview: d.result_summary,
               // Live detail belongs to an in-flight step only.
               activeDetail: undefined,
+              url: undefined,
               activeProgress: undefined,
             }
             const done = steps.filter((s) => s.status === "done").length
@@ -269,6 +312,7 @@ export function useTaskProgress(): TaskProgress {
               status: "fail",
               resultPreview: d.error,
               activeDetail: undefined,
+              url: undefined,
               activeProgress: undefined,
             }
             setState({ ...prev, steps, isWorking: true })
@@ -276,9 +320,14 @@ export function useTaskProgress(): TaskProgress {
           break
         }
         case "task:progress": {
-          // DER finished a step — check it off in the to-do list.
+          // DER finished a step â€” check it off in the to-do list.
           if (d.step_done) {
-            const id = `der-${d.step_number ?? prev.steps.length}`
+            // pin_517dfcbda150 (F3): look up by the backend's unique step_id
+            // first (plan steps carry ids like r1/step_1; split children carry
+            // parent_s{i}); fall back to the legacy der-N convention for older
+            // emitters. Previously only der-N matched, so plan steps never
+            // visually completed while the task was running.
+            const id = d.step_id || `der-${d.step_number ?? prev.steps.length}`
             const steps = prev.steps.slice()
             const idx = steps.findIndex((s) => s.id === id)
             if (idx >= 0) {
@@ -286,22 +335,27 @@ export function useTaskProgress(): TaskProgress {
                 ...steps[idx],
                 status: d.success === false ? "error" : "done",
                 activeDetail: undefined,
+              url: undefined,
                 activeProgress: undefined,
               }
             }
             setState({ ...prev, steps })
             break
           }
-          // DER discovered a new step — append it to the to-do list so the user
+          // DER discovered a new step â€” append it to the to-do list so the user
           // sees the agent's live plan (e.g. the actual search queries) as it is
           // built, not just the upfront planner plan.
           if (d.add_step) {
-            const id = `der-${d.step_number ?? prev.steps.length + 1}`
+            // pin_517dfcbda150 (F2): key on the backend's unique step_id when
+            // present. Split children share the parent's step_number but carry
+            // distinct ids (parent_s{i}); the old der-N key made every child of
+            // one parent collide and silently drop all but the first.
+            const id = d.step_id || `der-${d.step_number ?? prev.steps.length + 1}`
             const steps = prev.steps.slice()
             if (!steps.find((s) => s.id === id)) {
               steps.push({
                 id,
-                description: d.description || "Working…",
+                description: d.description || "Workingâ€¦",
                 status: "working",
                 toolName: d.tool_name,
               })
@@ -323,7 +377,7 @@ export function useTaskProgress(): TaskProgress {
           // This writes `activeDetail`, NOT `description`. Overwriting the
           // description replaced the agent's plan text ("Search for recent
           // Python 3.13 features") with transient progress ("Reading
-          // example.com (2/5)") — the plan was destroyed as it executed and the
+          // example.com (2/5)") â€” the plan was destroyed as it executed and the
           // dropdown could never show what the agent set out to do.
           const action = d.description || d.action
           if (!action) break
@@ -337,6 +391,9 @@ export function useTaskProgress(): TaskProgress {
                 // emitters that predate `detail`.
                 activeDetail: d.detail || action,
                 activeProgress: d.detail_progress,
+                // pin_517dfcbda150 (F1): the crawler streams the source URL on
+                // every page event; surface it on the card (subtitle/hover).
+                url: d.detail_url,
               }
             }
           }
@@ -353,7 +410,7 @@ export function useTaskProgress(): TaskProgress {
         case "task:fail": {
           // Keep steps + planTitle for display; clear the working flag + live
           // action + phase + learning signal. Also strip any live detail left
-          // on a step that never got a terminal event — otherwise a finished
+          // on a step that never got a terminal event â€” otherwise a finished
           // card keeps advertising a page it is no longer reading.
           setState({
             ...prev,
@@ -364,7 +421,8 @@ export function useTaskProgress(): TaskProgress {
             learningSignal: undefined,
             steps: prev.steps.map((s) =>
               s.activeDetail
-                ? { ...s, activeDetail: undefined, activeProgress: undefined }
+                ? { ...s, activeDetail: undefined,
+              url: undefined, activeProgress: undefined }
                 : s
             ),
           })
@@ -389,6 +447,53 @@ export function useTaskProgress(): TaskProgress {
 
     window.addEventListener("iris:task_update", handler)
     return () => window.removeEventListener("iris:task_update", handler)
+  }, [])
+
+  // REQ-12 AC4 (T19): while the browser panel is closed the orb must still
+  // reflect crawl progress. The crawl's phase arrives over the SSE fallback as
+  // `iris:task:event` (ux_map CRAWLER_PHASE -> msg_type "task:event") and the
+  // in-flight stage message as `iris:crawler_progress` — neither is an
+  // `iris:task_update` message, so they would never flip the orb working state.
+  // Terminal `iris:crawler_complete` / `iris:crawler_error` clear it (the
+  // SSE-only path has no task:done/fail to do so).
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const d = (e as CustomEvent<{
+        phase?: string
+        phase_sequence?: number
+        stage?: string
+        message?: string
+      }>).detail
+      if (!d) return
+      const prev = ref.current
+      const next: Partial<TaskProgress> = { isWorking: true }
+      if (d.phase) {
+        next.phase = d.phase
+        next.phaseSequence = d.phase_sequence ?? (prev.phaseSequence ?? 0)
+      }
+      if (d.message) next.currentAction = d.message
+      setState({ ...prev, ...next })
+    }
+    const done = () => {
+      const prev = ref.current
+      setState({
+        ...prev,
+        isWorking: false,
+        currentAction: undefined,
+        phase: undefined,
+        phaseSequence: undefined,
+      })
+    }
+    window.addEventListener("iris:task:event", handler)
+    window.addEventListener("iris:crawler_progress", handler)
+    window.addEventListener("iris:crawler_complete", done)
+    window.addEventListener("iris:crawler_error", done)
+    return () => {
+      window.removeEventListener("iris:task:event", handler)
+      window.removeEventListener("iris:crawler_progress", handler)
+      window.removeEventListener("iris:crawler_complete", done)
+      window.removeEventListener("iris:crawler_error", done)
+    }
   }, [])
 
   return state

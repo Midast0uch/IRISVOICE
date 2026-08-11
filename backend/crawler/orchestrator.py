@@ -688,7 +688,20 @@ on_page_done=self._page_emitter(_emit, job_id),
                             "vision=unavailable -> crawl only (REQ-10 AC3 degraded)",
                             job_id, url, history,
                         )
-                    outcome = await crawl_cap.fetch_one(url, query, job_id)
+                    # Forward this run's emitter into the capability so per-URL
+                    # CRAWLER_PAGE_FETCHED events reach the panel — the nav
+                    # overlay's progressive animation advances on exactly those
+                    # events. The inner orchestrator re-wraps it, so hand it a
+                    # CrawlProgress consumer that feeds our (event, payload)
+                    # emitter. Optional kwarg, tolerated if a capability
+                    # implements only the bare 3-arg protocol (REQ-6 AC1).
+                    try:
+                        outcome = await crawl_cap.fetch_one(
+                            url, query, job_id,
+                            on_progress=lambda p: _emit(p.event, p.payload),
+                        )
+                    except TypeError:
+                        outcome = await crawl_cap.fetch_one(url, query, job_id)
                     # T13 (specs/dag-node-execution-model): the fresh-failure
                     # escalation branch is REPLACED by an advertisement
                     # consultation — fetch.vision's NodeSpec declares it

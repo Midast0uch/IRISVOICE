@@ -493,6 +493,34 @@ class CoordinateExtractor:
 # Module-level helpers
 # ---------------------------------------------------------------------------
 
+def resolve_topic_domain(text: str) -> str:
+    """Resolve free text to a mycelium DOMAIN_IDS registry key (REQ-18 AC2/AC3).
+
+    Registry-backed, NEVER free text: runs the same ``_DOMAIN_KEYWORDS``
+    patterns the coordinate extractor uses (extractor.py:80-105) against
+    ``text`` and returns the first matching registry key. A miss resolves to
+    the registry's ``general`` bucket and is LOGGED — never invented (AC3).
+
+    This is the single write-time resolver for the node ``topic_domain`` axis
+    (der_loop.py NodeRecord.topic_domain, stamped at finalize in
+    agent_kernel.py ``_der_finalize_step``). Free text stops being a
+    production value; every node's topic axis is a registry key by
+    construction.
+    """
+    if not text:
+        return "general"
+    lower = text.lower()
+    for pattern, domain_key in _DOMAIN_KEYWORDS:
+        if re.search(pattern, lower, re.IGNORECASE):
+            return domain_key
+    logger.debug(
+        "[extractor.resolve_topic_domain] no keyword match — resolved to "
+        "'general' (registry miss, text starts: %r)",
+        (text or "")[:80],
+    )
+    return "general"
+
+
 def _detect_os_id() -> float:
     """Map sys.platform to OS_ID constant."""
     p = sys.platform

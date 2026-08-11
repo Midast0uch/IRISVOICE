@@ -461,8 +461,11 @@ class RecallDecoder:
 
         try:
             from backend.memory.mycelium.interpreter import BehavioralPredictor
-            predictor = BehavioralPredictor()
-            # Get active node IDs from current session
+            # T9 (REQ-12): pass the mycelium interface so predict can resolve
+            # the store connection — the no-arg form left _resolve_conn with
+            # no interface, so predictions were always [] here.
+            predictor = BehavioralPredictor(myc)
+            # Active node IDs from current session
             active_nodes = list(myc._registry.get_active(self._session_id))
             if not active_nodes:
                 return _sparse_span(op, confidence=0.1, hint="no_active_nodes")

@@ -4,6 +4,10 @@ import { useState, useEffect, useCallback, useRef } from "react"
 import type {
   CrawlerStartedMsg,
   CrawlerPageMsg,
+  CrawlerProgressMsg,
+  CrawlerPhaseMsg,
+  CrawlerVisionActionMsg,
+  CrawlerSourceParkedMsg,
   CrawlerErrorMsg,
   CrawlerCompleteMsg,
   OpenTabMsg,
@@ -11,11 +15,25 @@ import type {
 import { useReducedMotion } from "./useReducedMotion"
 import { useCrawlSSE } from "./useCrawlSSE"
 
+// sessionStorage keys — let the provider restore a run after a full app
+// remount (REQ-12 AC3) without re-crawling.
+const SESSION_KEY = "iris:crawl:session_id"
+
 export interface CrawlPageProgress {
   url: string
   pageNumber: number
   total: number
   host: string
+  /** REQ-11 (T13): capture provenance so the panel can replay the bytes the
+   * agent actually read (job_id/page_number -> /api/browser/capture/...). */
+  jobId?: string
+  title?: string
+}
+
+export interface CrawlSnapshotEvent {
+  seq: number
+  type: string
+  payload: Record<string, unknown>
 }
 
 export interface CrawlState {
@@ -34,6 +52,19 @@ export interface CrawlState {
   syncRequired: boolean
   // Session id the backend used for this crawl (enables SSE fallback replay).
   sessionId: string | null
+  // ── T17 (REQ-11 AC4 / REQ-12 AC2): live run detail surfaced while the
+  // panel is closed. Transport-agnostic: both the WS dispatch and the SSE
+  // fallback emit the SAME CustomEvents for these.
+  /** Latest in-flight stage message ("Narrowing search…"). */
+  progress: string | null
+  /** Structured pipeline phase (searching / extracting / citing…). */
+  phase: string | null
+  /** Monotonic phase sequence (disambiguates re-emission). */
+  phaseSequence: number | null
+  /** REQ-11 AC4: vision actions performed on pages (panel annotation). */
+  visionActions: CrawlerVisionActionMsg[]
+  /** REQ-13 AC4: sources parked behind a wall (non-blocking ask). */
+  parkedSources: CrawlerSourceParkedMsg[]
 }
 
 const IDLE: CrawlState = {
@@ -49,6 +80,20 @@ const IDLE: CrawlState = {
   dashboard: null,
   syncRequired: false,
   sessionId: null,
+  progress: null,
+  phase: null,
+  phaseSequence: null,
+  visionActions: [],
+  parkedSources: [],
+}
+
+function _persistSession(sid: string | null) {
+  try {
+    if (sid) sessionStorage.setItem(SESSION_KEY, sid)
+    else sessionStorage.removeItem(SESSION_KEY)
+  } catch {
+    /* storage unavailable — restore-on-remount degrades to live events only */
+  }
 }
 
 function _hostOf(url: string): string {
@@ -76,14 +121,18 @@ export function useCrawl(wsConnected: boolean = true) {
   const activeRef = useRef(false)
   const sessionIdRef = useRef<string | null>(null)
 
-  const reset = useCallback(() => setState(IDLE), [])
+  const reset = useCallback(() => {
+    _persistSession(null)
+    setState(IDLE)
+  }, [])
 
   useEffect(() => {
     function onStarted(e: Event) {
       const msg = (e as CustomEvent<CrawlerStartedMsg>).detail
       activeRef.current = true
       sessionIdRef.current = msg.session_id ?? sessionIdRef.current
-      setState((s) => ({
+      if (msg.session_id) _persistSession(msg.session_id)
+      setState(() => ({
         ...IDLE,
         active: true,
         query: msg.query,
@@ -104,6 +153,8 @@ export function useCrawl(wsConnected: boolean = true) {
             pageNumber: msg.page_number,
             total: msg.total,
             host: msg.host || _hostOf(msg.url),
+            jobId: msg.job_id,
+            title: msg.title,
           },
         ],
       }))
@@ -111,6 +162,35 @@ export function useCrawl(wsConnected: boolean = true) {
     function onOpenTab(e: Event) {
       const msg = (e as CustomEvent<OpenTabMsg>).detail
       setState((s) => ({ ...s, dashboard: msg.data }))
+    }
+    function onProgress(e: Event) {
+      const msg = (e as CustomEvent<CrawlerProgressMsg>).detail
+      setState((s) => ({ ...s, active: true, progress: msg.message ?? msg.stage ?? s.progress }))
+    }
+    function onPhase(e: Event) {
+      const msg = (e as CustomEvent<CrawlerPhaseMsg>).detail
+      setState((s) => ({
+        ...s,
+        active: true,
+        phase: msg.phase ?? s.phase,
+        phaseSequence: msg.phase_sequence ?? s.phaseSequence,
+      }))
+    }
+    function onVisionAction(e: Event) {
+      const msg = (e as CustomEvent<CrawlerVisionActionMsg>).detail
+      setState((s) => ({
+        ...s,
+        active: true,
+        visionActions: [...s.visionActions, msg],
+      }))
+    }
+    function onSourceParked(e: Event) {
+      const msg = (e as CustomEvent<CrawlerSourceParkedMsg>).detail
+      setState((s) => ({
+        ...s,
+        active: true,
+        parkedSources: [...s.parkedSources, msg],
+      }))
     }
     function onError(e: Event) {
       const msg = (e as CustomEvent<CrawlerErrorMsg>).detail
@@ -129,10 +209,15 @@ export function useCrawl(wsConnected: boolean = true) {
         credibilityTopScore: msg.credibility_top_score ?? s.credibilityTopScore,
       }))
     }
-    function onSyncRequired() {
+    function onSyncRequired(e: Event) {
       // REQ-31 edge / T23: TTL eviction dropped events we never replayed, so
       // partial SSE replay is insufficient. Fetch the FULL snapshot and apply
       // every buffered event as a complete re-sync.
+      const d = (e as CustomEvent<{ session_id?: string }>).detail
+      if (d?.session_id) {
+        sessionIdRef.current = d.session_id
+        _persistSession(d.session_id)
+      }
       const sid = sessionIdRef.current
       if (!sid) {
         setState((s) => ({ ...s, syncRequired: true }))
@@ -145,7 +230,7 @@ export function useCrawl(wsConnected: boolean = true) {
           if (!snap || !snap.ok) return
           // Re-apply every buffered event as a full sync (idempotent: handlers
           // dedupe by url / overwrite by field). This restores complete state.
-          for (const ev of snap.events as Array<{ type: string; payload: any }>) {
+          for (const ev of snap.events as Array<CrawlSnapshotEvent>) {
             window.dispatchEvent(new CustomEvent(`iris:${ev.type}`, { detail: ev.payload }))
           }
         })
@@ -158,6 +243,15 @@ export function useCrawl(wsConnected: boolean = true) {
     t.addEventListener("iris:crawler_started", onStarted as EventListener)
     t.addEventListener("iris:crawler_page_fetched", onPage as EventListener)
     t.addEventListener("iris:open_tab", onOpenTab as EventListener)
+    t.addEventListener("iris:crawler_progress", onProgress as EventListener)
+    t.addEventListener("iris:crawler_phase", onPhase as EventListener)
+    // The SSE transport maps CRAWLER_PHASE to msg_type `task:event`
+    // (backend/crawler/ux_map.py) and useCrawlSSE re-dispatches `iris:task:event`.
+    // Accept BOTH names so phase updates land regardless of transport (REQ-31
+    // AC4: one event contract). The WS path may also deliver `crawler_phase`.
+    t.addEventListener("iris:task:event", onPhase as EventListener)
+    t.addEventListener("iris:crawler_vision_action", onVisionAction as EventListener)
+    t.addEventListener("iris:crawler_source_parked", onSourceParked as EventListener)
     t.addEventListener("iris:crawler_error", onError as EventListener)
     t.addEventListener("iris:crawler_complete", onComplete as EventListener)
     t.addEventListener("iris:crawler_sync_required", onSyncRequired as EventListener)
@@ -165,10 +259,42 @@ export function useCrawl(wsConnected: boolean = true) {
       t.removeEventListener("iris:crawler_started", onStarted as EventListener)
       t.removeEventListener("iris:crawler_page_fetched", onPage as EventListener)
       t.removeEventListener("iris:open_tab", onOpenTab as EventListener)
+      t.removeEventListener("iris:crawler_progress", onProgress as EventListener)
+      t.removeEventListener("iris:crawler_phase", onPhase as EventListener)
+      t.removeEventListener("iris:task:event", onPhase as EventListener)
+      t.removeEventListener("iris:crawler_vision_action", onVisionAction as EventListener)
+      t.removeEventListener("iris:crawler_source_parked", onSourceParked as EventListener)
       t.removeEventListener("iris:crawler_error", onError as EventListener)
       t.removeEventListener("iris:crawler_complete", onComplete as EventListener)
       t.removeEventListener("iris:crawler_sync_required", onSyncRequired as EventListener)
     }
+  }, [])
+
+  // REQ-12 AC3 (T18): restore a run's state from the server-side event log on
+  // remount. Fetches GET /api/crawl/snapshot/{session_id}; if the log evicted
+  // events the client never replayed (snapshot.sync_required / client flag set)
+  // it re-dispatches EVERY buffered event as a full sync, otherwise only
+  // events with seq > afterSeq. Re-dispatch is idempotent (handlers dedupe by
+  // url / overwrite by field), so restore can run repeatedly without duplicating.
+  const restore = useCallback((sessionId: string, afterSeq: number) => {
+    if (!sessionId) return
+    fetch(`/api/crawl/snapshot/${encodeURIComponent(sessionId)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((snap) => {
+        if (!snap || !snap.ok) return
+        const fullSync = snap.sync_required === true
+        const events = (snap.events ?? []) as Array<CrawlSnapshotEvent>
+        for (const ev of events) {
+          if (!fullSync && ev.seq <= afterSeq) continue
+          window.dispatchEvent(new CustomEvent(`iris:${ev.type}`, { detail: ev.payload }))
+        }
+        // Mirror the authoritative server eviction flag into client state so a
+        // subsequent partial replay knows a full sync already happened.
+        setState((s) => ({ ...s, syncRequired: fullSync }))
+      })
+      .catch(() => {
+        /* restore is best-effort; live events + SSE replay cover the gap */
+      })
   }, [])
 
   // REQ-31 AC3/AC5: SSE fallback — activates only when the primary WS is down.
@@ -177,5 +303,5 @@ export function useCrawl(wsConnected: boolean = true) {
   // CustomEvents, so the state above is transport-agnostic.
   const { sseConnected } = useCrawlSSE(sessionIdRef.current, wsConnected)
 
-  return { state, reset, reducedMotion, isActive: activeRef, sseConnected }
+  return { state, reset, restore, reducedMotion, isActive: activeRef, sseConnected }
 }

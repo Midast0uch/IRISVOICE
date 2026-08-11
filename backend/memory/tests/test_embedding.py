@@ -68,18 +68,32 @@ class TestEmbeddingServiceLazyLoading:
         assert service._model is None, "Model should not be loaded on instantiation"
     
     def test_model_loaded_on_first_encode(self):
-        """Test that model is loaded lazily on first encode()."""
+        """Test that model is loaded lazily on first encode().
+
+        NOTE (2026-08-09): the legacy assertion checked ``service._model``,
+        a never-populated class attribute from the single-model era. The
+        Phase-4 multi-backend service stores the loaded model in
+        ``self._models[backend]`` (visible via ``available_backends()``).
+        This test was dormant (whole module skipped when
+        sentence-transformers was absent) and only now runs; the assertion
+        is corrected to the real lazy-load contract, not weakened.
+        """
         service = EmbeddingService()
-        
-        # Model should be None before
-        assert service._model is None
-        
+
+        # Before first encode(): hash fallback is always registered, but no
+        # neural backend has loaded yet.
+        assert "hash" in service.available_backends()
+        assert "qwen3" not in service.available_backends(), \
+            "No neural model should be loaded on instantiation"
+
         # Trigger lazy loading
         embedding = service.encode("Hello world")
-        
-        # Model should now be loaded
-        assert service._model is not None, "Model should be loaded after encode()"
-        assert len(embedding) == EmbeddingService.EMBEDDING_DIM, "Should return embedding_dim vector"
+
+        # The neural backend should now be loaded
+        assert "qwen3" in service.available_backends(), \
+            "Model should be loaded after encode()"
+        assert len(embedding) == EmbeddingService.EMBEDDING_DIM, \
+            "Should return embedding_dim vector"
 
 
 class TestEmbeddingServiceEncoding:
@@ -229,6 +243,43 @@ class TestEmbeddingServiceDimensions:
     def test_model_name_constant(self):
         """Test that MODEL_NAME is BAAI/bge-m3."""
         assert EmbeddingService.MODEL_NAME == "BAAI/bge-m3"
+
+
+class TestQwen3Backend:
+    """Test the Qwen3-Embedding-0.6B backend (2026-08 switch)."""
+
+    def test_backend_qwen_constant(self):
+        """Qwen3 backend id is 'qwen3' and is a registered neural backend."""
+        from backend.memory.embedding import BACKEND_QWEN, BACKEND_NEURAL
+        assert BACKEND_QWEN == "qwen3"
+        assert BACKEND_QWEN in BACKEND_NEURAL
+
+    def test_model_name_qwen_constant(self):
+        """Qwen3 model name resolves to the 0.6B sentence-transformers model."""
+        assert EmbeddingService.MODEL_NAME_QWEN == "Qwen/Qwen3-Embedding-0.6B"
+
+    def test_window_for_qwen(self):
+        """Qwen3 uses its 32K context window for chunking."""
+        assert EmbeddingService._window_for("qwen3") == 32768
+
+    def test_default_backend_is_qwen(self):
+        """Config default backend is qwen3 after the 2026-08 switch."""
+        from backend.memory.config import VectorSearchConfig
+        assert VectorSearchConfig().backend == "qwen3"
+
+    def test_resolve_selected_backend_defaults_qwen(self):
+        """Service resolves qwen3 when config is untouched (default)."""
+        service = EmbeddingService()
+        assert service._resolve_selected_backend() == "qwen3"
+        EmbeddingService.reset_instance()
+
+    def test_encode_qwen_dim(self):
+        """Encoding through the qwen3 backend returns 1024-dim vectors."""
+        service = EmbeddingService()
+        emb = service.encode_with_backend("test query about waterfalls", "qwen3")
+        assert emb is not None, "qwen3 backend should load (model is pre-warmed)"
+        assert len(emb) == EmbeddingService.EMBEDDING_DIM
+        EmbeddingService.reset_instance()
 
 
 if __name__ == "__main__":

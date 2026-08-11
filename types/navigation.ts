@@ -21,6 +21,8 @@ export interface FieldConfig {
   loadOptions?: () => Promise<{ label: string; value: string }[]>
   // button props
   action?: string
+  // password-field secret: render masked / never echo (cards.ts:444)
+  secure?: boolean
   // conditional visibility
   showIf?: { field: string; values: (string | boolean)[] }
 }

@@ -4,8 +4,10 @@ Embedding Service for IRIS Memory Foundation.
 Phase 4 (LFM2.5 Encoder Integration) — backend-swappable, chunking, provenance.
 
 Backends (provenance values stored with every persisted vector):
+  - "qwen3"           Qwen/Qwen3-Embedding-0.6B via sentence-transformers
+                       (1024-dim, ~639MB, 32K context). Default (2026-08).
   - "bge-m3"          BAAI/bge-m3 via sentence-transformers (1024-dim, ~2.3GB).
-                       Default for the migration window; selectable at any time.
+                       Selectable at any time; kept as the pre-switch default.
   - "lfm25-emb-350m"  LFM2.5-Embedding-350M via llama_cpp GGUF on CPU (1024-dim).
   - "hash"            Dependency-free hash-projection fallback. Always available.
 
@@ -42,6 +44,8 @@ logger = logging.getLogger(__name__)
 BACKEND_BGE = "bge-m3"
 BACKEND_LFM = "lfm25-emb-350m"
 BACKEND_HASH = "hash"
+BACKEND_QWEN = "qwen3"
+BACKEND_NEURAL = (BACKEND_BGE, BACKEND_LFM, BACKEND_QWEN)
 
 # Chunking defaults (OQ-1: start 480 / 64; tune against REQ-8 AC1).
 DEFAULT_CHUNK_TOKENS = 480
@@ -58,12 +62,13 @@ MAX_CHUNKS_PER_DOC = 32
 # for tens of minutes with no exception raised and no way to interrupt it from
 # pure Python. Any such load MUST therefore be (a) off the construction path
 # and (b) bounded by a timeout, never awaited unboundedly.
-DEFAULT_LOAD_TIMEOUT_S = 60.0
+DEFAULT_LOAD_TIMEOUT_S = 300.0
 
 
 def _load_timeout_s() -> float:
-    """Bound for a backend load attempt. Overridable via
-    IRIS_EMBEDDING_LOAD_TIMEOUT_S (default 60s)."""
+    """Bound for a backend load attempt (default 300s for neural backends;
+    60s was too tight for Qwen3-Embedding-0.6B which cold-loads in ~106s).
+    Overridable via IRIS_EMBEDDING_LOAD_TIMEOUT_S."""
     raw = os.environ.get("IRIS_EMBEDDING_LOAD_TIMEOUT_S")
     if not raw:
         return DEFAULT_LOAD_TIMEOUT_S
@@ -288,9 +293,10 @@ class EmbeddingService:
     """
     Singleton, backend-swappable embedding service (Phase 4).
 
-    Model: selectable between BAAI/bge-m3 (default) and LFM2.5-Embedding-350M
-    (GGUF, CPU). Falls back to the hash-projection embedder if neither neural
-    backend is available. All memory components share this single instance.
+    Model: Qwen/Qwen3-Embedding-0.6B (default, 2026-08), BAAI/bge-m3, or
+    LFM2.5-Embedding-350M (GGUF, CPU). Falls back to the hash-projection
+    embedder if no neural backend is available. All memory components share
+    this single instance.
     """
 
     _instance: Optional["EmbeddingService"] = None
@@ -300,6 +306,7 @@ class EmbeddingService:
 
     # Model configuration
     MODEL_NAME = "BAAI/bge-m3"
+    MODEL_NAME_QWEN = "Qwen/Qwen3-Embedding-0.6B"
     EMBEDDING_DIM = 1024
 
     # Sentinel: True when sentence-transformers is confirmed unavailable.
@@ -344,17 +351,17 @@ class EmbeddingService:
 
     # ── Backend selection (REQ-1 AC4) ────────────────────────────────────────
     def _resolve_selected_backend(self) -> str:
-        """Select backend from config; default BGE-M3 (migration-safe)."""
+        """Select backend from config; default QWEN3 (2026-08 switch)."""
         try:
             from backend.memory.config import get_config
             cfg = get_config()
             vec = getattr(cfg, "embedding", None)
             b = getattr(vec, "backend", None) if vec else None
-            if b in (BACKEND_BGE, BACKEND_LFM, BACKEND_HASH):
+            if b in (BACKEND_BGE, BACKEND_LFM, BACKEND_HASH, BACKEND_QWEN):
                 return b
         except Exception as exc:  # pragma: no cover - config optional at import
             logger.debug("[EmbeddingService] backend config read failed: %s", exc)
-        return BACKEND_BGE
+        return BACKEND_QWEN
 
     @staticmethod
     def _window_for(backend: str) -> int:
@@ -362,6 +369,8 @@ class EmbeddingService:
             return 512
         if backend == BACKEND_BGE:
             return 8192
+        if backend == BACKEND_QWEN:
+            return 32768
         return 10 ** 9  # hash: effectively unbounded
 
     def _chunker_for(self, backend: str) -> Chunker:
@@ -403,13 +412,17 @@ class EmbeddingService:
         if backend == BACKEND_HASH:
             self._models[BACKEND_HASH] = "hash"
             return True
-        if backend not in (BACKEND_BGE, BACKEND_LFM):
+        if backend not in BACKEND_NEURAL:
             return False
         if backend in self._load_attempted:
             return False
         self._load_attempted.add(backend)
         timeout_s = _load_timeout_s()
-        load_fn = self._load_bge if backend == BACKEND_BGE else self._load_gguf
+        load_fn = {
+            BACKEND_BGE: self._load_bge,
+            BACKEND_QWEN: self._load_qwen,
+            BACKEND_LFM: self._load_gguf,
+        }[backend]
         model, timed_out = _run_bounded(load_fn, timeout_s, backend)
         if timed_out:
             logger.warning(
@@ -423,13 +436,53 @@ class EmbeddingService:
         return model is not None
 
     def _load_bge(self):
+        """Load BGE-M3 ONLY from the local HF cache (2026-08-09: the cache was
+        removed; bge-m3 is no longer the default backend, so this backend now
+        resolves to None unless the weights are re-downloaded intentionally).
+        Guarded against silent network re-download: a model that is not already
+        cached locally is reported unavailable rather than fetched."""
+        import os
+        if not self._hf_cached(self.MODEL_NAME):
+            logger.info(
+                "[EmbeddingService] %s not in local HF cache; "
+                "BGE-M3 backend unavailable (no download attempted)",
+                self.MODEL_NAME,
+            )
+            return None
         try:
             from sentence_transformers import SentenceTransformer
             logger.info("[EmbeddingService] Loading %s model...", self.MODEL_NAME)
-            return SentenceTransformer(self.MODEL_NAME)
+            return SentenceTransformer(self.MODEL_NAME, device="cpu")
         except Exception as exc:  # ImportError or load failure
             logger.info("[EmbeddingService] BGE-M3 not available: %s", exc)
             return None
+
+    def _load_qwen(self):
+        try:
+            from sentence_transformers import SentenceTransformer
+            logger.info("[EmbeddingService] Loading %s model (CPU)...", self.MODEL_NAME_QWEN)
+            # Pinned to CPU (2026-08-09): the embedding models run on system
+            # RAM, keeping the GPU free for audio/STT workloads.
+            return SentenceTransformer(self.MODEL_NAME_QWEN, device="cpu")
+        except Exception as exc:  # ImportError or load failure
+            logger.info("[EmbeddingService] Qwen3 not available: %s", exc)
+            return None
+
+    @staticmethod
+    def _hf_cached(model_name: str) -> bool:
+        """True if ``model_name`` has a populated snapshot in the HF hub cache."""
+        import os
+        hf_home = os.environ.get("HF_HOME") or os.path.join(
+            os.path.expanduser("~"), ".cache", "huggingface"
+        )
+        hub_dir = os.path.join(hf_home, "hub", "models--" + model_name.replace("/", "--"))
+        snap = os.path.join(hub_dir, "snapshots")
+        if not os.path.isdir(snap) or not os.listdir(snap):
+            return False
+        return any(
+            os.path.isdir(os.path.join(snap, s))
+            for s in os.listdir(snap)
+        )
 
     def _load_gguf(self):
         path = self._resolve_gguf_path()
@@ -519,7 +572,7 @@ class EmbeddingService:
     def _encode_chunk_with(self, text: str, backend: str) -> List[float]:
         """Embed a single chunk with the given backend, else hash fallback."""
         model = self._models.get(backend)
-        if backend == BACKEND_BGE and model is not None:
+        if backend in (BACKEND_BGE, BACKEND_QWEN) and model is not None:
             emb = model.encode(text, convert_to_numpy=True)
             return emb.tolist()
         if backend == BACKEND_LFM and model is not None:

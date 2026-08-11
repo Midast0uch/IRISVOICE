@@ -37,12 +37,33 @@ _SPACE_ORDER: List[str] = [
     "toolpath",
 ]
 
-# Outcome score deltas (Req 7.1)
+# Outcome score deltas (Req 7.1) — now the PER-OBSERVATION base impact of a
+# REQ-26/T40 evidence-weighted update, not a fixed applied delta.
+#
+# REQ-26 AC2 — the asymmetry is a DELIBERATE PESSIMISM PRIOR, stated, not
+# implicit: a miss (-0.08) weighs 1.6x a hit (+0.05), so ~2 hits undo 1 miss.
+# Rationale: in this system a wrong action writes a biased node into shared
+# memory that later gets recalled AS evidence, so failures compound while
+# successes self-correct — the prior is set to make the store harder to fool,
+# not because misses are 1.6x more informative in the abstract.
+#
+# The applied delta is base * alpha where alpha = 1/(1+observation_count)
+# BEFORE the observation lands, so the FIRST observation on an edge moves it
+# fully and later ones converge (REQ-26 AC1: a posterior, not a
+# reinforcement rule). See EdgeScorer.record_outcome.
 _OUTCOME_DELTAS = {
     "hit": 0.05,
     "partial": 0.02,
     "miss": -0.08,
 }
+
+# REQ-26 AC5 (T40d): the PRIOR for an unseen (coordinate-region, mediator)
+# pair — the initial score of a newly created region->mediator edge. Explicit
+# and recorded so first-encounter behavior is a decision, not an accident of
+# initialization: a fresh pair starts at neutral 0.5 (no evidence either way)
+# and the pessimism asymmetry above does the rest. This constant is the prior
+# the BehavioralPredictor reads for pairs it has never seen.
+_UNSEEN_PAIR_PRIOR = 0.5
 
 
 def _pack_coords(coords: List[float]) -> bytes:
@@ -69,12 +90,28 @@ class EdgeScorer:
 
     def record_outcome(self, edge_ids: List[str], outcome: str) -> None:
         """
-        Apply an outcome delta to every edge in edge_ids (Req 7.1–7.2).
+        Apply an outcome observation to every edge in edge_ids (Req 7.1–7.2).
 
-        Deltas: hit=+0.05, partial=+0.02, miss=-0.08.
+        REQ-26 (T40): the update is now EVIDENCE-WEIGHTED, not a fixed delta.
+        Each edge carries an ``observation_count``; the applied delta is
+        ``base_delta * alpha`` where ``alpha = 1 / (1 + observation_count)``
+        computed BEFORE the observation lands. The first observation on an
+        edge therefore moves it fully (alpha = 1.0), the 100th barely —
+        belief converges instead of oscillating, which is the entire thing a
+        posterior provides. ``observation_count`` is bumped alongside
+        ``traversal_count`` (via ``CoordinateStore.record_observation``), so
+        the score always carries the evidence behind it.
+
+        The asymmetry in ``_OUTCOME_DELTAS`` (miss = 1.6x hit) is a stated
+        pessimism prior — see the constant's docstring.
+
         HIGHWAY_BONUS (+0.01) is applied in the same call when a hit pushes
         the score from below HIGHWAY_THRESHOLD (0.85) to at or above it —
         crossing counts as a single traversal (Req 7.2).
+
+        REQ-26 AC7: this method is the ONLY place an outcome may be counted.
+        ``apply_decay`` never calls it, so decay is never recorded as a miss
+        and never inflates ``observation_count``.
 
         Unknown outcome values are silently ignored.
 
@@ -91,15 +128,74 @@ class EdgeScorer:
             if edge is None:
                 continue
 
-            delta = base_delta
+            # REQ-26 AC1: diminishing update — alpha from the count BEFORE
+            # this observation. First observation: alpha = 1/(1+0) = 1.0
+            # (full strength); each later one converges.
+            alpha = 1.0 / (1.0 + edge.observation_count)
+            delta = base_delta * alpha
 
             # Highway bonus: add when a hit crosses HIGHWAY_THRESHOLD
             if outcome == "hit":
-                projected = min(1.0, edge.score + base_delta)
+                projected = min(1.0, edge.score + delta)
                 if edge.score < HIGHWAY_THRESHOLD <= projected:
                     delta += HIGHWAY_BONUS
 
-            self._store.update_edge_score(edge_id, delta)
+            self._store.record_observation(edge_id, delta)
+
+    def record_region_mediator_outcome(
+        self,
+        region_node_id: str,
+        mediator: str,
+        outcome: str,
+    ) -> Optional[str]:
+        """
+        REQ-26 AC1/T40c (join with REQ-23/T37): score the ONE edge for a
+        (coordinate-region, mediator) pair.
+
+        The region is ``region_node_id`` (a coordinate node — typically an
+        active node from ``SessionRegistry.get_active``); the mediator is the
+        resolved tool/action identifier from ``_der_mediator_for`` (T37) — the
+        tool NAME, not the args-hashed full string: the graph learns
+        tool-per-region (a tool that works in one region and fails in another
+        must be representable — a single global score cannot express that),
+        while the args hash stays on the chain row as provenance (REQ-23 AC2).
+
+        Resolution:
+          1. Find the toolpath node labelled ``mediator`` (label identity, not
+             coordinate proximity — ``store.get_node_by_label``); create it if
+             absent, at the region's coordinates so condense/expand stay
+             coordinate-local.
+          2. Find-or-create the edge region -> mediator with
+             ``_UNSEEN_PAIR_PRIOR`` as the initial score (REQ-26 AC5 — the
+             prior for an unseen pair is explicit and recorded).
+          3. Apply the evidence-weighted update to THAT edge only (a
+             repeated failure here cannot touch region B's edge for the same
+             mediator — the caller selects the edge, never the global fan-out
+             the pre-REQ-26 path used).
+
+        Returns the scored edge_id (or None if the region node is missing).
+        """
+        region = self._store.get_node_by_id(region_node_id)
+        if region is None:
+            return None
+
+        mediator_node = self._store.get_node_by_label("toolpath", mediator)
+        if mediator_node is None:
+            mediator_node = self._store.upsert_node(
+                space_id="toolpath",
+                coordinates=list(region.coordinates),
+                label=mediator,
+                confidence=0.5,
+            )
+
+        edge_id = self._store.upsert_edge(
+            from_node_id=region_node_id,
+            to_node_id=mediator_node.node_id,
+            edge_type="tool_choice",
+            initial_score=_UNSEEN_PAIR_PRIOR,
+        )
+        self.record_outcome([edge_id], outcome)
+        return edge_id
 
     def apply_decay(self, session_id: Optional[str] = None) -> int:
         """
@@ -115,6 +211,12 @@ class EdgeScorer:
 
         Decay writes use a direct UPDATE to avoid bumping traversal_count
         (decay is not a traversal).
+
+        REQ-26 AC7 (T40e): decay is FORGETTING, not an observation — the
+        direct UPDATE below sets score only and never touches
+        ``observation_count``, and decay never routes through
+        ``record_outcome``, so it can never be counted as a miss nor inflate
+        the evidence count behind a score.
 
         v2: When session_id is provided, the Caducean attentional velocity (u)
         modulates the effective decay rate:
@@ -234,6 +336,13 @@ class MapManager:
         """
         Merge pairs of nodes in space_id within CONDENSE_THRESHOLD (0.04) (Req 7.6–7.7).
 
+        REQ-19 vocabulary: this is NODE CONDENSE — the mycelium coordinate-graph
+        compaction mechanism (scorer.condense). It is NOT Landmark.condense()
+        (Landmark Crystallization, landmark.py), NOT DER "COMPRESS" (a physics
+        recommendation code, int 1, agent_kernel.py), NOT DCP message pruning,
+        and NOT mcm_compress (external build tooling). See the REQ-19 vocabulary
+        table in specs/long-horizon-der-execution/design.md.
+
         For each qualifying pair:
           - Survivor = node with higher access_count (ties favour first-encountered).
           - New coordinates = access-count-weighted average of both nodes.
@@ -315,6 +424,12 @@ class MapManager:
         """
         Split nodes whose outbound edge hit/miss variance exceeds SPLIT_THRESHOLD (0.40)
         into two child nodes (Req 7.8–7.9).
+
+        REQ-19 vocabulary: this is NODE EXPANSION — the mycelium coordinate-graph
+        mechanism (scorer.expand). It is NOT Step Expansion (agent_kernel.py
+        _growth_width -> _split_step, which creates DER sub-loop steps), NOT DER
+        "EXPAND" (a physics phase), and NOT DCP message pruning. See the REQ-19
+        vocabulary table in specs/long-horizon-der-execution/design.md.
 
         For each qualifying node:
           - Compute hit_rate per outbound edge: hit_count / (hit_count + miss_count).

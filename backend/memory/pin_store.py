@@ -50,6 +50,29 @@ PIN_TYPES = (
 )
 
 
+# REQ-19 AC2b (T20): the link vocabulary, enforced at the WRITE boundary
+# (link() rejects out-of-vocabulary predicates loudly). The schema column
+# mycelium_pin_links.relationship is free text — the controlled vocabulary is
+# this constant, pinned by specs/der-dag-inversion/ontology.md §3 and checked
+# by scripts/validate_ontology_schema.py (REQ-22 AC2). DER relationships
+# (part_of, relevant_to, failed_like, derives_from, depends_on) land in the
+# SAME store as the pre-existing pin/landmark predicates — one store, no
+# second edge store (REQ-19 AC4).
+LINK_VOCABULARY = frozenset({
+    # pre-existing (pin / landmark / mycelium scorer)
+    "documents", "references", "implements", "contains", "depends_on",
+    "related_to",
+    # REQ-19 AC2b extensions (DER)
+    "derives_from", "part_of", "relevant_to", "failed_like",
+})
+
+# The sub-vocabulary DER is permitted to write (REQ-19 AC2b §3b). The rest of
+# LINK_VOCABULARY remains owned by the pin/landmark system.
+DER_LINK_PREDICATES = frozenset({
+    "depends_on", "derives_from", "part_of", "relevant_to", "failed_like",
+})
+
+
 @dataclass
 class Pin:
     """A primordial information node."""
@@ -244,7 +267,23 @@ class PinStore:
         target_type: str = "pin",
         weight: float = 1.0,
     ) -> int:
-        """Link a pin to another pin/landmark/episode/node. Returns link_id."""
+        """Link a pin to another pin/landmark/episode/node. Returns link_id.
+
+        REQ-19 AC2b (T20): the relationship MUST be in ``LINK_VOCABULARY``.
+        The schema column is free text — the vocabulary is enforced HERE, at
+        the write boundary. An out-of-vocabulary predicate is LOGGED and
+        DROPPED (returns 0), never written — a loud rejection, so a caller
+        (e.g. DER link writing) can never silently poison the graph with an
+        untyped edge. Canonical direction rules (ontology.md §3b) are the
+        caller's contract; this method enforces membership only.
+        """
+        if relationship not in LINK_VOCABULARY:
+            logger.warning(
+                "[PinStore.link] REJECTED out-of-vocabulary predicate %r "
+                "(%s -> %s, %s -> %s) — dropped, not written (REQ-19 AC2b)",
+                relationship, source_type, source_id, target_type, target_id,
+            )
+            return 0
         now = time.time()
         cur = self._conn.execute(
             "INSERT INTO mycelium_pin_links "

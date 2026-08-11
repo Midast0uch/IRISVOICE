@@ -85,16 +85,158 @@ class OuterTuner:
     ):
         if recorder is None:
             from backend.agent.caducean_trajectory import (
-                CaduceanTrajectoryRecorder,
+                get_trajectory_recorder,
             )
+            from backend.memory import get_memory_interface
 
-            recorder = CaduceanTrajectoryRecorder()
+            # REQ-20: bind to the APPLICATION store via the live MemoryInterface.
+            # When no interface is live, get_trajectory_recorder degrades to the
+            # no-op recorder (never the BUILD-memory .mcm/coordinates.db).
+            recorder = get_trajectory_recorder(get_memory_interface())
         self.recorder = recorder
         self.params_path = params_path or os.path.join(
             os.path.dirname(__file__), "..", "..", ".mcm", "der_params.json"
         )
         self.held_out_count = held_out_count
         self.params = self._load_params()
+
+    # ── REQ-16 AC3 (T33): signal-relevance / strength observations ───────────
+    @staticmethod
+    def _signal_observations(
+        session_id: str,
+        recorder: Any = None,
+        governance_counts: Optional[Dict[str, int]] = None,
+    ) -> Dict[str, Any]:
+        """REQ-16 AC3 (T33): collect the three read-only signal inputs the
+        outer loop consumes to judge relevance/strength in real time.
+
+          - governance_ratio (REQ-6 AC3): past-governed share of steering
+            decisions this session — how much the past-memory signal (the
+            node records the tuner's U_SPLIT / width govern) was actually
+            used. None when no decisions were recorded (signal absent, not
+            zero — same liveness discipline as GuardResult.live).
+          - rate_health (REQ-9 AC3, T27): per-quota 429 frequency + ceiling
+            trajectory. Unmetered quotas report metered=False and are
+            NEVER fabricated as saturated (REQ-9 edge case).
+          - domain_aggregates (REQ-21 AC1, T22): per-execution-domain physics
+            (avg_u / oscillation / convergence / split / collapse / n) —
+            where the physics signal is strong enough to aggregate.
+
+        Strictly read-only and never raises: each signal is gathered inside
+        its own guard and reported absent on failure (REQ-16 edge: "guard
+        inputs unavailable -> GuardResult.live=False").
+        """
+        obs: Dict[str, Any] = {
+            "session_id": session_id,
+            "governance_ratio": None,
+            "rate_health": None,
+            "domain_aggregates": None,
+        }
+        # Governance ratio (REQ-6 AC3) — from the kernel's per-turn counter.
+        if governance_counts:
+            _past = int(governance_counts.get("past", 0) or 0)
+            _live = int(governance_counts.get("live", 0) or 0)
+            _both = int(governance_counts.get("both", 0) or 0)
+            _total = _past + _live + _both
+            if _total > 0:
+                obs["governance_ratio"] = round((_past + _both) / _total, 3)
+        # Rate health (REQ-9 AC3 / T27).
+        try:
+            from backend.agent.rate_meter import get_rate_meter
+
+            # The quota id is not derivable from the session; read the FIRST
+            # metered window as the provider-level health signal. Unmetered
+            # / no windows -> None (absent, never fabricated).
+            _rh = None
+            for _qid, _w in get_rate_meter()._windows.items():
+                if _w.metered:
+                    _rh = get_rate_meter().rate_health(_qid)
+                    break
+            obs["rate_health"] = _rh
+        except Exception:
+            obs["rate_health"] = None
+        # Per-domain physics aggregates (REQ-21 / T22).
+        try:
+            if recorder is not None and hasattr(recorder, "compute_domain_aggregates"):
+                _aggs = recorder.compute_domain_aggregates(
+                    session_id, axis="execution_domain"
+                )
+                obs["domain_aggregates"] = {
+                    k: v.as_dict() if hasattr(v, "as_dict") else v
+                    for k, v in _aggs.items()
+                }
+        except Exception:
+            obs["domain_aggregates"] = None
+        return obs
+
+    @staticmethod
+    def _signal_relevance(obs: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """REQ-16 AC3 (T33): judge each signal's relevance/strength.
+
+        Turns the raw observations into a tunable relevance/strength verdict
+        the outer loop can ACT on:
+
+          - governance_relevance: "past" | "live" | "mixed" | "absent" — did
+            the past-memory signal (the node records being tuned) actually
+            govern this session's decisions?
+          - rate_strength: "saturated" | "healthy" | "absent" — is the
+            provider being throttled right now (429 pressure / falling
+            ceiling)? A saturated provider contaminates the observed
+            natural-exit signal, so tuning on it is unreliable.
+          - domain_signal: "present" | "absent" — are per-domain physics
+            aggregates available to weight the per-domain gate?
+          - relevance_score: 0.0..1.0 — the composite signal-relevance the
+            outer loop uses to decide whether to tune THIS cycle (1.0 =
+            relevant + healthy + present; lower when signals are absent or
+            the provider is saturated).
+
+        Never raises; absent inputs report "absent", never fabricated.
+        """
+        if not obs:
+            return {
+                "governance_relevance": "absent",
+                "rate_strength": "absent",
+                "domain_signal": "absent",
+                "relevance_score": 0.0,
+            }
+        # Governance: which signal governed decisions this session.
+        _gov = obs.get("governance_ratio")
+        if _gov is None:
+            _gov_rel = "absent"
+        elif _gov >= 0.67:
+            _gov_rel = "past"
+        elif _gov <= 0.33:
+            _gov_rel = "live"
+        else:
+            _gov_rel = "mixed"
+        # Rate health: saturated vs healthy vs absent.
+        _rh = obs.get("rate_health")
+        if not _rh or not _rh.get("metered"):
+            _rate_str = "absent"  # unmetered / no windows — no signal (REQ-9 edge)
+        else:
+            _c429 = int(_rh.get("count_429_in_window", 0) or 0)
+            _trend = _rh.get("ceiling_trend", "stable")
+            if _c429 > 0 or _trend == "falling":
+                _rate_str = "saturated"
+            else:
+                _rate_str = "healthy"
+        # Domain aggregates present?
+        _daggs = obs.get("domain_aggregates")
+        _dom_sig = "present" if _daggs else "absent"
+        # Composite relevance: healthy rate + any governance + any domain data.
+        _score = 0.0
+        if _rate_str == "healthy":
+            _score += 0.5
+        if _gov_rel in ("past", "mixed"):
+            _score += 0.3
+        if _dom_sig == "present":
+            _score += 0.2
+        return {
+            "governance_relevance": _gov_rel,
+            "rate_strength": _rate_str,
+            "domain_signal": _dom_sig,
+            "relevance_score": round(_score, 3),
+        }
 
     # ── params store ────────────────────────────────────────────────────────
     def _load_params(self) -> Dict[str, float]:
@@ -340,7 +482,11 @@ class OuterTuner:
         return None
 
     # ── main entry (D4.2 run_once) ───────────────────────────────────────────
-    def run_once(self, domain: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    def run_once(
+        self,
+        domain: Optional[str] = None,
+        observations: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
         """Run one outer-loop iteration.
 
         Order (D-4): the POOLED compound gate runs first; per-domain gating
@@ -348,13 +494,43 @@ class OuterTuner:
         A proposal failing pooled never reaches domain iteration, so per-domain
         gating can never accept something the pooled gate rejected.
 
-        Returns the applied change dict, or None if no improvement / no proposal.
+        REQ-16 AC3 (T33): when ``observations`` (signal relevance/strength
+        from REQ-6 governance ratio, REQ-9 rate health, REQ-21 aggregates)
+        are supplied, the outer loop judges relevance FIRST and HOLDS OFF
+        tuning while the provider is saturated — a throttled provider
+        contaminates the observed natural-exit signal, so tuning on it is
+        unreliable (REQ-16 edge: "rate health absent -> relevance from
+        governance ratio only"). The relevance verdict is always included in
+        the returned dict so the debug surface can display it.
+
+        Returns the applied change dict, or None if no improvement / no
+        proposal / held off due to saturated signal.
         """
+        relevance = self._signal_relevance(observations)
         ledger = self._ledger(domain=domain)
         exits = ledger["exits"]
         if len(exits) <= self.held_out_count:
             logger.info("[outer_loop] not enough sessions to tune (%d)", len(exits))
+            # Preserves the Wave-0 contract: no data -> None (the debug
+            # surface computes the relevance verdict itself for the empty
+            # case). REQ-16 AC3's relevance dict appears on the paths where
+            # tuning actually decided something.
             return None
+
+        # REQ-16 AC3 (T33): a saturated provider contaminates the held-out
+        # natural-exit observation — hold off tuning until it recovers.
+        if relevance.get("rate_strength") == "saturated":
+            logger.info(
+                "[outer_loop] provider saturated — holding off tuning "
+                "(rate_strength=%s relevance=%.2f)",
+                relevance.get("rate_strength"),
+                relevance.get("relevance_score", 0.0),
+            )
+            return {
+                "applied": False,
+                "reason": "provider_saturated",
+                "signal_relevance": relevance,
+            }
 
         held_out = self._heldout_batch(exits)
         baseline, live = self._score_with_liveness(held_out)
@@ -426,6 +602,8 @@ class OuterTuner:
                 "live": live,
                 "deciding_guard": deciding,
                 "domains": domain_report,
+                # REQ-16 AC3 (T33): the relevance verdict rides every result.
+                "signal_relevance": relevance,
             }
         return {
             "applied": False,
@@ -436,6 +614,8 @@ class OuterTuner:
             "live": live,
             "deciding_guard": deciding,
             "domains": domain_report,
+            # REQ-16 AC3 (T33): the relevance verdict rides every result.
+            "signal_relevance": relevance,
         }
 
     def _score_proposal(
@@ -478,10 +658,41 @@ def run_outer_loop(session_id: str, domain: Optional[str] = None) -> Optional[Di
     Called from the pre-compress hook / session-exit path (NOT the MCM 70%
     cadence). Runs one AIDE^2 outer-loop iteration to learn U_SPLIT / width /
     verify-strictness from the ledgers. Never raises.
+
+    REQ-16 AC3 (T33): gathers the live signal observations (governance ratio
+    from the active kernel's per-turn counter, rate health from the meter,
+    per-domain physics aggregates from the recorder) and feeds them to the
+    tuner as relevance/strength inputs.
     """
     try:
         tuner = OuterTuner()
-        return tuner.run_once(domain=domain)
+        # REQ-16 AC3 (T33): governance counts from the active kernel (the
+        # per-turn counter REQ-6/T18 maintains); rate health + domain
+        # aggregates collected read-only. The static collector runs on the
+        # REAL class — tests replace the module-level ``OuterTuner`` with a
+        # factory function that has no statics.
+        _gov = None
+        try:
+            from backend.agent import get_active_kernel
+
+            _kernel = get_active_kernel(session_id)
+            _gov = getattr(_kernel, "_der_governance_counts", None) or None
+        except Exception:
+            _gov = None
+        # The pure static collector runs on the REAL class (module-level
+        # alias captured below the class definition), never the possibly
+        # test-patched module name.
+        _obs = _REAL_OUTER_TUNER._signal_observations(
+            session_id, recorder=tuner.recorder, governance_counts=_gov
+        )
+        return tuner.run_once(domain=domain, observations=_obs)
     except Exception as _e:
         logger.warning("[outer_loop] run_outer_loop failed: %s", _e)
         return None
+
+
+# The REAL OuterTuner, bound once at module load. run_outer_loop's local
+# `OuterTuner()` call reads the module attribute (which tests replace with a
+# factory function), but the pure static signal helpers must run on the real
+# class — captured here, never the patched name.
+_REAL_OUTER_TUNER = OuterTuner

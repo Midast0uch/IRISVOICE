@@ -11,9 +11,12 @@ Coverage:
   - REQ-2: outer-loop compound gate rejects the hack
   - REQ-3: measured-token work_units debit
   - REQ-7: physics-event narration trigger (silent on ordinary step)
-  - REQ-8: task:learning event carries real signal
-   - REQ-9: narration log records silence + spoken, scoped by conv
-   - REQ-10: critical blocker escalates to user (TASK_BLOCKED + ask_user options)
+   - REQ-8: task:learning event carries real signal
+    - REQ-9: narration log records silence + spoken, scoped by conv
+    - REQ-5 (supersedes deleted REQ-10): critical failure finalizes honestly —
+      marked failed, NO TASK_BLOCKED card / ask_user (the old REQ-10
+      escalation was removed; the long-horizon spec replaces it with honest
+      partial finalization)
 
 Run:  python scripts/validate_der_integrity.py
 """
@@ -168,11 +171,27 @@ def validate_req9_log(fail):
 
 
 def validate_req10_escalation(fail):
-    print("REQ-10: critical blocker escalates to user (not silent give-up)")
-    # Drive the REAL recovery decision on a critical step that fails past the
-    # graft budget. Post-fix, the (MAX+1)-th critical failure MUST escalate:
-    # emit TASK_BLOCKED + call ask_user with >=2 concrete options. Pre-fix
-    # this fails (the gap): the step is silently mark_failed, no escalation.
+    """REQ-5 (long-horizon-der-execution) supersedes the deleted REQ-10.
+
+    The old der-loop-integrity-display REQ-10 required a TASK_BLOCKED card +
+    ask_user QuestionCard when a critical step failed past the graft budget.
+    The long-horizon spec REMOVED that escalation (agent_kernel.py:7384-7398
+    documents the supersession verbatim): "the task does NOT block on a
+    TASK_BLOCKED card / ask_user QuestionCard (that escalation came from the
+    deleted der-loop-integrity-display REQ-10; the long-horizon spec
+    supersedes it: 'IF budget ends before completion THEN emit remaining
+    nodes and their last failure class')".
+
+    This harness section therefore pins the REQ-5 contract:
+      - the critical step IS marked failed (honest partial finalization);
+      - NO TASK_BLOCKED event and NO ask_user call are emitted (the old
+        escalation is gone — pinned so it cannot silently return);
+      - a result that classifies as a transport/envelope error is NOT split
+        (REQ-5 AC2: "not split solely because a transport or envelope error
+        hid usable evidence") — grafts stay bounded.
+    """
+    print("REQ-5: critical failure finalizes honestly, no blocking card "
+          "(supersedes deleted REQ-10 escalation)")
     from types import SimpleNamespace
 
     from backend.agent.der_loop import DirectorQueue, QueueItem
@@ -207,8 +226,7 @@ def validate_req10_escalation(fail):
             fake.ask = _ask
             return fake
 
-    # Intercept the bus + ask_user tool so we can detect escalation
-    # without a live bus / real UI.
+    # Intercept the bus + ask_user tool so we can DETECT any escalation.
     import backend.agent.event_bus as _eb
     import backend.agent.tools.ask_user_tool as _aut
 
@@ -256,10 +274,16 @@ def validate_req10_escalation(fail):
             if item.step_id in queue.completed_ids:
                 queue.completed_ids.remove(item.step_id)
 
-        fail.check("blocked event emitted", len(blocked) >= 1)
-        fail.check("user asked with options", len(asked) >= 1)
-        if asked:
-            fail.check(">=2 alternative options", len(asked[0]["options"]) >= 2)
+        # REQ-5: the step IS marked failed (honest partial finalization).
+        fail.check("critical step marked failed", item.step_id in queue.failed_ids)
+        # The old REQ-10 escalation is GONE — no blocking card, no question.
+        fail.check("no TASK_BLOCKED event (REQ-10 removed)", len(blocked) == 0)
+        fail.check("no ask_user call (REQ-10 removed)", len(asked) == 0)
+        # REQ-5 AC2: an empty/envelope result is NOT split (grafts bounded).
+        fail.check(
+            "envelope-error result not split (REQ-5 AC2)",
+            queue.graft_attempts == 0,
+        )
     finally:
         if _orig_bus is not None:
             _eb.get_event_bus = _orig_bus
@@ -269,6 +293,97 @@ def validate_req10_escalation(fail):
             _aut.get_ask_user_tool = _orig_ask
         else:
             delattr(_aut, "get_ask_user_tool")
+
+
+def validate_req18_trace(fail):
+    """REQ-18: the correlated per-task trace is complete on every replay.
+
+    Populates the trace the same way the DER kernel's hooks do (verify /
+    verify_label / synthesis / revision / steering / navigation) and asserts
+    every signal is present and shaped correctly — bounded, redacted,
+    off the critical path.
+    """
+    print("REQ-18: correlated per-task trace complete")
+    from backend.agent.der_trace import clear_traces, get_der_trace
+
+    clear_traces()
+    try:
+        trace = get_der_trace("sess-req18")
+
+        # AC1: scorer tag + score + verified label (T19).
+        trace.record("verify", scorer_tag="semantic", score=0.91)
+        trace.record("verify", scorer_tag="fallback", score=0.55)
+        trace.record(
+            "verify_label", verified_label="VERIFIED",
+            step_id="s1", step_number=1, tool="crawler_query",
+        )
+
+        # AC2: synthesis path (T20).
+        trace.record("synthesis", path="success", ran=True)
+        trace.record("synthesis", path="deterministic_failure", ran=False)
+
+        # AC3: revision origin (T23).
+        trace.record("revision", origin="sub_loop_split", children=2)
+        trace.record("revision", origin="user_steering", boundary_step=2)
+
+        # AC4: steering ack + applied boundary (T25/T26).
+        trace.record(
+            "steering", channel="steer", message_id="m1",
+            ack="considered", boundary_step=2,
+        )
+
+        # AC5: navigation surface + job_id + HAR (T27).
+        trace.record(
+            "navigation", tool="open_url", surface="in-app",
+            url="https://example.com/x",
+            job_id="job-1", har_path="data/har/job-1.har",
+        )
+
+        # All six signals present.
+        for sig in ("verify", "verify_label", "synthesis", "revision",
+                    "steering", "navigation"):
+            fail.check(f"trace has {sig}", trace.has_signal(sig))
+
+        # AC1 shape: scorer tags are the canonical vocabulary.
+        tags = {e.get("scorer_tag") for e in trace.entries("verify")}
+        fail.check("scorer tags semantic+fallback", tags == {"semantic", "fallback"})
+
+        # AC2 shape: synthesis ran flag is boolean + path known.
+        syn_paths = {e.get("path") for e in trace.entries("synthesis")}
+        fail.check(
+            "synthesis paths recorded",
+            syn_paths == {"success", "deterministic_failure"},
+        )
+
+        # AC3 shape: both revision origins distinguished.
+        origins = {e.get("origin") for e in trace.entries("revision")}
+        fail.check(
+            "revision origins distinguished",
+            origins == {"sub_loop_split", "user_steering"},
+        )
+
+        # AC4 shape: steering carries ack + boundary.
+        steer = trace.entries("steering")[-1]
+        fail.check("steering acked", steer.get("ack") == "considered")
+        fail.check("steering boundary present", steer.get("boundary_step") is not None)
+
+        # AC5 shape: navigation surface in-app + job_id/HAR carried.
+        nav = trace.entries("navigation")[-1]
+        fail.check("nav surface in-app", nav.get("surface") == "in-app")
+        fail.check("nav job_id carried", nav.get("job_id") == "job-1")
+        fail.check("nav har_path carried", nav.get("har_path") == "data/har/job-1.har")
+
+        # Bounded + redacted: a flood of long entries is capped and truncated.
+        long = "z" * 5000
+        for _ in range(900):
+            trace.record("verify", scorer_tag="semantic", score=0.5, result=long)
+        fail.check("trace bounded", trace.count() <= 500)
+        fail.check(
+            "trace redacted",
+            all(len(e.get("result", "")) <= 313 for e in trace.entries("verify")),
+        )
+    finally:
+        clear_traces()
 
 
 def main() -> int:
@@ -285,6 +400,7 @@ def main() -> int:
     validate_req8_event(fail)
     validate_req9_log(fail)
     validate_req10_escalation(fail)
+    validate_req18_trace(fail)
 
     print("-" * 64)
     if fail.items:

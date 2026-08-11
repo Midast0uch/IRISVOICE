@@ -36,9 +36,17 @@ class _StubBackend(FetchBackend):
 
     async def fetch(self, query, urls, instructions, max_pages, on_page_done, timeout_s, **kwargs):
         self.__class__.mode_used = "stub"
+        # Fixture-input update (called out): the REQ-3 rerank honest gate
+        # (RerankState BELOW_THRESHOLD, rerank.py) rejects weak content, and
+        # these stubs must clear it. Old content ("The quantum model shows X. It
+        # was verified by Y.") scores 0.236 < 0.300, so the funnel escalated to
+        # honest failure and cited_markdown was never produced — the test then
+        # failed at its (unchanged) assertion. New content repeats the query
+        # tokens ~3x per page, exactly the pattern applied to
+        # test_crawl_behavior.py stubs; the assertions here are untouched.
         pages = [
-            PageData(url="https://example.gov/doc", title="Doc", markdown="The quantum model shows X. It was verified by Y.", html="", metadata={}),
-            PageData(url="https://news.example.com/a", title="News", markdown="Report says Z happened recently.", html="", metadata={}),
+            PageData(url="https://example.gov/doc", title="Doc", markdown="X is the quantum model. X was verified by Y. What X means is key.", html="", metadata={}),
+            PageData(url="https://news.example.com/a", title="News", markdown="X appears in the new report. X is mentioned again in section three.", html="", metadata={}),
         ]
         for i, p in enumerate(pages):
             if on_page_done:
@@ -103,6 +111,14 @@ def test_funnel_order_and_events(events, emitter):
     # full URL present (REQ-11)
     pf = [p for e, p in events if e == "CRAWLER_PAGE_FETCHED"]
     assert pf[0]["url"].startswith("https://")
+
+    # REQ-11 (T13 / CT-C2): the OPEN_TAB payload carries url + job_id so the
+    # frontend can tell a content tab from a url-less dashboard tab (and never
+    # force-activate the latter).
+    ot = [p for e, p in events if e == "OPEN_TAB"]
+    assert ot, "OPEN_TAB payload must be present"
+    assert "job_id" in ot[0], f"OPEN_TAB must carry job_id: {ot[0]}"
+    assert "url" in ot[0], f"OPEN_TAB must carry url key: {ot[0]}"
 
 
 def test_credibility_monotonicity():
@@ -196,14 +212,26 @@ def test_concurrency_cap_enforced():
 
 
 def test_process_tree_killed_on_timeout(tmp_path):
-    """REQ-17 AC2: on timeout the worker's child process tree is reaped, not orphaned."""
+    """REQ-17 AC2: on timeout the worker's child process tree is reaped, not orphaned.
+
+    The runner's timeout path kills the whole tree (taskkill /T /F on
+    Windows, process-group SIGKILL on POSIX). We verify the GRANDCHILD is
+    gone after the run — not just that the parent returned. The timeout
+    itself is a scheduler-layer concern (design.md §"429s and timeouts become
+    transient"): the crawl result only surfaces the timeout when the
+    last-resort fallback ALSO fails to recover content.
+    """
     import crawler.crawl_runner as runner
 
-    # Worker script: spawn a grandchild `sleep` and then hang so the parent times out.
+    pid_file = tmp_path / "grandchild.pid"
+
+    # Worker script: spawn a grandchild `sleep`, record its PID, then hang so
+    # the parent times out.
     worker = tmp_path / "hang_worker.py"
     worker.write_text(
         "import subprocess, sys, time\n"
         "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+        f"open({str(pid_file)!r}, 'w').write(str(child.pid))\n"
         "sys.stderr = open('nul', 'w') if sys.platform == 'win32' else open('/dev/null', 'w')\n"
         "time.sleep(30)\n"
     )
@@ -218,14 +246,45 @@ def test_process_tree_killed_on_timeout(tmp_path):
 
     asyncio.create_subprocess_exec = _fake_create
     try:
+        # 127.0.0.1:1 -> the plain-HTTP fallback fails fast (nothing listens),
+        # so the timeout error honestly surfaces (no network dependence).
         result = asyncio.run(
-            runner.run_crawl_subprocess("q", ["https://x.com"], "i", timeout_s=1)
+            runner.run_crawl_subprocess("q", ["http://127.0.0.1:1/"], "i", timeout_s=1)
         )
     finally:
         asyncio.create_subprocess_exec = orig_create
 
+    # REQ-17 AC2: the grandchild was killed with the tree — not orphaned.
+    grandchild_pid = int(pid_file.read_text().strip())
+    assert not _process_alive(grandchild_pid), \
+        f"grandchild {grandchild_pid} survived the tree kill (orphaned)"
+
+    # Fallback could not recover content -> the timeout surfaces honestly.
     assert result.error is not None
     assert "timed out" in result.error
+
+
+def _process_alive(pid: int) -> bool:
+    """True if the process exists. os.kill(pid, 0) on POSIX; on Windows
+    signal 0 would TERMINATE the process, so use OpenProcess instead."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = ctypes.windll.kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid)
+            )
+            if not handle:
+                return False
+            ctypes.windll.kernel32.CloseHandle(handle)
+            return True
+        except Exception:  # noqa: BLE001 — conservative: assume alive
+            return True
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
 
 
 if __name__ == "__main__":

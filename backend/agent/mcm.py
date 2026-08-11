@@ -379,8 +379,9 @@ class MCM:
             return ""
         try:
             if rec is None:
-                from backend.agent.caducean_trajectory import CaduceanTrajectoryRecorder
-                rec = CaduceanTrajectoryRecorder()
+                from backend.agent.caducean_trajectory import get_trajectory_recorder
+                # REQ-20: bind to the APPLICATION store via the MCM's MemoryInterface.
+                rec = get_trajectory_recorder(self._mi)
             rows = rec._conn.execute(
                 "SELECT tool, outcome, u FROM der_fan_traces "
                 "WHERE session_id = ? ORDER BY ts",

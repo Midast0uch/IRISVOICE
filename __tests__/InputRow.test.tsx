@@ -182,21 +182,29 @@ describe("Chat input row — Send pill removed, Enter carries the guards (REQ-1)
       expect(sendMessage).not.toHaveBeenCalledWith("text_message", expect.anything())
     })
 
-    it("blocks while isTyping (isChatTyping true)", async () => {
+    it("sends while isTyping (isChatTyping true) — queued, not blocked", async () => {
+      // Amended per specs/long-horizon-der-execution + live finding: the old
+      // `isTyping` block swallowed sends during long websearch turns (user
+      // could not send anything for 23 minutes). The backend per-session
+      // message lock QUEUES messages in order, so a send during a running
+      // turn is safe and must be allowed.
       mockNav.isChatTyping = true
       const sendMessage = jest.fn()
       await act(async () => {
         render(<ChatWing isOpen onClose={() => {}} onDashboardClick={() => {}} sendMessage={sendMessage} />)
       })
       await act(async () => {
-        fireEvent.change(getTextarea(), { target: { value: "should not send" } })
+        fireEvent.change(getTextarea(), { target: { value: "queued message" } })
       })
       await act(async () => {
         fireEvent.keyDown(getTextarea(), { key: "Enter", shiftKey: false })
       })
-      // Guard blocked the send — text is NOT cleared, WS was NOT told to send.
-      expect(getTextarea().value).toBe("should not send")
-      expect(sendMessage).not.toHaveBeenCalledWith("text_message", expect.anything())
+      // Send went through — text cleared, WS told to send.
+      expect(getTextarea().value).toBe("")
+      expect(sendMessage).toHaveBeenCalledWith(
+        "text_message",
+        expect.objectContaining({ text: "queued message" })
+      )
     })
 
     it("blocks while voiceState === 'listening'", async () => {

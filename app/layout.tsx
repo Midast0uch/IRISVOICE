@@ -11,6 +11,7 @@ import { BrandColorProvider } from "@/contexts/BrandColorContext"
 import { TransitionProvider } from "@/contexts/TransitionContext"
 import { IntegrationsProvider } from "@/contexts/IntegrationsContext"
 import { TerminalProvider } from "@/contexts/TerminalContext"
+import { CrawlProvider } from "@/hooks/CrawlProvider"
 
 export const metadata: Metadata = {
   title: 'Control Center | TTS Chatbot',
@@ -77,20 +78,22 @@ export default function RootLayout({
         <link rel="stylesheet" href="/globals.css" />
         {/* Pre-compiled Tailwind CSS — see note at top of file */}</head>
       <body className={`font-sans antialiased text-foreground`}>
-        <BrandColorProvider>
-          <TransitionProvider>
-            <NavigationProvider>
-              <TerminalProvider>
-                <IntegrationsProvider>
-                  {children}
-                </IntegrationsProvider>
-              </TerminalProvider>
-              {/* Transition testing components removed - they were interfering with widget drag */}
-              {/* <TransitionIndicator /> */}
-              {/* <TransitionSwitch /> */}
-            </NavigationProvider>
-        </TransitionProvider>
-      </BrandColorProvider>
+        <CrawlProvider>
+          <BrandColorProvider>
+            <TransitionProvider>
+              <NavigationProvider>
+                <TerminalProvider>
+                  <IntegrationsProvider>
+                    {children}
+                  </IntegrationsProvider>
+                </TerminalProvider>
+                {/* Transition testing components removed - they were interfering with widget drag */}
+                {/* <TransitionIndicator /> */}
+                {/* <TransitionSwitch /> */}
+              </NavigationProvider>
+            </TransitionProvider>
+          </BrandColorProvider>
+        </CrawlProvider>
       </body>
     </html>
   )

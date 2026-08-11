@@ -91,9 +91,24 @@ class TestDegradationLadder:
         assert result is None
 
     def test_degrade_config_shrinks_ctx_for_gpu(self, lmm):
-        """GPU purposes get a degraded config with smaller n_ctx."""
-        params = {"n_ctx": 32768, "n_gpu_layers": -1, "n_batch": 2048}
-        result = lmm._degrade_config(params, MODEL_8B, purpose="chat")
+        """GPU purposes get a degraded config with smaller n_ctx.
+
+        Stubs get_hardware_info: _degrade_config returns None when the
+        machine has no GPU (vram_budget <= 0), so on a GPU-less dev box this
+        test would vacuously pass without exercising the ladder. The stub
+        simulates a GPU with VRAM so the degradation logic is actually
+        driven (deterministic on any machine).
+        """
+        with patch.object(
+            LocalModelManager, "get_hardware_info",
+            return_value={
+                "cuda_available": True, "gpu_name": "Test GPU",
+                "vram_total_gb": 8.0, "vram_free_gb": 6.0,
+                "ram_total_gb": 24.0, "models_dir": "",
+            },
+        ):
+            params = {"n_ctx": 32768, "n_gpu_layers": -1, "n_batch": 2048}
+            result = lmm._degrade_config(params, MODEL_8B, purpose="tool")
         assert result is not None
         assert result["n_ctx"] < 32768 or result["n_ctx"] == MIN_CTX
         # D-2: n_gpu_layers ALWAYS -1

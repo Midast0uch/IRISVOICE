@@ -25,6 +25,13 @@ from datetime import datetime, timezone
 from typing import Callable, Optional
 
 from .crawler_engine import CrawlResult, PageData, _coerce_headers, _write_har_file
+# Single-source-of-truth predicate + challenge detection (REQ-1). The
+# challenge detector lived here at :453 with one caller inside the plain-HTTP
+# fallback; it moved to usability.py so the shared predicate can judge
+# challenges and the primary path can reach it (REQ-4). The alias keeps the
+# module-global name for existing callers/tests that import or patch it.
+from .usability import is_challenge_page as _is_challenge_page  # noqa: E402,F401
+from .usability import page_is_usable  # noqa: E402,F401
 
 logger = logging.getLogger(__name__)
 
@@ -344,12 +351,65 @@ async def run_crawl_subprocess(
             )
 
         _usable_pages = result.pages if result is not None else None
-        _good_pages = [p for p in (_usable_pages or []) if p.markdown]
+        # REQ-1: single shared predicate — the local `if p.markdown` judge is
+        # gone. Every layer that decides "usable" calls page_is_usable.
+        _good_pages = [p for p in (_usable_pages or []) if page_is_usable(p).usable]
+
+        # REQ-16 AC2/AC6: per-URL terminal outcome with the shared predicate's
+        # reason, keyed by run id — even on success, so "what did each URL
+        # actually yield?" is answerable from logs (compact: only unusable
+        # URLs carry a reason; usable ones are implied by the count).
+        if _usable_pages:
+            _unusable = [
+                "%s reason=%s" % (
+                    (p.url or "?")[:52], page_is_usable(p).reason.value,
+                )
+                for p in _usable_pages if not page_is_usable(p).usable
+            ]
+            logger.info(
+                "[crawl_runner] per-URL outcome job_id=%s usable=%d/%d %s",
+                job_id, len(_good_pages), len(_usable_pages),
+                ("unusable: " + "; ".join(_unusable)) if _unusable else "",
+            )
+
+        # DIAGNOSABILITY: "worker returned zero usable pages" and "worker
+        # crashed" produced the SAME downstream log line ("worker failed"),
+        # with no record of which. That cost a full investigation cycle —
+        # the crash hypothesis was chased through import traces and torchcodec
+        # stack dumps when the worker had in fact run cleanly and simply
+        # extracted nothing. State which it is, and for the zero-pages case
+        # state PER URL why, because "the sites blocked us" and "extraction
+        # produced empty markdown" need completely different fixes.
+        if result is None:
+            logger.warning(
+                "[crawl_runner] worker produced NO RESULT (crash/timeout) — "
+                "see the stderr tail above if present"
+            )
+        elif not _good_pages:
+            logger.warning(
+                "[crawl_runner] worker RAN but returned 0 usable pages of %d "
+                "fetched — job_id=%s per-URL: %s",
+                len(_usable_pages or []),
+                job_id,
+                [
+                    "%s -> %s" % (
+                        (p.url or "?")[:52],
+                        # REQ-1 AC4: the reason comes from the verdict, not a
+                        # local guess — error is None alone is not usability.
+                        "reason=%s detail=%s" % (
+                            page_is_usable(p).reason.value,
+                            page_is_usable(p).detail[:40],
+                        ),
+                    )
+                    for p in (_usable_pages or [])[:6]
+                ] or "no pages at all",
+            )
         if _usable_pages is not None and _good_pages:
-            # Partial success: re-fetch ONLY the URLs crawl4ai failed on over
-            # plain HTTP and merge them in, so a single broken page (huge /
-            # separator-less / JS-heavy) no longer silently starves DER.
-            _failed = [p for p in _usable_pages if not p.markdown and p.url]
+            # Partial success: re-fetch ONLY the URLs the shared predicate
+            # judged unusable over plain HTTP and merge them in, so a single
+            # broken page (huge / separator-less / JS-heavy / challenged) no
+            # longer silently starves DER.
+            _failed = [p for p in _usable_pages if not page_is_usable(p).usable and p.url]
             if _failed:
                 _fb_pages, _fb_har = await _plain_http_fetch(
                     [p.url for p in _failed], job_id=job_id, on_page_done=on_page_done,
@@ -401,38 +461,6 @@ async def run_crawl_subprocess(
                 error=error_msg or "crawl produced no result",
             )
         return result
-
-
-_BOT_CHALLENGE_SIGNATURES = (
-    # Cloudflare: interstitial JS challenge, the "Just a moment..." page
-    "cf-chl-",
-    "challenge-platform",
-    "cf-mitigated",
-    "__cf_chl",
-    "just a moment...",
-    # Turnstile (Cloudflare's anti-bot widget) — a CAPTCHA the crawler cannot
-    # solve; content behind it is NOT the page's real content.
-    "cf-turnstile",
-    "turnstile",
-    "challenges.cloudflare.com",
-    # Generic bot-challenge interstitials
-    "challenge-form",
-    "verify you are human",
-    "you are being redirected",
-)
-
-
-def _is_challenge_page(html: str) -> bool:
-    """REQ-10 (T12): detect a bot-challenge interstitial (Cloudflare/Turnstile).
-
-    A challenged page is NOT the page's real content — saving it would poison
-    the capture store and the DER summarize pipeline with the challenge's
-    boilerplate. Returns True when any signature matches (case-insensitive).
-    """
-    if not html:
-        return False
-    _low = html.lower()
-    return any(_sig in _low for _sig in _BOT_CHALLENGE_SIGNATURES)
 
 
 async def _plain_http_fetch(
@@ -552,7 +580,9 @@ async def _plain_http_fetch(
             _pages.append(_page)
     if _pages:
         logger.info(
-            "[crawl_runner] plain-HTTP fallback produced %d pages (worker failed)",
+            "[crawl_runner] plain-HTTP fallback produced %d pages "
+            "(worker returned no usable pages — see the reason line above; "
+            "this is NOT necessarily a worker crash)",
             len(_pages),
         )
     return _pages, _har_entries

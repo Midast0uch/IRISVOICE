@@ -25,6 +25,16 @@ import logging
 import os
 from typing import Any
 
+# REQ-16 AC3 (T33): the REAL OuterTuner class, bound at module load. The
+# _outer_loop() endpoint's local `from backend.agent.outer_loop import
+# OuterTuner` re-reads the module attribute each call — which tests replace
+# with a factory function — so the pure static signal helpers must be called
+# on THIS reference, captured once, never the patched name.
+try:
+    from backend.agent.outer_loop import OuterTuner as _REAL_OUTER_TUNER
+except Exception:  # pragma: no cover — import guard
+    _REAL_OUTER_TUNER = None
+
 from fastapi import APIRouter
 
 logger = logging.getLogger(__name__)
@@ -146,9 +156,12 @@ def _memory() -> dict[str, Any]:
     the single measurement that moves it from UNEXERCISED to PROVEN.
     """
     try:
-        from backend.agent.caducean_trajectory import CaduceanTrajectoryRecorder
+        from backend.agent.caducean_trajectory import get_trajectory_recorder
+        from backend.memory import get_memory_interface
 
-        rec = CaduceanTrajectoryRecorder()
+        # REQ-20: introspect the APPLICATION store via the live MemoryInterface,
+        # never the BUILD-memory .mcm/coordinates.db.
+        rec = get_trajectory_recorder(get_memory_interface())
         conn = rec._conn
     except Exception as exc:
         return {"error": f"recorder unavailable: {exc}"[:200]}
@@ -258,6 +271,24 @@ def _empty_domain_gating(reason: str) -> dict[str, Any]:
         "pooled_accepts": None,
         "domains": {},
     }
+
+
+def _recent_session(exits: list) -> str:
+    """The most recent session_id in an exit list, or '' when empty.
+
+    Used by the REQ-16 AC3 (T33) signal-relevance display to pick which
+    session's observations to show. Falls back to '' (absent) so the
+    endpoint never raises on an empty ledger.
+    """
+    try:
+        if exits:
+            _row = exits[0]
+            if isinstance(_row, dict):
+                return str(_row.get("session_id", ""))
+            return str(_row[0]) if _row else ""
+    except Exception:
+        pass
+    return ""
 
 
 def _domain_gating_report(
@@ -392,6 +423,11 @@ def _outer_loop() -> dict[str, Any]:
     except Exception as exc:
         return {"error": f"outer_loop unavailable: {exc}"[:200]}
 
+    # REQ-16 AC3 (T33): the pure static signal helpers run on the REAL class
+    # captured at module load — the local `OuterTuner` name is the (possibly
+    # test-patched) module attribute.
+    _real_outer_tuner = _REAL_OUTER_TUNER or OuterTuner
+
     try:
         tuner = OuterTuner()
         exits = tuner.recorder.get_session_exits(limit=200)
@@ -402,6 +438,13 @@ def _outer_loop() -> dict[str, Any]:
                 "held_out_count": 0,
                 "held_out_score": {},
                 "params": dict(tuner.params),
+                # REQ-16 AC3 (T33): the live signal-relevance verdict for the
+                # most recent session (read-only, never mutates).
+                "signal_relevance": _real_outer_tuner._signal_relevance(
+                    _real_outer_tuner._signal_observations(
+                        session_id=_recent_session(exits), recorder=tuner.recorder
+                    )
+                ),
                 # AC1: no proposals yet -> report metrics computed on the
                 # current baseline, not as an absent/unknown section (REQ-6
                 # edge case: "No proposals yet -> report the metrics as
@@ -430,6 +473,13 @@ def _outer_loop() -> dict[str, Any]:
             "held_out_score": score,
             "live_by_metric": live,
             "params": dict(tuner.params),
+            # REQ-16 AC3 (T33): the live signal-relevance verdict (governance
+            # ratio + rate health + domain aggregates) the outer loop consumed.
+            "signal_relevance": _real_outer_tuner._signal_relevance(
+                _real_outer_tuner._signal_observations(
+                    session_id=_recent_session(exits), recorder=tuner.recorder
+                )
+            ),
             # CT-D6 / AC1: live_guards must be 3 with no dead guards once all
             # three inputs are computable from real ledger data.
             "live_guards": sum(1 for is_live in live.values() if is_live),

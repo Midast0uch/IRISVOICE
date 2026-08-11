@@ -155,6 +155,13 @@ class LandmarkCondenser:
         """
         Attempt to crystallise a Landmark from the current session (Req 8.4–8.7).
 
+        REQ-19 vocabulary: this is LANDMARK CRYSTALLIZATION — a permanent
+        landmark bridge (Landmark.condense). It is NOT Node Condense
+        (scorer.condense, the mycelium merge mechanism), NOT DER "COMPRESS" (a
+        physics recommendation code, int 1, agent_kernel.py), NOT DCP message
+        pruning, and NOT mcm_compress (external build tooling). See the REQ-19
+        vocabulary table in specs/long-horizon-der-execution/design.md.
+
         Returns None when:
           - cumulative_score < LANDMARK_MIN_SCORE (0.45) (Req 8.5)
           - outcome == "miss" (Req 8.5)

@@ -245,6 +245,24 @@ AVG_STEP_COST = 1500
 # LLM rubric per D2.3).
 U_CONVERGED = 0.85
 
+# REQ-4 AC4 (T16b): max fold-back observations kept on a parent's node_record
+# after its sub-loop children finalize. Bounded — NodeRecord.folded_back never
+# grows into a log (quality: memory footprint bounded).
+DER_FOLD_BACK_MAX = 3
+
+# REQ-5 AC1 (T17): the coupling CANDIDATE CAP — how many relevant branches
+# retrieval may surface to a deciding step at once. Retrieval NEVER pre-selects
+# one candidate by score: it surfaces ALL relevant branches up to this cap and
+# the step decides with all of them in view (the edge then records the choice).
+# Bounded so the step context (coordinate_signal) cannot grow without limit.
+DER_COUPLING_CANDIDATE_CAP = 5
+
+# REQ-5 AC4 (T17): per-coupling-decision provenance is recorded on the
+# NodeRecord as candidates_surfaced / chosen_branch. This bound caps how many
+# candidate branches are LISTED in the provenance record itself (the count is
+# always recorded; the label list is bounded).
+DER_COUPLING_PROVENANCE_MAX = 5
+
 # EML explore-pressure bands (REQ-17 / REQ-17 AC5)
 # Shared source of truth for continuous explore-pressure function and
 # cognitive-state phase label in agent_kernel.py. These match the old

@@ -141,9 +141,7 @@ class TestExplorerBehavior:
         mock_response = MagicMock()
         mock_response.raw_text = json.dumps({
             "done": False,
-            "tool": "search",
             "description": "Search for more results",
-            "params": {"query": "extended research"},
         })
         mock_self.infer = MagicMock(return_value=mock_response)
 
@@ -154,7 +152,9 @@ class TestExplorerBehavior:
         result = self._call_explorer(mock_self, "Research topic", completed, ExecutionMode.AGENTIC)
 
         assert result is not None
-        assert result["tool"] == "search"
+        # F6 / single tool-resolution authority: the explorer returns a GOAL
+        # only — never a tool/params (the resolver picks the tool on exec).
+        assert "tool" not in result
         assert result["description"] == "Search for more results"
         mock_self.infer.assert_called_once()
 

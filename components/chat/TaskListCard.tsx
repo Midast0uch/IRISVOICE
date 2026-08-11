@@ -6,6 +6,7 @@ import { Search } from "lucide-react"
 import { useBrandColor } from "@/contexts/BrandColorContext"
 import { Xur } from "@/components/Xur"
 import type { TaskStep, TaskStepStatus } from "@/hooks/useTaskProgress"
+import { toolLabel } from "@/hooks/useTaskProgress"
 
 export interface TaskListCardProps {
   steps: TaskStep[]
@@ -208,8 +209,9 @@ export default function TaskListCard({
                         ? setExpandedStep(isOpen ? null : step.id)
                         : undefined
                     }
-                    className="flex items-start gap-2.5 w-full text-left py-0.5 hover:brightness-125"
+                    className="flex flex-col gap-0.5 w-full text-left py-0.5 hover:brightness-125"
                   >
+                    <span className="flex items-start gap-2.5 min-w-0">
                     {/* One identical 12x12 wrapper for BOTH states so the
                         node centre always lands at x=6 — matching the
                         hairline at left:5.5 and the 12px header core. Without
@@ -281,23 +283,32 @@ export default function TaskListCard({
                     >
                       {step.description}
                     </span>
-                    {step.toolName || step.activeDetail ? (
+                    </span>
+                    {toolLabel(step) || step.activeDetail || step.url ? (
                       <span
-                        className="text-[9px] font-mono uppercase tracking-wide shrink-0 mt-0.5 flex items-baseline gap-1 max-w-[46%] justify-end"
+                        className="flex flex-col gap-[3px] pl-[22px] min-w-0"
                         style={{ color: glowColor }}
                         title={
                           step.activeDetail
-                            ? `${step.toolName || ""} — ${step.activeDetail}${
+                            ? `${toolLabel(step)} — ${step.activeDetail}${
                                 step.activeProgress
                                   ? ` (${step.activeProgress})`
                                   : ""
-                              }`
-                            : step.toolName
+                              }${step.url ? ` — ${step.url}` : ""}`
+                            : toolLabel(step)
                         }
                       >
-                        {step.toolName ? (
-                          <span className="shrink-0">{step.toolName}</span>
-                        ) : null}
+                        <span className="flex items-baseline gap-1.5 min-w-0 text-[10px] leading-snug">
+                        <span
+                          className="shrink-0 rounded-full px-2 py-[1px] text-[10px] leading-tight font-normal"
+                          style={{
+                            color: glowColor,
+                            background: "rgba(255,255,255,0.08)",
+                            border: "1px solid rgba(255,255,255,0.14)",
+                          }}
+                        >
+                          {toolLabel(step)}
+                        </span>
                         {/* Live source, beside the tool rather than replacing
                             the plan text. Keyed on the detail so each new host
                             re-mounts and fades in — the "rotation". */}
@@ -321,6 +332,18 @@ export default function TaskListCard({
                               ) : null}
                             </motion.span>
                           </AnimatePresence>
+                        ) : null}
+                        </span>
+                        {/* pin_517dfcbda150 (F1): the live source URL streamed
+                            by the crawler on every page event — visible under
+                            the detail, truncated to the card width. */}
+                        {step.url ? (
+                          <span
+                            className="block max-w-full truncate normal-case text-[9px] leading-snug"
+                            style={{ color: "rgba(255,255,255,0.38)" }}
+                          >
+                            {step.url}
+                          </span>
                         ) : null}
                       </span>
                     ) : null}

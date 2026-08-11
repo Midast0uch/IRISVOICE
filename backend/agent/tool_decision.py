@@ -271,6 +271,11 @@ class ToolDecisionBox:
         # ── 2. Memory pre-filter (REQ-4 AC6) ───────────────────────────
         memory_hint = self._memory_lookup(goal) if callable(self._memory_lookup) else None
         pre_filtered = self._apply_pre_filter(all_tools, memory_hint, goal)
+        # pin_517dfcbda150: the memory layer may explicitly veto heavy gather
+        # tools (crawler_query/web_search) when the physics sanction says the
+        # agent is converged / budget-exhausted / provider-loaded. The veto is
+        # enforced below even if the model proposes a vetoed tool anyway.
+        _vetoed: set[str] = set((memory_hint or {}).get("veto") or [])
 
         # ── 3. Build propose prompt and call router ────────────────────
         tool_list = "\n".join(
@@ -313,6 +318,17 @@ class ToolDecisionBox:
                         except Exception:
                             tc_args = {}
                     if tc_tool and tc_tool in {t.get("name") for t in all_tools}:
+                        if tc_tool in _vetoed:
+                            logger.info(
+                                "[TOOL_DECISION] tool_call %s VETOED by memory "
+                                "sanction -> REASON conv=%s",
+                                tc_tool, conversation_id,
+                            )
+                            return Decision(
+                                kind=DecisionKind.REASON, source="memory",
+                                rationale=(memory_hint or {}).get("rationale")
+                                or "vetoed by execution policy",
+                            )
                         return self._validate_as_tool(tc_tool, tc_args, "llm",
                                                        conversation_id, _start, log_extra)
 
@@ -335,6 +351,17 @@ class ToolDecisionBox:
                                     rationale=rationale)
 
                 if kind == "tool" and tool_name:
+                    if tool_name in _vetoed:
+                        logger.info(
+                            "[TOOL_DECISION] kind=tool %s VETOED by memory "
+                            "sanction -> REASON conv=%s",
+                            tool_name, conversation_id,
+                        )
+                        return Decision(
+                            kind=DecisionKind.REASON, source="memory",
+                            rationale=(memory_hint or {}).get("rationale")
+                            or "vetoed by execution policy",
+                        )
                     if tool_name not in {t.get("name") for t in all_tools}:
                         ms = int((time.perf_counter() - _start) * 1000)
                         logger.warning(
@@ -453,7 +480,28 @@ class ToolDecisionBox:
                 # Third+ identical call → loop signal.
                 _repeat = 0
                 _prev = self._last_call.get(decision.tool)  # (args_hash, success, repeat_count)
-                if decision.tool and _prev and _prev[0] == _args_hash and _prev[1]:
+                # pin_42ddd255162d: crawler_query is exempt from the dispatcher's
+                # repeat guard — the crawl JobRegistry dedupe is the authoritative
+                # anti-loop for crawls (a same-query dispatch legitimately returns
+                # the cached pages). Applying BOTH guards double-punishes a cached
+                # re-dispatch into a "failure", which the DER then splits on.
+                # Read-only, idempotent tools (get_rendered_documents etc.) are
+                # ALSO exempt: they have no side effects, so looping on them is
+                # harmless, and blocking them starves the DER's ability to re-read
+                # gathered docs (the observed 15:45+ loop: LLM kept resolving
+                # get_rendered_documents → DUPLICATE CALL → step never committed
+                # → agent gave up and asked the user).
+                _IDEMPOTENT_READ_TOOLS = frozenset(
+                    {"get_rendered_documents", "recall_memory", "read_file"}
+                )
+                if (
+                    decision.tool
+                    and decision.tool != "crawler_query"
+                    and decision.tool not in _IDEMPOTENT_READ_TOOLS
+                    and _prev
+                    and _prev[0] == _args_hash
+                    and _prev[1]
+                ):
                     _repeat = _prev[2]
                     if _repeat >= 1:  # second+ consecutive repeat → loop
                         logger.warning(
@@ -532,8 +580,21 @@ class ToolDecisionBox:
                 # thread, otherwise run it in a worker thread via
                 # run_coroutine_threadsafe so we don't clash with the DER loop
                 # already driving this call.
+                # session_id MUST be threaded through. Without it execute_tool
+                # falls back to its default "unknown" (tool_bridge.py:1010), and
+                # every session-addressed side effect silently goes nowhere:
+                # crawl UI events (open_tab / crawler_started /
+                # crawler_page_fetched / crawler_complete) are broadcast to
+                # get_clients_for_session("unknown"), which matches no client.
+                # That is why an agent-driven web search answered in chat while
+                # the browser panel never moved, while the user-initiated
+                # gateway crawl — which passes a real session — animated fine.
+                # Diagnosed from a live log line:
+                #   [crawl-ui] first event CRAWLER_STARTED for session='unknown' clients=0
                 result = self._run_async(
-                    self._tool_bridge.execute_tool(decision.tool, decision.params)
+                    self._tool_bridge.execute_tool(
+                        decision.tool, decision.params, session_id=session_id,
+                    )
                 )
 
                 if not isinstance(result, dict):
@@ -552,9 +613,32 @@ class ToolDecisionBox:
                 # structured envelope; fall back to heuristic classification only
                 # when the tool didn't supply one.
                 _explicit_et = result.get("error_type") if isinstance(result, dict) else None
-                dr = DispatchResult(success=success, result=result.get("result"),
+                _result_val = result.get("result")
+                if _result_val is None and "result" not in result:
+                    # No dedicated "result" key — the tool envelope itself IS the
+                    # result (e.g. crawler_query returns
+                    # {success, content, sources, url, trust, ...}). Pass the
+                    # WHOLE envelope so _format_tool_result extracts the content
+                    # text for the step result AND _capture_tool_result persists
+                    # sources/har_path for the DOCUMENT_RENDER prism card.
+                    # pin: dropping it here (old `result.get("result")` → None)
+                    # starved every crawl step: empty step_result → verify FAILED
+                    # → split → children → physics veto → agent looped and the
+                    # card stayed empty despite real gathered content.
+                    _result_val = result
+                dr = DispatchResult(success=success, result=_result_val,
                                     error=error, duration_ms=0,
                                     error_type=_explicit_et or _classify_error(error, result))
+
+                # REQ-15 AC2: a tool result is NEVER both successful and
+                # permanently errored. `_classify_error` returns "permanent"
+                # for any None error — including a HEALTHY crawl that simply
+                # has no error string — which produced the traced
+                # `[TOOL_DISPATCH] tool=crawler_query success=True
+                # error_type=permanent` line on a run that retrieved zero
+                # usable content. A success carries no permanent error.
+                if success and dr.error_type == "permanent":
+                    dr.error_type = None
 
                 # ── Idempotency store (REQ-11) ──────────────────────────
                 if _ik and _is_write_tool(decision.tool):
@@ -703,9 +787,25 @@ class ToolDecisionBox:
         Keeps the memory-suggested tool (if any) plus generic utility tools
         so the model still has a choice.  Returns the full list unchanged
         when there is no memory hint.
+
+        pin_517dfcbda150: a hint may carry an explicit ``veto`` list — tools
+        the memory layer forbids this step (e.g. crawler_query when the
+        physics sanction says the agent is converged / budget-exhausted /
+        provider-loaded). Vetoed tools are REMOVED from the candidate set so
+        the LLM cannot pick them; a vetoed-only candidate set collapses to
+        the generic utilities, and an empty result falls back to the full
+        list only if even the utilities are absent.
         """
         if not memory_hint:
             return all_tools  # no pre-filter
+        vetoed = memory_hint.get("veto") or []
+        if vetoed:
+            generic = {"speak", "tts", "ask_user", "respond"}
+            keep = [t for t in all_tools if t.get("name", "") not in vetoed]
+            if keep:
+                return keep
+            gen_only = [t for t in all_tools if t.get("name", "") in generic]
+            return gen_only if gen_only else all_tools
         suggested = memory_hint.get("tool")
         if not suggested:
             return all_tools

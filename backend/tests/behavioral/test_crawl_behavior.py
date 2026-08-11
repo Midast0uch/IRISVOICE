@@ -26,24 +26,38 @@ from pathlib import Path
 
 import pytest
 
-# Mirror the contract-test path setup: backend/ on sys.path; top-level packages.
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-
-from crawler.orchestrator import CrawlOrchestrator, FetchBackend  # noqa: E402
-from crawler.crawler_engine import CrawlResult, PageData  # noqa: E402
-from crawler.crawl_planner import CrawlPlan  # noqa: E402
-from crawler.event_log import get_event_log  # noqa: E402
-from crawler.job_registry import get_job_registry  # noqa: E402
-from api.crawl_stream import router  # noqa: E402
+# Module-identity fix: use the SAME package path as the router
+# (backend.crawler.*). The previous top-level `crawler.*` imports created a
+# SECOND module identity with its OWN get_event_log() singleton, so events
+# written by the test were invisible to the router's snapshot endpoint
+# (silently empty SSE). conftest already puts the project root on sys.path.
+from backend.crawler.orchestrator import CrawlOrchestrator, FetchBackend  # noqa: E402
+from backend.crawler.crawler_engine import CrawlResult, PageData  # noqa: E402
+from backend.crawler.crawl_planner import CrawlPlan  # noqa: E402
+from backend.crawler.event_log import get_event_log  # noqa: E402
+from backend.crawler.job_registry import get_job_registry  # noqa: E402
+from backend.api.crawl_stream import router  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 
 class _StubBackend(FetchBackend):
-    async def fetch(self, query, urls, instructions, max_pages, on_page_done, timeout_s):
+    # Test-repair (pin_517dfcbda150, reported): the orchestrator now passes
+    # job_id to fetch(); the stub must mirror the real backend interface.
+    # Assertions are unchanged — this only makes the stub accept the kwarg.
+    async def fetch(self, query, urls, instructions, max_pages, on_page_done, timeout_s, job_id=None):
+        # 2026-08-10 (fixture-input update, called out): the old stub markdown
+        # ("Fact." / "Z.") is BELOW MIN_CONTENT_CHARS=20 AND does not match the
+        # crawl query, so the REQ-1 AC1 page_is_usable predicate and the REQ-3
+        # rerank honest gate now (correctly) reject it: the REQ-2 broaden-retry
+        # fires and the run ends in honest failure instead of crawler_complete.
+        # The stub now returns genuinely usable content whose tokens match the
+        # research query (see _run_crawl) so these tests assert what they
+        # assert (SSE event order / snapshot / replay), not retry or rerank
+        # behavior. Assertions are unchanged.
         pages = [
-            PageData(url="https://example.gov/doc", title="Doc", markdown="Fact.", html="", metadata={}),
-            PageData(url="https://news.example.com/a", title="News", markdown="Z.", html="", metadata={}),
+            PageData(url="https://example.gov/doc", title="Doc", markdown="Quantum verification of lattice cryptography. This document explains quantum verification methods and why quantum verification matters for post-quantum security. A full treatment of quantum verification appears in section two.", html="", metadata={}),
+            PageData(url="https://news.example.com/a", title="News", markdown="A companion note on quantum verification. Where quantum verification is applied, the results confirm the earlier quantum verification claims. More on quantum verification follows in the appendix.", html="", metadata={}),
         ]
         for i, p in enumerate(pages[:max_pages]):
             if on_page_done:
@@ -72,8 +86,11 @@ def _run_crawl(session_id: str) -> None:
     job_id = f"crawl_{session_id}_job"
 
     async def _go():
-        await reg.register(job_id, session_id, "q")
-        result = await orch.research("q", mode="agent", session_id=session_id)
+        await reg.register(job_id, session_id, "quantum verification")
+        # 2026-08-10: research query aligned with the stub content (see
+        # _StubBackend) so the REQ-3 rerank gate accepts it; the old single
+        # char "q" tokenized to nothing and honest-failed under the new gate.
+        result = await orch.research("quantum verification", mode="agent", session_id=session_id)
         await reg.complete(job_id, {"summary": "done", "pages": len(result.pages)})
 
     asyncio.run(_go())
@@ -172,7 +189,7 @@ def test_background_result_fetch_after_completion():
 # ── REQ-18: web gate fail-closed ───────────────────────────────────────────
 def test_web_gate_fail_closed_by_default():
     """Without an internet provider wired, an internet-requiring tool is denied."""
-    from agent.tool_registry import capability_allowed, ToolSpec
+    from backend.agent.tool_registry import capability_allowed, ToolSpec  # noqa: E402
 
     web_tool = ToolSpec(name="crawler_query", description="d", requires_internet=True)
     local_tool = ToolSpec(name="file_read", description="d", requires_internet=False)

@@ -22,6 +22,10 @@ interface RichDocumentProps {
   // Trust-routing W3: "trusted" renders raw HTML; anything else is sanitized
   // with DOMPurify before being injected (untrusted = web/crawler-sourced).
   trust?: string
+  // Document-rehydration provenance (REQ-5): source URLs + HAR path so a
+  // re-hydrated research doc shows its citations, never as bare [n].
+  sources?: { url: string; title: string }[]
+  harPath?: string | null
 }
 
 /**
@@ -42,6 +46,8 @@ export function RichDocument({
   onFormatChange,
   onExpand,
   trust,
+  sources,
+  harPath,
 }: RichDocumentProps) {
   const { getThemeConfig } = useBrandColor()
   const theme = getThemeConfig()
@@ -189,6 +195,43 @@ export function RichDocument({
                   {alt}
                 </button>
               ))}
+            </div>
+          )}
+
+          {/* Provenance — source list (REQ-5): a re-hydrated research doc shows
+              its citations, never as bare [n]. Resolvable links + HAR pointer. */}
+          {sources && sources.length > 0 && (
+            <div
+              className="pt-2 mt-2 border-t"
+              style={{ borderColor: "rgba(255,255,255,0.06)" }}
+            >
+              <span
+                className="text-[8px] font-semibold tracking-wide uppercase"
+                style={{ color: "rgba(255,255,255,0.25)" }}
+              >
+                Sources
+              </span>
+              <ul className="mt-1 space-y-0.5">
+                {sources.map((s, i) => (
+                  <li key={s.url} className="text-[9px] leading-tight">
+                    <a
+                      href={s.url}
+                      target="_blank"
+                      rel="noreferrer noopener"
+                      className="hover:brightness-125 transition-all duration-150"
+                      style={{ color: glowColor }}
+                      title={s.url}
+                    >
+                      {i + 1}. {s.title || s.url}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+              {harPath && (
+                <p className="text-[8px] mt-1" style={{ color: "rgba(255,255,255,0.2)" }}>
+                  HAR: {harPath}
+                </p>
+              )}
             </div>
           )}
         </div>

@@ -19,6 +19,19 @@ from backend.gateway.iris_ffi import _PythonFallbackEngine  # noqa: E402
 from backend.agent.tool_bridge import AgentToolBridge  # noqa: E402
 
 
+def _read_back(db: str):
+    """Read back the way the engine wrote it (Dilithium migration: the
+    fallback engine encrypts with sqlcipher3 when available, so a plain
+    sqlite3 open fails with 'file is not a database')."""
+    try:
+        import sqlcipher3  # type: ignore[import]
+    except ImportError:
+        return sqlite3.connect(db)
+    conn = sqlcipher3.connect(db)
+    conn.execute("PRAGMA key = \"x'" + ("00" * 32) + "'\";")
+    return conn
+
+
 def test_fallback_ingest_event_stores_screenshot_blob():
     db = tempfile.mktemp(suffix=".db")
     eng = _PythonFallbackEngine(db, "00" * 32)
@@ -29,7 +42,7 @@ def test_fallback_ingest_event_stores_screenshot_blob():
             screenshot_blob=b"FAKEPNGDATA",
         )
         assert rc == 0
-        conn = sqlite3.connect(db)
+        conn = _read_back(db)
         try:
             row = conn.execute("SELECT screenshot FROM system_events").fetchone()
             assert row is not None
@@ -50,7 +63,7 @@ def test_fallback_ingest_event_without_screenshot_is_null():
             "sess1", "SYSTEM", "tool_execution", "agent", "success",
             "speak", '{"tool": "speak"}',
         )
-        conn = sqlite3.connect(db)
+        conn = _read_back(db)
         try:
             row = conn.execute("SELECT screenshot FROM system_events").fetchone()
             assert row[0] is None

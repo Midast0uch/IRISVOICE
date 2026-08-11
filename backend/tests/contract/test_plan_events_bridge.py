@@ -73,7 +73,11 @@ def test_plan_event_forwarded_to_session(bus, event, ws_type):
         assert ws.broadcast_to_session.called
         msg = ws.broadcast_to_session.call_args[0][1]
         assert msg["type"] == ws_type
-        assert msg["payload"] == {"detail": "x"}
+        # CT-3 (REQ-6 AC3/AC5): the bridge injects conversation_id into the
+        # bridged payload (so the frontend can drop stale events from a
+        # cancelled thread). Original detail is preserved alongside it.
+        assert msg["payload"]["detail"] == "x"
+        assert msg["payload"].get("conversation_id") == "c1"
         assert ws.broadcast_to_session.call_args[0][0] == "s1"
     finally:
         bridge.stop()

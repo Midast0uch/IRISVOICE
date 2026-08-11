@@ -1,4 +1,4 @@
-"""CT-D2: ledger <-> display coherence.
+﻿"""CT-D2: ledger <-> display coherence.
 
 Spec: specs/phase-6-der-integrity/design.md Testing Strategy > Contract table,
 row CT-D2. "The `verified_label` in the ledger matches the status shown to
@@ -7,14 +7,14 @@ the user for the same step (Phase 2)."
 Drives the REAL `AgentKernel._der_finalize_step` (not a re-implementation of
 its logic) for one step and captures BOTH sinks it writes to:
   1. the commit ledger (`CaduceanTrajectoryRecorder.record_commit`,
-     `verified_label=...`) — the AUDIT record.
-  2. the `task:learning` event (`verified_label` field) — the signal the
+     `verified_label=...`) â€” the AUDIT record.
+  2. the `task:learning` event (`verified_label` field) â€” the signal the
      frontend uses to render the step's displayed status (Phase 2).
 
 Asserts they carry the IDENTICAL value for the same step, for each of the
 three labels. A scorer that inflated the displayed VERIFIED rate while the
 ledger disagreed would be reward-hacking by accident (design.md's Ripple-
-Effect Map, "Phase 2 displayed labels" row) — this pins that they cannot
+Effect Map, "Phase 2 displayed labels" row) â€” this pins that they cannot
 diverge.
 """
 
@@ -31,8 +31,16 @@ from backend.agent.der_loop import DirectorQueue, ExecutionMode, QueueItem
 
 
 class _CapturingRecorder:
-    """Spy standing in for CaduceanTrajectoryRecorder() inside the finalize
-    step — captures record_commit(...) calls without touching any real DB."""
+    """Spy standing in for the recorder returned by get_trajectory_recorder()
+    inside the finalize step â€” captures record_commit(...) calls without
+    touching any real DB.
+
+    REQ-20 seam change: the kernel no longer constructs
+    CaduceanTrajectoryRecorder() directly (that bare construction wrote to the
+    BUILD-memory DB); it calls get_trajectory_recorder(memory_interface). The
+    spy therefore patches that factory. The asserted contract is unchanged:
+    ledger label == task-learning event label for the same step.
+    """
 
     calls = []
 
@@ -52,7 +60,7 @@ def _make_stub_kernel(conversation_id: str) -> AgentKernel:
     k._der_last_u_mag = None
     k._der_work_units = 10
     k._der_live_cad_state = lambda session: {"u": 0.5, "xi": 0.1}
-    k._split_step = lambda item, reason, cad, wu: []  # never splits in this test
+    k._split_step = lambda item, reason, cad, wu, step_result="": []  # never splits in this test
     return k
 
 
@@ -73,15 +81,15 @@ class _CapturingBus:
 @pytest.mark.parametrize("forced_label", ["VERIFIED", "UNVERIFIED", "FAILED"])
 def test_ledger_label_matches_task_learning_event_label(monkeypatch, forced_label):
     _CapturingRecorder.calls = []
-    monkeypatch.setattr(_ct_module, "CaduceanTrajectoryRecorder", _CapturingRecorder)
+    monkeypatch.setattr(_ct_module, "get_trajectory_recorder", lambda mi: _CapturingRecorder())
     bus = _CapturingBus()
     monkeypatch.setattr(_eb_module, "get_event_bus", lambda: bus)
 
     kernel = _make_stub_kernel(f"conv-ct-d2-{forced_label}")
-    # Isolate the write-coherence contract from verification correctness —
+    # Isolate the write-coherence contract from verification correctness â€”
     # CT-D2 is about whether both sinks agree on WHATEVER label was computed,
     # not about how that label was computed (that is CT-D1's job).
-    kernel._verify_step_result = lambda goal, expected, result: forced_label
+    kernel._verify_step_result = lambda goal, expected, result, tool=None, success=False: forced_label
 
     item = QueueItem(
         step_id="step-ct-d2", step_number=1, description="do the thing",
@@ -124,5 +132,5 @@ def test_ledger_label_matches_task_learning_event_label(monkeypatch, forced_labe
     assert display_label == forced_label
     assert ledger_label == display_label, (
         f"ledger wrote {ledger_label!r} but the displayed-status event "
-        f"carried {display_label!r} for the SAME step — CT-D2 violated"
+        f"carried {display_label!r} for the SAME step â€” CT-D2 violated"
     )

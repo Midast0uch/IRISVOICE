@@ -11,7 +11,7 @@ Gate 1 Step 1.9
 """
 
 import json
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 class ResolutionEncoder:
@@ -213,8 +213,40 @@ class BehavioralPredictor:
     nodes ranked by (hit_count / traversal_count) * target_node_confidence.
     Tools already used in the current session are excluded.
 
+    REQ-12 AC1 (T9): the three production call sites (explorer.py:107,
+    evidence.py:69, live_context.py:127) construct ``BehavioralPredictor(myc)``
+    with the MyceliumInterface as a positional argument. This class previously
+    had NO ``__init__``, so every one of those call sites raised
+    ``TypeError: BehavioralPredictor() takes no arguments`` (silently swallowed
+    by each caller's try/except, leaving tier2 predictions permanently empty).
+    The constructor is now real and storing: ``myc`` is kept so ``predict`` can
+    resolve the connection and the active-region node ids from the live
+    interface instead of requiring the caller to hand them in.
+
+    The stored interface also makes this the REQ-26 prior reader: the ranking
+    it returns IS the posterior read that the (region, mediator) edge updates
+    (REQ-26 AC3) feed — read-after-write across a decision boundary.
+
     Never raises — returns [] on any error.
     """
+
+    def __init__(self, myc: Any = None) -> None:
+        """Store the MyceliumInterface so predict can self-resolve conn/region.
+
+        Args:
+            myc: The MyceliumInterface (or a duck-typed stand-in exposing
+                 ``_store``/``_registry``). None is accepted so the predictor
+                 degrades to [] rather than raising.
+        """
+        self._myc = myc
+
+    def _resolve_conn(self, conn) -> Any:
+        """Resolve the SQL connection: explicit arg wins, else the stored
+        interface's store connection."""
+        if conn is not None:
+            return conn
+        store = getattr(self._myc, "_store", None)
+        return getattr(store, "_conn", None) if store is not None else None
 
     def predict(
         self,
@@ -232,25 +264,41 @@ class BehavioralPredictor:
             current_node_ids: Active node IDs in this session
             task_class:       Task class label (reserved for future weighting)
             completed_tools:  Tools already used this session (excluded)
-            conn:             SQLite connection (returns [] if None)
+            conn:             SQLite connection (defaults to the stored
+                              interface's store connection when None)
 
         Returns:
             List of up to 3 predicted tool names (empty if no data)
         """
         try:
+            conn = self._resolve_conn(conn)
             if conn is None or not current_node_ids:
                 return []
 
+            # REQ-26 AC3 (T41): the decision reads the UPDATED SCORE as its
+            # prior. The (coordinate-region, mediator) edges created by
+            # ``EdgeScorer.record_region_mediator_outcome`` (edge_type
+            # 'tool_choice') carry the posterior in ``score`` — they never
+            # bump hit_count, so the pre-REQ-26 formula (hit ratio, with a
+            # ``hit_count > 0`` filter) could neither see nor rank them: the
+            # loop would not close. tool_choice edges are therefore ranked by
+            # ``score`` (the posterior — first observation full strength,
+            # later ones converge), and qualify even with zero hits (an
+            # unseen pair has the explicit _UNSEEN_PAIR_PRIOR, not silence).
+            # Legacy 'traversal' edges keep the pre-existing hit-ratio
+            # ranking.
             placeholders = ",".join("?" for _ in current_node_ids)
             cursor = conn.execute(
-                f"SELECT e.to_node_id, e.hit_count, e.traversal_count, "
-                f"       n.label, n.confidence "
+                f"SELECT e.to_node_id, e.score, e.hit_count, e.traversal_count, "
+                f"       n.label, n.confidence, e.edge_type "
                 f"FROM mycelium_edges e "
                 f"JOIN mycelium_nodes n ON n.node_id = e.to_node_id "
                 f"WHERE e.from_node_id IN ({placeholders}) "
-                f"  AND e.hit_count > 0 "
-                f"ORDER BY (CAST(e.hit_count AS REAL) / MAX(e.traversal_count, 1)) "
-                f"         * n.confidence DESC "
+                f"  AND (e.edge_type = 'tool_choice' OR e.hit_count > 0) "
+                f"ORDER BY CASE WHEN e.edge_type = 'tool_choice' THEN e.score "
+                f"              ELSE (CAST(e.hit_count AS REAL) "
+                f"                    / MAX(e.traversal_count, 1)) * n.confidence "
+                f"         END DESC "
                 f"LIMIT 10",
                 current_node_ids,
             )
@@ -260,7 +308,9 @@ class BehavioralPredictor:
             seen: set = set()
 
             for row in cursor.fetchall():
-                label = row[3] or ""
+                # Column order: to_node_id, score, hit_count, traversal_count,
+                # label, confidence, edge_type.
+                label = row[4] or ""
                 if not label:
                     continue
                 name = label.split(":")[-1].strip()

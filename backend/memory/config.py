@@ -13,6 +13,43 @@ from typing import Optional, Dict, Any
 
 logger = logging.getLogger(__name__)
 
+# Canonical repo root: backend/memory/config.py -> parents[2] == repo root.
+# Anchored to this file, NEVER to CWD — a CWD-relative "data/..." is how the
+# decoy backend/data/memory.db got created (REQ-2 AC2 / T6a).
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def resolve_memory_store_path(config_path: Optional[str] = None) -> Path:
+    """Resolve the ONE application memory store path (REQ-2 AC2 / T6a).
+
+    Single source of truth: ``memory_config.json`` ``db_path``, anchored to the
+    repo root. Every reader/writer of the memory store must go through this so
+    that ``data/memory.db`` and ``backend/data/memory.db`` can never diverge
+    again — a CWD-relative default silently resolves to the wrong directory
+    when the app starts from ``backend/``.
+
+    Args:
+        config_path: Optional path to memory_config.json (repo-root-anchored by
+            default). When relative, it is resolved against REPO_ROOT.
+
+    Returns:
+        Absolute Path to the application memory database.
+    """
+    cfg_path = Path(config_path) if config_path else (REPO_ROOT / "data" / "memory_config.json")
+    if not cfg_path.is_absolute():
+        cfg_path = REPO_ROOT / cfg_path
+    try:
+        cfg = load_config(str(cfg_path))
+        db_path = Path(cfg.db_path)
+    except Exception as exc:  # noqa: BLE001 — resolver must never crash callers
+        logger.warning(
+            "[MemoryConfig] resolve_memory_store_path fell back to default: %s", exc
+        )
+        db_path = Path("data/memory.db")
+    if not db_path.is_absolute():
+        db_path = REPO_ROOT / db_path
+    return db_path
+
 
 @dataclass
 class CompressionConfig:
@@ -71,15 +108,16 @@ class PrivacyConfig:
 class VectorSearchConfig:
     """Configuration for vector search."""
 
-    model_name: str = "BAAI/bge-m3"
+    model_name: str = "Qwen/Qwen3-Embedding-0.6B"
     embedding_dim: int = 1024
     similarity_threshold: float = 0.6
     max_results: int = 5
     fallback_to_keyword: bool = True
-    # Phase 4 (REQ-1 AC4): selectable embedding backend. "bge-m3" (default,
-    # migration-safe) or "lfm25-emb-350m" (LFM2.5-Embedding-350M GGUF, CPU).
-    # The swap is reversible from config, not from a revert.
-    backend: str = "bge-m3"
+    # Phase 4 (REQ-1 AC4): selectable embedding backend. "qwen3" (default,
+    # 2026-08 switch: Qwen/Qwen3-Embedding-0.6B, 639MB, 32K ctx) or "bge-m3"
+    # (BAAI/bge-m3, 2.3GB, migration-safe fallback) or "lfm25-emb-350m"
+    # (LFM2.5-Embedding-350M GGUF, CPU). Reversible from config.
+    backend: str = "qwen3"
     # Explicit path to the Embedding-350M GGUF. When None, discovered from the
     # user's local model folder (REQ-7 AC1). Never silently downloaded.
     model_path: Optional[str] = None

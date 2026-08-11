@@ -5930,6 +5930,12 @@ Respond with a JSON object:
         """
         # Trust-routing W2: a plan run is one turn — start unmarked.
         self.clear_turn_trust_flag()
+        # REQ-5 AC3: the amendment bound is PER TASK. _der_amendment_count lives
+        # on the kernel, which is cached per CONVERSATION — leaving it to
+        # accumulate would permanently refuse every graft after the third
+        # recovery in a conversation, silently killing DER's existing recovery
+        # path. One plan run is one task, so the counter resets here.
+        self._der_amendment_count = 0
         # T6.4: mark the call class as USER_TURN at the real turn entry so the
         # phase gate admits it immediately (high-priority lane).
         set_call_class(CallClass.USER_TURN)
@@ -7346,7 +7352,13 @@ Respond with a JSON object:
         """
         from backend.agent.nodes.telemetry import log_amendment
 
-        _task_id = self.conversation_id or _session
+        # getattr, not attribute access: these run on the graft/recovery paths,
+        # and a kernel built via __new__ (as the DER test doubles and some
+        # recovery paths do) has no conversation_id. A bare access raised
+        # AttributeError inside the graft's try/except, silently turning
+        # "amend the graph" into "recovery failed" — telemetry must never be
+        # able to cost a graft.
+        _task_id = getattr(self, "conversation_id", None) or _session
         try:
             if not new_steps:
                 return False
@@ -7511,7 +7523,13 @@ Respond with a JSON object:
         from backend.agent.steering import get_steering_inbox
         import time as _time
 
-        _task_id = self.conversation_id or _session
+        # getattr, not attribute access: these run on the graft/recovery paths,
+        # and a kernel built via __new__ (as the DER test doubles and some
+        # recovery paths do) has no conversation_id. A bare access raised
+        # AttributeError inside the graft's try/except, silently turning
+        # "amend the graph" into "recovery failed" — telemetry must never be
+        # able to cost a graft.
+        _task_id = getattr(self, "conversation_id", None) or _session
         try:
             _ledger = getattr(self, "_der_ledger", None)
             if _ledger is None:
@@ -7875,6 +7893,26 @@ Respond with a JSON object:
                     verified_fraction=_vf_split,
                 )
                 if _children:
+                    # REQ-5 (dag-node-execution-model): grafted recovery steps
+                    # ARE an amendment of the executing graph, so they go
+                    # through the amendment gate rather than around it. This is
+                    # _der_amend_graph's production caller — without one the
+                    # mechanism was built, tested and unreachable.
+                    #
+                    # Behaviour is unchanged by construction: _AMENDMENT_BOUND
+                    # and DER_MAX_GRAFTS are both 3, so the gate admits exactly
+                    # the grafts that already ran. What it adds is REQ-5's
+                    # guarantees on a path that previously had none — validity
+                    # checking, the per-task bound, and telemetry for every
+                    # applied AND refused amendment (REQ-5 AC5, REQ-9 AC3).
+                    if not self._der_amend_graph(
+                        _children, _session, plan, queue,
+                    ):
+                        logger.info(
+                            "[DER] amendment refused for failed %s — continuing "
+                            "on the existing graph (REQ-5 AC5)", item.step_id,
+                        )
+                        return aborted
                     queue.graft_attempts += 1
                     # REQ-7 AC1/AC2/AC3 (T25): route subloop children through
                     # the batcher — each ready group (full OR force-flushed at

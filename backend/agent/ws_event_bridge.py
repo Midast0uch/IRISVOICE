@@ -58,6 +58,13 @@ _BRIDGED_EVENTS: Tuple[IRISStreamEvent, ...] = (
     IRISStreamEvent.VALIDATION_FAILED,
     IRISStreamEvent.RECOVERY_START,
     IRISStreamEvent.TOPOLOGY_RECOVERY,
+    # ── REQ-15 (T26): pause/resume lifecycle + steering acknowledgement ─────
+    # AC4: TASK_PAUSED/TASK_RESUMED make the suspended state visible; AC5:
+    # STEERING_ACK carries the queued/considered acknowledgement so the user
+    # sees the steering message landed and was applied.
+    IRISStreamEvent.TASK_PAUSED,
+    IRISStreamEvent.TASK_RESUMED,
+    IRISStreamEvent.STEERING_ACK,
 )
 
 # Events added at runtime (e.g. future additions) so the tuple above stays
@@ -130,12 +137,23 @@ class WSEventBridge:
                     # Loop not captured yet (events before server startup). Skip.
                     logger.debug("[WSEventBridge] no main loop yet; skipping %s", evt.value)
                     return
-                if session_id and session_id != "default":
+                if (
+                    session_id
+                    and session_id != "default"
+                    and self._ws.session_exists(session_id)
+                ):
                     asyncio.run_coroutine_threadsafe(
                         self._ws.broadcast_to_session(session_id, msg), loop
                     )
                 else:
-                    # No session routing info -- broadcast to all (IRIS is single-user).
+                    # pin_42ddd255162d: no session routing info, OR the session
+                    # has no connected client — DER sub-loop/crawl events
+                    # arrive under the placeholder session "unknown", and
+                    # broadcast_to_session() silently DROPS messages for
+                    # unknown sessions (get_session -> None). IRIS is
+                    # single-user, so falling back to broadcast still reaches
+                    # the one connected client; the conversation_id carried on
+                    # the wire lets the frontend drop stale events.
                     asyncio.run_coroutine_threadsafe(self._ws.broadcast(msg), loop)
             except Exception as e:  # one bad payload never breaks others
                 logger.warning("[WSEventBridge] %s forward failed: %s", evt.value, e)

@@ -61,7 +61,7 @@ class SourceRegistry:
 
     # ── Public API ──────────────────────────────────────────────────────
 
-    async def resolve(self, query: str) -> dict:
+    async def resolve(self, query: str, quick: bool = False) -> dict:
         """Check whether known sources adequately cover *query*.
 
         Returns::
@@ -75,8 +75,18 @@ class SourceRegistry:
 
         Even on a MISS, ``sources`` is populated with whatever partial
         matches were found (usable as seed URLs for the fallback search).
+
+        ``quick=True`` skips the LLM topic-extraction call and uses the query
+        itself as the single topic — intended for the DER resolution gate,
+        which runs on EVERY web-intent step. Burning an LLM quota slot just to
+        check coverage of known sources made every step resolution slow AND
+        consumed provider quota (observed: 429 storms + 40s gate evaluations).
+        Full extraction remains on the learn path.
         """
-        topics = await self._extract_topics(query)
+        if quick:
+            topics = [query.lower().strip()[:60]] if query and query.strip() else []
+        else:
+            topics = await self._extract_topics(query)
         sources = self._lookup_topics(topics)
         coverage = self._score_coverage(sources)
         return {
@@ -101,6 +111,16 @@ class SourceRegistry:
         topics = await self._extract_topics(query)
         cred_map = credibility_map or {}
 
+        # DIAGNOSTIC: the learn path was silent, so a MISS on the next identical
+        # query could not be attributed. The three candidate causes need
+        # opposite fixes, and only the pair (topics stored here vs topics
+        # extracted at resolve) can tell them apart:
+        #   (a) nothing saved      -> saved=0 below
+        #   (b) saved but unmatched-> saved>0 here, but resolve() logs different topics
+        #   (c) saved and matched  -> resolve() logs coverage below threshold
+        # Topics are the JOIN KEY between learn and resolve; log them both sides.
+        _saved = 0
+        _skipped: list[str] = []
         for item in search_result.results:
             domain = _extract_domain(item.url)
             if not domain:
@@ -108,11 +128,23 @@ class SourceRegistry:
             cred = cred_map.get(domain, 0.5)
             if cred >= 0.3:
                 self._save_entry(item.url, domain, topics, cred)
+                _saved += 1
+            else:
+                _skipped.append("%s(cred=%.2f)" % (domain, cred))
+        logger.info(
+            "[SourceRegistry] learn q=%r topics=%s saved=%d skipped_low_cred=%s",
+            query[:60], topics[:6], _saved, _skipped[:5] or "none",
+        )
 
-    def penalize_url(self, url: str, topics: list[str]):
+    def penalize_url(self, url: str, topics: list[str], last_error: str = "crawl_failed"):
         """Reduce credibility for a URL whose crawl failed.
 
         Call from the orchestrator/tool when ``PageData.error`` is set.
+
+        REQ-10 (T12): ``last_error="challenge"`` marks a bot-challenge
+        interstitial (Cloudflare/Turnstile) — the source is penalized the same
+        way (credibility halved) but the error reason distinguishes it so the
+        outer loop can tell "page is dead" from "page is behind a CAPTCHA".
         """
         for topic in topics:
             key = _topic_key(topic)
@@ -127,7 +159,7 @@ class SourceRegistry:
                 if entry.get("url") == url:
                     old = entry.get("credibility", 0.5)
                     entry["credibility"] = round(old * 0.5, 3)
-                    entry["last_error"] = "crawl_failed"
+                    entry["last_error"] = last_error
                     self._set_store(key, json.dumps(entries, indent=2))
                     break
 

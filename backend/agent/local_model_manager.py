@@ -344,6 +344,70 @@ class ConfigCache:
         }
         self._save()
 
+    # ── Machine-scoped hardware calibration (NOT per-model) ──
+    # A single real throughput measurement anywhere on the machine yields an
+    # effective memory bandwidth; every model derives its own base_tps from that
+    # one number divided by its own parsed size/quant. Keyed by hw_fingerprint so
+    # a GPU swap invalidates it automatically (see CADUCEAN_ARCHITECTURE.md §10
+    # rule 1 — the "compute-and-discard" defect, 5th instance). Kept in a SEPARATE
+    # file from the per-model config cache so it never pollutes model entries and
+    # existing per-model cache assertions are unaffected.
+    _MACHINE_BW_PREFIX = "_machine_bw:"
+
+    def _machine_path(self) -> Path:
+        base = self.cache_path or (IRISVOICE_ROOT / ".mcm" / "local_model_configs.json")
+        return base.with_name("local_model_machine_bandwidth.json")
+
+    def _ensure_loaded_machine(self) -> None:
+        if getattr(self, "_machine_loaded", False):
+            return
+        self._machine_loaded = True
+        self._machine_data: Dict[str, Any] = {}
+        try:
+            p = self._machine_path()
+            if p.exists():
+                with open(p, "r", encoding="utf-8") as fh:
+                    self._machine_data = json.load(fh)
+                if not isinstance(self._machine_data, dict):
+                    raise ValueError("machine cache root not a dict")
+        except Exception as exc:
+            logger.warning(
+                f"[ConfigCache] machine cache unreadable ({exc}); starting fresh"
+            )
+            self._machine_data = {}
+
+    def _save_machine(self) -> None:
+        try:
+            p = self._machine_path()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with open(p, "w", encoding="utf-8") as fh:
+                json.dump(self._machine_data, fh, indent=2)
+        except Exception as exc:
+            logger.warning(f"[ConfigCache] failed to save machine cache: {exc}")
+
+    def put_machine_bandwidth(self, hw: Dict[str, Any], effective_bandwidth: float) -> None:
+        """Persist the machine-level effective bandwidth (GB/s) for the current HW."""
+        self._ensure_loaded_machine()
+        key = self._MACHINE_BW_PREFIX + self._hw_fingerprint(hw)
+        self._machine_data[key] = {
+            "hw_fingerprint": self._hw_fingerprint(hw),
+            "effective_bandwidth": effective_bandwidth,
+            "updated_at": time.time(),
+        }
+        self._save_machine()
+
+    def get_machine_bandwidth(self, hw: Dict[str, Any]) -> Optional[float]:
+        """Return the cached machine bandwidth (GB/s), or None if uncalibrated/stale."""
+        self._ensure_loaded_machine()
+        key = self._MACHINE_BW_PREFIX + self._hw_fingerprint(hw)
+        entry = self._machine_data.get(key)
+        if entry is None:
+            return None
+        if entry.get("hw_fingerprint") != self._hw_fingerprint(hw):
+            return None
+        bw = entry.get("effective_bandwidth")
+        return float(bw) if bw is not None else None
+
     def _save(self) -> None:
         try:
             self.cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1125,87 +1189,243 @@ class LocalModelManager:
                 return _read(slen).decode("utf-8", errors="replace")
             return None
 
-        def read_value(vtype: int) -> Any:
+        class _StopParsing(Exception):
+            """Raised when a value's length cannot be determined (cursor unrecoverable)."""
+
+        def _read_str_strict() -> str:
+            slen = struct.unpack("<Q", _read(8))[0]
+            if slen <= 0 or slen >= 65536 or pos + slen > buf_len:
+                raise _StopParsing()
+            return _read(slen).decode("utf-8", errors="replace")
+
+        def _read_array_strict() -> list:
+            elem_type = struct.unpack("<I", _read(4))[0]
+            count = struct.unpack("<Q", _read(8))[0]
+            if elem_type not in _GGUF_TYPE_READERS or count >= 1024:
+                raise _StopParsing()
+            return [read_value(elem_type, "auto") for _ in range(count)]
+
+        def _skip_string() -> bool:
+            slen = struct.unpack("<Q", _read(8))[0]
+            if slen <= 0 or slen >= 65536 or pos + slen > buf_len:
+                return False
+            _read(slen)
+            return True
+
+        def _skip_array() -> bool:
+            elem_type = struct.unpack("<I", _read(4))[0]
+            count = struct.unpack("<Q", _read(8))[0]
+            if elem_type not in _GGUF_TYPE_READERS or count >= 1024:
+                return False
+            for _ in range(count):
+                if not _skip_value(elem_type, "auto"):
+                    return False
+            return True
+
+        def _skip_value(vtype: int, mode: str = "auto") -> bool:
+            """Advance pos past a value of `vtype`. Return False if the type's
+            length cannot be determined (cursor unrecoverable)."""
+            if vtype in (0, 1, 2, 3):
+                _read({0: 4, 1: 4, 2: 4, 3: 1}[vtype]); return True
+            if vtype in (5, 6, 7):
+                _read(8); return True
+            if vtype == 10:
+                return False  # COMPLEX — unsized
+            if vtype == 11:  # STRING_DEPRECATED
+                slen = struct.unpack("<Q", _read(8))[0]
+                _read(slen); return True
+            if vtype == 4:  # STRING or UINT32
+                if mode == "non_standard":
+                    _read(4); return True
+                peek = buf[pos:pos + 8]
+                if len(peek) >= 8:
+                    slen = struct.unpack("<Q", peek)[0]
+                    if 0 < slen < 65536 and pos + 8 + slen <= buf_len:
+                        _read(8 + slen); return True
+                if mode == "standard":
+                    return False
+                _read(4); return True  # auto UINT32 fallback
+            if vtype == 8:  # STRING or ARRAY
+                if mode == "non_standard":
+                    return _skip_string()
+                peek = buf[pos:pos + 8]
+                if len(peek) >= 8:
+                    slen = struct.unpack("<Q", peek)[0]
+                    if 0 < slen < 65536 and pos + 8 + slen <= buf_len:
+                        _read(8 + slen); return True
+                if mode == "standard":
+                    return _skip_array()
+                return _skip_array()  # auto: try array
+            if vtype == 9:  # ARRAY or UINT16
+                if mode == "standard":
+                    _read(2); return True
+                peek = buf[pos:pos + 12]
+                if len(peek) >= 12:
+                    elem_type = struct.unpack("<I", peek[:4])[0]
+                    count = struct.unpack("<Q", peek[4:12])[0]
+                    if elem_type in _GGUF_TYPE_READERS and count < 1024:
+                        _read(12)
+                        for _ in range(count):
+                            if not _skip_value(elem_type, mode):
+                                return False
+                        return True
+                if mode == "non_standard":
+                    return False
+                _read(2); return True  # auto UINT16 fallback
+            return False
+
+        def read_value(vtype: int, mode: str = "auto") -> Any:
             nonlocal pos
-            # Type 4: could be STRING (standard) or UINT32 (non-standard)
+            if mode == "standard":
+                if vtype == 4:
+                    return _read_str_strict()
+                if vtype == 8:
+                    return _read_array_strict()
+                if vtype == 9:
+                    return struct.unpack("<H", _read(2))[0]
+            elif mode == "non_standard":
+                if vtype == 4:
+                    return struct.unpack("<I", _read(4))[0]
+                if vtype == 8:
+                    return _read_str_strict()
+                if vtype == 9:
+                    return _read_array_strict()
+            # auto (default) — tries STRING first, falls back (current behavior)
             if vtype == 4:
                 result = _try_string()
                 if result is not None:
                     return result
-                return struct.unpack("<I", _read(4))[0]  # UINT32 fallback
-            # Type 8: could be STRING (non-standard) or ARRAY (standard)
+                return struct.unpack("<I", _read(4))[0]
             if vtype == 8:
                 result = _try_string()
                 if result is not None:
                     return result
-                # ARRAY: elem_type (4 bytes) + count (8 bytes) + elements
                 elem_type = struct.unpack("<I", _read(4))[0]
                 count = struct.unpack("<Q", _read(8))[0]
-                return [read_value(elem_type) for _ in range(min(count, 16))]
-            # Type 9: could be ARRAY (non-standard) or UINT16 (standard)
+                if elem_type in _GGUF_TYPE_READERS and count < 1024:
+                    return [read_value(elem_type, mode) for _ in range(count)]
+                raise _StopParsing()
             if vtype == 9:
-                # Try ARRAY first: elem_type (4 bytes) + count (8 bytes)
-                peek = buf[pos:pos+12]
+                peek = buf[pos:pos + 12]
                 if len(peek) >= 12:
                     elem_type = struct.unpack("<I", peek[:4])[0]
                     count = struct.unpack("<Q", peek[4:12])[0]
                     if elem_type in _GGUF_TYPE_READERS and count < 1024:
                         pos += 12
-                        return [read_value(elem_type) for _ in range(count)]
-                # Fallback: UINT16 (standard)
+                        return [read_value(elem_type, mode) for _ in range(count)]
                 return struct.unpack("<H", _read(2))[0]
             if vtype == 10:  # COMPLEX — not needed for metadata
-                return None
+                raise _StopParsing()
             reader = _GGUF_TYPE_READERS.get(vtype)
             if reader is None:
-                raise ValueError(f"Unknown GGUF value type: {vtype}")
+                raise _StopParsing()
             return reader()
 
-        for _ in range(min(kv_count, 256)):
-            try:
-                key = read_str()
-                vtype = struct.unpack("<I", _read(4))[0]
-                val = read_value(vtype)
-            except Exception:
-                break
+        def _is_sane_architecture(arch: Any) -> bool:
+            if not isinstance(arch, str) or not arch:
+                return False
+            return all(32 <= ord(c) < 127 for c in arch)
 
-            if key == "general.architecture" and isinstance(val, str):
-                meta["architecture"] = val
-            elif key == "general.parameter_count" and isinstance(val, int):
-                meta["params_b"] = round(val / 1e9, 1)
-            elif key == "general.name" and isinstance(val, str):
-                meta["model_name"] = val
-                # Filename-based MTP detection heuristic
-                if "mtp" in val.lower():
-                    meta["is_mtp"] = True
-            elif key == "general.size_label" and isinstance(val, str):
-                # e.g. "1.2B", "450M", "8B" — fallback when parameter_count is absent
+        def _parse_once(mode: str) -> Dict[str, Any]:
+            """Parse the KV section once under enum `mode`.
+
+            GAP 2 fix: a single unparseable key no longer discards every key
+            after it. On a per-key failure we skip the value and continue with
+            the NEXT key; we stop (marked ``_partial``) only when the cursor is
+            genuinely unrecoverable.
+            """
+            nonlocal pos
+            pos = 0
+            result: Dict[str, Any] = {}
+            skipped: list = []
+            for _ in range(min(kv_count, 256)):
                 try:
-                    val_stripped = val.strip().upper()
-                    if "X" in val_stripped:
-                        # MoE format: "32x959M" → 32 experts × 959M = 30.7B total params
-                        parts = val_stripped.split("X")
-                        if len(parts) == 2:
-                            n_experts = int(parts[0])
-                            per_expert = parts[1]
-                            if per_expert.endswith("M"):
-                                per_b = float(per_expert[:-1]) / 1000
-                            elif per_expert.endswith("B"):
-                                per_b = float(per_expert[:-1])
-                            else:
-                                per_b = float(per_expert)
-                            meta["params_b"] = round(n_experts * per_b, 1)
-                            meta["is_moe"] = True
-                    elif val_stripped.endswith("B"):
-                        meta["params_b"] = float(val_stripped[:-1])
-                    elif val_stripped.endswith("M"):
-                        meta["params_b"] = round(float(val_stripped[:-1]) / 1000, 1)
-                except (ValueError, IndexError):
-                    pass
-            elif key.endswith(".context_length") and isinstance(val, int):
-                meta["context_length"] = val
-            elif key.endswith(".block_count") and isinstance(val, int):
-                meta["block_count"] = val
+                    key = read_str()
+                    vtype = struct.unpack("<I", _read(4))[0]
+                    val = read_value(vtype, mode)
+                except _StopParsing:
+                    result["_partial"] = True
+                    break
+                except Exception:
+                    # Recoverable error (e.g. truncated buffer): skip the value
+                    # and continue instead of discarding all remaining keys.
+                    try:
+                        if not _skip_value(vtype, mode):
+                            result["_partial"] = True
+                            break
+                    except Exception:
+                        result["_partial"] = True
+                        break
+                    skipped.append(key)
+                    continue
+                if key == "general.architecture" and isinstance(val, str):
+                    result["architecture"] = val
+                elif key == "general.parameter_count" and isinstance(val, int):
+                    result["params_b"] = round(val / 1e9, 1)
+                elif key == "general.name" and isinstance(val, str):
+                    result["model_name"] = val
+                    if "mtp" in val.lower():
+                        result["is_mtp"] = True
+                elif key == "general.size_label" and isinstance(val, str):
+                    # e.g. "1.2B", "450M", "8B" — fallback when parameter_count is absent
+                    try:
+                        val_stripped = val.strip().upper()
+                        if "X" in val_stripped:
+                            # MoE format: "32x959M" → 32 experts × 959M = 30.7B total params
+                            parts = val_stripped.split("X")
+                            if len(parts) == 2:
+                                n_experts = int(parts[0])
+                                per_expert = parts[1]
+                                if per_expert.endswith("M"):
+                                    per_b = float(per_expert[:-1]) / 1000
+                                elif per_expert.endswith("B"):
+                                    per_b = float(per_expert[:-1])
+                                else:
+                                    per_b = float(per_expert)
+                                result["params_b"] = round(n_experts * per_b, 1)
+                                result["is_moe"] = True
+                        elif val_stripped.endswith("B"):
+                            result["params_b"] = float(val_stripped[:-1])
+                        elif val_stripped.endswith("M"):
+                            result["params_b"] = round(float(val_stripped[:-1]) / 1000, 1)
+                    except (ValueError, IndexError):
+                        pass
+                elif key.endswith(".context_length") and isinstance(val, int):
+                    result["context_length"] = val
+                elif key.endswith(".block_count") and isinstance(val, int):
+                    result["block_count"] = val
+            if skipped or result.get("_partial"):
+                logger.info(
+                    f"[LocalModelManager] parse_gguf_metadata: parsed "
+                    f"{len([k for k in result if not k.startswith('_')])} fields, "
+                    f"skipped {len(skipped)} key(s)={skipped}, "
+                    f"partial={result.get('_partial', False)}"
+                )
+            return result
+
+        # GAP 3: detect, do not assume. Auto-parse first; if the architecture is
+        # not sane ASCII, retry with explicit standard / non-standard enums and
+        # keep whichever yields a sane architecture. Log the selected enum.
+        meta = _parse_once("auto")
+        arch = meta.get("architecture")
+        if not _is_sane_architecture(arch):
+            chosen = None
+            for mode in ("standard", "non_standard"):
+                cand = _parse_once(mode)
+                if _is_sane_architecture(cand.get("architecture")):
+                    meta = cand
+                    chosen = mode
+                    break
+            if chosen is not None:
+                logger.info(
+                    f"[LocalModelManager] parse_gguf_metadata: auto enum produced "
+                    f"non-sane architecture ({arch!r}); selected enum={chosen}"
+                )
+            else:
+                logger.warning(
+                    f"[LocalModelManager] parse_gguf_metadata: architecture not "
+                    f"sane under any enum ({arch!r}); using auto result"
+                )
 
         # Tensor-based MTP detection: peek at first few tensor names for mtp. prefix
         if not meta.get("is_mtp"):
@@ -1336,7 +1556,7 @@ class LocalModelManager:
         self,
         model_meta: Dict[str, Any],
         target_tps: float = TARGET_TPS,
-        base_tps: float = 50.0,
+        base_tps: Optional[float] = None,
         vram_budget_gb: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
@@ -1355,8 +1575,11 @@ class LocalModelManager:
         Args:
             model_meta: Parsed GGUF metadata dict.
             target_tps: Minimum acceptable tokens/sec (default: TARGET_TPS).
-            base_tps: Estimated base throughput at MIN_CTX (default: 50).
-                      Used for the throughput model: tps = base_tps * sqrt(MIN_CTX/n_ctx).
+            base_tps: Estimated base throughput at MIN_CTX. If None (default),
+                      derive_config seeds it from a machine-level memory-bandwidth
+                      calibration cached against the hw_fingerprint (P3.4 fix),
+                      falling back to 50.0 only when uncalibrated. Used for the
+                      throughput model: tps = base_tps * sqrt(MIN_CTX/n_ctx).
             vram_budget_gb: GPU VRAM budget in GB. If None, uses hardware info.
 
         Returns:
@@ -1365,6 +1588,35 @@ class LocalModelManager:
         hw = self.get_hardware_info()
         if vram_budget_gb is None:
             vram_budget_gb = hw.get("vram_free_gb", 0.0)
+
+        # P3.4 fix (CADUCEAN_ARCHITECTURE.md §10 rule 1 — compute-and-discard): if the
+        # caller did not supply a base_tps, seed it from a machine-level memory-bandwidth
+        # calibration cached against the hw_fingerprint. This makes a single real
+        # measurement anywhere on the machine correct for EVERY model's first load,
+        # instead of each model having to be run slowly three times to learn its own
+        # lesson. Falls back to the flat 50.0 only when no calibration exists yet.
+        calibrated = False
+        if base_tps is None:
+            base_tps = 50.0
+            try:
+                cache = getattr(self, "_config_cache", None)
+                if cache is not None:
+                    bw = cache.get_machine_bandwidth(hw)
+                    if bw is not None:
+                        _params_b = model_meta.get("params_b", 0) or 0
+                        _quant = model_meta.get("quantization", "") or ""
+                        _bpw = QUANT_BPW.get(_quant.upper(), 4.85)
+                        if _params_b and _bpw:
+                            seeded = bw / (_params_b * _bpw / 8.0)
+                            if seeded > 0:
+                                base_tps = seeded
+                                calibrated = True
+            except Exception:
+                pass
+        logger.info(
+            f"[LocalModelManager] derive_config base_tps={base_tps:.1f} "
+            f"(source={'machine_bandwidth' if calibrated else 'uncalibrated_default'})"
+        )
 
         native_ctx = model_meta.get("context_length") or model_meta.get("n_ctx") or MAX_CTX
         max_ctx = min(native_ctx, MAX_CTX)
@@ -1738,10 +1990,35 @@ class LocalModelManager:
         except ZeroDivisionError:
             calibrated_base = 50.0
 
+        hw = self.get_hardware_info()
+
+        # P3.4 fix (CADUCEAN_ARCHITECTURE.md §10 rule 1 — compute-and-discard, 5th
+        # instance): calibrated_base is model-specific and was previously used once
+        # then discarded. Convert it to a MACHINE-LEVEL constant by dividing out this
+        # model's own weight footprint, then cache it against the hw_fingerprint so
+        # EVERY future model's first load derives its own correct base_tps — not just
+        # this model's next load. Reuses the existing closed loop; only the SCOPE
+        # changes. A computed signal must change behavior, or it is not implemented.
+        try:
+            _params_b = self._current_model_meta.get("params_b", 0) or 0
+            _quant = self._current_model_meta.get("quantization", "") or ""
+            _bpw = QUANT_BPW.get(_quant.upper(), 4.85)
+            if _params_b and _bpw:
+                effective_bandwidth = calibrated_base * (_params_b * _bpw / 8.0)
+                self._config_cache.put_machine_bandwidth(hw, effective_bandwidth)
+                logger.info(
+                    f"[LocalModelManager] machine bandwidth calibrated: "
+                    f"{effective_bandwidth:.1f} GB/s (from {avg_tps:.1f} tok/s, "
+                    f"{_params_b}B {_quant})"
+                )
+        except Exception as exc:
+            logger.warning(
+                f"[LocalModelManager] failed to cache machine bandwidth: {exc}"
+            )
+
         direction = "shrink" if avg_tps < target else "grow"
 
         try:
-            hw = self.get_hardware_info()
             derived = self.derive_config(
                 self._current_model_meta,
                 target_tps=target,
@@ -2192,7 +2469,7 @@ class LocalModelManager:
         config = self.derive_config(
             model_meta,
             target_tps=policy.throughput_target or TARGET_TPS,
-            base_tps=50.0,
+            base_tps=None,
             vram_budget_gb=vram_budget,
         )
 

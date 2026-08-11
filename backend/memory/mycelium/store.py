@@ -101,6 +101,10 @@ class CoordEdge:
     decay_rate: float
     created_at: float
     last_traversed: Optional[float]
+    # REQ-26 (T40): the observation count this score expresses — the
+    # evidence behind the belief. The update magnitude diminishes as it
+    # grows (alpha = 1/(1+count)); decay never touches it (REQ-26 AC7).
+    observation_count: int = 0
 
 
 @dataclass
@@ -287,6 +291,27 @@ class CoordinateStore:
         )
         return [self._row_to_node(row) for row in cursor.fetchall()]
 
+    def get_node_by_label(self, space_id: str, label: str) -> Optional[CoordNode]:
+        """
+        REQ-23/T38: return the node in ``space_id`` whose label matches EXACTLY.
+
+        Used to resolve the mediator's toolpath node for the (region,
+        mediator) edge lookup — label identity, not coordinate proximity, is
+        what makes the mediator a stable learning unit across regions.
+        Returns None when no such node exists.
+        """
+        cursor = self._conn.execute(
+            """
+            SELECT node_id, space_id, coordinates, label, confidence,
+                   created_at, updated_at, access_count, last_accessed
+            FROM mycelium_nodes
+            WHERE space_id = ? AND label = ?
+            """,
+            (space_id, label),
+        )
+        row = cursor.fetchone()
+        return self._row_to_node(row) if row else None
+
     def get_node_by_id(self, node_id: str) -> Optional[CoordNode]:
         """Return a single node by its node_id, or None if not found."""
         cursor = self._conn.execute(
@@ -337,7 +362,7 @@ class CoordinateStore:
             """
             SELECT edge_id, from_node_id, to_node_id, score, edge_type,
                    traversal_count, hit_count, miss_count, decay_rate,
-                   created_at, last_traversed
+                   created_at, last_traversed, observation_count
             FROM mycelium_edges
             WHERE from_node_id = ? AND score >= ?
             ORDER BY score DESC
@@ -352,7 +377,7 @@ class CoordinateStore:
             """
             SELECT edge_id, from_node_id, to_node_id, score, edge_type,
                    traversal_count, hit_count, miss_count, decay_rate,
-                   created_at, last_traversed
+                   created_at, last_traversed, observation_count
             FROM mycelium_edges
             WHERE edge_id = ?
             """,
@@ -366,6 +391,11 @@ class CoordinateStore:
         Apply a score delta to the given edge, clamping the result to [0.0, 1.0].
 
         Also updates traversal_count and last_traversed (Req 3.7).
+
+        NOTE: this is the RAW application — it does NOT touch
+        observation_count. The REQ-26/T40 evidence-weighted path goes through
+        ``record_observation`` (below); this method remains for generic
+        callers (e.g. navigator scoring) that express plain score movement.
         """
         cursor = self._conn.execute(
             "SELECT score FROM mycelium_edges WHERE edge_id = ?", (edge_id,)
@@ -380,6 +410,39 @@ class CoordinateStore:
             """
             UPDATE mycelium_edges
             SET score = ?, traversal_count = traversal_count + 1, last_traversed = ?
+            WHERE edge_id = ?
+            """,
+            (new_score, time.time(), edge_id),
+        )
+        self._conn.commit()
+
+    def record_observation(self, edge_id: str, delta: float) -> None:
+        """
+        REQ-26 (T40): apply ONE observation to an edge.
+
+        Bumps ``observation_count`` alongside ``traversal_count`` so the score
+        carries its own evidence count — the update magnitude in
+        ``EdgeScorer.record_outcome`` is a function of this count (alpha =
+        1/(1+count)), which is what makes the score a posterior rather than a
+        reinforcement rule. Decay never calls this (REQ-26 AC7).
+
+        The caller is responsible for the evidence weighting; this method only
+        applies the (already-weighted) delta and records the observation.
+        """
+        cursor = self._conn.execute(
+            "SELECT score FROM mycelium_edges WHERE edge_id = ?", (edge_id,)
+        )
+        row = cursor.fetchone()
+        if row is None:
+            logger.warning("[store] record_observation: edge not found: %s", edge_id)
+            return
+
+        new_score = max(0.0, min(1.0, row[0] + delta))
+        self._conn.execute(
+            """
+            UPDATE mycelium_edges
+            SET score = ?, traversal_count = traversal_count + 1,
+                observation_count = observation_count + 1, last_traversed = ?
             WHERE edge_id = ?
             """,
             (new_score, time.time(), edge_id),
@@ -439,7 +502,7 @@ class CoordinateStore:
             """
             SELECT edge_id, from_node_id, to_node_id, score, edge_type,
                    traversal_count, hit_count, miss_count, decay_rate,
-                   created_at, last_traversed
+                   created_at, last_traversed, observation_count
             FROM mycelium_edges
             """
         )
@@ -579,10 +642,19 @@ class CoordinateStore:
 
     @staticmethod
     def _row_to_edge(row: tuple) -> CoordEdge:
-        """Convert a mycelium_edges DB row to a CoordEdge dataclass."""
+        """Convert a mycelium_edges DB row to a CoordEdge dataclass.
+
+        Defensive about the REQ-26/T40 ``observation_count`` column: a row
+        from a store that predates the ALTER (or a test fixture that has not
+        added the column) carries 11 fields and defaults the count to 0 —
+        the same null/absent tolerance REQ-2 AC3 requires of recall. The
+        production schema always carries the column (CREATE + idempotent
+        ALTER in db.py Block 5).
+        """
         (edge_id, from_node_id, to_node_id, score, edge_type,
          traversal_count, hit_count, miss_count, decay_rate,
-         created_at, last_traversed) = row
+         created_at, last_traversed) = row[:11]
+        observation_count = row[11] if len(row) > 11 else 0
         return CoordEdge(
             edge_id=edge_id,
             from_node_id=from_node_id,
@@ -595,4 +667,5 @@ class CoordinateStore:
             decay_rate=decay_rate,
             created_at=created_at,
             last_traversed=last_traversed,
+            observation_count=observation_count,
         )

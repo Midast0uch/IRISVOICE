@@ -60,6 +60,28 @@ const PULSE_DURATION = 4200
  */
 const ORB_SIZE = 76
 
+/**
+ * Cursor size — the orb's size once it has become the vision cursor.
+ *
+ * 40, not smaller. OrbCanvas maps its particle coords to SIZE/2, so the three
+ * shells scale proportionally: below roughly 34 the 168 particles congeal into
+ * a featureless dot and the shell structure — the thing that makes it read as
+ * OUR orb rather than a generic cursor — is lost. 40 keeps all three shells
+ * legible while still reading as a pointer beside a full-size 76 orb.
+ */
+const CURSOR_SIZE = 40
+
+/**
+ * Travel time from the orb's resting centre to an action point.
+ *
+ * Long enough to read as a deliberate movement rather than a jump-cut, short
+ * enough that a fast action sequence does not queue up behind it.
+ */
+const CURSOR_TRAVEL_MS = 620
+
+/** How many decaying afterimages trail the cursor. */
+const CURSOR_TRAIL_LEN = 5
+
 /** Panel border radius. MUST equal the mount container's rounded-2xl (1rem). */
 const RADIUS = 16
 
@@ -156,6 +178,30 @@ export interface BrowserNavigationOverlayProps {
   state: OverlayState
   /** called on every state transition for REQ-18 trace (AC9) */
   onStateChange?: (state: OverlayState, detail: Record<string, unknown>) => void
+  /**
+   * REQ-11 AC4 — the vision agent's current action ("click" / "type" /
+   * "scroll"), "" when none is in flight.
+   *
+   * When this is set the CENTRE ORB BECOMES THE CURSOR: the same OrbCanvas
+   * instance travels to the action point and tightens. It is deliberately not
+   * a second particle system — a morph between two engines could never be
+   * mathematically continuous, whereas moving and resizing one instance is
+   * exact. OrbCanvas integrates shell phase per frame, so both the travel and
+   * the period change happen WITHOUT snapping any particle (see its
+   * `orbitPeriodMs` note).
+   */
+  visionAction?: string
+  /**
+   * Action point as fractions of the VIEWPORT (0..1), from the backend's
+   * Playwright bounding-box centre. Fractions rather than pixels because the
+   * panel scales the captured frame — pixels would misplace the cursor at any
+   * other size. Undefined for actions with no point (scroll), in which case
+   * the cursor holds its last position rather than teleporting to a corner.
+   */
+  visionX?: number
+  visionY?: number
+  /** Monotonic action index; a change is what triggers a fresh travel + wake. */
+  visionStep?: number
 }
 
 /** Walk a rounded rectangle's perimeter. Returns the point at arc-length `d`. */
@@ -198,6 +244,10 @@ export const BrowserNavigationOverlay = React.memo(function BrowserNavigationOve
   chromeInset = 0,
   state,
   onStateChange,
+  visionAction = "",
+  visionX,
+  visionY,
+  visionStep = 0,
 }: BrowserNavigationOverlayProps) {
   const prefersReducedMotion = useReducedMotion()
   const rootRef = useRef<HTMLDivElement>(null)
@@ -223,6 +273,53 @@ export const BrowserNavigationOverlay = React.memo(function BrowserNavigationOve
   // from absolute elapsed time. Recomputing position from elapsed whenever the
   // speed changes teleports every particle; integrating keeps the ring
   // continuous while its speed varies.
+  // ── Vision cursor (REQ-11 AC4) ──────────────────────────────────────────
+  // `null` = the orb is at its resting centre; a point = it has travelled and
+  // become the cursor. Held in state (not a ref) because position drives CSS,
+  // not the canvas draw loop.
+  const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null)
+  const [trail, setTrail] = useState<{ x: number; y: number; k: number }[]>([])
+  const lastStepRef = useRef<number>(0)
+
+  // A NEW action (step changed) moves the cursor and pushes the old point onto
+  // the trail. Gated on the step rather than on the coordinates so a repeated
+  // action at the same spot still registers as a fresh beat, and so an action
+  // WITHOUT a point (scroll) holds position instead of teleporting to 0,0.
+  useEffect(() => {
+    if (!visionStep || visionStep === lastStepRef.current) return
+    lastStepRef.current = visionStep
+    if (typeof visionX !== "number" || typeof visionY !== "number") return
+    setCursor((prev) => {
+      if (prev) {
+        setTrail((t) => [{ ...prev, k: 1 }, ...t].slice(0, CURSOR_TRAIL_LEN))
+      }
+      return { x: visionX, y: visionY }
+    })
+  }, [visionStep, visionX, visionY])
+
+  // Trail decay. One interval for the whole trail rather than a timer per
+  // afterimage, and it stops itself the moment the trail empties so an idle
+  // overlay holds no timers.
+  useEffect(() => {
+    if (trail.length === 0) return
+    const id = setInterval(() => {
+      setTrail((t) =>
+        t.map((p) => ({ ...p, k: p.k - 0.14 })).filter((p) => p.k > 0.02),
+      )
+    }, 60)
+    return () => clearInterval(id)
+  }, [trail.length])
+
+  // The run ended (or restarted): the cursor dissolves and the orb returns to
+  // centre for the next one.
+  useEffect(() => {
+    if (state === "idle" || state === "complete" || state === "error") {
+      setCursor(null)
+      setTrail([])
+      lastStepRef.current = 0
+    }
+  }, [state])
+
   const phaseRef = useRef<number>(0)
   const lapMsRef = useRef<number>(LAP_DEFAULT_MS)
   // React-visible mirror of lapMsRef, consumed only by the orb (see below).
@@ -518,7 +615,23 @@ export const BrowserNavigationOverlay = React.memo(function BrowserNavigationOve
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefersReducedMotion, state === "idle", startLoop])
 
-  const showOrb = state === "loading" || state === "dispersing"
+  // The orb stays on screen while vision is driving — that IS the cursor. Its
+  // absence during escalation was the dead air the user reported: the panel
+  // froze between the last page and completion, which is exactly when the
+  // agent was doing its most interesting work.
+  const isCursor = cursor !== null
+  const showOrb = state === "loading" || state === "dispersing" || isCursor
+
+  // Surface speed, not angular speed. Holding the period constant while the
+  // orb shrinks to CURSOR_SIZE makes it read as SLOWING DOWN, because the same
+  // revolution now covers a much shorter circumference. Scaling the period by
+  // the size ratio keeps the particles moving at the same apparent rate, so
+  // shrinking reads as the same object tightening rather than a different,
+  // lazier one. Safe mid-flight: OrbCanvas integrates phase.
+  const orbSize = isCursor ? CURSOR_SIZE : ORB_SIZE
+  const orbPeriodEffective = isCursor
+    ? Math.max(400, orbPeriodMs * (CURSOR_SIZE / ORB_SIZE))
+    : orbPeriodMs
 
   // NOTE on centring the orb: plain `left-1/2` is correct and needs NO
   // perspective compensation. The overlay root is `absolute inset-0` on the
@@ -559,33 +672,73 @@ export const BrowserNavigationOverlay = React.memo(function BrowserNavigationOve
 
       {/* Centre orb — reuses the exact OrbCanvas engine (loading / dispersing).
           Centred on the VIEWPORT (panel minus its chrome), not the panel box. */}
+      {/* Cursor wake — the orb's own afterimages, drawn with the same glow so
+          the trail reads as the orb's motion blur rather than a separate
+          decoration. Skipped entirely under reduced motion. */}
+      {isCursor && !prefersReducedMotion && trail.map((p, i) => (
+        <div
+          key={`${p.x}-${p.y}-${i}`}
+          className="absolute rounded-full"
+          style={{
+            left: `${p.x * 100}%`,
+            top: `calc(${p.y * 100}% + ${chromeInset}px)`,
+            transform: "translate(-50%, -50%)",
+            width: CURSOR_SIZE * 0.34 * p.k,
+            height: CURSOR_SIZE * 0.34 * p.k,
+            background: `radial-gradient(circle, ${glowColor} 0%, transparent 70%)`,
+            opacity: p.k * 0.42,
+            transition: "opacity 60ms linear",
+          }}
+          aria-hidden="true"
+        />
+      ))}
+
       {showOrb && !prefersReducedMotion && (
         <div
-          className="absolute left-1/2"
+          className={isCursor ? "absolute" : "absolute left-1/2"}
           style={{
-            top: `calc(50% + ${chromeInset / 2}px)`,
+            // Cursor: positioned at the action point, offset by the panel
+            // chrome so the fractions map to the VIEWPORT the screenshot was
+            // taken of — not to the panel box, which includes the tab and
+            // address bars. Resting: unchanged from the original centring.
+            ...(isCursor
+              ? {
+                  left: `${cursor!.x * 100}%`,
+                  top: `calc(${cursor!.y * 100}% + ${chromeInset}px)`,
+                }
+              : { top: `calc(50% + ${chromeInset / 2}px)` }),
             transform: "translate(-50%, -50%)",
-            width: ORB_SIZE,
+            width: orbSize,
+            // The travel itself. Eased, not linear: it leaves quickly and
+            // settles into the target, which is what makes it read as the orb
+            // ARRIVING somewhere rather than sliding on rails. Width is on the
+            // same curve so the shrink and the journey are one gesture.
+            transition: `left ${CURSOR_TRAVEL_MS}ms cubic-bezier(0.22, 1, 0.36, 1), `
+              + `top ${CURSOR_TRAVEL_MS}ms cubic-bezier(0.22, 1, 0.36, 1), `
+              + `width ${CURSOR_TRAVEL_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`,
           }}
           aria-hidden="true"
         >
           <OrbCanvas
             glowColor={glowColor}
-            breathMode={state === "dispersing" ? "C" : "D"}
-            breathLevel={state === "dispersing" ? 0.5 : 0.3}
+            // As the cursor, mode D — the magnetic-pull/spiral expression. It
+            // draws the shells INWARD, which is what makes a small orb read as
+            // a directed pointer instead of a shrunken ball.
+            breathMode={isCursor ? "D" : state === "dispersing" ? "C" : "D"}
+            breathLevel={isCursor ? 0.7 : state === "dispersing" ? 0.5 : 0.3}
             isBreathing
-            glowActive={state === "loading"}
-            animationMode={state === "dispersing" ? "C" : null}
-            animActive={state === "dispersing"}
-            glowScale={1}
-            size={ORB_SIZE}
+            glowActive={isCursor || state === "loading"}
+            animationMode={isCursor ? "D" : state === "dispersing" ? "C" : null}
+            animActive={isCursor || state === "dispersing"}
+            glowScale={isCursor ? 1.15 : 1}
+            size={orbSize}
             // Same cadence as the border comet: the ring completes one lap of
             // the card in lapMs, so the outer shell completes one revolution
             // in lapMs too. The default 28 s made the orb drift while the
             // border raced, reading as two unrelated animations. lapMs is the
             // live crawl-derived value, and OrbCanvas integrates phase, so it
             // can move without snapping the particles.
-            orbitPeriodMs={orbPeriodMs}
+            orbitPeriodMs={orbPeriodEffective}
           />
 
           {/* Dispersion ring — the orb reaching out to touch the page.

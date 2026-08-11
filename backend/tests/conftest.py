@@ -104,3 +104,31 @@ def _caducean_scheduler_isolation(monkeypatch):
     _reset()
     yield
     _reset()
+
+
+# ── Search-provider singleton isolation ──────────────────────────────────
+#
+# backend/crawler/search_providers/__init__.py caches its provider in a
+# process-wide global (`_provider_instance`) and resolves it, on the first
+# uncached call, by reading the REAL data/iris_config.json + EXA_API_KEY.
+# That file legitimately carries provider="exa" with a live key for this
+# deployment (field_values.search — see the Exa wiring fix). Now that
+# crawl_planner.plan() calls get_search_provider() in production (it had
+# zero callers before), the first test in a run that reaches an uncached
+# call would construct a real ExaSearchProvider and could attempt a live
+# network call using that committed key. Pre-seed the cache with a safe
+# LLMSearchProvider for every test so no test resolves the real config
+# unless it explicitly opts in (tests that exercise Exa selection patch
+# get_search_provider or the cache directly).
+@_pytest.fixture(autouse=True)
+def _search_provider_isolation(monkeypatch):
+    try:
+        from backend.crawler import search_providers as _sp_mod
+        from backend.crawler.search_providers.llm import LLMSearchProvider
+    except Exception:
+        yield  # search_providers package unavailable — nothing to isolate
+        return
+
+    monkeypatch.setattr(_sp_mod, "_provider_instance", LLMSearchProvider())
+    yield
+    monkeypatch.setattr(_sp_mod, "_provider_instance", None)

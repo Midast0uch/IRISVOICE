@@ -960,11 +960,18 @@ class IRISGateway:
                         else:
                             with open(env_path, "a", encoding="utf-8") as f:
                                 f.write(f"\nEXA_API_KEY={value}\n")
+                        # Set the process env immediately — get_search_provider()
+                        # resolves os.environ.get("EXA_API_KEY") first (search_
+                        # providers/__init__.py), so without this the key only
+                        # took effect after a full backend restart even though
+                        # it was already written to .env and the cache cleared.
+                        os.environ["EXA_API_KEY"] = value
+
                         # Clear the cached provider so it picks up the new key.
                         from backend.crawler.search_providers import clear_search_provider_cache
 
                         clear_search_provider_cache()
-                        logger.info("[SearchConfig] Exa API key saved to .env")
+                        logger.info("[SearchConfig] Exa API key saved to .env and applied to process env")
                     except Exception as exc:
                         logger.warning("[SearchConfig] failed to save Exa key to .env: %s", exc)
 
@@ -2587,7 +2594,22 @@ class IRISGateway:
             self._logger.info(f"[VOICE_TIMING] {label}: +{dt:.3f}s")
 
         try:
-            # â”€â”€ Pillar 1A: user bubble â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── T15 (REQ-14): pending-question awareness — a completed voice
+            # transcript is a candidate answer to a pending question card. When
+            # matched at/above threshold the question resolves through the SAME
+            # funnel as a card click (first-wins); the transcript does not go to
+            # the LLM as a new turn. Below threshold -> user asked to repeat,
+            # and the utterance falls through to the normal command path (edge:
+            # never swallowed). No pending question -> normal path (AC6).
+            try:
+                from backend.agent.tools.ask_user_tool import get_ask_user_tool
+                voice = get_ask_user_tool().resolve_via_voice(transcript, session_id)
+                if voice.get("handled"):
+                    return  # question answered by voice; nothing to process
+            except Exception as _voice_q_err:
+                self._logger.warning(f"[AskUser] voice resolve failed: {_voice_q_err}")
+
+            # ── Pillar 1A: user bubble ─────────────────────────────────────
             await self._ws_manager.send_to_client(
                 client_id,
                 {
@@ -4534,6 +4556,22 @@ class IRISGateway:
         msg_type = message.get("type")
         payload = message.get("payload", {})
 
+        # ── NARRATION ROUTING: bind the Caducean session to THIS session ────
+        # ConversationKernel resolves its broadcast target via
+        # session_id_getter=lambda: getattr(self, "_caducean_session_id", None)
+        # (see :1985). NOTHING EVER ASSIGNED THAT ATTRIBUTE — grep found the
+        # getter's own reference and no writer anywhere — so it always returned
+        # None, fell through to the voice handler's _active_session_id (voice
+        # turns only), and narration was broadcast to session "default" while
+        # the client sat on session_iris. Every narration and listening_state
+        # reset for a TEXT turn was therefore silently dropped: sent, to nobody.
+        # That is why the phase stuck on WRK and why agent speech never
+        # arrived. Declared-read-never-written, the same defect shape that has
+        # now produced ten separate silent failures in this codebase.
+        # Bind it on every chat message so the getter has a real target.
+        if session_id:
+            self._caducean_session_id = session_id
+
         if msg_type == "switch_conversation":
             new_conv_id = payload.get("conversation_id")
             old_conv_id = payload.get("old_conversation_id") or session_id
@@ -4848,12 +4886,97 @@ class IRISGateway:
                     client_id, {"type": "chat_typing", "payload": {"active": False}}
                 )
 
+                # T36-FIX (stuck WRK / spinning radial): the text-message path
+                # never emitted a terminal listening_state, while tool_bridge
+                # (crawler_query) pushes processing_conversation mid-turn — so
+                # the frontend ContextPill stuck at WRK and the XurOrb working
+                # radial kept spinning after the turn completed. The voice path
+                # resets via _speak_response's finally block; the text path has
+                # no such reset (it streams via chat_chunk / ConversationKernel
+                # narration, neither of which guarantees a terminal idle). Emit
+                # the terminal idle here so any processing_* state set during
+                # the turn is cleared. Never fires for a disconnected session.
+                try:
+                    await self._ws_manager.broadcast_to_session(
+                        session_id,
+                        {"type": "listening_state", "payload": {"state": "idle"}},
+                    )
+                except Exception as _idle_exc:
+                    self._logger.warning(
+                        f"[T36] terminal listening_state idle broadcast failed: {_idle_exc}"
+                    )
+
+                # ── D2 (text path): SPEAK THE FINAL ANSWER ──────────────────
+                # This app is a hands-free widget: ChatView is usually CLOSED
+                # and the user is talking to the agent, which is the whole
+                # reason narration exists. But the text path had NO TTS leg at
+                # all — _chunk_cb above only pushes chat_chunk to the UI, so a
+                # text turn rendered a card and said nothing. Observed live:
+                # der_response_len=467, "chunk_callback invoked OK", and zero
+                # synthesize/PLAYBACK entries for the answer; the only audio
+                # was "reading…" fillers emitted by SpeakTool from the
+                # crawl_planner pseudo-kernel.
+                #
+                # The voice path already solves this (sentence_queue + TTS
+                # thread in the other _execute_agent). Rather than duplicate
+                # that machinery, speak the SAME prepared text the voice path
+                # speaks: prepare_spoken_text is the designed normaliser and
+                # keeps the speak/show contract (spoken is a companion-style
+                # subset of what is displayed, never raw markdown/JSON).
+                #
+                # Off-thread: _speak_response blocks on synthesis+playback and
+                # must never hold the WS handler.
+                try:
+                    _spoken_text = agent_kernel.prepare_spoken_text(response, text)
+                    if _spoken_text and _spoken_text.strip():
+                        self._logger.info(
+                            "[D2-TEXT-TTS] speaking final answer (%d chars) for "
+                            "session=%s",
+                            len(_spoken_text), session_id,
+                        )
+                        threading.Thread(
+                            target=self._speak_response,
+                            args=(_spoken_text,),
+                            kwargs={
+                                "session_id": session_id,
+                                "_client_id": client_id,
+                                "_turn_id": turn_id,
+                            },
+                            daemon=True,
+                            name="text-path-tts",
+                        ).start()
+                    else:
+                        # Say why, rather than going quiet with no trace — a
+                        # silent turn with no log line is what made this cost
+                        # two live smoke runs to find.
+                        self._logger.warning(
+                            "[D2-TEXT-TTS] no spoken text produced for a "
+                            "%d-char response — turn will be silent",
+                            len(response or ""),
+                        )
+                except Exception as _tts_exc:  # noqa: BLE001
+                    # TTS must never fail the turn: the answer is already
+                    # rendered and persisted by this point.
+                    self._logger.warning(
+                        "[D2-TEXT-TTS] speak failed (answer still delivered): %s",
+                        _tts_exc,
+                    )
+
             except Exception as e:
                 self._logger.error(f"Error processing text message: {e}", exc_info=True)
                 # Clear typing indicator on error
                 await self._ws_manager.send_to_client(
                     client_id, {"type": "chat_typing", "payload": {"active": False}}
                 )
+                # T36-FIX: also clear any processing_* listening_state set by
+                # tool_bridge mid-turn so the pill/orb don't stick on error.
+                try:
+                    await self._ws_manager.broadcast_to_session(
+                        session_id,
+                        {"type": "listening_state", "payload": {"state": "idle"}},
+                    )
+                except Exception:
+                    pass
                 # Translate the raw exception into a friendly user-facing message.
                 # Common cases: 401 wrong key, 404 model not found, 429 rate limit.
                 err_str = str(e)
@@ -9064,6 +9187,43 @@ class IRISGateway:
                 ))
             elif ev == "CRAWLER_ERROR":
                 asyncio.ensure_future(send({"type": "crawler_error", "message": pl["message"]}))
+            # T12/T14 (REQ-11/REQ-13): surface progress, phase, and parked-source
+            # events over WS with the SAME msg_types ux_map defines for the SSE
+            # path, so the two transports never diverge (REQ-31 AC4).
+            elif ev == "CRAWLER_PROGRESS":
+                asyncio.ensure_future(send(
+                    {"type": "crawler_progress", "stage": pl.get("stage", ""),
+                     "message": pl.get("message", "")}
+                ))
+            elif ev == "CRAWLER_PHASE":
+                asyncio.ensure_future(send(
+                    {"type": "task:event", "phase": pl.get("phase", ""),
+                     "phase_sequence": pl.get("phase_sequence", 0)}
+                ))
+            elif ev == "CRAWLER_VISION_ACTION":
+                vision_msg = {
+                    "type": "crawler_vision_action", "job_id": pl.get("job_id", ""),
+                    "url": pl.get("url", ""), "kind": pl.get("kind", ""),
+                    "reason": pl.get("reason", ""),
+                    "action_index": pl.get("action_index", 0),
+                    "total": pl.get("total", 0),
+                }
+                # REQ-16 AC7: best-effort cursor coordinates for the frontend
+                # particle-trail cursor mirror — only present when
+                # BrowserSession captured them (click/type: x/y/viewport_w/
+                # viewport_h; scroll: scroll_dx/scroll_dy). Copied over only
+                # when present so an action with no point (navigate/wait/a
+                # failed bounding_box) sends no stray nulls.
+                for _coord_key in ("x", "y", "viewport_w", "viewport_h", "scroll_dx", "scroll_dy"):
+                    if _coord_key in pl:
+                        vision_msg[_coord_key] = pl[_coord_key]
+                asyncio.ensure_future(send(vision_msg))
+            elif ev == "CRAWLER_SOURCE_PARKED":
+                asyncio.ensure_future(send(
+                    {"type": "crawler_source_parked", "url": pl.get("url", ""),
+                     "domain": pl.get("domain", ""), "wall_kind": pl.get("wall_kind", ""),
+                     "run_id": pl.get("run_id", ""), "question_id": pl.get("question_id", "")}
+                ))
 
         result = await get_crawl_orchestrator().research(
             query, mode="ws", session_id=session_id, on_progress=_on_progress,

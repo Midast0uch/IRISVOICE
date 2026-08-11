@@ -15,12 +15,48 @@ import logging
 import math
 import re
 from collections import defaultdict
+from dataclasses import dataclass, field
+from enum import Enum
 
 from .orchestrator import Passage
 
 logger = logging.getLogger(__name__)
 
 RERANK_THRESHOLD = float(__import__("os").environ.get("CRAWL_RERANK_THRESHOLD", "0.3"))
+
+
+class RerankState(str, Enum):
+    """Distinguishable rerank return states (REQ-3 AC1).
+
+    The old bare ``[]`` collapsed two very different situations into one
+    value whose meaning lived only in a comment. Callers must be able to tell
+    "nothing was produced" from "content was produced but all of it scored
+    below threshold" because they escalate differently.
+    """
+
+    OK = "ok"                        # >=1 passage kept
+    NO_PASSAGES = "no_passages"      # input was empty (page set empty — REQ-2 covers it)
+    BELOW_THRESHOLD = "below_threshold"  # scored but every score < threshold
+
+
+@dataclass
+class RerankOutcome:
+    """Return type of :func:`rerank_passages` (REQ-3).
+
+    Iterable over ``kept`` so existing callers that treated the old return as
+    a plain list (``for p in kept``) keep working; the ``state`` and
+    ``top_score`` are the actionable signal for the orchestrator.
+    """
+
+    state: RerankState
+    kept: list[Passage] = field(default_factory=list)
+    top_score: float = 0.0
+
+    def __iter__(self):
+        return iter(self.kept)
+
+    def __len__(self) -> int:
+        return len(self.kept)
 
 # ── Cross-encoder refinement (OFF by default — see _cross_encoder_rerank) ──
 # The hybrid score (BM25 + embedding cosine + credibility) is a complete
@@ -105,10 +141,18 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return dot / (na * nb) if na and nb else 0.0
 
 
-def rerank_passages(passages: list[Passage], query: str, cred_map) -> list[Passage]:
-    """Rank + threshold passages (REQ-7 AC1-AC4). Returns kept passages, scored desc."""
+def rerank_passages(passages: list[Passage], query: str, cred_map) -> RerankOutcome:
+    """Rank + threshold passages (REQ-7 AC1-AC4).
+
+    Returns a :class:`RerankOutcome` (REQ-3 AC1): ``NO_PASSAGES`` when nothing
+    was produced (an empty page set is REQ-2's concern — do not double
+    escalate), ``BELOW_THRESHOLD`` when content was scored but nothing met the
+    bar (the caller MUST escalate, never cite empty), and ``OK`` with the kept
+    passages otherwise. The outcome is iterable over kept passages for
+    backward compatibility with list-style callers.
+    """
     if not passages:
-        return []
+        return RerankOutcome(state=RerankState.NO_PASSAGES)
     q_tokens = _tokenize(query)
     doc_tokens = [_tokenize(p.text) for p in passages]
     bm25 = _bm25(q_tokens, doc_tokens)
@@ -136,14 +180,21 @@ def rerank_passages(passages: list[Passage], query: str, cred_map) -> list[Passa
     # threshold drop (REQ-7 AC2)
     kept = [p for p in passages if p.score >= RERANK_THRESHOLD]
     if kept:
-        return kept
+        return RerankOutcome(
+            state=RerankState.OK, kept=kept,
+            top_score=max(p.score for p in kept),
+        )
 
-    # REQ-7 AC3: signal re-query preference by leaving passages empty but marking
-    # the best score so the orchestrator can narrow the query and re-run Plan->Fetch.
-    if passages:
-        best = max(p.score for p in passages)
-        logger.info("[rerank] top score %.3f below threshold %.3f -> prefer re-query", best, RERANK_THRESHOLD)
-    return []  # empty => orchestrator should re-query (handled at call site)
+    # REQ-7 AC3 / REQ-3 AC1: signal re-query preference EXPLICITLY — the old
+    # bare `[]` with the comment "handled at call site" was never handled at
+    # the call site (orchestrator fell through to citation with empty
+    # passages). Callers must distinguish this from an empty input.
+    best = max(p.score for p in passages)
+    logger.info(
+        "[rerank] top score %.3f below threshold %.3f -> prefer re-query",
+        best, RERANK_THRESHOLD,
+    )
+    return RerankOutcome(state=RerankState.BELOW_THRESHOLD, top_score=best)
 
 
 def _cross_encoder_rerank(passages: list[Passage], query: str) -> list[Passage]:

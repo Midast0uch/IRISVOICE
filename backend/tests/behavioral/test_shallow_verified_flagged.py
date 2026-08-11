@@ -1,4 +1,4 @@
-"""Behavioral: a VERIFIED-but-shallow step still runs `analyze_gaps` and can
+﻿"""Behavioral: a VERIFIED-but-shallow step still runs `analyze_gaps` and can
 still add a gap item to the queue (REQ-5 AC1/AC2).
 
 Spec: specs/phase-6-der-integrity/requirements.md REQ-5.
@@ -8,7 +8,7 @@ CT-D2 / test_failed_step_writes_commit_row) with the TRAILING_GAP_MIN cadence
 DELIBERATELY not hit and `_phase` NOT forcing gap analysis, so the ONLY thing
 that can trigger `analyze_gaps` is the depth check itself (REQ-5 AC1). A
 VERIFIED step with real depth must NOT trigger it off-cadence; a VERIFIED
-step that is measurably thin MUST — "verified but inadequate" must not pass
+step that is measurably thin MUST â€” "verified but inadequate" must not pass
 silently just because it missed the periodic cadence.
 """
 
@@ -51,7 +51,7 @@ def _make_kernel(conversation_id: str) -> AgentKernel:
     k._der_last_u_mag = None
     k._der_work_units = 10
     k._der_live_cad_state = lambda session: {"u": 0.5, "xi": 0.1}
-    k._split_step = lambda item, reason, cad, wu: []
+    k._split_step = lambda item, reason, cad, wu, step_result="": []
     return k
 
 
@@ -94,7 +94,7 @@ class TestShallowVerifiedFlagged:
         monkeypatch.setattr(_eb_module, "get_event_bus", lambda: _NoOpBus())
 
         kernel = _make_kernel("conv-shallow")
-        kernel._verify_step_result = lambda goal, expected, result: "VERIFIED"
+        kernel._verify_step_result = lambda goal, expected, result, tool=None, success=False: "VERIFIED"
         spy = _SpyTrailingDirector()
         kernel._trailing_director = spy
 
@@ -117,7 +117,7 @@ class TestShallowVerifiedFlagged:
         monkeypatch.setattr(_eb_module, "get_event_bus", lambda: _NoOpBus())
 
         kernel = _make_kernel("conv-deep")
-        kernel._verify_step_result = lambda goal, expected, result: "VERIFIED"
+        kernel._verify_step_result = lambda goal, expected, result, tool=None, success=False: "VERIFIED"
         spy = _SpyTrailingDirector()
         kernel._trailing_director = spy
 
@@ -132,7 +132,7 @@ class TestShallowVerifiedFlagged:
 
         assert spy.calls == [], (
             "a VERIFIED step with real depth must NOT trigger analyze_gaps "
-            "off-cadence — the depth check is a targeted flag, not a "
+            "off-cadence â€” the depth check is a targeted flag, not a "
             "second unconditional gap pass"
         )
 
@@ -142,7 +142,7 @@ class TestShallowVerifiedFlagged:
         monkeypatch.setattr(_eb_module, "get_event_bus", lambda: _NoOpBus())
 
         kernel = _make_kernel("conv-excluded")
-        kernel._verify_step_result = lambda goal, expected, result: "VERIFIED"
+        kernel._verify_step_result = lambda goal, expected, result, tool=None, success=False: "VERIFIED"
         kernel._der_task_class = "question"  # excluded (der_constants.DEPTH_EXCLUDED_TASK_CLASSES)
         spy = _SpyTrailingDirector()
         kernel._trailing_director = spy

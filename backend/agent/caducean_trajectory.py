@@ -15,12 +15,28 @@ import logging
 import sqlite3
 import threading
 import time
+import weakref
 from typing import Any, List, Optional, Dict, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Cached singleton per MemoryInterface instance id()
-_recorders: Dict[int, "CaduceanTrajectoryRecorder"] = {}
+
+class _NullMemoryInterfaceMarker:
+    """Stable weakref-able stand-in for ``get_trajectory_recorder(None)``.
+
+    ``None`` is not weakref-able, and keying the cache on ``id(None)`` made
+    every unbound call share one bucket. Using one stable marker object keeps
+    the no-op-recorder singleton semantics without an id() key.
+    """
+
+    def __repr__(self) -> str:
+        return "<NullMemoryInterface>"
+
+
+# Cached singleton per MemoryInterface OBJECT (weak key — entry drops when the
+# interface is GC'd; never keyed on id(), whose reuse would hand a stale
+# recorder bound to the WRONG store to a new interface).
+_recorders: "weakref.WeakKeyDictionary[Any, Any]" = weakref.WeakKeyDictionary()
 
 _SQL_CREATE = """
 CREATE TABLE IF NOT EXISTS caducean_trajectories (
@@ -102,11 +118,37 @@ _SQL_ADD_RECOMMENDATION_COLUMN = (
     "ALTER TABLE caducean_trajectories ADD COLUMN recommendation INTEGER"
 )
 
+# REQ-12 (T10): existing DBs that predate the `domain` column (BUILD store has
+# it, app store did not — baseline-report §8) need the idempotent ALTER. The
+# _SQL_CREATE covers fresh installs; this covers pre-domain stores. Wrapped in
+# try/except by the caller — error means the column already exists.
+_SQL_ADD_DOMAIN_COLUMN = (
+    "ALTER TABLE caducean_trajectories ADD COLUMN domain TEXT DEFAULT 'general'"
+)
+
+# REQ-21 (T22): per-domain physics aggregation needs the two ontology axes on
+# the trajectory row itself — execution_domain (how it ran: voice|der|research)
+# and topic_domain (what it is about: DOMAIN_IDS registry). Same idempotent
+# ALTER pattern as above — error means the column already exists.
+_SQL_ADD_EXECUTION_DOMAIN_COLUMN = (
+    "ALTER TABLE caducean_trajectories ADD COLUMN execution_domain TEXT DEFAULT 'der'"
+)
+_SQL_ADD_TOPIC_DOMAIN_COLUMN = (
+    "ALTER TABLE caducean_trajectories ADD COLUMN topic_domain TEXT DEFAULT 'general'"
+)
+
 
 class CaduceanTrajectoryRecorder:
     """
-    Lightweight recorder backed by the same SQLite DB as MemoryInterface.
-    WAL mode (set by MemoryInterface init) keeps concurrent writes safe.
+    Lightweight recorder for Caducean trajectory / DER-commit / session-exit rows.
+
+    REQ-20 binding rule: application call sites MUST bind to the APPLICATION
+    store via ``get_trajectory_recorder(memory_interface)`` (which resolves
+    ``memory_interface.episodic.db``) or by passing an explicit ``db_conn``.
+    Constructing without a connection now RAISES — it must never silently bind
+    to the BUILD-memory database (``MCM_DB_PATH`` / ``.mcm/coordinates.db``),
+    which previously received every bare-constructed recorder's writes and
+    starved ``backend/data/memory.db`` (REQ-20 AC2).
     """
 
     # REQ-16: per-session EML cache. _eml_cache is kept as a class-level
@@ -118,22 +160,22 @@ class CaduceanTrajectoryRecorder:
     MAX_EML_SESSIONS = 128
 
     def __init__(self, db_conn: sqlite3.Connection = None) -> None:
-        # Spec: the recorder is backed by the SAME SQLite DB as MemoryInterface.
-        # When no conn is supplied (ad-hoc call sites), fall back to the project
-        # coordinate DB so the recorder is always usable. This keeps the G5 commit
-        # ledger and D4.0 session-exit ledger writable from any call site.
+        # REQ-20 AC2: a bare constructor used to fall back to the BUILD-memory
+        # database (MCM_DB_PATH / .mcm/coordinates.db). That silent alternate
+        # binding is removed: every application call site must go through
+        # get_trajectory_recorder(memory_interface) (app store) or pass an
+        # explicit db_conn. Failing loudly beats writing to the wrong store.
         if db_conn is None:
-            import os
-
-            _db_path = os.environ.get(
-                "MCM_DB_PATH",
-                os.path.join(
-                    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-                    ".mcm", "coordinates.db",
-                ),
+            raise ValueError(
+                "CaduceanTrajectoryRecorder requires an explicit sqlite3 "
+                "Connection. Application call sites must use "
+                "get_trajectory_recorder(memory_interface) to bind to the "
+                "APPLICATION store (memory_config.json db_path — the "
+                "repo-root-anchored data/memory.db, resolved via "
+                "backend.memory.config.resolve_memory_store_path); bare "
+                "construction previously wrote to the BUILD-memory "
+                ".mcm/coordinates.db (REQ-20 AC2)."
             )
-            os.makedirs(os.path.dirname(_db_path), exist_ok=True)
-            db_conn = sqlite3.connect(_db_path)
         self._conn = db_conn
         self._write_lock = threading.Lock()
         self._ensure_table()
@@ -151,6 +193,22 @@ class CaduceanTrajectoryRecorder:
             self._conn.commit()
         except Exception:
             pass  # column already exists — expected on v2+ fresh installs
+        # REQ-12 (T10): idempotent ALTER for pre-domain stores (baseline-report
+        # §8 schema delta). Error = column already exists — safe to ignore.
+        try:
+            self._conn.execute(_SQL_ADD_DOMAIN_COLUMN)
+            self._conn.commit()
+        except Exception:
+            pass  # column already exists — expected on fresh installs
+        # REQ-21 (T22): idempotent ALTERs for the two ontology axes on the
+        # trajectory row. Error = column already exists — safe to ignore.
+        for _alter in (_SQL_ADD_EXECUTION_DOMAIN_COLUMN,
+                       _SQL_ADD_TOPIC_DOMAIN_COLUMN):
+            try:
+                self._conn.execute(_alter)
+                self._conn.commit()
+            except Exception:
+                pass  # column already exists — expected on fresh installs
         # REQ-1 / REQ-2: add new ledger columns to existing DBs. Each wrapped
         # individually so one missing column doesn't block the others.
         for _alter in (
@@ -178,18 +236,27 @@ class CaduceanTrajectoryRecorder:
         eml_after: float,
         recommendation: int = 2,  # default CONTINUE
         domain: str = "general",  # DER Phase 4 (D4.1c): domain tag for outer-loop learning
+        execution_domain: Optional[str] = None,  # REQ-21 (T22): voice|der|research
+        topic_domain: Optional[str] = None,      # REQ-21 (T22): DOMAIN_IDS registry
     ) -> None:
         """Write one transition record. <2ms on WAL-mode SSD.
 
         v2: now takes xi, u, recommendation as required params (previously
         hardcoded to 0.0). The agent kernel calls this after every update.
+
+        v2.1 (T22): carries the two ontology axes (execution_domain /
+        topic_domain) so REQ-21 per-domain aggregation can key on them. When
+        either is None they default to the legacy ``domain`` value, so a
+        pre-ontology caller (auto_research, tests) still lands a taggable row.
         """
         try:
+            _exec_domain = execution_domain if execution_domain is not None else domain
+            _topic_domain = topic_domain if topic_domain is not None else domain
             with self._write_lock:
                 self._conn.execute(
                     "INSERT INTO caducean_trajectories "
-                    "(ts, session_id, step_num, x, y, xi, u, action, outcome, eml_after, recommendation, domain) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "(ts, session_id, step_num, x, y, xi, u, action, outcome, eml_after, recommendation, domain, execution_domain, topic_domain) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         time.time(),
                         session_id,
@@ -203,6 +270,8 @@ class CaduceanTrajectoryRecorder:
                         eml_after,
                         recommendation,
                         domain,
+                        _exec_domain,
+                        _topic_domain,
                     ),
                 )
                 self._conn.commit()
@@ -344,6 +413,74 @@ class CaduceanTrajectoryRecorder:
             logger.warning("[CaduceanTrajectory] get_latest_coordinate failed: %s", exc)
             return None
 
+    def compute_domain_aggregates(
+        self, session_id: str, axis: str = "execution_domain"
+    ) -> Dict[str, "PhysicsAggregate"]:
+        """REQ-21 (T22): per-domain physics aggregates for a session.
+
+        Aggregates avg |u|, oscillation rate, convergence rate, and
+        split/collapse counts per ``execution_domain`` (default) or per
+        ``topic_domain``, read from the session's trajectory rows.
+
+        - Off the hot path (AC3): computed at session boundaries / on demand,
+          never per-step.
+        - One-sample domain -> reported with n=1 (edge case: reported, not
+          hidden).
+        - No rows / pre-ontology store -> empty dict (AC3 edge: absent, not
+          zero) — never raises.
+        - Aggregation failure -> logged and skipped, never errors the turn.
+
+        Returns a mapping ``{domain_value: PhysicsAggregate}``; callers use
+        ``.as_dict()`` for the read-only signal.
+        """
+        result: Dict[str, PhysicsAggregate] = {}
+        try:
+            _cols = {
+                r[1] for r in self._conn.execute(
+                    "PRAGMA table_info(caducean_trajectories)"
+                )
+            }
+            if axis not in _cols:
+                logger.debug(
+                    "[CaduceanTrajectory] domain axis %s absent — "
+                    "aggregation skipped (pre-T22 store)",
+                    axis,
+                )
+                return result
+            rows = self._conn.execute(
+                "SELECT u, {} FROM caducean_trajectories "
+                "WHERE session_id = ?".format(axis),
+                (session_id,),
+            ).fetchall()
+            per_domain: Dict[str, list] = {}
+            for (u, dom) in rows:
+                key = (dom or "").strip() or "general"
+                per_domain.setdefault(key, []).append(abs(float(u or 0.0)))
+            for dom, mags in per_domain.items():
+                n = len(mags)
+                osc = sum(1 for m in mags if _u_band(m) == "oscillating")
+                conv = sum(1 for m in mags if _u_band(m) == "converged")
+                split_zone = sum(1 for m in mags if _u_band(m) == "split_zone")
+                # split_count: rows in the below-split deep-oscillation zone
+                # (the growth-width trigger); collapse_count: rows converged
+                # (folded back to an answer). Both count OCCURRENCES over the
+                # session's trajectory, so a volatile domain shows high counts.
+                result[dom] = PhysicsAggregate(
+                    domain=dom,
+                    axis=axis,
+                    n=n,
+                    avg_u_mag=sum(mags) / n,
+                    oscillation_rate=osc / n,
+                    convergence_rate=conv / n,
+                    split_count=split_zone,
+                    collapse_count=conv,
+                )
+        except Exception as exc:
+            logger.debug(
+                "[CaduceanTrajectory] domain aggregation skipped: %s", exc
+            )
+        return result
+
     def record_commit(
         self,
         session_id: str,
@@ -441,6 +578,32 @@ class CaduceanTrajectoryRecorder:
         except Exception as exc:
             logger.warning("[CaduceanTrajectory] record_session_exit failed: %s", exc)
 
+    def record_topic_domain_coverage(self, session_id: str) -> Optional[bool]:
+        """REQ-18 AC1c (T19): run the topic_domain coverage check at a session
+        boundary and persist the finding to the session-exit ledger.
+
+        Called from the same session-end hook as ``record_session_exit`` — the
+        outer loop's measurement point. Returns the check outcome
+        (True = discriminating / False = modal bucket dominates) or None when
+        the store predates the typed columns. Off the hot path; never raises.
+        """
+        try:
+            report = DomainCoverageReport(self._conn)
+            dist = report.report_distribution(session_id)
+            ok, detail = DomainCoverageReport.check_coverage(dist)
+            logger.info(
+                "[CaduceanTrajectory] session %s topic_domain coverage: %s "
+                "(%s)",
+                session_id, "OK" if ok else "FAIL", detail,
+            )
+            return ok
+        except Exception as exc:
+            logger.debug(
+                "[CaduceanTrajectory] topic_domain coverage check skipped: %s",
+                exc,
+            )
+            return None
+
     def get_session_exits(
         self, domain: Optional[str] = None, limit: int = 200
     ) -> List[Dict[str, Any]]:
@@ -477,6 +640,167 @@ class CaduceanTrajectoryRecorder:
         except Exception as exc:
             logger.warning("[CaduceanTrajectory] get_session_exits failed: %s", exc)
             return []
+
+
+# ── REQ-18 AC1c (T19): per-session topic_domain distribution + coverage ───
+
+
+class DomainCoverageReport:
+    """REQ-18 AC1c (T19): the DISCRIMINATION check for the topic_domain axis.
+
+    Registry-backing prevents free text (AC2) but does NOT guarantee the axis
+    carries information — the pre-T19 failure was EVERY row being "general".
+    This is the falsifiable measurement: report the per-session distribution
+    of ``topic_domain`` across DER nodes (memory_chain rows) and FAIL the
+    coverage check when the modal domain exceeds the observed-data threshold.
+    Same falsifiability pattern as REQ-5 AC5 (measured-then-tuned): the
+    initial limit is conservative; the measured distribution from the first
+    real multi-topic session (T24) tunes it.
+    """
+
+    DEFAULT_MODAL_SHARE_LIMIT = 0.95
+
+    def __init__(self, conn=None):
+        self._conn = conn
+
+    def report_distribution(self, session_id: str) -> Dict[str, int]:
+        """Distribution of ``topic_domain`` over the session's DER chain rows.
+
+        Rows written before the T19 typed columns (NULL) are counted under
+        the registry's ``general`` bucket — normalization at query time, never
+        an in-place rewrite of legacy rows (REQ-18 Edge Cases). Read-only.
+        """
+        dist: Dict[str, int] = {}
+        if self._conn is None:
+            return dist
+        try:
+            _cols = {
+                r[1] for r in self._conn.execute("PRAGMA table_info(memory_chain)")
+            }
+            if "topic_domain" not in _cols:
+                # Pre-T19 store — every node is untyped; report the degenerate
+                # distribution as all-general so the coverage check fails
+                # loudly instead of silently passing on a schema gap.
+                _n = self._conn.execute(
+                    "SELECT COUNT(*) FROM memory_chain WHERE thread_id = ?",
+                    (session_id,),
+                ).fetchone()
+                if _n and _n[0]:
+                    return {"general": int(_n[0])}
+                return {}
+            rows = self._conn.execute(
+                "SELECT topic_domain FROM memory_chain WHERE thread_id = ?",
+                (session_id,),
+            ).fetchall()
+            for (td,) in rows:
+                key = (td or "").strip() or "general"
+                dist[key] = dist.get(key, 0) + 1
+        except Exception as exc:
+            logger.debug(
+                "[trajectory] topic_domain distribution unavailable: %s", exc
+            )
+        return dist
+
+    @classmethod
+    def check_coverage(
+        cls,
+        dist: Dict[str, int],
+        modal_share_limit: float = DEFAULT_MODAL_SHARE_LIMIT,
+    ) -> Tuple[bool, Dict[str, Any]]:
+        """FAIL when the modal ``topic_domain`` exceeds ``modal_share_limit``.
+
+        Returns ``(ok, detail)`` where detail carries the modal bucket, its
+        share, the limit, and n — so a failure names the problem (e.g.
+        'modal general 1.00 > 0.95') instead of asserting in the dark.
+        """
+        total = sum(dist.values())
+        if total == 0:
+            return False, {"modal": None, "share": 0.0, "n": 0}
+        modal = max(dist, key=lambda k: dist[k])
+        share = dist[modal] / total
+        ok = share <= modal_share_limit
+        return ok, {
+            "modal": modal,
+            "share": round(share, 4),
+            "n": total,
+            "limit": modal_share_limit,
+        }
+
+
+# ── REQ-21 (T22): per-domain physics aggregation ──────────────────────────
+
+
+class PhysicsAggregate:
+    """REQ-21 (T22): one domain's physics summary for a session.
+
+    The signal the outer loop (REQ-16) and the narration tuning gate (REQ-15)
+    read: which domains oscillate and which converge. Computed OFF the hot
+    path (batched at session boundary, never per-step).
+
+    Bands reuse the production narration thresholds (der_constants U_SPLIT /
+    U_CONVERGED) so the aggregation and the narration speak the same physics:
+      - oscillating  : U_SPLIT < |u| < U_CONVERGED
+      - converged    : |u| >= U_CONVERGED
+      - split zone   : |u| <= U_SPLIT (below split — the deep-oscillation
+                       zone that drives growth-width splits)
+    """
+
+    def __init__(
+        self,
+        domain: str,
+        axis: str,  # "execution_domain" | "topic_domain"
+        n: int = 0,
+        avg_u_mag: float = 0.0,
+        oscillation_rate: float = 0.0,
+        convergence_rate: float = 0.0,
+        split_count: int = 0,
+        collapse_count: int = 0,
+    ):
+        self.domain = domain
+        self.axis = axis
+        self.n = n
+        self.avg_u_mag = avg_u_mag
+        self.oscillation_rate = oscillation_rate
+        self.convergence_rate = convergence_rate
+        self.split_count = split_count
+        self.collapse_count = collapse_count
+
+    def as_dict(self) -> Dict[str, Any]:
+        """Read-only dict surface (REQ-21 AC2) — never mutated by callers."""
+        return {
+            "domain": self.domain,
+            "axis": self.axis,
+            "n": self.n,
+            "avg_u_mag": round(self.avg_u_mag, 4),
+            "oscillation_rate": round(self.oscillation_rate, 4),
+            "convergence_rate": round(self.convergence_rate, 4),
+            "split_count": self.split_count,
+            "collapse_count": self.collapse_count,
+        }
+
+    def __repr__(self) -> str:  # pragma: no cover - debug aid
+        return (
+            f"<PhysicsAggregate {self.axis}={self.domain} n={self.n} "
+            f"avg|u|={self.avg_u_mag:.3f} osc={self.oscillation_rate:.2f} "
+            f"conv={self.convergence_rate:.2f} split={self.split_count} "
+            f"collapse={self.collapse_count}>"
+        )
+
+
+def _u_band(u_mag: float) -> str:
+    """Classify |u| into a narration band (same thresholds as der_constants).
+
+    Imported lazily so a constants import cycle can never break aggregation.
+    """
+    try:
+        from backend.agent.der_constants import U_CONVERGED, U_SPLIT
+    except Exception:
+        U_SPLIT, U_CONVERGED = 0.5, 0.85  # production defaults (never drift)
+    if u_mag >= U_CONVERGED:
+        return "converged"
+    if u_mag > U_SPLIT:
+        return "oscillating"
+    return "split_zone"
 
 
 # ── REQ-5: canonical 4D coordinate serialization ──────────────────────────
@@ -526,16 +850,73 @@ def parse_coords(s: str) -> Tuple[float, float, float, float]:
         raise ValueError(f"Non-numeric value in coordinate string: {s!r}")
 
 
+class _NoopTrajectoryRecorder:
+    """Disconnected recorder (pin_42ddd255162d).
+
+    The Caducean update block must never be poisoned by an unopenable episodic
+    store. Reads return None/empty, writes are no-ops — coordinates stay honestly
+    UNEXERCISED (CADUCEAN_ARCHITECTURE.md §8) until the store is openable.
+    REQ-20: this is the honest degradation for an app-store binding that cannot
+    open memory.db — never a fallback to the BUILD-memory database.
+    """
+
+    def get_latest_coordinate(self, session_id: str) -> Optional[str]:
+        return None
+
+    def record(self, **kwargs) -> None:
+        return None
+
+    def record_commit(self, **kwargs) -> None:
+        return None
+
+    def record_session_exit(self, **kwargs) -> None:
+        return None
+
+    def get_session_exits(self, domain: Optional[str] = None, limit: int = 200) -> list:
+        return []
+
+    def compute_domain_aggregates(self, session_id: str, axis: str = "execution_domain") -> dict:
+        return {}
+
+
 def get_trajectory_recorder(memory_interface: Any) -> CaduceanTrajectoryRecorder:
-    """Return (or create) the singleton recorder for this MemoryInterface."""
-    key = id(memory_interface)
-    if key not in _recorders:
+    """Return (or create) the singleton recorder for this MemoryInterface.
+
+    Keyed on the MemoryInterface OBJECT (weakly), not ``id()``: an id-keyed
+    cache returns a stale recorder bound to the WRONG store when a collector
+    object is GC'd and its id is reused (REQ-20 binding correctness). The
+    weak key also frees the entry when the interface is dropped (no leak).
+    """
+    if memory_interface is None:
+        memory_interface = _NullMemoryInterfaceMarker()  # id(None) was a single
+        # shared bucket; None is not weakref-able, so use a stable marker object.
+    recorder = _recorders.get(memory_interface)
+    if recorder is None:
         episodic = getattr(memory_interface, "episodic", None)
-        conn = episodic.db if episodic is not None else None
+        conn = None
+        if episodic is not None:
+            try:
+                conn = episodic.db  # lazy-open property; may raise per context
+            except Exception:
+                conn = None
         if conn is None:
-            raise RuntimeError("MemoryInterface must have an active SQLite connection")
-        _recorders[key] = CaduceanTrajectoryRecorder(conn)
-    return _recorders[key]
+            # pin_42ddd255162d: a recorder we cannot bind must not poison the
+            # whole Caducean update block (it did — every DER finalize skipped
+            # the physics update AND, via the kernel's broad try, the u/xi
+            # bindings, which is what made narration mute). Return a no-op
+            # recorder: reads are None, writes are no-ops, so coordinates stay
+            # honestly UNEXERCISED (CADUCEAN_ARCHITECTURE.md §8) until the
+            # store is actually openable.
+            logger.warning(
+                "[trajectory] episodic store not openable for %s — "
+                "no-op recorder in use (coords stay UNEXERCISED)",
+                type(memory_interface).__name__,
+            )
+            recorder = _NoopTrajectoryRecorder()  # type: ignore[assignment]
+        else:
+            recorder = CaduceanTrajectoryRecorder(conn)
+        _recorders[memory_interface] = recorder
+    return recorder
 
 
 def reset_eml_cache_for_testing() -> None:

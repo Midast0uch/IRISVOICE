@@ -251,10 +251,6 @@ class PhaseRegistry:
                 if _dt <= 0:
                     _osc.last_advance_at = _now
                     continue
-                # REQ-12 AC4 / N5: CLAMP a long idle gap, never skip the advance.
-                if _dt > TICK_MAX_DT_S:
-                    _dt = TICK_MAX_DT_S
-
                 # REQ-9 AC3 / N1: amplitude modulates the effective angular
                 # velocity — omega_eff = omega * r — so a loaded provider makes
                 # its registrants fire LESS OFTEN through the same phase
@@ -262,7 +258,27 @@ class PhaseRegistry:
                 # amplitude standing at the start of the tick (relaxation below
                 # applies to the next one), matching the "react to the position
                 # you are standing on" rule.
+                # Computed FIRST: the idle clamp below needs the velocity, and
+                # a loop-local referenced before assignment raised
+                # UnboundLocalError on every tick — which fail-opened the gate
+                # (reason=exception, wait=0) and re-enabled 429 bursts.
                 _omega = (2.0 * math.pi / _osc.natural_period_s) * _osc.amplitude
+
+                # REQ-12 AC4 / N5: CLAMP a long idle gap, never skip the advance.
+                # pin_42ddd255162d: the old clamp (dt = TICK_MAX_DT_S, then
+                # advance mod 2π) wrapped a long-idle oscillator to a RANDOM
+                # phase — past the firing point ~60% of the time — so every
+                # post-idle call found θ DUE and the gate admitted a burst
+                # (observed: 5 admits in 2s → provider 429 → 30s retry sleeps).
+                # Long idle means DUE: land exactly at the firing point so the
+                # first post-idle call is admitted once and the next is spaced
+                # a full half-cycle.
+                if _dt > TICK_MAX_DT_S:
+                    _dist = math.pi - _osc.theta
+                    if _dist > 0:
+                        _dt = _dist / max(_omega, 1e-9)
+                    else:
+                        _dt = 0.0  # already at/past firing point — stay due
 
                 # Per-oscillator signed coupling force (T6.1 — no abs!)
                 _coupling = splay_force(_osc.theta, _thetas, k=PHASE_K)
@@ -468,7 +484,33 @@ def _compute_gate(
 
         # compute wait (firing point at θ ≈ π)
         _wait = _estimate_wait(_osc)
-        _wait = min(_wait, PHASE_MAX_WAIT_S)
+        # REQ-9 / window-aware quota enforcement: admit FAST while the quota
+        # window has headroom, hold only when recent admissions are at/over the
+        # learned ceiling. The prior fixed-spacing approach (wait 60/ceiling on
+        # EVERY call) serialized the whole task to ~3 calls/min even with an
+        # empty window — correct but glacial. The meter's window count is the
+        # authoritative saturation signal; the phase mark stays the
+        # decorrelation cadence.
+        _ceiling_spacing = 0.0
+        try:
+            _ceiling_rpm = get_rate_meter().get_ceiling(_qid)
+            if not math.isinf(_ceiling_rpm) and _ceiling_rpm > 0:
+                # rate_meter.draw() is the real window read API (window_stats
+                # does not exist — the old call raised AttributeError, was
+                # swallowed by the blanket except below, and the ceiling
+                # enforcement silently never fired). requests = attempts
+                # recorded by the transport BEFORE send, so a saturated
+                # provider window actually holds admissions here.
+                _stats = get_rate_meter().draw(_qid)
+                _recent = int((_stats or {}).get("requests", 0))
+                if _recent >= _ceiling_rpm:
+                    # window saturated -> wait for the next quota slot
+                    _ceiling_spacing = 60.0 / _ceiling_rpm
+        except Exception:  # noqa: BLE001 — meter failure degrades to phase-only
+            _ceiling_spacing = 0.0
+        if _wait < _ceiling_spacing:
+            _wait = _ceiling_spacing
+        _wait = min(_wait, max(PHASE_MAX_WAIT_S, _ceiling_spacing))
 
         if _wait <= 0.0:
             # ON ADMIT: reset θ by +π (mod 2π) atomically under the lock
@@ -630,6 +672,9 @@ def provider_metrics() -> dict:
                 "gap_stats": _meter.gap_stats(_qid),
                 "draw": _meter.draw(_qid),
                 "ceiling_rpm": _meter.get_ceiling(_qid),
+                # REQ-9 AC3 (T27): read-only rate-health signal the outer loop
+                # consumes — 429 frequency + ceiling trajectory per quota.
+                "rate_health": _meter.rate_health(_qid),
                 # Diagnostic only — NOT inter-request spacing (see docstring).
                 "advance_staleness_s": [],
                 "coupling_k": PHASE_K,

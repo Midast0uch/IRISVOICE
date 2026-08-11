@@ -29,11 +29,20 @@ _counter = 0
 _lock = threading.RLock()
 
 # Database path — can be overridden via the IRIS_CONVERSATIONS_DB env var
-_DEFAULT_DB_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "data",
-    "conversations.db",
-)
+# PATH FIX: this file is backend/conversation_store.py, so reaching the project
+# root takes TWO dirname() calls (backend/ -> repo root). It had THREE, which
+# resolved to the PARENT of the repo — every conversation and message was being
+# written to C:\dev\data\conversations.db, outside the project entirely, while
+# the in-repo stores sat empty (0 rows). Measured before the fix: 332
+# conversations / 353 messages in the out-of-tree file. The docstring at the top
+# of this module always said "data/conversations.db in the project root"; the
+# code simply did not agree with it.
+#
+# Same defect shape as the backend/data/memory.db stray: a relative path
+# resolved from __file__ with one level too many. Anchor it explicitly and name
+# the intent so the next edit cannot silently re-break it.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_DEFAULT_DB_PATH = os.path.join(_REPO_ROOT, "data", "conversations.db")
 _DB_PATH = os.environ.get("IRIS_CONVERSATIONS_DB", _DEFAULT_DB_PATH)
 _conn: sqlite3.Connection | None = None
 

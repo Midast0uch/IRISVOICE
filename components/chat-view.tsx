@@ -1129,12 +1129,14 @@ export function ChatWing({
   }, [voiceState, isSpeaking]);
 
   const handleSendMessage = async () => {
-    // REQ-1 AC3 (Phase 5): these were the Send button's `disabled` conditions
-    // (`!inputText.trim() || isTyping || voiceState === 'listening'`). They
-    // move here, into the send path itself, BEFORE the button is removed —
-    // otherwise `Enter` (which already calls this function directly) would
-    // send mid-response or while IRIS is listening, with no error.
-    if (!inputText.trim() || isTyping || voiceState === 'listening') return
+    // Send guards (REQ-1 AC3, Phase 5, amended per long-horizon-der-execution):
+    // the backend per-session message lock QUEUES messages in order, so a
+    // send during a running turn is safe — the message is processed after the
+    // current turn completes. The old `|| isTyping` clause silently swallowed
+    // sends during long websearch turns (observed: user could not send
+    // anything for 23 minutes). Blocking is now limited to genuinely
+    // impossible states: empty input and an actively-listening mic.
+    if (!inputText.trim() || voiceState === 'listening') return
     const text = inputText.trim()
 
     setInputText("")
@@ -3527,12 +3529,21 @@ ${message.text}`;
                   {/* Divider */}
                   <div className="flex-shrink-0 rounded-full" style={{ width: '1px', height: '20px', background: glowColor, opacity: 0.3 }} />
 
+                  {/* Model switcher — Phase 5 REQ-2. Sibling of ContextPill
+                      (D-2), never a new ContextPill prop (CT-S1). Reads
+                      useInferenceState and writes through its existing
+                      sendRoleBinding — no new backend surface (D-3).
+                      Rendered on the LEFT per layout order. */}
+                  <ModelSwitcher glowColor={glowColor} fontColor={fontColor} />
+
                   {/* Conversation chips pill — its own fixed 32x32 icon
-                      button. Phase 5 REQ-3 edge case: this container used to
-                      also hold ContextPill, clipping the pill's own
-                      max-w-[200px] glass panel to 32px. Split apart below. */}
+                      button, sits BETWEEN the ModelSwitcher and ContextPill
+                      per layout order. Phase 5 REQ-3 edge case: this
+                      container used to also hold ContextPill, clipping the
+                      pill's own max-w-[200px] glass panel to 32px. Split
+                      apart below. */}
                   <div
-                    className="flex items-center justify-center w-[32px] h-[32px] flex-shrink-0"
+                    className="flex items-center justify-center w-[32px] h-[32px] flex-shrink-0 ml-1.5"
                     style={{
                       background: 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
                       border: `1px solid ${fontColor}80`,
@@ -3548,16 +3559,13 @@ ${message.text}`;
                     />
                   </div>
 
-                  {/* Model switcher — Phase 5 REQ-2. Sibling of ContextPill
-                      (D-2), never a new ContextPill prop (CT-S1). Reads
-                      useInferenceState and writes through its existing
-                      sendRoleBinding — no new backend surface (D-3). */}
-                  <ModelSwitcher glowColor={glowColor} fontColor={fontColor} />
-
                   {/* ContextPill — declares its own dark-glass panel
                       (max-w-[200px]); it is no longer squeezed into a fixed
                       w-[32px] h-[32px] container (REQ-3 edge case). Freed by
-                      REQ-1's Send-pill removal below. */}
+                      REQ-1's Send-pill removal below. Rendered to the RIGHT of
+                      the ConversationChips. Internal order is phase label then
+                      token numbers (numbers sit to the right of the working
+                      state, e.g. "IDLE  0 / 128.0k"). */}
                   <ContextPill
                     usedTokens={contextUsage.used}
                     maxTokens={contextUsage.max}

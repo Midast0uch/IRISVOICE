@@ -13,6 +13,7 @@ Nothing outside this module should touch memory storage directly.
 __version__ = "1.0.0"
 
 import logging
+from pathlib import Path
 from typing import Optional, Any
 
 from backend.memory.interface import MemoryInterface, Episode
@@ -66,17 +67,23 @@ async def initialise_memory(
     
     logger.info("[Memory] Initializing memory system...")
     
-    # Load configuration
+    # Load configuration (repo-root-anchored; a CWD-relative default is how the
+    # decoy backend/data/memory.db was created — REQ-2 AC2 / T6a).
+    if config_path is None or not Path(config_path).is_absolute():
+        from backend.memory.config import REPO_ROOT as _MEM_REPO_ROOT
+        config_path = str(_MEM_REPO_ROOT / (config_path or "data/memory_config.json"))
     try:
         config = load_config(config_path)
         logger.info(f"[Memory] Loaded configuration from {config_path}")
     except Exception as e:
         logger.warning(f"[Memory] Failed to load config: {e}, using defaults")
         config = MemoryConfig()
-    
-    # Determine database path
+
+    # Determine database path — single source of truth: the config db_path,
+    # resolved repo-root-anchored via the canonical resolver (REQ-2 AC2).
+    from backend.memory.config import resolve_memory_store_path
     if db_path is None:
-        db_path = config.db_path
+        db_path = str(resolve_memory_store_path(config_path=config_path))
 
     # Memory transfer: if runtime DB doesn't exist yet, seed it from the
     # bootstrap coordinate DB so the app starts with a populated graph.

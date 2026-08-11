@@ -19,6 +19,7 @@ import hashlib
 import json
 import logging
 import os
+import random
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -26,6 +27,7 @@ from datetime import datetime, timezone
 from typing import Callable, Optional
 
 from .robots_checker import get_robots_checker
+from .usability import is_challenge_page  # REQ-4 primary-path detection
 
 logger = logging.getLogger(__name__)
 
@@ -42,11 +44,12 @@ _STEALTH_USER_AGENTS = (
 )
 _USER_AGENT = _STEALTH_USER_AGENTS[0]  # backward compat
 _STEALTH_INDEX = 0
-# NOTE (D3, T36 live smoke 2026-08-09): not currently wired to a live crawl4ai
-# 0.8.6 call — CrawlerRunConfig has no per-request `headers` param in this
-# version (extra headers are BrowserConfig-level, set once at launch). Kept
-# for a future BrowserConfig-level stealth pass; do not pass this to
-# CrawlerRunConfig(...) — it raises TypeError (see the 403-retry site below).
+# NOTE (T11, REQ-5): _STEALTH_EXTRA_HEADERS is applied at BrowserConfig level —
+# crawl4ai 0.8.6's CrawlerRunConfig has NO per-request `headers` param (verified
+# via inspect.signature: extra headers are BrowserConfig-level, set once at
+# browser launch). Passing this to CrawlerRunConfig(...) raises TypeError (see
+# the 403-retry site below). BrowserConfig.__init__ DOES accept `headers`, so
+# T11 wires it there (crawler_engine.py:__aenter__).
 _STEALTH_EXTRA_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -58,9 +61,69 @@ _STEALTH_EXTRA_HEADERS = {
 }
 
 _DEFAULT_DELAY_MS = int(os.environ.get("CRAWL4AI_DEFAULT_DELAY", "1000"))
+# T11 (REQ-5): randomised inter-request delay. Actual sleep is
+# base * uniform(1-jitter, 1+jitter), so the crawl is not a metronome.
+_DELAY_JITTER = float(os.environ.get("CRAWL4AI_DELAY_JITTER", "0.5"))
 _MAX_PAGES = int(os.environ.get("CRAWL4AI_MAX_PAGES", "5"))
 _TIMEOUT_MS = int(os.environ.get("CRAWL4AI_TIMEOUT", "10000"))
 _BM25_THRESHOLD = float(os.environ.get("CRAWL4AI_BM25_THRESHOLD", "1.0"))
+
+
+def _jittered_delay_ms(base_ms: int, jitter: float = _DELAY_JITTER) -> float:
+    """Randomised delay around base_ms (T11, REQ-5).
+
+    Pure function so tests can pin the range without sleeping. Zero jitter
+    returns the exact base (deterministic politeness).
+    """
+    if jitter <= 0.0:
+        return float(base_ms)
+    low = max(0.0, base_ms * (1.0 - jitter))
+    high = max(low + 1.0, base_ms * (1.0 + jitter))
+    return random.uniform(low, high)
+
+
+class RunCookieJar:
+    """Run-scoped per-domain cookie persistence (T11, REQ-5).
+
+    Deliberately NOT cross-run: the jar lives for the lifetime of one
+    CrawlerEngine instance (one run) and is deleted on close. No credentials,
+    no stable identity — a fresh run starts with an empty jar. This must not
+    weaken robots_checker.py (REQ-5 AC3, CT-8) — the robots gate lives in
+    crawl() and is untouched by this jar.
+    """
+
+    def __init__(self, job_id: str) -> None:
+        self._job_id = job_id
+        # domain -> list of cookie dicts captured this run
+        self._cookies: dict[str, list[dict]] = {}
+
+    def record_set_cookie(self, url: str, response_headers: Optional[dict]) -> None:
+        """Harvest a Set-Cookie header from a response, scoped to its domain."""
+        if not response_headers:
+            return
+        try:
+            from urllib.parse import urlparse
+
+            domain = urlparse(url).netloc
+            for k, v in response_headers.items():
+                if str(k).lower() == "set-cookie" and v:
+                    self._cookies.setdefault(domain, []).append(
+                        {"name": str(v).split("=", 1)[0], "value": str(v).split("=", 1)[1].split(";")[0]}
+                    )
+        except Exception as exc:  # noqa: BLE001 — cookie harvest must never break a fetch
+            logger.debug("[RunCookieJar] harvest failed: %s", exc)
+
+    def domain_cookies(self, url: str) -> list[dict]:
+        from urllib.parse import urlparse
+
+        return self._cookies.get(urlparse(url).netloc, [])
+
+    @property
+    def is_empty(self) -> bool:
+        return not any(self._cookies.values())
+
+    def clear(self) -> None:
+        self._cookies.clear()
 
 
 def _rotate_user_agent() -> str:
@@ -161,6 +224,13 @@ class CrawlerEngine:
         self._crawler = None
         self._browser_config = None
         self._current_ua = _USER_AGENT
+        # T11 (REQ-5): run-scoped cookie jar — created lazily on first crawl
+        # (job_id known there), cleared on close. No cross-run identity.
+        self._cookie_jar: Optional[RunCookieJar] = None
+        # REQ-4 AC4: domains that served a challenge this run, so a later
+        # timeout on the same domain can be recorded as challenge-suspected
+        # (the 136-timeouts-vs-2-labelled-challenges undercount this fixes).
+        self._challenge_domains: set[str] = set()
 
     async def __aenter__(self) -> "CrawlerEngine":
         try:
@@ -176,6 +246,9 @@ class CrawlerEngine:
             user_agent=self._current_ua,
             java_script_enabled=True,
             ignore_https_errors=True,
+            # T11 (REQ-5): coherent stealth header set at the ONLY level
+            # crawl4ai 0.8.6 accepts it (BrowserConfig, set once at launch).
+            headers=dict(_STEALTH_EXTRA_HEADERS),
         )
         self._crawler = AsyncWebCrawler(config=self._browser_config)
         await self._crawler.start()
@@ -193,6 +266,10 @@ class CrawlerEngine:
                 logger.debug("[CrawlerEngine] close error: %s", exc)
             finally:
                 self._crawler = None
+        # T11 (REQ-5): the run-scoped cookie jar dies with the run.
+        if self._cookie_jar is not None:
+            self._cookie_jar.clear()
+            self._cookie_jar = None
         logger.debug("[CrawlerEngine] browser closed")
 
     async def crawl(
@@ -220,6 +297,11 @@ class CrawlerEngine:
 
         if not job_id:
             job_id = uuid.uuid4().hex
+
+        # T11 (REQ-5): run-scoped cookie jar, one per job. Robots gate is NOT
+        # weakened — get_robots_checker() still gates every URL below.
+        if self._cookie_jar is None:
+            self._cookie_jar = RunCookieJar(job_id)
 
         try:
             from crawl4ai import CrawlerRunConfig  # type: ignore
@@ -363,6 +445,10 @@ class CrawlerEngine:
                     "body_sha256": hashlib.sha256(body.encode("utf-8", "replace")).hexdigest(),
                     "error": _page_error,
                 })
+                # T11 (REQ-5): harvest Set-Cookie into the run-scoped jar,
+                # scoped to the response's domain. Best-effort, never raises.
+                if self._cookie_jar is not None:
+                    self._cookie_jar.record_set_cookie(url, resp_headers)
                 metadata = (result.metadata if result is not None else {}) or {}
                 title = metadata.get("title", "") or ""
                 # T1: the raw HTML byte size is recorded for EVERY page. The
@@ -370,6 +456,51 @@ class CrawlerEngine:
                 # over, so we measure it even when markdown succeeded (where
                 # `html` itself is still discarded to keep payloads small).
                 _raw_html = getattr(result, "html", None) or None
+                # REQ-4 AC1/AC2: challenge detection on the PRIMARY path.
+                # The old detector lived in crawl_runner with a single caller
+                # inside the plain-HTTP fallback; the primary Playwright path
+                # had ZERO awareness (grep -c "challenge" crawler_engine.py = 0).
+                # is_challenge_page now lives in usability.py (REQ-1 shared
+                # predicate) and is judged here against the raw HTML — the
+                # structural markers (challenge-platform, cf-turnstile, …) are
+                # what distinguish a real interstitial from prose containing
+                # "just a moment" (REQ-4 edge case).
+                _challenged = False
+                if isinstance(_raw_html, str) and _raw_html:
+                    _challenged = is_challenge_page(_raw_html)
+                    if _challenged:
+                        # AC3: log URL, status, and the detection signal so
+                        # challenge frequency is measurable per domain.
+                        logger.warning(
+                            "[CrawlerEngine] CHALLENGE url=%s status=%s marker=structural — "
+                            "page NOT persisted as content",
+                            url, status,
+                        )
+                        from urllib.parse import urlparse
+                        self._challenge_domains.add(urlparse(url).netloc)
+                        _page_error = "challenge"
+                        # AC2: the challenge interstitial must not reach the
+                        # capture store (its boilerplate is not content).
+                        _raw_html = None
+                        # REQ-18/CT-11: the HAR entry must carry the challenge
+                        # marker too — _apply_har_penalties keys on
+                        # `"challenge" in entry["error"]` to penalize the
+                        # source domain. The entry was appended above with the
+                        # pre-detection error; overwrite it.
+                        if har_entries:
+                            har_entries[-1]["error"] = "challenge"
+                elif _page_error and _page_error.startswith("timeout"):
+                    # AC4: a timeout on a domain already seen serving
+                    # challenges this run is challenge-suspected — reconcile
+                    # the two buckets instead of undercounting challenges.
+                    from urllib.parse import urlparse
+                    if urlparse(url).netloc in self._challenge_domains:
+                        _page_error = "challenge_suspected"
+                        logger.warning(
+                            "[CrawlerEngine] CHALLENGE-SUSPECTED url=%s timeout on "
+                            "domain with prior challenge this run",
+                            url,
+                        )
                 pages.append(PageData(
                     url=url,
                     title=title,
@@ -420,9 +551,11 @@ class CrawlerEngine:
                 except Exception:
                     pass
 
-            # Polite delay between requests (skip after last URL)
+            # Polite delay between requests (skip after last URL). T11 (REQ-5):
+            # randomised jitter so the crawl is not a metronome (anti-detection,
+            # same politeness budget on average).
             if i < total - 1 and delay_ms > 0:
-                await asyncio.sleep(delay_ms / 1000.0)
+                await asyncio.sleep(_jittered_delay_ms(delay_ms) / 1000.0)
 
         duration_ms = int((time.monotonic() - t_start) * 1000)
         har_path = _write_har_file(job_id, har_entries)

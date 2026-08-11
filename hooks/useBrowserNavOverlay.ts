@@ -28,9 +28,38 @@ export interface NavOverlayStatus {
   subGoal: string
   pagesDone: number
   pagesTotal: number
+  /**
+   * REQ-11 AC4 — what the vision session is doing right now ("scroll",
+   * "click", …), "" when no vision action is in flight.
+   *
+   * Vision escalation can hold a URL for 45s+ while it settles a bot-challenge
+   * page. Without this the overlay sat frozen between `crawler_page_fetched`
+   * and `crawler_complete` for the whole escalation, so the interactive
+   * feedback died exactly when the agent was doing its most interesting work.
+   * SEPARATE from pagesDone on purpose: a vision action is not a page, and
+   * folding it into the page counter would misreport progress.
+   */
+  visionAction: string
+  visionStep: number
+  visionTotal: number
+  /**
+   * REQ-16 AC7 — best-effort cursor coordinates for the particle-trail cursor,
+   * normalised 0..1 fractions of the viewport from the backend's Playwright
+   * bounding-box read.
+   *
+   * `undefined` — NOT 0 — when the action carried no point. Consumers MUST
+   * treat undefined as "keep the cursor where it was", never as "move to
+   * (0,0)": a missing coordinate must not teleport the cursor.
+   */
+  visionX?: number
+  visionY?: number
 }
 
-const IDLE: NavOverlayStatus = { state: "idle", subGoal: "", pagesDone: 0, pagesTotal: 0 }
+const IDLE: NavOverlayStatus = {
+  state: "idle", subGoal: "", pagesDone: 0, pagesTotal: 0,
+  visionAction: "", visionStep: 0, visionTotal: 0,
+  visionX: undefined, visionY: undefined,
+}
 
 export function useBrowserNavOverlay() {
   const [status, setStatus] = useState<NavOverlayStatus>(IDLE)
@@ -69,6 +98,13 @@ export function useBrowserNavOverlay() {
         subGoal: d.query ?? p.subGoal,
         pagesTotal: d.url_count ?? p.pagesTotal,
         pagesDone: 0,
+        // Fresh run — a stale cursor point from a PREVIOUS run must not
+        // survive into this one.
+        visionAction: "",
+        visionStep: 0,
+        visionTotal: 0,
+        visionX: undefined,
+        visionY: undefined,
       }))
     }
     const onPageFetched = (e: Event) => {
@@ -93,11 +129,40 @@ export function useBrowserNavOverlay() {
     }
     const onCrawlerError = () => setStatus(p => ({ ...p, state: "error" }))
 
+    // REQ-11 AC4: a vision action keeps the SAME animation surface alive and
+    // progressing — it introduces no new visual state (REQ-11 AC3: the panel's
+    // design and timing are unchanged; this is additive signal only).
+    const onVisionAction = (e: Event) => {
+      const d = (e as CustomEvent<{
+        kind?: string; action_index?: number; total?: number
+        x?: number; y?: number
+      }>).detail ?? {}
+      setStatus(p => {
+        // Never revive a finished run: a late action arriving after complete
+        // or error must not restart the animation.
+        if (p.state === "complete" || p.state === "error") return p
+        return {
+          ...p,
+          // First signal of life disperses, exactly as a first page does; any
+          // action after that is the crawling/shutter state.
+          state: p.state === "loading" ? "dispersing" : "crawling",
+          visionAction: d.kind ?? p.visionAction,
+          visionStep: d.action_index ?? p.visionStep + 1,
+          visionTotal: d.total ?? p.visionTotal,
+          // Coordinates are best-effort per action. A missing coordinate must
+          // KEEP the previous point rather than dropping the cursor to (0,0).
+          visionX: d.x ?? p.visionX,
+          visionY: d.y ?? p.visionY,
+        }
+      })
+    }
+
     window.addEventListener("iris:open_tab", onOpenTab)
     window.addEventListener("iris:crawler_started", onCrawlerStarted)
     window.addEventListener("iris:crawler_page_fetched", onPageFetched)
     window.addEventListener("iris:crawler_complete", onCrawlerComplete)
     window.addEventListener("iris:crawler_error", onCrawlerError)
+    window.addEventListener("iris:crawler_vision_action", onVisionAction)
 
     return () => {
       window.removeEventListener("iris:open_tab", onOpenTab)
@@ -105,6 +170,7 @@ export function useBrowserNavOverlay() {
       window.removeEventListener("iris:crawler_page_fetched", onPageFetched)
       window.removeEventListener("iris:crawler_complete", onCrawlerComplete)
       window.removeEventListener("iris:crawler_error", onCrawlerError)
+      window.removeEventListener("iris:crawler_vision_action", onVisionAction)
     }
   }, [])
 

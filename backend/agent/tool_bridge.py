@@ -954,6 +954,30 @@ class AgentToolBridge:
             if not text:
                 return {"success": False, "error": "Question text is required"}
 
+            # T14 (REQ-13): park-and-continue. When the caller passes
+            # non_blocking=True (with optional parked_url/run_id), the question
+            # card is raised and the tool returns IMMEDIATELY with a handle —
+            # the research run keeps going with the remaining sources (AC2)
+            # and picks the parked source back up when the answer arrives
+            # (AC3). The blocking wait_for_answer path below is untouched for
+            # existing callers.
+            if params.get("non_blocking"):
+                question = tool.ask_non_blocking(
+                    text=text,
+                    options=params.get("options"),
+                    allow_other=params.get("allow_other", True),
+                    turn_id=session_id,
+                    run_id=params.get("run_id"),
+                    parked_url=params.get("parked_url"),
+                    wall_kind=params.get("wall_kind", "unknown"),
+                )
+                return {
+                    "success": True,
+                    "non_blocking": True,
+                    "question_id": question.question_id,
+                    "parked": bool(params.get("parked_url")),
+                }
+
             question = tool.ask(
                 text=text,
                 options=params.get("options"),
@@ -2102,9 +2126,13 @@ class AgentToolBridge:
         # not return it — so we rebuild it here (capped to match context limits).
         _CONTENT_CAP = 12_000
         _content_parts: List[str] = []
+        # REQ-1 AC1: EVERY layer that judges fetch success calls the shared
+        # predicate — the old local judge (`if _err: continue; if _md:`) could
+        # count a whitespace-only or challenge-boilerplate page as content,
+        # which let a zero-usable-content crawl report success=True.
+        from backend.crawler.usability import page_is_usable
         for _p in getattr(crawl_result, "pages", []):
-            _err = getattr(_p, "error", None)
-            if _err:
+            if not page_is_usable(_p).usable:
                 continue
             _md = getattr(_p, "markdown", "") or ""
             if _md:

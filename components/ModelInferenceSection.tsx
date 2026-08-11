@@ -12,6 +12,9 @@ import { CustomDropdown } from "@/components/ui/CustomDropdown";
  *   • Model routing    — Brain (reasoning) + Tool (tool_execution) role
  *                        selectors bound to provider instances (same or
  *                        different providers)
+ *   • Per-role model   — a second dropdown per role showing models available
+ *                        for the bound provider (from model_catalog), allowing
+ *                        model override without changing the provider binding.
  *   • Inference behaviour — Thinking Style / Max Response / Reasoning
  *                        Effort / Tool Mode
  *   • Active Routing   — read-only summary of current role bindings
@@ -29,6 +32,7 @@ const ModelInferenceSection = memo(function ModelInferenceSection({
   sendModelSelection,
   sendInferenceMode,
   inferenceValues,
+  model_catalog = {},
 }: {
   providers: { id: string; label: string; kind: string; model: string; purpose?: string; has_key?: boolean }[];
   role_bindings: { role: string; instance_id: string; model_override?: string }[];
@@ -39,6 +43,7 @@ const ModelInferenceSection = memo(function ModelInferenceSection({
   sendModelSelection: (payload: { model_provider: string; api_key?: string; api_base_url?: string; lmstudio_endpoint?: string }) => void;
   sendInferenceMode: (values: Record<string, string>) => void;
   inferenceValues?: Record<string, any>;
+  model_catalog?: Record<string, { id: string; name: string }[]>;
 }) {
   const [useSameModel, setUseSameModel] = useState(true);
   const [bindError, setBindError] = useState<string | null>(null);
@@ -75,47 +80,94 @@ const ModelInferenceSection = memo(function ModelInferenceSection({
     return p ? p.label : instanceId;
   };
 
-  // Keep the Provider Setup dropdown in sync with the active role binding so confirming
-  // the card never clobbers a selection made via the Brain/Tool dropdowns or the chat-view
-  // ModelSwitcher. All surfaces must reflect the same provider (cerebras/cohere/...) —
-  // otherwise the backend applies a stale model_provider and overrides the user's selection.
+  // Keep Provider Setup dropdown initialized with the active role binding, but allow user selection.
   useEffect(() => {
     const active = brainBinding?.instance_id || toolBinding?.instance_id || "";
-    if (active && active !== selectedProvider) {
+    if (active && !selectedProvider) {
       setSelectedProvider(active);
     }
-  }, [brainBinding?.instance_id, toolBinding?.instance_id]);
+  }, [brainBinding?.instance_id, toolBinding?.instance_id, selectedProvider]);
 
-  // Merge provider + its current model into each option label so the Brain/Tool
-  // selectors show "Provider · model" rather than just the provider name.
-  // REQ-6 AC3: exclude non-chat providers (embedding, rerank, etc.) from
-  // the Brain and Tool selectors so they cannot be bound to reasoning or
-  // tool_execution. Backward-compat: undefined/empty purpose treats as chat.
-  const chatProviderOptions = providers.filter(
-    (p) => !p.purpose || p.purpose === "chat"
-  );
-  const providerOptions = chatProviderOptions.map((p) => ({
-    label: p.model ? `${p.label} · ${p.model}` : p.label,
-    value: p.id,
-  }));
+  // Determine active provider: user-selected provider in Provider Setup takes priority,
+  // falling back to active brain binding or first preset.
+  const activeProviderId = selectedProvider || brainBinding?.instance_id || provider_presets[0]?.id || "opencodego";
 
-  const handleBrainChange = (value: string) => {
+  // Build model options for Brain/Tool dropdowns.
+  // Prioritizes the active provider's models at the top, followed by models from all
+  // other provider presets (all 15 providers).
+  const buildModelOptions = () => {
+    const options: { label: string; value: string }[] = [];
+    const added = new Set<string>();
+
+    const appendModelsForProvider = (pId: string) => {
+      if (!pId || added.has(pId)) return;
+      added.add(pId);
+
+      const preset = provider_presets.find((p) => p.id === pId);
+      const label = preset?.label || pId;
+      const catalog = model_catalog[pId] ?? [];
+
+      if (catalog.length > 0) {
+        for (const m of catalog) {
+          options.push({
+            label: `${label} · ${m.name}`,
+            value: `${pId}::${m.id}`,
+          });
+        }
+      } else {
+        const pInst = providers.find((p) => p.id === pId);
+        const defaultModel = pInst?.model || "";
+        options.push({
+          label: defaultModel ? `${label} · ${defaultModel}` : label,
+          value: `${pId}::`,
+        });
+      }
+    };
+
+    // 1. Add active provider's catalog models first
+    if (activeProviderId) {
+      appendModelsForProvider(activeProviderId);
+    }
+
+    // 2. Add all other provider presets (all 15 providers)
+    for (const preset of provider_presets) {
+      appendModelsForProvider(preset.id);
+    }
+
+    return options;
+  };
+
+  const modelOptions = buildModelOptions();
+
+  // Encode current binding as "providerId::modelOverride" for the dropdown value
+  const encodeBrainValue = brainBinding
+    ? `${brainBinding.instance_id}::${brainBinding.model_override || ""}`
+    : "";
+  const encodeToolValue = toolBinding
+    ? `${toolBinding.instance_id}::${toolBinding.model_override || ""}`
+    : "";
+
+  const handleBrainChange = (encoded: string) => {
     setBindError(null);
-    sendRoleBinding("reasoning", value);
+    const [providerId, modelId] = encoded.split("::");
+    if (providerId) setSelectedProvider(providerId);
+    sendRoleBinding("reasoning", providerId, modelId || undefined);
     if (useSameModel) {
-      sendRoleBinding("tool_execution", value);
+      sendRoleBinding("tool_execution", providerId, modelId || undefined);
     }
   };
 
-  const handleToolChange = (value: string) => {
+  const handleToolChange = (encoded: string) => {
     setBindError(null);
-    sendRoleBinding("tool_execution", value);
+    const [providerId, modelId] = encoded.split("::");
+    if (providerId) setSelectedProvider(providerId);
+    sendRoleBinding("tool_execution", providerId, modelId || undefined);
   };
 
   const handleSameModelToggle = (val: boolean) => {
     setUseSameModel(val);
     if (val && brainBinding?.instance_id) {
-      sendRoleBinding("tool_execution", brainBinding.instance_id);
+      sendRoleBinding("tool_execution", brainBinding.instance_id, brainBinding.model_override);
     }
   };
 
@@ -254,19 +306,20 @@ const ModelInferenceSection = memo(function ModelInferenceSection({
       {/* ── Model routing ── */}
       <div className="pt-2 pb-1 border-t border-white/5">
         <div className={sectionHeadCls}>Model Routing</div>
-        {/* Brain Model dropdown */}
+
+        {/* Brain Model — single dropdown with provider · model */}
         <div className="flex items-center justify-between py-1.5 gap-3 group/field px-1">
           <span className="text-[11px] font-medium text-white/55 group-hover/field:text-white/80 transition-colors flex-shrink-0 whitespace-nowrap">
-            Brain Model
+            Brain
           </span>
           <div className="w-[180px] flex-shrink-0">
             <CustomDropdown
-              value={brainBinding?.instance_id || ""}
-              options={providerOptions}
+              value={encodeBrainValue}
+              options={modelOptions}
               onChange={handleBrainChange}
               glowColor={glowColor}
               className="text-[10px] py-1 px-2 h-7 w-full"
-              placeholder="Select…"
+              placeholder="Select model…"
               forceOpenUp
             />
           </div>
@@ -276,18 +329,18 @@ const ModelInferenceSection = memo(function ModelInferenceSection({
         {!useSameModel && (
           <div className="flex items-center justify-between py-1.5 gap-3 group/field px-1">
             <span className="text-[11px] font-medium text-white/55 group-hover/field:text-white/80 transition-colors flex-shrink-0 whitespace-nowrap">
-              Tool Execution Model
+              Tool
             </span>
             <div className="w-[180px] flex-shrink-0">
-            <CustomDropdown
-              value={toolBinding?.instance_id || ""}
-              options={providerOptions}
-              onChange={handleToolChange}
-              glowColor={glowColor}
-              className="text-[10px] py-1 px-2 h-7 w-full"
-              placeholder="Select…"
-              forceOpenUp
-            />
+              <CustomDropdown
+                value={encodeToolValue}
+                options={modelOptions}
+                onChange={handleToolChange}
+                glowColor={glowColor}
+                className="text-[10px] py-1 px-2 h-7 w-full"
+                placeholder="Select model…"
+                forceOpenUp
+              />
             </div>
           </div>
         )}
@@ -343,11 +396,19 @@ const ModelInferenceSection = memo(function ModelInferenceSection({
           style={{ background: `${glowColor}10`, border: `1px solid ${glowColor}30` }}>
           <div className="flex items-center justify-between">
             <span style={{ color: "rgba(255,255,255,0.5)" }}>BRAIN (reasoning)</span>
-            <span style={{ color: glowColor }}>{brainBinding ? getProviderLabel(brainBinding.instance_id) : "—"}</span>
+            <span style={{ color: glowColor }}>
+              {brainBinding
+                ? `${getProviderLabel(brainBinding.instance_id)}${brainBinding.model_override ? ` · ${brainBinding.model_override}` : ""}`
+                : "—"}
+            </span>
           </div>
           <div className="flex items-center justify-between">
             <span style={{ color: "rgba(255,255,255,0.5)" }}>TOOL EXECUTION</span>
-            <span style={{ color: glowColor }}>{toolBinding ? getProviderLabel(toolBinding.instance_id) : "—"}</span>
+            <span style={{ color: glowColor }}>
+              {toolBinding
+                ? `${getProviderLabel(toolBinding.instance_id)}${toolBinding.model_override ? ` · ${toolBinding.model_override}` : ""}`
+                : "—"}
+            </span>
           </div>
         </div>
       </div>

@@ -1,6 +1,7 @@
 "use client"
 
 import React, { useState, useRef, useEffect, useCallback, useId } from "react"
+import { createPortal } from "react-dom"
 import { injectDropdownStyles } from "@/lib/dropdown-styles"
 
 // Ensure .iris-select hover/focus styles are present whenever this component is used
@@ -26,6 +27,9 @@ interface CustomDropdownProps {
   /** Inline style on the trigger button (e.g. error border color) */
   style?: React.CSSProperties
   placeholder?: string
+  /** Force the list to open upward (used when the trigger sits low in the
+   * viewport, e.g. the ModelSwitcher's nested dropdowns inside its panel). */
+  forceOpenUp?: boolean
 }
 
 /**
@@ -52,6 +56,7 @@ export const CustomDropdown: React.FC<CustomDropdownProps> = ({
   className = "",
   style,
   placeholder = "Select…",
+  forceOpenUp = false,
 }) => {
   const [open, setOpen] = useState(false)
   const [focusedIdx, setFocusedIdx] = useState<number>(-1)
@@ -73,11 +78,25 @@ export const CustomDropdown: React.FC<CustomDropdownProps> = ({
     if (!open) return
     const handle = (e: MouseEvent) => {
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        // Ignore clicks inside the portaled list (rendered at document.body)
+        if (listRef.current && listRef.current.contains(e.target as Node)) return
         setOpen(false)
       }
     }
     document.addEventListener("mousedown", handle)
     return () => document.removeEventListener("mousedown", handle)
+  }, [open])
+
+  // Close on scroll/resize so the portaled list doesn't drift from the trigger
+  useEffect(() => {
+    if (!open) return
+    const close = () => setOpen(false)
+    window.addEventListener("scroll", close, true)
+    window.addEventListener("resize", close)
+    return () => {
+      window.removeEventListener("scroll", close, true)
+      window.removeEventListener("resize", close)
+    }
   }, [open])
 
   // Scroll focused option into view
@@ -128,12 +147,26 @@ export const CustomDropdown: React.FC<CustomDropdownProps> = ({
 
   // Determine if the list should open upward (if near bottom of viewport)
   const [openUp, setOpenUp] = useState(false)
+  // Viewport-relative coords for the portaled list (computed from the trigger
+  // rect so the list escapes any ancestor overflow:hidden/auto clipping).
+  const [listPos, setListPos] = useState<{
+    top?: number
+    bottom?: number
+    left: number
+    width: number
+  } | null>(null)
   const handleOpen = () => {
     if (disabled) return
     if (!open && triggerRef.current) {
       const rect = triggerRef.current.getBoundingClientRect()
       const spaceBelow = window.innerHeight - rect.bottom
-      setOpenUp(spaceBelow < 220)
+      const shouldOpenUp = forceOpenUp || spaceBelow < 220
+      setOpenUp(shouldOpenUp)
+      setListPos(
+        shouldOpenUp
+          ? { bottom: window.innerHeight - rect.top + 4, left: rect.left, width: rect.width }
+          : { top: rect.bottom + 4, left: rect.left, width: rect.width }
+      )
     }
     setOpen(o => !o)
     setFocusedIdx(currentIdx >= 0 ? currentIdx : 0)
@@ -160,7 +193,7 @@ export const CustomDropdown: React.FC<CustomDropdownProps> = ({
         className={`iris-select w-full flex items-center justify-between gap-2 text-left text-white rounded-xl cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed select-none ${className}`}
         style={style}
       >
-        <span className="min-w-0 flex-1">{displayLabel}</span>
+        <span className="min-w-0 flex-1 truncate">{displayLabel}</span>
         {/* Chevron */}
         <svg
           width="10" height="6" viewBox="0 0 10 6" fill="none"
@@ -171,25 +204,34 @@ export const CustomDropdown: React.FC<CustomDropdownProps> = ({
         </svg>
       </button>
 
-      {/* Options list */}
-      {open && (
+      {/* Options list — rendered in a portal so it escapes ancestor
+          overflow:hidden/auto clipping (e.g. ModelSwitcher panel, Dashboard
+          scroll containers) that would otherwise cut off the options. */}
+      {open && listPos && createPortal(
         <div
           id={`${uid}-list`}
           ref={listRef}
           role="listbox"
           tabIndex={-1}
           onKeyDown={handleListKeyDown}
-          className="absolute z-50 w-full min-w-max max-h-52 overflow-y-auto rounded-xl py-1"
+          className="max-h-52 overflow-y-auto py-1"
           style={{
-            ...(openUp ? { bottom: "calc(100% + 4px)" } : { top: "calc(100% + 4px)" }),
+            position: "fixed",
+            top: listPos.top,
+            bottom: listPos.bottom,
+            left: listPos.left,
+            width: listPos.width,
+            zIndex: 9050,
             background: "rgba(10, 10, 14, 0.96)",
-            border: `1px solid color-mix(in srgb, ${glowColor} 30%, rgba(255,255,255,0.08))`,
-            boxShadow: `0 8px 32px rgba(0,0,0,0.6), 0 0 20px color-mix(in srgb, ${glowColor} 10%, transparent)`,
-            backdropFilter: "blur(12px)",
+            border: "1px solid rgba(255,255,255,0.08)",
+            boxShadow: "0 8px 32px rgba(0,0,0,0.7)",
+            borderRadius: "6px",
+            backdropFilter: "blur(8px)",
+            WebkitBackdropFilter: "blur(8px)",
           }}
         >
           {normalizedOpts.length === 0 ? (
-            <div className="px-4 py-2.5 text-[11px] text-white/30">No options available</div>
+            <div className="px-2 py-1.5 text-[10px] text-white/30">No options available</div>
           ) : (
             normalizedOpts.map((opt, idx) => {
               const isSelected = opt.value === value
@@ -202,7 +244,7 @@ export const CustomDropdown: React.FC<CustomDropdownProps> = ({
                   aria-selected={isSelected}
                   onClick={() => selectOption(opt.value)}
                   onMouseEnter={() => setFocusedIdx(idx)}
-                  className="flex items-center gap-2.5 px-3 py-2 text-[11px] font-medium text-white cursor-pointer transition-colors duration-100 select-none"
+                  className="flex items-center gap-2 px-2 py-1.5 text-[10px] font-medium text-white cursor-pointer transition-colors duration-100 select-none"
                   style={{
                     background: isFocused
                       ? `color-mix(in srgb, ${glowColor} 18%, rgba(255,255,255,0.04))`
@@ -219,12 +261,13 @@ export const CustomDropdown: React.FC<CustomDropdownProps> = ({
                       opacity: isSelected ? 1 : 0,
                     }}
                   />
-                  <span>{String(opt.label ?? '')}</span>
+                  <span className="min-w-0 flex-1 truncate">{String(opt.label ?? '')}</span>
                 </div>
               )
             })
           )}
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   )

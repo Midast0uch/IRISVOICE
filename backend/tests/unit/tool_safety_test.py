@@ -1,4 +1,4 @@
-"""Unit tests: tool safety hardening (REQ-10, REQ-11, REQ-12).
+﻿"""Unit tests: tool safety hardening (REQ-10, REQ-11, REQ-12).
 
 Tests error-envelope classification, idempotency no-double-execute, per-tool
 retry budget + dedup, and split-scoped identity (graft not penalized).
@@ -19,7 +19,7 @@ from backend.agent.tool_decision import (
 )
 
 
-# ── Error classification (REQ-10) ──────────────────────────────────────────
+# â”€â”€ Error classification (REQ-10) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 class TestErrorClassification:
@@ -58,24 +58,24 @@ class TestErrorClassification:
         assert _classify_error(None) == "permanent"
 
 
-# ── Idempotency (REQ-11) ───────────────────────────────────────────────────
+# â”€â”€ Idempotency (REQ-11) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 class TestIdempotencyKey:
     def test_deterministic_same_inputs(self):
         k1 = _make_idempotency_key("turn1", "search_web", {"q": "hello"})
         k2 = _make_idempotency_key("turn1", "search_web", {"q": "hello"})
-        assert k1 == k2  # same inputs → same key
+        assert k1 == k2  # same inputs â†’ same key
 
     def test_different_inputs_different_keys(self):
         k1 = _make_idempotency_key("turn1", "search_web", {"q": "hello"})
         k2 = _make_idempotency_key("turn1", "search_web", {"q": "world"})
-        assert k1 != k2  # different params → different key
+        assert k1 != k2  # different params â†’ different key
 
     def test_different_turn_different_key(self):
         k1 = _make_idempotency_key("turn1", "search_web", {"q": "hello"})
         k2 = _make_idempotency_key("turn2", "search_web", {"q": "hello"})
-        assert k1 != k2  # different turn → different key
+        assert k1 != k2  # different turn â†’ different key
 
     def test_key_length(self):
         k = _make_idempotency_key("t1", "tool", {"a": 1})
@@ -106,7 +106,7 @@ class TestIdempotencyCacheBehavioral:
         calls = []
 
         class _CountTB:
-            def execute_tool(self, name, params, **kw):
+            async def execute_tool(self, name, params, **kw):
                 calls.append((name, params))
                 return {"success": True, "result": "done", "tool_used": name}
 
@@ -117,7 +117,7 @@ class TestIdempotencyCacheBehavioral:
             validate_tool_call=lambda n, p: (True, None),
         )
 
-        # First call — executes, caches
+        # First call â€” executes, caches
         dr1 = box.dispatch(
             Decision(kind=DecisionKind.TOOL, tool="send_email", params={"to": "a@b.c"}),
             turn_id="t1",
@@ -125,19 +125,19 @@ class TestIdempotencyCacheBehavioral:
         assert dr1.success is True
         assert len(calls) == 1
 
-        # Second call with same params — cache hit, no execute
+        # Second call with same params â€” cache hit, no execute
         dr2 = box.dispatch(
             Decision(kind=DecisionKind.TOOL, tool="send_email", params={"to": "a@b.c"}),
             turn_id="t1",
         )
         assert dr2.success is True
-        assert len(calls) == 1  # still 1 → second was cached
+        assert len(calls) == 1  # still 1 â†’ second was cached
 
     def test_different_params_different_cache(self):
         calls = []
 
         class _CountTB:
-            def execute_tool(self, name, params, **kw):
+            async def execute_tool(self, name, params, **kw):
                 calls.append((name, params))
                 return {"success": True, "result": "ok"}
 
@@ -156,7 +156,7 @@ class TestIdempotencyCacheBehavioral:
             Decision(kind=DecisionKind.TOOL, tool="send_email", params={"to": "x@y.z"}),
             turn_id="t1",
         )
-        assert len(calls) == 2  # different params → different cache entries
+        assert len(calls) == 2  # different params â†’ different cache entries
 
 
 class _DummyRouter:
@@ -166,7 +166,7 @@ class _DummyRouter:
         return {"ok": True, "provider": "test", "model": "test"}
 
 
-# ── Per-tool budget + dedup (REQ-12) ───────────────────────────────────────
+# â”€â”€ Per-tool budget + dedup (REQ-12) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 class TestPerToolBudget:
@@ -174,7 +174,7 @@ class TestPerToolBudget:
         fails = [-1]
 
         class _FailingTB:
-            def execute_tool(self, name, params, **kw):
+            async def execute_tool(self, name, params, **kw):
                 fails[0] += 1
                 return {"success": False, "error": "transient blip"}
 
@@ -186,7 +186,7 @@ class TestPerToolBudget:
         )
         dec = Decision(kind=DecisionKind.TOOL, tool="search_web", params={"q": "x"})
 
-        # Fail 3 times → budget exceeded on 4th
+        # Fail 3 times â†’ budget exceeded on 4th
         for i in range(3):
             dr = box.dispatch(dec)
             assert dr.success is False, f"call {i+1} should fail"
@@ -198,7 +198,7 @@ class TestPerToolBudget:
         count = {"n": 0}
 
         class _AlternatingTB:
-            def execute_tool(self, name, params, **kw):
+            async def execute_tool(self, name, params, **kw):
                 count["n"] += 1
                 if count["n"] == 1:
                     return {"success": False, "error": "fail"}
@@ -216,7 +216,7 @@ class TestPerToolBudget:
         assert dr1.success is False  # fail
 
         dr2 = box.dispatch(dec)
-        assert dr2.success is True  # success → resets counter
+        assert dr2.success is True  # success â†’ resets counter
 
         # Third call with different params (not a duplicate, test budget reset)
         dr3 = box.dispatch(
@@ -226,7 +226,7 @@ class TestPerToolBudget:
 
     def test_duplicate_call_detected(self):
         class _OkTB:
-            def execute_tool(self, name, params, **kw):
+            async def execute_tool(self, name, params, **kw):
                 return {"success": True, "result": "ok"}
 
         box = ToolDecisionBox(
@@ -244,13 +244,13 @@ class TestPerToolBudget:
         assert dr2.success is True  # second is idempotent retry (allowed once)
 
         dr3 = box.dispatch(dec, turn_id="t1")
-        assert dr3.success is False  # third → duplicate detected
+        assert dr3.success is False  # third â†’ duplicate detected
         assert "duplicate" in (dr3.error or "").lower()
 
     def test_different_after_reset(self):
         """reset_failure_counters clears dedup state so retry is allowed."""
         class _RetryTB:
-            def execute_tool(self, name, params, **kw):
+            async def execute_tool(self, name, params, **kw):
                 return {"success": True, "result": "ok"}
 
         box = ToolDecisionBox(

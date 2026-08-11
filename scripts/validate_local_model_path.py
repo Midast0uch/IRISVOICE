@@ -127,16 +127,43 @@ def main():
     finally:
         mgr2._llm = None
 
-    print("== Assertion 2: deriver produces THREE different contexts ==")
+    print("== Assertion 2: deriver produces THREE different contexts (organic, from calibration) ==")
+    # P3.4 fix (CADUCEAN_ARCHITECTURE.md §10 rule 1): base_tps must be DERIVED from a
+    # machine-level memory-bandwidth calibration cached against hw_fingerprint, NOT handed
+    # in by the test. Seed a calibration (simulating a prior model's measured throughput)
+    # and derive with NO base_tps argument — prove the three sizes differentiate on their
+    # own parsed size/quant, not on a per-test constant. This is the "vary the input;
+    # assert the output behavior changes" half of rule 1's verification directive.
     SMALL = {"params_b": 0.2, "quantization": "Q8_0", "context_length": 32768, "block_count": 12, "embed_dim": 512, "n_heads": 8}
     MEDIUM = {"params_b": 1.2, "quantization": "Q8_0", "context_length": 32768, "block_count": 24, "embed_dim": 1024, "n_heads": 16}
     LARGE = {"params_b": 30.7, "quantization": "Q4_K_M", "context_length": 32768, "block_count": 32, "embed_dim": 4096, "n_heads": 32, "is_moe": True}
-    c_small = mgr.derive_config(SMALL, vram_budget_gb=7.0, base_tps=120.0)
-    c_medium = mgr.derive_config(MEDIUM, vram_budget_gb=7.0, base_tps=60.0)
-    c_large = mgr.derive_config(LARGE, vram_budget_gb=7.0, base_tps=25.0)
+    cal_cache = ConfigCache(Path(tempfile.mkdtemp()) / "cal.json")
+    cal_hw = mgr.get_hardware_info()
+    # 60 GB/s effective bandwidth -> SMALL saturates MAX_CTX, MEDIUM hits its throughput
+    # cap (~14.5k), LARGE is VRAM-bound to MIN_CTX. Three distinct, no hand-fed base_tps.
+    cal_cache.put_machine_bandwidth(cal_hw, 60.0)
+    mgr._config_cache = cal_cache
+    c_small = mgr.derive_config(SMALL, vram_budget_gb=7.0)
+    c_medium = mgr.derive_config(MEDIUM, vram_budget_gb=7.0)
+    c_large = mgr.derive_config(LARGE, vram_budget_gb=7.0)
     ctxs = [c_small["n_ctx"], c_medium["n_ctx"], c_large["n_ctx"]]
-    check("three model sizes -> three different contexts",
+    check("three model sizes -> three different contexts (organic, calibrated)",
           len(set(ctxs)) == 3, f"contexts={ctxs}")
+
+    print("== Assertion 2b: a calibration written by one model benefits a DIFFERENT model ==")
+    # Rule 1's second directive: "When a value is written more than once, test the second
+    # write." The machine bandwidth is written by model A's correction and must be CONSUMED
+    # by model B's derive — the cross-model effect that is the entire point of the fix.
+    cal2 = ConfigCache(Path(tempfile.mkdtemp()) / "cal2.json")
+    cal2.put_machine_bandwidth(mgr.get_hardware_info(), 60.0)  # simulate model A's correction
+    mgr._config_cache = cal2
+    calibrated_ctx = mgr.derive_config(MEDIUM, vram_budget_gb=7.0)["n_ctx"]
+    mgr._config_cache = ConfigCache(Path(tempfile.mkdtemp()) / "empty.json")  # no calibration
+    uncalibrated_ctx = mgr.derive_config(MEDIUM, vram_budget_gb=7.0)["n_ctx"]
+    check("calibration from one model changes a different model's derived context",
+          calibrated_ctx != uncalibrated_ctx,
+          f"calibrated={calibrated_ctx} uncalibrated={uncalibrated_ctx}")
+    mgr._config_cache = cal2  # restore for any later use in this harness
 
     print("== Assertion 3: VRAM estimate monotonic in context ==")
     mono = True
@@ -151,7 +178,18 @@ def main():
 
     print("== Assertion 4: degradation order ctx->batch, n_gpu_layers==-1 ==")
     base = {"n_ctx": 32768, "n_gpu_layers": -1, "n_batch": 2048}
-    deg = mgr._degrade_config(base, LARGE, purpose="chat")
+    # GPU-less boxes return vram_budget=0 -> _degrade_config correctly
+    # returns None, which would make this assertion vacuous. Simulate a GPU
+    # so the ladder is actually exercised (deterministic on any machine).
+    with patch.object(
+        LocalModelManager, "get_hardware_info",
+        return_value={
+            "cuda_available": True, "gpu_name": "Test GPU",
+            "vram_total_gb": 8.0, "vram_free_gb": 6.0,
+            "ram_total_gb": 24.0, "models_dir": "",
+        },
+    ):
+        deg = mgr._degrade_config(base, LARGE, purpose="chat")
     check("degrade returns a config", deg is not None)
     if deg is not None:
         check("degraded n_gpu_layers == -1", deg["n_gpu_layers"] == -1)
