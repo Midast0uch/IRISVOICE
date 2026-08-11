@@ -1033,7 +1033,28 @@ on_page_done=self._page_emitter(_emit, job_id),
             "-> fetch.vision (REQ-10 fresh-failure escalation)",
             job_id, url, reason,
         )
+        _t_esc_start = time.monotonic()
         vision_outcome = await self._vision_fetch(vision_cap, url, query, job_id, _emit)
+        # REQ-9 AC1/AC4 (specs/dag-node-execution-model, T18): every recovery
+        # node execution is logged with node name + typed reason + duration +
+        # task identifier, so the executed graph is reconstructable from the
+        # log alone. Off the critical path — logging failure never propagates.
+        try:
+            from backend.agent.nodes.telemetry import log_node_execution
+
+            log_node_execution(
+                task_id=job_id,
+                node="fetch.vision",
+                status=(
+                    "ok"
+                    if (vision_outcome.page is not None and vision_outcome.verdict.usable)
+                    else vision_outcome.verdict.reason.value
+                ),
+                reason=reason,
+                duration_ms=int((time.monotonic() - _t_esc_start) * 1000),
+            )
+        except Exception:  # noqa: BLE001 — REQ-9 AC5
+            pass
         result_desc = (
             "usable"
             if (vision_outcome.page is not None and vision_outcome.verdict.usable)
