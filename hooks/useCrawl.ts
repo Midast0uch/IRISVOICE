@@ -25,8 +25,14 @@ export interface CrawlPageProgress {
   total: number
   host: string
   /** REQ-11 (T13): capture provenance so the panel can replay the bytes the
-   * agent actually read (job_id/page_number -> /api/browser/capture/...). */
+   * agent actually read (jobId/capturePage -> /api/browser/capture/...). */
   jobId?: string
+  /** Capture-store ADDRESS of this page's bytes. Distinct from pageNumber, which
+   * is the progress counter — see CrawlerPageMsg.capture_page. */
+  capturePage?: number
+  /** False when the page was deliberately not persisted (challenge interstitial,
+   * REQ-4 AC2): there is nothing to replay and the panel must say so. */
+  captureAvailable?: boolean
   title?: string
 }
 
@@ -154,6 +160,12 @@ export function useCrawl(wsConnected: boolean = true) {
             total: msg.total,
             host: msg.host || _hostOf(msg.url),
             jobId: msg.job_id,
+            // Fall back to the counter only when the backend sent no address —
+            // the batch path, where the two coincide. Never invent one.
+            capturePage: msg.capture_page ?? msg.page_number,
+            // Absent means "not reported", which for older emitters meant the
+            // bytes were there; only an explicit false is a blocked page.
+            captureAvailable: msg.capture_available !== false,
             title: msg.title,
           },
         ],

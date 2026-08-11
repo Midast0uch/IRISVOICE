@@ -235,6 +235,7 @@ class FetchBackend:
         on_page_done: Optional[Callable[[str, int, int, str, str], None]],
         timeout_s: float,
         job_id: Optional[str] = None,
+        page_offset: int = 0,
     ) -> CrawlResult:  # pragma: no cover - abstract
         raise NotImplementedError
 
@@ -242,14 +243,14 @@ class FetchBackend:
 class InProcessFetchBackend(FetchBackend):
     """In-process CrawlerEngine (used by WS mode=ws)."""
 
-    async def fetch(self, query, urls, instructions, max_pages, on_page_done, timeout_s, job_id=None):
+    async def fetch(self, query, urls, instructions, max_pages, on_page_done, timeout_s, job_id=None, page_offset=0):
         from .crawler_engine import CrawlerEngine
         try:
             async with CrawlerEngine() as engine:
                 return await engine.crawl(
                     query=query, urls=urls, instructions=instructions,
                     max_pages=max_pages, on_page_done=on_page_done,
-                    job_id=job_id,
+                    job_id=job_id, page_offset=page_offset,
                 )
         except Exception as exc:  # CrawlerUnavailable etc.
             logger.error("[InProcessFetchBackend] fetch failed: %s", exc)
@@ -263,12 +264,12 @@ class InProcessFetchBackend(FetchBackend):
 class SubprocessFetchBackend(FetchBackend):
     """Isolated subprocess (used by agent mode=agent). Crash-isolated (REQ-17)."""
 
-    async def fetch(self, query, urls, instructions, max_pages, on_page_done, timeout_s, job_id=None):
+    async def fetch(self, query, urls, instructions, max_pages, on_page_done, timeout_s, job_id=None, page_offset=0):
         from .crawl_runner import run_crawl_subprocess
         return await run_crawl_subprocess(
             query=query, urls=urls, instructions=instructions,
             on_page_done=on_page_done, max_pages=max_pages, timeout_s=timeout_s,
-            job_id=job_id,
+            job_id=job_id, page_offset=page_offset,
         )
 
 
@@ -276,6 +277,41 @@ _BACKENDS: dict[str, type[FetchBackend]] = {
     "ws": InProcessFetchBackend,
     "agent": SubprocessFetchBackend,
 }
+
+
+async def _call_fetch_one(
+    cap, url: str, goal: str, job_id: str, *, on_progress=None, page_offset: int = 0,
+):
+    """``cap.fetch_one`` with whichever optional kwargs the capability accepts.
+
+    The FetchCapability protocol call is 3-positional so capabilities stay
+    interchangeable (REQ-6 AC1); ``on_progress`` and ``page_offset`` are
+    independent optional extensions.
+
+    Support is decided PER KWARG and by SIGNATURE. The previous shape — pass both
+    and fall back to the bare 3-arg call on TypeError — has two failure modes,
+    and one of them bit immediately: a capability that accepted on_progress but
+    not page_offset lost its EMITTER on the retry, so no page event reached the
+    panel at all (the regression pinned in pin_883b20571a56, caught here by
+    test_page_events_carry_the_outer_runs_numbering). The other is that fetch_one
+    performs a whole network fetch, so a TypeError raised anywhere inside it
+    would be misread as a signature mismatch and re-run the entire fetch.
+    """
+    import inspect
+
+    kwargs: dict = {}
+    try:
+        _params = inspect.signature(cap.fetch_one).parameters
+        _var_kw = any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in _params.values()
+        )
+        if on_progress is not None and (_var_kw or "on_progress" in _params):
+            kwargs["on_progress"] = on_progress
+        if page_offset and (_var_kw or "page_offset" in _params):
+            kwargs["page_offset"] = page_offset
+    except (TypeError, ValueError):  # unintrospectable callable — bare protocol
+        kwargs = {}
+    return await cap.fetch_one(url, goal, job_id, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -583,6 +619,7 @@ on_page_done=self._page_emitter(_emit, job_id),
         on_progress: Optional[Callable[[CrawlProgress], None]] = None,
         timeout_s: float = _DEFAULT_TIMEOUT_S,
         job_id: Optional[str] = None,
+        page_offset: int = 0,
     ) -> CrawlResult:
         """Direct single-URL fetch (REQ-16 open_url path). No LLM planning.
 
@@ -592,6 +629,11 @@ on_page_done=self._page_emitter(_emit, job_id),
         browser surface sees the page load. Never raises for fetch failures
         (REQ-17 AC1). Does NOT plan URLs or run extraction — open_url wants
         the raw page, not a research dashboard.
+
+        ``page_offset`` reserves this fetch's block of the job's CAPTURE address
+        space. A single-URL fetch numbers its only page 1, so five of them under
+        one job_id all wrote <job>/1.html and the panel's replay URL 404'd for
+        pages 2..5. dispatch_urls passes each URL's reserved offset.
         """
         t_start = time.monotonic()
         if not job_id:
@@ -608,9 +650,10 @@ on_page_done=self._page_emitter(_emit, job_id),
                 urls=[url],
                 instructions="Extract the full page content as markdown.",
                 max_pages=1,
-on_page_done=self._page_emitter(_emit, job_id),
+                on_page_done=self._page_emitter(_emit, job_id),
                 timeout_s=timeout_s,
                 job_id=job_id,
+                page_offset=page_offset,
             )
         except Exception as exc:  # REQ-17 AC1: never raise for fetch failures
             logger.error("[orchestrator.fetch_url] fetch failed: %s", exc)
@@ -653,6 +696,7 @@ on_page_done=self._page_emitter(_emit, job_id),
         log both the history decision and the dispatch outcome).
         """
         from .capabilities import CAPABILITIES, get_capability
+        from .capture_store import slot_capture_offset
 
         t_start = time.monotonic()
         _emit = self._make_emitter(on_progress, session_id)
@@ -668,6 +712,12 @@ on_page_done=self._page_emitter(_emit, job_id),
         har_entries: list[dict] = []
 
         async def _dispatch_one(idx: int, url: str) -> None:
+            # Each URL owns a reserved block of the job's capture address space:
+            # its crawl page takes offset+1 and any vision frames take offset+2
+            # onward. Without this every single-URL fetch wrote <job>/1.html and
+            # every vision session restarted at 1 on top of it — the first
+            # 404'd pages 2..N, the second served ANOTHER url's bytes.
+            _slot_offset = slot_capture_offset(idx)
             async with sem:  # AC1: bounded concurrency
                 # T13 (specs/dag-node-execution-model): the race gate is
                 # advertisement-driven. A domain's recorded failure history
@@ -680,7 +730,10 @@ on_page_done=self._page_emitter(_emit, job_id),
                 if history and vision_avail and _router_recovery_node(
                     history, race_rollback=True, step_id=f"race:{url}",
                 ) == "fetch.vision":
-                    outcome = await self._race_url(url, query, job_id, crawl_cap, _emit)
+                    outcome = await self._race_url(
+                        url, query, job_id, crawl_cap, _emit,
+                        page_offset=_slot_offset,
+                    )
                 else:
                     if history and not vision_avail:
                         logger.info(
@@ -705,6 +758,13 @@ on_page_done=self._page_emitter(_emit, job_id),
                     # which is what rendered as "3/1" live on 2026-08-11 09:18.
                     # The OUTER run owns the lifecycle; only the per-page signal
                     # belongs to it, renumbered to this URL's real slot.
+                    #
+                    # page_number/total are the OUTER run's counter and are
+                    # rewritten here (the inner single-URL run only knows 1/1).
+                    # capture_page is NOT rewritten: the inner run already
+                    # reported the address it actually saved under, and
+                    # overwriting it with the counter is exactly what made the
+                    # iframe request /capture/<job>/3 when only /1 existed.
                     def _forward(p, _i=idx):
                         if p.event != "CRAWLER_PAGE_FETCHED":
                             return
@@ -713,12 +773,10 @@ on_page_done=self._page_emitter(_emit, job_id),
                         payload["total"] = len(capped)
                         _emit("CRAWLER_PAGE_FETCHED", payload)
 
-                    try:
-                        outcome = await crawl_cap.fetch_one(
-                            url, query, job_id, on_progress=_forward,
-                        )
-                    except TypeError:
-                        outcome = await crawl_cap.fetch_one(url, query, job_id)
+                    outcome = await _call_fetch_one(
+                        crawl_cap, url, query, job_id,
+                        on_progress=_forward, page_offset=_slot_offset,
+                    )
                     # T13 (specs/dag-node-execution-model): the fresh-failure
                     # escalation branch is REPLACED by an advertisement
                     # consultation — fetch.vision's NodeSpec declares it
@@ -734,7 +792,10 @@ on_page_done=self._page_emitter(_emit, job_id),
                             outcome.verdict.reason.value, step_id=f"esc:{url}",
                         )
                         if _recovery == "fetch.vision":
-                            outcome = await self._escalate_to_vision(url, query, job_id, outcome, _emit)
+                            outcome = await self._escalate_to_vision(
+                                url, query, job_id, outcome, _emit,
+                                page_offset=_slot_offset,
+                            )
                 # T12c (REQ-18 AC1): one HAR entry per vision/crawl outcome.
                 # A walled URL records error="challenge" so the existing
                 # _apply_har_penalties path penalizes the domain exactly like a
@@ -1024,20 +1085,28 @@ on_page_done=self._page_emitter(_emit, job_id),
             logger.debug("[CrawlOrchestrator] evidence stamp failed: %s", exc)
 
     @staticmethod
-    async def _vision_fetch(vision_cap, url: str, goal: str, job_id: str, _emit):
+    async def _vision_fetch(vision_cap, url: str, goal: str, job_id: str, _emit, page_offset: int = 0):
         """Call fetch.vision, passing the REQ-11 AC4 action emitter when the
         capability supports it. Capabilities implementing only the bare
-        3-positional-arg protocol are called unchanged (REQ-6 AC1)."""
+        3-positional-arg protocol are called unchanged (REQ-6 AC1).
+
+        ``page_offset`` is this URL's reserved block of the job's capture address
+        space. A vision session publishes MANY frames for ONE url; every session
+        used to start at page 1 under the shared job_id, so URL 4's frames
+        overwrote URL 1's captured page and the panel served the wrong bytes.
+        """
         def _on_action(payload: dict) -> None:
             _emit("CRAWLER_VISION_ACTION", payload)
 
         try:
-            return await vision_cap.fetch_one(url, goal, job_id, on_action=_on_action)
+            return await vision_cap.fetch_one(
+                url, goal, job_id, on_action=_on_action, page_offset=page_offset,
+            )
         except TypeError:
             # Capability does not accept on_action — protocol-only implementation.
             return await vision_cap.fetch_one(url, goal, job_id)
 
-    async def _escalate_to_vision(self, url: str, query: str, job_id: str, crawl_outcome, _emit) -> "FetchOutcome":
+    async def _escalate_to_vision(self, url: str, query: str, job_id: str, crawl_outcome, _emit, page_offset: int = 0) -> "FetchOutcome":
         """Problem 1 fix: escalate a FRESH crawl-only failure to fetch.vision.
 
         Unlike `_race_url` (which fires only when `source_registry` already
@@ -1064,7 +1133,9 @@ on_page_done=self._page_emitter(_emit, job_id),
             job_id, url, reason,
         )
         _t_esc_start = time.monotonic()
-        vision_outcome = await self._vision_fetch(vision_cap, url, query, job_id, _emit)
+        vision_outcome = await self._vision_fetch(
+            vision_cap, url, query, job_id, _emit, page_offset=page_offset,
+        )
         # REQ-9 AC1/AC4 (specs/dag-node-execution-model, T18): every recovery
         # node execution is logged with node name + typed reason + duration +
         # task identifier, so the executed graph is reconstructable from the
@@ -1101,7 +1172,7 @@ on_page_done=self._page_emitter(_emit, job_id),
         self._stamp_evidence(vision_outcome, [crawl_outcome, vision_outcome], url, job_id)
         return vision_outcome
 
-    async def _race_url(self, url: str, goal: str, job_id: str, crawl_cap, _emit) -> "FetchOutcome":
+    async def _race_url(self, url: str, goal: str, job_id: str, crawl_cap, _emit, page_offset: int = 0) -> "FetchOutcome":
         """Race fetch.crawl vs fetch.vision; first usable wins (REQ-10 AC3/AC5).
 
         Loser is cancelled. Both usable -> crawl wins (cheaper), race logged.
@@ -1110,13 +1181,18 @@ on_page_done=self._page_emitter(_emit, job_id),
 
         vision_cap = get_capability("fetch.vision")
         t0 = time.monotonic()
-        crawl_task = asyncio.create_task(crawl_cap.fetch_one(url, goal, job_id))
+        # Both racers write into this URL's reserved capture block: crawl takes
+        # offset+1, vision frames take offset+2 onward, so the loser can never
+        # clobber the winner's bytes or a neighbouring URL's.
+        crawl_task = asyncio.create_task(
+            _call_fetch_one(crawl_cap, url, goal, job_id, page_offset=page_offset)
+        )
         # REQ-11 AC4: thread a per-action emitter into the vision capability so
         # each browser action reaches the panel. Passed only when the capability
         # accepts it, so a capability implementing the bare 3-arg protocol still
         # works (REQ-6 AC1).
         vision_task = asyncio.create_task(
-            self._vision_fetch(vision_cap, url, goal, job_id, _emit)
+            self._vision_fetch(vision_cap, url, goal, job_id, _emit, page_offset=page_offset)
         )
         done, pending = await asyncio.wait(
             {crawl_task, vision_task},
@@ -1243,7 +1319,7 @@ on_page_done=self._page_emitter(_emit, job_id),
         # duplicates are dropped (the bytes are identical for the same page).
         _seen: set = set()
 
-        def _cb(url, page_number, total, title="", snippet=""):
+        def _cb(url, page_number, total, title="", snippet="", capture_page=None):
             # Dedup on the URL, NOT on page_number. Each URL is fetched in its
             # own sub-batch, so EVERY url arrives as page_number=1 — keying on
             # the number therefore dropped every page after the first and the
@@ -1260,14 +1336,35 @@ on_page_done=self._page_emitter(_emit, job_id),
                 )
                 return
             _seen.add(_key)
+            # The capture ADDRESS is not the UI counter. page_number counts the
+            # outer run's progress ("reading 3 of 5"); capture_page is where the
+            # bytes live. They diverge under per-URL dispatch (every single-URL
+            # crawl numbers its only page 1) and under vision escalation (many
+            # frames for one URL). Falling back to page_number preserves the
+            # batch path exactly, where the two genuinely coincide.
+            _addr = int(capture_page) if capture_page is not None else int(page_number)
+            # A challenged page is DELIBERATELY not persisted (REQ-4 AC2 — the
+            # interstitial's boilerplate must not poison replay), so an iframe
+            # pointed at it 404s BY DESIGN. Tell the panel whether bytes exist so
+            # it can render a "blocked by the site" state instead of a dead
+            # frame. The save always precedes this callback, so the check is
+            # authoritative; it is one stat() off the hot path.
+            try:
+                from .capture_store import get_capture_store
+
+                _has_capture = get_capture_store().has(job_id, _addr)
+            except Exception:  # noqa: BLE001 — never fail a progress emit
+                _has_capture = False
             emit("CRAWLER_PAGE_FETCHED", {
                 "url": url, "page_number": page_number, "total": total,
                 "host": _host(url),
                 "title": title,
                 "snippet": snippet,
-                # T5 (REQ-1 AC1): job_id lets the in-app browser panel build the
-                # capture-replay URL /api/browser/capture/{job_id}/{page_number}.
+                # T5 (REQ-1 AC1): job_id + capture_page let the in-app browser
+                # panel build the replay URL /api/browser/capture/{job_id}/{capture_page}.
                 "job_id": job_id,
+                "capture_page": _addr,
+                "capture_available": _has_capture,
             })
         return _cb
 

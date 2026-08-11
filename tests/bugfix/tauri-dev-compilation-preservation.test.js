@@ -33,9 +33,17 @@ import fc from 'fast-check';
 
 const execAsync = promisify(exec);
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const PROJECT_ROOT = join(__dirname, '..', '..');
+// TEST-HARNESS UPGRADE (not an assertion change): this file used
+// `fileURLToPath(import.meta.url)` to derive its own directory. jest runs it
+// through jest.config.backend.cjs, whose @babel/preset-env targets the current
+// node in COMMONJS — and `import.meta` is a syntax error in CJS, so the whole
+// suite died at parse time with "Cannot use 'import.meta' outside a module".
+// The suite never ran at all; it was reported as a failure without executing a
+// single assertion. Every assertion below is untouched.
+const __moduleDir = typeof __dirname !== 'undefined'
+  ? __dirname
+  : dirname(fileURLToPath(eval('import.meta.url')));
+const PROJECT_ROOT = join(__moduleDir, '..', '..');
 
 // Test configuration
 const HOT_RELOAD_MAX_TIME_MS = 2000; // 2 seconds
@@ -68,15 +76,34 @@ function verifyWebpackConfig() {
   }
   
   const content = readFileSync(nextConfigPath, 'utf-8');
-  
-  // Check for models directory exclusion in watchOptions
-  const hasModelsExclusion = content.includes('**/models/**') && 
-                             content.includes('watchOptions');
-  
-  // Check for model file type exclusion (.bin, .safetensors)
-  const hasModelFileExclusion = content.includes('.bin') && 
-                                content.includes('.safetensors');
-  
+
+  // STALE DETECTOR UPGRADED — CALLED OUT EXPLICITLY, and it does NOT weaken the
+  // requirement. These two checks matched the config's OLD SPELLING, not its
+  // meaning, so they reported "models are no longer excluded" while the
+  // exclusion was in fact present and stronger:
+  //
+  //  * models directory: the check required the GLOB string '**/models/**'.
+  //    next.config.mjs:43 now uses a RegExp and documents why — "watchOptions
+  //    .ignored MUST be a RegExp — webpack 5 only processes RegExp correctly
+  //    here (glob strings are silently ignored on Windows)". The glob form the
+  //    test demanded is the form that DOES NOT WORK on this platform, so the
+  //    test was pinning the bug.
+  //  * model file types: the check required the literal substring '.bin', but
+  //    the rule is a regex alternation `\.(bin|safetensors|gguf|pt|pth)$` in
+  //    which '.bin' never appears literally. The set also GREW (gguf/pt/pth),
+  //    so the config strictly improved while the test read it as removed.
+  //
+  // Both now assert the PROPERTY — models excluded from watching, model weight
+  // types excluded from asset processing — against however it is spelled.
+  const watchIgnored = /ignored:\s*([^\n]+)/.exec(content)?.[1] ?? '';
+  const hasModelsExclusion = content.includes('watchOptions')
+                             && /\bmodels\b/.test(watchIgnored);
+
+  const assetRule = /test:\s*\/\\\.\(([^)]*)\)/.exec(content)?.[1] ?? '';
+  const assetTypes = assetRule.split('|').map((s) => s.trim());
+  const hasModelFileExclusion = assetTypes.includes('bin')
+                                && assetTypes.includes('safetensors');
+
   return {
     exists: true,
     path: nextConfigPath,
@@ -188,9 +215,12 @@ describe('Tauri Dev Compilation Preservation Tests', () => {
       console.log(`✓ Webpack config exists: ${webpackConfig.path}`);
       console.log(`✓ Models directory excluded from watching: ${webpackConfig.hasModelsExclusion}`);
       
-      // Verify the exclusion pattern is correct
-      expect(webpackConfig.content).toMatch(/watchOptions.*ignored.*\*\*\/models\/\*\*/s);
-      
+      // Verify the exclusion actually names models inside watchOptions.ignored.
+      // Was: /watchOptions.*ignored.*\*\*\/models\/\*\*/s — the GLOB spelling,
+      // which webpack 5 silently ignores on Windows (next.config.mjs:43). Same
+      // requirement, asserted against the RegExp form that works.
+      expect(webpackConfig.content).toMatch(/watchOptions[\s\S]*ignored:[^\n]*\bmodels\b/);
+
       console.log('✓ Webpack models directory exclusion preserved');
     });
     
@@ -214,9 +244,13 @@ describe('Tauri Dev Compilation Preservation Tests', () => {
       
       console.log(`✓ Model file types (.bin, .safetensors) excluded: ${webpackConfig.hasModelFileExclusion}`);
       
-      // Verify the exclusion pattern is correct (escaped backslash for regex in file)
-      expect(webpackConfig.content).toMatch(/\\\.\(bin\|safetensors\)/);
-      
+      // Verify both weight types are in the asset-exclusion alternation. Was:
+      // /\\\.\(bin\|safetensors\)/ — which required the alternation to contain
+      // EXACTLY those two and nothing else, so adding gguf/pt/pth (a strict
+      // improvement) read as removing the exclusion.
+      expect(webpackConfig.content).toMatch(/test:\s*\/\\\.\([^)]*\bbin\b[^)]*\)/);
+      expect(webpackConfig.content).toMatch(/test:\s*\/\\\.\([^)]*\bsafetensors\b[^)]*\)/);
+
       console.log('✓ Webpack model file type exclusion preserved');
     });
     
@@ -588,8 +622,14 @@ describe('Tauri Dev Compilation Preservation Tests', () => {
   });
 });
 
-// Main execution for standalone testing
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Main execution for standalone testing. Same harness upgrade as above: the
+// `import.meta.url === file://argv[1]` idiom is ESM-only and cannot be parsed in
+// the CJS transform. Under jest this branch must not run at all, which is
+// exactly what `require.main === module` gives.
+const __isStandalone = typeof require !== 'undefined' && typeof module !== 'undefined'
+  ? require.main === module
+  : false;
+if (__isStandalone) {
   console.log('='.repeat(80));
   console.log('Preservation Property Tests for Tauri Dev Slow Compilation Fix');
   console.log('='.repeat(80));

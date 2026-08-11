@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable, Optional
 
+from .capture_store import accepts_capture_page as _accepts_capture_page
 from .robots_checker import get_robots_checker
 from .usability import is_challenge_page  # REQ-4 primary-path detection
 
@@ -281,7 +282,8 @@ class CrawlerEngine:
         delay_ms: int = _DEFAULT_DELAY_MS,
         on_page_done: Optional[Callable[[str, int, int], None]] = None,
         job_id: Optional[str] = None,
-        # on_page_done(url, page_number, total) for progress events
+        page_offset: int = 0,
+        # on_page_done(url, page_number, total, title, snippet, capture_page)
     ) -> CrawlResult:
         """
         Crawl up to max_pages URLs using BM25 filtering keyed on query.
@@ -291,6 +293,16 @@ class CrawlerEngine:
         HAR entry (no full bodies) and, after the run, written to
         data/har/<job_id>.har. job_id is threaded from the orchestrator so the
         file is deterministically named and linkable from document_data.
+
+        ``page_offset`` reserves this call's block in the job's CAPTURE address
+        space, which is NOT the UI's progress counter. Per-URL dispatch
+        (orchestrator.dispatch_urls) runs one single-URL crawl per URL, so every
+        such crawl would otherwise number its only page 1 and all five URLs
+        would overwrite data/captures/<job>/1.html — the iframe then 404s for
+        pages 2..5 (live 2026-08-11 16:11). The offset gives each URL its own
+        block; ``capture_page`` is reported to on_page_done so the panel is told
+        the number the bytes were actually SAVED under. Default 0 keeps the
+        batch path (one crawl, all URLs) numbering exactly as before.
         """
         if self._crawler is None:
             raise RuntimeError("CrawlerEngine must be used as async context manager")
@@ -322,6 +334,11 @@ class CrawlerEngine:
         t_start = time.monotonic()
         capped_urls = urls[:max_pages]
         total = len(capped_urls)
+        # Probe ONCE, outside the loop: a `try capture_page / except TypeError`
+        # retry per page would re-invoke (and double-emit) whenever the callback
+        # itself raised TypeError internally. Signature inspection cannot
+        # misread a runtime error as a signature mismatch.
+        _cb_takes_capture_page = _accepts_capture_page(on_page_done)
 
         for i, url in enumerate(capped_urls):
             # Robots.txt gate (policy, not an HTTP request — recorded as evidence)
@@ -364,7 +381,23 @@ class CrawlerEngine:
                     status = getattr(result, "status_code", None)
 
                     # --- 403 retry (T13) ---
-                    if status == 403:
+                    # A bot-challenge interstitial is NOT a UA problem. Turnstile
+                    # /cf-chl does not care which browser string asked, so the
+                    # retry cannot win: it pays a 2s sleep plus a second full
+                    # arun() (up to _TIMEOUT_MS) per challenged URL and then
+                    # detects the same challenge. Under per-URL dispatch that
+                    # cost is paid once PER URL, and challenged URLs are exactly
+                    # the ones that go on to pay a vision escalation as well.
+                    # Skip straight to the challenge verdict so the escalation
+                    # starts sooner (REQ-4 AC1 already routes it).
+                    if status == 403 and is_challenge_page(getattr(result, "html", None)):
+                        logger.info(
+                            "[CrawlerEngine] 403 + challenge markers url=%s — "
+                            "skipping the UA retry (a rotated UA cannot pass a "
+                            "challenge); escalating instead",
+                            url,
+                        )
+                    elif status == 403:
                         old_ua = self._current_ua
                         self._current_ua = _rotate_user_agent()
                         logger.warning(
@@ -520,7 +553,7 @@ class CrawlerEngine:
 
                         get_capture_store().save(
                             job_id=job_id,
-                            page_number=i + 1,
+                            page_number=page_offset + i + 1,
                             url=url,
                             html=_raw_html,
                         )
@@ -547,7 +580,17 @@ class CrawlerEngine:
                 try:
                     # W5 (T33): pass title + first-150-char snippet for narration
                     snippet = (md or "")[:150].strip()
-                    on_page_done(url, i + 1, total, title, snippet)
+                    # capture_page is the STORAGE address the bytes were saved
+                    # under; i + 1 is this crawl's own page counter. They differ
+                    # whenever page_offset is set (per-URL dispatch). Passed as a
+                    # trailing kwarg so callbacks that predate it still work.
+                    if _cb_takes_capture_page:
+                        on_page_done(
+                            url, i + 1, total, title, snippet,
+                            capture_page=page_offset + i + 1,
+                        )
+                    else:
+                        on_page_done(url, i + 1, total, title, snippet)
                 except Exception:
                     pass
 

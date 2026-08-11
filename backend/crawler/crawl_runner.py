@@ -32,6 +32,7 @@ from .crawler_engine import CrawlResult, PageData, _coerce_headers, _write_har_f
 # module-global name for existing callers/tests that import or patch it.
 from .usability import is_challenge_page as _is_challenge_page  # noqa: E402,F401
 from .usability import page_is_usable  # noqa: E402,F401
+from .capture_store import accepts_capture_page as _accepts_capture_page  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -198,11 +199,15 @@ async def run_crawl_subprocess(
     delay_ms: int = 1000,
     timeout_s: float = _DEFAULT_TIMEOUT_S,
     job_id: Optional[str] = None,
+    page_offset: int = 0,
 ) -> CrawlResult:
     """Run the crawl in a child process.
 
     Never raises for crawl failures — returns a CrawlResult with pages=[]
     and error set on any failure (spawn error, crash, timeout, unavailable).
+
+    ``page_offset`` reserves this call's block in the job's capture address
+    space (see CrawlerEngine.crawl). Default 0 = unchanged batch numbering.
     """
     params = {
         "query": query,
@@ -211,6 +216,7 @@ async def run_crawl_subprocess(
         "max_pages": max_pages,
         "delay_ms": delay_ms,
         "job_id": job_id,
+        "page_offset": page_offset,
     }
     tmp = tempfile.NamedTemporaryFile(
         mode="w", suffix=".json", delete=False, encoding="utf-8"
@@ -225,6 +231,10 @@ async def run_crawl_subprocess(
     # Belt-and-suspenders: force UTF-8 stdio in the child so any stray output
     # is encoded consistently (the worker itself emits ASCII-safe JSON).
     env["PYTHONIOENCODING"] = "utf-8"
+
+    # Probed once (not per page): see _accepts_capture_page's docstring for why
+    # a per-call TypeError retry is the wrong shape here.
+    _relay_capture_page = _accepts_capture_page(on_page_done)
 
     proc = None
     result: Optional[CrawlResult] = None
@@ -277,12 +287,23 @@ async def run_crawl_subprocess(
                     if _type == "progress":
                         if on_page_done:
                             try:
+                                _pn = int(msg.get("page_number", 0))
+                                _kw = {}
+                                if _relay_capture_page:
+                                    # Relay the capture ADDRESS the child saved
+                                    # under. Dropping it here is what left the
+                                    # panel building its iframe src from the UI
+                                    # counter instead (404 on pages 2..N).
+                                    _kw["capture_page"] = int(
+                                        msg.get("capture_page", _pn) or _pn
+                                    )
                                 on_page_done(
                                     msg.get("url", ""),
-                                    int(msg.get("page_number", 0)),
+                                    _pn,
                                     int(msg.get("total", 0)),
                                     msg.get("title", ""),
                                     msg.get("snippet", ""),
+                                    **_kw,
                                 )
                             except Exception:  # noqa: BLE001
                                 pass
@@ -409,10 +430,20 @@ async def run_crawl_subprocess(
             # judged unusable over plain HTTP and merge them in, so a single
             # broken page (huge / separator-less / JS-heavy / challenged) no
             # longer silently starves DER.
-            _failed = [p for p in _usable_pages if not page_is_usable(p).usable and p.url]
+            # Keep each failed page's ORIGINAL slot. Re-fetching [u2, u4] as a
+            # fresh 1..2 list wrote their bytes over u1's and u2's captures — the
+            # panel then served the wrong page's content under u1's tab. The
+            # re-fetch is the SAME page, so it must reuse the SAME address.
+            _failed_slots = [
+                (i, p) for i, p in enumerate(_usable_pages)
+                if not page_is_usable(p).usable and p.url
+            ]
+            _failed = [p for _, p in _failed_slots]
             if _failed:
                 _fb_pages, _fb_har = await _plain_http_fetch(
                     [p.url for p in _failed], job_id=job_id, on_page_done=on_page_done,
+                    page_offset=page_offset,
+                    capture_pages=[page_offset + i + 1 for i, _ in _failed_slots],
                 )
                 if _fb_pages:
                     result.pages = _good_pages + _fb_pages
@@ -436,6 +467,7 @@ async def run_crawl_subprocess(
             # succeeded.
             _fb_pages, _fb_har = await _plain_http_fetch(
                 urls, job_id=job_id, on_page_done=on_page_done,
+                page_offset=page_offset,
             )
             if _fb_pages:
                 _har_path = _write_har_file(job_id, _fb_har) if job_id else None
@@ -467,6 +499,8 @@ async def _plain_http_fetch(
     urls: list,
     job_id: Optional[str] = None,
     on_page_done: Optional[Callable[..., None]] = None,
+    page_offset: int = 0,
+    capture_pages: Optional[list] = None,
 ) -> "tuple[list, list]":
     """Fetch URLs over plain HTTP and strip HTML tags.
 
@@ -477,7 +511,12 @@ async def _plain_http_fetch(
     cannot hit the crawl4ai chunking failure. All fetches run in parallel and
     are individually bounded (30s), so the fallback completes in ~30s worst
     case regardless of page count. ``job_id`` (when known) keys capture-store
-    writes for the browser panel replay (REQ-1).
+    writes for the browser panel replay (REQ-1), and ``page_offset`` reserves
+    this call's block of the job's capture address space so a single-URL
+    dispatch does not overwrite another URL's captured bytes. ``capture_pages``
+    overrides the address per URL — used when re-fetching a FAILED SUBSET, whose
+    members must keep the addresses they already own rather than be renumbered
+    1..N over their neighbours' bytes.
     """
     import hashlib as _hashlib
     import re as _re
@@ -485,7 +524,11 @@ async def _plain_http_fetch(
 
     import httpx as _httpx
 
-    async def _one(url: str, page_number: int):
+    _fb_relay_capture_page = _accepts_capture_page(on_page_done)
+
+    async def _one(url: str, page_number: int, capture_page: int):
+        # page_number is this fetch's own counter; capture_page is the storage
+        # address (caller-supplied, or this call's reserved block).
         t0 = _time.monotonic()
         try:
             async with _httpx.AsyncClient(follow_redirects=True, timeout=30.0) as _hc:
@@ -537,7 +580,7 @@ async def _plain_http_fetch(
 
                     get_capture_store().save(
                         job_id=job_id,
-                        page_number=page_number,
+                        page_number=capture_page,
                         url=url,
                         html=_html,
                     )
@@ -551,9 +594,11 @@ async def _plain_http_fetch(
             # this runs most of the time.
             if on_page_done:
                 try:
+                    _kw = {"capture_page": capture_page} if _fb_relay_capture_page else {}
                     on_page_done(
                         url, page_number, len(urls),
                         (_m.group(1).strip() if _m else url), "",
+                        **_kw,
                     )
                 except Exception:  # noqa: BLE001
                     pass  # never fail a fetch on a progress emit
@@ -568,7 +613,15 @@ async def _plain_http_fetch(
             }
             return None, _har
 
-    _results = await asyncio.gather(*[_one(u, i + 1) for i, u in enumerate(urls)], return_exceptions=True)
+    def _addr(i: int) -> int:
+        if capture_pages is not None and i < len(capture_pages):
+            return int(capture_pages[i])
+        return page_offset + i + 1
+
+    _results = await asyncio.gather(
+        *[_one(u, i + 1, _addr(i)) for i, u in enumerate(urls)],
+        return_exceptions=True,
+    )
     _pages: list = []
     _har_entries: list = []
     for _r in _results:

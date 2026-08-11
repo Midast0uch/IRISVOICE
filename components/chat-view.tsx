@@ -1203,6 +1203,13 @@ export function ChatWing({
       }
       setConversations(prev => [...prev, newConv])
       setActiveConversationId(threadId!)
+      // Also rebind the WS hook's active thread. useIRISWebSocket declares
+      // itself authoritative for it and seeds it from localStorage DELIBERATELY
+      // stickily (so a drag / unmount / reconnect does not lose the thread), and
+      // it re-sends that id on reconnect. handleSelectConversation sets both ids;
+      // this create path set only the local one, so the hook kept advertising the
+      // PREVIOUS thread for the rest of the session.
+      setCurrentConversationId(threadId!)
     } else if (activeConversationId) {
       setConversations(prev =>
         prev.map(conv =>
@@ -1247,7 +1254,18 @@ export function ChatWing({
     // as a fallback for when the WebSocket is unavailable (sendMessage unset).
     setLocalTyping(true)
     if (sendMessage) {
-      sendMessage("text_message", { text: userMessage.text, conversation_id: activeConversationId })
+      // Send `threadId`, NOT `activeConversationId`. setActiveConversationId
+      // was called a few lines up for a new conversation, but a React state
+      // setter does not apply within the same function scope — so this read
+      // still returned the PREVIOUS value (null on a first-ever conversation).
+      // The backend then had no thread to file under: iris_gateway.py:4685 is
+      // `payload.get("conversation_id") or session_id`, so it fell back to the
+      // SESSION id — which is stable for the whole WebSocket connection. Every
+      // new conversation therefore collapsed into one session-keyed thread,
+      // which is the "past prompts accumulating into one thread" symptom.
+      // threadId is resolved locally above and is definitive in BOTH branches
+      // (for an existing conversation it IS activeConversationId).
+      sendMessage("text_message", { text: userMessage.text, conversation_id: threadId })
     } else {
       // Fallback: REST /api/chat (reliable when WS unavailable)
       const controller = new AbortController()
@@ -1527,33 +1545,35 @@ export function ChatWing({
   }
 
   const handleNewConversation = () => {
-    // Create new conversation thread
-    const newConv: Conversation = {
-      id: `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-      title: `Conversation ${conversations.length + 1}`,
-      preview: 'New conversation',
-      messages: [],
-      documents: [],
-      timestamp: new Date(),
-      isPinned: false,
-      lastMessagePreview: 'New conversation'
-    };
-    
-    setConversations(prev => [newConv, ...prev]);
-    setActiveConversationId(newConv.id);
-    setCurrentConversationId(newConv.id);
+    // Do NOT mint an id here. This used to create `conv_<ts>_<rand>` locally,
+    // which produced a SECOND id namespace that the conversation store never
+    // saw: `new_conversation` only resets kernel context (iris_gateway.py:4660),
+    // it does not insert a row, and conversation_store.add_message returns None
+    // for an unknown id (conversation_store.py:230) — so every message in such a
+    // thread was silently dropped and the conversation vanished on reload, since
+    // chat-view rebuilds from GET /api/conversations.
+    //
+    // Clearing the active id instead hands the job to handleSendMessage's create
+    // branch, which POSTs /api/conversations and uses the SERVER id — the
+    // canonical design this file already documents ("The server ID is the
+    // canonical ID from the start"). One id namespace, and the thread survives a
+    // reload. Null is an already-supported state: it is the app's initial one.
+    setActiveConversationId(null);
+    setCurrentConversationId(undefined);
     setInputText('');
-    
+
     // Close any open dropdowns
     closeDropdowns();
-    
+
     // Focus input field
     setTimeout(() => inputRef.current?.focus(), 100);
-    
-    // Notify backend of new conversation
-    sendMessage?.('new_conversation', { 
-      conversation_id: newConv.id,
-      timestamp: newConv.timestamp.toISOString()
+
+    // Notify backend so the kernel context resets now rather than at first
+    // message. No conversation_id: there is no thread yet, and inventing one is
+    // what created the orphan namespace. The first text_message carries the real
+    // server id and rebinds the backend to it.
+    sendMessage?.('new_conversation', {
+      timestamp: new Date().toISOString()
     });
   };
 

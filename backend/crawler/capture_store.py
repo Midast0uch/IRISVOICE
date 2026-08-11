@@ -26,9 +26,55 @@ import logging
 import os
 import threading
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
+
+# ── capture ADDRESS vs UI COUNTER ──────────────────────────────────────────
+# These are two different numbers and conflating them is what made the browser
+# panel 404. `page_number` in a CRAWLER_PAGE_FETCHED payload is the outer run's
+# progress counter ("reading 3 of 5"); the capture address is where the bytes
+# were actually written. They diverge for two independent reasons:
+#   1. Per-URL dispatch runs one single-URL crawl per URL, so every URL's only
+#      page is number 1 and all of them overwrite <job>/1.html.
+#   2. A vision escalation publishes MANY frames for ONE URL, so a single slot
+#      number cannot address them at all — and starting each session at 1 makes
+#      URL 4's frames overwrite URL 1's captured page, serving the WRONG bytes.
+# Each URL therefore gets a reserved block of the job's address space, and the
+# emitted payload carries the address explicitly alongside the counter.
+CAPTURE_SLOT_STRIDE = int(os.environ.get("IRIS_CAPTURE_SLOT_STRIDE", "100"))
+
+
+def slot_capture_offset(slot: int) -> int:
+    """First capture address reserved for dispatch slot *slot* (0-based), minus 1.
+
+    Slot 0 owns 1..99, slot 1 owns 101..199, and so on. Passed as ``page_offset``
+    into the crawl (whose page 1 becomes offset+1) and into the vision session
+    (whose frames take offset+2 onward, after the crawl's offset+1).
+    """
+    return max(0, int(slot)) * CAPTURE_SLOT_STRIDE
+
+
+def accepts_capture_page(cb: Optional[Callable]) -> bool:
+    """True when *cb* accepts the ``capture_page`` progress kwarg.
+
+    The capture address is NEWER than the on_page_done contract, and test fakes
+    / older relays implement the 5-positional shape only. Probed by signature,
+    never by catching TypeError from a call: that cannot distinguish a signature
+    mismatch from a failure raised inside the callback, and retrying on it would
+    emit the same page twice. A ``**kwargs`` callback accepts it too.
+    """
+    if cb is None:
+        return False
+    try:
+        import inspect
+
+        params = inspect.signature(cb).parameters
+        if "capture_page" in params:
+            return True
+        return any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+    except (TypeError, ValueError):  # builtins / C callables expose no signature
+        return False
 
 # Bounds (T1/T2 decision, recorded in requirements.md Decisions Locked).
 MAX_CAPTURE_PAGES = int(os.environ.get("IRIS_CAPTURE_MAX_PAGES", "100"))

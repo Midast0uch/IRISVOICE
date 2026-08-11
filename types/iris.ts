@@ -125,9 +125,21 @@ export interface CrawlerPageMsg {
   total: number
   host?: string
   /** REQ-11 (T13): crawl provenance — lets the panel replay the captured bytes
-   * (/api/browser/capture/{job_id}/{page_number}). Sent by the agent-path WS
+   * (/api/browser/capture/{job_id}/{capture_page}). Sent by the agent-path WS
    * emitter (tool_bridge._crawl_ui_emitter); absent on the user-initiated path. */
   job_id?: string
+  /** The capture-store ADDRESS the bytes were saved under — NOT `page_number`.
+   * page_number is the run's progress counter ("reading 3 of 5"); the address is
+   * where the page lives. They diverge under per-URL dispatch (each single-URL
+   * fetch numbers its only page 1) and under vision escalation (many frames for
+   * one URL), and building the iframe src from the counter is what made every
+   * replay 404. Falls back to page_number when absent (the batch path, where the
+   * two genuinely coincide). */
+  capture_page?: number
+  /** False when the bytes were deliberately NOT stored — a bot-challenge
+   * interstitial is not persisted (REQ-4 AC2), so its frame can only 404. The
+   * panel must render a "blocked by the site" state instead of a dead iframe. */
+  capture_available?: boolean
   title?: string
 }
 /** REQ-11/12 (T17): in-flight stage message (stage: narrowing/refining/fetching). */

@@ -71,6 +71,7 @@ class FetchCrawlCapability:
         goal: str,
         job_id: str,
         on_progress=None,
+        page_offset: int = 0,
     ) -> FetchOutcome:
         """Fetch one URL through the crawl path.
 
@@ -82,6 +83,12 @@ class FetchCrawlCapability:
         live 2026-08-10 23:27, five real Exa URLs fetched and ZERO
         `[crawl-ui] CRAWLER_PAGE_FETCHED` events emitted, so the panel showed no
         URL progression and the nav overlay's animation had nothing to advance.
+
+        ``page_offset`` is this URL's reserved block of the job's CAPTURE address
+        space. Also optional, also load-bearing for the UI: this is a SINGLE-URL
+        fetch, so its only page is number 1, and without an offset all five
+        dispatched URLs wrote data/captures/<job>/1.html — the panel's replay
+        URL then 404'd for every page after the first (live 2026-08-11 16:11).
         """
         from backend.crawler.capture_store import _safe_job  # noqa: F401  (typing only)
         from backend.crawler.orchestrator import CrawlOrchestrator
@@ -93,6 +100,7 @@ class FetchCrawlCapability:
             session_id=job_id,
             job_id=job_id,
             on_progress=on_progress,
+            page_offset=page_offset,
         )
         duration_ms = int((time.monotonic() - t_start) * 1000)
 

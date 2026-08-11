@@ -46,6 +46,34 @@ logger = logging.getLogger(__name__)
 _MAX_LOOP_STEPS = int(os.environ.get("IRIS_VISION_MAX_LOOP_STEPS", "8"))
 
 
+def _make_session(session_cls, job_id, url, goal, bounds, page_offset: int):
+    """Construct a browser session, passing ``page_offset`` only if it takes one.
+
+    session_cls is injectable (test doubles implement the 4-positional shape),
+    so the capture-block offset is passed by capability, not assumed. Decided by
+    signature rather than by catching TypeError from the constructor: a
+    TypeError raised inside a real __init__ would be misread as "no such
+    parameter" and silently drop the offset, restoring the overwrite bug.
+    """
+    if page_offset:
+        try:
+            import inspect
+
+            _params = inspect.signature(session_cls).parameters
+            if "page_offset" in _params or any(
+                p.kind is inspect.Parameter.VAR_KEYWORD for p in _params.values()
+            ):
+                return session_cls(job_id, url, goal, bounds, page_offset=page_offset)
+            logger.warning(
+                "[fetch.vision] session_cls %s takes no page_offset — frames for "
+                "job_id=%s will number from 1 and may overwrite another URL's capture",
+                getattr(session_cls, "__name__", session_cls), job_id,
+            )
+        except (TypeError, ValueError):
+            pass
+    return session_cls(job_id, url, goal, bounds)
+
+
 class FetchVisionCapability(FetchCapability):
     """Vision-guided browser fetch (REQ-6/REQ-7)."""
 
@@ -83,6 +111,7 @@ class FetchVisionCapability(FetchCapability):
         goal: str,
         job_id: str,
         on_action: Optional[Callable[[dict], None]] = None,
+        page_offset: int = 0,
     ) -> FetchOutcome:
         """Run the goal-directed action loop for one URL, bounded by
         SessionBounds. Always returns a FetchOutcome — never raises.
@@ -94,12 +123,21 @@ class FetchVisionCapability(FetchCapability):
         per-call parameter rather than instance state on purpose — the capability
         singleton is shared across concurrent runs, and an emitter stored on it
         would cross-wire their events.
+
+        ``page_offset`` is this URL's reserved block of the job's CAPTURE address
+        space, and it is a CORRECTNESS fix, not a cosmetic one. A session
+        publishes one capture per distinct frame, numbering from 1, into the
+        SHARED job_id directory — so an escalation on URL 4 overwrote the crawl
+        captures of URLs 1, 2, 3 and the panel served URL 4's frames under URL
+        1's tab. Wrong bytes presented as evidence is worse than a 404. Also a
+        per-call parameter: concurrent dispatch runs several sessions at once,
+        each owning a different block.
         """
         t0 = time.monotonic()
         bounds = self._bounds
         # T9: hold the vision server for the whole loop; release on exit.
         lease = acquire_vision_lease(max_ms=bounds.max_wall_ms)
-        session = self._session_cls(job_id, url, goal, bounds)
+        session = _make_session(self._session_cls, job_id, url, goal, bounds, page_offset)
         wall: Optional[WallKind] = None
         actions = 0
         try:
@@ -176,6 +214,14 @@ class FetchVisionCapability(FetchCapability):
                             point = getattr(session, "last_action_point", None)
                             if point:
                                 payload.update(point)
+                            # The session publishes a capture per distinct frame,
+                            # but nothing told the panel WHERE. Without the
+                            # address those frames were written and never read —
+                            # the built-but-never-reached shape this codebase
+                            # keeps producing. getattr: fakes do not set it.
+                            _frame = getattr(session, "current_capture_page", None)
+                            if _frame is not None:
+                                payload["capture_page"] = int(_frame)
                             on_action(payload)
                         except Exception as _emit_exc:  # noqa: BLE001
                             logger.debug(

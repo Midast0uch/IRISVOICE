@@ -54,7 +54,7 @@ from enum import Enum
 from typing import Literal, Optional
 from dataclasses import dataclass
 
-from backend.crawler.capture_store import get_capture_store
+from backend.crawler.capture_store import CAPTURE_SLOT_STRIDE, get_capture_store
 
 logger = logging.getLogger(__name__)
 
@@ -221,13 +221,25 @@ class BrowserSession:
         url: str,
         goal: str,
         bounds: Optional[SessionBounds] = None,
+        page_offset: int = 0,
     ) -> None:
         self._job_id = job_id
         self.url = url
         self.goal = goal
         self._bounds = bounds or SessionBounds()
         self._actions_taken = 0
-        self._page_number = 0
+        # Capture addresses for this session's published frames. Without an
+        # offset every session numbered from 1 into the SHARED job directory, so
+        # an escalation on URL 4 overwrote URLs 1-3's captured pages and the panel
+        # served the wrong page's bytes as evidence.
+        #
+        # With a reservation, the crawl page for the same URL owns offset+1, so
+        # frames begin at offset+2. WITHOUT one (offset 0) there is no crawl page
+        # to step over and the first frame must still be page 1 exactly as
+        # before — this is the unreserved path the open()/settle() contract tests
+        # pin, and starting it at 2 broke both.
+        self._page_offset = max(0, int(page_offset))
+        self._page_number = self._page_offset + 1 if self._page_offset else 0
         self._last_published: Optional[str] = None  # T16: rate-bound dedupe
         self._started_at = time.monotonic()
         self._unavailable = False
@@ -565,6 +577,18 @@ class BrowserSession:
 
     # ── frame publishing (REQ-11 AC1 / AC5) ────────────────────────────────
 
+    @property
+    def current_capture_page(self) -> Optional[int]:
+        """Capture address of the most recently PUBLISHED frame, or None.
+
+        Read by fetch.vision to put the address on CRAWLER_VISION_ACTION so the
+        panel can render the frame the model is looking at. None until the first
+        successful publish — never report an address with no bytes behind it.
+        """
+        if self._last_published is None:
+            return None
+        return self._page_number
+
     async def _publish_frame(self) -> str:
         """Best-effort save of the current frame to the capture store with an
         incrementing page number. Never raises (REQ-11 AC5): a store failure
@@ -585,7 +609,21 @@ class BrowserSession:
                 self._job_id, self._page_number,
             )
             return html
-        self._page_number += 1
+        # Stay inside this session's reserved block. A session is bounded to ~12
+        # distinct frames, so the stride is ample; the clamp is the guard that a
+        # runaway loop can never write over the NEXT url's capture addresses —
+        # which would silently serve one page's bytes under another's tab.
+        _next = self._page_number + 1
+        _ceiling = self._page_offset + CAPTURE_SLOT_STRIDE - 1
+        if self._page_offset and _next > _ceiling:
+            logger.warning(
+                "[browser_session] frame block exhausted job=%s slot_offset=%s "
+                "frames=%s — not publishing further frames (would overwrite the "
+                "next URL's capture)",
+                self._job_id, self._page_offset, _next - self._page_offset,
+            )
+            return html
+        self._page_number = _next
         try:
             get_capture_store().save(self._job_id, self._page_number, self.url, html)
             self._last_published = html

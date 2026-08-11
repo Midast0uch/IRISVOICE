@@ -624,33 +624,43 @@ export function DarkGlassDashboard({
   // provider's pages array. Only pages with a job_id have capture bytes to
   // show. A seen-set keeps this idempotent across re-renders; a remount
   // (fresh ref) re-derives the tabs from restored provider state (AC3).
+  // The frame src is built from the CAPTURE ADDRESS (p.capturePage), never from
+  // the progress counter (p.pageNumber). They are different numbers: per-URL
+  // dispatch fetches each URL on its own, so every fetch numbers its only page
+  // 1, and pointing the iframe at the counter requested /capture/<job>/3 when
+  // only /1 existed — every replay 404'd (live 2026-08-11 16:11).
+  //
+  // A page whose bytes were deliberately NOT stored (bot-challenge interstitial,
+  // REQ-4 AC2) gets a tab WITHOUT capture provenance, so useActiveFrameSrc
+  // routes it through the proxy instead of at a replay URL that can only 404.
   const processedCrawlTabsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     for (const p of crawlState.pages) {
-      if (!p.jobId || p.pageNumber == null) continue  // no capture to show
-      const key = `${p.jobId}:${p.pageNumber}`
+      if (!p.jobId) continue
+      const addr = p.capturePage ?? p.pageNumber
+      if (addr == null) continue  // no capture to show
+      const replayable = p.captureAvailable !== false
+      const key = `${p.jobId}:${addr}`
       if (processedCrawlTabsRef.current.has(key)) continue
       processedCrawlTabsRef.current.add(key)
-      const tabId = `crawl-${p.jobId}-${p.pageNumber}`
+      const tabId = `crawl-${p.jobId}-${addr}`
       openTab({
         id: tabId,
         tab_type: 'web',
         title: p.title || p.url,
         url: p.url,
       } as OpenTabMsg)
-      setTabs(prev => prev.map(t =>
-        t.id === tabId
-          ? { ...t, captureJobId: p.jobId, capturePageNumber: p.pageNumber,
-              captureFetchedAt: new Date().toISOString() }
-          : t,
-      ))
+      if (!replayable) continue
+      const provenance = {
+        captureJobId: p.jobId,
+        capturePageNumber: addr,
+        captureFetchedAt: new Date().toISOString(),
+      }
+      setTabs(prev => prev.map(t => (t.id === tabId ? { ...t, ...provenance } : t)))
       // Also attach provenance to any existing web tab for the same URL — an
       // open_tab may have created it before the page event arrived.
       setTabs(prev => prev.map(t =>
-        t.type === 'web' && t.url === p.url
-          ? { ...t, captureJobId: p.jobId, capturePageNumber: p.pageNumber,
-              captureFetchedAt: new Date().toISOString() }
-          : t,
+        t.type === 'web' && t.url === p.url ? { ...t, ...provenance } : t,
       ))
     }
   }, [crawlState.pages, openTab])

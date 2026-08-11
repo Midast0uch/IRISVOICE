@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -56,6 +57,13 @@ def routing_enabled() -> bool:
 # Recovery attempts per originating step. The second identical failure is
 # terminal for that branch; cycles are guarded by the same bound.
 DEFAULT_RECOVERY_BOUND = int(os.environ.get("IRIS_NODE_RECOVERY_BOUND", "1"))
+
+# Memory bound on the per-step attempt counters. The router is a process-wide
+# singleton whose step_ids are per-URL, so without a cap the map grows with
+# every distinct URL for the life of the backend. Far above any single run's
+# working set (a run tracks a handful of step_ids), so eviction can only ever
+# reach counters from runs that are already over.
+MAX_TRACKED_STEPS = int(os.environ.get("IRIS_NODE_MAX_TRACKED_STEPS", "512"))
 
 
 # ── Permission tiers (REQ-8) ───────────────────────────────────────────────
@@ -103,7 +111,16 @@ class NodeRouter:
         # name -> NodeSpec; populated once by the registry (T7) at startup.
         self._nodes: Dict[str, NodeSpec] = {}
         # step_id -> remaining recovery attempts (REQ-4 AC3).
-        self._attempts: Dict[str, int] = {}
+        #
+        # BOUNDED. This router is a process-wide singleton and step_ids are
+        # per-URL ("esc:<url>", "race:<url>"), so entries are removed only by an
+        # explicit reset_attempts — any run that aborts before its reset leaks
+        # its entry for the life of the process, and the dict grows with every
+        # distinct URL IRIS has ever seen. Oldest-first eviction is safe by
+        # construction: dropping an entry restores the FULL recovery bound for a
+        # step nobody is tracking anymore, so a live step's bound is never
+        # loosened (a live step is, by definition, among the most recent).
+        self._attempts: "OrderedDict[str, int]" = OrderedDict()
 
     # ── Registry wiring (called by tool_registry on register_node) ────────
     def register_node(self, spec: NodeSpec) -> None:
@@ -189,6 +206,14 @@ class NodeRouter:
 
         selected = candidates[0]
         self._attempts[req.step_id] = remaining - 1
+        self._attempts.move_to_end(req.step_id)
+        while len(self._attempts) > MAX_TRACKED_STEPS:
+            _stale, _ = self._attempts.popitem(last=False)
+            logger.debug(
+                "[router] evicting stale attempt counter step_id=%s "
+                "(tracked=%d, bound=%d)",
+                _stale, len(self._attempts), MAX_TRACKED_STEPS,
+            )
         log_routing_decision(
             task_id=req.task_id, step_id=req.step_id, node=req.node,
             reason=reason.value,

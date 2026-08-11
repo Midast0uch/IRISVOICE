@@ -7,7 +7,7 @@ Reads crawl parameters from a JSON file, runs the crawl in THIS process (so a
 Chromium C-level crash is contained here and cannot take down the
 agent/backend), and reports progress + final result as JSON lines on stdout:
 
-  {"type": "progress", "url": "...", "page_number": 1, "total": 5}
+  {"type": "progress", "url": "...", "page_number": 1, "total": 5, "capture_page": 1}
   {"type": "result", "query": "...", "pages": [...], "duration_ms": 1234,
    "crawled_at": "..."}
   {"type": "error", "error": "..."}   # on fatal failure
@@ -21,6 +21,7 @@ import json
 import os
 import sys
 import traceback
+from typing import Optional
 
 
 def _emit(obj: dict) -> None:
@@ -56,6 +57,7 @@ def _main() -> int:
     max_pages = int(params.get("max_pages", 5))
     delay_ms = int(params.get("delay_ms", 1000))
     job_id = params.get("job_id")
+    page_offset = int(params.get("page_offset", 0) or 0)
 
     try:
         import asyncio
@@ -65,7 +67,18 @@ def _main() -> int:
         _emit({"type": "error", "error": f"crawler modules unavailable: {exc}"})
         return 3
 
-    def _on_page_done(url: str, page_number: int, total: int, title: str = "", snippet: str = "") -> None:
+    def _on_page_done(
+        url: str,
+        page_number: int,
+        total: int,
+        title: str = "",
+        snippet: str = "",
+        capture_page: Optional[int] = None,
+    ) -> None:
+        # capture_page is the capture-store address the bytes were saved under.
+        # It differs from page_number whenever page_offset is set (per-URL
+        # dispatch), and the panel builds its iframe src from it — relaying only
+        # page_number is what made /api/browser/capture/<job>/<n> 404.
         _emit(
             {
                 "type": "progress",
@@ -73,6 +86,9 @@ def _main() -> int:
                 "page_number": page_number,
                 "total": total,
                 "title": title,
+                "capture_page": (
+                    int(capture_page) if capture_page is not None else page_number
+                ),
             }
         )
 
@@ -87,6 +103,7 @@ def _main() -> int:
                     delay_ms=delay_ms,
                     on_page_done=_on_page_done,
                     job_id=job_id,
+                    page_offset=page_offset,
                 )
 
         result = asyncio.run(_run())

@@ -28,7 +28,18 @@ def client(monkeypatch):
     ba.reset_token_cache_for_tests()
 
 
-CAPTURE = "/api/browser/capture/job-1/1"
+# FIXTURE INPUT CHANGED — CALLED OUT EXPLICITLY; no assertion is touched and the
+# load is unchanged. This was "/api/browser/capture/job-1/1". The two token-gate
+# tests below require a capture that DOES NOT EXIST (their own docstring says so)
+# so that reaching the handler is provable by the 'unavailable' marker. But
+# "job-1" is a plausible id that other suites and manual runs also use, and the
+# capture store is a SHARED PERSISTENT directory (data/captures/<job>/<n>.html).
+# Once anything wrote data/captures/job-1/1.html — one existed from 2026-08-11
+# 17:28 — the handler answered 'available' and both tests failed while the
+# property they exist to prove (a correct token passes the gate and reaches the
+# handler) was in fact still holding. A sentinel id no crawl or fixture will ever
+# mint makes the precondition true by construction instead of by luck.
+CAPTURE = "/api/browser/capture/job-nonexistent-auth-fixture/1"
 PROXY = "/api/browser/proxy?url=https://example.com"
 
 

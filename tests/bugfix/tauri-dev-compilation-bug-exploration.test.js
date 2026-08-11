@@ -31,9 +31,14 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import fc from 'fast-check';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const PROJECT_ROOT = join(__dirname, '..', '..');
+// TEST-HARNESS UPGRADE (not an assertion change): `import.meta` is a syntax
+// error under jest.config.backend.cjs's CommonJS babel transform, so this suite
+// died at parse time ("Cannot use 'import.meta' outside a module") and never ran
+// one assertion. Assertions below are untouched.
+const __moduleDir = typeof __dirname !== 'undefined'
+  ? __dirname
+  : dirname(fileURLToPath(eval('import.meta.url')));
+const PROJECT_ROOT = join(__moduleDir, '..', '..');
 
 /**
  * Property 1: Fault Condition - Dev Server Startup Time Exceeds 30 Seconds
@@ -367,8 +372,12 @@ describe('Tauri Dev Compilation Bug Exploration - Configuration Analysis', () =>
   });
 });
 
-// Main execution for standalone testing
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Main execution for standalone testing. ESM-only idiom replaced for the same
+// reason as above; under jest this branch must not run.
+const __isStandalone = typeof require !== 'undefined' && typeof module !== 'undefined'
+  ? require.main === module
+  : false;
+if (__isStandalone) {
   console.log('='.repeat(80));
   console.log('Bug Condition Exploration Test for Tauri Dev Slow Compilation Fix');
   console.log('='.repeat(80));
