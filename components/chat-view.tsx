@@ -27,6 +27,7 @@ import ModelSwitcher from "@/components/ModelSwitcher";
 import { RichDocument } from "@/components/chat/RichDocument";
 import { DocumentPanel } from "@/components/chat/DocumentPanel";
 import { useTaskProgress } from "@/hooks/useTaskProgress";
+import { useCrawlContext } from "@/hooks/CrawlProvider";
 import type { ConversationChip, Suggestion } from "@/types/iris";
 
 // Notification types for the universal notification system
@@ -146,6 +147,11 @@ interface DocRender {
   // Document-rehydration provenance (REQ-5/REQ-6): source URLs + HAR path so a
   // re-hydrated research doc re-renders WITH its citations, never as bare [n].
   sources?: { url: string; title: string }[]
+  // The plan card: emitted at PLAN time, before there is any answer. `pending`
+  // means the card is still describing intent, so it must NOT be treated as this
+  // turn's rendered output — see the fold in handleTextResponse.
+  pending?: boolean
+  kind?: string
   harPath?: string | null
 }
 
@@ -266,9 +272,18 @@ export function ChatWing({
   // (avoids closure staleness when a document:render WS event arrives between
   // fetch send and response).
   const activeDocTurnIdsRef = useRef<Set<string>>(new Set())
+  // Turns whose card is still a PLAN (no answer yet). Tracked separately because
+  // "a document exists for this turn" and "this turn's answer has been rendered"
+  // stopped being the same statement once the plan card started arriving first.
+  const activePendingDocTurnIdsRef = useRef<Set<string>>(new Set())
   useEffect(() => {
+    const _docs =
+      conversations.find(c => c.id === activeConversationId)?.documents || []
     activeDocTurnIdsRef.current = new Set(
-      (conversations.find(c => c.id === activeConversationId)?.documents || [])
+      _docs.map(d => d.turnId).filter((t): t is string => !!t)
+    )
+    activePendingDocTurnIdsRef.current = new Set(
+      _docs.filter(d => d.pending)
         .map(d => d.turnId)
         .filter((t): t is string => !!t)
     )
@@ -394,6 +409,10 @@ export function ChatWing({
 
   // Task progress (drives TaskListCard + OrbBadge)
   const taskProgress = useTaskProgress()
+  // Crawl state (drives the plan card's source list). Owned by CrawlProvider in
+  // app/layout.tsx, ABOVE this component, so the list survives a panel unmount
+  // mid-run (REQ-12 AC3) instead of resetting when the user drags the widget.
+  const { state: crawlState } = useCrawlContext()
   // Context-window usage (drives ContextPill)
   const [contextUsage, setContextUsage] = useState<{ used: number; max: number }>({
     used: 0,
@@ -481,8 +500,32 @@ export function ChatWing({
 
       // If this turn is a rendered document (prism card), skip plain-text —
       // the RichDocument card already shows the structured content.
+      //
+      // EXCEPT when the only card for the turn is the PLAN card, which is
+      // emitted before any answer exists. Suppressing here would swallow the
+      // answer entirely and leave the user staring at a plan for work that had
+      // already finished. A plain-text answer therefore FOLDS INTO the plan
+      // card — same card, now carrying the answer — which is also what makes
+      // the structured and unstructured paths end in the same place.
       if (turnId && activeDocTurnIdsRef.current.has(turnId)) {
-        if (turnId) seenTurnIds.current.add(turnId)
+        if (activePendingDocTurnIdsRef.current.has(turnId)) {
+          seenTurnIds.current.add(turnId)
+          setConversations((prev) =>
+            prev.map((conv) => {
+              if (conv.id !== activeConversationIdRef.current) return conv
+              return {
+                ...conv,
+                documents: conv.documents.map((d) =>
+                  d.turnId === turnId && d.pending
+                    ? { ...d, content: text, pending: false, updated: true }
+                    : d,
+                ),
+              }
+            }),
+          )
+          return
+        }
+        seenTurnIds.current.add(turnId)
         return
       }
 
@@ -629,6 +672,11 @@ export function ChatWing({
         // existing document in place, so the card can show an "Updated" indicator.
         updated?: boolean
         trust?: string
+        sources?: { url: string; title: string }[]
+        har_path?: string | null
+        // Set only by the plan card, which is emitted before any answer exists.
+        pending?: boolean
+        kind?: string
       } | undefined
       if (!detail?.content) return
       const doc: DocRender = {
@@ -642,6 +690,13 @@ export function ChatWing({
         updated: detail.updated || false,
         error: null,
         trust: detail.trust,
+        sources: detail.sources,
+        harPath: detail.har_path ?? null,
+        // A revision that carries no `pending` is the answer arriving: the card
+        // stops being a plan. Defaulting to the previous value instead would
+        // leave it pending forever and keep swallowing the plain-text path.
+        pending: detail.pending === true,
+        kind: detail.kind,
       }
       // Per-conversation document store — updates the active conversation's
       // documents array instead of a flat global array.
@@ -3094,7 +3149,24 @@ ${message.text}`;
                           })
                         }
                         onExpand={() => setExpandedDocId(doc.id)}
-                        sources={doc.sources}
+                        // While this turn's crawl is still running, show the LIVE
+                        // source list: what the agent planned to read plus what it
+                        // has added since, each with its current outcome. The
+                        // document's own stored sources are the settled citations
+                        // and take over once the run is done, so a rehydrated card
+                        // still renders exactly as before.
+                        sources={
+                          doc.turnId && doc.turnId === taskProgress.turnId &&
+                          crawlState.sources.length > 0
+                            ? crawlState.sources.map((s) => ({
+                                url: s.url,
+                                title: s.title || s.host || s.url,
+                                status: s.status,
+                                discovered: s.discovered,
+                                reason: s.reason,
+                              }))
+                            : doc.sources
+                        }
                         harPath={doc.harPath}
                       />
                       {doc.error && (
@@ -3144,6 +3216,7 @@ ${message.text}`;
                       learningSignal={taskProgress.learningSignal}
                     />
                   )}
+
 
                   {/* Permission Cards — inline tool approval UI */}
                   <AnimatePresence>

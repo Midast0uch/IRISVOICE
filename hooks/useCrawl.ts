@@ -8,6 +8,7 @@ import type {
   CrawlerPhaseMsg,
   CrawlerVisionActionMsg,
   CrawlerSourceParkedMsg,
+  CrawlerSourcesAddedMsg,
   CrawlerErrorMsg,
   CrawlerCompleteMsg,
   OpenTabMsg,
@@ -71,6 +72,62 @@ export interface CrawlState {
   visionActions: CrawlerVisionActionMsg[]
   /** REQ-13 AC4: sources parked behind a wall (non-blocking ask). */
   parkedSources: CrawlerSourceParkedMsg[]
+  /** The plan card's source list: every source the agent INTENDS to read or HAS
+   * read, in announcement order, each carrying its current outcome.
+   *
+   * Kept separate from `pages`, which only ever contains sources that produced a
+   * fetched page. This list starts as the planned set (so the card can show the
+   * agent's intent before it acts), GROWS when a broadened re-plan or vision
+   * search discovery adds more, and each entry's status advances in place. It is
+   * a union keyed by url — never replaced, so a later announcement cannot erase
+   * what the user already saw. */
+  sources: CrawlSource[]
+}
+
+export type CrawlSourceStatus = "planned" | "reading" | "read" | "blocked" | "parked"
+
+export interface CrawlSource {
+  url: string
+  host: string
+  title?: string
+  status: CrawlSourceStatus
+  /** True when this source came from vision discovery (the model typing a query
+   * into a search engine) rather than from the planner. */
+  discovered?: boolean
+  /** Capture address, once the bytes exist — lets the card link to the replay. */
+  capturePage?: number
+  /** Why it is blocked/parked (challenge, captcha, login, paywall). */
+  reason?: string
+}
+
+/** Merge announced urls into the source union. Existing entries KEEP their
+ * status: a re-announcement of a url already read must not demote it back to
+ * "planned", which is what a naive replace would do on every broadened re-plan. */
+function _mergeSources(
+  existing: CrawlSource[],
+  urls: string[] | undefined,
+  discovered: string[] | undefined,
+): CrawlSource[] {
+  if (!urls || urls.length === 0) return existing
+  const discoveredSet = new Set(discovered ?? [])
+  const byUrl = new Map(existing.map((s) => [s.url, s]))
+  for (const url of urls) {
+    const prev = byUrl.get(url)
+    if (prev) {
+      // Only ever ADD provenance to a known source; never reset its outcome.
+      if (discoveredSet.has(url) && !prev.discovered) {
+        byUrl.set(url, { ...prev, discovered: true })
+      }
+      continue
+    }
+    byUrl.set(url, {
+      url,
+      host: _hostOf(url),
+      status: "planned",
+      discovered: discoveredSet.has(url) || undefined,
+    })
+  }
+  return Array.from(byUrl.values())
 }
 
 const IDLE: CrawlState = {
@@ -91,6 +148,7 @@ const IDLE: CrawlState = {
   phaseSequence: null,
   visionActions: [],
   parkedSources: [],
+  sources: [],
 }
 
 function _persistSession(sid: string | null) {
@@ -144,6 +202,17 @@ export function useCrawl(wsConnected: boolean = true) {
         query: msg.query,
         total: msg.url_count,
         sessionId: sessionIdRef.current,
+        // Seed the plan card with the planned set so the user sees WHAT the agent
+        // is about to read, not just how many. Older emitters send only
+        // url_count; then the list stays empty and fills in from page events.
+        sources: _mergeSources([], msg.urls, msg.discovered_urls),
+      }))
+    }
+    function onSourcesAdded(e: Event) {
+      const msg = (e as CustomEvent<CrawlerSourcesAddedMsg>).detail
+      setState((s) => ({
+        ...s,
+        sources: _mergeSources(s.sources, msg.urls, msg.discovered_urls),
       }))
     }
     function onPage(e: Event) {
@@ -169,6 +238,21 @@ export function useCrawl(wsConnected: boolean = true) {
             title: msg.title,
           },
         ],
+        // Advance this source's outcome in the plan card. `capture_available:
+        // false` means the bytes were deliberately not stored — a bot-challenge
+        // interstitial — so the page was reached but is NOT readable evidence,
+        // and calling that "read" would overstate what the agent actually got.
+        sources: _mergeSources(s.sources, [msg.url], undefined).map((src) =>
+          src.url === msg.url
+            ? {
+                ...src,
+                status: msg.capture_available === false ? "blocked" : "read",
+                title: src.title || msg.title,
+                capturePage: msg.capture_page ?? msg.page_number,
+                reason: msg.capture_available === false ? "blocked by the site" : src.reason,
+              }
+            : src,
+        ),
       }))
     }
     function onOpenTab(e: Event) {
@@ -202,6 +286,14 @@ export function useCrawl(wsConnected: boolean = true) {
         ...s,
         active: true,
         parkedSources: [...s.parkedSources, msg],
+        // A parked source is a wall the agent hit and chose not to block on
+        // (REQ-13 AC2/AC4). The card must show it as parked WITH its reason —
+        // silently omitting it is how "the run looked stuck" reads to a user.
+        sources: _mergeSources(s.sources, [msg.url], undefined).map((src) =>
+          src.url === msg.url
+            ? { ...src, status: "parked", reason: msg.wall_kind || msg.wall || "blocked" }
+            : src,
+        ),
       }))
     }
     function onError(e: Event) {
@@ -264,6 +356,7 @@ export function useCrawl(wsConnected: boolean = true) {
     t.addEventListener("iris:task:event", onPhase as EventListener)
     t.addEventListener("iris:crawler_vision_action", onVisionAction as EventListener)
     t.addEventListener("iris:crawler_source_parked", onSourceParked as EventListener)
+    t.addEventListener("iris:crawler_sources_added", onSourcesAdded as EventListener)
     t.addEventListener("iris:crawler_error", onError as EventListener)
     t.addEventListener("iris:crawler_complete", onComplete as EventListener)
     t.addEventListener("iris:crawler_sync_required", onSyncRequired as EventListener)
@@ -276,6 +369,7 @@ export function useCrawl(wsConnected: boolean = true) {
       t.removeEventListener("iris:task:event", onPhase as EventListener)
       t.removeEventListener("iris:crawler_vision_action", onVisionAction as EventListener)
       t.removeEventListener("iris:crawler_source_parked", onSourceParked as EventListener)
+      t.removeEventListener("iris:crawler_sources_added", onSourcesAdded as EventListener)
       t.removeEventListener("iris:crawler_error", onError as EventListener)
       t.removeEventListener("iris:crawler_complete", onComplete as EventListener)
       t.removeEventListener("iris:crawler_sync_required", onSyncRequired as EventListener)

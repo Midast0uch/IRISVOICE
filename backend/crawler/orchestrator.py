@@ -378,7 +378,22 @@ class CrawlOrchestrator:
                 await self._drain_log_tasks()
                 return self._empty(query, t_start, "no candidate urls")
 
-        _emit("CRAWLER_STARTED", {"query": query, "url_count": len(plan.urls), "session_id": session_id, "job_id": job_id})
+        # `urls` is the PLANNED SET, not just its size. The plan card shows the
+        # user which sources the agent intends to read BEFORE it reads them, and
+        # url_count alone cannot express that — the panel could only ever count.
+        # The set is not final: vision discovery (typing a query into a search
+        # engine) and a broadened re-plan both ADD sources mid-run, each announced
+        # by CRAWLER_SOURCES_ADDED so the card appends rather than resets.
+        _emit("CRAWLER_STARTED", {
+            "query": query,
+            "url_count": len(plan.urls),
+            "urls": list(plan.urls),
+            "session_id": session_id,
+            "job_id": job_id,
+            # REQ-19: distinguish planner-supplied sources from vision-discovered
+            # ones, so the card can say WHERE a source came from.
+            "discovered_urls": sorted(discovered_urls),
+        })
         # REQ-4 AC1/AC3: emit phase transition — moving into search.
         _emit("CRAWLER_PHASE", {"phase": "searching", "phase_sequence": PHASE_SEARCHING})
 
@@ -463,10 +478,23 @@ class CrawlOrchestrator:
                         title=plan.title or broader_query[:60],
                     )
             if plan.urls:
+                # The broadened re-plan (and any vision discovery inside it) is
+                # where the source set GROWS mid-run — a fresh Exa plan for the
+                # broader query, or URLs the vision model found by typing into a
+                # search engine. Announce the additions so the plan card APPENDS
+                # them; without this the card would still be showing the original
+                # five while the agent reads a different set entirely.
+                _emit("CRAWLER_SOURCES_ADDED", {
+                    "job_id": job_id,
+                    "urls": list(plan.urls),
+                    "discovered_urls": sorted(discovered_urls),
+                    "query": broader_query,
+                    "reason": "broadened_replan",
+                })
                 fetched = await backend.fetch(
                     query=broader_query, urls=plan.urls, instructions=plan.instructions,
                     max_pages=max_pages,
-on_page_done=self._page_emitter(_emit, job_id),
+                    on_page_done=self._page_emitter(_emit, job_id),
                     timeout_s=timeout_s,
                     job_id=f"{job_id}_retry",
                 )

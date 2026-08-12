@@ -116,7 +116,24 @@ export interface CrawlerStartedMsg {
   type: 'crawler_started'
   query: string
   url_count: number
+  /** The PLANNED source set, not just its size — the plan card shows the user
+   * which sources the agent intends to read before it reads them. Optional: the
+   * user-initiated path and older emitters send only url_count. */
+  urls?: string[]
+  /** Subset of `urls` that came from vision discovery rather than the planner. */
+  discovered_urls?: string[]
   session_id?: string
+}
+/** Sources ADDED mid-run — a broadened re-plan, or URLs the vision model found
+ * by typing a query into a search engine. The plan card must APPEND these; the
+ * planned set at CRAWLER_STARTED is not final. */
+export interface CrawlerSourcesAddedMsg {
+  type: 'crawler_sources_added'
+  job_id?: string
+  urls: string[]
+  discovered_urls?: string[]
+  query?: string
+  reason?: string
 }
 export interface CrawlerPageMsg {
   type: 'crawler_page_fetched'

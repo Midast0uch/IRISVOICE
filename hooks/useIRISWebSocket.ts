@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useSyncExternalStore } from "react"
-import type { OpenTabMsg, CloseTabMsg, CrawlerStartedMsg, CrawlerPageMsg, CrawlerErrorMsg, CrawlerCompleteMsg, CrawlerProgressMsg, CrawlerPhaseMsg, CrawlerVisionActionMsg, CrawlerSourceParkedMsg } from "@/types/iris"
+import type { OpenTabMsg, CloseTabMsg, CrawlerStartedMsg, CrawlerPageMsg, CrawlerErrorMsg, CrawlerCompleteMsg, CrawlerProgressMsg, CrawlerPhaseMsg, CrawlerVisionActionMsg, CrawlerSourceParkedMsg, CrawlerSourcesAddedMsg } from "@/types/iris"
 
 // WebSocket connection states
 type ConnectionState = "connecting" | "connected" | "disconnected" | "error"
@@ -1352,6 +1352,19 @@ export function useIRISWebSocket(
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('iris:crawler_source_parked', {
             detail: message as unknown as CrawlerSourceParkedMsg
+          }))
+        }
+        break
+      }
+
+      // Sources added mid-run (broadened re-plan / vision search discovery). The
+      // plan card appends them — the set announced at crawler_started is not
+      // final, so without this the card keeps showing sources the agent has
+      // already moved on from.
+      case "crawler_sources_added": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:crawler_sources_added', {
+            detail: message as unknown as CrawlerSourcesAddedMsg
           }))
         }
         break

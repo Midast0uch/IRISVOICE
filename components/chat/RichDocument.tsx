@@ -24,8 +24,32 @@ interface RichDocumentProps {
   trust?: string
   // Document-rehydration provenance (REQ-5): source URLs + HAR path so a
   // re-hydrated research doc shows its citations, never as bare [n].
-  sources?: { url: string; title: string }[]
+  /** Provenance list. `status` is optional so a re-hydrated research doc (which
+   * only knows its final citations) renders exactly as before, while a LIVE plan
+   * card can show each source's current outcome as the run progresses. */
+  sources?: {
+    url: string
+    title: string
+    status?: "planned" | "reading" | "read" | "blocked" | "parked"
+    discovered?: boolean
+    reason?: string
+  }[]
   harPath?: string | null
+}
+
+/** Per-source outcome marker for the live plan card.
+ *
+ * A planned-but-not-yet-read source must LOOK unread: showing every source
+ * identically is what let a run that actually read one page of five present as
+ * though it had read all five. `blocked`/`parked` are stated outright rather
+ * than omitted — a source the agent could not use is information the user needs,
+ * not noise to hide (REQ-15: an answer not built on retrieved content says so). */
+const _SOURCE_MARK: Record<string, { glyph: string; label: string; dim: number }> = {
+  planned: { glyph: "○", label: "queued", dim: 0.45 },
+  reading: { glyph: "◍", label: "reading", dim: 0.8 },
+  read: { glyph: "●", label: "read", dim: 1 },
+  blocked: { glyph: "⊘", label: "blocked by the site", dim: 0.5 },
+  parked: { glyph: "⏸", label: "parked", dim: 0.5 },
 }
 
 /**
@@ -212,20 +236,61 @@ export function RichDocument({
                 Sources
               </span>
               <ul className="mt-1 space-y-0.5">
-                {sources.map((s, i) => (
-                  <li key={s.url} className="text-[9px] leading-tight">
-                    <a
-                      href={s.url}
-                      target="_blank"
-                      rel="noreferrer noopener"
-                      className="hover:brightness-125 transition-all duration-150"
-                      style={{ color: glowColor }}
-                      title={s.url}
+                {sources.map((s, i) => {
+                  // No status = a re-hydrated research doc listing its final
+                  // citations. It renders exactly as before: no marker, full
+                  // opacity. Only a LIVE plan card carries per-source outcomes.
+                  const mark = s.status ? _SOURCE_MARK[s.status] : undefined
+                  return (
+                    <li
+                      key={s.url}
+                      className="text-[9px] leading-tight flex items-baseline gap-1"
+                      style={mark ? { opacity: mark.dim } : undefined}
                     >
-                      {i + 1}. {s.title || s.url}
-                    </a>
-                  </li>
-                ))}
+                      {mark && (
+                        <span
+                          aria-hidden
+                          className="shrink-0"
+                          style={{ color: glowColor }}
+                        >
+                          {mark.glyph}
+                        </span>
+                      )}
+                      <a
+                        href={s.url}
+                        target="_blank"
+                        rel="noreferrer noopener"
+                        className="hover:brightness-125 transition-all duration-150"
+                        style={{ color: glowColor }}
+                        title={s.url}
+                      >
+                        {i + 1}. {s.title || s.url}
+                      </a>
+                      {/* State the outcome in WORDS, not colour alone — the
+                          glyph and the dimming are both inaccessible on their
+                          own, and "blocked" is exactly the fact a user must not
+                          have to infer. Omitted for `read`, where the default
+                          reading is already correct. */}
+                      {mark && s.status !== "read" && (
+                        <span
+                          className="shrink-0 text-[8px] italic"
+                          style={{ color: "rgba(255,255,255,0.35)" }}
+                        >
+                          {s.reason || mark.label}
+                        </span>
+                      )}
+                      {s.discovered && (
+                        <span
+                          className="shrink-0 text-[8px]"
+                          style={{ color: "rgba(255,255,255,0.25)" }}
+                          title="found by searching, not from the original plan"
+                        >
+                          found mid-run
+                        </span>
+                      )}
+                    </li>
+                  )
+                })}
               </ul>
               {harPath && (
                 <p className="text-[8px] mt-1" style={{ color: "rgba(255,255,255,0.2)" }}>

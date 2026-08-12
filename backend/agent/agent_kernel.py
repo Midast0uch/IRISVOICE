@@ -3255,7 +3255,12 @@ class AgentKernel:
         # Phase 4 (chat-card-redesign): if the agent includes an existing
         # document_id in its `show` payload, revise that document in place
         # (bumped revision + updated:True) instead of rendering a new card.
-        existing_id = show.get("document_id")
+        # Fold into the PLAN card when this turn opened one. Minting a fresh
+        # document_id here would leave the plan card sitting above the answer as
+        # a second, stale card describing work that is already finished — the
+        # design calls for one card that fills in, and this is the point where it
+        # stops being a plan and becomes the answer.
+        existing_id = show.get("document_id") or self._plan_document_id(turn_id)
         if existing_id and self.update_document(
             existing_id,
             content=show.get("content", ""),
@@ -3413,6 +3418,105 @@ class AgentKernel:
             )
             return "untrusted"
         return trust
+
+    # ── The plan prism card ────────────────────────────────────────────────
+    # One card per turn, emitted at PLAN time and revised in place: it starts as
+    # the steps the agent intends to take, fills in with the sources as the crawl
+    # reads them, and finally carries the answer. It is the SAME document
+    # throughout — a real DOCUMENT_RENDER with a stable document_id, so it
+    # persists and rehydrates like any other card rather than being a transient
+    # overlay that vanishes on reload.
+    #
+    # The live per-source detail (queued / reading / read / blocked / parked) is
+    # applied by the frontend from the crawler event stream it already consumes.
+    # Re-emitting the document on every page event would put a document write on
+    # the crawl's hot path for information the client already has.
+    _PLAN_DOC_MAX_TURNS = 32
+
+    def _plan_document_id(self, turn_id: Optional[str]) -> Optional[str]:
+        """The plan card's document_id for *turn_id*, if one was emitted."""
+        if not turn_id:
+            return None
+        return getattr(self, "_plan_doc_ids", {}).get(turn_id)
+
+    def _emit_plan_document(
+        self,
+        plan_title: str,
+        steps: list,
+        turn_id: Optional[str],
+        conversation_id: str,
+    ) -> Optional[str]:
+        """Render the plan as a prism card and remember its id for this turn.
+
+        Returns the document_id, or None if it could not be emitted (never
+        raises — a card is not worth failing a task over).
+        """
+        try:
+            import uuid
+
+            from backend.agent.event_bus import IRISStreamEvent, get_event_bus
+
+            document_id = str(uuid.uuid4())
+            lines: list[str] = []
+            if plan_title:
+                lines.append(f"**{plan_title}**")
+                lines.append("")
+            for _i, _s in enumerate(steps, start=1):
+                lines.append(f"{_i}. {_s.get('description') or _s.get('toolName') or 'step'}")
+            show = {"format": "markdown", "content": "\n".join(lines), "alternatives": []}
+
+            self._store_document_data(
+                document_id=document_id,
+                show=show,
+                trust="trusted",
+                turn_id=turn_id,
+                conversation_id=conversation_id,
+            )
+
+            # Bounded: the kernel is cached PER CONVERSATION, so an unbounded map
+            # would grow for the life of that conversation. Only the current
+            # turn's id is ever read; older entries are kept purely so a late
+            # revision can still find its card.
+            _ids = getattr(self, "_plan_doc_ids", None)
+            if _ids is None:
+                _ids = {}
+                self._plan_doc_ids = _ids
+            if turn_id:
+                _ids[turn_id] = document_id
+                while len(_ids) > self._PLAN_DOC_MAX_TURNS:
+                    _ids.pop(next(iter(_ids)))
+
+            get_event_bus().emit(
+                IRISStreamEvent.DOCUMENT_RENDER,
+                data={
+                    "format": "markdown",
+                    "content": show["content"],
+                    "alternatives": [],
+                    "trust": "trusted",
+                    "document_id": document_id,
+                    "turn_id": turn_id,
+                    "conversation_id": conversation_id,
+                    "sources": [],
+                    "har_path": None,
+                    # The card is a PLAN, not an answer. The frontend must not
+                    # treat it as this turn's rendered output: it suppresses a
+                    # turn's plain-text response when a document exists for that
+                    # turn, and swallowing the answer behind a plan is strictly
+                    # worse than showing no plan at all.
+                    "pending": True,
+                    "kind": "plan",
+                },
+                turn_id=turn_id,
+                conversation_id=conversation_id,
+            )
+            logger.info(
+                "[AgentKernel] PLAN_CARD doc=%s conv=%s turn=%s steps=%d",
+                document_id, conversation_id, turn_id, len(steps),
+            )
+            return document_id
+        except Exception as exc:  # noqa: BLE001 — never block the task on a card
+            logger.warning("[AgentKernel] plan card emit failed: %s", exc)
+            return None
 
     def _store_document_data(
         self,
@@ -5115,6 +5219,12 @@ class AgentKernel:
                                 origin="initial",
                             ),
                             session_id=session_id or self.session_id,
+                        )
+                        self._emit_plan_document(
+                            plan_title=_plan.plan_title or "",
+                            steps=_steps,
+                            turn_id=getattr(self, "_current_turn_id", None),
+                            conversation_id=self.conversation_id,
                         )
                     except Exception:
                         pass  # never block execution on an event emission failure
