@@ -1256,7 +1256,17 @@ export function ChatWing({
         isPinned: false,
         lastMessagePreview: text.substring(0, 60),
       }
-      setConversations(prev => [...prev, newConv])
+      // Replace-by-id rather than blind append. The backend used to hand out an
+      // id that already existed (its auto-counter restarted at conv-1 on every
+      // restart), and appending produced two entries with the same key — React:
+      // "Encountered two children with the same key, `conv-1`", which silently
+      // duplicates or omits rows. The store no longer collides, but the list
+      // must not be one bad id away from corrupting its own rendering.
+      setConversations(prev =>
+        prev.some(c => c.id === newConv.id)
+          ? prev.map(c => (c.id === newConv.id ? newConv : c))
+          : [...prev, newConv],
+      )
       setActiveConversationId(threadId!)
       // Also rebind the WS hook's active thread. useIRISWebSocket declares
       // itself authoritative for it and seeds it from localStorage DELIBERATELY

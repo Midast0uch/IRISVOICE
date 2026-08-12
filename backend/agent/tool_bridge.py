@@ -2522,6 +2522,36 @@ _agent_tool_bridge: Optional[AgentToolBridge] = None
 
 
 
+# Crawler events forwarded to the browser panel, with the keys a consumer would
+# break on if they were missing. Membership here is the ONLY gate — the payload
+# itself is forwarded whole, so adding a field to an event needs no edit in this
+# file. That is deliberate: the previous per-event allowlist silently dropped
+# job_id, then the progress emitter, then capture_page, each time leaving both
+# ends of the seam correct and the middle broken.
+#
+# The WS `type` is the lowercased event name, which is already what the frontend
+# switches on (see useIRISWebSocket).
+_UI_EVENT_DEFAULTS: dict = {
+    "CRAWLER_STARTED": {"query": "", "url_count": 0, "urls": []},
+    "CRAWLER_PAGE_FETCHED": {
+        "url": "", "page_number": 0, "total": 0, "host": "", "job_id": "",
+        "title": "",
+        # The capture ADDRESS. Defaulting it to page_number would silently
+        # reinstate the 404 this table exists to prevent, so it defaults to
+        # nothing and the client decides how to degrade.
+        "capture_page": None, "capture_available": True,
+    },
+    "CRAWLER_SOURCES_ADDED": {"urls": [], "job_id": ""},
+    "CRAWLER_PHASE": {"phase": "", "phase_sequence": 0},
+    "CRAWLER_PROGRESS": {"stage": "", "message": ""},
+    "CRAWLER_VISION_ACTION": {"job_id": "", "url": "", "kind": ""},
+    "CRAWLER_SOURCE_PARKED": {"job_id": "", "url": ""},
+    "CRAWLER_COMPLETE": {"page_count": 0, "summary": ""},
+    "CRAWLER_ERROR": {"message": "crawl error"},
+    "OPEN_TAB": {"tab_type": "browser", "id": "", "title": "", "url": "", "data": None},
+}
+
+
 def _crawl_ui_emitter(session_id: str):
     """Forward orchestrator crawl events to the browser panel (REQ-16 AC6-AC9).
 
@@ -2594,43 +2624,38 @@ def _crawl_ui_emitter(session_id: str):
                 except Exception:
                     pass  # never block the crawl on a UI emit
 
-            if ev == "CRAWLER_STARTED":
-                _send({"type": "crawler_started",
-                       "query": pl.get("query", ""),
-                       "url_count": pl.get("url_count", 0)})
-            elif ev == "CRAWLER_PAGE_FETCHED":
-                # job_id and title are REQUIRED, not decorative. The panel
-                # builds /api/browser/capture/{job_id}/{page_number} from them,
-                # and dark-glass-dashboard's listener bails on the first line
-                # (`if (!d.url || !d.job_id || d.page_number == null) return`)
-                # when job_id is absent — so dropping it here meant no web tab
-                # was ever created and the panel URL never changed, while the
-                # overlay animated normally because crawler_started needs
-                # nothing extra. The orchestrator has always put job_id in the
-                # payload (see _page_emitter) and the frontend has always read
-                # it; only this forwarder in the middle omitted it. A seam bug:
-                # both ends were correct and independently verified.
-                _send({"type": "crawler_page_fetched",
-                       "url": pl.get("url", ""),
-                       "page_number": pl.get("page_number", 0),
-                       "total": pl.get("total", 0),
-                       "host": pl.get("host", ""),
-                       "job_id": pl.get("job_id", ""),
-                       "title": pl.get("title", "")})
-            elif ev == "OPEN_TAB":
-                _send({"type": "open_tab",
-                       "tab_type": pl.get("tab_type", "browser"),
-                       "id": pl.get("id") or _uuid.uuid4().hex,
-                       "title": pl.get("title", ""),
-                       "url": pl.get("url", ""),
-                       "data": pl.get("data")})
-            elif ev == "CRAWLER_COMPLETE":
-                _send({"type": "crawler_complete",
-                       "page_count": pl.get("page_count", 0),
-                       "summary": pl.get("summary", "")})
-            elif ev == "CRAWLER_ERROR":
-                _send({"type": "crawler_error",
-                       "message": pl.get("message", "crawl error")})
+            # Forward the payload WHOLE, and map the event name generically.
+            #
+            # This was a hand-written allowlist per event, and it had failed the
+            # same way three times: it dropped job_id (no web tab was ever
+            # created), then it dropped the progress emitter, and most recently
+            # it dropped capture_page — so the panel fell back to the UI counter
+            # and requested /api/browser/capture/<job>/5 when the bytes were
+            # saved at 101. Live 2026-08-11 22:47, 404 on pages 4 and 5 while
+            # 1.html, 2.html, 102.html, 103.html and 202.html sat on disk.
+            #
+            # Worse, the allowlist gated the EVENTS too: only started /
+            # page_fetched / open_tab / complete / error had a branch, so
+            # CRAWLER_VISION_ACTION, CRAWLER_SOURCE_PARKED, CRAWLER_PHASE and
+            # CRAWLER_SOURCES_ADDED never reached the client at all on the agent
+            # path — the particle cursor and the parked-source notice had
+            # nothing to render from, which is why they were never seen live.
+            #
+            # A forwarder must not be a place where fields go to die. Every
+            # crawler event now forwards its whole payload under the lowercased
+            # event name, which is exactly the type string the frontend already
+            # switches on. Defaults are applied only for the keys a consumer
+            # would break on if they were absent; anything new rides along
+            # without needing an edit here.
+            _defaults = _UI_EVENT_DEFAULTS.get(ev)
+            if _defaults is not None:
+                _msg = {"type": ev.lower(), **_defaults}
+                _msg.update({k: v for k, v in (pl or {}).items() if k != "type"})
+                if ev == "OPEN_TAB" and not _msg.get("id"):
+                    # The one field the panel needs that the payload cannot
+                    # supply: a tab with no id cannot be addressed or closed.
+                    _msg["id"] = _uuid.uuid4().hex
+                _send(_msg)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[crawl-ui] emit skipped (%s): %s", ev, exc)
 

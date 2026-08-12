@@ -15,17 +15,25 @@ WAL mode: enabled for concurrent read/write safety.
 
 from __future__ import annotations
 
+import logging
 import os
+import re
 import sqlite3
 import threading
 import time
 from datetime import datetime, timezone
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
 # In-memory hot cache (the dict is the primary read path; SQLite is the
 # persistence layer). The cache is rebuilt from DB on load_from_db().
 _conversations: dict[str, dict[str, Any]] = {}
+# Highest "conv-N" suffix issued. Seeded from the persisted store by
+# load_from_db() — see the note there for what leaving it at 0 across a restart
+# actually did.
 _counter = 0
+_CONV_ID_RE = re.compile(r"conv-(\d+)")
 _lock = threading.RLock()
 
 # Database path — can be overridden via the IRIS_CONVERSATIONS_DB env var
@@ -115,7 +123,17 @@ def load_from_db() -> None:
 
     Call this at backend startup so conversations persist across restarts.
     Tests call it to simulate a restart (clear in-memory, reload from disk).
+
+    Restores ``_counter`` as well as the conversations. Reloading the threads but
+    NOT the counter is what made every backend restart start issuing "conv-1"
+    again: the id already existed with 15 messages behind it, so the first new
+    conversation of each run was handed an OLD thread. The user's prompt landed
+    in a previous conversation, that conversation's documents rehydrated
+    alongside it, and the frontend rendered two entries with the same id
+    ("Encountered two children with the same key, `conv-1`"). One unrestored
+    global, three symptoms.
     """
+    global _counter
     with _lock:
         conn = _get_conn()
         _conversations.clear()
@@ -148,6 +166,21 @@ def load_from_db() -> None:
                     }
                 )
 
+        # Resume the auto-id sequence past every "conv-N" already on disk.
+        # Derived from the ids themselves rather than from a stored counter, so
+        # it is self-correcting: it cannot drift out of step with the data, and
+        # it still holds for a store whose ids were minted before this existed.
+        _highest = 0
+        for _cid in _conversations:
+            _m = _CONV_ID_RE.fullmatch(_cid)
+            if _m:
+                _highest = max(_highest, int(_m.group(1)))
+        _counter = _highest
+        logger.info(
+            "[conversation_store] loaded %d conversations; auto-id counter resumes at %d",
+            len(_conversations), _counter + 1,
+        )
+
 
 # Auto-load on import so existing conversations are available immediately
 try:
@@ -171,14 +204,36 @@ def create_conversation(
     global _counter
     with _lock:
         if conv_id is None:
+            # Skip ids already taken. `_counter` is seeded from the store on
+            # load, but a store written before that seeding existed — or one
+            # holding ids minted by another path — can still collide, and a
+            # collision here is not cosmetic: it hands the caller a thread that
+            # already has messages in it.
             _counter += 1
             conv_id = f"conv-{_counter}"
+            while conv_id in _conversations:
+                logger.warning(
+                    "[conversation_store] auto id %s is already taken — skipping. "
+                    "A new conversation must never be handed an existing thread.",
+                    conv_id,
+                )
+                _counter += 1
+                conv_id = f"conv-{_counter}"
         elif conv_id in _conversations:
             # Idempotent: return existing conversation
             return _conversations[conv_id]
+        if conv_id in _conversations:
+            # Belt-and-braces: never REPLACE a cached conversation with an empty
+            # one. That is what merged threads even when the DB row survived —
+            # `INSERT OR IGNORE` kept the row, but the cache entry (and with it
+            # the loaded message list) was overwritten, so the existing thread
+            # looked empty and the new turn appended into it.
+            return _conversations[conv_id]
         conv = {
             "id": conv_id,
-            "title": title or f"Conversation {_counter + 1}",
+            # Was `_counter + 1`, which named the NEXT conversation rather than
+            # this one — "conv-7" was titled "Conversation 8".
+            "title": title or f"Conversation {_counter}",
             "created_at": _now(),
             "updated_at": _now(),
             "messages": [],

@@ -97,6 +97,11 @@ interface TaskUpdateDetail {
   error?: string
   outcome?: string
   steps_completed?: number
+  /** Steps the DER loop recorded as failed, sent on task:done / task:fail. The
+   * backend has always sent this and the card ignored it, so a run that failed a
+   * step showed no sign of it once the card stopped moving. */
+  failed_steps?: Array<{ step_id?: string; description?: string }>
+  cancelled?: boolean
   /** REQ-4: structured phase label from the crawl pipeline. */
   phase?: string
   /** Stable phase sequence number (1..N) for disambiguating re-emission. */
@@ -412,6 +417,29 @@ export function useTaskProgress(): TaskProgress {
           // action + phase + learning signal. Also strip any live detail left
           // on a step that never got a terminal event â€” otherwise a finished
           // card keeps advertising a page it is no longer reading.
+          //
+          // RESOLVE every step that is still mid-flight. Stripping activeDetail
+          // but leaving `status: "working"` is what left the card spinning after
+          // the run had ended ("stuck in the work phase after the search
+          // ended"): TaskListCard renders a working step's Xur indefinitely, and
+          // a step whose completion event was lost — the step_id mismatch
+          // recorded in pin_517dfcbda150 is one way that happens — never got one.
+          //
+          // Resolved HONESTLY, not by blanket-marking done:
+          //   * a step the backend named in `failed_steps` is a failure, and now
+          //     says so instead of quietly reading as finished;
+          //   * a step still `working` when the loop reports success did finish,
+          //     so it completes — but on a FAILED task it becomes an error, not
+          //     a success;
+          //   * a step still `pending`/`unknown` never ran, so it is `skipped`.
+          //     Marking those done would claim work that never happened, which
+          //     is exactly the overstatement the card exists to prevent.
+          const failedIds = new Set(
+            (d.failed_steps || [])
+              .map((f) => f?.step_id)
+              .filter((x): x is string => !!x),
+          )
+          const taskFailed = d.type === "task:fail" || d.outcome === "cancelled"
           setState({
             ...prev,
             isWorking: false,
@@ -419,12 +447,23 @@ export function useTaskProgress(): TaskProgress {
             phase: undefined,
             phaseSequence: undefined,
             learningSignal: undefined,
-            steps: prev.steps.map((s) =>
-              s.activeDetail
-                ? { ...s, activeDetail: undefined,
-              url: undefined, activeProgress: undefined }
-                : s
-            ),
+            steps: prev.steps.map((s) => {
+              const cleared = {
+                ...s,
+                activeDetail: undefined,
+                url: undefined,
+                activeProgress: undefined,
+              }
+              if (failedIds.has(s.id)) return { ...cleared, status: "fail" as const }
+              if (s.status === "working") {
+                const resolved: TaskStepStatus = taskFailed ? "error" : "done"
+                return { ...cleared, status: resolved }
+              }
+              if (s.status === "pending" || s.status === "unknown") {
+                return { ...cleared, status: "skipped" as const }
+              }
+              return cleared
+            }),
           })
           break
         }
