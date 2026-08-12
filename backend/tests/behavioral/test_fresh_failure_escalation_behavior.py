@@ -102,7 +102,16 @@ def _make_orch():
 # ══════════════════════════════════════════════════════════════════════════
 
 @pytest.mark.parametrize("reason", [
-    UsabilityReason.CHALLENGE, UsabilityReason.EMPTY, UsabilityReason.TOO_SHORT,
+    # CHALLENGE WAS REMOVED FROM THIS LIST ON PURPOSE, 2026-08-12, and is called
+    # out here because dropping a parametrize case is normally a way of quietly
+    # weakening a test. It is not dropped — it MOVED to
+    # test_fresh_challenge_parks_instead_of_escalating below, which asserts the
+    # behaviour the case now has. fetch.vision no longer advertises CHALLENGE:
+    # escalating a wall to a headless browser measured 0/3 live over 240s+188s+
+    # 243s and returned no content. EMPTY and TOO_SHORT are pages the crawl
+    # REACHED but could not extract from, which is what vision is for, so they
+    # stay here unchanged.
+    UsabilityReason.EMPTY, UsabilityReason.TOO_SHORT,
 ])
 def test_fresh_failure_escalates_to_vision_and_vision_result_wins(reason):
     """The Problem-1 regression guard: a FIRST-TIME crawl failure with a
@@ -133,6 +142,45 @@ def test_fresh_failure_escalates_to_vision_and_vision_result_wins(reason):
     # REQ-17 AC6 / REQ-18 AC2: the rescued page carries provenance, exactly
     # like the raced path already does for a history-based escalation.
     assert result.pages[0].metadata.get("content_origin") == "vision"
+
+
+def test_fresh_challenge_parks_instead_of_escalating():
+    """The CHALLENGE case, moved out of the escalation parametrize above.
+
+    It must do BOTH halves: not burn a vision session on a wall it cannot pass,
+    and not vanish. A source the agent could not read has to remain visible to
+    the user — dropping it silently just produces an answer with fewer citations
+    and no explanation (REQ-13 AC4 / REQ-15).
+    """
+    url = "https://walled.example/guide"
+    crawl = _FakeCrawlCap({url: FetchOutcome(
+        url=url, capability="fetch.crawl", page=None,
+        verdict=UsabilityVerdict(
+            usable=False, reason=UsabilityReason.CHALLENGE, detail="cf-turnstile",
+        ),
+        duration_ms=1,
+    )})
+    vision = _FakeVisionCap()
+    register_capability(crawl)
+    register_capability(vision)
+    orch = _make_orch()
+    parked: list = []
+    orch._park_source = lambda job_id, u, kind, emit: parked.append((u, kind))
+
+    result = asyncio.run(orch.dispatch_urls(
+        [url], query="q", job_id="j-wall", concurrency_limit=2,
+    ))
+
+    assert crawl.calls == [url], "crawl.fetch_one was not tried first"
+    assert vision.calls == [], (
+        f"a walled page was escalated to fetch.vision ({vision.calls}) — this is "
+        f"the four-minute 0/3 path the advertisement change removed"
+    )
+    assert not result.pages, "a challenged page must not yield content"
+    assert [u for u, _ in parked] == [url], (
+        f"the walled source was not parked ({parked}) — skipping the escalation "
+        f"must not mean skipping the report"
+    )
 
 
 def test_escalation_fires_at_most_once_per_url():
@@ -262,7 +310,17 @@ def test_history_based_race_path_still_used_when_history_present():
     capabilities are called even though crawl's outcome is already usable.
     The new sequential escalation only ever calls vision AFTER an unusable
     crawl outcome, so if this fired instead of the race, vision.calls would
-    be empty (a usable crawl outcome never triggers escalation)."""
+    be empty (a usable crawl outcome never triggers escalation).
+
+    FIXTURE INPUT CHANGED, 2026-08-12, and called out because the assertions are
+    untouched: the recorded history was `last_error: "challenge"`. The race is
+    advertisement-gated like everything else, and fetch.vision no longer
+    advertises CHALLENGE — so a challenge-history domain correctly stops racing
+    too. Knowing in advance that a domain walls us does not make vision better at
+    walls; it just wastes the session earlier. The history is now `empty`, a
+    reason vision DOES recover, so this still exercises the race mechanism that
+    REQ-10 AC3 is about rather than the reason that no longer routes.
+    """
     url = "https://known-bad.example/x"
     crawl = _FakeCrawlCap({url: _usable_outcome(url)})
     vision = _FakeVisionCap()  # would only be called by escalation if crawl failed
@@ -275,7 +333,7 @@ def test_history_based_race_path_still_used_when_history_present():
         async def resolve(self, query, quick=False):
             return {
                 "hit": True,
-                "sources": [{"url": url, "domain": "known-bad.example", "last_error": "challenge"}],
+                "sources": [{"url": url, "domain": "known-bad.example", "last_error": "empty"}],
                 "coverage_score": 1.0, "topics": ["q"],
             }
 

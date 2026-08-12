@@ -287,9 +287,24 @@ def test_kill_switch_off_behaviour_identical(monkeypatch):
 
 
 def test_websearch_escalation_by_advertisement():
-    """The escalation BT-12 path, driven through the node router: a fresh
-    CHALLENGE on a no-history domain is recovered by fetch.vision's
-    advertisement — the same outcome the hand-written branch produced."""
+    """A fresh CHALLENGE is NOT escalated to vision, and is NOT silently lost.
+
+    CONTRACT CHANGE, 2026-08-12, called out because it inverts what this test
+    previously asserted. It used to require that a fresh CHALLENGE escalate to
+    fetch.vision via advertisement (BT-8/BT-12's escalation). fetch.vision no
+    longer advertises CHALLENGE, so that requirement is gone by decision, not by
+    accident: escalating a wall to a headless browser measured 0/3 across three
+    live attempts costing 240s + 188s + 243s, four minutes of a seven-minute
+    turn, while contributing no content at all.
+
+    The mechanism this test exists to protect — the router recovering purely
+    from advertisement, with no hand-written branch — is unchanged and still
+    covered for the reasons vision DOES advertise (see the EMPTY case below and
+    test_websearch_budget_contract). What is asserted here now is the other half
+    of the decision: a walled source must be PARKED and reported, never dropped
+    on the floor, because an unread source the user cannot see is worse than a
+    slow one (REQ-13 AC2/AC4, REQ-15).
+    """
     from backend.crawler.capabilities import (
         CAPABILITIES,
         FetchOutcome,
@@ -346,14 +361,25 @@ def test_websearch_escalation_by_advertisement():
 
         orch = CrawlOrchestrator()
         orch._backend_override = None
+        parked: list = []
+        orch._park_source = lambda job_id, u, kind, emit: parked.append((u, kind))
         url = "https://palworld.wiki.gg/wiki/Palworld_Wiki"
         result = asyncio.run(orch.dispatch_urls(
             [url], query="q", job_id="bt8", concurrency_limit=2,
         ))
-        assert vision.calls == [url], (
-            "BT-8: fresh CHALLENGE was not escalated to fetch.vision — the "
-            "advertisement-driven path must reproduce BT-12's escalation"
+        assert vision.calls == [], (
+            f"a walled page was escalated to fetch.vision ({vision.calls}). "
+            f"Vision does not advertise CHALLENGE any more: a wall costs it "
+            f"minutes and it loses anyway, so the run must park and move on."
         )
-        assert result.pages and result.pages[0].url == url
+        assert not result.pages, (
+            "a challenged page yielded content — the fake crawl returns no page, "
+            "so anything here means the challenge verdict was not honoured"
+        )
+        assert [u for u, _ in parked] == [url], (
+            f"the walled source was not parked ({parked}). Skipping the "
+            f"escalation must not mean skipping the REPORT: a source the agent "
+            f"could not read has to stay visible to the user."
+        )
     finally:
         CAPABILITIES.clear()

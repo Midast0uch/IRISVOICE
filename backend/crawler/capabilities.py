@@ -190,12 +190,29 @@ def _declare_node_metadata(cap: FetchCapability) -> None:
     })
     _recovers: frozenset = frozenset()
     if cap.name == "fetch.vision":
-        # BT-12 pins this exact set: challenge/empty/too_short escalate;
-        # transport_error (robots.txt refusal, DNS) NEVER routes around
-        # compliance (REQ-5 AC3 / REQ-8 AC3).
-        _recovers = frozenset({
-            Reason.CHALLENGE, Reason.EMPTY, Reason.TOO_SHORT,
-        })
+        # CHALLENGE IS DELIBERATELY NOT HERE ANY MORE.
+        #
+        # Advertising it made fetch.vision a challenge-recovery node, which meant
+        # it only ever ran on URLs the crawl had already failed — in practice,
+        # Cloudflare-walled pages. A headless browser fails those too. Measured
+        # live 2026-08-11 (job 40e4e523…): three escalations, 240s + 188s + 243s,
+        # ALL THREE returning status=challenge. A 0/3 success rate for roughly
+        # four minutes of a seven-minute turn, while the one source that did
+        # yield content came from the ordinary crawl.
+        #
+        # The inversion that caused: vision spent all its time on the job it is
+        # worst at and none on the job it exists for — being the live reading
+        # surface on pages we CAN reach, scrolling the iframe so the user watches
+        # the search happen. A walled page now parks immediately (REQ-13 AC2
+        # already handles that path) and the run moves to the next Exa URL, which
+        # is cheap because the planner returns more candidates than it dispatches.
+        #
+        # EMPTY / TOO_SHORT are RETAINED: those are pages the crawl reached but
+        # could not extract from — reachable, and exactly where a reading pass
+        # adds content instead of fighting a wall. transport_error stays absent:
+        # robots.txt refusal and DNS must never be routed around (REQ-5 AC3 /
+        # REQ-8 AC3), which is unchanged.
+        _recovers = frozenset({Reason.EMPTY, Reason.TOO_SHORT})
     elif cap.name == "search_discovery":
         _recovers = frozenset({Reason.NO_CANDIDATES})
     try:

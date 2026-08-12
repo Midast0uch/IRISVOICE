@@ -60,6 +60,19 @@ _DEFAULT_TIMEOUT_S = float(os.environ.get("CRAWL_SUBPROCESS_TIMEOUT_S", "90"))
 # REQ-10 AC1: max distinct URLs fetched concurrently by dispatch_urls().
 _DEFAULT_CONCURRENCY = int(os.environ.get("CRAWL_CONCURRENCY", "3"))
 
+# THE RUN CEILING. One deadline for the whole dispatch, enforced with wait_for
+# rather than checked and hoped for.
+#
+# Every bound before this one was per-subsystem and advisory: the session had
+# max_wall_ms=60_000 and ran to elapsed_ms=243_112 because the code that noticed
+# only logged, and the crawl subprocess had its own 90s that said nothing about
+# the run as a whole. Measured end to end on 2026-08-11: 7m43s for five URLs.
+#
+# The number of sources must NOT change how long a search takes — a run gathers
+# what it can inside the ceiling and reports honestly on the rest, rather than
+# growing without limit as the planner returns more candidates.
+_RUN_BUDGET_MS = int(os.environ.get("IRIS_WEBSEARCH_MAX_WALL_MS", "90000"))
+
 # Problem-1 fix (REQ-10 escalation tier, REQ-6 AC1 edge): fresh-failure
 # reasons where an interactive vision session plausibly recovers content
 # crawl could not. TRANSPORT_ERROR is deliberately EXCLUDED — it is the
@@ -856,6 +869,14 @@ class CrawlOrchestrator:
                     # (AC4) instead of blocking on them.
                     if wall is not None:
                         self._park_source(job_id, url, wall.value, _emit)
+                    elif outcome.verdict.reason == UsabilityReason.CHALLENGE:
+                        # A wall found by the CRAWL, not by vision. This used to
+                        # be invisible here because a challenge always escalated
+                        # and vision reported the wall instead. Vision no longer
+                        # takes challenges, so without this a walled source would
+                        # be silently dropped — the run would simply have fewer
+                        # citations and never say why (REQ-13 AC4 / REQ-15).
+                        self._park_source(job_id, url, "challenge", _emit)
                     else:
                         logger.info(
                             "[CrawlOrchestrator] dispatch job_id=%s url=%s cap=%s "
@@ -867,6 +888,7 @@ class CrawlOrchestrator:
         # REQ-16: concurrency limit reached -> queued, never dropped; the
         # semaphore queues naturally, and we log when a task had to wait.
         queued_count = 0
+        _run_deadline = time.monotonic() + (_RUN_BUDGET_MS / 1000.0)
 
         async def _dispatch_with_defer_log(idx: int, url: str) -> None:
             nonlocal queued_count
@@ -877,7 +899,27 @@ class CrawlOrchestrator:
                     "(REQ-16 deferral, not dropped)",
                     job_id, url, queued_count,
                 )
-            await _dispatch_one(idx, url)
+            # Enforce the run ceiling on EVERY url, with wait_for so it actually
+            # interrupts rather than being noticed after the fact. A url that
+            # runs out of budget is parked and SAID so — an unread source has to
+            # be visible, not quietly missing from the citation list (REQ-15).
+            _left = _run_deadline - time.monotonic()
+            if _left <= 0:
+                logger.info(
+                    "[CrawlOrchestrator] run budget spent job_id=%s url=%s — not "
+                    "started (ceiling %dms)", job_id, url, _RUN_BUDGET_MS,
+                )
+                self._park_source(job_id, url, "run_budget", _emit)
+                return
+            try:
+                await asyncio.wait_for(_dispatch_one(idx, url), timeout=_left)
+            except asyncio.TimeoutError:
+                logger.info(
+                    "[CrawlOrchestrator] run budget spent job_id=%s url=%s — "
+                    "cut off after %.1fs (ceiling %dms)",
+                    job_id, url, _left, _RUN_BUDGET_MS,
+                )
+                self._park_source(job_id, url, "run_budget", _emit)
 
         tasks = [
             asyncio.create_task(_dispatch_with_defer_log(i, u))
