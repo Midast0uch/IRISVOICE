@@ -2,7 +2,7 @@
 
 import { useState } from "react"
 import { AnimatePresence, motion } from "framer-motion"
-import { Search } from "lucide-react"
+import { Search, ChevronDown } from "lucide-react"
 import { useBrandColor } from "@/contexts/BrandColorContext"
 import { Xur } from "@/components/Xur"
 import type { TaskStep, TaskStepStatus } from "@/hooks/useTaskProgress"
@@ -75,14 +75,31 @@ export default function TaskListCard({
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -8 }}
       transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
-      className="my-2 w-full"
+      className="my-3 w-full"
     >
+      {/* The plan card sat as bare text directly on the chat background while
+          every document beside it was a glass panel, so a turn read as one
+          finished card plus some loose floating rows. Same surface, same radius,
+          same accent rail as RichDocument — the two now belong to one system.
+          `relative` is also load-bearing: the learning-signal ring below is
+          `absolute inset-0` and had no positioned ancestor here, so it escaped
+          the card and drew against the whole message column. */}
+      <div
+        className="relative rounded-xl px-3 py-2.5"
+        style={{
+          background:
+            "linear-gradient(140deg, rgba(12,13,24,0.55) 0%, rgba(16,17,30,0.62) 100%)",
+          border: `1px solid ${glowColor}1a`,
+          borderLeft: `2px solid ${glowColor}66`,
+          boxShadow: "inset 0 1px 0 rgba(255,255,255,0.05), 0 4px 18px rgba(0,0,0,0.35)",
+        }}
+      >
       {/* REQ-8: subtle Pacman OrbCanvas-style border particles on live
           learning signal. Absolutely positioned so it never shifts layout. */}
       {learningSignal && (
         <span
           aria-hidden
-          className="pointer-events-none absolute inset-0 rounded-2xl"
+          className="pointer-events-none absolute inset-0 rounded-xl"
           style={{
             border: `1px solid ${signalTint[learningSignal]}55`,
             boxShadow: `0 0 14px ${signalTint[learningSignal]}33, inset 0 0 6px ${signalTint[learningSignal]}22`,
@@ -92,7 +109,7 @@ export default function TaskListCard({
         />
       )}
       {/* Header: action core (identity marker) + action badge + progress + collapse toggle */}
-      <div className="flex items-center gap-2.5 mb-2.5">
+      <div className="relative flex items-center gap-2.5 mb-2.5">
         {/* W4 (T24): websearch gets a magnifying glass icon; other actions get the gradient core */}
         {headerTitle.toLowerCase().includes("websearch") ? (
           <span className="relative shrink-0 flex items-center justify-center"
@@ -131,17 +148,44 @@ export default function TaskListCard({
           </span>
         )}
         <span
-          className="px-1.5 py-0.5 rounded text-[9px] font-semibold tracking-wide uppercase"
+          className="px-1.5 py-[3px] rounded text-[9px] font-semibold tracking-[0.12em] uppercase leading-none"
           style={{
             color: glowColor,
-            backgroundColor: `${glowColor}1a`,
-            border: `1px solid ${glowColor}30`,
+            backgroundColor: `${glowColor}14`,
+            border: `1px solid ${glowColor}33`,
           }}
         >
           {headerTitle.toUpperCase()}
         </span>
+
+        {/* Progress rail. A bare "2/5" made the reader do the arithmetic to
+            find out how far along a run was; the bar states it directly, and
+            failures take their share of it in red instead of hiding behind a
+            "·2✕" suffix. */}
+        {steps.length > 0 && (
+          <span
+            className="ml-auto h-[3px] rounded-full overflow-hidden flex shrink-0"
+            style={{ width: 56, background: "rgba(255,255,255,0.08)" }}
+            aria-hidden
+          >
+            <span
+              style={{
+                width: `${(doneCount / steps.length) * 100}%`,
+                background: glowColor,
+                transition: "width 0.35s cubic-bezier(0.22,1,0.36,1)",
+              }}
+            />
+            <span
+              style={{
+                width: `${(failCount / steps.length) * 100}%`,
+                background: "#f87171",
+                transition: "width 0.35s cubic-bezier(0.22,1,0.36,1)",
+              }}
+            />
+          </span>
+        )}
         <span
-          className="ml-auto text-[9px] font-mono tabular-nums"
+          className={`text-[9px] font-mono tabular-nums${steps.length > 0 ? "" : " ml-auto"}`}
           style={{ color: "rgba(255,255,255,0.6)" }}
         >
           {doneCount}/{steps.length}
@@ -164,11 +208,19 @@ export default function TaskListCard({
         <button
           type="button"
           onClick={() => setCollapsed((c) => !c)}
-          className="text-[9px] px-1.5 py-0.5 rounded hover:brightness-125"
+          className="shrink-0 p-1 rounded transition-all duration-150 hover:brightness-125 flex items-center justify-center"
           style={{ color: glowColor, border: `1px solid ${glowColor}30` }}
           aria-label={collapsed ? "Expand plan" : "Collapse plan"}
         >
-          {collapsed ? "▸" : "▾"}
+          {/* The ▸/▾ glyphs render at different heights across fonts, so the
+              header shifted by a pixel on every toggle. One icon, rotated. */}
+          <ChevronDown
+            size={10}
+            style={{
+              transform: collapsed ? "rotate(-90deg)" : "none",
+              transition: "transform 0.2s",
+            }}
+          />
         </button>
       </div>
 
@@ -367,6 +419,7 @@ export default function TaskListCard({
         </motion.div>
         ) : null}
       </AnimatePresence>
+      </div>
     </motion.div>
   )
 }

@@ -4661,14 +4661,49 @@ class IRISGateway:
             # Reset the agent kernel's conversation context so the next
             # voice command or text message starts fresh.  The frontend sends
             # this when the user creates a "New Conversation" in the chat UI.
-            conversation_id = payload.get("conversation_id") or session_id
-            # Point the wake-word voice path at the new thread (same reason as
-            # switch_conversation): _handle_voice falls back to
-            # _active_conversation_id[session_id] when voice_command_start has
-            # no conversation_id, so a wake-word response must target the fresh
-            # conversation, not the one that was just cleared.
-            self._active_conversation_id[session_id] = conversation_id
-            set_active_conversation(session_id, conversation_id)
+            # NO `or session_id` fallback here. "New conversation" means the
+            # user has left the previous thread and the next one does not exist
+            # yet — the frontend deliberately sends no id, because minting one
+            # client-side created an orphan namespace (see chat-view's
+            # handleNewConversation). Defaulting to session_id was worse than
+            # useless: it bound the session to a pseudo-thread and cleared THAT
+            # kernel's context instead of the one the user was actually in,
+            # leaving the real previous thread bound and live. A wake word or a
+            # reconnect then resolved straight back into it — the "new
+            # conversation reverts to the old one" report.
+            #
+            # So: with an explicit id, bind to it. Without one, DROP the binding
+            # and let the first message of the new thread establish it.
+            conversation_id = payload.get("conversation_id")
+            if conversation_id:
+                # Point the wake-word voice path at the new thread (same reason
+                # as switch_conversation): _handle_voice falls back to
+                # _active_conversation_id[session_id] when voice_command_start
+                # carries no conversation_id.
+                self._active_conversation_id[session_id] = conversation_id
+                set_active_conversation(session_id, conversation_id)
+            else:
+                prev_conv = self._active_conversation_id.pop(session_id, None)
+                set_active_conversation(session_id, None)
+                self._logger.info(
+                    "[Chat] new_conversation unbound session %s (was %s) — "
+                    "next message establishes the thread",
+                    session_id,
+                    prev_conv,
+                )
+                # Clear the thread the user just left, not a pseudo-thread.
+                if prev_conv:
+                    try:
+                        get_agent_kernel(prev_conv, session_id).clear_conversation(
+                            prev_conv
+                        )
+                    except Exception as exc:
+                        self._logger.warning(
+                            "[Chat] Failed to clear previous conversation %s: %s",
+                            prev_conv,
+                            exc,
+                        )
+                return
             try:
                 agent_kernel = get_agent_kernel(conversation_id, session_id)
                 agent_kernel.clear_conversation(conversation_id)
@@ -4880,6 +4915,42 @@ class IRISGateway:
                 if not _delivered:
                     # Client disconnected mid-inference â€” buffer for replay on reconnect
                     self._ws_manager.buffer_message(session_id, _final_msg)
+
+                # ── Persist the assistant turn to conversations.db ────────────
+                # The WS text_message path ran the DER turn and delivered the
+                # answer, but NEVER wrote it to the persistent store — only the
+                # REST /api/chat path saved assistant replies (api/chat.py:432).
+                # The frontend saves the USER message via REST, so every
+                # WS-driven thread accumulated exactly one message (live
+                # 2026-08-12: conv-3/conv-4 held only the initial prompt, and
+                # the whole thread vanished on restart). Resolve the turn's
+                # conversation from the session mapping and persist here.
+                try:
+                    from backend.conversation_store import add_message as _store_add
+
+                    _conv_for_turn = self._active_conversation_id.get(
+                        session_id
+                    ) or conversation_id
+                    if _conv_for_turn and response:
+                        _store_add(
+                            _conv_for_turn,
+                            "assistant",
+                            response,
+                            thinking=thinking or None,
+                            turn_id=turn_id,
+                            source="ws_text_message",
+                        )
+                        self._logger.info(
+                            "[WS] persisted assistant turn to conv=%s (len=%d)",
+                            _conv_for_turn, len(response),
+                        )
+                except Exception as _persist_exc:
+                    # A persistence failure must never fail the turn or the UI
+                    # update that just succeeded.
+                    self._logger.warning(
+                        "[WS] assistant-turn persist failed for session %s: %s",
+                        session_id, _persist_exc,
+                    )
 
                 # Clear ChatView typing indicator
                 await self._ws_manager.send_to_client(
@@ -6430,6 +6501,37 @@ class IRISGateway:
             },
         )
 
+        # Push the FULL inference snapshot (providers + role_bindings +
+        # provider_presets + model_catalog) on request_state — the frontend
+        # sends request_state on EVERY open and reconnect (useIRISWebSocket
+        # :415, Tauri path :1954), so this single seam covers page load,
+        # reconnect, remount, drag, and Tauri.  Previously the inference cards
+        # depended on the frontend's one-shot mount-time REST fetch, which
+        # raced backend startup and left the Provider/Model dropdowns empty
+        # until a manual refresh (root-caused 2026-08-12, pin_05511443f03b).
+        # peek_active_kernel NEVER constructs a kernel (71.8s cold measured),
+        # and build_inference_snapshot(None) still returns the full key set
+        # with static provider_presets/model_catalog, so the dropdown
+        # populates even before the first kernel exists.  Reusing the SAME
+        # builder as the other emission sites keeps the key-parity contract
+        # (test_inference_snapshot_key_parity.py) true by construction.
+        try:
+            from backend.agent.inference.snapshot import build_inference_snapshot
+            from backend.agent.agent_kernel import peek_active_kernel
+
+            _kernel = peek_active_kernel(session_id)
+            _router = getattr(_kernel, "_router", None) if _kernel else None
+            _snap = build_inference_snapshot(_router)
+            await self._ws_manager.send_to_client(
+                client_id,
+                {"type": "role_bindings_updated", "payload": _snap},
+            )
+        except Exception as _snap_err:
+            self._logger.warning(
+                "[Session: %s] request_state inference snapshot push failed: %s",
+                session_id, _snap_err,
+            )
+
         # Flush any pending deliveries that were buffered while disconnected
         await self._ws_manager.flush_pending(session_id, client_id)
 
@@ -7259,7 +7361,7 @@ class IRISGateway:
                         "vram_usage_mb": None,
                         "load_progress_percent": None,
                         "error_message": None,
-                        "model_name": "lfm2.5-vl",
+                        "model_name": "lfm2.5-vl-3b",
                         "quantization_enabled": False,
                         "is_available": False,
                     },
@@ -7279,7 +7381,7 @@ class IRISGateway:
                 "error_message": None
                 if available
                 else f"Vision server not running on port {_VISION_PORT}. Enable Vision from the UI or run start_vl.bat.",
-                "model_name": "lfm2.5-vl",
+                "model_name": "lfm2.5-vl-3b",
                 "quantization_enabled": False,
                 "is_available": available,
             }
@@ -7329,7 +7431,7 @@ class IRISGateway:
                         "vram_usage_mb": None,
                         "load_progress_percent": None,
                         "error_message": None,
-                        "model_name": "lfm2.5-vl",
+                        "model_name": "lfm2.5-vl-3b",
                         "quantization_enabled": False,
                         "is_available": False,
                     },
@@ -7368,7 +7470,7 @@ class IRISGateway:
                         "error_message": None
                         if available
                         else "Vision server not running on port 8081",
-                        "model_name": "lfm2.5-vl",
+                        "model_name": "lfm2.5-vl-3b",
                         "quantization_enabled": False,
                         "is_available": available,
                     },
@@ -8467,6 +8569,13 @@ class IRISGateway:
                 kernel = get_agent_kernel(conversation_id, session_id)
                 store = kernel._get_document_store() if kernel is not None else None
                 if store is not None:
+                    # metadata_only stays True. CT-DOC-1 pins this payload as
+                    # metadata-only (`assert "content" not in d`) — the body is
+                    # deliberately NOT carried here and is fetched on expand.
+                    # The blank-card bug this looked like a fix for is handled
+                    # where it belongs: the live render path keys on
+                    # document_id so same-turn documents keep their own bodies,
+                    # and chat-view refuses to draw a card with no body.
                     rows = store.list_for_conversation(
                         conversation_id, metadata_only=True
                     )
@@ -9221,7 +9330,17 @@ class IRISGateway:
                 # viewport_h; scroll: scroll_dx/scroll_dy). Copied over only
                 # when present so an action with no point (navigate/wait/a
                 # failed bounding_box) sends no stray nulls.
-                for _coord_key in ("x", "y", "viewport_w", "viewport_h", "scroll_dx", "scroll_dy"):
+                # scroll_y / scroll_height are what let the panel MIRROR the
+                # scroll into the iframe the user is watching; capture_page is
+                # which captured frame the session is on. This whitelist is the
+                # second place a new field can silently die (the other is
+                # tool_bridge's _UI_EVENT_DEFAULTS, which forwards wholesale) —
+                # anything added to last_action_point must be listed here too.
+                for _coord_key in (
+                    "x", "y", "viewport_w", "viewport_h",
+                    "scroll_dx", "scroll_dy", "scroll_y", "scroll_height",
+                    "capture_page",
+                ):
                     if _coord_key in pl:
                         vision_msg[_coord_key] = pl[_coord_key]
                 asyncio.ensure_future(send(vision_msg))

@@ -179,17 +179,36 @@ export function toolLabel(step: TaskStep): string {
  * and tool:call/result/error). Consumed by XurOrb (OrbBadge) and chat-view
  * (TaskListCard) so there is a single source of truth.
  */
+const EMPTY_PROGRESS: TaskProgress = {
+  isWorking: false,
+  currentStep: 0,
+  totalSteps: 0,
+  steps: [],
+  currentAction: undefined,
+  planTitle: undefined,
+}
+
 export function useTaskProgress(): TaskProgress {
-  const [state, setState] = useState<TaskProgress>({
-    isWorking: false,
-    currentStep: 0,
-    totalSteps: 0,
-    steps: [],
-    currentAction: undefined,
-    planTitle: undefined,
-  })
+  const [state, setState] = useState<TaskProgress>(EMPTY_PROGRESS)
   const ref = useRef(state)
   ref.current = state
+
+  // A plan belongs to the thread that produced it. Nothing here was scoped to a
+  // conversation, and the state only ever cleared on a TERMINAL task event — so
+  // starting a new conversation carried the previous thread's task card straight
+  // into the empty chat, and a run that was still in flight kept it there
+  // indefinitely. Both thread transitions reset it: the user is looking at a
+  // different conversation, so the card describing the old one is not just
+  // stale, it is about something they can no longer see.
+  useEffect(() => {
+    const reset = () => setState(EMPTY_PROGRESS)
+    window.addEventListener("iris:new_conversation", reset)
+    window.addEventListener("iris:conversation_switched", reset)
+    return () => {
+      window.removeEventListener("iris:new_conversation", reset)
+      window.removeEventListener("iris:conversation_switched", reset)
+    }
+  }, [])
 
   useEffect(() => {
     const handler = (e: Event) => {

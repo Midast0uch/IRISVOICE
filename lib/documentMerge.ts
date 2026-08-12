@@ -5,6 +5,13 @@
 export interface HydratedDoc {
   document_id?: string
   format?: string
+  /** Body, if a payload ever carries one. The WS `get_documents` path does NOT
+   * — CT-DOC-1 pins it as metadata-only, with the body fetched on expand — so
+   * this is currently always absent and the merge falls through to ''. Declared
+   * because the merge must not silently DISCARD a body it is handed; a card
+   * rendering blank when the data was right there is the failure this file
+   * already exists to prevent. */
+  content?: string
   sources?: { url: string; title: string }[]
   har_path?: string | null
   /** Which exchange produced this render. Lets a rehydrated card be paired with
@@ -50,8 +57,10 @@ export function mergeRenderedDocuments(
       ...existing,
       id: d.document_id,
       format: d.format || existing?.format || 'markdown',
-      // Keep a body we already have; hydration never carries one.
-      content: existing?.content ?? '',
+      // A body we already have always wins: it is the live render, and the
+      // payload's copy may be truncated for transport. Otherwise take the
+      // payload's body when it has one, and only then fall back to empty.
+      content: existing?.content || d.content || '',
       alternatives: existing?.alternatives ?? [],
       documentId: d.document_id,
       turnId: d.turn_id ?? existing?.turnId,

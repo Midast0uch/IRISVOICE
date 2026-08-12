@@ -77,6 +77,31 @@ describe('mergeRenderedDocuments (document re-hydration)', () => {
     expect(after[0].turnId).toBe('turn-7')
   })
 
+  it('uses a body the payload DOES carry instead of blanking the card', () => {
+    // The WS hydration path is metadata-only and CT-DOC-1 pins it that way, so
+    // this never fires today. It is pinned because the merge is the one place a
+    // body can be silently discarded, and a card rendering blank while the data
+    // was right there is the exact failure this module exists to prevent (live
+    // conv-6: three empty JSON cards beside the markdown). If any caller ever
+    // hands this function a body — a REST hydrate, a fetch-on-expand — it must
+    // reach the card rather than being dropped on the floor.
+    const out = mergeRenderedDocuments([], [
+      { document_id: 'e', format: 'json', content: '{"real":true}' } as any,
+    ])
+    expect(out[0].content).toBe('{"real":true}')
+  })
+
+  it('still prefers the LIVE body over one arriving in a payload', () => {
+    // Ordering matters: the live render is the full document, a payload copy may
+    // be truncated for transport. A payload must never downgrade what is shown.
+    const live = mergeRenderedDocuments([], [docA])
+    live[0].content = '## the full synthesized guide'
+    const after = mergeRenderedDocuments(live, [
+      { document_id: 'a', format: 'markdown', content: 'truncated…' } as any,
+    ])
+    expect(after[0].content).toBe('## the full synthesized guide')
+  })
+
   it('updates an existing card when re-hydrated with new provenance', () => {
     const base = mergeRenderedDocuments([], [docA])
     const updated = mergeRenderedDocuments(base, [

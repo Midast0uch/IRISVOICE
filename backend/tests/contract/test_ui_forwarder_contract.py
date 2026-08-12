@@ -167,9 +167,25 @@ def _forward(event: str, payload: dict, monkeypatch) -> list:
     """Run one event through the emitter inside a loop, return what was sent.
 
     The emitter is called SYNCHRONOUSLY by the orchestrator and schedules its
-    sends with ensure_future, so there must be a running loop or every send is
-    created and dropped — which would make these tests pass vacuously against a
-    forwarder that sends nothing.
+    sends onto the GATEWAY'S MAIN LOOP, so that loop must exist and be running
+    or every send returns early — which would make these tests fail before they
+    assert anything about fields.
+
+    SETUP CHANGED 2026-08-12, CALLED OUT DELIBERATELY: this harness used to
+    provide only a running loop, because the emitter used `ensure_future` and so
+    scheduled onto whatever loop was current. The cross-loop fix
+    (pin_8b41f386d397) correctly changed `_send` to marshal onto
+    `get_iris_gateway()._main_loop` — a worker-loop broadcast was taking a
+    main-loop-bound lock and DISCONNECTING the live client mid-turn. That fix
+    left this setup encoding the OLD mechanism: with no gateway main loop, every
+    send hit the `_loop is None` early return and `sent` came back empty, so all
+    five tests in this module failed at `assert sent` WITHOUT EVER REACHING a
+    field assertion. The guard against "a forwarder is where fields go to die"
+    had itself been dead since that fix.
+
+    So the running loop is now also published as the gateway's `_main_loop`.
+    NOTHING about what is asserted, or the payloads driven through, is changed —
+    this only restores the emitter's precondition so the existing assertions run.
     """
     import asyncio
 
@@ -180,8 +196,16 @@ def _forward(event: str, payload: dict, monkeypatch) -> list:
     _install_fake_ws(monkeypatch, sink=sent)
 
     async def _run():
+        # Publish the running loop as the gateway's main loop — the loop the
+        # emitter marshals onto. Patched on the singleton the emitter resolves.
+        import backend.iris_gateway as _ig
+
+        _gw = _ig.get_iris_gateway()
+        monkeypatch.setattr(_gw, "_main_loop", asyncio.get_running_loop(), raising=False)
+
         _crawl_ui_emitter("sess-fwd")(CrawlProgress(event, payload))
-        # Let the scheduled broadcast task actually run.
+        # Let the scheduled broadcast task actually run. run_coroutine_threadsafe
+        # from inside the target loop still needs a tick to execute the callback.
         await asyncio.sleep(0)
         await asyncio.sleep(0)
 

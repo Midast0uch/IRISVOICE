@@ -1,12 +1,12 @@
 "use client"
 
-import React, { useMemo, lazy, Suspense } from "react"
+import React, { useMemo, useState, useRef, useEffect, lazy, Suspense } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import type { Components } from "react-markdown"
 import { motion } from "framer-motion"
 import { useBrandColor } from "@/contexts/BrandColorContext"
-import { Expand } from "lucide-react"
+import { Expand, ChevronDown } from "lucide-react"
 import DOMPurify from "dompurify"
 
 // Lazy-load mermaid only when a ```mermaid block is present
@@ -14,7 +14,10 @@ const MermaidDiagram = lazy(() => import("./MermaidDiagram"))
 
 interface RichDocumentProps {
   content: string
-  format: "markdown" | "html" | "table" | "diagram" | "text"
+  // "json" is what the crawler/tool-result cards actually carry. It was absent
+  // from this union, so those cards fell through to the markdown renderer and
+  // the type never flagged it.
+  format: "markdown" | "html" | "table" | "diagram" | "text" | "json"
   glowColor?: string
   alternatives?: string[]
   onFormatChange?: (newFormat: string) => void
@@ -36,6 +39,9 @@ interface RichDocumentProps {
   }[]
   harPath?: string | null
 }
+
+/** Inline height cap for a document body before it offers to expand. */
+const COLLAPSED_MAX_HEIGHT = 460
 
 /** Per-source outcome marker for the live plan card.
  *
@@ -101,6 +107,49 @@ export function RichDocument({
     [glowColor, shimmerPrimary, hasMermaid, trust]
   )
 
+  // Pretty-print a JSON body. Falls back to the raw string when it does not
+  // parse — a malformed payload should still be READABLE, not blank.
+  const prettyJson = useMemo(() => {
+    if (format !== "json") return ""
+    try {
+      return JSON.stringify(JSON.parse(truncatedContent), null, 2)
+    } catch {
+      return truncatedContent
+    }
+  }, [format, truncatedContent])
+
+  // ── Height cap, and being honest about it ──────────────────────────────────
+  // The body was capped at a flat 400px with `overflow-y-auto` and no other
+  // signal. A 4px near-transparent scrollbar over a dark glass panel is not a
+  // visible affordance, so a long answer simply looked TRUNCATED — text ending
+  // mid-sentence with nothing to say there was more. That is the "text getting
+  // cut off on rendered markdowns" report: the content was always there, the
+  // card just never admitted it.
+  //
+  // Now: measure whether the body actually overflows, and only then show the
+  // fade and the expand control. A short document gets no chrome at all, and
+  // the cap can be lifted in place instead of forcing a trip to the panel.
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const [expanded, setExpanded] = useState(false)
+  const [overflows, setOverflows] = useState(false)
+
+  useEffect(() => {
+    const el = bodyRef.current
+    if (!el) return
+    const measure = () => {
+      // scrollHeight vs the cap, not vs clientHeight — once expanded the two
+      // are equal and the control would flicker away mid-read.
+      setOverflows(el.scrollHeight > COLLAPSED_MAX_HEIGHT + 8)
+    }
+    measure()
+    // Markdown lays out asynchronously (fonts, lazy mermaid, images), so a
+    // single post-mount read under-measures. Observe instead of polling.
+    if (typeof ResizeObserver === "undefined") return
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [truncatedContent, format])
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 8, scale: 0.98 }}
@@ -109,22 +158,36 @@ export function RichDocument({
       transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
       className="my-3 w-full"
     >
+      {/* `border` after `borderLeft` in the same style object OVERWROTE the
+          2px brand edge — the shorthand wins, so the card's signature accent
+          rail had silently become a flat 1px hairline on all four sides. The
+          longhand now comes last, and the rail is drawn as an inset ring so it
+          follows the rounded corner instead of squaring it off. */}
       <div
-        className="rounded-lg overflow-hidden relative"
+        className="rounded-xl overflow-hidden relative group/doc transition-shadow duration-200"
         style={{
-          background: `linear-gradient(135deg, rgba(10,11,22,${0.6 + glassOpacity * 2}) 0%, rgba(15,16,28,${0.65 + glassOpacity * 2}) 100%)`,
+          background: `linear-gradient(140deg, rgba(12,13,24,${0.66 + glassOpacity * 2}) 0%, rgba(16,17,30,${0.72 + glassOpacity * 2}) 100%)`,
           backdropFilter: `blur(${glassBlur}px)`,
           WebkitBackdropFilter: `blur(${glassBlur}px)`,
+          border: `1px solid ${glowColor}22`,
           borderLeft: `2px solid ${glowColor}`,
-          border: `1px solid ${glowColor}20`,
           boxShadow: `
-            inset 0 1px 1px rgba(255,255,255,0.04),
-            inset 0 -1px 1px rgba(0,0,0,0.5),
-            0 0 0 1px rgba(0,0,0,0.6),
-            0 4px 20px rgba(0,0,0,0.4)
+            inset 0 1px 0 rgba(255,255,255,0.06),
+            inset 0 -1px 0 rgba(0,0,0,0.45),
+            0 1px 0 rgba(0,0,0,0.55),
+            0 6px 24px rgba(0,0,0,0.42)
           `,
         }}
       >
+        {/* Top light-catch: a single hairline that reads as the glass edge
+            picking up the brand colour, so the card has a defined top rather
+            than fading into the message list. */}
+        <div
+          className="absolute top-0 left-0 right-0 h-px pointer-events-none"
+          style={{
+            background: `linear-gradient(90deg, ${glowColor}00, ${glowColor}66 18%, ${glowColor}22 60%, ${glowColor}00)`,
+          }}
+        />
         {/* Edge fresnel */}
         <div
           className="absolute inset-0 pointer-events-none"
@@ -137,25 +200,45 @@ export function RichDocument({
           }}
         />
 
-        <div className="relative p-3">
-          {/* Document header — format badge + expand button */}
-          <div className="flex items-center gap-2 mb-2.5">
+        <div className="relative">
+          {/* Document header — its own band, separated by a rule. It used to
+              float directly above the body with only a margin, so the badge
+              read as part of the prose. */}
+          <div
+            className="flex items-center gap-2 px-3 py-2 border-b"
+            style={{ borderColor: "rgba(255,255,255,0.06)" }}
+          >
             <span
-              className="text-[9px] font-semibold tracking-wide uppercase px-1.5 py-0.5 rounded"
+              className="text-[9px] font-semibold tracking-[0.12em] uppercase px-1.5 py-[3px] rounded leading-none"
               style={{
                 color: glowColor,
-                backgroundColor: `${glowColor}12`,
-                border: `1px solid ${glowColor}30`,
+                backgroundColor: `${glowColor}14`,
+                border: `1px solid ${glowColor}33`,
               }}
             >
               {format}
             </span>
+            {/* Untrusted content is web-sourced and sanitized. That was only
+                ever visible as a behaviour (stripped HTML), never as a fact the
+                reader could see. */}
+            {trust && trust !== "trusted" && (
+              <span
+                className="text-[8px] font-medium tracking-[0.1em] uppercase leading-none px-1.5 py-[3px] rounded"
+                style={{
+                  color: "rgba(255,255,255,0.38)",
+                  border: "1px solid rgba(255,255,255,0.1)",
+                }}
+                title="Sourced from the web — HTML is sanitized before rendering"
+              >
+                web
+              </span>
+            )}
             {onExpand && (
               <button
                 onClick={onExpand}
-                className="ml-auto p-1 rounded transition-all duration-150 hover:brightness-125"
+                className="ml-auto p-1 rounded transition-all duration-150 hover:brightness-125 opacity-60 group-hover/doc:opacity-100"
                 style={{
-                  color: "rgba(255,255,255,0.4)",
+                  color: "rgba(255,255,255,0.55)",
                   backgroundColor: "rgba(255,255,255,0.04)",
                   border: "1px solid rgba(255,255,255,0.08)",
                 }}
@@ -166,10 +249,19 @@ export function RichDocument({
             )}
           </div>
 
-          {/* Document content — scrollable, max-height 400px inline */}
+          {/* Document body. `overflowWrap: anywhere` is the actual fix for text
+              disappearing at the right edge: a long URL or an unbroken token in
+              a paragraph overflowed the card, and the card's `overflow-hidden`
+              clipped it outright — the characters were painted outside the
+              rounded box and simply never seen. Wrapping keeps them inside. */}
           <div
-            className="overflow-y-auto"
-            style={{ maxHeight: 400 }}
+            ref={bodyRef}
+            className="rich-doc-body overflow-y-auto overflow-x-hidden px-3 py-2.5 min-w-0"
+            style={{
+              maxHeight: expanded ? undefined : COLLAPSED_MAX_HEIGHT,
+              overflowWrap: "anywhere",
+              wordBreak: "break-word",
+            }}
           >
             {format === "html" ? (
               <div
@@ -183,6 +275,20 @@ export function RichDocument({
               >
                 {truncatedContent}
               </p>
+            ) : format === "json" ? (
+              // A tool-result card is `format: "json"` and used to fall through
+              // to the markdown branch, where a 16KB single-line object renders
+              // as one unreadable run-on paragraph with its quotes and braces
+              // treated as prose. Pretty-print it as code instead.
+              <pre
+                className="text-[10px] leading-relaxed whitespace-pre-wrap m-0"
+                style={{
+                  color: "rgba(255,255,255,0.62)",
+                  fontFamily: "'Courier New', Courier, monospace",
+                }}
+              >
+                {prettyJson}
+              </pre>
             ) : (
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
@@ -193,10 +299,48 @@ export function RichDocument({
             )}
           </div>
 
+          {/* Fade + expand — shown ONLY when the body is genuinely taller than
+              the cap, so a short document carries no false "there's more" cue.
+              The fade is pointer-events-none: it must never eat a click or a
+              text selection at the bottom of the body. */}
+          {overflows && !expanded && (
+            <div
+              className="absolute left-0 right-0 pointer-events-none"
+              style={{
+                bottom: 0,
+                height: 56,
+                background:
+                  "linear-gradient(to bottom, rgba(14,15,27,0) 0%, rgba(14,15,27,0.82) 70%, rgba(14,15,27,0.95) 100%)",
+              }}
+            />
+          )}
+          {overflows && (
+            <div className="relative flex justify-center pb-2 -mt-1">
+              <button
+                onClick={() => setExpanded((v) => !v)}
+                className="flex items-center gap-1 px-2.5 py-1 rounded-full text-[9px] font-semibold tracking-[0.1em] uppercase transition-all duration-150 hover:brightness-125"
+                style={{
+                  color: glowColor,
+                  backgroundColor: `${glowColor}14`,
+                  border: `1px solid ${glowColor}33`,
+                }}
+              >
+                <ChevronDown
+                  size={10}
+                  style={{
+                    transform: expanded ? "rotate(180deg)" : "none",
+                    transition: "transform 0.2s",
+                  }}
+                />
+                {expanded ? "Collapse" : "Show more"}
+              </button>
+            </div>
+          )}
+
           {/* Format alternatives — pills at bottom */}
           {alternatives.length > 0 && onFormatChange && (
             <div
-              className="flex items-center gap-1.5 pt-2 mt-2 border-t"
+              className="flex items-center gap-1.5 px-3 py-2 border-t"
               style={{ borderColor: "rgba(255,255,255,0.06)" }}
             >
               <span
@@ -226,7 +370,7 @@ export function RichDocument({
               its citations, never as bare [n]. Resolvable links + HAR pointer. */}
           {sources && sources.length > 0 && (
             <div
-              className="pt-2 mt-2 border-t"
+              className="px-3 py-2 border-t"
               style={{ borderColor: "rgba(255,255,255,0.06)" }}
             >
               <span
@@ -301,6 +445,44 @@ export function RichDocument({
           )}
         </div>
       </div>
+
+      {/* The body used the browser's default scrollbar — a ~17px opaque bar on
+          Windows, sitting inside a 4px-scrollbar design. It both looked wrong
+          and stole width from the prose. Same glass treatment as the dashboard
+          wing and the proxied iframes. */}
+      <style jsx global>{`
+        .rich-doc-body::-webkit-scrollbar {
+          width: 4px;
+          height: 4px;
+        }
+        .rich-doc-body::-webkit-scrollbar-track {
+          background: rgba(255, 255, 255, 0.05);
+          border-radius: 2px;
+        }
+        .rich-doc-body::-webkit-scrollbar-thumb {
+          background: rgba(255, 255, 255, 0.2);
+          border-radius: 2px;
+        }
+        .rich-doc-body::-webkit-scrollbar-thumb:hover {
+          background: rgba(255, 255, 255, 0.3);
+        }
+        .rich-doc-body {
+          scrollbar-width: thin;
+          scrollbar-color: rgba(255, 255, 255, 0.2) rgba(255, 255, 255, 0.05);
+        }
+        /* Long tokens inside nested markdown (links, inline code, table cells)
+           escape the body's own wrapping rules unless they are told to break —
+           this is the other half of the clipped-text fix. */
+        .rich-doc-body a,
+        .rich-doc-body code,
+        .rich-doc-body td,
+        .rich-doc-body th,
+        .rich-doc-body p,
+        .rich-doc-body li {
+          overflow-wrap: anywhere;
+          word-break: break-word;
+        }
+      `}</style>
     </motion.div>
   )
 }

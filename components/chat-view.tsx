@@ -231,9 +231,16 @@ export function ChatWing({
       { conversations: [] },
     ).then((data) => {
         if (cancelled) return
-        const convs: Conversation[] = (data.conversations || []).map((c: any) => ({
+        const convs: Conversation[] = (data.conversations || []).map((c: any) => {
+          const firstUserMsg = (c.messages || []).find((m: any) => m.role === "user" || m.sender === "user")
+          return {
           id: c.id,
-          title: c.title || `Conversation ${c.id?.slice(-4) || ""}`,
+          // Rehydration: prefer the stored title; else derive from the first
+          // user message; else a stable id-suffix label (legacy threads).
+          title: c.title && !/^Conversation \d+$/.test(c.title)
+            ? c.title
+            : (firstUserMsg?.text || "").replace(/\s+/g, " ").trim().slice(0, 60)
+              || `Conversation ${c.id?.slice(-4) || ""}`,
           preview: c.messages?.[c.messages.length - 1]?.text?.substring(0, 60) || "",
           messages: (c.messages || []).map((m: any) => ({
             id: m.id,
@@ -247,7 +254,8 @@ export function ChatWing({
           timestamp: new Date(c.updated_at || c.created_at || Date.now()),
           isPinned: !!c.pinned,
           lastMessagePreview: c.messages?.[c.messages.length - 1]?.text?.substring(0, 60) || "",
-        }))
+        }
+        })
         setConversations(convs)
         // Set active conversation to most recent non-pinned conversation
         if (!cancelled) {
@@ -555,7 +563,9 @@ export function ChatWing({
         setConversations(prev => {
           const newConv: Conversation = {
             id: newId,
-            title: `Conversation ${prev.length + 1}`,
+            // Contextual title from the first message (see the POST branch —
+            // same rule; never a session-local counter).
+            title: (sender === 'user' ? text : 'New conversation').replace(/\s+/g, ' ').trim().slice(0, 60) || 'New conversation',
             preview: text.substring(0, 60),
             messages: [{
               id: messageId,
@@ -646,7 +656,16 @@ export function ChatWing({
       } | undefined
       if (!detail?.content) return
       const doc: DocRender = {
-        id: detail.turn_id || detail.document_id || `doc-${Date.now()}`,
+        // document_id FIRST. This used to key on turn_id, and a websearch turn
+        // emits SEVERAL documents under ONE turn (two crawler_query step cards
+        // plus the markdown synthesis — live conv-6 had four sharing turn
+        // 28c6f59e-a78). Keying on the turn made them all the same card, so
+        // each render REPLACED the previous one and only the last survived with
+        // a body. The other three then came back from the metadata-only
+        // rehydration with no content at all — which is exactly the "3 empty
+        // JSON cards next to the markdown" the user saw. A document is the
+        // unit here; the turn is a grouping, not an identity.
+        id: detail.document_id || detail.turn_id || `doc-${Date.now()}`,
         format: detail.format || "markdown",
         content: detail.content,
         alternatives: detail.alternatives || [],
@@ -667,10 +686,14 @@ export function ChatWing({
           // Phase 4 (chat-card-redesign): update an existing card in place when the
           // backend revises a document by id (or re-formats by turn), instead of
           // appending a duplicate card.
-          const idx = conv.documents.findIndex(
-            (d) =>
-              (detail.document_id && d.documentId === detail.document_id) ||
-              (detail.turn_id && d.turnId === detail.turn_id),
+          // Match on document_id ONLY when the payload carries one — see the
+          // id note above. The turn_id fallback is for renders that predate
+          // stable ids; using it as a co-equal match collapsed every document
+          // in a multi-step turn into a single card.
+          const idx = conv.documents.findIndex((d) =>
+            detail.document_id
+              ? d.documentId === detail.document_id
+              : !!detail.turn_id && d.turnId === detail.turn_id && !d.documentId,
           )
           if (idx >= 0) {
             const updated = [...conv.documents]
@@ -833,7 +856,8 @@ export function ChatWing({
         setConversations(prev => {
           const newConv: Conversation = {
             id: newId,
-            title: `Conversation ${prev.length + 1}`,
+            // Contextual title from the first (voice) message.
+            title: (voiceMessage.text || 'New conversation').replace(/\s+/g, ' ').trim().slice(0, 60) || 'New conversation',
             preview: voiceMessage.text.substring(0, 60),
             messages: [voiceMessage],
             documents: [],
@@ -1174,10 +1198,17 @@ export function ChatWing({
       // NEW conversation — create on backend first
       isNewConversation = true
       try {
+        // Title from the FIRST user message (contextual, not a session-local
+        // counter). The old `Conversation ${conversations.length + 1}` named
+        // every new thread "1" — conversations.length only counts what the
+        // current session loaded, so it reset low every run and never derived
+        // a name from the prompt. Backend REST-chat threads (conv_... ) were
+        // titled from their first message; the UI path now does the same.
+        const autoTitle = (text || "New conversation").replace(/\s+/g, " ").trim().slice(0, 60)
         const createRes = await fetch("/api/conversations", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ title: `Conversation ${conversations.length + 1}` }),
+          body: JSON.stringify({ title: autoTitle }),
         })
         if (!createRes.ok) {
           throw new Error(`POST /api/conversations returned ${createRes.status}`)
@@ -1209,7 +1240,7 @@ export function ChatWing({
     if (isNewConversation) {
       const newConv: Conversation = {
         id: threadId!,
-        title: `Conversation ${conversations.length + 1}`,
+        title: (text || 'New conversation').replace(/\s+/g, ' ').trim().slice(0, 60) || 'New conversation',
         preview: text.substring(0, 60),
         messages: [userMessage],
         documents: [],
@@ -1601,6 +1632,13 @@ export function ChatWing({
     sendMessage?.('new_conversation', {
       timestamp: new Date().toISOString()
     });
+
+    // Tell per-thread UI state the thread is gone. The task/plan card is the
+    // visible one: it only cleared on a terminal task event, so the previous
+    // conversation's card sat in the new, empty chat.
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('iris:new_conversation'));
+    }
   };
 
   // Feedback action handlers
@@ -3090,7 +3128,74 @@ ${message.text}`;
                 })}
 
                   {/* Rich documents (plan Issue D.3) — inline render with format pills + expand */}
-                  {(activeConversation?.documents || []).map((doc) => (
+                  {(() => {
+                    // Sources render on ONE card per turn — the SYNTHESIZED
+                    // (markdown) document — never on the mid-turn step cards.
+                    // A websearch turn emits multiple `show` payloads (one per
+                    // crawler_query step as a JSON card, then the final
+                    // markdown synthesis), and each step card carries the full
+                    // sources list while the synthesis card carries none
+                    // (live 2026-08-12: two JSON cards with 2 sources each,
+                    // markdown card with 0). Rendering sources on every card
+                    // stacked duplicates; the canonical list also lives in the
+                    // browser's summary tab (OPEN_TAB → dashboard_data.sources).
+                    // So: the markdown card is the sources carrier, and it
+                    // merges sources from its same-turn siblings when its own
+                    // payload lacks them.
+                    const _docs = activeConversation?.documents || []
+                    const _turnSources = new Map<string, { url: string; title: string }[]>()
+                    for (const d of _docs) {
+                      if (!d.turnId) continue
+                      const cur = _turnSources.get(d.turnId) || []
+                      const merged = [...cur]
+                      for (const s of d.sources || []) {
+                        if (!merged.some((m) => m.url === s.url)) merged.push(s)
+                      }
+                      _turnSources.set(d.turnId, merged)
+                    }
+                    // A card with no body is not a card. Both sources of a
+                    // bodyless entry are fixed above (live renders now key on
+                    // document_id, hydration now carries content), but a store
+                    // miss or a truncated row must degrade to "no card" rather
+                    // than to an empty glass rectangle with a format badge.
+                    return _docs.filter((d) => (d.content || '').trim().length > 0).map((doc) => {
+                      const isMarkdown = doc.format === 'markdown'
+                      // Carrier = the markdown synthesis card (preferred) or the
+                      // first card with sources. Cards that are NOT the carrier
+                      // render without the sources block.
+                      const carrierId =
+                        _docs.find((d) => d.format === 'markdown')?.id ??
+                        _docs.find(
+                          (d) =>
+                            (d.sources && d.sources.length > 0) ||
+                            (d.turnId && d.turnId === taskProgress.turnId),
+                        )?.id ??
+                        null
+                      const isSourcesCarrier = doc.id === carrierId
+                      // While the turn's crawl is live, prefer the LIVE source
+                      // list; once settled, use the turn-merged sources.
+                      const docSources: {
+                        url: string
+                        title: string
+                        status?: "planned" | "reading" | "read" | "blocked" | "parked"
+                        discovered?: boolean
+                        reason?: string
+                      }[] | undefined =
+                        isSourcesCarrier
+                          ? doc.turnId && doc.turnId === taskProgress.turnId &&
+                            crawlState.sources.length > 0
+                            ? crawlState.sources.map((s) => ({
+                                url: s.url,
+                                title: s.title || s.host || s.url,
+                                status: s.status,
+                                discovered: s.discovered,
+                                reason: s.reason,
+                              }))
+                            : isMarkdown
+                              ? _turnSources.get(doc.turnId || '') || doc.sources
+                              : doc.sources
+                          : undefined
+                      return (
                     <div key={doc.id} className="my-3 relative">
                       {doc.updated && (
                         <span
@@ -3120,31 +3225,16 @@ ${message.text}`;
                           })
                         }
                         onExpand={() => setExpandedDocId(doc.id)}
-                        // While this turn's crawl is still running, show the LIVE
-                        // source list: what the agent planned to read plus what it
-                        // has added since, each with its current outcome. The
-                        // document's own stored sources are the settled citations
-                        // and take over once the run is done, so a rehydrated card
-                        // still renders exactly as before.
-                        sources={
-                          doc.turnId && doc.turnId === taskProgress.turnId &&
-                          crawlState.sources.length > 0
-                            ? crawlState.sources.map((s) => ({
-                                url: s.url,
-                                title: s.title || s.host || s.url,
-                                status: s.status,
-                                discovered: s.discovered,
-                                reason: s.reason,
-                              }))
-                            : doc.sources
-                        }
+                        sources={docSources}
                         harPath={doc.harPath}
                       />
                       {doc.error && (
                         <p className="text-[9px] mt-1" style={{ color: '#ef4444' }}>{doc.error}</p>
                       )}
                     </div>
-                  ))}
+                      )
+                    })
+                  })()}
 
                   {/* Typing Indicator — suppressed while a TaskListCard is
                       visible (taskProgress.steps.length > 0): the card
@@ -3439,7 +3529,7 @@ ${message.text}`;
                             const newId = Date.now().toString()
                             activeConversationIdRef.current = newId
                             setActiveConversationId(newId)
-                            return [...prev, { id: newId, title: `Conversation ${prev.length + 1}`, preview: s.message.substring(0, 60), messages: [userMsg], documents: [], timestamp: new Date(), isPinned: false, lastMessagePreview: s.message.substring(0, 60) }]
+                            return [...prev, { id: newId, title: (s.message || 'New conversation').replace(/\s+/g, ' ').trim().slice(0, 60) || 'New conversation', preview: s.message.substring(0, 60), messages: [userMsg], documents: [], timestamp: new Date(), isPinned: false, lastMessagePreview: s.message.substring(0, 60) }]
                           })()
                     )
                     sendMessage?.('text_message', { text: s.message })

@@ -53,12 +53,30 @@ export interface NavOverlayStatus {
    */
   visionX?: number
   visionY?: number
+  /**
+   * Absolute scroll offset (px) of the page the vision session is reading, and
+   * that page's full scroll height. The panel mirrors this into the iframe so
+   * the user WATCHES the page move as the model reads it — the whole point of
+   * the reading surface. Absolute rather than the delta the session also emits:
+   * the iframe and the headless page do not share a starting offset, and one
+   * dropped event would desynchronise a delta mirror permanently.
+   *
+   * `undefined` when the action was not a scroll — the iframe then holds its
+   * position, exactly as the cursor holds its point.
+   */
+  visionScrollY?: number
+  visionScrollHeight?: number
+  /** Monotonic counter — bumped on every scroll action so a repeated scroll to
+   * the SAME offset still registers as a new instruction to mirror. Without it
+   * a value-equality effect would skip it. */
+  visionScrollSeq: number
 }
 
 const IDLE: NavOverlayStatus = {
   state: "idle", subGoal: "", pagesDone: 0, pagesTotal: 0,
   visionAction: "", visionStep: 0, visionTotal: 0,
   visionX: undefined, visionY: undefined,
+  visionScrollY: undefined, visionScrollHeight: undefined, visionScrollSeq: 0,
 }
 
 export function useBrowserNavOverlay() {
@@ -105,6 +123,11 @@ export function useBrowserNavOverlay() {
         visionTotal: 0,
         visionX: undefined,
         visionY: undefined,
+        // A new run starts from an unknown scroll position; carrying the last
+        // run's offset would jump the iframe on the first page of the next one.
+        visionScrollY: undefined,
+        visionScrollHeight: undefined,
+        visionScrollSeq: 0,
       }))
     }
     const onPageFetched = (e: Event) => {
@@ -136,6 +159,7 @@ export function useBrowserNavOverlay() {
       const d = (e as CustomEvent<{
         kind?: string; action_index?: number; total?: number
         x?: number; y?: number
+        scroll_y?: number; scroll_height?: number
       }>).detail ?? {}
       setStatus(p => {
         // Never revive a finished run: a late action arriving after complete
@@ -153,6 +177,10 @@ export function useBrowserNavOverlay() {
           // KEEP the previous point rather than dropping the cursor to (0,0).
           visionX: d.x ?? p.visionX,
           visionY: d.y ?? p.visionY,
+          visionScrollY: d.scroll_y ?? p.visionScrollY,
+          visionScrollHeight: d.scroll_height ?? p.visionScrollHeight,
+          visionScrollSeq:
+            typeof d.scroll_y === "number" ? p.visionScrollSeq + 1 : p.visionScrollSeq,
         }
       })
     }

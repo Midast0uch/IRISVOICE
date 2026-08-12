@@ -70,6 +70,61 @@ function _getVoiceState(): VoiceState {
   return _voiceState
 }
 
+// ── Shared active-conversation singleton ────────────────────────────────────
+// Same problem as voiceState, different blast radius. Every useIRISWebSocket
+// instance kept its OWN currentConversationId, each seeded from localStorage at
+// ITS mount and each sending `sync_state {conversation_id}` on (re)connect. The
+// instances also fight over client="iris", so every connect evicts the previous
+// socket and re-sends sync_state — a steady churn of rebinds.
+//
+// So "New Conversation" could not work: chat-view cleared the NavigationContext
+// instance's copy, while the orbit-node / useInferenceState instances still held
+// the OLD thread and re-bound the backend to it on their next connect. Observed
+// live as the log pair `client_replace cancelled in-flight thread conv-4` +
+// `sync_state attached conversation conv-4` right after starting a new
+// conversation — the fresh thread snapping back to the previous one.
+//
+// One id, module scope, one localStorage writer. Clearing it clears it for every
+// instance, so no socket can resurrect a thread the user has left.
+const ACTIVE_ID_KEY = "iris_active_conversation_id_v1"
+
+let _activeConvId: string | undefined = (() => {
+  if (typeof window === "undefined") return undefined
+  try {
+    return localStorage.getItem(ACTIVE_ID_KEY) || undefined
+  } catch {
+    return undefined
+  }
+})()
+const _activeConvSubs = new Set<() => void>()
+
+function _emitActiveConvId(next: string | undefined) {
+  if (_activeConvId === next) return
+  _activeConvId = next
+  try {
+    if (next) localStorage.setItem(ACTIVE_ID_KEY, next)
+    else localStorage.removeItem(ACTIVE_ID_KEY)
+  } catch {
+    // localStorage unavailable — non-fatal, the in-memory value still rules
+  }
+  _activeConvSubs.forEach((cb) => {
+    try { cb() } catch { /* subscriber error must not break the emit */ }
+  })
+}
+
+function _subscribeActiveConvId(cb: () => void): () => void {
+  _activeConvSubs.add(cb)
+  return () => { _activeConvSubs.delete(cb) }
+}
+
+function _getActiveConvId(): string | undefined {
+  return _activeConvId
+}
+
+function _getActiveConvIdServer(): string | undefined {
+  return undefined
+}
+
 // Text response message type
 interface TextResponseMessage {
   text: string
@@ -209,12 +264,16 @@ export function useIRISWebSocket(
   // back to a stale/old conversation).  chat-view also keeps its own copy,
   // but the WS hook is authoritative: every switch/new writes here AND back
   // to the same localStorage key chat-view uses, keeping them in lockstep.
-  const ACTIVE_ID_KEY = "iris_active_conversation_id_v1"
-  const [currentConversationId, setCurrentConversationId] = useState<string | undefined>(() => {
-    if (typeof window === "undefined") return undefined
-    const stored = localStorage.getItem(ACTIVE_ID_KEY)
-    return stored || undefined
-  })
+  // Backed by the module-level singleton above, so every instance of this hook
+  // sees — and writes — the SAME thread id.
+  const currentConversationId = useSyncExternalStore(
+    _subscribeActiveConvId,
+    _getActiveConvId,
+    _getActiveConvIdServer,
+  )
+  const setCurrentConversationId = useCallback((id: string | undefined) => {
+    _emitActiveConvId(id)
+  }, [])
   
   // Agent state
   const [agentStatus, setAgentStatus] = useState<Record<string, unknown> | null>(null)
@@ -267,39 +326,16 @@ export function useIRISWebSocket(
   // Deduplicate buffered chat_message replays by turn_id
   const seenTurnIdsRef = useRef<Set<string>>(new Set())
 
-  // Latest active conversation id — read on WS reconnect to re-attach the
-  // correct per-thread kernel via sync_state (Phase 4.3).  Kept in a ref so
-  // the connect() callback (which doesn't depend on currentConversationId)
-  // always sees the current value.
-  const currentConversationIdRef = useRef<string | undefined>(undefined)
-
   // Update ref when callback changes
   useEffect(() => {
     onNativeAudioResponseRef.current = onNativeAudioResponse
   }, [onNativeAudioResponse])
 
-  // Keep the conversation-id ref in sync with state for use inside connect()
-  useEffect(() => {
-    currentConversationIdRef.current = currentConversationId
-  }, [currentConversationId])
-
-  // Persist the active conversation id to the SAME localStorage key chat-view
-  // uses, so thread identity survives unmounts/drags/reconnects.  The hook is
-  // the authoritative writer; chat-view reads this on next mount.  This closes
-  // the gap where the WS sync_state could fire with an undefined id after a
-  // remount, causing the backend to fall back to a stale/old conversation.
-  useEffect(() => {
-    if (typeof window === "undefined") return
-    try {
-      if (currentConversationId) {
-        localStorage.setItem(ACTIVE_ID_KEY, currentConversationId)
-      } else {
-        localStorage.removeItem(ACTIVE_ID_KEY)
-      }
-    } catch {
-      // localStorage unavailable — non-fatal, in-memory state still works
-    }
-  }, [currentConversationId])
+  // The active thread id is read straight from the module singleton at every
+  // use site (connect(), sendMessage()). It replaced a per-instance ref that a
+  // per-instance effect kept in sync — which is precisely how instances came to
+  // disagree about which thread was live. There is nothing left to synchronise:
+  // the store IS the value, and it owns the localStorage write.
 
   // Safety timeout: reset typing indicator if no chat_typing:false event
   // arrives within 30s. Covers the case where backend crashes mid-response
@@ -430,7 +466,7 @@ export function useIRISWebSocket(
         // (re)connect so the resumed thread keeps its own history instead of
         // the session default.  The backend binds the WS kernel to this id
         // and restores its persisted context.
-        const _convId = currentConversationIdRef.current
+        const _convId = _getActiveConvId()
         if (_convId) {
           ws.send(JSON.stringify({
             type: "sync_state",
@@ -528,7 +564,7 @@ export function useIRISWebSocket(
         // backend restart.  Only override when the backend actually has an id,
         // so we never clobber a legitimate in-flight frontend-led switch.
         const backendCid = (payload as Record<string, unknown>)?.current_conversation_id as string | undefined
-        if (backendCid && backendCid !== currentConversationIdRef.current) {
+        if (backendCid && backendCid !== _getActiveConvId()) {
           setCurrentConversationId(backendCid)
         }
 
@@ -1400,6 +1436,15 @@ export function useIRISWebSocket(
             (payload as Record<string, unknown>)?.conversation_id
           )
         }
+        // The backend's switch ack was logged and dropped. Anything holding
+        // per-thread UI state (useTaskProgress' plan card) had no way to learn
+        // the thread changed, so it kept rendering the previous conversation's
+        // run inside the new one.
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(
+            new CustomEvent('iris:conversation_switched', { detail: payload })
+          )
+        }
         break
       }
 
@@ -1649,13 +1694,10 @@ export function useIRISWebSocket(
       if (typeof supplied === 'string' && supplied) {
         // LEARN — always safe: the caller knows which thread it is in, so the
         // socket just mirrors it for the paths that cannot know.
-        if (supplied !== currentConversationIdRef.current) {
-          currentConversationIdRef.current = supplied
-          try { localStorage.setItem(ACTIVE_ID_KEY, supplied) } catch { /* ignore */ }
-          setCurrentConversationId(supplied)
-        }
+        // One writer: the singleton emits and persists.
+        _emitActiveConvId(supplied)
       } else if (
-        currentConversationIdRef.current &&
+        _getActiveConvId() &&
         SUPPLY_IF_MISSING.has(type)
       ) {
         // SUPPLY — NARROWED. An earlier revision injected the stored id into
@@ -1674,7 +1716,7 @@ export function useIRISWebSocket(
         // get_documents always come from a mounted ChatView that knows its own
         // thread; if they arrive without an id that is a bug to surface, not to
         // paper over.
-        payload = { ...payload, conversation_id: currentConversationIdRef.current }
+        payload = { ...payload, conversation_id: _getActiveConvId() }
       }
     }
 

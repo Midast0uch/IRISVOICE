@@ -453,7 +453,32 @@ class BrowserSession:
             # Particle-trail cursor mirror (REQ-16 AC7): a scroll has no single
             # point on the page — a point would drift meaninglessly as the
             # content moves under it — so we emit direction/delta instead.
+            #
+            # The ABSOLUTE position rides along too. The panel mirrors this
+            # session into the iframe the user is watching, and a delta cannot
+            # be mirrored reliably: the iframe and this page do not start from
+            # the same offset, and any dropped or reordered event desynchronises
+            # them permanently. An absolute top is self-correcting — every event
+            # re-anchors the iframe to where the model actually is. Best-effort:
+            # if the read fails the deltas are still emitted exactly as before.
+            _abs_y: Optional[int] = None
+            _doc_h: Optional[int] = None
+            try:
+                _pos = await page.evaluate(
+                    "({y: window.pageYOffset || document.documentElement.scrollTop || 0,"
+                    " h: Math.max(document.documentElement.scrollHeight,"
+                    " document.body ? document.body.scrollHeight : 0)})"
+                )
+                if isinstance(_pos, dict):
+                    _abs_y = int(_pos.get("y") or 0)
+                    _doc_h = int(_pos.get("h") or 0)
+            except Exception:  # noqa: BLE001 — the mirror never costs a scroll
+                pass
             self.last_action_point = {"scroll_dx": 0, "scroll_dy": delta}
+            if _abs_y is not None:
+                self.last_action_point["scroll_y"] = _abs_y
+            if _doc_h:
+                self.last_action_point["scroll_height"] = _doc_h
         elif kind == "click":
             if not action.target:
                 raise ValueError("click requires a target selector")

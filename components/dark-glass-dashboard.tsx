@@ -511,6 +511,28 @@ export function DarkGlassDashboard({
   //    throws.
   const { sendScrollTo } = useViewProtocol(iframeRef)
 
+  // ── The reading surface actually reads ──────────────────────────────────
+  // `sendScrollTo` was destructured here and NEVER CALLED. Every other half of
+  // this feature exists — the session records where it scrolled, the event
+  // reaches the panel, the particle cursor animates, the injected view-agent
+  // honours a `scrollTo` command — but nothing ever sent the command, so the
+  // page in the iframe never moved. The user watched a still frame with a
+  // cursor drifting over it and reasonably concluded vision was not running.
+  //
+  // Mirror on the SEQUENCE, not the value: the model can scroll to the same
+  // offset twice (a bounded page, a re-read), and a value-keyed effect would
+  // silently skip the second one. Smooth, because this is something a person is
+  // watching, not a jump-cut.
+  const lastMirroredScrollRef = useRef(0)
+  useEffect(() => {
+    const seq = navOverlay.visionScrollSeq
+    const top = navOverlay.visionScrollY
+    if (!seq || seq === lastMirroredScrollRef.current) return
+    if (typeof top !== 'number') return
+    lastMirroredScrollRef.current = seq
+    sendScrollTo(top, true)
+  }, [navOverlay.visionScrollSeq, navOverlay.visionScrollY, sendScrollTo])
+
   // Tab system — receives open_tab / close_tab WebSocket messages
   const [tabs, setTabs] = useState<Tab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
@@ -1615,8 +1637,41 @@ export function DarkGlassDashboard({
              {/* ── Tab bar ─────────────────────────────────────────────────── */}
              {tabs.length > 0 && (
                <div
-                 className="flex items-center gap-0 border-b overflow-x-auto"
-                 style={{ borderColor: 'rgba(255,255,255,0.06)', scrollbarWidth: 'none', minHeight: 36 }}
+                 className="browser-tab-strip flex items-center gap-0 border-b overflow-x-auto overflow-y-hidden shrink-0"
+                 // A vertical wheel over a horizontal strip does nothing on
+                 // Windows without shift, and there is no CSS that maps one axis
+                 // to the other — the visible-scrollbar fix made the overflow
+                 // reachable by dragging but the wheel still did nothing, so
+                 // tabs past the edge were only reachable by keyboard. Translate
+                 // the dominant wheel axis into scrollLeft, and only swallow the
+                 // event when this strip can actually consume it (at either end
+                 // the page keeps its normal scroll).
+                 onWheel={(e) => {
+                   const el = e.currentTarget
+                   const max = el.scrollWidth - el.clientWidth
+                   if (max <= 0) return
+                   const delta =
+                     Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY
+                   if (!delta) return
+                   const next = Math.min(max, Math.max(0, el.scrollLeft + delta))
+                   if (next === el.scrollLeft) return
+                   el.scrollLeft = next
+                   e.preventDefault()
+                 }}
+                 style={{
+                   borderColor: 'rgba(255,255,255,0.06)',
+                   // Visible thin scrollbar so a many-tab strip can actually be
+                   // scrolled on Windows (scrollbarWidth:'none' hid it entirely,
+                   // and a mouse wheel cannot move a horizontal strip — tabs got
+                   // "cut off" with no way to reach them; live 2026-08-12).
+                   // Matches the dashboard wing's glass aesthetic: 4px, 2px
+                   // radius, white/5 track, white/20 thumb (see .browser-tab-strip
+                   // rules below; Firefox via scrollbarColor).
+                   scrollbarWidth: 'thin',
+                   scrollbarColor: 'rgba(255,255,255,0.2) rgba(255,255,255,0.05)',
+                   minHeight: 36,
+                   overscrollBehaviorX: 'contain',
+                 }}
                >
                  {tabs.map((tab) => {
                    const isActive = tab.id === activeTabId
@@ -1655,7 +1710,12 @@ export function DarkGlassDashboard({
                const activeTab = tabs.find(t => t.id === activeTabId)
                if (activeTab?.type === 'dashboard' && activeTab.data) {
                  return (
-                   <div className="flex-1 overflow-hidden">
+                   // overflow-y-auto: the summary tab (DashboardRenderer —
+                   // the search's synthesized answer + sources) must scroll
+                   // vertically like the web iframes do. Previously
+                   // overflow-hidden clipped it, so a long summary could not
+                   // be scrolled (live 2026-08-12).
+                   <div className="browser-summary-scroll flex-1 overflow-y-auto overflow-x-hidden">
                      <DashboardRenderer data={activeTab.data} glowColor={glowColor} />
                    </div>
                  )
@@ -1809,14 +1869,55 @@ export function DarkGlassDashboard({
       <div className="absolute inset-0 pointer-events-none z-10" style={{ boxShadow: `inset 0 0 60px ${glowColor}05` }} />
       <div className="flex-1 flex overflow-hidden relative z-20">
         {renderNavigationRail()}
-          <div className="flex-1 flex flex-col overflow-visible relative">
+          {/* min-h-0 on BOTH columns is load-bearing, not cosmetic. A flex item
+              whose overflow is `visible` gets min-height:auto, meaning it
+              refuses to shrink below its content — so this column grew to fit a
+              long summary, renderContentZone's `flex-1` resolved against that
+              inflated height, and every `overflow-y-auto` below it (the summary
+              tab included) had nothing to overflow. The content was then simply
+              clipped by the `overflow-hidden` wrapper above, which is exactly
+              what "the summary tab cannot be scrolled" looked like: no
+              scrollbar, no wheel response, text cut off at the bottom. The
+              earlier fix — adding overflow-y-auto to the summary container —
+              was correct and inert, because the height it scrolled within was
+              never bounded. Overflow stays visible here (the header's glow and
+              dropdowns depend on it); min-h-0 only restores the ability to
+              shrink. */}
+          <div className="flex-1 min-h-0 flex flex-col overflow-visible relative">
             {renderHeader()}
-            <div className="flex-1 flex flex-col overflow-visible">
+            <div className="flex-1 min-h-0 flex flex-col overflow-visible">
               {renderContentZone()}
             </div>
           </div>
       </div>
       {renderActionBar()}
+
+      {/* Browser tab-strip scrollbar — 4px glass style matching the wing's
+          SidePanel custom-scrollbar (white/5 track, white/20 thumb, 2px
+          radius). Firefox uses the inline scrollbarColor; Chrome/Edge need
+          these webkit rules. Applied via a global rule so it works even when
+          the strip is inside the shadow-ish dashboard tree. */}
+      <style jsx global>{`
+        .browser-tab-strip::-webkit-scrollbar,
+        .browser-summary-scroll::-webkit-scrollbar {
+          height: 4px;
+          width: 4px;
+        }
+        .browser-tab-strip::-webkit-scrollbar-track,
+        .browser-summary-scroll::-webkit-scrollbar-track {
+          background: rgba(255, 255, 255, 0.05);
+          border-radius: 2px;
+        }
+        .browser-tab-strip::-webkit-scrollbar-thumb,
+        .browser-summary-scroll::-webkit-scrollbar-thumb {
+          background: rgba(255, 255, 255, 0.2);
+          border-radius: 2px;
+        }
+        .browser-tab-strip::-webkit-scrollbar-thumb:hover,
+        .browser-summary-scroll::-webkit-scrollbar-thumb:hover {
+          background: rgba(255, 255, 255, 0.3);
+        }
+      `}</style>
     </div>
   );
 }

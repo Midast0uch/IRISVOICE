@@ -199,6 +199,15 @@ export interface CrawlerVisionActionMsg {
   viewport_h?: number
   scroll_dx?: number
   scroll_dy?: number
+  /** Absolute scroll offset of the page the session is reading, and that page's
+   * full scroll height. The panel mirrors `scroll_y` into the iframe so the user
+   * sees the page move as the model reads it. Absolute rather than the delta
+   * above: the iframe and the headless page do not share a starting offset. */
+  scroll_y?: number
+  scroll_height?: number
+  /** Which captured frame this action is on, so the panel can keep the iframe's
+   * bytes aligned with the session's position. */
+  capture_page?: number
 }
 /** REQ-13 AC4 (T17): a walled source was parked (non-blocking ask). The design
  * doc shape is {job_id, url, wall, question_id}; the orchestrator emits

@@ -12751,14 +12751,26 @@ def get_agent_kernel(
 _session_active_conversation: dict = {}
 
 
-def set_active_conversation(session_id: str, conversation_id: str) -> None:
+def set_active_conversation(
+    session_id: str, conversation_id: Optional[str]
+) -> None:
     """Mirror the gateway's session→active-conversation binding into this
     module-level registry.  Called by the gateway whenever it (re)points a
     session at a conversation (new_conversation / switch_conversation /
-    sync_state / voice_command_start / connect)."""
+    sync_state / voice_command_start / connect).
+
+    ``conversation_id=None`` UNBINDS the session — the state "the user left a
+    thread and has not started the next one yet".  Leaving a stale binding in
+    place is what let a wake word or a reconnect resolve back into the thread
+    the user had just walked away from, so the absence of a thread has to be
+    representable, not approximated by the session id."""
     global _session_active_conversation
-    if session_id:
+    if not session_id:
+        return
+    if conversation_id:
         _session_active_conversation[session_id] = conversation_id
+    else:
+        _session_active_conversation.pop(session_id, None)
 
 
 def get_active_kernel(session_id: str) -> "AgentKernel":
@@ -12772,6 +12784,24 @@ def get_active_kernel(session_id: str) -> "AgentKernel":
     """
     conv_id = _session_active_conversation.get(session_id) or "default"
     return get_agent_kernel(conversation_id=conv_id, session_id=session_id)
+
+
+def peek_active_kernel(session_id: str) -> "Optional[AgentKernel]":
+    """Non-constructing variant of ``get_active_kernel``: return the kernel
+    for a session's currently active conversation IF one already exists,
+    else ``None``.
+
+    Never constructs a kernel.  ``get_agent_kernel`` builds a full
+    ``AgentKernel`` when absent (measured 71.81s cold on 2026-08-12), which
+    made read-only paths (``/api/inference/state``, ``request_state``) time
+    out on page loads racing backend startup.  Callers that only read router
+    state (inference snapshot, status broadcast) MUST use this instead so a
+    read can never pay kernel-construction cost.  ``build_inference_snapshot``
+    already accepts ``None`` and returns the full key set with empty
+    providers, so a missing kernel degrades gracefully, never errors.
+    """
+    conv_id = _session_active_conversation.get(session_id) or "default"
+    return _agent_kernel_instances.get(conv_id)
 
 
 def cleanup_agent_kernel(
