@@ -137,6 +137,84 @@ def _sleep_on_429(
     _perf_t.sleep(_delay)
 
 
+# Per-minute request-limit headers, in priority order. PROVIDER-AGNOSTIC by
+# design: nothing here names a vendor and no rpm value is hardcoded — the
+# number always comes from whatever the provider sent, and is stored per
+# quota_id so each provider learns its own ceiling independently.
+#
+# Only PER-MINUTE headers belong in this list, and that is a correctness
+# requirement rather than a preference. Providers publish minute, hour and day
+# limits under nearly identical names (a single response carries
+# x-ratelimit-limit-requests-minute: 5 alongside -hour: 150 and -day: 2400).
+# Reading an hour or day figure as rpm would set a ceiling hundreds of times too
+# high and silently disable the gate — worse than not gating at all, because it
+# would look configured. Anything whose period is unknown is ignored.
+#
+# Extra header names can be added for a provider that uses a different spelling
+# via IRIS_RPM_LIMIT_HEADERS (comma-separated), so an unrecognised provider does
+# not need a code change.
+_RPM_HEADERS: Tuple[str, ...] = tuple(
+    _h.strip().lower()
+    for _h in (
+        __import__("os").environ.get("IRIS_RPM_LIMIT_HEADERS", "").split(",")
+        + [
+            "x-ratelimit-limit-requests-minute",  # Cerebras and similar
+            "anthropic-ratelimit-requests-limit",  # Anthropic (per minute)
+            "x-ratelimit-limit-rpm",               # common explicit spelling
+            "x-ratelimit-limit-requests",          # OpenAI-style (per minute)
+        ]
+    )
+    if _h.strip()
+)
+
+# A published per-minute request limit outside this range is not believable and
+# is far more likely to be a differently-scoped number under a familiar name.
+# Ignoring it leaves the existing learned ceiling in place, which is the safe
+# direction: the meter keeps learning from 429s as it always did.
+_RPM_SANE_MIN = 1.0
+_RPM_SANE_MAX = float(__import__("os").environ.get("IRIS_RPM_LIMIT_MAX", "10000"))
+
+
+def _observe_advertised_limit(transport: "object", response_headers: Any) -> None:
+    """Feed a provider-published per-minute request ceiling into the rate meter.
+
+    The meter learned ceilings only by being REJECTED — halving on a 429 and
+    probing back up from an initial guess of 30 rpm. Providers that publish
+    their limit on every response were ignored, so each run re-guessed until it
+    had collected enough rejections. Observed live at 5 rpm against a guess of
+    30. Applies to any provider that sends one of ``_RPM_HEADERS``.
+
+    Best-effort: metering must never break a call.
+    """
+    if response_headers is None:
+        return
+    try:
+        _qid = getattr(transport, "_quota_id", None)
+        if not _qid:
+            return
+        _get = getattr(response_headers, "get", None)
+        if _get is None:
+            return
+        for _h in _RPM_HEADERS:
+            _raw = _get(_h)
+            if _raw is None:
+                continue
+            try:
+                _rpm = float(str(_raw).strip())
+            except (TypeError, ValueError):
+                continue  # unparseable — try the next spelling
+            if not (_RPM_SANE_MIN <= _rpm <= _RPM_SANE_MAX):
+                logger.debug(
+                    "[transport] ignoring implausible rpm header %s=%s for %s",
+                    _h, _raw, _qid,
+                )
+                continue
+            get_rate_meter().observe_advertised_limit(_qid, _rpm)
+            return
+    except Exception:  # pragma: no cover — metering is best-effort
+        pass
+
+
 def _record_attempt(transport: "object") -> None:
     """REQ-9 / root-cause of the 429 storm: record a logical LLM call attempt
     in the rate window BEFORE sending.
@@ -566,6 +644,9 @@ class ApiHttpxTransport:
                             )
                             continue
 
+                        # The provider publishes its own RPM ceiling on every response;
+                        # learning it only from 429s meant guessing 30 against a real 5.
+                        _observe_advertised_limit(self, _resp.headers)
                         if _resp.status_code != 200:
                             try:
                                 _first = next(_resp.iter_bytes(), b"")
@@ -701,6 +782,9 @@ class ApiHttpxTransport:
                             self._quota_id, _retry_after
                         )
                         continue
+                    # The provider publishes its own RPM ceiling on every response;
+                    # learning it only from 429s meant guessing 30 against a real 5.
+                    _observe_advertised_limit(self, _resp.headers)
                     if _resp.status_code != 200:
                         raise RuntimeError(
                             f"API returned {_resp.status_code}: "
@@ -1049,6 +1133,9 @@ class OpenAICompatTransport:
 
                     if _resp.status_code == 429:
                         continue
+                    # The provider publishes its own RPM ceiling on every response;
+                    # learning it only from 429s meant guessing 30 against a real 5.
+                    _observe_advertised_limit(self, _resp.headers)
                     if _resp.status_code != 200:
                         raise RuntimeError(
                             f"LM Studio returned "
@@ -1208,6 +1295,9 @@ class OllamaTransport:
         try:
             with _httpx.Client(timeout=_httpx.Timeout(30.0)) as _client:
                 _resp = _client.post(url, json=payload)
+                # The provider publishes its own RPM ceiling on every response;
+                # learning it only from 429s meant guessing 30 against a real 5.
+                _observe_advertised_limit(self, _resp.headers)
                 if _resp.status_code != 200:
                     raise RuntimeError(
                         f"Ollama returned {_resp.status_code}: "

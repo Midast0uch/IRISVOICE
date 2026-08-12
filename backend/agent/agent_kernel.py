@@ -3555,6 +3555,12 @@ class AgentKernel:
                     source_document_id=source_document_id,
                     sources=sources,
                     har_path=har_path,
+                    # _store_document_data has always TAKEN turn_id and never
+                    # passed it on, so every stored document was unattributable:
+                    # a rehydrated card could not be paired with the exchange
+                    # that produced it, which is why the answer text and its card
+                    # both rendered, neither aware of the other.
+                    turn_id=turn_id,
                 )
         except Exception as exc:
             logger.warning("[AgentKernel] document_data store failed: %s", exc)

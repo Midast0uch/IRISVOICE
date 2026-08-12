@@ -74,8 +74,13 @@ class DocumentDataStore:
                 # Column already exists on a fresh DB — safe to ignore.
                 pass
             # Wave 0/1 (document-rehydration, REQ-5/REQ-13): provenance linkage.
+            # `turn_id` was passed to every writer and stored by NONE of them, so
+            # a rehydrated document came back unattributable: the frontend pairs
+            # a card to its turn by turn_id, and without it the answer text and
+            # its card both render (neither knowing about the other) and the
+            # agent cannot tell which exchange a previous render belongs to.
             # Idempotent — each ADD COLUMN is a no-op once the column exists.
-            for col in ("source_document_id", "sources", "har_path"):
+            for col in ("source_document_id", "sources", "har_path", "turn_id"):
                 try:
                     self._conn.execute(
                         f"ALTER TABLE document_data ADD COLUMN {col} TEXT"
@@ -100,21 +105,26 @@ class DocumentDataStore:
         source_document_id: Optional[str] = None,
         sources: Optional[list] = None,
         har_path: Optional[str] = None,
+        turn_id: Optional[str] = None,
     ) -> None:
         """Upsert a document's canonical data + variants (idempotent by id)."""
         try:
             self._conn.execute(
                 "INSERT INTO document_data "
                 "(document_id, conversation_id, fmt, content, variants, alternatives, trust, revision, "
-                " source_document_id, sources, har_path) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                " source_document_id, sources, har_path, turn_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(document_id) DO UPDATE SET "
                 "conversation_id=excluded.conversation_id, fmt=excluded.fmt, "
                 "content=excluded.content, variants=excluded.variants, "
                 "alternatives=excluded.alternatives, trust=excluded.trust, "
                 "revision=document_data.revision, "
                 "source_document_id=excluded.source_document_id, "
-                "sources=excluded.sources, har_path=excluded.har_path",
+                "sources=excluded.sources, har_path=excluded.har_path, "
+                # COALESCE, not excluded: a later write that does not know the
+                # turn (a reformat, a variant refresh) must not erase the
+                # attribution the original render established.
+                "turn_id=COALESCE(excluded.turn_id, document_data.turn_id)",
                 (
                     document_id,
                     conversation_id,
@@ -127,6 +137,7 @@ class DocumentDataStore:
                     source_document_id,
                     json.dumps(sources or [], ensure_ascii=False) if sources is not None else None,
                     har_path,
+                    turn_id,
                 ),
             )
             self._conn.commit()
@@ -157,7 +168,8 @@ class DocumentDataStore:
         try:
             row = self._conn.execute(
                 "SELECT document_id, conversation_id, fmt, content, variants, "
-                "alternatives, trust, revision, source_document_id, sources, har_path "
+                "alternatives, trust, revision, source_document_id, sources, har_path, "
+                "turn_id "
                 "FROM document_data WHERE document_id = ?",
                 (document_id,),
             ).fetchone()
@@ -175,6 +187,7 @@ class DocumentDataStore:
                 "source_document_id": row[8],
                 "sources": json.loads(row[9] or "[]"),
                 "har_path": row[10],
+                "turn_id": row[11],
             }
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("[DocumentDataStore] get failed: %s", exc)
@@ -192,7 +205,8 @@ class DocumentDataStore:
         try:
             if metadata_only:
                 rows = self._conn.execute(
-                    "SELECT document_id, fmt, conversation_id, sources, har_path, created_at "
+                    "SELECT document_id, fmt, conversation_id, sources, har_path, created_at, "
+                    "turn_id "
                     "FROM document_data WHERE conversation_id = ? ORDER BY created_at ASC",
                     (conversation_id,),
                 ).fetchall()
@@ -204,12 +218,14 @@ class DocumentDataStore:
                         "sources": json.loads(r[3] or "[]"),
                         "har_path": r[4],
                         "created_at": r[5],
+                        "turn_id": r[6],
                     }
                     for r in rows
                 ]
             rows = self._conn.execute(
                 "SELECT document_id, conversation_id, fmt, content, variants, "
-                "alternatives, trust, revision, source_document_id, sources, har_path "
+                "alternatives, trust, revision, source_document_id, sources, har_path, "
+                "turn_id "
                 "FROM document_data WHERE conversation_id = ? ORDER BY created_at ASC",
                 (conversation_id,),
             ).fetchall()
@@ -226,6 +242,7 @@ class DocumentDataStore:
                     "source_document_id": r[8],
                     "sources": json.loads(r[9] or "[]"),
                     "har_path": r[10],
+                    "turn_id": r[11],
                 }
                 for r in rows
             ]

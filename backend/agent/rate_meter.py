@@ -93,6 +93,10 @@ class ProviderWindow:
     last_429_at: Optional[float] = None
     count_429_in_window: int = 0
     configured_max_rpm: Optional[float] = None
+    # RPM the provider itself published (x-ratelimit-limit-requests-minute).
+    # Authoritative: never decayed, never probed upward, and never overridden by
+    # the learning floor. None until a response header supplies one.
+    advertised_rpm: Optional[float] = None
     # REQ-9 AC3 (T27): read-only rate-health inputs. 429 observation timestamps
     # feed the windowed 429 frequency; ceiling_trajectory records (ts, rpm)
     # change points (each 429 decay + each post-probe recovery) so the outer
@@ -369,6 +373,42 @@ class ProviderRateMeter:
             _w.ceiling_trajectory.append((_w.last_429_at, _w.ceiling_rpm))
             self._save_ceilings()
 
+    # ── advertised limit (the provider tells us; stop guessing) ─────────────
+    def observe_advertised_limit(self, quota_id: str, rpm: float) -> None:
+        """Record an RPM ceiling the provider stated in a response header.
+
+        The meter learned ceilings ONLY by being rejected — halving on a 429 and
+        probing back up. Meanwhile Cerebras returns
+        ``x-ratelimit-limit-requests-minute: 5`` on every single response, and it
+        was thrown away. Learning by rejection when the limit is published means
+        the first N calls of every run are a guess, and the guess was 30
+        (CEILING_INIT_RPM) against a real 5.
+
+        An advertised value is AUTHORITATIVE: it is not decayed, not probed, and
+        crucially not raised by the learning floor — see get_ceiling. It is only
+        lowered by a 429, which would mean the provider is enforcing something
+        stricter than it published.
+        """
+        try:
+            _rpm = float(rpm)
+        except (TypeError, ValueError):
+            return
+        if _rpm <= 0:
+            return
+        with self._lock:
+            _w = self._windows.get(quota_id)
+            if _w is None:
+                _w = self._new_window(quota_id)
+                self._windows[quota_id] = _w
+            if _w.advertised_rpm == _rpm:
+                return  # unchanged; skip the log and the persist
+            _w.advertised_rpm = _rpm
+            logger.info(
+                "[rate_meter] advertised ceiling quota=%s rpm=%.0f (was learning "
+                "from 429s only)", quota_id, _rpm,
+            )
+            self._save_ceilings()
+
     # ── ceiling read (T2.3 / T2.6) ──────────────────────────────────────────
     def get_ceiling(self, quota_id: str) -> float:
         """Effective RPM ceiling: min(learned, hard rail, configured max).
@@ -395,6 +435,15 @@ class ProviderRateMeter:
             _floor = min(CEILING_MIN_RPM, PHASE_HARD_MAX_RPM)
             if _w.configured_max_rpm is not None:
                 _floor = min(_floor, _w.configured_max_rpm)
+            # A floor must never lift the ceiling above a limit the PROVIDER
+            # published. CEILING_MIN_RPM is 15 and Cerebras advertises 5, so
+            # without this clamp the gate would pace to three times the real
+            # limit and manufacture the 429s it exists to avoid — the floor is
+            # there to stop learning from starving a crawl, not to overrule the
+            # provider.
+            if _w.advertised_rpm is not None:
+                _eff = min(_eff, _w.advertised_rpm)
+                _floor = min(_floor, _w.advertised_rpm)
             _eff = max(_eff, _floor)
             # Log once per provider when the rail is the binding constraint
             if _w.ceiling_rpm > PHASE_HARD_MAX_RPM and _w.quota_id not in self._rail_logged:

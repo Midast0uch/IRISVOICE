@@ -8478,6 +8478,13 @@ class IRISGateway:
                             "sources": r.get("sources") or [],
                             "har_path": r.get("har_path"),
                             "created_at": r.get("created_at"),
+                            # Which exchange produced this render. Without it the
+                            # frontend cannot pair a rehydrated card with its
+                            # turn, so the answer text and its card both render
+                            # independently — and the agent cannot say which
+                            # question a previous markdown was answering when it
+                            # compares old findings against new ones.
+                            "turn_id": r.get("turn_id"),
                         }
                         for r in rows
                     ]
