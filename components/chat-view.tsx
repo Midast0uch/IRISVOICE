@@ -147,11 +147,6 @@ interface DocRender {
   // Document-rehydration provenance (REQ-5/REQ-6): source URLs + HAR path so a
   // re-hydrated research doc re-renders WITH its citations, never as bare [n].
   sources?: { url: string; title: string }[]
-  // The plan card: emitted at PLAN time, before there is any answer. `pending`
-  // means the card is still describing intent, so it must NOT be treated as this
-  // turn's rendered output — see the fold in handleTextResponse.
-  pending?: boolean
-  kind?: string
   harPath?: string | null
 }
 
@@ -272,20 +267,11 @@ export function ChatWing({
   // (avoids closure staleness when a document:render WS event arrives between
   // fetch send and response).
   const activeDocTurnIdsRef = useRef<Set<string>>(new Set())
-  // Turns whose card is still a PLAN (no answer yet). Tracked separately because
-  // "a document exists for this turn" and "this turn's answer has been rendered"
-  // stopped being the same statement once the plan card started arriving first.
-  const activePendingDocTurnIdsRef = useRef<Set<string>>(new Set())
   useEffect(() => {
     const _docs =
       conversations.find(c => c.id === activeConversationId)?.documents || []
     activeDocTurnIdsRef.current = new Set(
       _docs.map(d => d.turnId).filter((t): t is string => !!t)
-    )
-    activePendingDocTurnIdsRef.current = new Set(
-      _docs.filter(d => d.pending)
-        .map(d => d.turnId)
-        .filter((t): t is string => !!t)
     )
   }, [activeConversationId, conversations])
 
@@ -501,30 +487,13 @@ export function ChatWing({
       // If this turn is a rendered document (prism card), skip plain-text —
       // the RichDocument card already shows the structured content.
       //
-      // EXCEPT when the only card for the turn is the PLAN card, which is
-      // emitted before any answer exists. Suppressing here would swallow the
-      // answer entirely and leave the user staring at a plan for work that had
-      // already finished. A plain-text answer therefore FOLDS INTO the plan
-      // card — same card, now carrying the answer — which is also what makes
-      // the structured and unstructured paths end in the same place.
+      // NOTE for anyone re-adding an early/plan card: this suppression is why
+      // that is dangerous. A document emitted BEFORE the answer exists claims
+      // the turn here, and an answer arriving as plain text is then dropped —
+      // the user is left reading a plan for work that already finished. Any
+      // pre-answer card needs this branch to distinguish "a card exists" from
+      // "the answer was rendered" before it can be safe.
       if (turnId && activeDocTurnIdsRef.current.has(turnId)) {
-        if (activePendingDocTurnIdsRef.current.has(turnId)) {
-          seenTurnIds.current.add(turnId)
-          setConversations((prev) =>
-            prev.map((conv) => {
-              if (conv.id !== activeConversationIdRef.current) return conv
-              return {
-                ...conv,
-                documents: conv.documents.map((d) =>
-                  d.turnId === turnId && d.pending
-                    ? { ...d, content: text, pending: false, updated: true }
-                    : d,
-                ),
-              }
-            }),
-          )
-          return
-        }
         seenTurnIds.current.add(turnId)
         return
       }
@@ -674,9 +643,6 @@ export function ChatWing({
         trust?: string
         sources?: { url: string; title: string }[]
         har_path?: string | null
-        // Set only by the plan card, which is emitted before any answer exists.
-        pending?: boolean
-        kind?: string
       } | undefined
       if (!detail?.content) return
       const doc: DocRender = {
@@ -692,11 +658,6 @@ export function ChatWing({
         trust: detail.trust,
         sources: detail.sources,
         harPath: detail.har_path ?? null,
-        // A revision that carries no `pending` is the answer arriving: the card
-        // stops being a plan. Defaulting to the previous value instead would
-        // leave it pending forever and keep swallowing the plain-text path.
-        pending: detail.pending === true,
-        kind: detail.kind,
       }
       // Per-conversation document store — updates the active conversation's
       // documents array instead of a flat global array.

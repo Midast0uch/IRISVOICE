@@ -115,7 +115,22 @@ async def extract_page_frames(
     b = bounds or SessionBounds()
     frames: list[FrameExtraction] = []
     scroll = 0
+    # The loop had NO time bound and no way to notice a scroll that did not
+    # happen. Live 2026-08-11: the session's wall-clock budget was exhausted at
+    # 60s, every subsequent scroll_down failed with "wall-clock budget
+    # exhausted" — and the loop kept going, re-triaging the SAME unmoved frame
+    # at ~7s per VLM call, to elapsed_ms=243112 against max_ms=60000. Four
+    # minutes per URL spent re-reading one screenful, and the whole turn took
+    # 7m43s. Both halves are guarded here: the deadline, and the failed scroll.
+    _deadline = time.monotonic() + (max(1, b.max_wall_ms) / 1000.0)
     while len(frames) < b.max_extractions and scroll <= max_scrolls:
+        if time.monotonic() >= _deadline:
+            logger.warning(
+                "[frame_extraction] wall-clock budget %.0fms exhausted after %d "
+                "frame(s) — stopping extraction instead of re-reading the page",
+                b.max_wall_ms, len(frames),
+            )
+            break
         triage = await _triage_frame(provider, goal, scroll)
         if triage == "challenge":
             frames.append(FrameExtraction(scroll_top=scroll, text="", triage_verdict="challenge", extraction_ms=0))
@@ -127,7 +142,17 @@ async def extract_page_frames(
             FrameExtraction(scroll_top=scroll, text=text, triage_verdict="new_content", extraction_ms=_extract_ms())
         )
         scroll += 1
-        await _scroll_down(provider, scroll)
+        if not await _scroll_down(provider, scroll):
+            # The page did not move, so the next frame is the one just read.
+            # Continuing guarantees a duplicate triage at full VLM cost, and a
+            # stateless VLM cannot detect "unchanged" for itself — the reason
+            # the hardcoded no-op scroll was a defect in the first place.
+            logger.info(
+                "[frame_extraction] scroll did not advance at scroll=%s — "
+                "stopping with %d frame(s) rather than re-reading",
+                scroll, len(frames),
+            )
+            break
     if len(frames) >= b.max_extractions:
         raise BudgetExceeded(f"max_extractions={b.max_extractions} hit for {goal!r}")
     return frames
@@ -173,25 +198,35 @@ async def _full_extract(provider: VisionProvider) -> str:
         return ""
 
 
-async def _scroll_down(provider: VisionProvider, scroll: int) -> None:
+async def _scroll_down(provider: VisionProvider, scroll: int) -> bool:
     """Advance the page before the next extraction iteration.
+
+    Returns True when the caller may keep extracting, False when the page did
+    NOT move and another iteration would only re-read the same frame.
 
     Delegates to the provider's own ``scroll_down`` when present — this
     keeps frame_extraction free of browser concerns (original design intent)
     while letting a real session-backed adapter (SessionVisionAdapter)
     physically move the page between iterations. Providers that do not
-    implement scrolling (pure-VLM test fakes) are left as a no-op, matching
-    the original dedup-bucket semantics.
+    implement scrolling (pure-VLM test fakes) are a no-op and report True,
+    matching the original dedup-bucket semantics where triage decides.
     """
     scroller = getattr(provider, "scroll_down", None)
     if scroller is None:
-        return
+        return True
     try:
         await scroller()
-    except Exception as exc:  # noqa: BLE001 — a failed scroll degrades to a
-        # repeated frame; the next triage call most likely reads
-        # no_new_content off it and the loop stops naturally.
+        return True
+    except Exception as exc:  # noqa: BLE001
+        # This used to be swallowed on the assumption that "the next triage
+        # call most likely reads no_new_content off it and the loop stops
+        # naturally". It does not. Live 2026-08-11, every scroll_down failed
+        # with the session's wall-clock budget exhausted and the VLM answered
+        # 'new_content' to the identical frame each time, so the loop ran on for
+        # another three minutes. A stateless VLM cannot see that a frame is
+        # unchanged; the caller has to.
         logger.warning("[frame_extraction] scroll_down(scroll=%s) failed: %s", scroll, exc)
+        return False
 
 
 def _extract_ms() -> int:

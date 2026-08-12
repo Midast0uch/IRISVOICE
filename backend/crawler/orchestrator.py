@@ -892,6 +892,26 @@ class CrawlOrchestrator:
                 )
 
         pages = [p for p in slots if p is not None]
+        # T12c assembled har_entries for every dispatched outcome and then
+        # returned them WITHOUT ever writing the file. _write_har_file is called
+        # from crawl_runner (batch/fallback) and from inside the worker, neither
+        # of which the per-URL dispatch path goes through — so the live path
+        # produced no HAR at all. Verified 2026-08-11: job
+        # 40e4e52342334e28827bbeea8418df25 crawled five URLs and data/har/ held
+        # nothing newer than a probe from two days earlier, leaving REQ-13/REQ-18
+        # evidence unrecorded and every document's har_path null.
+        _har_path = None
+        if har_entries and job_id:
+            try:
+                from .crawler_engine import _write_har_file
+
+                _har_path = _write_har_file(job_id, har_entries)
+                logger.info(
+                    "[CrawlOrchestrator] HAR written job_id=%s entries=%d path=%s",
+                    job_id, len(har_entries), _har_path,
+                )
+            except Exception as exc:  # noqa: BLE001 — evidence must not fail the crawl
+                logger.warning("[CrawlOrchestrator] HAR write failed job_id=%s: %s", job_id, exc)
         _emit("CRAWLER_PHASE", {"phase": "extracting", "phase_sequence": PHASE_EXTRACTING})
         logger.info(
             "[CrawlOrchestrator] dispatch job_id=%s urls=%d usable=%d concurrency=%d (REQ-10)",
@@ -906,6 +926,7 @@ class CrawlOrchestrator:
             # CrawlResult field the batch path uses, so research()'s
             # _apply_har_penalties + _learn_from_crawl consume them unchanged.
             har_entries=har_entries,
+            har_path=_har_path,
         )
 
     async def _domain_failure_history(self, url: str, query: str) -> str:
