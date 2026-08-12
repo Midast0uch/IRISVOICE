@@ -17,7 +17,10 @@ interface RichDocumentProps {
   // "json" is what the crawler/tool-result cards actually carry. It was absent
   // from this union, so those cards fell through to the markdown renderer and
   // the type never flagged it.
-  format: "markdown" | "html" | "table" | "diagram" | "text" | "json"
+  // "image" carries a URL (/api/documents/<id>/image), never the bytes: the
+  // render path truncates content at 12k and the card again at 50k, so an
+  // inlined data: URI would be silently CUT into a broken image.
+  format: "markdown" | "html" | "table" | "diagram" | "text" | "json" | "image"
   glowColor?: string
   alternatives?: string[]
   onFormatChange?: (newFormat: string) => void
@@ -106,6 +109,16 @@ export function RichDocument({
     () => getMarkdownComponents(glowColor, shimmerPrimary, hasMermaid, trust),
     [glowColor, shimmerPrimary, hasMermaid, trust]
   )
+
+  // Alt text for a screenshot card. Prefers the captured page's URL (the tool
+  // records it as the document's source), so a screen-reader user is told WHICH
+  // page this is a picture of rather than just "a screenshot".
+  const imageAlt = useMemo(() => {
+    if (format !== "image") return ""
+    const src = sources && sources.length > 0 ? sources[0] : undefined
+    const where = src?.title || src?.url
+    return where ? `Screenshot of ${where}` : "Screenshot captured by IRIS"
+  }, [format, sources])
 
   // Pretty-print a JSON body. Falls back to the raw string when it does not
   // parse — a malformed payload should still be READABLE, not blank.
@@ -275,6 +288,38 @@ export function RichDocument({
               >
                 {truncatedContent}
               </p>
+            ) : format === "image" ? (
+              <>
+              {/* A screenshot. `content` is the URL of the document's own blob.
+                  Click opens it full-size in the panel via the same expand path
+                  every other card uses, so an image is not a special case the
+                  user has to learn. */}
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={content}
+                alt={imageAlt}
+                onClick={onExpand}
+                className={`w-full h-auto rounded${onExpand ? " cursor-zoom-in" : ""}`}
+                style={{ border: `1px solid ${glowColor}22`, display: "block" }}
+                // A screenshot that fails to load must SAY so. Left alone the
+                // browser draws a broken-image glyph or nothing at all, which
+                // reads as "the tool did nothing" — the same
+                // silently-blank failure the empty document cards were.
+                onError={(e) => {
+                  const el = e.currentTarget
+                  el.style.display = "none"
+                  const note = el.nextElementSibling as HTMLElement | null
+                  if (note) note.style.display = "block"
+                }}
+              />
+              <p
+                className="text-[10px] italic"
+                style={{ color: "rgba(255,255,255,0.4)", display: "none" }}
+              >
+                The screenshot could not be loaded — its stored image is gone or
+                was evicted.
+              </p>
+              </>
             ) : format === "json" ? (
               // A tool-result card is `format: "json"` and used to fall through
               // to the markdown branch, where a 16KB single-line object renders

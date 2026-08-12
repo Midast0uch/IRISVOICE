@@ -936,6 +936,41 @@ class AgentToolBridge:
 
             return error_result
 
+    async def _handle_screenshot_page(self, params: Dict, session_id: str) -> Dict:
+        """Handle `screenshot_page` — photograph a web page into the chat.
+
+        Resolved against the SAME conversation the rest of the document tools
+        use, so the card lands in the thread the user is actually looking at
+        rather than in a "default" one they cannot see.
+        """
+        params = params or {}
+        url = (params.get("url") or "").strip()
+        if not url:
+            return {"success": False, "error": "A url is required"}
+
+        conversation_id = (
+            params.get("conversation_id")
+            or self._active_conversation_id.get(session_id)
+            or "default"
+        )
+        try:
+            from backend.agent.agent_kernel import get_agent_kernel
+            from backend.agent.tools.screenshot_page_tool import (
+                capture_page_screenshot,
+            )
+            from backend.utils.observability import get_turn_id
+
+            kernel = get_agent_kernel(conversation_id, session_id)
+            return await capture_page_screenshot(
+                url=url,
+                kernel=kernel,
+                conversation_id=conversation_id,
+                turn_id=get_turn_id(),
+            )
+        except Exception as exc:  # noqa: BLE001 — a picture never fails a turn
+            logger.warning("[ToolBridge] screenshot_page failed: %s", exc)
+            return {"success": False, "error": "the page could not be captured"}
+
     async def _handle_ask_user_question(self, params: Dict, session_id: str) -> Dict:
         """Handle the ask_user_question tool — ask user, wait for answer.
 
@@ -1185,7 +1220,7 @@ class AgentToolBridge:
 
         try:
             # Internal tools (handled here)
-            internal_tools = ["ask_user_question", "speak"]
+            internal_tools = ["ask_user_question", "speak", "screenshot_page"]
             media_tools = ["transcribe_media", "analyze_video_frames", "clip_video"]
 
             if tool_name in internal_tools:
@@ -1193,6 +1228,8 @@ class AgentToolBridge:
                     return await self._handle_ask_user_question(params, session_id)
                 if tool_name == "speak":
                     return self._handle_speak(params, session_id)
+                if tool_name == "screenshot_page":
+                    return await self._handle_screenshot_page(params, session_id)
 
             # Read-only document-data retrieval for recombination / re-render
             # (REQ-7/REQ-8). Returns the active conversation's full document DATA
@@ -2571,8 +2608,14 @@ def _crawl_ui_emitter(session_id: str):
     browser panel stayed dead. This emitter is the shared piece the agent
     paths were missing; it mirrors the gateway handler so both agree.
 
-    ``on_progress`` is called SYNCHRONOUSLY by the orchestrator, so sends are
-    scheduled with ensure_future rather than awaited. Every send is
+    ``on_progress`` is called SYNCHRONOUSLY by the orchestrator — possibly from
+    a WORKER event loop (the crawler_query tool runs under
+    run_coroutine_threadsafe(coro, asyncio.new_event_loop()) in
+    tool_decision._run_async, and the DER loop itself runs under
+    run_in_executor). Every send is therefore marshalled onto the gateway's
+    MAIN loop via run_coroutine_threadsafe (see _send below) — NEVER
+    ensure_future, which would bind the send to the current worker loop and
+    trip send_to_client's per-client lock (pin_8b41f386d397). Every send is
     best-effort: a UI emit must never fail or stall a crawl.
     """
     import asyncio as _asyncio
@@ -2619,8 +2662,28 @@ def _crawl_ui_emitter(session_id: str):
                 )
 
             def _send(msg: dict) -> None:
+                # MUST marshal onto the gateway's MAIN event loop, never the
+                # loop running in the current thread. The crawler_query tool
+                # executes inside _run_async's worker thread (tool_decision
+                # :236 run_coroutine_threadsafe(coro, asyncio.new_event_loop()))
+                # and the DER loop itself runs under run_in_executor — so
+                # `ensure_future` here scheduled the broadcast on a WORKER
+                # loop. send_to_client then did `async with _send_locks[client]`
+                # on a lock bound to the MAIN loop at connect time, raising
+                # "bound to a different event loop", which DISCONNECTED the
+                # live client mid-turn (live 2026-08-12, pin_8b41f386d397).
+                # ws_event_bridge.py:145 and ~30 gateway sites use this exact
+                # run_coroutine_threadsafe(main_loop) pattern.
                 try:
-                    _asyncio.ensure_future(ws.broadcast_to_session(session_id, msg))
+                    from backend.iris_gateway import get_iris_gateway
+
+                    _gw = get_iris_gateway()
+                    _loop = getattr(_gw, "_main_loop", None)
+                    if _loop is None or not _loop.is_running():
+                        return  # no live main loop yet — nothing to animate
+                    _asyncio.run_coroutine_threadsafe(
+                        ws.broadcast_to_session(session_id, msg), _loop
+                    )
                 except Exception:
                     pass  # never block the crawl on a UI emit
 

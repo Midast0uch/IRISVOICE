@@ -430,6 +430,26 @@ def register_builtin_tools() -> None:
             requires_desktop=True, parallel_safe=False,
         ),
         ToolSpec(
+            name="screenshot_page",
+            description=(
+                "Take a picture of a WEB PAGE and show it in the chat. Use when "
+                "the user wants to SEE a page ('show me that page', 'what does "
+                "it look like', 'screenshot that site'). Needs the page's URL. "
+                "This is for SHOWING a page, not for reading one — to get a "
+                "page's TEXT or to answer a question from it, use 'web_search' "
+                "or the crawler instead, which are far cheaper. For the user's "
+                "own DESKTOP rather than a web page, use 'take_screenshot'."
+            ),
+            parameters={
+                "url": {
+                    "type": "string",
+                    "description": "Full http(s) URL of the page to photograph",
+                },
+            },
+            category="vision", executor="internal",
+            requires_internet=True, parallel_safe=False,
+        ),
+        ToolSpec(
             name="start_screen_monitor",
             description="Start background screen monitoring for proactive help",
             parameters={"interval": {"type": "integer", "description": "Check interval in seconds"}},

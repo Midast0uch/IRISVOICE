@@ -3211,7 +3211,11 @@ ${message.text}`;
                       )}
                       <RichDocument
                         content={doc.content}
-                        format={doc.format as "markdown" | "html" | "table" | "diagram" | "text"}
+                        // Cast kept in sync with RichDocumentProps.format. It
+                        // omitted "json" and "image", which is why a json card
+                        // silently fell through to the markdown renderer with
+                        // no type error to catch it.
+                        format={doc.format as "markdown" | "html" | "table" | "diagram" | "text" | "json" | "image"}
                         glowColor={glowColor}
                         alternatives={doc.alternatives}
                         trust={doc.trust}

@@ -69,7 +69,7 @@ ALLOWED_ORIGINS = os.environ.get(
     "http://localhost:3000,http://localhost:3001,http://localhost:8080,http://127.0.0.1:3000,http://127.0.0.1:8080,tauri://localhost,https://tauri.localhost,http://*.ts.net,https://*.ts.net,http://100.*",
 ).split(",")
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 logger.info("  - Importing session-aware managers...")
@@ -1567,19 +1567,23 @@ async def api_inference_state():
     Mirrors the unified status-snapshot pattern (replaces ad-hoc FE polling).
     """
     try:
-        from backend.agent import get_agent_kernel
         from backend.agent.inference.snapshot import build_inference_snapshot
 
-        # The UI configures the "session_iris" kernel over the WS; read that
-        # same kernel so the registry/role bindings the user set are reflected.
-        # Use conversation_id="default" so get_agent_kernel returns the same
-        # instance that the WS message handlers use (get_agent_kernel with
-        # session_id="session_iris" also maps to conversation_id="default").
-        kernel = get_agent_kernel(conversation_id="default")
-        router = getattr(kernel, "_router", None)
-        # build_inference_snapshot(None) still returns the full key set
-        # (empty providers/role_bindings) so the REST endpoint and both WS
-        # broadcast sites always agree on shape, even with no router yet.
+        # Read the live provider registry + role bindings WITHOUT constructing
+        # a kernel.  get_agent_kernel(conversation_id="default") builds a full
+        # AgentKernel when absent (measured 71.81s cold), which made this
+        # endpoint time out on page loads racing backend startup — the exact
+        # cause of the "provider card empty until refresh" bug (root-caused
+        # 2026-08-12, pin_05511443f03b).  peek_active_kernel returns None when
+        # no kernel exists yet; build_inference_snapshot(None) still returns
+        # the FULL key set (empty providers, static provider_presets +
+        # model_catalog), so the dropdown populates even before the first WS
+        # session.  The process-wide provider registry (router.py) is shared,
+        # so providers registered by ANY session are always visible here.
+        from backend.agent.agent_kernel import peek_active_kernel
+
+        kernel = peek_active_kernel("session_iris")
+        router = getattr(kernel, "_router", None) if kernel else None
         return build_inference_snapshot(router)
     except Exception as e:
         from fastapi.responses import JSONResponse
@@ -1952,6 +1956,54 @@ async def api_add_message(conversation_id: str, request: dict):
         text=text,
         thinking=request.get("thinking", ""),
         feedback=request.get("feedback"),
+    )
+
+
+@app.get("/api/documents/{document_id}/image")
+async def api_document_image(document_id: str):
+    """Serve a document's binary body (a screenshot) for the chat card's <img>.
+
+    Addressed by the document's OWN id, never by a filename or a path: there is
+    nothing here to traverse, and the image cannot be requested independently of
+    a document that exists. Its lifetime is the document's — the store's
+    eviction drops the blob with the row — so a served image can never outlive
+    the card that shows it.
+
+    A missing blob is an explicit 404, never a placeholder image: a screenshot
+    that failed to store must be VISIBLY missing rather than silently blank,
+    which is the failure mode this codebase keeps reproducing.
+    """
+    from fastapi.responses import Response as _Response
+
+    try:
+        from backend.agent.agent_kernel import get_active_kernel
+        from backend.agent.document_store import DocumentDataStore
+
+        kernel = get_active_kernel("session_iris")
+        store = (
+            DocumentDataStore.get_for(kernel._memory_interface)
+            if kernel is not None
+            else None
+        )
+        blob = store.get_blob(document_id) if store is not None else None
+    except Exception as exc:  # noqa: BLE001 — a lookup failure is a 404, not a 500
+        logger.warning("[api] document image lookup failed id=%s: %s", document_id, exc)
+        blob = None
+
+    if not blob:
+        raise HTTPException(status_code=404, detail="image unavailable")
+
+    return _Response(
+        content=blob["data"],
+        media_type=blob.get("mime") or "image/png",
+        headers={
+            # Immutable: a document id addresses exactly one set of bytes for
+            # its whole life, so re-fetching on every render is pure waste.
+            "Cache-Control": "private, max-age=86400, immutable",
+            # The bytes are a rendered web page. Refuse to let a browser
+            # re-interpret them as anything but the declared image type.
+            "X-Content-Type-Options": "nosniff",
+        },
     )
 
 

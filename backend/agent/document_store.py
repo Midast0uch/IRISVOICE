@@ -40,6 +40,29 @@ CREATE TABLE IF NOT EXISTS document_data (
 """
 
 
+# Binary bodies (screenshots) live in their OWN table rather than as a column on
+# document_data, for two reasons that both bite in practice:
+#   * `list_for_conversation(metadata_only=False)` selects content/variants for a
+#     whole conversation. A blob column would be dragged into every one of those
+#     reads — megabytes to answer a question about text.
+#   * document_data's TEXT `content` is truncated on the render path
+#     (agent_kernel `response[:12000]`) and again in the card at 50k. A base64
+#     image in that column would be silently CUT, producing a broken image with
+#     no error anywhere — the exact class of failure this file keeps hosting.
+# Keyed by document_id so the image is addressed by an opaque id, never by a
+# filename: there is no path to traverse. Lifetime follows the document row
+# (see _evict), so an image cannot outlive the card that shows it.
+_SQL_CREATE_BLOBS = """
+CREATE TABLE IF NOT EXISTS document_blobs (
+    document_id TEXT PRIMARY KEY,
+    mime TEXT NOT NULL,
+    data BLOB NOT NULL,
+    byte_len INTEGER NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+)
+"""
+
+
 _SQL_CREATE_EDGES = """
 CREATE TABLE IF NOT EXISTS reformat_edges (
     from_format TEXT NOT NULL,
@@ -62,6 +85,7 @@ class DocumentDataStore:
     def _ensure_table(self) -> None:
         try:
             self._conn.execute(_SQL_CREATE)
+            self._conn.execute(_SQL_CREATE_BLOBS)
             self._conn.execute(_SQL_CREATE_EDGES)
             self._conn.commit()
             # Phase 4 (chat-card-redesign): revision column added after launch.
@@ -162,6 +186,59 @@ class DocumentDataStore:
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("[DocumentDataStore] update failed: %s", exc)
             return False
+
+    # ── Binary bodies (screenshots) ────────────────────────────────────────
+    # Deliberately NOT folded into store()/get(): a caller asking for a text
+    # document must never pay for an image, and a blob must never reach a code
+    # path that treats `content` as text (it would be truncated, see the
+    # _SQL_CREATE_BLOBS note).
+
+    def store_blob(
+        self, document_id: str, data: bytes, mime: str = "image/png"
+    ) -> bool:
+        """Persist a binary body for ``document_id``. Returns success.
+
+        Never raises: an image that fails to store must cost the card its
+        picture, never the turn.
+        """
+        if not document_id or not data:
+            return False
+        try:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO document_blobs "
+                "(document_id, mime, data, byte_len) VALUES (?, ?, ?, ?)",
+                (document_id, mime, sqlite3.Binary(data), len(data)),
+            )
+            self._conn.commit()
+            return True
+        except Exception as exc:  # noqa: BLE001 — storage never breaks a turn
+            logger.warning(
+                "[DocumentDataStore] store_blob failed id=%s bytes=%d: %s",
+                document_id, len(data), exc,
+            )
+            return False
+
+    def get_blob(self, document_id: str) -> Optional[Dict[str, Any]]:
+        """Return ``{"mime", "data", "byte_len"}`` for a stored binary body.
+
+        None when absent — the caller serves a 404 rather than a placeholder, so
+        a missing image is visible as missing instead of silently blank.
+        """
+        if not document_id:
+            return None
+        try:
+            row = self._conn.execute(
+                "SELECT mime, data, byte_len FROM document_blobs WHERE document_id = ?",
+                (document_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return {"mime": row[0], "data": bytes(row[1]), "byte_len": row[2]}
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[DocumentDataStore] get_blob failed id=%s: %s", document_id, exc
+            )
+            return None
 
     def get(self, document_id: str) -> Optional[Dict[str, Any]]:
         """Return the full document record, or None if not found."""
@@ -358,6 +435,15 @@ class DocumentDataStore:
                     "DELETE FROM document_data WHERE document_id IN ("
                     "SELECT document_id FROM document_data ORDER BY created_at ASC LIMIT ?)",
                     (excess,),
+                )
+                # Cascade to binary bodies. SQLite does not enforce foreign keys
+                # unless PRAGMA foreign_keys is on (it is not, per-connection),
+                # so the cascade is explicit. Without it the blobs would be the
+                # ONLY thing in this store that grows without bound — and being
+                # images, they are the rows where that actually costs something.
+                self._conn.execute(
+                    "DELETE FROM document_blobs WHERE document_id NOT IN ("
+                    "SELECT document_id FROM document_data)"
                 )
                 self._conn.commit()
         except Exception as exc:  # pragma: no cover - defensive
