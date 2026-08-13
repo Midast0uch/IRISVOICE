@@ -39,10 +39,23 @@ next-env.d.ts
 .idea/
 
 # logs
+# `/logs` matches the ROOT dir only and `*.log` misses logrotate suffixes, so
+# backend/logs/irisvoice.log.1 slipped through both and was committed — it
+# carried a full API key into this public repo (2026-08-13). Match log
+# directories at any depth, and rotated files, not just bare *.log.
 /logs
+**/logs/
+.iris-logs/
 *.log
+*.log.[0-9]*
+*.out
 
 # IRIS-specific
+# Runtime config — holds provider api_key values written by the settings UI.
+# It was tracked, and carried a live Cerebras key into this public repo
+# (2026-08-13). load_config() falls back to defaults when it is absent, so a
+# fresh clone bootstraps itself; nothing needs this file in git.
+data/iris_config.json
 *.db
 *.db-shm
 *.db-wal

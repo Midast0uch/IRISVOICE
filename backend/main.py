@@ -27,6 +27,7 @@ load_dotenv()  # .env — placeholders, won't override existing real keys
 
 # Configure structured logging
 from backend.core.logging_config import setup_backend_logging
+from backend.utils.log_redaction import redact as redact_log
 
 logger = setup_backend_logging(log_level=os.environ.get("IRIS_LOG_LEVEL", "INFO"))
 
@@ -2255,11 +2256,22 @@ async def websocket_endpoint(
 
         while True:
             data = await websocket.receive_text()
-            logger.info(f"[WS] Received from {client_id}: {data[:200]}")
+            # Redact BEFORE truncating. `data[:200]` on its own does not
+            # protect anything — it publishes the first 200 characters of
+            # whatever the frame contains. The settings UI sends one
+            # field_update per keystroke, so this line wrote ~30 progressively
+            # longer prefixes of every API key a user typed straight to disk,
+            # and backend/logs was tracked in git (found 2026-08-13: a full
+            # Cerebras key reached a public repo through irisvoice.log.1).
+            logger.info(
+                f"[WS] Received from {client_id}: {redact_log(data, limit=200)}"
+            )
             try:
                 message = json.loads(data)
             except json.JSONDecodeError:
-                logger.warning(f"[WS] Invalid JSON from {client_id}: {data[:100]}")
+                logger.warning(
+                    f"[WS] Invalid JSON from {client_id}: {redact_log(data, limit=100)}"
+                )
                 continue
 
             msg_type = message.get("type", "")

@@ -18,8 +18,23 @@ import pytest
 import websockets
 
 WS_URI = "ws://localhost:8090/ws/test_contract?session_id=contract-test-1"
-CEREBRAS_KEY = os.environ.get("CEREBRAS_TEST_KEY") or "csk-wn5m3wp3pkwjepye29vkv4ny68j3xkpwy2j24dy6vrrw35r5"
+# No hardcoded fallback. The literal that used to sit here was a REAL Cerebras
+# key, and this file is tracked in a public repo — it leaked that credential for
+# as long as it existed (found 2026-08-13). These are live integration tests
+# that call a real provider over a real socket, so a credential is a genuine
+# precondition: without one they cannot exercise anything, and skipping states
+# that honestly instead of failing against a dead key.
+CEREBRAS_KEY = os.environ.get("CEREBRAS_TEST_KEY")
 TIMEOUT = 45.0
+
+pytestmark = pytest.mark.skipif(
+    not CEREBRAS_KEY,
+    reason=(
+        "CEREBRAS_TEST_KEY is not set. These are live integration tests: they "
+        "need a backend on :8090 and a real Cerebras credential. Export "
+        "CEREBRAS_TEST_KEY to run them."
+    ),
+)
 
 
 async def connect_and_init(session_id="contract-test-1"):
