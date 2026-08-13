@@ -82,18 +82,25 @@ export function useInferenceState() {
     return () => { cancelled = true; };
   }, []);
 
-  // Listen for provider_added — append or merge the new provider
+  // Listen for provider_added — append, or merge FIELD-WISE into the existing
+  // entry. Emission sites differ in how complete their payload is; replacing
+  // the whole entry meant a payload that omitted `loaded` blanked it, and both
+  // the ModelSwitcher and the settings panel gate local providers on `loaded` —
+  // so a model demonstrably resident in VRAM vanished from the dropdowns.
+  // Position is preserved too, so the list does not reshuffle on every event.
   useEffect(() => {
     const handler = (e: Event) => {
       const provider = (e as CustomEvent).detail as Provider;
       if (provider && provider.id) {
-        setState((prev) => ({
-          ...prev,
-          providers: [
-            ...prev.providers.filter((p) => p.id !== provider.id),
-            provider,
-          ],
-        }));
+        setState((prev) => {
+          const idx = prev.providers.findIndex((p) => p.id === provider.id);
+          if (idx === -1) {
+            return { ...prev, providers: [...prev.providers, provider] };
+          }
+          const next = [...prev.providers];
+          next[idx] = { ...next[idx], ...provider };
+          return { ...prev, providers: next };
+        });
       }
     };
     window.addEventListener('iris:provider_added', handler as EventListener);
@@ -124,6 +131,34 @@ export function useInferenceState() {
     };
     window.addEventListener('iris:role_bindings_updated', handler as EventListener);
     return () => window.removeEventListener('iris:role_bindings_updated', handler as EventListener);
+  }, []);
+
+  // Live-merge the periodic `system_status` broadcast.  The backend pushes
+  // `router.snapshot()` (providers/role_bindings/default_role) inside every
+  // system_status payload; the HUD already consumes it, but the inference
+  // cards did not — so provider/model state only changed on user action or
+  // full page reload (root-caused 2026-08-12, pin_05511443f03b).  Merge the
+  // SAME field-wise way as role_bindings_updated so an update that carries
+  // only some fields never clobbers the rest.  system_status does NOT carry
+  // provider_presets/model_catalog, so those fields are deliberately left to
+  // the REST fetch + role_bindings_updated — `?? prev` keeps them stable.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as
+        | { inference?: Partial<InferenceState> }
+        | undefined;
+      const inf = detail?.inference;
+      if (inf) {
+        setState((prev) => ({
+          ...prev,
+          providers: inf.providers ?? prev.providers,
+          role_bindings: inf.role_bindings ?? prev.role_bindings,
+          default_role: inf.default_role ?? prev.default_role,
+        }));
+      }
+    };
+    window.addEventListener('iris:system_status', handler as EventListener);
+    return () => window.removeEventListener('iris:system_status', handler as EventListener);
   }, []);
 
   const sendRoleBinding = useCallback(

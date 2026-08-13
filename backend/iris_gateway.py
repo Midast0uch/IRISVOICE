@@ -191,10 +191,11 @@ class IRISGateway:
         self._cleanup_analyzer = CleanupAnalyzer()
         self._logger.info("[IRISGateway] Cleanup analyzer initialized")
 
-        # Initialize LFM2.5-VL vision provider (connects to llama-server port 8081)
+        # Initialize LFM2.5-VL vision provider (connects to llama-server on vision_port)
         self._vision_provider = LFMVLProvider()
         self._logger.info(
-            "[IRISGateway] Vision provider initialized (LFM2.5-VL @ http://localhost:8081/v1)"
+            "[IRISGateway] Vision provider initialized (LFM2.5-VL @ http://localhost:%d/v1)",
+            _VISION_PORT,
         )
 
         # Initialize model cache for lazy loading (5 minute TTL)
@@ -295,6 +296,81 @@ class IRISGateway:
         except Exception as e:  # never block startup on this
             self._logger.warning(f"[IRISGateway] local hydrate schedule failed: {e}")
 
+        # Pre-warm the shared embedding encoder at boot, OFF the event loop, so
+        # the first DER verification never pays a 2-4 minute cold model load
+        # (previously a second AutoModel copy was loaded inline — blocking the
+        # loop). SemanticVerifier reuses this same encoder (dedupe, 2026-08-12);
+        # while it loads, verification falls back to graded F1 (REQ-4 AC4).
+        try:
+            loop.create_task(self._prewarm_embedding_encoder())
+            self._logger.info("[IRISGateway] Embedding encoder pre-warm scheduled.")
+        except Exception as e:  # never block startup on this
+            self._logger.warning(f"[IRISGateway] embedding pre-warm schedule failed: {e}")
+
+    async def _prewarm_embedding_encoder(self) -> None:
+        """Load the shared EmbeddingService encoder in a background thread at boot.
+
+        The EmbeddingService load is already bounded by IRIS_EMBEDDING_LOAD_TIMEOUT_S
+        and runs in a daemon thread (Defect 1); ``asyncio.to_thread`` additionally
+        keeps even the bounded wait off the event loop. Failure is non-fatal: the
+        verifier falls back to graded F1 (REQ-4 AC4) until the encoder is available.
+        """
+        try:
+            from backend.memory.embedding import get_embedding_service
+
+            svc = get_embedding_service()
+            if getattr(svc, "_backend", None) != "hash":
+                self._logger.info(
+                    "[IRISGateway] embedding encoder already loaded (backend=%s)",
+                    getattr(svc, "_backend", "?"),
+                )
+                return
+            t0 = time.monotonic()
+            # encode_with_meta("") triggers _load_active_backend (lazy, latched,
+            # bounded) without doing real inference work.
+            await asyncio.to_thread(svc.encode_with_meta, "")
+            self._logger.info(
+                "[IRISGateway] embedding encoder pre-warmed in %.1fs (backend=%s)",
+                time.monotonic() - t0,
+                getattr(svc, "_backend", "?"),
+            )
+        except Exception as exc:
+            self._logger.warning(f"[IRISGateway] embedding encoder pre-warm failed: {exc}")
+
+    async def _broadcast_inference_snapshot(
+        self, session_id: Optional[str], router: Any = None
+    ) -> None:
+        """Re-emit the FULL inference snapshot to the frontend.
+
+        Every surface that shows a model (chat-row ModelSwitcher, the dashboard
+        Model & Inference card, the wheel-view SidePanel) reads one hook,
+        ``useInferenceState``. Any code path that mutates the provider registry
+        or the role bindings must call this, or those surfaces keep rendering
+        the pre-change state until the next periodic ``system_status`` — which
+        is what made a load/unload look like it had not happened.
+
+        Never raises: a broadcast failure must not fail the operation that
+        triggered it.
+        """
+        try:
+            from backend.agent.inference.snapshot import build_inference_snapshot
+
+            _r = router
+            if _r is None:
+                from .agent import get_agent_kernel
+
+                _r = getattr(get_agent_kernel(session_id or "session_iris"), "_router", None)
+            _snap = build_inference_snapshot(_r)
+            _msg = {"type": "role_bindings_updated", "payload": _snap}
+            if session_id:
+                await self._ws_manager.broadcast_to_session(session_id, _msg)
+            else:
+                await self._ws_manager.broadcast(_msg)
+        except Exception as exc:
+            self._logger.warning(
+                "[IRISGateway] inference snapshot broadcast failed: %s", exc
+            )
+
     async def _hydrate_local_provider_on_startup(self) -> None:
         """Re-register the 'local' provider after a backend restart.
 
@@ -316,7 +392,15 @@ class IRISGateway:
             from pathlib import Path as _Path
 
             _cfg = _lc()
-            _status = getattr(_cfg, "local_model_status", None)
+            # local_model_status/local_model_path live on cfg.inference (see
+            # InferenceConfig in iris_config.py) — reading them off the ROOT
+            # config always returned None, so this whole hydrate returned early
+            # and a local model loaded before a backend restart never came back
+            # into the dropdowns. Root falls back for older configs.
+            _infer_cfg = getattr(_cfg, "inference", None)
+            _status = getattr(_infer_cfg, "local_model_status", None) or getattr(
+                _cfg, "local_model_status", None
+            )
             if _status != "loaded":
                 return
             _mgr = get_local_model_manager()
@@ -339,7 +423,8 @@ class IRISGateway:
                 return
 
             _model_path = (
-                getattr(_cfg, "local_model_path", None)
+                getattr(_infer_cfg, "local_model_path", None)
+                or getattr(_cfg, "local_model_path", None)
                 or (_cfg.field_values or {}).get("iris_local_model_path")
                 or getattr(_mgr, "_current_model_path", None)
             )
@@ -348,13 +433,20 @@ class IRISGateway:
             )
             _inproc = getattr(_mgr, "_llm", None) is not None
             _local_inst = ProviderInstance(
-                id="local",
-                label=f"Local: {_model_name}",
+                # Namespaced id (REQ-4 AC1) and the SAME id the live load path
+                # registers, so a restart re-hydrates the entry the role
+                # bindings already point at instead of a second, bare "local"
+                # entry that nothing is bound to.
+                id=f"local:{_model_name}",
+                label=f"Local: {_Path(_model_path).name if _model_path else _model_name}",
                 kind=(
                     ProviderKind.INPROCESS if _inproc else ProviderKind.LOCAL_OPENAI
                 ),
                 model=_model_name,
                 api_base_url="" if _inproc else _endpoint,
+                # The server answered /models above — it IS loaded. Without this
+                # the ModelSwitcher's `loaded` filter drops it on sight.
+                loaded=True,
             )
             _kernels = [self] + [
                 pk for pk in _agent_kernel_instances.values() if pk is not self
@@ -367,7 +459,7 @@ class IRISGateway:
                 if _inproc:
                     _r.set_inprocess_manager(_mgr)
             self._logger.info(
-                f"[LocalHydrate] re-registered local provider 'local' "
+                f"[LocalHydrate] re-registered local provider '{_local_inst.id}' "
                 f"(kind={_local_inst.kind.value}) across {len(_kernels)} kernel(s)"
             )
             # Notify the frontend so the dropdown populates.
@@ -375,15 +467,10 @@ class IRISGateway:
                 await self._ws_manager.broadcast(
                     {
                         "type": "provider_added",
-                        "payload": {
-                            "id": _local_inst.id,
-                            "label": _local_inst.label,
-                            "kind": _local_inst.kind.value,
-                            "model": _local_inst.model,
-                            "api_base_url": _local_inst.api_base_url,
-                        },
+                        "payload": _local_inst.to_dict(),
                     }
                 )
+                await self._broadcast_inference_snapshot(None)
             except Exception as _be:
                 self._logger.warning(f"[LocalHydrate] broadcast failed: {_be}")
         except Exception as e:
@@ -1415,35 +1502,66 @@ class IRISGateway:
                     # models from the existing bindings and only use the card values
                     # for roles that are not yet bound.
                     _existing = {}
+                    _existing_override = {}
                     try:
                         _rt = getattr(kernel, "_router", None)
                         if _rt is not None and hasattr(_rt, "_roles"):
                             for _b in _rt._roles.list():
                                 _existing[_b.role] = _b.instance_id
+                                _existing_override[_b.role] = _b.model_override
                     except Exception:
                         _existing = {}
+                        _existing_override = {}
                     _effective_provider = _existing.get("reasoning") or provider
-                    # Derive the model names from the canonical binding's provider
-                    # instance (its registered model) — never from stale card values.
-                    _effective_reasoning = reasoning
-                    _effective_tool = tool_exec
+
+                    # A model name only means anything ALONGSIDE the provider it
+                    # was chosen for. When the card names a DIFFERENT provider
+                    # than the one the bindings say is live, its model fields
+                    # describe the old provider and must be discarded — using
+                    # them stamped "gemma-4-31b" (Cerebras) onto the freshly
+                    # selected Cohere instance, so the switcher, the dashboard
+                    # card, and generate() all reported Cohere · gemma-4-31b
+                    # (root-caused 2026-08-13 from backend-20260813-074742.log).
+                    _card_applies = (not provider) or (provider == _effective_provider)
+                    _effective_reasoning = reasoning if _card_applies else None
+                    _effective_tool = tool_exec if _card_applies else None
+
+                    # Canonical source, in order: the ROLE BINDING's own
+                    # model_override (which is where an override actually lives —
+                    # ProviderInstance has no `model_override` attribute, so the
+                    # previous getattr() on the resolved instance was always
+                    # None and silently fell through to the card value), then the
+                    # bound provider instance's registered model.
                     try:
                         _rp = kernel._router.resolve("reasoning") if _existing.get("reasoning") else None
                         _tp = kernel._router.resolve("tool_execution") if _existing.get("tool_execution") else None
                         if _rp is not None:
                             _effective_reasoning = (
-                                getattr(_rp, "model_override", None)
+                                _existing_override.get("reasoning")
                                 or getattr(_rp, "model", None)
-                                or reasoning
+                                or _effective_reasoning
                             )
                         if _tp is not None:
                             _effective_tool = (
-                                getattr(_tp, "model_override", None)
+                                _existing_override.get("tool_execution")
                                 or getattr(_tp, "model", None)
-                                or tool_exec
+                                or _effective_tool
                             )
                     except Exception:
                         pass
+
+                    # Last resort: a provider with no resolvable model gets its
+                    # OWN catalog default, never a leftover from another one.
+                    if not _effective_reasoning:
+                        from backend.agent.inference.provider_catalog import (
+                            get_default_model_for_provider,
+                        )
+
+                        _effective_reasoning = get_default_model_for_provider(
+                            _effective_provider
+                        )
+                    if not _effective_tool:
+                        _effective_tool = _effective_reasoning
                     # Resolve the provider base URL so the router instance carries
                     # the correct endpoint (not the previously configured one).
                     if _effective_provider == "cerebras":
@@ -7343,8 +7461,8 @@ class IRISGateway:
 
     async def _handle_enable_vision(self, session_id: str, client_id: str) -> None:
         """
-        Handle enable_vision message â€” checks if LFM2.5-VL llama-server is reachable.
-        Vision is a separate process (llama-server port 8081); enabling = health check.
+        Handle enable_vision message — checks if LFM2.5-VL llama-server is reachable.
+        Vision is a separate process (llama-server on vision_port); enabling = health check.
         """
         try:
             self._logger.info(
@@ -7469,7 +7587,7 @@ class IRISGateway:
                         "load_progress_percent": None,
                         "error_message": None
                         if available
-                        else "Vision server not running on port 8081",
+                        else f"Vision server not running on port {_VISION_PORT}",
                         "model_name": "lfm2.5-vl-3b",
                         "quantization_enabled": False,
                         "is_available": available,
@@ -8154,23 +8272,46 @@ class IRISGateway:
                             f"[SLICE3] Registered local provider 'local:{_stem}' "
                             f"(kind={_local_inst.kind.value}, session {session_id})"
                         )
+                        # Send the FULL provider dict, not a hand-picked subset.
+                        # The subset omitted `loaded`, and the ModelSwitcher
+                        # admits a non-API provider only when `loaded` is truthy
+                        # — so a model that was demonstrably resident in VRAM
+                        # never appeared in the Brain/Tool dropdowns.
                         await self._ws_manager.broadcast_to_session(
                             session_id,
                             {
                                 "type": "provider_added",
-                                "payload": {
-                                    "id": _local_inst.id,
-                                    "label": _local_inst.label,
-                                    "kind": _local_inst.kind.value,
-                                    "model": _local_inst.model,
-                                    "api_base_url": _local_inst.api_base_url,
-                                },
+                                "payload": _local_inst.to_dict(),
                             },
+                        )
+                        # …and re-emit the whole inference snapshot, so every
+                        # useInferenceState() consumer re-derives its provider
+                        # list from one authoritative payload instead of
+                        # patching in a single entry.
+                        await self._broadcast_inference_snapshot(
+                            session_id, _router
                         )
                 except Exception as reg_err:
                     self._logger.warning(
                         f"[SLICE3] Local provider registration failed: {reg_err}"
                     )
+
+                # Drive the dashboard's MODEL STATUS badge. The load path only
+                # ever sent `local_model_loading` (a progress channel); the badge
+                # listens on `local_model_status`, so it sat at UNLOADED even
+                # after a successful load.
+                await self._ws_manager.broadcast_to_session(
+                    session_id,
+                    {
+                        "type": "local_model_status",
+                        "payload": {
+                            "loaded": True,
+                            "status": "loaded",
+                            "model_path": model_path,
+                            "profile": profile,
+                        },
+                    },
+                )
 
                 await self._handle_get_available_models(session_id, client_id, {})
                 import time as _time
@@ -8184,6 +8325,22 @@ class IRISGateway:
                             "model": model_path,
                             "profile": profile,
                             "timestamp": _time.time(),
+                        },
+                    },
+                )
+            else:
+                # Same badge channel on the failure path, so a load that did not
+                # come up is shown as ERROR rather than left at whatever the
+                # badge said before.
+                await self._ws_manager.broadcast_to_session(
+                    session_id,
+                    {
+                        "type": "local_model_status",
+                        "payload": {
+                            "loaded": False,
+                            "status": "error",
+                            "model_path": model_path,
+                            "error": payload_out.get("error", "Model load failed"),
                         },
                     },
                 )
@@ -8243,16 +8400,35 @@ class IRISGateway:
                 kernel.configure_openai_compat(None)
                 if hasattr(kernel, "configure_inprocess_local"):
                     kernel.configure_inprocess_local(None)
-                # Remove the 'local' provider from the router registry
-                # so the Brain/Tool dropdowns no longer list it.
+                # Remove the local provider(s) from the router registry so the
+                # Brain/Tool dropdowns no longer list them. The load path
+                # registers a NAMESPACED id ("local:<stem>", REQ-4 AC1) — this
+                # used to remove the bare literal "local", which was never
+                # registered, so an unloaded model stayed in the registry with
+                # loaded=True forever. Remove every local entry plus the legacy
+                # bare id.
                 router = getattr(kernel, "_router", None)
                 if router is not None:
-                    router.remove_provider("local")
+                    _local_ids = [
+                        i.id
+                        for i in router.registry.list()
+                        if i.id == "local" or i.id.startswith("local:")
+                    ]
+                    for _lid in _local_ids:
+                        router.remove_provider(_lid)
+                    self._logger.info(
+                        f"[iris_local] Removed local provider(s) {_local_ids} "
+                        f"from registry (session {session_id})"
+                    )
                 self._logger.info(
                     f"[iris_local] Kernel de-wired after unload (session {session_id})"
                 )
             except Exception as kw_err:
                 self._logger.debug(f"[iris_local] Kernel de-wire skipped: {kw_err}")
+
+            # Re-emit the snapshot so every model surface drops the unloaded
+            # provider immediately instead of at the next system_status tick.
+            await self._broadcast_inference_snapshot(session_id)
 
             await self._ws_manager.send_to_client(
                 client_id,

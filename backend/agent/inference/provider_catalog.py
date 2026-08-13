@@ -213,3 +213,35 @@ def get_catalog_for_provider(provider_id: Optional[str]) -> List[Dict[str, str]]
         return []
     p = provider_id.lower().strip()
     return PROVIDER_MODEL_CATALOG.get(p, [])
+
+
+def get_default_model_for_provider(provider_id: Optional[str]) -> Optional[str]:
+    """Return the first (recommended) model id for *provider_id*, or None.
+
+    Used when a provider instance is registered without a model: a provider
+    whose ``model`` is empty makes every downstream "which model?" resolution
+    fall through to whatever value the caller happened to be carrying — which
+    is how a freshly-selected provider ended up wearing the PREVIOUS
+    provider's model id.
+    """
+    cat = get_catalog_for_provider(provider_id)
+    return cat[0]["id"] if cat else None
+
+
+def model_belongs_to_provider(
+    provider_id: Optional[str], model_id: Optional[str]
+) -> bool:
+    """True when *model_id* is offered by *provider_id*.
+
+    A provider with NO catalog entry (local:<stem>, ollama at runtime, a custom
+    endpoint) accepts anything — absence of a catalog is not evidence that a
+    model is wrong. Callers must only enforce this for providers whose catalog
+    is authoritative (the hosted API presets), never for local servers where the
+    catalog is a suggestion list.
+    """
+    if not model_id:
+        return False
+    cat = get_catalog_for_provider(provider_id)
+    if not cat:
+        return True
+    return any(m.get("id") == model_id for m in cat)

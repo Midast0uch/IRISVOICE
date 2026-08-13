@@ -34,7 +34,7 @@ const ModelInferenceSection = memo(function ModelInferenceSection({
   inferenceValues,
   model_catalog = {},
 }: {
-  providers: { id: string; label: string; kind: string; model: string; purpose?: string; has_key?: boolean }[];
+  providers: { id: string; label: string; kind: string; model: string; purpose?: string; has_key?: boolean; loaded?: boolean; loading?: boolean }[];
   role_bindings: { role: string; instance_id: string; model_override?: string }[];
   loading: boolean;
   sendRoleBinding: (role: string, instanceId: string, modelOverride?: string) => void;
@@ -92,9 +92,18 @@ const ModelInferenceSection = memo(function ModelInferenceSection({
   // falling back to active brain binding or first preset.
   const activeProviderId = selectedProvider || brainBinding?.instance_id || provider_presets[0]?.id || "opencodego";
 
+  // Every provider instance the backend actually knows about that can serve a
+  // chat role. This is what makes a locally-loaded GGUF selectable: it is
+  // registered as a provider instance ("local:<stem>") but is NOT a preset, and
+  // building the dropdown from presets alone meant a model sitting in VRAM could
+  // never be chosen as the Brain or Tool model.
+  const chatProviders = providers.filter(
+    (p) => !p.purpose || p.purpose === "chat"
+  );
+
   // Build model options for Brain/Tool dropdowns.
-  // Prioritizes the active provider's models at the top, followed by models from all
-  // other provider presets (all 15 providers).
+  // Prioritizes the active provider's models at the top, followed by every
+  // provider preset and every registered chat provider instance.
   const buildModelOptions = () => {
     const options: { label: string; value: string }[] = [];
     const added = new Set<string>();
@@ -104,7 +113,8 @@ const ModelInferenceSection = memo(function ModelInferenceSection({
       added.add(pId);
 
       const preset = provider_presets.find((p) => p.id === pId);
-      const label = preset?.label || pId;
+      const pInst = providers.find((p) => p.id === pId);
+      const label = preset?.label || pInst?.label || pId;
       const catalog = model_catalog[pId] ?? [];
 
       if (catalog.length > 0) {
@@ -115,7 +125,6 @@ const ModelInferenceSection = memo(function ModelInferenceSection({
           });
         }
       } else {
-        const pInst = providers.find((p) => p.id === pId);
         const defaultModel = pInst?.model || "";
         options.push({
           label: defaultModel ? `${label} · ${defaultModel}` : label,
@@ -134,10 +143,25 @@ const ModelInferenceSection = memo(function ModelInferenceSection({
       appendModelsForProvider(preset.id);
     }
 
+    // 3. Add every registered chat provider instance that is not a preset —
+    //    loaded local models, ollama, any endpoint configured at runtime.
+    for (const p of chatProviders) {
+      appendModelsForProvider(p.id);
+    }
+
     return options;
   };
 
   const modelOptions = buildModelOptions();
+
+  // Provider Setup dropdown: presets plus any registered chat provider that has
+  // no preset (again, the loaded local model), so it is reachable from here too.
+  const providerSetupOptions = [
+    ...provider_presets.map((p) => ({ label: p.label, value: p.id })),
+    ...chatProviders
+      .filter((p) => !provider_presets.some((pp) => pp.id === p.id))
+      .map((p) => ({ label: p.label || p.id, value: p.id })),
+  ];
 
   // Encode current binding as "providerId::modelOverride" for the dropdown value
   const encodeBrainValue = brainBinding
@@ -184,7 +208,15 @@ const ModelInferenceSection = memo(function ModelInferenceSection({
     if (!selectedProvider || providerStatus === "applied") return;
     setProviderMsg(null);
     setProviderStatus("applied");  // optimistic — button shows "✓ Applied" immediately
+    // The model sent with a provider MUST belong to that provider. Prefer the
+    // model the backend already has registered for this exact instance, else
+    // the provider's own catalog default. Sending "" here registered the new
+    // provider with no model at all, and every downstream "which model?"
+    // resolution then fell through to the value left over from the PREVIOUS
+    // provider — that is how selecting Cohere produced "cohere · gemma-4-31b".
     const matchedProvider = providers.find((p) => p.id === selectedProvider);
+    const modelForProvider =
+      matchedProvider?.model || model_catalog[selectedProvider]?.[0]?.id || "";
     const payload: {
       model_provider: string;
       reasoning_model?: string;
@@ -194,8 +226,8 @@ const ModelInferenceSection = memo(function ModelInferenceSection({
       lmstudio_endpoint?: string;
     } = {
       model_provider: selectedProvider,
-      reasoning_model: matchedProvider?.model || "",
-      tool_execution_model: matchedProvider?.model || "",
+      reasoning_model: modelForProvider,
+      tool_execution_model: modelForProvider,
     };
     if (needsKey) {
       // Only send the key if the user typed a new one; otherwise the backend
@@ -238,7 +270,7 @@ const ModelInferenceSection = memo(function ModelInferenceSection({
           <div className="w-[180px] flex-shrink-0">
             <CustomDropdown
               value={selectedProvider}
-              options={provider_presets.map((p) => ({ label: p.label, value: p.id }))}
+              options={providerSetupOptions}
               onChange={(v) => { setSelectedProvider(v); setProviderMsg(null); }}
               glowColor={glowColor}
               className="text-[10px] py-1 px-2 h-7 w-full"

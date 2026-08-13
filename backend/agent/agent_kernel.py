@@ -2966,22 +2966,17 @@ class AgentKernel:
 
     # ── Tool definitions for OpenAI-compatible function calling ─────────────
 
-    def _get_openai_tools(self, text: str = "") -> List[Dict]:
-        """Convert tool_bridge tool list to OpenAI-compatible function-calling format.
+    def _ensure_tool_bridge(self) -> None:
+        """Lazy-initialize the tool bridge on first access.
 
-        When `text` is provided, web search / crawler tools are included only
-        if the text explicitly asks for a web search. This prevents the model
-        from calling web tools unnecessarily for simple conversational prompts
-        even when the web toggle is ON.
-
-        Each entry becomes:
-          {"type": "function", "function": {"name": ..., "description": ..., "parameters": {...}}}
+        The bridge is created as a background task (its initialize() is async
+        and wires MCP/server connections); tools from its in-process dict are
+        available immediately.  This MUST run before ANY code reads
+        ``self._tool_bridge.get_available_tools()`` — ``_plan_task`` builds the
+        planner's AVAILABLE TOOLS block from it, and a None bridge silently
+        produces an empty tool list (planner then emits tool-less speak steps).
         """
         if not self._tool_bridge:
-            # Lazy-initialize the tool bridge on first access.
-            # initialize() is async, so we create it as a background task
-            # that runs once.  Tools from _tools dict are available immediately;
-            # the async initialization sets up MCP/server connections.
             try:
                 from backend.agent.tool_bridge import get_agent_tool_bridge
 
@@ -2996,7 +2991,19 @@ class AgentKernel:
                 logger.info("[AgentKernel] Tool bridge lazy-initialized")
             except Exception as e:
                 logger.warning(f"[AgentKernel] Tool bridge init failed: {e}")
-                return []
+
+    def _get_openai_tools(self, text: str = "") -> List[Dict]:
+        """Convert tool_bridge tool list to OpenAI-compatible function-calling format.
+
+        When `text` is provided, web search / crawler tools are included only
+        if the text explicitly asks for a web search. This prevents the model
+        from calling web tools unnecessarily for simple conversational prompts
+        even when the web toggle is ON.
+
+        Each entry becomes:
+          {"type": "function", "function": {"name": ..., "description": ..., "parameters": {...}}}
+        """
+        self._ensure_tool_bridge()
         if not self._tool_bridge:
             return []
         openai_tools: List[Dict] = []
@@ -4350,6 +4357,12 @@ class AgentKernel:
         # "responds to the prompt as step 1 completed, never searches" bug.
         _tools_block = ""
         try:
+            # Ensure the tool bridge exists BEFORE reading the tool list — a
+            # fresh kernel has a None bridge (lazy-init only ran on the OpenAI
+            # tools path), which silently yields an empty AVAILABLE TOOLS block
+            # and the planner then emits tool-less speak steps (2026-08-12:
+            # explicit "use screenshot_page" requests planned as trivial).
+            self._ensure_tool_bridge()
             if self._tool_bridge is not None:
                 _avail = self._tool_bridge.get_available_tools()
                 if _avail:
@@ -4604,9 +4617,19 @@ class AgentKernel:
         a factual question (which the frontend may strip of its "websearch:"
         prefix) must reach DER so the crawler path stays available. Chit-chat
         still skips DER regardless of web mode.
+
+        F6 interaction (2026-08-12): plan steps are GOALS ONLY — the parse
+        hardcodes ``tool=None`` and the single resolver (explorer.propose)
+        assigns tools at execution time. Therefore step.tool is ALWAYS None
+        for production plans, and the empty string must NOT count as a
+        "voice-only" tool. With "" in the speak set, every planned task was
+        misread as voice-only and DER (task card + tool execution) was
+        skipped — an explicit "use the screenshot_page tool" prompt produced
+        a trivial plan, no task card, and the empty fallback. Only
+        EXPLICITLY marked speak steps are voice-only now.
         """
         _voice_only = bool(plan_steps) and all(
-            (s.tool or "").lower() in ("speak", "speak_tool", "tts", "")
+            (s.tool or "").lower() in ("speak", "speak_tool", "tts")
             for s in plan_steps
         )
         _is_websearch = self._is_web_search_request(task_clean)
@@ -12269,16 +12292,82 @@ If any tools failed, address those issues in your response.
                         pass
                 # Namespace the bare "local" provider id (REQ-4 AC1) so it never
                 # collides with or shadows a namespaced local entry.
+                # `reasoning_model` is optional on this call, so derive the stem
+                # defensively — an unguarded .split() on None raised out of here
+                # and the whole selection silently returned False.
                 _inst_id = (
-                    f"local:{reasoning_model.split('.')[0].lower()}"
+                    f"local:{(reasoning_model or 'local').split('.')[0].lower()}"
                     if model_provider == "local"
                     else model_provider
                 )
+                # ── Resolve the model this instance is registered WITH ──────
+                # `registry.add()` REPLACES the entry for this id, so whatever
+                # lands in `model=` becomes the provider's model for every
+                # later reader (ModelSwitcher label, dashboard card, and
+                # `generate()`'s `model_override or inst.model` fallback).
+                #
+                # Two rules, both learned from the cerebras→cohere desync
+                # (2026-08-13 08:19, backend-20260813-074742.log): a confirm_card
+                # carrying the PREVIOUS provider's model name re-registered
+                # `cohere` with `model="gemma-4-31b"`.
+                #   1. A hosted-API provider only accepts a model from its OWN
+                #      catalog. A foreign model id is a stale caller value, not
+                #      a user intent — drop it rather than stamp it on.
+                #   2. Never downgrade a known model to blank. An empty `model`
+                #      is what made every downstream resolution fall through to
+                #      the stale value in the first place.
+                from backend.agent.inference.provider_catalog import (
+                    get_default_model_for_provider,
+                    model_belongs_to_provider,
+                )
+
+                _prev_router = getattr(self, "_router", None)
+                _prev_inst = (
+                    _prev_router.registry.get(_inst_id)
+                    if _prev_router is not None
+                    else None
+                )
+                _inst_model = reasoning_model or None
+                if (
+                    _inst_model
+                    and _kind == ProviderKind.API
+                    and not model_belongs_to_provider(model_provider, _inst_model)
+                ):
+                    logger.warning(
+                        "[AgentKernel] model '%s' is not in provider '%s' catalog — "
+                        "ignoring it (stale caller value) and keeping the provider's "
+                        "own model",
+                        _inst_model, model_provider,
+                    )
+                    _inst_model = None
+                if not _inst_model:
+                    _inst_model = (
+                        (_prev_inst.model if _prev_inst else None)
+                        or get_default_model_for_provider(model_provider)
+                    )
+                # A tool model from another provider's catalog is stale the same
+                # way; sanitize it before it can become a role override below.
+                _tool_model = tool_execution_model or None
+                if (
+                    _tool_model
+                    and _kind == ProviderKind.API
+                    and not model_belongs_to_provider(model_provider, _tool_model)
+                ):
+                    _tool_model = None
+
                 _inst = ProviderInstance(
                     id=_inst_id, label=model_provider, kind=_kind,
-                    model=reasoning_model,
+                    model=_inst_model,
                     api_base_url=api_base_url or getattr(self, '_api_base_url', '') or "",
-                    api_key=_effective_key)
+                    api_key=_effective_key,
+                    # Carry forward live state that this call knows nothing
+                    # about — re-registering a loaded local provider must not
+                    # silently mark it unloaded (that drops it out of the
+                    # ModelSwitcher, which filters local providers on `loaded`).
+                    purpose=(_prev_inst.purpose if _prev_inst else "chat"),
+                    loaded=(_prev_inst.loaded if _prev_inst else False),
+                    loading=(_prev_inst.loading if _prev_inst else False),
+                )
                 # Register on this kernel's router only. The registry is
                 # process-wide (REQ-5), so every peer kernel observes the same
                 # provider and role bindings automatically — no fan-out loop.
@@ -12298,11 +12387,14 @@ If any tools failed, address those issues in your response.
                     else:
                         # Explicit selection (Dashboard Models card): bind roles so
                         # resolve("reasoning") / resolve("tool_execution") succeed.
-                        _r.bind_role("reasoning", _inst.id, model_override=reasoning_model)
-                        if tool_execution_model and tool_execution_model != reasoning_model:
-                            _r.bind_role("tool_execution", _inst.id, model_override=tool_execution_model)
+                        # The overrides use the SANITIZED models — a foreign or
+                        # blank model must not survive as a role override either,
+                        # or generate() would send it to the new provider.
+                        _r.bind_role("reasoning", _inst.id, model_override=_inst_model)
+                        if _tool_model and _tool_model != _inst_model:
+                            _r.bind_role("tool_execution", _inst.id, model_override=_tool_model)
                         else:
-                            _r.bind_role("tool_execution", _inst.id)
+                            _r.bind_role("tool_execution", _inst.id, model_override=_inst_model)
 
             # Emit updated context-window usage so the ContextPill reflects the
             # newly-selected model's real window immediately on switch (not only
