@@ -5,10 +5,38 @@ Uses mss for fast screen capture, with intelligent caching and downscaling.
 import base64
 import hashlib
 import io
+import os
 import time
 from typing import Optional, Tuple, Dict, Any
 
 import numpy as np
+
+# Optional disk persistence for every captured screenshot (2026-08-12).
+# Off by default so the hot path stays in-memory; set IRIS_SAVE_SCREENSHOTS=1
+# to keep a copy of every capture in <workspace>/screenshots/ (the canonical
+# folder AGENTS.md mandates for this project — gitignored). Path is overridable
+# via IRIS_SCREENSHOT_DIR. Best-effort: a write failure must never break a
+# capture.
+_SAVE_SCREENSHOTS = os.environ.get("IRIS_SAVE_SCREENSHOTS", "0") == "1"
+_SCREENSHOT_DIR = os.environ.get("IRIS_SCREENSHOT_DIR", "") or os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "screenshots",
+)
+
+
+def _save_screenshot_to_disk(png_bytes: bytes) -> Optional[str]:
+    """Persist a screenshot PNG to the screenshots dir (best-effort)."""
+    if not _SAVE_SCREENSHOTS:
+        return None
+    try:
+        os.makedirs(_SCREENSHOT_DIR, exist_ok=True)
+        ts = time.strftime("%Y%m%d-%H%M%S")
+        path = os.path.join(_SCREENSHOT_DIR, f"screen-{ts}.png")
+        with open(path, "wb") as f:
+            f.write(png_bytes)
+        return path
+    except Exception:
+        return None  # never break a capture on a write failure
 
 
 class ScreenCapture:
@@ -126,6 +154,10 @@ class ScreenCapture:
 
         # Hash for change detection
         img_hash = hashlib.md5(png_bytes).hexdigest()
+
+        # Optional disk persistence (IRIS_SAVE_SCREENSHOTS=1) — best-effort,
+        # off the hot path, never raises.
+        _save_screenshot_to_disk(png_bytes)
 
         if img_hash == self._last_hash and self._last_b64:
             self._last_capture_time = now

@@ -575,45 +575,46 @@ with the correction it produced, or that it fell in the deadband.
 **FAIL** — the file never changes despite a clearly sustained sub-target run, or the running model's
 context changes mid-session (that would violate REQ-4 AC4).
 
-### P3.4 — Known limitation: model size does NOT yet differentiate derived context
+### P3.4 — Model size now differentiates derived context (fix landed — verify live)
 
-**This is a documented current limitation, not a test to pass.** Read it before you conclude that a
-small model getting an unexpectedly small context is a bug — it is the expected behaviour of the code
-as it stands, and reporting it as a mystery costs a triage cycle.
+**Status: the fix specified in the MCM pin *"Local loader auto-calibration — three gaps blocking
+'max context at max tok/s'"* is now IMPLEMENTED** — GAP 1 (compute-and-discard), GAP 2 (per-key
+metadata resilience), and GAP 3 (self-detecting value-type enum) are all closed and green at the
+unit/contract level. This section is now a **verification step**, not a known limitation.
 
-**What you will see.** Load the 230M model and the 1.2B model in turn and compare
-`loader_state.active_config.n_ctx` for each. They may come out **the same**, or much closer than the
-~5× difference in model size would suggest.
+**What you should see.** Load the 230M model and the 1.2B model in turn and compare
+`loader_state.active_config.n_ctx` for each. They should now come out **different** — the smaller model
+claims more context (its calibrated `base_tps` is higher), the larger one less — because `base_tps` is
+no longer a flat `50.0`.
 
-**Why.** `derive_config` searches for the largest `n_ctx` satisfying two constraints — a VRAM fit and
-`expected_tps(n_ctx) = base_tps * sqrt(MIN_CTX / n_ctx) >= TARGET_TPS`. But `base_tps` defaults to a
-flat `50.0` for **every** model, regardless of its size or quantisation. So the throughput constraint
-is identical for a 230M and an 8B model, and only VRAM differentiates them. The 230M model's real
-throughput is several times 50 tok/s, so the search stops short and leaves context unclaimed that
-the card had room for.
+**Why it now works.** `derive_config` still searches for the largest `n_ctx` satisfying a VRAM fit and
+`expected_tps(n_ctx) = base_tps * sqrt(MIN_CTX / n_ctx) >= TARGET_TPS`, but `base_tps` is now seeded
+from a machine-level memory-bandwidth calibration (`put_machine_bandwidth` / `get_machine_bandwidth`,
+cached against `hw_fingerprint` in a separate file). The calibration is `effective_bandwidth =
+calibrated_base * (params_b * bpw / 8)`, written by `_write_tps_correction`, so each model derives its
+own `base_tps = bandwidth / (params_b * bpw / 8)` from its own parsed size and quantisation. One real
+measurement anywhere on the machine now corrects every model's first load. If no calibration exists
+yet (first-ever load before any correction), it falls back to the flat `50.0` — so a virgin machine
+still behaves as before until it has measured something.
 
-**Why the harness does not catch it.** `scripts/validate_local_model_path.py` Assertion 2 ("three
-model sizes → three different contexts") passes — but only because the *tests* pass model-appropriate
-`base_tps` values (120 / 60 / 25) by hand. Production's first load uses the flat default. The green
-proves the arithmetic is right, not that the behaviour happens. This is the same trap named in
-`docs/CADUCEAN_ARCHITECTURE.md` §10: a passing assertion only covers the inputs its fixture drives.
+**The harness now catches this.** `scripts/validate_local_model_path.py` Assertion 2 ("three model
+sizes → three different contexts") was rewritten to derive **organically** from a seeded machine
+calibration with **no hand-fed `base_tps`**, and Assertion 2b proves a calibration written by one
+model benefits a *different* model (the cross-model effect that is the whole point). The green now
+proves the behaviour happens, not just the arithmetic — the §10 "passing assertion only covers its
+fixture's inputs" trap is closed for this case.
 
 **What to record.** For each local model you load, note `params_b`, the derived `n_ctx`, and the
-measured tok/s from `loader_state`. That triple is exactly the data the fix needs to be validated
-against — a real measurement per model beats any estimate, so capturing it while you are testing
-anyway is worth more than re-deriving it later.
+measured tok/s from `loader_state`. That triple confirms the calibration is taking effect per model.
 
-**Not a FAIL.** Do not file this as a regression. The fix (deriving `base_tps` from a once-per-machine
-measured memory-bandwidth calibration, cached against the existing `hw_fingerprint`, so each model
-derives its own throughput from its own parsed size and quantisation) is specified in the MCM pin
-*"Local loader auto-calibration — three gaps blocking 'max context at max tok/s'"* and is **not yet
-implemented**. Two related parser gaps are in the same pin: one unparseable metadata key currently
-discards every key after it (which is why MoE models report `context_length` as N/A and fall back to
-a default context), and the GGUF value-type enum is hard-patched for one vendor quirk rather than
-detected.
-
-**FAIL only if** the derived `n_ctx` exceeds what VRAM can hold — that would be a real overcommit and
-a different defect entirely from this under-claiming one.
+**PASS** — the 230M and 1.2B models derive visibly different `n_ctx`, and the log shows
+`derive_config base_tps=... source=machine_bandwidth` (not `uncalibrated_default`) on a machine that
+has a calibration.
+**FAIL** — two clearly different-sized models derive the *same* `n_ctx` on a machine that has already
+run at least one model (a calibration should exist), or `source=uncalibrated_default` appears after a
+sustained sub-target run should have written a calibration (see P3.3).
+**FAIL only if** the derived `n_ctx` exceeds what VRAM can hold — a real overcommit, a different defect
+from the under-claiming one this fix resolves.
 
 ---
 

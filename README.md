@@ -86,14 +86,36 @@ The full audio pipeline — wake word → VAD → STT → LLM → TTS → audio 
 - **Conversation Memory**: Context-aware conversations with memory management (persists across mode switches)
 - **Internet Access Control**: Toggle agent web search capabilities independently of app connectivity
 
+### 🕸 DER-DAG Execution Model
+
+DER no longer runs as a hardcoded Director→Explorer→Reviewer pipeline over a flat queue. Execution is now a **physics-governed, memory-backed DAG** (specs `specs/der-dag-inversion/` + `specs/dag-node-execution-model/`):
+
+- **The DAG is the memory.** Every step, split child, and sub-loop is a *node* that is simultaneously a work unit and a memory record. The execution tree is a traversal over the shared coordinate graph in `data/memory.db` (configured via `data/memory_config.json`). Each finalized step appends a `memory_chain` row carrying its pre/post Σ (Caducean state) snapshots, outcome, and insight — so the structure persists and the working context can *forget* the raw content once it has landed (REQ-2/REQ-3).
+- **Non-binary steering.** Gates consume the continuous Caducean signal (u/ξ, verified fraction, edge strength) as graded functions instead of binary switches. A mid-band signal takes the bounded middle path, not a threshold coin-flip. Split children resolve a *named* blocker, not a retry of the parent's goal (REQ-4).
+- **Coupling by decision, not threshold.** Relevance retrieval surfaces *all* candidate branches; the agent commits to a direction and the edge records that decision as provenance. No auto-linker writes biased nodes into shared memory (REQ-5).
+- **Layer-batched execution.** Join-point children run as one batched LLM call (bounded by `BATCH_MAX_CHILDREN`); the giant full-history synthesis call is replaced by a synthesis built from compressed node records, with spoken-text normalization at the sentence-flush point (REQ-7/REQ-8).
+- **Outer loop as live judge.** `run_outer_loop` now runs at real session boundaries, feeding live observations so the agent learns in real time whether a memory signal is relevant/strong enough (REQ-16).
+- **DAG Node Execution Model.** Every action — tool call, MCP tool, vision/audio pipeline — is a *node* with a typed, routable outcome (terminal status + enumerated reason + artifact). Composite actions decompose into sub-graphs whose decision points DER can see and re-route; recovery is outcome-driven routing, not a hand-written `if` branch. Adoption is strangler-fig: undeclared legacy tools keep working untouched (REQ-1..REQ-9).
+
 ### 👁 Vision Layer (LFM2.5-VL)
-- **LFM2.5-VL-450M**: Liquid AI's vision-language model running via `llama-server` on port 8081
+- **LFM2.5-VL-3B**: Liquid AI's vision-language model (upgraded 2026-08-12 from the 450M; same LFM2.5-VL class, ~3B params) running via `llama-server` on port 8081. The 450M is retained as an automatic fallback for setups that haven't downloaded the 3B.
 - **VisionMCPServer**: 5 MCP tools — `vision.analyze_screen`, `vision.find_ui_element`, `vision.read_text`, `vision.suggest_next_action`, `vision.describe_live_frame`
 - **UniversalGUIOperator**: Controls any Windows application — UIA accessibility first, VL coordinate prediction second, PIL diff verification third
 - **Perception-Action-Verify Loop**: Every GUI action is preceded by VL perception and followed by result verification
 - **smart_click()**: VL finds element by natural language description → UIA by name → known coordinates — no hardcoded pixel hunting
 - **PIL Fallback**: Pixel diff verification when VL is offline; all pipelines degrade gracefully
 - **MiniCPM Removed**: Fully replaced by LFM2.5-VL + llama-server (no Ollama dependency)
+
+### 🌐 Browser Automation (Server-Side Vision Browser)
+
+The agent now drives a **real browser server-side** for goal-directed websearch and in-app browsing — distinct from the Windows GUI operator described under Desktop Automation below.
+
+- **Pooled Chromium.** `backend/vision/browser_pool.py` holds ONE Playwright driver + ONE Chromium instance, started lazily on first use and stopped by an idle watchdog. Sessions acquire a *counted, hard-expiry* lease; each session gets its own `browser.new_context()` so cookies/storage stay isolated. This eliminates the per-URL cold browser launch that used to dominate escalation latency.
+- **Session = action executor, not vision source.** `backend/vision/browser_session.py` executes DOM actions, publishes frames to the capture store (for the live iframe mirror), and detects walls via pure DOM heuristics (CAPTCHA / LOGIN / PAYWALL). It never calls the vision model and never captures the desktop. Action *decisions* come from the vision loop in `fetch.vision`.
+- **`fetch.vision` capability.** `backend/vision/fetch_vision.py` composes the browser session + a vision lease + frame extraction + usability predicate. It hands back the settled DOM via `FetchOutcome.settled_dom`, making `crawl → vision → crawl` a normal traversal; wall detection feeds CAPTCHA/LOGIN/PAYWALL back as a routable outcome.
+- **In-app browser surface.** `backend/api/browser_surface.py` serves `GET /api/browser/capture/{job_id}/{page_number}` (replays the exact raw HTML the agent reasoned over, with provenance + CSP) and `GET /api/browser/proxy?url=...` (server-side fetch through the egress guard, no credentials forwarded). Both are gated by **dual auth** in `browser_auth.py`: an *address* gate (loopback/tailnet only) AND a *token* gate derived (HKDF) from the Dilithium identity key — deliberately separate from the memory key.
+- **Sandboxed mirror.** The frontend iframe is served from the capture store and sandboxed *without* `allow-same-origin`; it can never be the vision source or escape to app resources.
+- **Contract-tested.** A full CDD contract suite pins browser-pool, session, no-webbrowser-escape, stealth, view-agent protocol, capture-address, fetch-vision, and session-vision-adapter behavior (see `backend/tests/contract/`).
 
 ### 🖥 Desktop Automation
 - **Any Windows App**: UniversalGUIOperator works with Paint, Notepad, Chrome, Office — no app-specific code
@@ -165,9 +187,12 @@ ln -s /mnt/c/Users/midas/.lmstudio/models ~/.lmstudio/models
 ```
 ~/.lmstudio/models/
 ├── LiquidAI/
-│   └── LFM2.5-VL-450M-GGUF/
-│       ├── LFM2.5-VL-450M-*.gguf      # vision model weights
-│       └── mmproj-LFM2.5-VL-*.gguf    # vision projector
+│   ├── LFM2.5-VL-3B-GGUF/           # primary vision model (upgraded 2026-08-12)
+│   │   ├── LFM2.5-VL-3B-*.gguf       # vision model weights
+│   │   └── mmproj-LFM2.5-VL-*.gguf   # vision projector
+│   └── LFM2.5-VL-450M-GGUF/          # fallback vision model (optional)
+│       ├── LFM2.5-VL-450M-*.gguf     # fallback vision model weights
+│       └── mmproj-LFM2.5-VL-*.gguf   # fallback vision projector
 └── (your brain models — any GGUF file...)
 ```
 
@@ -494,7 +519,7 @@ npm run dev:tauri
 |-------|------|------|--------|-------|
 | **Any GGUF model** | Reasoning & conversation | 8082 | ik_llama.cpp or llama-cpp-python | Your choice; selected in Models Browser |
 | **Tool-calling model** | Tool execution | 8082 | Same as brain | Structured tool calls only; optional |
-| **LFM2.5-VL-450M** | Vision / GUI | 8081 | Upstream llama.cpp b8102+ | Auto-starts on first vision tool use |
+| **LFM2.5-VL-3B** | Vision / GUI | 8081 | Upstream llama.cpp b8102+ | Auto-starts on first vision tool use (450M retained as fallback) |
 | **Remote API** | Reasoning & conversation | — | OpenAI-compatible | Any provider URL + API key; configured in Settings |
 
 **Model Directory (Unified):**
@@ -974,7 +999,8 @@ IRISVOICE/
 │       ├── iris_core_bench.cpp  # Microbenchmark harness (Caducean, RE2, ingestion, EML, RSS)
 │       └── CMakeLists.txt         # CMake 3.15 — FetchContent RE2, SQLCipher
 ├── models/              # AI model files (symlinked to ~/.lmstudio/models)
-│   ├── LFM2.5-VL-450M/         # vision model (optional)
+│   ├── LFM2.5-VL-3B/           # primary vision model (optional)
+│   ├── LFM2.5-VL-450M/         # fallback vision model (optional)
 │   └── wake_words/
 ├── tests/               # Test suites
 │   ├── e2e/             # Playwright E2E tests (voice_to_chat, dedup, tts_word)
@@ -1328,6 +1354,6 @@ For issues and questions:
 
 ---
 
-**Version**: 4.9.0
-**Last Updated**: June 29, 2026
-**Status**: Production Ready ✅ (Domain 19 + Parakeet GPU ASR)
+**Version**: 5.0.0
+**Last Updated**: August 14, 2026
+**Status**: Production Ready ✅ (DER-DAG Execution Model + Server-Side Browser Automation)

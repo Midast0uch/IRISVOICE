@@ -452,6 +452,25 @@ class MemoryInterface:
         logger.debug(f"[MemoryInterface] Updated preference {key} -> v{version}")
         return version
 
+    def get_preference(self, key: str) -> Optional[str]:
+        """
+        Read a user preference from semantic memory (REQ-2 AC4).
+
+        The semantic logic gate routes ``lane:preference_lookup`` here —
+        preferences live in ``semantic.py`` (``user_preferences`` category),
+        NOT in the DER ``memory_chain``. Thin read wrapper over
+        ``SemanticStore.get`` (spec citation interface.py:439-482 named this
+        method; it did not exist — added as the divergence-resolution for the
+        gate, no behavior change to existing callers).
+
+        Returns:
+            The stored preference value, or None when unset.
+        """
+        entry = self.semantic.get("user_preferences", key)
+        if entry is None:
+            return None
+        return entry.value
+
     def get_user_profile_display(self) -> List[Dict[str, Any]]:
         """
         Get user-facing memory entries for UI display.

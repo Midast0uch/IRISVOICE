@@ -180,43 +180,16 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
   // ============================================================================
   // AGENT CATEGORY
 
-  // model_inference section — merged Model & Inference card
-  // Brain model and tool execution model are sourced from providers at render time
-  // via useInferenceState(). Options and role bindings come from backend.
+  // model_inference section — merged Model & Inference card.
+  // Rendered by the shared <ModelInferenceSection> component (dashboard + wheel);
+  // all fields (provider setup, brain/tool routing, inference behaviour, active
+  // routing) are supplied live from the backend routing layer via useInferenceState().
   model_inference: [
     {
       id: 'model-inference-card',
       label: 'Model & Inference',
       icon: 'Brain',
-      fields: [
-        {
-          id: 'brain_model',
-          type: 'dropdown',
-          label: 'Brain Model',
-          description: 'Reasoning model provider (role: reasoning)',
-          options: [], // Populated at render time from useInferenceState().providers
-          defaultValue: '',
-        },
-        {
-          id: 'tool_execution_model',
-          type: 'dropdown',
-          label: 'Tool Execution Model',
-          description: 'Tool execution provider (role: tool_execution)',
-          options: [], // Populated at render time from useInferenceState().providers
-          defaultValue: '',
-        },
-        {
-          id: 'use_same_model',
-          type: 'toggle',
-          label: 'Use Same Model',
-          defaultValue: true,
-        },
-        {
-          id: 'active_routing',
-          type: 'custom',
-          label: 'Active Routing',
-        },
-      ]
+      fields: [],
     }
   ],
 
@@ -444,6 +417,34 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
           type: 'toggle',
           label: 'Save Conversations',
           defaultValue: true
+        }
+      ]
+    }
+  ],
+
+  // search section - search-card
+  search: [
+    {
+      id: 'search-card',
+      label: 'Web Search',
+      icon: 'Search',
+      fields: [
+        {
+          id: 'provider',
+          type: 'dropdown',
+          label: 'Search Provider',
+          options: ['llm', 'exa'],
+          defaultValue: 'llm'
+        },
+        {
+          id: 'exa_api_key',
+          type: 'text',
+          label: 'Exa API Key',
+          placeholder: 'Enter your Exa API key...',
+          secure: true,
+          defaultValue: '',
+          description: 'Get a free key at exa.ai (20k searches/month)',
+          showIf: { field: 'provider', values: ['exa'] }
         }
       ]
     }
@@ -694,8 +695,8 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
           id: 'websocket_url',
           type: 'text',
           label: 'WebSocket URL',
-          placeholder: 'ws://localhost:8000/ws',
-          defaultValue: 'ws://localhost:8000/ws'
+      placeholder: 'ws://localhost:8090/ws',
+      defaultValue: 'ws://localhost:8090/ws'
         },
         {
           id: 'connection_timeout',

@@ -1,6 +1,10 @@
 {
   "db_path": "data/memory.db",
   "encryption_enabled": false,
+  "embedding": {
+    "backend": "lfm25-emb-350m",
+    "model_name": "LiquidAI/LFM2.5-Encoder-350M"
+  },
   "compression": {
     "threshold": 0.80,
     "keep_ratio": 0.60

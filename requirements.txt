@@ -1,4 +1,4 @@
-fastapi>=0.115.0
+﻿fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 websockets>=13.0
 pydantic>=2.10.0
@@ -11,7 +11,7 @@ requests>=2.31.0
 openai>=1.30.0          # LMStudio / OpenAI-compatible API client
 cryptography>=41.0.0
 keyring>=25.0.0          # Secure credential storage in OS keychain
-aiohttp>=3.9.0           # async HTTP client — used by auth_handlers, integrations
+aiohttp>=3.9.0           # async HTTP client â€” used by auth_handlers, integrations
 
 # Audio/Voice Processing
 # Linux system prerequisites (install before pip install):
@@ -27,13 +27,13 @@ numpy>=1.24.0
 scipy>=1.11.0
 pvporcupine>=4.0.0       # wake word detection; v4+ required for .ppn v4 model files.
 sounddevice>=0.5.0       # cross-platform audio I/O via PortAudio (lazy-loaded at runtime)
-# PyTorch (CPU is sufficient — Pocket-TTS runs on CPU)
+# PyTorch (CPU is sufficient â€” Pocket-TTS runs on CPU)
 # For GPU acceleration of the local LLM only, install the CUDA variant:
 #   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 torch>=2.0.0
 torchaudio>=2.0.0
 psutil>=5.9.0
-# STT Pipeline — Parakeet TDT 0.6B v3 ASR (PRIMARY)
+# STT Pipeline â€” Parakeet TDT 0.6B v3 ASR (PRIMARY)
 #   HuggingFace ParakeetForTDT model served by backend/audio/parakeet_service.py
 #   Runs on local GPU (RTX 3070 recommended), fp16 by default, ~1.2 GB VRAM
 #   25 languages with auto-detect, <300ms first-token latency
@@ -46,14 +46,14 @@ psutil>=5.9.0
 #
 # NOTE: The model is loaded lazily (only on first endpoint call).
 #       Test suite mocks _load_model so it does NOT need a GPU.
-transformers>=5.12.0      # ParakeetForTDT — HuggingFace Transformers ASR
+transformers>=5.12.0      # ParakeetForTDT â€” HuggingFace Transformers ASR
 soundfile>=0.12.0          # Audio file I/O for processor
-# STT Pipeline — faster-whisper direct integration (FALLBACK ONLY)
+# STT Pipeline â€” faster-whisper direct integration (FALLBACK ONLY)
 #   Used by VoiceCommandHandler when the Parakeet service is unreachable.
 #   tiny/int8 on CPU, ~40 MB, ~80ms per 3s clip.  Lower accuracy than Parakeet.
 faster-whisper>=1.0.0
 
-# TTS Pipeline — Pocket-TTS (sole engine)
+# TTS Pipeline â€” Pocket-TTS (sole engine)
 #   Zero-shot voice cloning + streaming inference, CPU, ~100 MB
 #   "Cloned Voice" -> voice cloning from TOMV2.wav reference audio
 #   Other voices   -> built-in Pocket-TTS speaker presets
@@ -65,12 +65,12 @@ faster-whisper>=1.0.0
 #   Voice cloning model weights download on first "Cloned Voice" use.
 git+https://github.com/danneauxs/Pocket-TTS-Spokenword.git
 
-# Local GGUF inference — llama-cpp-python server mode on port 8082
-# For CUDA GPU acceleration (recommended — RTX 3070 / CUDA 12.4):
+# Local GGUF inference â€” llama-cpp-python server mode on port 8082
+# For CUDA GPU acceleration (recommended â€” RTX 3070 / CUDA 12.4):
 #   pip install llama-cpp-python --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124 --upgrade
 # For CPU-only fallback:
 #   pip install llama-cpp-python>=0.2.0
-llama-cpp-python>=0.3.0  # GGUF model server — install CUDA variant above for GPU
+llama-cpp-python>=0.3.0  # GGUF model server â€” install CUDA variant above for GPU
 sse-starlette>=1.6.0     # required by llama_cpp.server
 pydantic-settings>=2.0.0 # required by llama_cpp.server
 starlette-context>=0.3.6 # required by llama_cpp.server
@@ -82,6 +82,7 @@ qrcode[pil]>=7.4.0       # QR code generation for phone pairing
 # Developer Mode & Web Crawler (Domain 14)
 # Install order: pip install crawl4ai && python -m playwright install chromium
 watchdog>=4.0.0          # File system events for CLI dev mode file activity panel
-crawl4ai>=0.4.0          # Headless web crawler — AsyncWebCrawler + BM25ContentFilter
+crawl4ai==0.8.9           # Headless web crawler (PINNED: 0.4-era RegexChunking raised "Separator is not found" on large pages; 0.8.9 does not chunk by default)
 playwright>=1.44.0       # Managed by crawl4ai internally; listed here for explicit version pin
 # Note: after pip install, run once: python -m playwright install chromium
+mss>=9.0,<11

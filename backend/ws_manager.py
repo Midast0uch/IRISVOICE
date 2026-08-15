@@ -5,6 +5,7 @@ Handles client connections, session association, and message routing.
 import json
 import logging
 import asyncio
+from collections import deque
 from typing import Dict, List, Set, Optional
 from fastapi import WebSocket
 from datetime import datetime
@@ -14,6 +15,9 @@ logger = logging.getLogger(__name__)
 
 from .sessions import get_session_manager, SessionManager
 from .state_manager import get_state_manager, StateManager
+
+# Bounded pending-delivery queue per session (see buffer_message / flush_pending).
+_PENDING_MAX = 200
 
 
 class WebSocketManager:
@@ -36,6 +40,37 @@ class WebSocketManager:
         logger.info(f"[WebSocketManager] Initializing (start: {start_time:.3f}s)")
         
         self.active_connections: Dict[str, WebSocket] = {}
+        # ── ONE SEND AT A TIME PER SOCKET ───────────────────────────────────
+        # Starlette WebSockets are NOT safe for concurrent sends: two coroutines
+        # awaiting send_json() on the same socket can interleave at the ASGI
+        # layer and emit a single frame containing TWO JSON objects. The client
+        # then dies on `JSON.parse` with "Unexpected non-whitespace character
+        # after JSON at position N" (observed live at position 232,
+        # useIRISWebSocket.ts:446) and DROPS THE WHOLE FRAME — including
+        # whatever message would have completed the turn.
+        #
+        # This backend has many concurrent senders by design: streamed
+        # chat_chunk / chat_reasoning marshalled from an executor thread via
+        # run_coroutine_threadsafe, FIRE-AND-FORGET crawler UI events, listening
+        # state broadcasts, tts_word events, narration and the chat heartbeat.
+        # Any two overlapping is enough.
+        #
+        # A per-(client, event-loop) lock serialises them. It is keyed by BOTH
+        # client and running loop because asyncio.Lock binds to the loop that
+        # first acquires it, and this backend legitimately sends from more than
+        # one loop (the crawler tool runs on a worker loop via
+        # run_coroutine_threadsafe(coro, asyncio.new_event_loop()) in
+        # tool_decision._run_async, while the gateway sends from the main loop).
+        # A single lock per client shared across loops raised "bound to a
+        # different event loop", which send_to_client treated as a failure and
+        # DISCONNECTED the live client mid-turn (live 2026-08-12,
+        # pin_8b41f386d397). Keying by loop gives every loop its own lock, so a
+        # send can never be cross-loop-blocked; per-client within a loop, a slow
+        # socket still cannot block delivery to everyone else.
+        self._send_locks: Dict[tuple, asyncio.Lock] = {}
+        # Pending undelivered messages per session, replayed by flush_pending
+        # on (re)connect (guaranteed delivery; see buffer_message).
+        self._pending: Dict[str, deque] = {}
         self._session_manager = session_manager or get_session_manager()
         self._state_manager = state_manager or get_state_manager()
         self._heartbeat_tasks: Dict[str, asyncio.Task] = {}
@@ -192,17 +227,79 @@ class WebSocketManager:
     async def flush_pending(self, session_id: str, client_id: str) -> None:
         """Flush any buffered undelivered messages for a session/client.
 
-        Currently a no-op — the pending delivery queue is not yet implemented.
-        This method is called after get_state() for guaranteed delivery of
-        any state change events that were buffered while the client was
-        disconnected.
+        Replays messages buffered by :meth:`buffer_message` (which the gateway
+        calls when a send fails because the client was disconnected mid-turn).
+        This is what makes the final chat_message survive a mid-turn disconnect:
+        without it, the turn's terminal message was lost and the UI sat stuck
+        at "Loading 0/2" forever (live 2026-08-12, pin_8b41f386d397). Called
+        after get_state() in _handle_request_state on every (re)connect.
         """
-        pass
+        _q = self._pending.get(session_id)
+        if not _q:
+            return
+        websocket = self.active_connections.get(client_id)
+        if not websocket:
+            return  # not connected yet — leave buffered for the next reconnect
+        try:
+            _lock = self._get_send_lock(client_id)
+            async with _lock:
+                while _q:
+                    _msg = _q.popleft()
+                    try:
+                        await websocket.send_json(_msg)
+                    except Exception:
+                        # Send failed again — re-buffer the rest and stop.
+                        _q.appendleft(_msg)
+                        break
+            if not _q:
+                self._pending.pop(session_id, None)
+        except Exception:
+            pass  # replay is best-effort; never break the reconnect path
+
+    def buffer_message(self, session_id: str, message: dict) -> None:
+        """Buffer a message for replay on the client's next (re)connect.
+
+        Bounded per session (maxlen) so an abandoned session cannot grow the
+        queue without limit (CLAUDE.md: memory footprint bounded). The gateway
+        calls this when send_to_client returns False — the client disconnected
+        mid-turn (or never connected), and the message (typically the final
+        chat_message) must not be lost.
+        """
+        _q = self._pending.setdefault(session_id, deque(maxlen=_PENDING_MAX))
+        _q.append(message)
+
+    def _get_send_lock(self, client_id: str) -> asyncio.Lock:
+        """Return the per-(client, event-loop) send lock, creating it on first use.
+
+        Keyed by (client_id, id(running loop)) because asyncio.Lock binds to
+        the loop that first acquires it, and this backend legitimately sends
+        from more than one loop (see _send_locks' comment in __init__). Returns
+        a fresh lock per (client, loop); the setdefault keeps concurrent first
+        senders from racing to create the lock itself.
+        """
+        try:
+            _loop_id = id(asyncio.get_running_loop())
+        except RuntimeError:
+            # No running loop in this thread (rare, e.g. a test calling
+            # send_to_client from a bare thread) — share one lock per client.
+            _loop_id = 0
+        _key = (client_id, _loop_id)
+        _lock = self._send_locks.get(_key)
+        if _lock is None:
+            _lock = asyncio.Lock()
+            self._send_locks[_key] = _lock
+        return _lock
 
     def disconnect(self, client_id: str):
         """Remove a client connection and dissociate from its session."""
         if client_id in self.active_connections:
             del self.active_connections[client_id]
+            # Drop the send locks too, or _send_locks grows unbounded across
+            # reconnects (CLAUDE.md: memory footprint bounded). Keys are
+            # (client_id, loop_id) tuples — remove every loop's lock for this
+            # client.
+            for _key in [k for k in self._send_locks if k[0] == client_id]:
+                self._send_locks.pop(_key, None)
             # Dissociate client from session but don't end the session
             session_id = self._session_manager.dissociate_client(client_id)
 
@@ -303,6 +400,15 @@ class WebSocketManager:
         """Get the session ID for a given client ID."""
         return self._session_manager.client_to_session.get(client_id)
 
+    def session_exists(self, session_id: str) -> bool:
+        """True if a session with the given ID is currently registered.
+
+        Used by the event bridge to decide between session-routed delivery and
+        a fallback broadcast: events emitted under placeholder sessions (e.g.
+        the DER sub-loop session "unknown") must not be silently dropped.
+        """
+        return self._session_manager.get_session(session_id) is not None
+
     async def send_to_client(self, client_id: str, message: dict) -> bool:
         """
         Send a message to a specific client.
@@ -313,7 +419,10 @@ class WebSocketManager:
             return False
 
         try:
-            await websocket.send_json(message)
+            # Serialise per socket, per event loop — see _send_locks.
+            _lock = self._get_send_lock(client_id)
+            async with _lock:
+                await websocket.send_json(message)
             return True
         except Exception as e:
             logger.error(f"Error sending to {client_id}: {e}")
@@ -337,7 +446,13 @@ class WebSocketManager:
         for client_id, websocket in snapshot:
             if client_id not in exclude_clients:
                 try:
-                    await websocket.send_json(message)
+                    # Same per-client, per-loop lock as send_to_client — this path wrote
+                    # to the socket DIRECTLY, so locking only send_to_client
+                    # would still leave broadcasts able to interleave with a
+                    # streamed chunk and corrupt the frame.
+                    _lock = self._get_send_lock(client_id)
+                    async with _lock:
+                        await websocket.send_json(message)
                 except Exception:
                     disconnected.append((client_id, websocket))
 

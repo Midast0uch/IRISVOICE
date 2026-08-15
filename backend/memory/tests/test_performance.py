@@ -95,12 +95,14 @@ class TestEmbeddingPerformance:
         NOTE (2026-08-09): the timed section previously measured COLD
         latency — the service lazy-loads the neural model on first encode
         (Defect 1 design), so the first call included the model load
-        (~106s for Qwen3-Embedding-0.6B) and always exceeded the 1.0s
-        budget. This test was dormant (skipped) while sentence-transformers
-        was absent and only began running after installation. The input is
-        corrected to measure WARM encode latency — the model is warmed
-        before the timed section — while the <1.0s assertion is unchanged.
-        Cold-start cost is bounded separately by the load timeout.
+        (~106s for Qwen3-Embedding-0.6B; the LFM2.5-Encoder-350M safetensors
+        route cold-loads transformers + a 350M model in a similar range) and
+        always exceeded the 1.0s budget. This test was dormant (skipped)
+        while the neural dependencies were absent and only began running
+        after installation. The input is corrected to measure WARM encode
+        latency — the model is warmed before the timed section — while the
+        <1.0s assertion is unchanged. Cold-start cost is bounded separately
+        by the load timeout.
         """
         from backend.memory.embedding import EmbeddingService
         

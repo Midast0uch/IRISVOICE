@@ -50,135 +50,81 @@ _STUB_RE = re.compile(r"\[step\s+\d+\s+completed\]", re.IGNORECASE)
 # ---------------------------------------------------------------------------
 
 
-def _load_default_encoder() -> Optional[Callable[[str, str], float]]:
-    """Try to load Encoder-350M (or equivalent) for semantic scoring.
+class _EncoderNotReady(Exception):
+    """Raised by the lazy default scorer while the shared EmbeddingService
+    encoder is still loading (pre-warm pending or failed).
 
-    Returns a callable ``(assertion, result) -> score [0,1]`` or None if
-    the model weights cannot be found.  The callable is deterministic for
-    a given (assertion, result) pair (REQ-4 AC5).
-
-    Only attempts loading if the model is already present in the HuggingFace
-    cache — never triggers a download (REQ-4 AC4: verification must NOT
-    block on a model load).
+    ``SemanticVerifier._score_assertion`` catches this BEFORE the generic
+    ``Exception`` handler: the shared encoder warming up is a NORMAL,
+    temporary state, so it degrades silently to the graded F1 scorer
+    (REQ-4 AC4) instead of spamming a warning per assertion. Once the
+    gateway pre-warm finishes, the SAME cached verifier starts scoring
+    semantically — no reconstruction needed.
     """
-    import importlib.util
-    import os
 
+
+def _load_default_encoder() -> Optional[Callable[[str, str], float]]:
+    """Default semantic scorer: REUSES the shared EmbeddingService encoder.
+
+    Dedupe (2026-08-12): the memory layer (backend.memory.embedding) already
+    loads the LFM2.5-Encoder-350M model once and latches it for the app
+    lifetime. This verifier previously loaded a SECOND AutoModel copy inline —
+    a 2-4 minute event-loop block on the first DER verification. Now it shares
+    the process-wide encoder via ``get_embedding_service()``, and the gateway
+    pre-warms that encoder at boot, off the event loop.
+
+    The returned scorer is LAZY and self-healing: it checks the shared
+    backend at CALL time, not construction time.
+
+      * shared backend loaded → cosine similarity (same L2-normalised dot
+        product as the removed AutoModel scorer, REQ-4 AC5 deterministic).
+      * backend still "hash" (pre-warm pending/failed) → raises
+        ``_EncoderNotReady``; ``_score_assertion`` catches it and falls back
+        to the graded F1 scorer (REQ-4 AC4: verification must never block on
+        a model load).  Once the encoder finishes loading, the SAME cached
+        verifier instance starts scoring semantically — no reconstruction.
+
+    Returns None only if the embedding layer itself cannot be imported.
+    """
     global encoder_350m_loaded
     encoder_350m_loaded = False
 
-    # Guard: require transformers + torch.
-    if importlib.util.find_spec("transformers") is None:
-        logger.debug("[SemanticVerifier] transformers not installed; no default encoder")
-        return None
-    if importlib.util.find_spec("torch") is None:
-        logger.debug("[SemanticVerifier] torch not installed; no default encoder")
-        return None
-
-    # REQ-4 / Decision-Locked #2: this is the ENCODER path — a masked-LM backbone
-    # used for scoring — NOT the embedding bi-encoder used for retrieval vectors.
-    # This previously hardcoded "LFM-Korea/LFM2.5-Embedding-350M": the wrong model
-    # AND an org that matches nothing in the user's cache (every other LFM2.5
-    # model there is under LiquidAI/). The cache probe below therefore looked for
-    # a directory that could never exist, logged "weights absent — expected", and
-    # the substring fallback became permanent no matter what was installed.
-    # Resolution order: env override -> memory config -> default.
-    MODEL_NAME = os.environ.get("IRIS_ENCODER_MODEL", "").strip()
-    if not MODEL_NAME:
-        try:
-            from backend.memory.config import get_config
-
-            MODEL_NAME = getattr(
-                getattr(get_config(), "embedding", None), "encoder_model", ""
-            ) or "LiquidAI/LFM2.5-Encoder-350M"
-        except Exception:  # pragma: no cover - config optional at import
-            MODEL_NAME = "LiquidAI/LFM2.5-Encoder-350M"
-
-    # A local directory of safetensors is accepted directly, so the user can point
-    # at downloaded weights without matching HF's cache layout.
-    if os.path.isdir(MODEL_NAME):
-        _model_cache_dir = MODEL_NAME
-        _snapshot_required = False
-    else:
-        # Check the HF cache before attempting any load. Never trigger a download
-        # (REQ-4 AC4).
-        _hf_home = os.environ.get(
-            "HF_HOME",
-            os.path.join(os.path.expanduser("~"), ".cache", "huggingface"),
-        )
-        _model_cache_dir = os.path.join(
-            _hf_home, "hub", "models--" + MODEL_NAME.replace("/", "--")
-        )
-        _snapshot_required = True
-    if not os.path.isdir(_model_cache_dir):
-        # Log the RESOLVED id and the exact directory probed. The previous message
-        # said "expected", which made a misconfigured id indistinguishable from a
-        # deliberate absence — the reason this went unnoticed. Name the override
-        # so a wrong id is a one-line fix.
-        logger.info(
-            "[SemanticVerifier] encoder %r not found at %s — falling back to the "
-            "graded token-overlap scorer. If the weights ARE installed, the model id is "
-            "wrong: set IRIS_ENCODER_MODEL (or memory config embedding."
-            "encoder_model) to the real repo id or a local weights directory.",
-            MODEL_NAME, _model_cache_dir,
-        )
-        return None
-    if not _snapshot_required:
-        logger.info(
-            "[SemanticVerifier] loading encoder from local directory %s",
-            _model_cache_dir,
-        )
-
-    # Check that at least one snapshot has the model files. Only meaningful for
-    # the HF cache layout — a local weights directory has no snapshots/ level, and
-    # requiring one there would reject a perfectly valid install.
-    if _snapshot_required:
-        snapshots_dir = os.path.join(_model_cache_dir, "snapshots")
-        if not os.path.isdir(snapshots_dir) or not os.listdir(snapshots_dir):
-            logger.info(
-                "[SemanticVerifier] %s is present at %s but has no populated "
-                "snapshots/ — an interrupted or partial download; no encoder",
-                MODEL_NAME, _model_cache_dir,
-            )
-            return None
-
     try:
-        import torch
-        import torch.nn.functional as F
-        from transformers import AutoModel, AutoTokenizer
-
-        logger.info("[SemanticVerifier] loading %s from cache ...", MODEL_NAME)
-        tokenizer = AutoTokenizer.from_pretrained(
-            MODEL_NAME, trust_remote_code=True, local_files_only=True
+        from backend.memory.embedding import (
+            BACKEND_HASH,
+            get_embedding_service,
         )
-        model = AutoModel.from_pretrained(
-            MODEL_NAME, trust_remote_code=True,
-            torch_dtype=torch.float16, local_files_only=True,
-        )
-        model.eval()
-
-        def _encode(text: str) -> torch.Tensor:
-            inputs = tokenizer(
-                text, return_tensors="pt", truncation=True, max_length=512
-            )
-            with torch.no_grad():
-                outputs = model(**inputs)
-            emb = outputs.last_hidden_state.mean(dim=1)
-            return F.normalize(emb, p=2, dim=1)
-
-        def _score(assertion: str, result: str) -> float:
-            emb_a = _encode(assertion)
-            emb_r = _encode(result)
-            sim = float((emb_a * emb_r).sum().item())
-            return max(0.0, min(1.0, (sim + 1.0) / 2.0))
-
-        logger.info("[SemanticVerifier] default encoder loaded successfully")
-        encoder_350m_loaded = True
-        return _score
-
-    except Exception as exc:
-        logger.info("[SemanticVerifier] default encoder unavailable: %s", exc)
+    except Exception as exc:  # memory layer optional — degrade to graded F1
+        logger.debug("[SemanticVerifier] shared encoder unavailable: %s", exc)
         return None
+
+    svc = get_embedding_service()
+
+    def _score(assertion: str, result: str) -> float:
+        global encoder_350m_loaded
+        if getattr(svc, "_backend", None) == BACKEND_HASH:
+            raise _EncoderNotReady(
+                "shared encoder not loaded yet (pre-warm pending); "
+                "falling back to graded F1"
+            )
+        va = svc.encode(assertion)
+        vr = svc.encode(result)
+        if not va or not vr:
+            return 0.0
+        # Both L2-normalised 1024-dim vectors → dot product == cosine sim.
+        sim = sum(a * b for a, b in zip(va, vr))
+        encoder_350m_loaded = True
+        return max(0.0, min(1.0, (sim + 1.0) / 2.0))
+
+    # Reflect the ACTUAL shared state at construction for observability
+    # (caducean_debug REQ-9 AC3 reads encoder_350m_loaded).
+    encoder_350m_loaded = getattr(svc, "_backend", None) != BACKEND_HASH
+    logger.info(
+        "[SemanticVerifier] default encoder reuses shared EmbeddingService "
+        "(current backend=%s)",
+        getattr(svc, "_backend", "?"),
+    )
+    return _score
 
 
 # ---------------------------------------------------------------------------
@@ -283,6 +229,13 @@ class SemanticVerifier:
             try:
                 score = self._encoder_fn(assertion, result)
                 return max(0.0, min(1.0, float(score))), "semantic"
+            except _EncoderNotReady:
+                # Shared encoder still warming up (pre-warm pending/failed) —
+                # silent graded fallback, no scary warning (REQ-4 AC4).
+                logger.debug(
+                    "[SemanticVerifier] encoder not ready; graded fallback for %r",
+                    assertion[:64],
+                )
             except Exception as exc:
                 logger.warning(
                     "[SemanticVerifier] encoder error for %r: %s",

@@ -455,6 +455,16 @@ class AgentKernel:
         except Exception as _md_err:
             logger.warning(f"[AgentKernel] ModeDetector unavailable: {_md_err}")
 
+        # REQ-6 AC2 (T9): fire the bounded, latched, background LFM warm-up so
+        # the first user turn runs at warm latency. Non-blocking — a daemon
+        # thread does the load; a failure leaves the normal cold path intact.
+        try:
+            from backend.agent.semantic_gate import ensure_warm_start
+
+            ensure_warm_start()
+        except Exception as _wu_err:
+            logger.debug("[AgentKernel] LFM warm-up kick failed: %s", _wu_err)
+
         logger.info("[AgentKernel] Initialization complete")
 
     def set_main_loop(self, loop: Any) -> None:
@@ -520,7 +530,7 @@ class AgentKernel:
 
         Never raises — logs warning on failure.
         """
-        _cid = conversation_id or self.conversation_id
+        _cid = conversation_id or getattr(self, "conversation_id", None)
         # Reset in-memory history immediately so a reused kernel instance
         # cannot leak the previous thread's messages into the new one.
         if self._conversation_memory is not None:
@@ -1884,75 +1894,94 @@ class AgentKernel:
 
     def _classify_intent(self, text: str, context=None) -> str:
         """
-        Layered, rule-first intent classifier (0 model calls) — the "router"
-        pattern used by mature agent frameworks (Hermes ARC, Anthropic
-        agentic patterns, LangChain routing).  Intent is resolved by the
-        CHEAPEST matching layer; the LLM/DER is the *fallback*, not the first
-        responder (negative routing).
+        Semantic-logic-gate Tier 0 (REQ-1). Delegates to ``tier0_classify``.
 
-        Returns one of: "chat" | "action" | "followup" | "question"
-          chat     → direct path (greetings, thanks, social)
-          action   → DER (explicit tool/action request)
-          followup → DER (continues a prior task; safe to plan)
-          question → direct path (standalone factual question, no task anchor)
-
-        Design notes from field research:
-          - Misrouting is worse than no routing → ambiguous middle defaults to
-            DER (the safe, general-purpose path), never to the dumb direct path.
-          - Rule-first cascade: explicit prefix → keyword → follow-up context →
-            default. Most traffic resolves in the first two layers.
+        Preserves the legacy 4-class contract ("chat" | "action" | "followup" |
+        "question") for any remaining callers. The authoritative structured
+        decision is ``compile_dag().requires_der_kernel``, consumed by
+        ``_needs_planning`` below; this method is the compatibility view.
         """
-        t = (text or "").lower().strip()
-        if not t:
-            return "chat"
+        from backend.agent.semantic_gate import Tier0Intent, tier0_classify
 
-        # Layer 1 — deterministic rules.
-        if t.startswith(("tool:", "run:", "execute:", "plan:")):
-            return "action"
-        if self._is_chitchat(text):
-            return "chat"
+        _v = tier0_classify(text, context)
+        return {
+            Tier0Intent.CHAT: "chat",
+            Tier0Intent.ACTION: "action",
+            Tier0Intent.FOLLOWUP: "followup",
+            Tier0Intent.QUESTION: "question",
+            Tier0Intent.WEB: "action",  # legacy web intent maps to action
+        }[_v.intent]
 
-        # Layer 2 — cheap keyword/intent match.
-        if self._is_web_search_request(text):
-            return "action"
-        if any(verb in t for verb in self._ACTION_VERBS):
-            return "action"
+    @property
+    def _gate(self):
+        """Lazy SemanticLogicGate instance (T7, REQ-1/REQ-8). No model load at
+        construction — the ontology (Tier 2) is wired via memory_interface."""
+        from backend.agent.semantic_gate import SemanticLogicGate
 
-        # Layer 3 — ambiguous middle: follow-up to a prior task → DER (safe).
-        if self._is_followup_to_task(text, context):
-            return "followup"
+        if getattr(self, "__gate", None) is None:
+            self.__gate = SemanticLogicGate(
+                tool_mode=getattr(self, "_tool_mode", "auto"),
+                memory_interface=getattr(self, "_memory_interface", None),
+            )
+        return self.__gate
 
-        # Layer 4 — default: standalone question → direct path.
-        return "question"
+    def register_planning_hook(self, name: str, fn) -> None:
+        """Planning-policy hook (REQ-8 AC3): skills/plugins/MCPs register a
+        contributor/override that adjusts the draft DAGPlanGraph per task.
+        Delegates to the gate's registered-policy store."""
+        self._gate.register_policy(name, fn)
+
+    def _web_mode_on(self) -> bool:
+        try:
+            from backend.agent.agent_gateways import get_global_internet_access
+
+            return bool(get_global_internet_access())
+        except Exception:
+            return False
 
     def _needs_planning(self, text: str, context=None) -> bool:
         """
-        Planner gate (router pattern).
+        Planner gate — the semantic logic gate (REQ-1, T7, T13).
 
-        Direct path (default): chat + standalone questions take the fast
-        `_respond_direct` path (1 Cerebras call, no "Working on it" filler).
-        DER loop: explicit action/tool requests AND follow-ups that continue a
-        prior task.  This prevents the multi-stage Cerebras burst from
-        exhausting the 5/min rate limit on every prompt, while keeping the
-        agent able to engage dynamically mid-conversation (it never drops a
-        follow-up into the dumb path).
+        ``compile_dag().requires_der_kernel`` is the structured planning
+        decision (REQ-8): Tier 0 (deterministic rules) -> Tier 2 (coordinate-
+        graph ontology) -> the continuation lens compose the DAGPlanGraph; the
+        ``_tool_mode`` policy
+        (auto | ask_first | disabled) is applied INSIDE the gate; the web-mode
+        gate (``_should_skip_der``) remains the final DER-skip authority
+        (REQ-1 AC6).
 
-        Respects _tool_mode:
-          auto        → DER for action + followup intents (default)
-          ask_first   → never auto-plan; user must explicitly request tools
-          disabled    → never plan, always direct response
+        T13 gate-proof (tests/behavioral/test_behavioral_intent_routing.py,
+        69 cases): equivalence with the legacy router on every non-compound
+        prompt (zero regressions) + superiority on compound/multi-concern
+        prompts (multi-lane DAGs). The legacy router is retired; this method
+        is the permanent routing surface. ``_classify_intent`` remains as the
+        legacy 4-class compatibility view (pinned by
+        tests/behavioral/test_intent_routing_memory.py).
         """
-        mode = getattr(self, "_tool_mode", "auto")
-        if mode == "disabled":
-            return False
-        if mode == "ask_first":
-            # Only plan if message starts with explicit tool request prefix
-            t = text.lower().strip()
-            return t.startswith(("tool:", "run:", "execute:", "plan:"))
+        _g = self._gate
+        _g.tool_mode = getattr(self, "_tool_mode", "auto")
+        graph = _g.compile_dag(text, context, web_mode=self._web_mode_on())
+        # REQ-5 AC1 (T8): stash the compiled graph for the [LAYERS] emit
+        # (off the hot path — the TurnMetrics stamp copies a few attrs).
+        self._last_gate_graph = graph
+        return bool(graph.requires_der_kernel)
 
-        intent = self._classify_intent(text, context)
-        # "question" and "chat" → direct; "action" and "followup" → DER.
-        return intent in ("action", "followup")
+    def _stamp_gate_telemetry(self, metrics) -> None:
+        """REQ-5 AC1 (T8): copy the last gate compilation onto the turn's
+        TurnMetrics before [LAYERS] emit. Fire-and-forget; defaults when the
+        gate never ran (direct calls in tests)."""
+        graph = getattr(self, "_last_gate_graph", None)
+        if graph is None:
+            return
+        lanes = ",".join(n.lane.value for n in graph.nodes) if graph.nodes else ""
+        domain = graph.nodes[0].domain.value if graph.nodes else ""
+        metrics.record_gate(
+            domain=domain,
+            lanes=lanes,
+            latency_ms=graph.latency_ms,
+            widen_scope=getattr(graph, "widen_scope", "") or "",
+        )
 
     def _broadcast_inference_event(
         self,
@@ -4247,12 +4276,16 @@ class AgentKernel:
         chain-row dicts, or [] on any failure — the step proceeds on live
         state, never an error. Cross-conversation by default (AC1b):
         thread_id ranks, never filters.
+
+        REQ-6 AC3 (semantic gate): the recall execution is the SHARED helper
+        ``run_filtered_recall`` (ontology_recall.py) — the gate's Tier 2 calls
+        the same code path, so the widen-order and telemetry cannot drift.
         """
         try:
             from backend.agent.ontology_recall import (
                 RecallFilters,
-                filtered_chain_recall,
-                record_widening_telemetry,
+                resolve_mycelium_conn,
+                run_filtered_recall,
             )
 
             _rec = getattr(item, "node_record", None) or getattr(
@@ -4271,22 +4304,11 @@ class AgentKernel:
             if not _filters.has_any:
                 return []  # no ontology axes on this node — nothing to filter
 
-            _conn = None
-            if (
-                self._memory_interface is not None
-                and hasattr(self._memory_interface, "_mycelium")
-                and self._memory_interface._mycelium is not None
-            ):
-                _myc = self._memory_interface._mycelium
-                # mycelium exposes the shared connection as `_conn`; some
-                # call sites alias it `.conn` — accept either.
-                _conn = getattr(_myc, "conn", None) or getattr(_myc, "_conn", None)
+            _conn = resolve_mycelium_conn(self._memory_interface)
             if _conn is None:
                 return []
 
-            rows, _scope = filtered_chain_recall(_conn, _filters)
-            record_widening_telemetry(_scope, _filters)
-            return rows or []
+            return run_filtered_recall(_conn, _filters)
         except Exception as exc:
             logger.debug("[DER] ontology neighborhood recall failed: %s", exc)
             return []
@@ -4723,8 +4745,11 @@ class AgentKernel:
         if session_id is None:
             session_id = self.session_id
 
-        # Resolve conversation_id — primary key for per-thread context
-        _conv_id = conversation_id or self.conversation_id
+        # Resolve conversation_id — primary key for per-thread context.
+        # getattr guard: a kernel may be constructed without __init__ (test
+        # stubs, partial init) — never raise on a missing attribute. The
+        # session_id fallback is the documented behavior (docstring above).
+        _conv_id = conversation_id or getattr(self, "conversation_id", None) or session_id
         self.conversation_id = _conv_id
 
         # Reset thinking from any previous call so stale data never leaks
@@ -4735,6 +4760,9 @@ class AgentKernel:
 
         task_id = turn_id or str(uuid.uuid4())
         metrics = TurnMetrics(turn_id=task_id)
+        # REQ-5 AC1 (T8): stamp the semantic-gate compilation onto this turn's
+        # [LAYERS] emit (off the hot path — attribute copies only).
+        self._stamp_gate_telemetry(metrics)
         # REQ-3 T8b AC5: per-turn prompt-token counter accumulated at each DER
         # step's context assembly (forgetting bound), recorded into TurnMetrics.
         self._der_step_prompt_tokens = 0

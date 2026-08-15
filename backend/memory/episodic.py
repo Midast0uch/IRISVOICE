@@ -511,9 +511,11 @@ class EpisodicStore:
         Returns:
             List of similar episode dictionaries, sorted by similarity
         """
-        # Check if dual-read is needed (migration active)
+        # Check if dual-read is needed (migration active). Once the migration
+        # is COMPLETE the old space is empty, so dual-read would only probe a
+        # dead backend on every search — treat "complete" like "idle".
         rm = get_reindex_manager()
-        if rm is not None and rm.progress().get("state", "idle") != "idle":
+        if rm is not None and rm.progress().get("state", "idle") not in ("idle", "complete"):
             return rm.search_episodes(
                 query=task, limit=limit, min_score=min_score,
                 session_id=session_id,
@@ -608,9 +610,11 @@ class EpisodicStore:
         Returns:
             List of failure episode dictionaries, sorted by similarity
         """
-        # Check if dual-read is needed (migration active)
+        # Check if dual-read is needed (migration active). Once the migration
+        # is COMPLETE the old space is empty, so dual-read would only probe a
+        # dead backend on every search — treat "complete" like "idle".
         rm = get_reindex_manager()
-        if rm is not None and rm.progress().get("state", "idle") != "idle":
+        if rm is not None and rm.progress().get("state", "idle") not in ("idle", "complete"):
             return rm.search_failures(
                 query=task, limit=limit, session_id=session_id,
             )
@@ -897,9 +901,11 @@ class EpisodicStore:
         if not query:
             return []
 
-        # Check if dual-read is needed (migration active)
+        # Check if dual-read is needed (migration active). Once the migration
+        # is COMPLETE the old space is empty, so dual-read would only probe a
+        # dead backend on every search — treat "complete" like "idle".
         rm = get_reindex_manager()
-        if rm is not None and rm.progress().get("state", "idle") != "idle":
+        if rm is not None and rm.progress().get("state", "idle") not in ("idle", "complete"):
             return rm.search_chunks(
                 query=query, session_id=session_id, limit=limit,
                 min_similarity=min_similarity, chunk_types=chunk_types,

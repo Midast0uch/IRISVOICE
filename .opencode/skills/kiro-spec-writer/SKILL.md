@@ -114,6 +114,23 @@ not a timer." "Pacman = subtle OrbCanvas particles on card border, backend-trigg
 ## Key Decisions
 <decision, rationale, alternatives rejected>
 
+## Ripple-Effect Map (MANDATORY — from Workflow step 2)
+Every change touches more than its target module. List EVERY area the change reaches,
+classified so nothing is missed:
+| Area / File | Change? | Classification | Why / Evidence (file:line) |
+|---|---|---|---|
+| <file> | Yes / No / Contract-Lock | CHANGE NEEDED / NO CHANGE (verified) / CONTRACT LOCK | <what and why; cite proof> |
+| <frontend handler> | No | NO CHANGE (verified) | <already handles new behavior — file:line> |
+| <contract/event shape> | No code | CONTRACT LOCK | <pin with contract test CT-x to prevent silent break> |
+Rules:
+- "NO CHANGE (verified)" MUST cite the file:line proving the area already handles the
+  new behavior. Do not assert "no change needed" without evidence — that is how regressions
+  slip through.
+- "CONTRACT LOCK" areas get a contract test ID (CT-x) in the Testing Strategy so a future
+  edit can't break the interface silently.
+- Include areas that are NOT modified but whose assumptions the change relies on (e.g.
+  "frontend already reacts to wake_detected — verified at useIRISWebSocket.ts:652").
+
 ## Error Handling
 <failure modes + EARS-style responses>
 
@@ -130,22 +147,24 @@ not a timer." "Pacman = subtle OrbCanvas particles on card border, backend-trigg
 > Each task links to a requirement. Group into waves for parallel execution.
 
 ## Wave 1 — Foundation
-- [ ] T1 (REQ-1, REQ-2): <task> — <file>
-- [ ] T2 (REQ-3): <task> — <file>
+- [ ] T1 (REQ-1, REQ-2): <task> — <file> — RIPPLE: <other areas this task touches or relies on>
+- [ ] T2 (REQ-3): <task> — <file> — RIPPLE: <...>
 
 ## Wave 2 — Integration
-- [ ] T3 (REQ-4, REQ-5): <task> — <file>
+- [ ] T3 (REQ-4, REQ-5): <task> — <file> — RIPPLE: <...>
 
 ## Wave 3 — Verification
-- [ ] T4 (REQ-28): contract tests — <test files>
+- [ ] T4 (REQ-28): contract tests — <test files> — RIPPLE: <CT-x locks which interface>
 
 ## Dependency / parallelization notes
 - <which waves are backend-independent and may run parallel with frontend; which tasks
  must land before others (e.g. a communication hook depends on the committed-outcome
  record existing)>
+- <which tasks are NO-CHANGE-verified areas that only need a contract test, vs. tasks
+ that modify code — so reviewers see at a glance what actually changes>
 ```
 
-## Workflow (STRICT ORDER — the quality is in steps 1-2)
+## Workflow (STRICT ORDER — the quality is in steps 1-3)
 1. **Verify against actual code BEFORE writing.** Read the real modules the feature
    touches. Trace the actual control flow. If a design audit / blueprint / doc exists,
    do NOT trust its "as-built" claims — auditors are frequently wrong or stale. For
@@ -153,20 +172,31 @@ not a timer." "Pacman = subtle OrbCanvas particles on card border, backend-trigg
    BLUEPRINT-DIVERGENT / CANNOT VERIFY, with file:line evidence. Establish a green
    test baseline first and distinguish real breaks from stale-test artifacts. A spec
    written without this step is how silent drift and phantom requirements enter.
-2. **User-in-the-loop decision gates.** Surface Open Questions explicitly and let the
+2. **Ripple-effect analysis (MANDATORY — do not skip).** A change in one module almost
+   always affects others. For EVERY requirement, trace every module/file the change
+   touches AND every downstream consumer that depends on the changed behavior
+   (event shapes, function signatures, session/state, frontend handlers, contracts).
+   Classify each touched area as: **CHANGE NEEDED** (code must be modified),
+   **NO CHANGE (verified correct)** (already handles the new behavior — cite file:line
+   as proof), or **CONTRACT LOCK** (behavior unchanged but the interface shape must be
+   pinned by a contract test so a future edit can't silently break it). This is the
+   step that prevents "fix one thing, break three others." Output the Ripple-Effect Map
+   (see design.md template) and surface it to the user before writing tasks.
+3. **User-in-the-loop decision gates.** Surface Open Questions explicitly and let the
    user resolve UX / communication / threshold decisions. Capture each resolution back
    into the spec (a "Decisions Locked" section), not just in chat. The user's domain
    calls are the highest-value inputs and must be written into requirements, never
    guessed. Preserve the architecture the user values; target only the broken/regressed
    layers.
-3. Decide scope: which requirements are in/out (Non-Requirements section).
-4. Write `requirements.md` first (EARS + user stories + edge cases + verification
+4. Decide scope: which requirements are in/out (Non-Requirements section).
+5. Write `requirements.md` first (EARS + user stories + edge cases + verification
    evidence + observability requirement).
-5. Write `design.md` (architecture, mermaid, data models, decisions, contract+behavioral
-   testing strategy).
-6. Write `tasks.md` (waves, each linked to a REQ, with parallelization notes).
-7. Report the file paths and a one-line summary of each artifact, plus the REAL/STALE
-   classification summary from step 1.
+6. Write `design.md` (architecture, mermaid, data models, decisions, **Ripple-Effect
+   Map**, contract+behavioral testing strategy).
+7. Write `tasks.md` (waves, each linked to a REQ, with parallelization notes AND a
+   per-task ripple note so no dependent code is missed).
+8. Report the file paths and a one-line summary of each artifact, plus the REAL/STALE
+   classification summary from step 1 and the Ripple-Effect Map summary from step 2.
 
 ## Required per-requirement discipline
 - **Verification evidence:** every REQ carries a `Verified:` line citing the file:line
@@ -179,15 +209,21 @@ not a timer." "Pacman = subtle OrbCanvas particles on card border, backend-trigg
   know if this is tuned right?" as a first-class requirement, not an afterthought.
 - **Decisions Locked section:** at the top of requirements.md, list the user-resolved
   Open Questions so future sessions don't re-litigate them.
+- **Ripple-Effect Map (MANDATORY):** design.md MUST contain a Ripple-Effect Map
+  (Workflow step 2) classifying every touched/downstream area as CHANGE NEEDED /
+  NO CHANGE (verified, with file:line) / CONTRACT LOCK. This is the primary guard
+  against fixing one area and silently breaking others. A spec without a Ripple-Effect
+  Map is incomplete.
 
 ## Quality bar
 - Every SHALL statement is testable AND carries verification evidence (above).
 - No implementation file paths in requirements.md except where the requirement
   names a module that MUST exist.
-- design.md has at least one mermaid diagram AND a Testing Strategy using the
-  contract + behavioral + intertwined + CDD-harness model (see below).
-- tasks.md tasks are small enough to check off independently, reference REQ IDs, and
-  note which waves may run in parallel.
+- design.md has at least one mermaid diagram AND a Ripple-Effect Map (Workflow step 2)
+  AND a Testing Strategy using the contract + behavioral + intertwined + CDD-harness
+  model (see below).
+- tasks.md tasks are small enough to check off independently, reference REQ IDs, note
+  which waves may run in parallel, AND carry a per-task RIPPLE note.
 
 ## Testing Strategy standard (write this into design.md)
 This system is ONE recursive operator at four scales; bugs live in the SEAMS between

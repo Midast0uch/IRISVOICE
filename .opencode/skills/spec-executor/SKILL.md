@@ -34,6 +34,39 @@ have built followed this discipline — it is what separates a real contract fro
 a wish-list. Run it before execution whenever the spec has not been verified
 against the as-built system.
 
+### Phase -1.0 — Symbol Grounding Gate (BLOCKING, run BEFORE writing any spec file)
+The single most common spec failure is writing blueprint assumptions as if they
+were verified code facts: inventing method names that don't exist, asserting the
+wrong capture layer, or citing a "pattern to follow" that isn't there. This gate
+converts the advisory "verify against code" into a checkable artifact so those
+drifts are caught at write-time, not at implementation time.
+
+**Before writing requirements.md / design.md / tasks.md, produce a grounding
+table** (keep it in the spec dir as `grounding.md`, or pin it). For EVERY
+function / class / method / WS-message-type / executor-value the spec will NAME,
+record one row:
+
+| symbol the spec will name | status | evidence (file:line) | if-new: which task creates it |
+|---|---|---|---|
+| `SourceRegistry.report_fetch_outcome` | DOES NOT EXIST | source_registry.py:91 has `penalize_url(url,topics)` | T0c reuses `penalize_url` |
+| `FetchBackend.fetch` (HAR capture pt) | EXISTS but WRONG LAYER | orchestrator.py:55 returns batch `CrawlResult`; real HTTP in crawler_engine.py `CrawlerEngine.crawl()` | T0a captures inside engine |
+| `get_documents` WS handler | DOES NOT EXIST | iris_gateway.py elif-chain has no such handler; pattern `reformat_document_ack` at :8194 | T3 |
+
+Rules:
+- A symbol is **EXISTS** only if you grepped the repo and have a `file:line`.
+  "I think it's there" / "a prior summary said so" is NOT evidence.
+- A symbol is **DOES NOT EXIST** only if you grepped and confirmed absence —
+  then name the task that will create it. Never invent a NEW symbol name that
+  collides with an existing one (prefer reusing the existing `penalize_url` over
+  creating `report_fetch_outcome`).
+- For every "existing pattern to follow" claim (WS response shape, executor
+  dispatch, ALTER TABLE idempotency), cite the `file:line` of that pattern.
+- **No spec file may be written until this table exists and is reviewed.** If a
+  spec file is already written, run this gate retroactively and FIX any
+  BLUEPRINT-DIVERGENT rows before Phase 0 (this is what caught the
+  document-rehydration divergences: `report_fetch_outcome`→`penalize_url`,
+  `executor="internal"`→real dispatch type, `FetchBackend.fetch`→`CrawlerEngine.crawl()`).
+
 1. **Verify against actual code, not the blueprint.** Read the real modules the
    spec/blueprint claims exist. Trace the actual control flow. A design audit
    (against a blueprint or doc) is NOT proof of as-built behavior — auditors are
@@ -74,7 +107,9 @@ against the as-built system.
     task should link to ≥1 REQ. If a gap exists, note it but do NOT silently skip —
     flag it to the user. If the spec was just crafted (Phase -1), confirm the
     REAL-GAP / ALREADY-FIXED / STALE classifications were resolved and the user's
-    decision gates were locked into the requirements.
+    decision gates were locked into the requirements. ALSO re-open the Phase -1.0
+    `grounding.md` table and confirm every symbol named in the spec still matches
+    its `file:line` evidence (no BLUEPRINT-DIVERGENT rows remain).
 
 ### Phase 1 — Build the execution ledger
 - Create a todo list (`todowrite`) with one item per task, tagged by wave.

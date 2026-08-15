@@ -61,6 +61,14 @@ class TestWriteBeforeMark:
         EmbeddingService.reset_instance()
         svc = EmbeddingService()
         svc._backend = BACKEND_BGE
+        # TEST-INPUT FIX (2026-08-12, called out per AGENTS.md test rule):
+        # `_load_active_backend()` resolves the backend from `_selected`, which
+        # `__init__` takes from the config default — now `lfm25-emb-350m` after
+        # the encoder migration. Without pinning `_selected` here, seeded rows
+        # are stored as LFM and the test's premise ("row reads as BGE before
+        # the mark is written") is silently void. Pinning `_selected` restores
+        # the original fixture contract; assertions are unchanged.
+        svc._selected = BACKEND_BGE
         svc._models = {BACKEND_HASH: "hash", BACKEND_BGE: "mock-bge", BACKEND_LFM: "mock-lfm"}
         svc._encode_chunk_with = lambda text, backend: (
             _bge_vec(text) if backend == BACKEND_BGE

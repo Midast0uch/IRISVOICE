@@ -101,6 +101,11 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
    Domain 20 — Agent Multi-Step Tool Execution (NEW — 7 items, investigation complete 2026-07-01)
      ⚠️ CRITICAL BLOCKER for D17 and long-horizon tasks. See docs/architecture/agent-multi-step-gaps.md
      Root cause: no agentic tool-call loop, permission UI disconnected, MCP static.
+     2026-08-05: DER DAG-INVERSION sub-initiative IMPLEMENTED across all waves (spec:
+       specs/der-dag-inversion/) — DER is now a traversal over a memory DAG rather than a
+       hardcoded role pipeline, with the causal triple (Treatment→Mediator→Outcome + Σ
+       confounders) recorded per node. ⚠️ AWAITING MANUAL UI VERIFICATION — see PRIORITY 0a.
+       Next direction (PROPOSED, blocked): docs/Wormhole-resonant-recall-.md.
 
      SUB-INITIATIVE — Trust-Routing + Data-Centric Document Memory (W1–W10 DONE 2026-07-10):
        Plan: docs/plans/2026-07-10-trust-routing-document-store.md
@@ -175,6 +180,69 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
           2 retrieval tests (test_der_a1_a2_a3_memory_bridge, test_context_engineering) need an
           embedding model to match semantic chunks; pass where embeddings are available.
 
+      SUB-INITIATIVE — DER DAG-INVERSION (all waves IMPLEMENTED 2026-08-05; ⚠️ UI VERIFICATION PENDING):
+        Spec: specs/der-dag-inversion/{requirements,design,tasks}.md (REQ-1..26, Waves 0-9)
+        Branch: feat/agent-multi-step-tool-execution | Commits: 7bdeccd6, 57d46b7d
+        Pins: pin_3d2f6975f21a (start-here handoff), pin_1a550d9eca21 (Bayesian amendment),
+              pin_d41e789cc7a5 + pin_31af72709a23 (checkpoints), pin_5b79ddf5f112 (budget root cause)
+        WHAT THIS CHANGED CONCEPTUALLY: DER is no longer a hardcoded Director→Explorer→Reviewer
+          pipeline with per-role context limits. It is a TRAVERSAL OVER A MEMORY DAG — every
+          step/split/sub-loop is a node that is BOTH a work unit and a memory record. Two graphs:
+          the EXECUTION DAG steps FORWARD (terminal nodes immutable; recovery spawns a new node with
+          an edge from the frozen one, never revives a dead parent), while the MEMORY DAG couples
+          OUTWARD (a frozen node's record connects across conversations over weeks). Execution
+          terminates because it only moves forward; learning accumulates because memory connects
+          sideways. Causal vocabulary is now first-class: Treatment (objective_anchor) → Mediator
+          (the tool/action — THE ONLY THING THE AGENT CONTROLS) → Outcome (verified_label), with
+          Confounders = the Σ (x,y,ξ,u) state it ran in. Confounders are DISCOVERED by watching a
+          mediator succeed in one coordinate region and fail in another — never enumerated.
+        HEADLINE FIXES (each measured, not inferred):
+          - REQ-1: DER budget was sized from a context window that silently collapsed 256k→8192
+            because _model_provider was the stale sentinel "uninitialized" while routing actually
+            went through InferenceRouter role_bindings. Budget hit the 4000 floor and blew after
+            step 2 — surfacing to users as a fabricated "no usable sources" web-search failure.
+            Now resolved from the ACTIVE reasoning binding.
+          - REQ-2: memory_chain wrote ZERO rows — three competing schemas across three databases.
+            Store is now resolved from memory_config.json db_path (data/memory.db); legacy rows
+            preserved; orphan memory_chain_v2 dropped; .mcm/coordinates.db (BUILD memory) is
+            explicitly out of bounds to the app path.
+          - REQ-23/26: the causal triple was incomplete — nodes recorded state and outcome but NOT
+            the mediator, so the graph could learn THAT something worked but never WHAT. Mediator
+            now recorded; outcomes feed the EXISTING coordinate-scoped mycelium scorer as an
+            evidence-weighted (Beta-Bernoulli) posterior rather than a flat delta.
+          - REQ-7/8: rate-limit relief is demand-side (batch a join point's children into ONE call;
+            synthesis reads compressed node records, not raw history). AIMD ceilings untouched.
+          - REQ-25: dormant-capability register — every built-but-inactive capability needs an
+            activation task OR a recorded exit condition; anything with neither gets deleted.
+        ⚠️ NOT DONE: implemented ≠ verified. Manual UI verification of the whole loop is the gate
+          before anything builds on this. This project's dominant defect is code that is built,
+          tested, and never wired — six instances found in one session (der_steps, captureJobId,
+          job_id dropped in transit, self._logger, dispatch_batch, run_outer_loop). A green unit
+          test is NOT evidence that a path runs in production.
+
+      NEXT DIRECTION (PROPOSED — do not start; foundation must be solid first):
+        Resonant Recall & Wormhole Traversal — docs/Wormhole-resonant-recall-.md
+        Status: ACTIVE EXPLORATION / CONCEPTUAL. Extends the DAG with recall-as-physics: nodes
+          resonate when used and go DORMANT (not deleted) when not; a wormhole is a shortcut edge
+          between causally distant nodes sharing a confounder signature; a landmark is a wormhole
+          whose resonance and coupling have held long enough to become a fixed pillar, collapsing
+          multi-hop walks into triangulation (the ALT pattern on a causal graph). Routing is a Hex
+          topology (hash signature → hex bin → hyperedge) with Beta-Bernoulli scorecards on the
+          HYPEREDGE (not the bin — a bin score blinds you to one brilliant memory among 99 duds),
+          composed as -log(posterior) so probabilistic hops are additive.
+        Scoping constraint carried from v1 and restored: NOTHING HERE IS A NEW SUBSYSTEM. It is the
+          existing DAG, the existing Mycelium store, and the existing Caducean physics reading a
+          signal already being collected and previously discarded. Any mechanism that cannot name
+          the component it reuses is a new subsystem in disguise.
+        BLOCKED ON, in order: (1) manual UI verification of DER DAG-inversion; (2) an unresolved
+          design discussion on how mid-stream RECALL works without becoming synchronous work on the
+          critical path — the exact defect shape fixed three times already (_record_tool_event,
+          _store_document_data, ffi_immortus_chain_append); (3) real DAG telemetry, because every
+          open constant in the doc (30-day birth energy, seed↔observed blending curve, drive
+          function magnitude, Tier-1a/1b hit-rate split, hub_score formula) needs data the DAG work
+          produces. Guessing them now hardcodes five constants — the thing the architecture exists
+          to avoid. Same discipline as [3.4]: hold implementation until validation data exists.
+
    DOMAINS COMPLETE (do not revisit unless regression):
     Domain 1  — DER loop gaps       ✓ all 8 items verified
     Domain 2  — Voice pipeline       ✓ all 5 items verified (session 155, 91 tests)
@@ -185,7 +253,18 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
     Domain 18 — C++ Hybrid Core     ✓ all 6 phases verified — CMake+RE2, DBManager, Caducean+Sanitizer, EventIngestor+FFI, Python bridge, PyInstaller
 
   PRIORITY ORDER FOR NEW SESSIONS:
-    0. VERIFY G1.6, G1.7, G1.8 — these block every downstream dependency
+    0a. VERIFY DER DAG-INVERSION THROUGH THE UI — all waves are IMPLEMENTED, none are
+         confirmed working end-to-end by hand. This gates the wormhole/resonant-recall
+         direction and anything else built on the DAG. What to confirm live, not from tests:
+           - a real web search completes and the browser panel URL changes to
+             /api/browser/capture/{job_id}/{page_number} as pages land
+           - [DER] budget=N from window=M shows the REAL window (never 8192 with a binding)
+           - memory_chain rows land per step in data/memory.db with coords
+           - mediator recorded on those rows; repeated failure in one coordinate region
+             lowers that mediator's rank THERE while leaving other regions unchanged
+           - per-turn call count is measurably below the Wave 0 baseline
+         Evidence rule: paste the actual output. "Done" without output does not close it.
+    0b. VERIFY G1.6, G1.7, G1.8 — these block every downstream dependency
          Load Qwen3.5-9B through ModelsScreen, send a chat, confirm in-process inference
          streams at ≥40 tok/s with no orphaned processes. Then confirm tool calling
          works with iris_local model (create a skill, recall it same session).

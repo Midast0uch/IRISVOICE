@@ -10,10 +10,10 @@ import numpy as np
 from backend.memory.embedding import EmbeddingService, get_embedding_service
 
 
-# Skip all tests if sentence-transformers is not available
+# Skip all tests if the LFM safetensors backend's dependencies are missing
 pytestmark = pytest.mark.skipif(
     not EmbeddingService.is_available(),
-    reason="sentence-transformers not installed"
+    reason="transformers/torch not installed"
 )
 
 
@@ -83,14 +83,14 @@ class TestEmbeddingServiceLazyLoading:
         # Before first encode(): hash fallback is always registered, but no
         # neural backend has loaded yet.
         assert "hash" in service.available_backends()
-        assert "qwen3" not in service.available_backends(), \
+        assert "lfm25-emb-350m" not in service.available_backends(), \
             "No neural model should be loaded on instantiation"
 
         # Trigger lazy loading
         embedding = service.encode("Hello world")
 
         # The neural backend should now be loaded
-        assert "qwen3" in service.available_backends(), \
+        assert "lfm25-emb-350m" in service.available_backends(), \
             "Model should be loaded after encode()"
         assert len(embedding) == EmbeddingService.EMBEDDING_DIM, \
             "Should return embedding_dim vector"
@@ -245,39 +245,41 @@ class TestEmbeddingServiceDimensions:
         assert EmbeddingService.MODEL_NAME == "BAAI/bge-m3"
 
 
-class TestQwen3Backend:
-    """Test the Qwen3-Embedding-0.6B backend (2026-08 switch)."""
+class TestLfmBackend:
+    """Test the LiquidAI/LFM2.5-Encoder-350M backend (2026-08 switch; the
+    Qwen3-Embedding-0.6B backend was removed in the same change)."""
 
-    def test_backend_qwen_constant(self):
-        """Qwen3 backend id is 'qwen3' and is a registered neural backend."""
-        from backend.memory.embedding import BACKEND_QWEN, BACKEND_NEURAL
-        assert BACKEND_QWEN == "qwen3"
-        assert BACKEND_QWEN in BACKEND_NEURAL
+    def test_backend_lfm_constant(self):
+        """LFM backend id is 'lfm25-emb-350m' and is a registered neural backend."""
+        from backend.memory.embedding import BACKEND_LFM, BACKEND_NEURAL
+        assert BACKEND_LFM == "lfm25-emb-350m"
+        assert BACKEND_LFM in BACKEND_NEURAL
 
-    def test_model_name_qwen_constant(self):
-        """Qwen3 model name resolves to the 0.6B sentence-transformers model."""
-        assert EmbeddingService.MODEL_NAME_QWEN == "Qwen/Qwen3-Embedding-0.6B"
+    def test_lfm_backend_is_bi_encoder_gguf(self):
+        """LFM backend resolves to the Embedding-350M bi-encoder GGUF (the
+        Encoder-350M masked-LM backbone was removed)."""
+        assert EmbeddingService.LFM_GGUF_REPO == "LiquidAI/LFM2.5-Embedding-350M-GGUF"
 
-    def test_window_for_qwen(self):
-        """Qwen3 uses its 32K context window for chunking."""
-        assert EmbeddingService._window_for("qwen3") == 32768
+    def test_window_for_lfm(self):
+        """LFM uses its 512-token window for chunking."""
+        assert EmbeddingService._window_for("lfm25-emb-350m") == 512
 
-    def test_default_backend_is_qwen(self):
-        """Config default backend is qwen3 after the 2026-08 switch."""
+    def test_default_backend_is_lfm(self):
+        """Config default backend is lfm25-emb-350m after the 2026-08 switch."""
         from backend.memory.config import VectorSearchConfig
-        assert VectorSearchConfig().backend == "qwen3"
+        assert VectorSearchConfig().backend == "lfm25-emb-350m"
 
-    def test_resolve_selected_backend_defaults_qwen(self):
-        """Service resolves qwen3 when config is untouched (default)."""
+    def test_resolve_selected_backend_defaults_lfm(self):
+        """Service resolves lfm25-emb-350m when config is untouched (default)."""
         service = EmbeddingService()
-        assert service._resolve_selected_backend() == "qwen3"
+        assert service._resolve_selected_backend() == "lfm25-emb-350m"
         EmbeddingService.reset_instance()
 
-    def test_encode_qwen_dim(self):
-        """Encoding through the qwen3 backend returns 1024-dim vectors."""
+    def test_encode_lfm_dim(self):
+        """Encoding through the lfm25-emb-350m backend returns 1024-dim vectors."""
         service = EmbeddingService()
-        emb = service.encode_with_backend("test query about waterfalls", "qwen3")
-        assert emb is not None, "qwen3 backend should load (model is pre-warmed)"
+        emb = service.encode_with_backend("test query about waterfalls", "lfm25-emb-350m")
+        assert emb is not None, "lfm backend should load from the local HF cache"
         assert len(emb) == EmbeddingService.EMBEDDING_DIM
         EmbeddingService.reset_instance()
 

@@ -43,7 +43,8 @@
 │       │               │               │               │               │        │
 │   Porcupine       Energy-based    Parakeet GPU   Provider-agnostic  Pocket-TTS │
 │   (native C++)    + silence       (in-process)   (agent card picks  (streaming) │
-│                   detection       or Whisper      the provider)                  │
+│   armed at        detection       or Whisper      the provider)                  │
+│   backend startup                                              │                │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -81,20 +82,71 @@ WebSocket broadcasts.
 ┌──────────────────────────────────────────────────────────┐
 │  Porcupine (native C++ via picovoice)                    │
 │                                                          │
-│  - Runs continuously on AudioEngine input stream         │
+│  - ARMED at backend startup (main.py lifespan calls      │
+│    audio_engine.initialize_porcupine()) — NOT mid-session│
+│  - Runs continuously on AudioEngine input stream AFTER   │
+│    arming (see AUDIO DIAG "Wake word: READY")            │
 │  - Listens for "Hey Iris" (custom .ppn wake word)        │
-│  - On detection → voice_handler.start_recording()        │
+│  - On detection → main.py _on_wake_word_sync →           │
+│    _on_wake_word_async fires voice_command_start to the  │
+│    WS session for client "iris" (see Session Routing)    │
 │  - AudioEngine half-duplex gate: _tts_active = True      │
 │    drops incoming frames during TTS (echo avoidance)     │
 └──────────────────────┬───────────────────────────────────┘
-                       │ wake word detected
-                       ▼
+                        │ wake word detected
+                        ▼
 ```
+
+**Arming lifecycle (IMPORTANT — common "wake word not working" cause):**
+- Porcupine is initialized **once at backend startup**, inside the FastAPI
+  lifespan, *before* `audio_engine.start()`:
+  ```python
+  # backend/main.py (lifespan)
+  if audio_engine.initialize_porcupine():   # arms Porcupine
+      logger.info("[AUDIO DIAG] ... Porcupine wake word detection active")
+  audio_engine.start()                       # starts the 31 Hz audio callback
+  ```
+- Until that init completes, the 31 Hz audio callback logs
+  `porcupine_initialized=False. Wake word detection never started.` and drops
+  frames. **The backend takes ~2–3 min to fully load (LLM + Parakeet pre-warm);
+  saying "Hey Iris" during that window is silently dropped.** Wait for the
+  `AUDIO DIAG ... Wake word: READY` line before testing the wake word.
+- `engine.start()` does NOT arm Porcupine on its own — only `initialize_porcupine()`
+  does. Do not rely on `start_recording` / orb-click to arm it; it is armed at
+  startup regardless of UI interaction.
 
 **Configuration** (in `backend/audio/engine.py`):
 ```python
 "activation_sound": "liquid-bubble-3000.wav",  # activation chime
 ```
+
+#### Wake Word → Session Routing
+
+When Porcupine detects "Hey Iris", the audio thread fires the registered callback
+(`engine.set_wake_word_callback`, wired in `main.py:372`). The routing is:
+
+```
+Porcupine detects "Hey Iris"
+  → engine._on_wake_word_detected(word)        [audio thread]
+  → main.py _on_wake_word_sync(word)           [debounce + cooldown]
+  → asyncio.run_coroutine_threadsafe(
+        _on_wake_word_async(word), _main_event_loop)
+  → _on_wake_word_async:
+       session_id = ws_manager.get_session_id_for_client("iris")   # Priority 1
+       if None: active_sessions = ws_manager.get_active_session_ids()  # Priority 2
+       if None: session_id = "voice_headless"                       # Priority 3
+     → gateway.handle_voice_message("voice_command_start", session_id, ...)
+  → iris_gateway._handle_voice → voice_handler.start_recording()
+```
+
+- **Requires an active frontend WebSocket session for client `"iris"`**
+  (the frontend connects to `ws://host:8090/ws/iris` in `useIRISWebSocket.ts`).
+  If no browser is connected, the headless fallback (`voice_headless`) is used.
+- **Cooldown**: `_WAKE_WORD_COOLDOWN_SEC` (in `main.py`) debounces repeated
+  detections so one utterance doesn't open multiple recordings.
+- The wake callback and the orb double-click / VOICE-label click all converge on
+  the SAME `voice_command_start` → `_handle_voice` path (see Voice State Machine).
+
 
 ### Phase 2: Voice Activity Detection (VAD)
 ```
@@ -822,9 +874,15 @@ regardless of how listening started:
 
 | Trigger | UI action | Code path |
 |---------|-----------|-----------|
-| Wake word | "Hey Iris" (Porcupine) | backend → `voice_command_start` |
+| Wake word | "Hey Iris" (Porcupine, **armed at backend startup**) | Porcupine callback → `main.py` `_on_wake_word_async` → `voice_command_start` |
 | Double-click | double-click orb (any state) | `handleDoubleClick` → `startVoiceCommand` |
 | VOICE label | click "↑↑ Voice" label (idle only) | `handleLabelClick('voice')` → `startVoiceCommand` |
+
+> **Arming note:** the wake word is the ONLY trigger that does not require a prior
+> UI interaction — Porcupine is armed in the FastAPI lifespan (`main.py`) at backend
+> startup, independent of the orb. The other two triggers *start a recording
+> session*; the wake word *opens* the session by firing the same `voice_command_start`
+> the others send. All three converge on `iris_gateway._handle_voice`.
 
 - `startVoiceCommand` (in `useIRISWebSocket.ts`) optimistically sets
   `voiceState="listening"`, dispatches `iris:voice_state_change`, and sends
@@ -959,6 +1017,36 @@ The `_monitor_words` function has a contract comment:
 ---
 
 ## Known Issues & Recent Fixes
+
+### Wake Word "not working after restart" — startup-window timing (documented 2026-07-17)
+
+**SYMPTOM**: After a backend (re)start, saying "Hey Iris" does nothing — the orb
+doesn't react and no recording starts.
+
+**ROOT CAUSE (timing, not a code regression)**: Porcupine is armed in the FastAPI
+lifespan via `audio_engine.initialize_porcupine()` (`main.py`), which runs *before*
+`audio_engine.start()`. But the backend takes ~2–3 min to fully load (LLM model +
+Parakeet pre-warm). Until `initialize_porcupine()` returns, the 31 Hz audio callback
+logs `porcupine_initialized=False. Wake word detection never started.` and drops
+frames. If "Hey Iris" is spoken during that load window, it is silently dropped. The
+`AUDIO DIAG ... Wake word: READY` line marks the point Porcupine is live.
+
+**VERIFIED**: The current backend startup log shows
+`[AUDIO DIAG] ... Wake word: READY | Pipeline: RUNNING | Porcupine wake word detection active`
+— so the wake word IS armed and functional once the backend has finished loading.
+
+**RESOLUTION / guidance**:
+- Wait for the `AUDIO DIAG ... Wake word: READY` line (or ~3 min after backend start)
+  before testing the wake word.
+- The wake word does NOT require any orb click or UI interaction to arm — it is armed
+  at startup. (The earlier belief that it needed an orb double-click was incorrect;
+  that only *starts a recording session*, which the wake word also does via its own
+  callback.)
+- Requires an active frontend WS session for client `"iris"` (the frontend connects
+  to `ws://host:8090/ws/iris`); without a connected browser the headless fallback
+  (`voice_headless`) is used.
+- See [Phase 1: Wake Word Detection → Arming lifecycle](#phase-1-wake-word-detection)
+  and [Wake Word → Session Routing](#wake-word--session-routing) for the full path.
 
 ### Session 158 (2026-07-15) — Orb Listening Animation Consistency (double-click + VOICE label == wake word)
 

@@ -1,5 +1,90 @@
 # IRIS Changelog
 
+## [Unreleased] — DER-DAG Execution Model + Server-Side Browser Automation — 2026-08-14
+
+### feat: DER-DAG — physics-governed, memory-backed execution graph
+
+DER is rearchitected from a hardcoded Director→Explorer→Reviewer pipeline over a flat
+queue into a DAG whose nodes are simultaneously work units and memory records
+(specs `der-dag-inversion`, `dag-node-execution-model`).
+
+#### Memory-backed DAG (der-dag-inversion)
+- **Node landing (REQ-2):** every finalized step appends a `memory_chain` row to the
+  configured store (`data/memory.db` via `data/memory_config.json`) carrying pre/post
+  Σ snapshots, outcome, and insight. Legacy `memory_chain` migrated idempotently; the
+  orphan `memory_chain_v2` shape and `.mcm/coordinates.db` are explicitly out of scope
+  (app path never writes BUILD memory).
+- **Forgetting is the point (REQ-3):** once a node's record lands, its raw content drops
+  from the working context and is re-read only when a later step's retrieval selects it —
+  bounded per-step context, measured as a token count, not asserted.
+- **Non-binary steering (REQ-4):** gates consume the continuous Caducean signal
+  (u/ξ, verified fraction, edge strength) as graded functions; split children resolve a
+  *named* blocker, not a retry of the parent goal.
+- **Coupling by decision (REQ-5):** retrieval surfaces ALL candidate branches; the agent
+  commits and the edge records the decision as provenance. Enables the dormant
+  `coupled_registry` / `align_force` path (`IRIS_COUPLING_ENABLED`) rather than a second
+  coupling implementation.
+- **Layer-batched execution (REQ-7) + synthesis diet (REQ-8):** join-point children run
+  as one batched LLM call (`BATCH_MAX_CHILDREN`); final synthesis built from compressed
+  node records with spoken-text normalization at the sentence-flush point — kills the
+  full-history 429-stall.
+- **Outer loop as live judge (REQ-16):** `run_outer_loop` now runs at real session
+  boundaries feeding live observations; per-domain physics aggregation (REQ-21) and
+  governance-ratio instrumentation (REQ-6/REQ-17) feed it.
+- **Dead-memory repairs (REQ-12):** `BehavioralPredictor` constructor fixed (real
+  pheromone predictions), `caducean_trajectories.domain` ALTER migration, honest
+  `der_steps` in `[LAYERS]`.
+
+#### DAG Node Execution Model (dag-node-execution-model)
+- Every action (tool call, MCP tool, vision/audio pipeline) is a **node** with a typed,
+  routable outcome (terminal status + enumerated reason + artifact) — no node signals
+  failure by raising (REQ-1).
+- One unified node registry extends the existing `ToolSpec`; MCP / in-process /
+  subprocess nodes are indistinguishable to the planner; the parallel fetch-capability
+  registry is expressible through it (REQ-2).
+- Composite actions decompose into sub-graphs whose decision points DER can see and
+  re-route (REQ-3); outcome-driven routing picks a recovery node by matching the failure
+  reason, bounded per step, refusals terminal (REQ-4); mid-execution re-planning preserves
+  completed work (REQ-5).
+- Strangler-fig adoption: undeclared legacy tools run exactly as today; a switch disables
+  routing entirely for behavioral parity (REQ-7). Permission tiers and refusals are
+  preserved through routing (REQ-8). Full graph observability off the critical path
+  (REQ-9).
+
+### feat: Server-side browser automation (vision-driven websearch + in-app surface)
+
+The agent now operates a **real browser server-side** for websearch and in-app browsing.
+
+- **`backend/vision/browser_pool.py`** (NEW) — ONE lazily-started Playwright/Chromium
+  instance, idle watchdog, counted hard-expiry leases; eliminates per-URL cold launches.
+- **`backend/vision/browser_session.py`** — server-side interactive session: executes DOM
+  actions, publishes frames to the capture store, detects walls (CAPTCHA/LOGIN/PAYWALL)
+  via pure DOM heuristics. Never calls the vision model, never captures the desktop.
+  Per-session `new_context()` keeps cookies/storage isolated.
+- **`backend/vision/fetch_vision.py`** — `fetch.vision` capability node composing browser
+  session + vision lease + frame extraction + usability predicate; returns settled DOM via
+  `FetchOutcome.settled_dom` so `crawl → vision → crawl` is a normal traversal.
+- **`backend/vision/session_vision_adapter.py`** (NEW) — binder between the browser
+  session (frames/scroll) and the real VLM provider (`LFMVLProvider`); fixes the live
+  `extract_page_frames() got multiple values for argument 'provider'` production bug.
+- **`backend/api/browser_surface.py`** + **`browser_auth.py`** (NEW) — `GET
+  /api/browser/capture/{job_id}/{page_number}` (replays exact raw HTML with provenance +
+  CSP) and `GET /api/browser/proxy?url=...` (server-side egress-guarded fetch, no
+  credentials). Dual auth: address gate (loopback/tailnet only) AND a token HKDF-derived
+  from the Dilithium identity key, deliberately separate from the memory key.
+- **Sandboxed mirror:** the frontend iframe is served from the capture store, sandboxed
+  without `allow-same-origin` — never the vision source, never escapes to app resources.
+- **Contract suite:** `test_browser_pool_contract`, `test_browser_session_contract`,
+  `test_no_webbrowser_escape`, `test_stealth_contract`, `test_view_agent_protocol_contract`,
+  `test_capture_address_contract`, `test_fetch_vision_contract`,
+  `test_session_vision_adapter_contract`, `test_vision_action_fields_reach_the_panel`
+  (all under `backend/tests/contract/`).
+- **Vision model upgrade (2026-08-12):** the VLM was upgraded from `LFM2.5-VL-450M` to
+  `LFM2.5-VL-3B` (same LFM2.5-VL class, larger); the 450M is retained as an automatic
+  fallback. See `backend/core/models.py:94` and `backend/tools/lfm_vl_provider.py`.
+
+---
+
 ## [Unreleased] — Dilithium Memory Unlock + DER/PACMAN Execution Hardening — 2026-07-13
 
 ### feat: Dilithium PQC identity key → memory encryption key

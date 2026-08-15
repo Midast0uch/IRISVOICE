@@ -417,7 +417,7 @@ SECTION_CONFIGS: Dict[str, List[Section]] = {
                 InputField(id="proactive_monitor", type=FieldType.TOGGLE, label="Proactive Monitor", value=False),
                 InputField(id="monitor_interval", type=FieldType.SLIDER, label="Monitor Interval", min=5, max=120, value=30, unit="s"),
                 InputField(id="ollama_endpoint", type=FieldType.TEXT, label="Ollama Endpoint", placeholder="http://localhost:11434", value="http://localhost:11434"),
-                InputField(id="vision_model", type=FieldType.DROPDOWN, label="Vision Model", options=["lfm2.5-vl", "llava", "bakllava"], value="lfm2.5-vl"),
+                InputField(id="vision_model", type=FieldType.DROPDOWN, label="Vision Model", options=["lfm2.5-vl-3b", "lfm2.5-vl", "llava", "bakllava"], value="lfm2.5-vl-3b"),
             ]
         ),
         Section(

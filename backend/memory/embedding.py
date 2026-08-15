@@ -4,11 +4,14 @@ Embedding Service for IRIS Memory Foundation.
 Phase 4 (LFM2.5 Encoder Integration) — backend-swappable, chunking, provenance.
 
 Backends (provenance values stored with every persisted vector):
-  - "qwen3"           Qwen/Qwen3-Embedding-0.6B via sentence-transformers
-                       (1024-dim, ~639MB, 32K context). Default (2026-08).
+  - "lfm25-emb-350m"  LiquidAI/LFM2.5-Embedding-350M bi-encoder (1024-dim CLS,
+                       cosine). Default (2026-08). Loaded as a quantized GGUF via
+                       llama_cpp (CPU), discovered from the local model folder.
+                       The Encoder-350M masked-LM backbone was REMOVED — its
+                       zero-shot mean-pooled vectors were weakly discriminative
+                       (pin_2d6c410018e7).
   - "bge-m3"          BAAI/bge-m3 via sentence-transformers (1024-dim, ~2.3GB).
-                       Selectable at any time; kept as the pre-switch default.
-  - "lfm25-emb-350m"  LFM2.5-Embedding-350M via llama_cpp GGUF on CPU (1024-dim).
+                       Optional alternate, only if the weights are cached.
   - "hash"            Dependency-free hash-projection fallback. Always available.
 
 The swap is INTERNAL: ``get_embedding_service()`` and the ``EmbeddingService``
@@ -44,8 +47,7 @@ logger = logging.getLogger(__name__)
 BACKEND_BGE = "bge-m3"
 BACKEND_LFM = "lfm25-emb-350m"
 BACKEND_HASH = "hash"
-BACKEND_QWEN = "qwen3"
-BACKEND_NEURAL = (BACKEND_BGE, BACKEND_LFM, BACKEND_QWEN)
+BACKEND_NEURAL = (BACKEND_BGE, BACKEND_LFM)
 
 # Chunking defaults (OQ-1: start 480 / 64; tune against REQ-8 AC1).
 DEFAULT_CHUNK_TOKENS = 480
@@ -67,7 +69,9 @@ DEFAULT_LOAD_TIMEOUT_S = 300.0
 
 def _load_timeout_s() -> float:
     """Bound for a backend load attempt (default 300s for neural backends;
-    60s was too tight for Qwen3-Embedding-0.6B which cold-loads in ~106s).
+    60s was too tight for Qwen3-Embedding-0.6B which cold-loads in ~106s; the
+    LFM2.5-Encoder-350M safetensors route cold-loads transformers + a 350M
+    model in a similar range).
     Overridable via IRIS_EMBEDDING_LOAD_TIMEOUT_S."""
     raw = os.environ.get("IRIS_EMBEDDING_LOAD_TIMEOUT_S")
     if not raw:
@@ -293,10 +297,10 @@ class EmbeddingService:
     """
     Singleton, backend-swappable embedding service (Phase 4).
 
-    Model: Qwen/Qwen3-Embedding-0.6B (default, 2026-08), BAAI/bge-m3, or
-    LFM2.5-Embedding-350M (GGUF, CPU). Falls back to the hash-projection
-    embedder if no neural backend is available. All memory components share
-    this single instance.
+    Model: LiquidAI/LFM2.5-Embedding-350M (default, 2026-08; bi-encoder GGUF
+    via llama_cpp, CPU), or BAAI/bge-m3 (sentence-transformers, if cached).
+    Falls back to the hash-projection embedder if no neural backend is
+    available. All memory components share this single instance.
     """
 
     _instance: Optional["EmbeddingService"] = None
@@ -306,7 +310,9 @@ class EmbeddingService:
 
     # Model configuration
     MODEL_NAME = "BAAI/bge-m3"
-    MODEL_NAME_QWEN = "Qwen/Qwen3-Embedding-0.6B"
+    # LFM backend = LFM2.5-Embedding-350M bi-encoder, loaded as a GGUF via
+    # llama_cpp (see _load_gguf). Source repo for provenance / re-download.
+    LFM_GGUF_REPO = "LiquidAI/LFM2.5-Embedding-350M-GGUF"
     EMBEDDING_DIM = 1024
 
     # Sentinel: True when sentence-transformers is confirmed unavailable.
@@ -351,17 +357,17 @@ class EmbeddingService:
 
     # ── Backend selection (REQ-1 AC4) ────────────────────────────────────────
     def _resolve_selected_backend(self) -> str:
-        """Select backend from config; default QWEN3 (2026-08 switch)."""
+        """Select backend from config; default LFM2.5-Encoder-350M (2026-08)."""
         try:
             from backend.memory.config import get_config
             cfg = get_config()
             vec = getattr(cfg, "embedding", None)
             b = getattr(vec, "backend", None) if vec else None
-            if b in (BACKEND_BGE, BACKEND_LFM, BACKEND_HASH, BACKEND_QWEN):
+            if b in (BACKEND_BGE, BACKEND_LFM, BACKEND_HASH):
                 return b
         except Exception as exc:  # pragma: no cover - config optional at import
             logger.debug("[EmbeddingService] backend config read failed: %s", exc)
-        return BACKEND_QWEN
+        return BACKEND_LFM
 
     @staticmethod
     def _window_for(backend: str) -> int:
@@ -369,8 +375,6 @@ class EmbeddingService:
             return 512
         if backend == BACKEND_BGE:
             return 8192
-        if backend == BACKEND_QWEN:
-            return 32768
         return 10 ** 9  # hash: effectively unbounded
 
     def _chunker_for(self, backend: str) -> Chunker:
@@ -420,8 +424,7 @@ class EmbeddingService:
         timeout_s = _load_timeout_s()
         load_fn = {
             BACKEND_BGE: self._load_bge,
-            BACKEND_QWEN: self._load_qwen,
-            BACKEND_LFM: self._load_gguf,
+            BACKEND_LFM: self._load_lfm,
         }[backend]
         model, timed_out = _run_bounded(load_fn, timeout_s, backend)
         if timed_out:
@@ -457,16 +460,12 @@ class EmbeddingService:
             logger.info("[EmbeddingService] BGE-M3 not available: %s", exc)
             return None
 
-    def _load_qwen(self):
-        try:
-            from sentence_transformers import SentenceTransformer
-            logger.info("[EmbeddingService] Loading %s model (CPU)...", self.MODEL_NAME_QWEN)
-            # Pinned to CPU (2026-08-09): the embedding models run on system
-            # RAM, keeping the GPU free for audio/STT workloads.
-            return SentenceTransformer(self.MODEL_NAME_QWEN, device="cpu")
-        except Exception as exc:  # ImportError or load failure
-            logger.info("[EmbeddingService] Qwen3 not available: %s", exc)
-            return None
+    def _load_lfm(self):
+        """LFM backend = LFM2.5-Embedding-350M bi-encoder, GGUF-only via
+        llama_cpp (CLS pooling). No safetensors/transformers fallback — the
+        Encoder-350M backbone was removed: its zero-shot mean-pooled vectors
+        are weakly discriminative (pin_2d6c410018e7)."""
+        return self._load_gguf()
 
     @staticmethod
     def _hf_cached(model_name: str) -> bool:
@@ -532,14 +531,16 @@ class EmbeddingService:
         logger.warning(
             "[EmbeddingService] LFM2.5-Embedding-350M GGUF not found in "
             "config.embedding.model_path or the local model folder. "
-            "Expected a file matching '*embedding*350m*.gguf'. "
-            "No network download will be attempted."
+            "Expected a file matching '*embedding*350m*.gguf' (source repo: "
+            f"{EmbeddingService.LFM_GGUF_REPO}). No network download will be "
+            "attempted."
         )
         return None
 
     @staticmethod
     def _discover_gguf() -> List[str]:
-        """Find a plausible Embedding-350M GGUF under common local model roots."""
+        """Find the Embedding-350M bi-encoder GGUF (LFM_GGUF_REPO) under common
+        local model roots (top-level, filename matching '*embedding*350m*.gguf')."""
         roots = [
             os.environ.get("IRIS_MODEL_DIR", ""),
             os.path.expanduser("~/.lmstudio/models"),
@@ -572,7 +573,7 @@ class EmbeddingService:
     def _encode_chunk_with(self, text: str, backend: str) -> List[float]:
         """Embed a single chunk with the given backend, else hash fallback."""
         model = self._models.get(backend)
-        if backend in (BACKEND_BGE, BACKEND_QWEN) and model is not None:
+        if backend == BACKEND_BGE and model is not None:
             emb = model.encode(text, convert_to_numpy=True)
             return emb.tolist()
         if backend == BACKEND_LFM and model is not None:
@@ -669,22 +670,24 @@ class EmbeddingService:
 
     @classmethod
     def is_available(cls) -> bool:
-        """True if sentence-transformers can be imported (legacy helper).
+        """True if the LFM safetensors backend's dependencies are importable
+        (transformers + torch).
 
-        Shares the Defect 1 hazard: importing sentence-transformers can block
-        the calling thread indefinitely on a machine with a broken native
-        dependency (e.g. torchcodec vs. local FFmpeg). Bounded the same way
-        as backend loading — an import that doesn't resolve within
-        IRIS_EMBEDDING_LOAD_TIMEOUT_S is reported unavailable rather than
-        blocking the caller. Cached at the class level so a broken install
-        only pays the timeout once per process.
+        The default backend (lfm25-emb-350m) loads via transformers+torch and
+        deliberately avoids the sentence-transformers -> torchvision ->
+        torchcodec chain, so this probe checks the LFM dependencies, not
+        sentence-transformers. Bounded the same way as backend loading — an
+        import that doesn't resolve within IRIS_EMBEDDING_LOAD_TIMEOUT_S is
+        reported unavailable rather than blocking the caller. Cached at the
+        class level so a broken install only pays the timeout once per process.
         """
         if cls._is_available_cache is not None:
             return cls._is_available_cache
 
         def _try_import() -> bool:
             try:
-                import sentence_transformers  # noqa: F401
+                import transformers  # noqa: F401
+                import torch  # noqa: F401
                 return True
             except ImportError:
                 return False

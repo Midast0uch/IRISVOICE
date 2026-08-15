@@ -108,36 +108,21 @@ class PrivacyConfig:
 class VectorSearchConfig:
     """Configuration for vector search."""
 
-    model_name: str = "Qwen/Qwen3-Embedding-0.6B"
+    model_name: str = "LiquidAI/LFM2.5-Embedding-350M"
     embedding_dim: int = 1024
     similarity_threshold: float = 0.6
     max_results: int = 5
     fallback_to_keyword: bool = True
-    # Phase 4 (REQ-1 AC4): selectable embedding backend. "qwen3" (default,
-    # 2026-08 switch: Qwen/Qwen3-Embedding-0.6B, 639MB, 32K ctx) or "bge-m3"
-    # (BAAI/bge-m3, 2.3GB, migration-safe fallback) or "lfm25-emb-350m"
-    # (LFM2.5-Embedding-350M GGUF, CPU). Reversible from config.
-    backend: str = "qwen3"
+    # Phase 4 (REQ-1 AC4): selectable embedding backend. "lfm25-emb-350m"
+    # (default, 2026-08: LiquidAI/LFM2.5-Embedding-350M bi-encoder, loaded as
+    # a quantized GGUF via llama_cpp — the Encoder-350M masked-LM backbone was
+    # removed for weak zero-shot separation)
+    # or "bge-m3" (BAAI/bge-m3, sentence-transformers, if cached).
+    # Reversible from config.
+    backend: str = "lfm25-emb-350m"
     # Explicit path to the Embedding-350M GGUF. When None, discovered from the
     # user's local model folder (REQ-7 AC1). Never silently downloaded.
     model_path: Optional[str] = None
-    # Phase 4 REQ-4 / Decision-Locked #2 and #3: the ENCODER used for semantic
-    # step verification and task classification. This is a DIFFERENT model from
-    # the embedding backend above — Encoder-350M is a masked-LM backbone run via
-    # transformers+torch for scoring; Embedding-350M is a bi-encoder run via GGUF
-    # for retrieval vectors. Conflating them was a live defect: verifier.py
-    # hardcoded "LFM-Korea/LFM2.5-Embedding-350M", so the cache probe looked for a
-    # directory that never exists, logged "weights absent — expected", and the
-    # substring fallback became permanent no matter what the user installed.
-    #
-    # Accepts either a HuggingFace repo id or a local directory of safetensors.
-    # Overridable by IRIS_ENCODER_MODEL so a wrong default costs an env var, not
-    # a code change.
-    #
-    # CONFIRMED 2026-07-30 against huggingface.co/LiquidAI/LFM2.5-Encoder-350M.
-    # Note the org: the previous hardcoded value used "LFM-Korea", a
-    # language-specific fork, for what is a general-purpose multilingual encoder.
-    encoder_model: str = "LiquidAI/LFM2.5-Encoder-350M"
 
 
 @dataclass

@@ -508,6 +508,22 @@ class AgentToolBridge:
                     },
                     "category": "web",
                 },
+                {
+                    "name": "screenshot_page",
+                    "description": (
+                        "Take a picture of a WEB PAGE and show it in the chat. Use when "
+                        "the user wants to SEE a page ('show me that page', 'what does "
+                        "it look like', 'screenshot that site'). Needs the page's URL. "
+                        "This is for SHOWING a page, not for reading one — to get a "
+                        "page's TEXT or to answer a question from it, use 'search' "
+                        "or the crawler instead, which are far cheaper. For the user's "
+                        "own DESKTOP rather than a web page, use 'take_screenshot'."
+                    ),
+                    "parameters": {
+                        "url": {"type": "string", "description": "Full http(s) URL of the page to photograph"}
+                    },
+                    "category": "vision",
+                },
             ])
 
         # ── Desktop-control gate ─────────────────────────────────────────────

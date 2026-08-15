@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -247,7 +248,9 @@ def _is_alive(pid: int) -> bool:
 # ─── Subprocess creation with all three fixes ──────────────────────────────
 
 
-def start_service(name: str, cmd: list[str], cwd: str | None = None) -> int:
+def start_service(
+    name: str, cmd: list[str], cwd: str | None = None, detach: bool = False
+) -> int:
     """Start a service with the three Windows-safe settings:
     - windowsHide: true            (no conhost.exe)
     - stdout/stderr to log file     (no parent pipe buffering)
@@ -276,6 +279,29 @@ def start_service(name: str, cmd: list[str], cwd: str | None = None) -> int:
     if sys.platform == "win32":
         creationflags = subprocess.CREATE_NO_WINDOW  # 0x08000000
 
+    # Resolve the executable on PATH before spawning.
+    #
+    # With shell=False (required — a shell would break the Job Object tree
+    # kill), Popen cannot run a Windows batch launcher: `npm` is `npm.cmd`, and
+    # `["npm", "run", "dev"]` died with
+    # "FileNotFoundError: [WinError 2] The system cannot find the file
+    # specified". That is why this manager was never used for the frontend and
+    # got written off as secondary, leaving no cross-platform way to start a
+    # server without blocking the caller.
+    #
+    # shutil.which() resolves `npm` -> `...\npm.cmd` on Windows and returns the
+    # same plain path everywhere else, so this is a no-op on Linux/macOS.
+    cmd = list(cmd)
+    if cmd:
+        _resolved = shutil.which(cmd[0])
+        if _resolved:
+            cmd[0] = _resolved
+        else:
+            print(
+                f"[{name}] WARNING: {cmd[0]!r} not found on PATH — the spawn "
+                f"will fail. Check the command name or activate the venv."
+            )
+
     proc = subprocess.Popen(
         cmd,
         cwd=cwd or str(REPO_ROOT),
@@ -290,7 +316,12 @@ def start_service(name: str, cmd: list[str], cwd: str | None = None) -> int:
     )
 
     # Wrap the process in a Windows Job Object for tree cleanup.
-    job = _create_job_object_windows()
+    #
+    # SKIPPED when detaching. The job carries KILL_ON_JOB_CLOSE, so the child
+    # dies the moment this manager process exits — which is exactly what a
+    # detached start must NOT do. Detached mode relies on the pid file plus
+    # stop_service's `taskkill /F /T` for tree cleanup instead.
+    job = None if detach else _create_job_object_windows()
     if job is not None:
         ok = _assign_to_job_windows(job, proc.pid)
         if not ok:
@@ -383,6 +414,10 @@ def main():
     p_start = sub.add_parser("start")
     p_start.add_argument("name")
     p_start.add_argument(
+        "--detach", action="store_true",
+        help="Spawn and return immediately (for agents/CI). Stop with stop-named.",
+    )
+    p_start.add_argument(
         "--cwd", default=None, help="Working directory for the child process"
     )
     p_start.add_argument("service_cmd", nargs=argparse.REMAINDER)
@@ -419,9 +454,23 @@ def main():
         # Strip leading "--" if present
         if cmd and cmd[0] == "--":
             cmd = cmd[1:]
-        pid = start_service(args.name, cmd, cwd=args.cwd)
-        # Hold the manager process alive so the Job Object stays attached.
-        # The console window IS the manager; closing it kills the tree.
+        pid = start_service(
+            args.name, cmd, cwd=args.cwd, detach=getattr(args, "detach", False)
+        )
+        if getattr(args, "detach", False):
+            # Detached: return NOW so the caller is not blocked.
+            #
+            # This mode exists because an agent driving the app has no console
+            # to leave open — it runs one command, gets the prompt back, and
+            # polls. Without it every "start" call blocked until the server
+            # died, which is indistinguishable from a hang and is why this
+            # manager went unused.
+            print(f"[{args.name}] detached, pid {pid} — poll for readiness, then:")
+            print(f"[{args.name}]   python {Path(__file__).name} stop-named {args.name}")
+            return 0
+        # Attached (default): hold the manager process alive so the Job Object
+        # stays attached. The console window IS the manager; closing it kills
+        # the tree.
         print(f"\n[manager] tracking pid {pid}. Close this window to stop the service.")
         print(
             f"[manager] (or run: python {Path(__file__).name} stop-named {args.name})"

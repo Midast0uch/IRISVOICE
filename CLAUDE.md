@@ -352,6 +352,13 @@ When the project reaches its completion condition (defined in GOALS.md),
 .mcm/coordinates.db transfers to the application's runtime memory store.
 Same schema. No migration. The build memory becomes the app memory.
 
+To make that true (REQ-2b): the BUILD store's shared tables are schema-identical
+to the application store after ONE offline, human-run step at hand-off —
+`python scripts/migrate_build_store_inheritance.py .mcm/coordinates.db`
+(idempotent, non-destructive; dry-run with `--dry-run`). It applies the same
+coordinate ALTER the application engine runs (memory_chain coords columns) and
+drops the orphan memory_chain_v2. Never run at app start.
+
 ---
 
 SPEC / DOMAIN QUICK REFERENCE

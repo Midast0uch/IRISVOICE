@@ -313,3 +313,41 @@ def record_widening_telemetry(winning_scope: str, filters: RecallFilters) -> Non
         "[ontology_recall] scope=%s requested=%s ts=%.3f",
         winning_scope, requested, time.time(),
     )
+
+
+def resolve_mycelium_conn(memory_interface):
+    """Shared mycelium connection resolution (kernel + gate, REQ-6 AC3).
+
+    The kernel's ``_der_recall_neighborhood`` and the semantic gate's Tier 2
+    both need the live mycelium connection. mycelium exposes it as ``_conn``;
+    some call sites alias it ``.conn`` — accept either. Returns None when the
+    interface or store is unavailable (caller falls back to live state).
+    """
+    if memory_interface is None:
+        return None
+    _myc = getattr(memory_interface, "_mycelium", None)
+    if _myc is None:
+        return None
+    return getattr(_myc, "conn", None) or getattr(_myc, "_conn", None)
+
+
+def run_filtered_recall(conn, filters: RecallFilters, scope_out=None) -> list:
+    """filtered_chain_recall + widen telemetry + error-swallow (REQ-6 AC3).
+
+    The ONE code path for ontology chain recall — shared by the kernel's
+    ``_der_recall_neighborhood`` and the semantic gate's Tier 2, so the
+    widen-order and telemetry cannot drift between callers. Returns chain-row
+    dicts, or [] on any failure — callers proceed on live state, never an
+    error. ``scope_out`` (optional list) receives the winning widen scope so
+    the gate can surface it on the [LAYERS] line (REQ-5 AC1, T8); the kernel
+    caller passes nothing and is unaffected.
+    """
+    try:
+        rows, scope = filtered_chain_recall(conn, filters)
+        record_widening_telemetry(scope, filters)
+        if scope_out is not None:
+            scope_out.append(scope)
+        return rows or []
+    except Exception as exc:
+        logger.debug("[ontology_recall] filtered chain recall failed: %s", exc)
+        return []

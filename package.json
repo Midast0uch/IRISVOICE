@@ -253,7 +253,9 @@
     "start:backend-only": "venv\\Scripts\\python.exe start_all.py --no-fe",
     "iris:start": "python scripts/iris_process_manager.py start",
     "iris:stop": "python scripts/iris_process_manager.py stop",
-    "iris:status": "python scripts/iris_process_manager.py status"
+    "iris:status": "python scripts/iris_process_manager.py status",
+    "iris:start:backend": "python scripts/iris_process_manager.py start --detach backend -- python start-backend.py",
+    "iris:start:frontend": "python scripts/iris_process_manager.py start --detach frontend -- npm run dev"
   },
   "optionalDependencies": {
     "@tailwindcss/oxide-win32-x64-msvc": "^4.2.4",

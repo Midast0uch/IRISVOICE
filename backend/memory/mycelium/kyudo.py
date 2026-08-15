@@ -593,7 +593,9 @@ class TaskClassifier:
                 from backend.memory.embedding import get_embedding_service
                 svc = get_embedding_service()
                 # Probe: if the backend is "hash" the encoder offers no semantic
-                # signal, so treat it as unavailable.
+                # signal, so treat it as unavailable. (Note: this does NOT cache
+                # None — a lazy-loaded encoder that is still initialising on the
+                # first call is retried on the next call, once loaded.)
                 if getattr(svc, "_backend", None) == "hash":
                     logger.debug("[TaskClassifier] backend=hash; no semantic encoder")
                     return None

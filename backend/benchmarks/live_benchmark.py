@@ -3,7 +3,7 @@
 Usage:
     python -m backend.benchmarks.live_benchmark
 
-Requires backend running on ws://localhost:8000/ws/benchmark
+Requires backend running on ws://localhost:8090/ws/benchmark
 """
 
 import asyncio
@@ -171,7 +171,7 @@ async def run_benchmark(
     report = BenchmarkReport()
     report.start_time = time.time()
 
-    uri = f"ws://localhost:8000/ws/{session_id}"
+    uri = f"ws://localhost:8090/ws/{session_id}"
     print(f"Connecting to {uri} ...")
 
     tracemalloc.start()

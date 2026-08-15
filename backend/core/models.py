@@ -91,7 +91,7 @@ class VisionStatus(BaseModel):
     load_progress_percent: Optional[float] = None
     error_message: Optional[str] = None
     last_used: Optional[datetime] = None
-    model_name: str = "lfm2.5-vl"
+    model_name: str = "lfm2.5-vl-3b"  # upgraded 2026-08-12 (was lfm2.5-vl 450M)
     quantization_enabled: bool = True
     is_available: bool = False
 

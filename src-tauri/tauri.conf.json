@@ -5,8 +5,8 @@
   "identifier": "com.iris.widget",
   "build": {
     "beforeBuildCommand": "npm run build",
-    "beforeDevCommand": "npm run dev -- --port 3001",
-    "devUrl": "http://localhost:3001",
+    "beforeDevCommand": "npm run dev -- --port 3000",
+    "devUrl": "http://localhost:3000",
     "frontendDist": "../dist"
   },
   "app": {

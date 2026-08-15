@@ -470,7 +470,9 @@ SECTION_CONFIGS: Dict[str, List[Section]] = {
             icon="Eye",
             fields=[
                 InputField(id="vision_enabled", type=FieldType.TOGGLE, label="Vision Enabled", value=False),
-                InputField(id="vision_model", type=FieldType.DROPDOWN, label="Vision Model", options=["lfm2.5-vl", "llava", "bakllava"], value="lfm2.5-vl"),
+                # 2026-08-12: vision model upgraded to lfm2.5-vl-3b (same repo
+                # family as the 450M it replaces).
+                InputField(id="vision_model", type=FieldType.DROPDOWN, label="Vision Model", options=["lfm2.5-vl-3b", "lfm2.5-vl", "llava", "bakllava"], value="lfm2.5-vl-3b"),
             ]
         ),
         Section(

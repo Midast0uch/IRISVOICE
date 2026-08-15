@@ -1452,8 +1452,9 @@ Build order is mandatory — each layer depends on the ones below it:
 | 6 | Issue D.2: Format auto-decision + alternatives — **DONE 2026-07-10** | Issue C.1 (structured response) | 1 session |
 | 7 | Issue D.3: Inline + expand rendering — **DONE 2026-07-10** | Issue D.1, Issue D.2 | 1 session |
 | 8 | Integration + E2E — **DONE 2026-07-10** | All above | 1 session |
+| 9 | Issue E: Web mode relay unification — **IMPLEMENTED 2026-07-11** | Issue C, Issue D | 1 session |
 
-Phases 1, 2, 3, and 5 can be worked in parallel (no dependencies between them).
+Phases 1, 2, 3, and 5 can be worked in parallel (no dependencies between them). Phase 9 (Issue E) depends only on the Issue C/D rendering pipeline, which is already done.
 
 ---
 
@@ -1477,10 +1478,17 @@ DER loop executes (tools, planning, etc.)
       Expand button → dashboard wing → DocumentPanel (full view)
       Format pills → reformat_document WS → agent re-renders
          ↓
-    Orb:
-      Working state → OrbWorkingIndicator (orbiting particles)
-      Done state → particles fade, OrbBadge clears
-```
+     Orb:
+       Working state → OrbWorkingIndicator (orbiting particles)
+       Done state → particles fade, OrbBadge clears
+
+ Web mode (Issue E) is a capability gate on the agent, not a routing switch:
+   web mode ON  → agent granted `search` + `crawler_query`; decides when to use them
+   web mode OFF → agent has zero internet tools (get_available_tools omits them,
+                  execute_tool rejects them)
+   crawler_query returns full `content` (markdown) → placed in `show` → RichDocument
+   (same document:render path as above — NOT a hardcoded markdown doc)
+ ```
 
 ---
 
@@ -1490,7 +1498,8 @@ DER loop executes (tools, planning, etc.)
 2. **Orb:** Flat CSS ring removed. Orbiting particles render when agent working. Matches OrbCanvas particle aesthetic (radial-gradient + `mixBlendMode: lighter`). `pointer-events: none`. Respects reduced motion.
 3. **TTS:** Agent generates structured JSON (`speak` + `show`). TTS reads only `speak` field (short summary). Full document renders visually. `speak` tool allows agent-initiated speech.
 4. **Documents:** Rich markdown rendering (tables, code, diagrams, lists) with Prism Glass styling (exact values from §0.1). Format auto-decided by agent. Alternatives offered as pills. Inline + expand to panel.
-5. All existing tests pass. New tests pass. `npx tsc --noEmit` clean. `npm run lint` clean. `pytest` clean.
+5. **Web mode (Issue E):** Web mode is a capability gate, not a routing switch. Web OFF → agent has zero internet tools (`get_available_tools` omits `search`/`crawler_query`, `execute_tool` rejects them). Web ON → agent decides when to search/crawl. The frontend `webMode` bypass and backend forced-crawler early-return are both removed. `crawler_query` returns full `content` (markdown) surfaced via the existing `show`/`document:render` pipeline (multi-mode rendering, not hardcoded). TTS reads only the short `speak` summary.
+6. All existing tests pass. New tests pass. `npx tsc --noEmit` clean. `npm run lint` clean. `pytest` clean.
 
 ---
 
@@ -1555,3 +1564,124 @@ These errors come from **svelte-based submodules** (`llama.cpp/tools/ui/` and `l
 1. **High-priority (block tsc from being useful):** Add `"exclude"` for submodules in `tsconfig.json` (30-second fix, clears 380 errors).
 2. **Medium-priority (real bugs):** Fix the 8 project errors in order of impact — `useIRISWebSocket.ts` (active code, 2 errors) first, then `SidePanel.tsx` and `MonitorDiagnosticsPanel.tsx` (dashboard/wheel-view), then `PrototypeOrbBreathing.tsx` and `card.tsx` (preview/legacy).
 3. **Low-priority (visual polish):** Once tsc output is clean, the project can enforce type checking in CI and catch regressions early.
+
+---
+
+## 10. Issue E — Web Mode Relay Unification (Voice → Agent → Crawler)
+
+> **Status:** IMPLEMENTED 2026-07-11. Tests passing (5/5 new + 38 related).
+> **Depends on:** Issue C (structured `speak`/`show` response), Issue D (RichDocument / `document:render` multi-mode rendering).
+> **Why it belongs here:** This plan already defines the voice→document rendering pipeline (Issues C/D). The web-mode / crawler path is just another *source* of `show` content. It should have been part of this plan from the start — the crawler's rich output must flow through the same `speak`/`show` + `document:render` system, **not** a separate hardcoded markdown doc.
+
+### 10.1 Problem (discovered 2026-07-11)
+
+There are **two competing relays** for web content, and both are wrong:
+
+1. **Frontend bypass (web mode ON):** `components/chat-view.tsx:946-950` — when `webMode` is true, the STT transcript is sent directly to `crawler_query` *instead of* the agent. This bypasses the agent entirely, so the agent never decides *whether* to search, never synthesizes, and never uses the `speak`/`show` pipeline. The crawler result is force-fed back as a raw summary.
+2. **Backend forced-crawler (web mode ON):** `backend/iris_gateway.py:2161-2170` — even when the transcript *does* reach the agent, this early-return intercepts and forces `crawler_query` on every prompt. Same bypass problem.
+3. **Web mode OFF:** the agent kernel still has its own `search` tool (via `tool_bridge.get_available_tools()` → `search` + `crawler_query`), so it web-searches anyway. The toggle does nothing meaningful — it only changes *which* path fires, not *whether* the agent has web access.
+
+**Root cause of "crawler gives less info than the agent's own search":**
+- The agent's `search` tool returns **actual fetched web content as markdown** → chatview renders it as a rich MD doc (via `ContentTypePatterns.markdown` at `chat-view.tsx:54` + `MARKDOWN_ARTIFACT_AT:800` at `chat-view.tsx:47`).
+- `tool_bridge._execute_crawler_query` (`backend/agent/tool_bridge.py:1248+`) returns **only** `{success, query, title, summary, pages, links, trust}`. The full extracted page markdown (`CrawlResult.pages[].markdown`, `PageData.markdown` at `backend/crawler/crawler_engine.py:45-58`; assembled `combined` markdown capped 12k in `backend/crawler/data_extractor.py`) is **discarded at the return boundary**. So the crawler produces rich content and then throws it away — the agent only ever sees the short `summary`.
+
+**Retracted earlier hypothesis:** A prior theory blamed `sendMessage` identity changing per render (flickering the `[webMode, sendMessage]` effect at `chat-view.tsx:243-249`). This is **false** — `sendMessage` is `useCallback(..., [])` at `hooks/useIRISWebSocket.ts:1302` (stable). The repeated `set_web_mode{enabled:false}` in logs was just ChatView remounting, harmless. The real issue is the dual-relay design above.
+
+**Web mode is manual-only:** `chat-view.tsx:241` `useState(false)`, toggled only by the web pill `onClick={() => setWebMode(v => !v)}` (`chat-view.tsx:2836`). Voice start does **not** enable it. So a live test with the toggle OFF never exercised the crawler path — it was inconclusive for the crawler, not a bug.
+
+### 10.2 Design (single agent-driven relay)
+
+**Web mode = an internet-access capability gate, not a routing switch.**
+
+- **Web mode ON** → the agent is granted web tools (`search` + `crawler_query`). The agent decides *if/when* to use them, synthesizes, and surfaces results through the normal `speak`/`show` pipeline.
+- **Web mode OFF** → the agent has **zero** internet tools. `get_available_tools()` omits `search`/`crawler_query`, and `execute_tool()` rejects them if called. The agent cannot reach the internet at all.
+
+The frontend **always** sends the STT transcript to the agent (no bypass). The backend **never** force-routes to `crawler_query`. The agent is the single relay.
+
+**Crawler content surfacing (the fix for "less info"):**
+- `_execute_crawler_query` returns the **full extracted content** in addition to the summary: `{success, query, title, summary, content, pages, links, trust}` where `content` = the combined page markdown (`data_extractor.combined`, capped 12k).
+- The agent places `content` into the structured `show` field (Issue C) and `summary` into `speak` (short, TTS ≤500 chars).
+- Frontend renders `show` via the **existing** Issue D pipeline: `document:render` → `RichDocument` with format auto-decision + alternatives + inline/expand. **Rendering is NOT hardcoded to a markdown doc** — chatview's `ContentTypePatterns` detection (`chat-view.tsx:54`) decides doc vs inline vs other, and the user may have additional display modes not yet seen. The crawler result is just another `show` payload.
+
+This reuses the §6 event flow exactly:
+```
+User speaks → VAD → STT → transcription
+    ↓  (ALWAYS to agent — no webMode bypass)
+Agent kernel (internet tools granted iff web mode ON)
+    ├─ agent calls `search` (quick) or `crawler_query` (deep) as it sees fit
+    ├─ crawler_query returns {summary, content, pages, links}
+    ├─ DER loop completes → structured JSON
+    │     speak → TTS (short summary, ≤500 chars)
+    │     show  → document:render → RichDocument (rich content, multi-mode)
+    └─ Orb working indicator during DER loop
+```
+
+### 10.3 Files to change
+
+| File | Location | Change |
+|------|----------|--------|
+| `components/chat-view.tsx` | 946-950 | **DELETE** the `if (webMode) crawler_query` bypass. Always send transcript to agent. |
+| `backend/iris_gateway.py` | 2161-2170 | **DELETE** the forced-crawler early-return. Transcript flows to agent normally. |
+| `backend/iris_gateway.py` | 470-480 (`set_web_mode`) | Replace `_web_mode_sessions` set bookkeeping with a call to set the **global** internet-access flag (see below). |
+| `backend/agent/agent_kernel.py` | 197, 6038 | Make internet access a **module-level global** flag (kernels are per-conversation via `_agent_kernel_instances` at 6038; the flag must be app-wide, not per-kernel). `set_internet_access` (5952) / `get_internet_access` (5970) operate on the global. |
+| `backend/agent/tool_bridge.py` | `get_available_tools()` | Filter out `search` + `crawler_query` when `get_internet_access()` is False. |
+| `backend/agent/tool_bridge.py` | `execute_tool()` (980-983) | Reject `search`/`crawler_query` with a clear error when internet access is off (defense in depth). |
+| `backend/agent/tool_bridge.py` | `_execute_crawler_query` (1248+) | Return `content` (combined page markdown) alongside `summary`/`pages`/`links`. Do **not** drop `pages[].markdown`. |
+| `backend/agent/agent_kernel.py` | system prompt / tool description | Clarify `crawler_query` returns rich `content`; agent should put `content` in `show`, `summary` in `speak`. |
+
+**No frontend rendering changes required** — Issue D's `RichDocument` + `document:render` already handle the `show` payload. The only frontend edit is *removing* the bypass.
+
+### 10.4 Quality check (required before tests)
+
+- [ ] No web bypass remains on either frontend or backend — single relay path verified by grep.
+- [ ] Internet flag is global (module-level), not per-conversation — toggling web mode affects all kernels.
+- [ ] `get_available_tools()` omits web tools when flag off; `execute_tool()` rejects them (two layers of gating).
+- [ ] `_execute_crawler_query` returns `content` (full markdown) — no rich content discarded at return boundary.
+- [ ] Agent `speak` field stays ≤500 chars (TTS never reads full doc); `show` carries the rich content.
+- [ ] Rendering uses existing `ContentTypePatterns` detection — no hardcoded markdown-doc branch added.
+- [ ] Web OFF → agent has zero internet tools (verified by tool list + rejected call).
+- [ ] No shared mutable state bugs — global flag read is concurrency-safe (WAL/async).
+
+### 10.5 Tests
+
+**Backend** (`pytest`):
+- `test_web_mode_off_removes_tools` — with flag off, `get_available_tools()` contains no `search`/`crawler_query`.
+- `test_execute_tool_rejects_when_off` — calling `search`/`crawler_query` with flag off raises/returns blocked result.
+- `test_web_mode_on_grants_tools` — with flag on, both tools present.
+- `test_crawler_query_returns_content` — `_execute_crawler_query` response includes non-empty `content` (full markdown), not just `summary`.
+- `test_set_web_mode_flips_global_flag` — `set_web_mode(True/False)` changes `get_internet_access()` app-wide.
+
+**Frontend** (`__tests__/components/chat-view.test.tsx`):
+- `test_no_crawler_bypass` — with `webMode` true, a transcribed message is still routed to the agent send path (no `crawler_query` short-circuit). Grep-assert the bypass block is gone.
+
+**E2E (manual, live):**
+- Web mode OFF → ask "what's the latest news?" → agent has no web tools, answers from knowledge only (no internet call).
+- Web mode ON → ask "research X" → agent uses `crawler_query`, `speak` = short summary (TTS), `show` = rich content rendered via RichDocument (multi-mode, not hardcoded doc).
+
+### 10.6 Implementation order
+
+| Phase | Work | Depends on |
+|-------|------|------------|
+| E.1 | Delete frontend bypass (`chat-view.tsx:946-950`) | None |
+| E.2 | Delete backend early-return (`iris_gateway.py:2161-2170`) | None |
+| E.3 | Global internet flag in `agent_kernel.py` + wire `set_web_mode` (`iris_gateway.py:470`) | None |
+| E.4 | Gate `get_available_tools()` + `execute_tool()` in `tool_bridge.py` | E.3 |
+| E.5 | Return `content` from `_execute_crawler_query` | None |
+| E.6 | Agent system-prompt clarification (put `content` in `show`) | None |
+| E.7 | Tests (backend + frontend) + live E2E | E.1–E.6 |
+
+Phases E.1, E.2, E.3, E.5, E.6 are independent and can be done in parallel. E.4 depends on E.3.
+
+### 10.7 Implementation log (2026-07-11)
+
+All phases E.1–E.7 implemented and verified:
+
+- **E.1 (frontend bypass):** Removed `if (webMode) crawler_query` from `handleSendMessage` (`chat-view.tsx:946-950`). **Also found and removed a second bypass** in the suggestions-chip `onSend` handler (`chat-view.tsx:2786` — `msgType = webMode ? 'crawler_query' : 'text_message'`). Both now always send `text_message` to the agent. Stale comments at `chat-view.tsx:58-68` and `2821-2823` updated to describe the capability-gate design.
+- **E.2 (backend early-return):** Removed the forced-crawler early-return in `iris_gateway.py` STT path (`2161-2170`). Transcript now always flows to the agent kernel.
+- **E.3 (global flag):** Added module-level `_internet_access_enabled` + `set_global_internet_access()` / `get_global_internet_access()` in `agent_kernel.py` (after the singleton block, ~6041). `set_web_mode` in `iris_gateway.py:470` now calls `set_global_internet_access(enabled)` instead of maintaining a per-session `_web_mode_sessions` set (removed). Removed the now-unused per-kernel `self._internet_access_enabled` attribute; `set_internet_access` / `get_internet_access` delegate to the global.
+- **E.4 (tool gating):** `tool_bridge.get_available_tools()` omits `search` + `crawler_query` when the global flag is OFF (appended conditionally after the capability filter). `tool_bridge.execute_tool()` rejects them with a clear error when OFF (defense-in-depth, placed right after the `[13.3]` capability gate).
+- **E.5 (rich content):** `_execute_crawler_query` now reconstructs the full combined markdown from `crawl_result.pages[].markdown` (capped 12k, mirroring `data_extractor`) and returns it as `content`. The agent places `content` in `show`; `summary` stays in `speak`.
+- **E.6 (agent guidance):** Updated the `crawler_query` tool description to state it returns `content` (full markdown) and to put `content` in `show` / `summary` in `speak`.
+- **E.7 (tests):** Added `backend/tests/test_web_mode_gate.py` (5 tests: flag flip, tools removed/granted, execute_tool rejection, crawler returns content). All pass. 38 related existing tests still pass. `npx tsc --noEmit` clean.
+
+**Verification done:** `python -m py_compile` on all 4 backend files (clean); `npx tsc --noEmit` (exit 0); `pytest backend/tests/test_web_mode_gate.py` (5 passed); related suite (38 passed). **Not yet done:** live E2E with web mode ON/OFF (requires the running backend + a real crawl). The running servers were restarted earlier (backend PID 27328 / 8090, frontend PID 24228 / 3000) but were NOT restarted after these edits — restart before live E2E.

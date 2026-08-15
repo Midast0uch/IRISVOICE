@@ -22,6 +22,7 @@ document's own id (document_store.store_blob), not onto disk:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from typing import Any, Dict, Optional
@@ -98,6 +99,17 @@ async def capture_page_screenshot(
                 "success": False,
                 "error": "the browser could not open that page",
             }
+        # Paint-settle before the shot (2026-08-12): open() waits only for
+        # `domcontentloaded`, so an immediate screenshot captured a BLANK
+        # canvas — example.com came out as a uniform RGB(238,238,238)
+        # 4255-byte 1280x720 PNG. settle() waits best-effort for networkidle
+        # (3s bound, never blocks) so the first paint and any lazy content
+        # land; the extra sleep gives the compositor a frame or two.
+        try:
+            await session.settle()
+            await asyncio.sleep(0.4)
+        except Exception:  # noqa: BLE001 — capture whatever painted
+            pass
         png = await session.screenshot()
     except Exception as exc:  # noqa: BLE001
         logger.warning("[screenshot_page] capture failed url=%s: %s", url, exc)

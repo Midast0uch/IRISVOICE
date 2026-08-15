@@ -241,7 +241,6 @@ def _sync_tts_playback(text: str) -> None:
     engine = None
     try:
         from backend.agent.tts import get_tts_manager
-        from backend.audio.pipeline import get_audio_pipeline
         from backend.audio.engine import get_audio_engine
 
         engine = get_audio_engine()
@@ -249,7 +248,9 @@ def _sync_tts_playback(text: str) -> None:
             engine.set_tts_active(True)
 
         tts = get_tts_manager()
-        pipeline = get_audio_pipeline()
+        # The AudioPipeline is owned by the AudioEngine (engine.pipeline);
+        # there is no module-level get_audio_pipeline() helper.
+        pipeline = engine.pipeline if engine is not None else None
 
         chunks = list(tts.synthesize_stream(text))
         if chunks and pipeline:
