@@ -1469,38 +1469,23 @@ class IRISGateway:
                     # "local" | "vps" | "api"
                     provider = values.get("model_provider") or values.get("provider")
 
-                    # Resolve the provider base URL so the router instance carries
-                    # the correct endpoint (not the previously configured one).
-                    # Mirrors PROVIDER_ENDPOINTS below; kept inline so the router
-                    # sync in set_model_selection gets the right URL up front.
-                    if provider == "cerebras":
-                        _api_base_url = "https://api.cerebras.ai/v1"
-                    elif provider == "opencodego":
-                        _api_base_url = "https://opencode.ai/zen/go/v1"
-                    elif provider == "chutes":
-                        _api_base_url = "https://llm.chutes.ai/v1"
-                    elif provider == "cohere":
-                        _api_base_url = "https://api.cohere.ai/compatibility/v1"
-                    elif provider == "deepseek":
-                        _api_base_url = "https://api.deepseek.com"
-                    elif provider == "anthropic":
-                        _api_base_url = "https://api.anthropic.com/v1"
-                    elif provider == "lmstudio":
-                        _api_base_url = (
-                            values.get("lmstudio_endpoint", _DEFAULT_LMSTUDIO_URL)
-                            or _DEFAULT_LMSTUDIO_URL
-                        )
-                    else:
-                        _api_base_url = ""
+                    # The provider base URL is resolved from the canonical preset
+                    # table AFTER the effective provider is known (see the
+                    # get_provider_default_endpoint resolution below). The inline
+                    # if/elif chain that used to live here drifted from that
+                    # table and silently resolved "" for every provider it
+                    # forgot (ollama, venice, openai, …).
 
                     # ── Canonical resolution ───────────────────────────────────
-                    # role_bindings (set by Brain/Tool dropdowns / ModelSwitcher /
-                    # wheelview provider change via set_role_binding) are the single
-                    # source of truth for WHICH provider instance serves each role.
-                    # The confirm_card's model_provider may be stale (frontend sync
-                    # lags the WS broadcast), so we resolve the EFFECTIVE provider +
-                    # models from the existing bindings and only use the card values
-                    # for roles that are not yet bound.
+                    # The card's EXPLICIT model_provider is the user's dropdown
+                    # choice and WINS; the role bindings (set by Brain/Tool
+                    # dropdowns / ModelSwitcher / wheelview provider change via
+                    # set_role_binding) are the fallback only when the card names
+                    # no provider. Treating the binding as authoritative made
+                    # _effective_provider resolve to the OLD provider when the
+                    # user switched (2026-08-15 13:40:32,
+                    # backend-20260815-134032.log: binding=cerebras, card=ollama
+                    # → the ollama selection was discarded and the UI reverted).
                     _existing = {}
                     _existing_override = {}
                     try:
@@ -1512,21 +1497,25 @@ class IRISGateway:
                     except Exception:
                         _existing = {}
                         _existing_override = {}
-                    _effective_provider = _existing.get("reasoning") or provider
+                    _effective_provider = provider or _existing.get("reasoning")
+                    _card_names_provider = bool(provider)
 
                     # A model name only means anything ALONGSIDE the provider it
-                    # was chosen for. When the card names a DIFFERENT provider
-                    # than the one the bindings say is live, its model fields
-                    # describe the old provider and must be discarded — using
-                    # them stamped "gemma-4-31b" (Cerebras) onto the freshly
-                    # selected Cohere instance, so the switcher, the dashboard
-                    # card, and generate() all reported Cohere · gemma-4-31b
-                    # (root-caused 2026-08-13 from backend-20260813-074742.log).
-                    _card_applies = (not provider) or (provider == _effective_provider)
-                    _effective_reasoning = reasoning if _card_applies else None
-                    _effective_tool = tool_exec if _card_applies else None
+                    # was chosen for. The card's models start as candidates; a
+                    # ROLE BINDING only supersedes them when it serves the
+                    # effective provider — either because the card names no
+                    # provider (the binding IS the choice) or because the card
+                    # names the SAME provider the binding already serves.
+                    # Without that guard, a binding left on the previous
+                    # provider stamps its model onto the freshly selected one —
+                    # "gemma-4-31b" (Cerebras) worn by Cohere (root-caused
+                    # 2026-08-13 from backend-20260813-074742.log).
+                    # set_model_selection's catalog check below is the second
+                    # line of defence for hosted API providers.
+                    _effective_reasoning = reasoning
+                    _effective_tool = tool_exec
 
-                    # Canonical source, in order: the ROLE BINDING's own
+                    # Canonical model source, in order: the ROLE BINDING's own
                     # model_override (which is where an override actually lives —
                     # ProviderInstance has no `model_override` attribute, so the
                     # previous getattr() on the resolved instance was always
@@ -1535,13 +1524,19 @@ class IRISGateway:
                     try:
                         _rp = kernel._router.resolve("reasoning") if _existing.get("reasoning") else None
                         _tp = kernel._router.resolve("tool_execution") if _existing.get("tool_execution") else None
-                        if _rp is not None:
+                        if _rp is not None and (
+                            not _card_names_provider
+                            or _existing.get("reasoning") == _effective_provider
+                        ):
                             _effective_reasoning = (
                                 _existing_override.get("reasoning")
                                 or getattr(_rp, "model", None)
                                 or _effective_reasoning
                             )
-                        if _tp is not None:
+                        if _tp is not None and (
+                            not _card_names_provider
+                            or _existing.get("tool_execution") == _effective_provider
+                        ):
                             _effective_tool = (
                                 _existing_override.get("tool_execution")
                                 or getattr(_tp, "model", None)
@@ -1564,25 +1559,28 @@ class IRISGateway:
                         _effective_tool = _effective_reasoning
                     # Resolve the provider base URL so the router instance carries
                     # the correct endpoint (not the previously configured one).
-                    if _effective_provider == "cerebras":
-                        _api_base_url = "https://api.cerebras.ai/v1"
-                    elif _effective_provider == "opencodego":
-                        _api_base_url = "https://opencode.ai/zen/go/v1"
-                    elif _effective_provider == "chutes":
-                        _api_base_url = "https://llm.chutes.ai/v1"
-                    elif _effective_provider == "cohere":
-                        _api_base_url = "https://api.cohere.ai/compatibility/v1"
-                    elif _effective_provider == "deepseek":
-                        _api_base_url = "https://api.deepseek.com"
-                    elif _effective_provider == "anthropic":
-                        _api_base_url = "https://api.anthropic.com/v1"
-                    elif _effective_provider == "lmstudio":
+                    # Single source of truth: PROVIDER_PRESETS via
+                    # get_provider_default_endpoint — an inline if/elif chain
+                    # here forgot ollama (and venice/openai/…), registering
+                    # those providers with an empty endpoint.
+                    if _effective_provider == "lmstudio":
                         _api_base_url = (
                             values.get("lmstudio_endpoint", _DEFAULT_LMSTUDIO_URL)
                             or _DEFAULT_LMSTUDIO_URL
                         )
+                    elif _effective_provider == "ollama":
+                        _api_base_url = (
+                            values.get("ollama_endpoint", _DEFAULT_OLLAMA_URL)
+                            or _DEFAULT_OLLAMA_URL
+                        )
                     else:
-                        _api_base_url = ""
+                        from backend.agent.inference.provider import (
+                            get_provider_default_endpoint,
+                        )
+
+                        _api_base_url = (
+                            get_provider_default_endpoint(_effective_provider) or ""
+                        )
 
                     # Register the provider + apply the EFFECTIVE (canonical) model
                     # names. preserve_bindings=True: never rebind existing roles.
@@ -1594,19 +1592,58 @@ class IRISGateway:
                         preserve_bindings=True,
                     )
 
-                    # Bind roles ONLY for roles that are not already bound.
+                    # Bind roles that are not already bound — and REBIND both
+                    # roles when the card names an explicit provider the
+                    # reasoning binding does not serve. The card's provider is
+                    # then a SWITCH (the user changed the Provider dropdown):
+                    # generate() resolves each role THROUGH its binding, so a
+                    # binding left on the previous provider keeps serving it and
+                    # every surface (switcher, dashboard, router) reverts to the
+                    # old provider (2026-08-15, backend-20260815-134032.log:
+                    # cerebras → ollama reverted because preserve_bindings kept
+                    # reasoning=cerebras). A card that echoes the reasoning
+                    # binding (the global APPLY re-sending the synced provider)
+                    # rebinds nothing, so a Brain/Tool split across providers
+                    # survives an unrelated APPLY.
+                    _provider_switch = bool(provider) and _existing.get("reasoning") not in (
+                        None,
+                        _effective_provider,
+                    )
                     _bound_any = False
-                    if not _existing.get("reasoning"):
+                    if _provider_switch or not _existing.get("reasoning"):
                         kernel.set_role_binding(
                             "reasoning", _effective_provider, model_override=_effective_reasoning
                         )
                         _bound_any = True
-                    if not _existing.get("tool_execution"):
+                    if _provider_switch or not _existing.get("tool_execution"):
                         kernel.set_role_binding(
                             "tool_execution", _effective_provider, model_override=_effective_tool
                         )
                         _bound_any = True
-                    if _bound_any:
+                    if _provider_switch:
+                        # Make the switch visible immediately on every surface —
+                        # otherwise the frontend keeps its previous snapshot
+                        # until the next periodic system_status tick and the
+                        # synced card value bounces back to the old provider.
+                        try:
+                            await self._persist_and_broadcast_role_bindings(
+                                session_id, kernel
+                            )
+                        except Exception as _rb_err:
+                            self._logger.warning(
+                                f"[Session: {session_id}] Failed to broadcast "
+                                f"provider switch: {_rb_err}"
+                            )
+                        self._logger.info(
+                            f"[Session: {session_id}] Provider switch on confirm: "
+                            f"rebound reasoning/tool_execution to "
+                            f"provider='{_effective_provider}' "
+                            f"(reasoning={_effective_reasoning}, "
+                            f"tool={_effective_tool}; previous reasoning binding="
+                            f"'{_existing.get('reasoning')}')",
+                            extra={"session_id": session_id, "client_id": client_id},
+                        )
+                    elif _bound_any:
                         self._logger.info(
                             f"[Session: {session_id}] Bound unbound roles to "
                             f"provider='{_effective_provider}' (reasoning={_effective_reasoning}, "
@@ -1704,6 +1741,22 @@ class IRISGateway:
                         # into VRAM now so cold-start delay doesn't hit the first message.
                         kernel.prewarm_lmstudio()
 
+                    elif provider == "ollama":
+                        # Ollama native server. The router path uses the
+                        # registered instance's api_base_url; this keeps the
+                        # kernel's legacy _ollama_endpoint field (read by the
+                        # direct /api/chat dispatch) pointed at the same server.
+                        _oll_ep = (
+                            values.get("ollama_endpoint", _DEFAULT_OLLAMA_URL)
+                            or _DEFAULT_OLLAMA_URL
+                        )
+                        kernel.configure_ollama(_oll_ep)
+                        kernel.configure_vps({"enabled": False})
+                        self._logger.info(
+                            f"[Session: {session_id}] Ollama configured: {_oll_ep}",
+                            extra={"session_id": session_id},
+                        )
+
                     elif provider in ("local", "iris_local"):
                         # Local GGUF model â€” configure kernel for in-process endpoint.
                         # Model loading is triggered separately via the Load button
@@ -1742,38 +1795,62 @@ class IRISGateway:
                         from .iris_config import with_modify_config, RoutingMode
 
                         def _update_model_config(cfg):
-                            cfg.inference.provider = provider or ""
-                            cfg.inference.reasoning_model = reasoning or ""
-                            cfg.inference.tool_execution_model = tool_exec or ""
-                            # Derive base URL from provider name or use lmstudio_endpoint
-                            _provider_endpoints = {
-                                "opencodego": "https://opencode.ai/zen/go/v1",
-                                "cerebras": "https://api.cerebras.ai/v1",
-                                "chutes": "https://llm.chutes.ai/v1",
-                                "cohere": "https://api.cohere.ai/compatibility/v1",
-                                "deepseek": "https://api.deepseek.com",
-                                "anthropic": "https://api.anthropic.com/v1",
-                            }
-                            if provider in _provider_endpoints:
-                                cfg.inference.api_base_url = _provider_endpoints[
-                                    provider
-                                ]
-                                cfg.inference.api_key = values.get("api_key", "")
-                            elif provider == "lmstudio":
+                            # Persist the EFFECTIVE (canonically resolved) values,
+                            # never the raw card fields — the card may carry the
+                            # previous provider's model, and persisting that
+                            # re-stamps it on restart via the router's config
+                            # re-apply (same class as the 2026-08-13 desync).
+                            cfg.inference.provider = _effective_provider or ""
+                            cfg.inference.reasoning_model = _effective_reasoning or ""
+                            cfg.inference.tool_execution_model = _effective_tool or ""
+                            # Base URL follows the provider id from the canonical
+                            # preset table (never a stale stored value); local
+                            # servers take their user-configured endpoint.
+                            if _effective_provider == "lmstudio":
                                 cfg.inference.api_base_url = values.get(
                                     "lmstudio_endpoint",
                     load_config().inference.lm_studio_url or "http://localhost:1234",
                                 )
-                            elif provider in ("local", "iris_local"):
-                                # Local GGUF â€” endpoint is the in-process llama server
+                            elif _effective_provider == "ollama":
+                                cfg.inference.api_base_url = (
+                                    values.get("ollama_endpoint", _DEFAULT_OLLAMA_URL)
+                                    or _DEFAULT_OLLAMA_URL
+                                )
+                            elif _effective_provider in ("local", "iris_local") or str(
+                                _effective_provider or ""
+                            ).startswith("local:"):
+                                # Local GGUF — endpoint is the in-process llama server
                                 cfg.inference.api_base_url = ""
                                 cfg.routing.mode = RoutingMode.SINGLE_LOCAL
                                 cfg.inference.provider = "local"
+                            else:
+                                from backend.agent.inference.provider import (
+                                    get_provider_default_endpoint,
+                                )
+
+                                _ep = get_provider_default_endpoint(_effective_provider)
+                                if _ep:
+                                    cfg.inference.api_base_url = _ep
+                                # Only write the key when the card actually sent
+                                # one. The frontend deliberately omits the key
+                                # when it is already stored — writing the blank
+                                # here wiped the persisted credential on every
+                                # APPLY that didn't re-enter it.
+                                if api_key:
+                                    cfg.inference.api_key = api_key
                             # Routing: model_selection only handles API/endpoint providers.
                             # LOCAL/SWARM routing is set by inference_mode confirm_card.
-                            if provider not in ("local", "iris_local"):
+                            # Ollama is its own local-server mode (aligned with
+                            # _handle_set_model_selection) — not SINGLE_API.
+                            if _effective_provider not in (
+                                "local",
+                                "iris_local",
+                                "ollama",
+                            ) and not str(_effective_provider or "").startswith(
+                                "local:"
+                            ):
                                 cfg.routing.mode = RoutingMode.SINGLE_API
-                                # Force swarm OFF for API providers â€” prevents stale
+                                # Force swarm OFF for API providers — prevents stale
                                 # swarm config from overriding the API provider selection
                                 # when the initial state is loaded from localStorage.
                                 cfg.inference.swarm_enabled = False
@@ -5537,13 +5614,22 @@ class IRISGateway:
                                 f"[Session: {session_id}] Found {len(available_models)} Ollama model(s) "
                                 f"({len(tags) - len(available_models)} vision-only filtered out)"
                             )
+                            await self._set_ollama_loaded(
+                                session_id, ollama_endpoint, loaded=True
+                            )
                         else:
                             self._logger.warning(
                                 f"[Session: {session_id}] Ollama returned status {r.status_code}"
                             )
+                            await self._set_ollama_loaded(
+                                session_id, ollama_endpoint, loaded=False
+                            )
                 except Exception as ollama_err:
                     self._logger.warning(
                         f"[Session: {session_id}] Ollama not reachable at {ollama_endpoint}: {ollama_err}"
+                    )
+                    await self._set_ollama_loaded(
+                        session_id, ollama_endpoint, loaded=False
                     )
 
                 # Scan the local models/ directory for HuggingFace-format models
@@ -8846,6 +8932,55 @@ class IRISGateway:
             session_id,
             {"type": "role_bindings_updated", "payload": snap},
         )
+
+    async def _set_ollama_loaded(
+        self, session_id: Optional[str], endpoint: str, *, loaded: bool
+    ) -> None:
+        """Record the probed reachability of the local Ollama server on the
+        ``ollama`` provider instance and broadcast the change.
+
+        The chat ModelSwitcher admits a non-API provider only when its
+        ``loaded`` flag is set — and nothing else ever set it for ollama, so a
+        running Ollama server never appeared in the switcher even after the
+        Models card was applied. ``loaded`` here means exactly what the probe
+        measured: the server answered ``/api/tags`` (models load lazily on the
+        server at first call). On a failed probe the flag is only DOWNGRADED
+        when the instance already exists — a dead server must not conjure a
+        phantom provider entry. Never raises: this is a side-channel of the
+        availability probe and must not break get_available_models.
+        """
+        try:
+            from .agent import get_agent_kernel as _gk
+            from .agent.inference.provider import (
+                ProviderInstance,
+                ProviderKind,
+            )
+
+            _kernel = _gk(session_id or "default")
+            _router = getattr(_kernel, "_router", None)
+            if _router is None:
+                return
+            _prev = _router.registry.get("ollama")
+            if _prev is None and not loaded:
+                return
+            _router.add_provider(
+                ProviderInstance(
+                    id="ollama",
+                    label="Ollama",
+                    kind=ProviderKind.OLLAMA,
+                    model=(_prev.model if _prev else None),
+                    api_base_url=endpoint,
+                    loaded=loaded,
+                )
+            )
+            await self._broadcast_inference_snapshot(
+                session_id, _router
+            )
+        except Exception as exc:
+            self._logger.debug(
+                "[Session: %s] ollama loaded-flag update skipped: %s",
+                session_id, exc,
+            )
 
     async def _route_kernel_to_swarm(
         self, kernel: "AgentKernel", session_id: str, cfg: Any
