@@ -241,6 +241,132 @@ class ToolDecisionBox:
 
     # ── Public API ──────────────────────────────────────────────────────────
 
+    def _bindings_differ(self) -> bool:
+        """True when the Brain and the Tool are different models.
+
+        Same model on both roles means there is nobody to coordinate with, so
+        every split-only behaviour below is skipped and the path stays exactly
+        as it was — no extra call, no extra latency.
+        """
+        try:
+            _r = self._router.resolve("reasoning")
+            _t = self._router.resolve("tool_execution")
+        except Exception:
+            return False
+        return (getattr(_r, "id", None), getattr(_r, "model", None)) != (
+            getattr(_t, "id", None), getattr(_t, "model", None)
+        )
+
+    def _selection_role(self) -> str:
+        """Role that converts a step description into a tool call."""
+        return "tool_execution" if self._bindings_differ() else "reasoning"
+
+    def _missing_required(self, tool_name: str, params: Optional[dict]) -> list:
+        """Required parameters the proposed call did not supply."""
+        from .tool_registry import resolve_tool
+
+        spec = resolve_tool(tool_name)
+        if spec is None:
+            return []
+        _p = params or {}
+        return [
+            name
+            for name, pspec in (spec.parameters or {}).items()
+            if isinstance(pspec, dict)
+            and not pspec.get("optional", False)
+            and not str(_p.get(name, "")).strip()
+        ]
+
+    def _ask_brain_for_params(
+        self, goal: str, tool_name: str, missing: list, params: Optional[dict]
+    ) -> Optional[dict]:
+        """Tool model could not fill required arguments — ask the Brain.
+
+        This is the Brain<->Tool handshake, and it exists because the execution
+        model is usually the SMALLER one: it knows which tool to reach for but
+        may not infer, say, the exact path or the question text the Brain had in
+        mind. Rather than dispatch a call that is certain to fail (observed
+        2026-08-16: ask_user_question dispatched with no text, permanent
+        failure, which aborted the step that composes the user's answer), it
+        asks the Brain for exactly the missing values and retries once.
+
+        Only ever runs when Brain and Tool are different models, and only for a
+        call that would otherwise be dispatched incomplete — so the common path
+        pays nothing. One round trip, no loop.
+        """
+        try:
+            _prompt = (
+                f"GOAL: {goal}\n"
+                f"TOOL TO CALL: {tool_name}\n"
+                f"ALREADY SUPPLIED: {json.dumps(params or {})}\n"
+                f"MISSING REQUIRED ARGUMENTS: {', '.join(missing)}\n\n"
+                "Supply ONLY the missing arguments, as strict JSON, using the "
+                'goal to determine their values. Respond with: {"args": {...}}'
+            )
+            text, _t, _tc = self._router.generate(
+                "reasoning",
+                [{"role": "user", "content": _prompt}],
+                temperature=0.0,
+                max_tokens=200,
+            )
+            _m = re.search(r"\{[\s\S]+\}", text or "")
+            if not _m:
+                return None
+            _obj = json.loads(_m.group(0))
+            _args = _obj.get("args") if isinstance(_obj, dict) else None
+            if not isinstance(_args, dict):
+                return None
+            merged = dict(params or {})
+            for k, v in _args.items():
+                if str(v).strip():
+                    merged[k] = v
+            return merged
+        except Exception as _e:
+            logger.debug("[TOOL_DECISION] brain clarification failed: %s", _e)
+            return None
+
+    def _complete_params_via_brain(self, decision, goal: str):
+        """Fill a split-model tool call's missing required args from the Brain.
+
+        No-op when Brain and Tool are the same model, when nothing is missing,
+        or when the Brain cannot supply the values.
+        """
+        if decision.kind != DecisionKind.TOOL or not decision.tool:
+            return decision
+        if not self._bindings_differ():
+            return decision
+        missing = self._missing_required(decision.tool, decision.params)
+        if not missing:
+            return decision
+        logger.info(
+            "[TOOL_DECISION] split models — tool model proposed %s without %s; "
+            "asking the brain",
+            decision.tool, ",".join(missing),
+        )
+        merged = self._ask_brain_for_params(
+            goal, decision.tool, missing, decision.params
+        )
+        if merged is None:
+            logger.info(
+                "[TOOL_DECISION] brain could not complete %s -> REASON "
+                "(dispatching an incomplete call would fail permanently)",
+                decision.tool,
+            )
+            return Decision(kind=DecisionKind.REASON, source="handshake")
+        still = self._missing_required(decision.tool, merged)
+        if still:
+            logger.info(
+                "[TOOL_DECISION] %s still missing %s after brain -> REASON",
+                decision.tool, ",".join(still),
+            )
+            return Decision(kind=DecisionKind.REASON, source="handshake")
+        decision.params = merged
+        logger.info(
+            "[TOOL_DECISION] brain completed %s args: %s",
+            decision.tool, ",".join(missing),
+        )
+        return decision
+
     def resolve(
         self,
         step: dict,
@@ -293,11 +419,28 @@ class ToolDecisionBox:
             {"role": "user", "content": propose_prompt},
         ]
 
+        # Convert to provider function-calling schema before sending. The
+        # internal descriptors use a bare property map, which is not valid JSON
+        # Schema — a tool with a property named "description" (e.g.
+        # vision_detect_element) makes Cohere reject the whole request with a
+        # 422. See tool_registry.to_function_schema for the full rationale.
+        from .tool_registry import to_function_schema
+
+        _fn_tools = to_function_schema(pre_filtered) if pre_filtered else None
+
+        # Which model turns this step into a tool call. When Brain and Tool are
+        # the SAME model there is nothing to coordinate, so we stay on the
+        # reasoning binding and behave exactly as before — no extra hop, no
+        # extra latency. When they are DIFFERENT models the tool binding owns
+        # this: picking a tool and shaping its arguments is the Tool model's
+        # actual job (2026-08-16).
+        _sel_role = self._selection_role()
+
         try:
             text, _thinking, tool_calls = self._router.generate(
-                "reasoning",
+                _sel_role,
                 messages,
-                tools=pre_filtered if pre_filtered else None,
+                tools=_fn_tools,
                 temperature=0.2,
                 max_tokens=500,
             )
@@ -330,7 +473,8 @@ class ToolDecisionBox:
                                 or "vetoed by execution policy",
                             )
                         return self._validate_as_tool(tc_tool, tc_args, "llm",
-                                                       conversation_id, _start, log_extra)
+                                                       conversation_id, _start, log_extra,
+                                                       goal=goal)
 
             # Parse text output as JSON
             data = _extract_json(text) if text else None
@@ -374,7 +518,8 @@ class ToolDecisionBox:
                             error=f"Tool '{tool_name}' not in available tool registry",
                         )
                     return self._validate_as_tool(tool_name, params, "llm",
-                                                   conversation_id, _start, log_extra)
+                                                   conversation_id, _start, log_extra,
+                                                   goal=goal)
 
             # ── 5. Model failure → consult memory (REQ-4 AC3) ──────────
             memory_result = self._memory_lookup(goal) if callable(self._memory_lookup) else None
@@ -431,6 +576,8 @@ class ToolDecisionBox:
                 "[TOOL_DECISION_FAIL] kind=FAIL source=fail "
                 "error='%s' resolve_ms=%d conv=%s",
                 str(exc)[:200], ms, conversation_id,
+                exc_info=True,  # a bare message here made a TypeError in this
+                                # path undiagnosable from the logs (2026-08-16)
             )
             return Decision(kind=DecisionKind.FAIL, source="fail", error=str(exc)[:500])
 
@@ -752,6 +899,7 @@ class ToolDecisionBox:
         conversation_id: str,
         start: float,
         log_extra: dict,
+        goal: str = "",
     ) -> Decision:
         """Validate *tool_name* + *params* via RC1 and return TOOL or FAIL."""
         is_valid, err = self._validate_tool_call(tool_name, params)
@@ -762,10 +910,15 @@ class ToolDecisionBox:
                 "resolve_ms=%d conv=%s",
                 source, tool_name, ms, conversation_id,
             )
-            return Decision(
+            _d = Decision(
                 kind=DecisionKind.TOOL, tool=tool_name, params=params,
                 source=source,
             )
+            # Brain<->Tool handshake. Only engages when the two roles are on
+            # DIFFERENT models and the proposed call is missing required
+            # arguments — i.e. the smaller execution model knew WHICH tool but
+            # not WHAT to pass it. Same model on both roles returns untouched.
+            return self._complete_params_via_brain(_d, goal)
         logger.warning(
             "[TOOL_DECISION_FAIL] kind=FAIL source=%s tool=%s "
             "error='RC1: %s' resolve_ms=%d conv=%s",

@@ -68,9 +68,19 @@ def main() -> int:
     # 4. Window precedence + source tags.
     from backend.agent import agent_kernel as _ak
 
+    # `_model_provider` / `_selected_reasoning_model` are derived from the role
+    # binding (2026-08-16) — bind the role instead of assigning the fields.
+    from backend.iris_config import load_config as _load_config
+
+    get_provider_registry().add(
+        ProviderInstance(id="cerebras", label="Cerebras",
+                         kind=ProviderKind.API, model="gemma-4-31b")
+    )
+    get_role_binding_table().bind("reasoning", "cerebras",
+                                  model_override="gemma-4-31b")
+
     k = _ak.AgentKernel.__new__(_ak.AgentKernel)
-    k._model_provider = "cerebras"
-    k._selected_reasoning_model = "gemma-4-31b"
+    k._router = InferenceRouter(_load_config())
     k._context_window_overrides = {}
     resolved = k.resolve_context_window_with_source()
     check("cerebras confirmed table entry resolves 256k",

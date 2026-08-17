@@ -185,6 +185,21 @@ PROVIDER_MODEL_CATALOG: Dict[str, List[Dict[str, str]]] = {
         {"id": "qwen2.5-coder-32b-instruct", "name": "Qwen 2.5 Coder 32B Instruct"},
     ],
     "ollama": [
+        # ── Cloud models (run on ollama.com, proxied via local server) ──
+        # VERIFIED against ollama.com 2026-08-16: every id below pulls cleanly
+        # (`ollama pull` succeeds). The previous list was ~80% fabricated —
+        # nemotron-3-super-cloud, nemotron-3-ultra-cloud, glm-5.2-cloud,
+        # kimi-k3-cloud, kimi-k2.6-cloud, kimi-k2.7-code-cloud, gpt-oss:20b-cloud,
+        # minimax-*, gemma4:31b-cloud, qwen3.5:397b-cloud, mistral-large-3:675b-cloud
+        # and all deepseek-v4-* variants return "pull model manifest: file does
+        # not exist" and 404 at inference. IDs use the ollama `:` tag format
+        # (glm-5.1:cloud, NOT glm-5.1-cloud).
+        {"id": "gpt-oss:120b-cloud", "name": "GPT-OSS (120B, cloud)"},
+        {"id": "nemotron-3-nano:30b-cloud", "name": "Nemotron 3 Nano (30B, cloud)"},
+        {"id": "glm-5.1:cloud", "name": "GLM 5.1 (cloud)"},
+        {"id": "kimi-k2.5:cloud", "name": "Kimi K2.5 (cloud)"},
+        {"id": "kimi-k2-thinking:cloud", "name": "Kimi K2 Thinking (1T, cloud)"},
+        # ── Local models (run on this machine) ──
         {"id": "deepseek-r1:7b", "name": "DeepSeek R1 (7B)"},
         {"id": "deepseek-r1:8b", "name": "DeepSeek R1 (8B)"},
         {"id": "deepseek-r1:14b", "name": "DeepSeek R1 (14B)"},
@@ -203,6 +218,11 @@ PROVIDER_MODEL_CATALOG: Dict[str, List[Dict[str, str]]] = {
         {"id": "mixtral", "name": "Mixtral 8x7B"},
         {"id": "phi4", "name": "Phi-4 (14B)"},
         {"id": "codellama", "name": "Code Llama"},
+        # ── Models present on this machine (from `ollama list`) ──
+        {"id": "granite3.3:8b", "name": "Granite 3.3 (8B)"},
+        {"id": "ibm/granite3.3:2b-base", "name": "Granite 3.3 (2B base)"},
+        {"id": "openbmb/minicpm-o4.5:latest", "name": "MiniCPM-O 4.5"},
+        {"id": "koiiLlama:latest", "name": "Koii Llama"},
     ],
 }
 

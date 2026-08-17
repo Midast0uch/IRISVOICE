@@ -54,7 +54,16 @@ def _transport_cache_key(
 ) -> Tuple[str, ...]:
     """Return a hashable key for the transport cache."""
     if kind == ProviderKind.API:
-        return (kind.value, inst.api_base_url or "")
+        # The credential is part of the transport's identity: a key change
+        # (UI Apply Provider) must invalidate the cached transport, or the
+        # stale key keeps being sent and every call 401s even though the
+        # keyring holds the correct value. Fingerprint the KEYRING value —
+        # the exact key the transport will use (router._build_transport reads
+        # get_secret(inst.id)) — so the cache invalidates precisely when the
+        # real credential changes, not when inst.api_key (which may lag) does.
+        from backend.agent.inference.keyring import get_secret
+
+        return (kind.value, inst.api_base_url or "", _key_fingerprint(get_secret(inst.id)))
     if kind == ProviderKind.LOCAL_OPENAI:
         return (kind.value, inst.api_base_url or "")
     if kind == ProviderKind.INPROCESS:
@@ -63,6 +72,17 @@ def _transport_cache_key(
     if kind == ProviderKind.OLLAMA:
         return (kind.value, inst.api_base_url or "http://localhost:11434")
     return (kind.value, inst.id)
+
+
+def _key_fingerprint(api_key: str) -> str:
+    """Stable, non-reversible fingerprint of a credential for cache-keying.
+
+    Uses the last 8 chars of the key — enough to distinguish keys without
+    exposing the secret in logs or cache keys. Empty key -> ''.
+    """
+    if not api_key:
+        return ""
+    return api_key[-8:]
 
 
 # ---------------------------------------------------------------------------
@@ -166,26 +186,42 @@ class InferenceRouter:
         # Role bindings from config. Migrate the literal "local" instance id to
         # its namespaced form (REQ-4 AC1) so a partially-migrated id is never a
         # dead binding.
+        #
+        # CONFIG IS A SEED, NOT AN AUTHORITY (2026-08-16). This method runs from
+        # ``InferenceRouter.__init__``, and a router is constructed in every
+        # ``AgentKernel.__init__`` — so it re-ran on every new conversation and
+        # replayed the PERSISTED bindings over the process-wide role table,
+        # discarding whatever the user had picked since the last save. That is
+        # the first of the two writes that produced the recurring "I picked
+        # cohere and it went back to cerebras when I sent a message" revert.
+        #
+        # The role table is the single live authority (REQ-5, process-wide
+        # singleton). Config may fill a role nobody has chosen yet — true
+        # startup, when the table is empty — and must never overwrite a role
+        # that is already bound.
         binding_list = getattr(infer_cfg, "role_bindings", None)
         if binding_list:
             for b in binding_list:
                 if isinstance(b, dict):
                     role = b["role"]
                     inst_id = b["instance_id"]
-                    if inst_id == "local":
-                        inst_id = self._namespaced_local_id(infer_cfg)
-                    self._roles.bind(
-                        role,
-                        inst_id,
-                        model_override=b.get("model_override"),
-                    )
+                    override = b.get("model_override")
                 else:
+                    role = b.role
                     inst_id = b.instance_id
-                    if inst_id == "local":
-                        inst_id = self._namespaced_local_id(infer_cfg)
-                    self._roles.bind(
-                        b.role, inst_id, b.model_override
+                    override = b.model_override
+                if self._roles.is_bound(role):
+                    # Log the id off the BINDING, not resolve() — resolve raises
+                    # when the bound instance is not (yet) in the registry, and
+                    # a diagnostic must never break router construction.
+                    logger.debug(
+                        "[InferenceRouter] config seed skipped for role=%r: "
+                        "already bound (live choice wins)", role,
                     )
+                    continue
+                if inst_id == "local":
+                    inst_id = self._namespaced_local_id(infer_cfg)
+                self._roles.bind(role, inst_id, model_override=override)
 
         # ── Legacy flat schema (backward compat) ───────────────────────
         # Only synthesise if the target schema contributed no CHAT provider,
@@ -240,12 +276,18 @@ class InferenceRouter:
                         set_secret(inst.id, legacy_key)
                     except Exception:
                         pass
-                self._roles.bind("reasoning", inst.id)
+                # Same seed-only rule as the target schema above: a legacy flat
+                # config must not overwrite a role the user has already bound.
+                if not self._roles.is_bound("reasoning"):
+                    self._roles.bind("reasoning", inst.id)
                 tool_model = getattr(infer_cfg, "tool_execution_model", None)
-                if tool_model and tool_model != inst.model:
-                    self._roles.bind("tool_execution", inst.id, model_override=tool_model)
-                else:
-                    self._roles.bind("tool_execution", inst.id)
+                if not self._roles.is_bound("tool_execution"):
+                    if tool_model and tool_model != inst.model:
+                        self._roles.bind(
+                            "tool_execution", inst.id, model_override=tool_model
+                        )
+                    else:
+                        self._roles.bind("tool_execution", inst.id)
 
         # Establish a default role so unbound roles (e.g. DER's "EXECUTION")
         # still resolve to a usable provider instance. Prefer "reasoning".

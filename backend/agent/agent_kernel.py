@@ -160,6 +160,51 @@ class TaskContext:
         return "\n".join(summary_parts) if summary_parts else "No tool results."
 
 
+def _resolve_effective_key(
+    *,
+    api_key: Optional[str],
+    kernel_key: str,
+    kernel_key_provider: str,
+    model_provider: Optional[str],
+) -> str:
+    """Resolve the credential a provider instance should carry.
+
+    A freshly supplied ``api_key`` always wins. Otherwise the kernel's cached
+    key (``kernel_key``) is reused ONLY when it belongs to the same provider
+    (``kernel_key_provider == model_provider``). The kernel's ``_api_key`` is a
+    single shared field holding the LAST applied key regardless of provider; a
+    blanket fallback attaches, e.g., a Cerebras key to a Cohere provider
+    instance, which then 401s at call time even though the keyring is correct.
+
+    Pure function — unit-testable without constructing an AgentKernel.
+    """
+    if api_key:
+        return api_key
+    if kernel_key and kernel_key_provider and kernel_key_provider == model_provider:
+        return kernel_key
+    return ""
+
+
+# Formatting rules appended to every prompt that produces USER-FACING prose.
+#
+# Models do not reliably structure a long answer on their own — a multi-tool
+# result came back as one unbroken block, which is unreadable in a chat thread
+# (2026-08-16). The reply is rendered as markdown, so ask for the structure
+# explicitly, and scale it: a one-line answer must NOT grow headings.
+_READABLE_FORMAT_RULES = """FORMATTING (your reply is rendered as markdown in a chat thread):
+- Short answer (a sentence or two)? Write it plainly. No headings, no bullets.
+- Longer answer? Make it scannable instead of one block of prose:
+  - open with a short sentence saying what you found
+  - `##` headings to separate distinct topics
+  - `-` bullets for lists of findings
+  - a markdown table for field/value pairs (specs, settings, counts)
+  - `backticks` for paths, commands, filenames and code
+  - a blank line between blocks — never run sections together
+- Structure only where it aids reading. Do not pad a short answer to fill it.
+- Report what the tools actually returned. If something was not returned, say
+  so plainly rather than filling the gap."""
+
+
 class AgentKernel:
     """
     Central orchestrator for the dual-LLM agent system.
@@ -222,16 +267,13 @@ class AgentKernel:
         self._initialization_error: Optional[str] = None
 
         # Model selection (user-configurable dual-LLM)
-        self._selected_reasoning_model: Optional[str] = None
-        self._selected_tool_execution_model: Optional[str] = None
-        # Provider the user selected in the UI.
-        # "lmstudio"          → LM Studio OpenAI-compatible local API
-        # "openai_compatible" → any OpenAI-compatible server (llamafile, vllm, ollama OpenAI mode, etc.)
-        # "local"             → Ollama native API (http://localhost:11434)
-        # "vps"               → VPS Gateway (self._vps_gateway)
-        # "api"               → OpenAI / cloud API key
-        # "uninitialized"     → not yet configured — wait for user to confirm settings
-        self._model_provider: str = "uninitialized"
+        # NOTE (2026-08-16): `_model_provider`, `_selected_reasoning_model` and
+        # `_selected_tool_execution_model` used to be assigned here and kept in
+        # sync by hand from half a dozen call sites. They are now READ-ONLY
+        # PROPERTIES derived from the process-wide role-binding table — see
+        # their definitions below. A stale copy of the user's model choice is
+        # not a bug that can be fixed here; it is a bug that can only be made
+        # impossible, by there being no copy.
 
         # OpenAI-compatible endpoint — covers lmstudio, llamafile, vllm, or any custom server.
         # Set via configure_lmstudio() (legacy name kept) or configure_openai_compat().
@@ -251,6 +293,10 @@ class AgentKernel:
         # Cloud/remote API credentials (used when provider == "api").
         # Supports any OpenAI-compatible remote API: OpenAI, Groq, Together, OpenRouter, etc.
         self._api_key: str = ""
+        # Provider id the kernel's _api_key belongs to. `_api_key` is a single
+        # shared field; without this, a provider switch reuses the previous
+        # provider's key (e.g. a Cerebras key attached to a Cohere instance).
+        self._api_key_provider: str = ""
         self._api_base_url: str = "https://api.openai.com/v1"
 
         # Thinking extracted from the most recent _respond_direct call.
@@ -885,12 +931,19 @@ class AgentKernel:
     ) -> None:
         """Configure any OpenAI-compatible inference server.
 
-        Passing endpoint=None resets the kernel to an uninitialized state (e.g. after
-        model unload). Safe to call with None — never raises AttributeError.
+        Passing endpoint=None clears the endpoint (e.g. after model unload).
+        Safe to call with None — never raises AttributeError.
+
+        Sets the ENDPOINT only. It used to also assign ``_model_provider``, but
+        that field is now derived from the role binding, and this function is
+        not a binding authority — the swarm/local handlers that call it wire the
+        router themselves (``_handle_swarm_action``, the local-load path). The
+        assignment was vestigial and could disagree with actual routing: it
+        reported ``"uninitialized"`` after an unload while the router happily
+        went on resolving the role to a live provider.
         """
         self._lmstudio_endpoint = self._normalise_endpoint(endpoint)
         self._lmstudio_client = None
-        self._model_provider = provider_name if endpoint else "uninitialized"
         if endpoint:
             logger.info(
                 f"[AgentKernel] {provider_name} endpoint configured: {self._lmstudio_endpoint}"
@@ -1010,7 +1063,119 @@ class AgentKernel:
         ("local", "qwen2.5", 32_768),
         ("local", "phi3", 128_000),
         ("local", "gemma2", 8_192),
+        # Ollama CLOUD models. Every value below was read from the running
+        # Ollama server's own /api/show `context_length` on 2026-08-16 — not
+        # from a model card, a blog post, or memory. The catalog above this
+        # file was once ~80% fabricated, so anything unverifiable is simply
+        # absent here rather than guessed.
+        #
+        # Why these were missing and what it cost: an OLLAMA-kind provider maps
+        # to the provider string "local" (see _provider_string_for_instance),
+        # and no "local" entry matched any cloud id — so gpt-oss:120b-cloud
+        # resolved to the conservative 8192 default and DER got a 4000-token
+        # budget against a real 131072 window. Observed live: a 3-step task
+        # stopped after step 2 with "Token budget exhausted (6091/4000)" while
+        # the model had ~32x the headroom it was being given.
+        #
+        # Deliberately NOT listed: kimi-k2.5:cloud and kimi-k2-thinking:cloud.
+        # Ollama's own /api/show returns an error for both, so no authoritative
+        # window exists to record. They fall through to the 8192 default, which
+        # under-provisions rather than truncates — the safe direction, per the
+        # cerebras note above.
+        ("local", "gpt-oss", 131_072),
+        ("local", "nemotron-3-nano", 262_144),
+        ("local", "glm-5.1", 202_752),
     ]
+
+    # ── Active-model state: DERIVED from the router, never stored ─────────
+    #
+    # These three read like plain attributes because ~120 call sites across the
+    # backend read them that way, and that is fine — reading is safe. What is
+    # not safe is STORING them, which is what they used to do.
+    #
+    # The role-binding table and the provider registry are process-wide
+    # singletons (REQ-5): one table, shared by every kernel's router. The user's
+    # live choice lives there and nowhere else. Every recurring "I picked cohere
+    # and it went back to cerebras" report traced to some path re-applying a
+    # stored copy of that choice — startup config replay, peer inheritance, a
+    # module-global snapshot, persisted session field_values. Each was fixed
+    # individually and the bug came back through the next copy.
+    #
+    # Deriving them removes the category. There is no copy to go stale, no sync
+    # to forget, and a new conversation kernel — or a subagent, or a swarm
+    # worker — sees the live binding at construction because it shares the
+    # table rather than inheriting a snapshot of it.
+    #
+    # To CHANGE the active model, bind the role: `kernel.set_role_binding(...)`.
+
+    @property
+    def _model_provider(self) -> str:
+        """Provider string serving the ``reasoning`` role, or ``"uninitialized"``.
+
+        Returns the legacy provider-string vocabulary (``"local"``,
+        ``"lmstudio"``, ``"iris_local"``, or an API provider id such as
+        ``"cerebras"``) that ``_KNOWN_CONTEXT_WINDOWS`` and the scheduler
+        labels expect.
+        """
+        if getattr(self, "_swarm_enabled", False):
+            return "iris_local"
+        _r = getattr(self, "_router", None)
+        if _r is None:
+            return "uninitialized"
+        try:
+            _inst = _r.resolve("reasoning")
+        except Exception:
+            return "uninitialized"
+        return self._provider_string_for_instance(_inst) or "uninitialized"
+
+    @property
+    def _selected_reasoning_model(self) -> Optional[str]:
+        """Model id serving the ``reasoning`` role, or None when unbound."""
+        return self._model_for_role("reasoning")
+
+    @property
+    def _selected_tool_execution_model(self) -> Optional[str]:
+        """Model id serving the ``tool_execution`` role, or None when unbound.
+
+        Independent of :attr:`_selected_reasoning_model` by construction — the
+        two roles are separate bindings. Brain and Tool can sit on different
+        providers, which is the property the swarm and subagent work builds on.
+        """
+        return self._model_for_role("tool_execution")
+
+    def _model_for_role(self, role: str) -> Optional[str]:
+        """Resolve *role* to its effective model id (override wins), or None."""
+        _r = getattr(self, "_router", None)
+        if _r is None:
+            return None
+        try:
+            return _r.resolve(role).model or None
+        except Exception:
+            return None
+
+    def response_max_tokens(self, floor: int = 0) -> int:
+        """Token ceiling for USER-FACING prose, from the Max Response setting.
+
+        The Model & Inference card's "Max Response" (short | medium | long) was
+        honoured only by ``_respond_direct``; every DER-side prompt that writes
+        to the user hardcoded its own cap (synthesis 4096, outcome summary 400,
+        step result 512). So the setting silently did nothing on exactly the
+        multi-tool answers it matters most for (2026-08-16).
+
+        *floor* keeps a caller's own minimum when it needs more room than the
+        setting implies — the setting raises a cap, it should not starve a
+        prompt that genuinely needs length.
+        """
+        _mapped = {"short": 1024, "medium": 4096, "long": 8192}.get(
+            getattr(self, "_response_length", "medium") or "medium", 4096
+        )
+        return max(_mapped, floor)
+
+    def response_temperature(self) -> float:
+        """Sampling temperature from the Reasoning Effort setting."""
+        return {"fast": 0.9, "balanced": 0.6, "accurate": 0.3}.get(
+            getattr(self, "_reasoning_effort", "balanced") or "balanced", 0.6
+        )
 
     def _provider_string_for_instance(self, inst: Any) -> str:
         """Map a bound ``ProviderInstance`` to the provider-string used by
@@ -1035,8 +1200,10 @@ class AgentKernel:
         # Fall back to instance id or the legacy string convention.
         return getattr(inst, "id", "") or ""
 
-    def resolve_context_window_with_source(self) -> "ResolvedWindow":
-        """Resolve the effective context window, tagging the source that won.
+    def resolve_context_window_with_source(
+        self, role: str = "reasoning"
+    ) -> "ResolvedWindow":
+        """Resolve *role*'s effective context window, tagging the source that won.
 
         Precedence (REQ-2, design D-2):
           1. override      — user-set ``_context_window_overrides`` (highest)
@@ -1048,24 +1215,33 @@ class AgentKernel:
         model's real ``n_ctx`` outranks a name-based guess. The old code ran the
         table first, so a 16k-loaded Mistral reported 32_768. Tagging the source
         is what makes an unknown window VISIBLE (REQ-2 AC4) rather than silent.
-        """
-        provider = self._model_provider or ""
-        model = self._selected_reasoning_model or ""
 
-        # REQ-1 AC1: the ACTIVE reasoning binding is authoritative over the
-        # legacy fields. Consult the InferenceRouter first — a role binding
-        # (esp. role-bindings-only startup) is the truth, and the legacy
-        # _model_provider field may be stale/unset. Fall back to legacy only
-        # when the binding is unbound or carries no model.
-        _router = getattr(self, "_router", None)
-        if _router is not None:
-            try:
-                _inst = _router.resolve("reasoning")
-                if _inst is not None and getattr(_inst, "model", None):
-                    provider = self._provider_string_for_instance(_inst)
-                    model = _inst.model or ""
-            except Exception:
-                pass  # unbound → legacy fields below
+        *role* exists because Brain and Tool are independent bindings and may sit
+        on models with very different windows. This method used to resolve the
+        reasoning binding unconditionally, so a turn's whole budget was sized by
+        the Brain even for the steps that execute on the Tool binding
+        (``infer(role="EXECUTION")``). With Brain on a 256k model and Tool on an
+        8k one, that budgets ~230k against a model that truncates at 8k — the
+        silent-truncation failure this table's conservative default exists to
+        prevent, reintroduced through the back door. Callers that care which
+        model will actually receive the tokens must say so.
+        """
+        # REQ-1 AC1: the ACTIVE binding is authoritative. These properties
+        # resolve it directly (2026-08-16) — they used to be stored fields that
+        # could disagree with the binding, which is why this block once read the
+        # router explicitly and treated them as a stale fallback.
+        if role == "reasoning":
+            provider = self._model_provider or ""
+            model = self._selected_reasoning_model or ""
+        else:
+            model = self._model_for_role(role) or ""
+            provider = ""
+            _r = getattr(self, "_router", None)
+            if _r is not None:
+                try:
+                    provider = self._provider_string_for_instance(_r.resolve(role))
+                except Exception:
+                    provider = ""
 
         # 1. User override (highest precedence)
         if model in self._context_window_overrides:
@@ -1120,15 +1296,51 @@ class AgentKernel:
         )
         return ResolvedWindow(8_192, "default")
 
-    def resolve_context_window(self) -> int:
-        """Return the effective context window (tokens) for the current model.
+    def resolve_context_window(self, role: str = "reasoning") -> int:
+        """Return the effective context window (tokens) for *role*'s model.
 
         Thin wrapper over :meth:`resolve_context_window_with_source` that returns
         only the token count, preserving the ``int`` contract used by the 20+
         call sites (budget, work units, ContextPill denominator, Pacman filter).
         The source tag is available via ``resolve_context_window_with_source()``.
+
+        Defaults to ``reasoning`` because that is the model the user thinks of as
+        "the model" — it answers, and it is the right ContextPill denominator.
+        Use ``resolve_turn_context_window()`` for anything sizing a budget that
+        BOTH roles will spend against.
         """
-        return self.resolve_context_window_with_source().tokens
+        return self.resolve_context_window_with_source(role).tokens
+
+    def resolve_turn_context_window(self) -> int:
+        """Smallest context window among the roles that will serve this turn.
+
+        A DER turn spends one budget across calls that go to the reasoning
+        binding AND calls that go to the tool_execution binding. When those sit
+        on different models the only safe ceiling is the SMALLER window: budget
+        for the larger one and every call to the smaller silently truncates.
+
+        This follows the rule stated throughout the window table — under-sizing
+        is safe, over-sizing is the bug. A Brain/Tool split must not be able to
+        reintroduce the overcommit by the back door (2026-08-16).
+        """
+        _reasoning = self.resolve_context_window("reasoning")
+        try:
+            _tool = self.resolve_context_window("tool_execution")
+        except Exception:
+            return _reasoning
+        # An unbound/unknown tool role resolves to the conservative default;
+        # that is a real ceiling for it, so honouring the minimum is still
+        # correct. Guard only against a nonsense zero.
+        if not _tool:
+            return _reasoning
+        if _tool != _reasoning:
+            logger.info(
+                "[AgentKernel] turn window = min(reasoning=%d, tool_execution=%d) "
+                "= %d — Brain and Tool are on different models, so the budget is "
+                "capped by the smaller window to avoid silent truncation",
+                _reasoning, _tool, min(_reasoning, _tool),
+            )
+        return min(_reasoning, _tool)
 
     def get_effective_token_budget(self, fraction: float = 0.75) -> int:
         """Return the usable token budget as a fraction of the context window.
@@ -3035,31 +3247,14 @@ class AgentKernel:
         self._ensure_tool_bridge()
         if not self._tool_bridge:
             return []
-        openai_tools: List[Dict] = []
-        for t in self._tool_bridge.get_available_tools():
-            props: Dict[str, Any] = {}
-            required: List[str] = []
-            for pname, pspec in t.get("parameters", {}).items():
-                props[pname] = {
-                    "type": pspec.get("type", "string"),
-                    "description": pspec.get("description", ""),
-                }
-                if not pspec.get("optional", False):
-                    required.append(pname)
-            openai_tools.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": t["name"],
-                        "description": t.get("description", ""),
-                        "parameters": {
-                            "type": "object",
-                            "properties": props,
-                            "required": required,
-                        },
-                    },
-                }
-            )
+        # Single shared converter (tool_registry.to_function_schema). This used
+        # to be an inline copy, and ToolDecisionBox had no conversion at all —
+        # so the same tools were valid on one code path and a 422 on the other.
+        from backend.agent.tool_registry import to_function_schema
+
+        openai_tools: List[Dict] = to_function_schema(
+            self._tool_bridge.get_available_tools()
+        )
         # ── Filter web tools when not explicitly requested ──────────────
         # Even when the web toggle is ON, exclude search/crawler tools
         # unless the user's text explicitly asks for a web search.
@@ -3177,6 +3372,10 @@ class AgentKernel:
         # Reset the per-response render flag; set True below if a DOCUMENT_RENDER
         # is emitted (agent's format choice). Used by _maybe_escalate_web_format.
         self._last_render_emitted = False
+        # Reset the per-response spoken line. Set below when the agent supplies
+        # an explicit `speak`; the TTS path prefers it over a derived summary,
+        # and a stale value from a previous turn must never be spoken.
+        self._last_spoken_text = ""
 
         from backend.agent.structured_response import parse_structured_response
 
@@ -3278,6 +3477,33 @@ class AgentKernel:
         # ── Structured response — emit DOCUMENT_RENDER ────────────────────
         # Trust-routing W3: 'untrusted' when this turn touched external/web
         # sources, else 'trusted'. The frontend sanitizes html/mermaid when
+        # A CARD IS FOR AN ARTIFACT, NOT FOR CONVERSATION (2026-08-16, user rule).
+        #
+        # Document renders exist for content that is STORED to be opened again
+        # later: web-search results, generated markdown, plans, code. An ordinary
+        # spoken-and-shown answer — "here is your system info" — is conversation,
+        # and belongs in the thread as text the agent formatted readably.
+        #
+        # This matters because the card branch returns the short `speak` line to
+        # avoid duplicating the artifact inline. When the agent renders a card
+        # for a CONVERSATIONAL answer, that same branch throws the real answer
+        # away: observed live with der_response_len=1787 persisted as 201 chars.
+        #
+        # `_pacman_zone_for_turn() == "reference"` is the existing signal for
+        # "this turn handled stored/reference content" and is already used by the
+        # auto-render fallback below. Gating on it means under-rendering is the
+        # failure mode (answer stays in chat, in full) rather than over-rendering
+        # (answer lost) — the same safe direction the rest of this file takes.
+        _is_artifact_turn = self._pacman_zone_for_turn() == "reference"
+        if not _is_artifact_turn:
+            logger.info(
+                "[AgentKernel] show payload on a conversational turn — "
+                "returning it as chat text instead of a card (len=%d)",
+                len(show.get("content") or ""),
+            )
+            self._last_spoken_text = speak or ""
+            return (show.get("content") or "").strip() or (speak or "")
+
         # trust != 'trusted'.
         trust = (
             "untrusted"
@@ -3369,7 +3595,25 @@ class AgentKernel:
                 get_speak_broadcaster().forward_external(speak)
             except Exception as exc:
                 logger.warning("[AgentKernel] speak broadcast failed: %s", exc)
-            return speak
+            # CONTENT LIVES IN EXACTLY ONE PLACE (2026-08-16, user rule).
+            #
+            # A document render is for an ARTIFACT — search results, generated
+            # markdown, a plan, code — something stored in the document store to
+            # be opened again later. When one is rendered, the card owns the
+            # content and the chat keeps the agent's conversational line, so the
+            # thread is not a wall of duplicated markdown.
+            #
+            # When NO card was rendered, the chat message is the only place the
+            # answer exists, so it must carry the FULL text. Returning `speak`
+            # unconditionally (the old behaviour) is what silently discarded a
+            # 1492-char answer down to a 201-char summary.
+            #
+            # `_last_render_emitted` is set at the actual emit above, so this
+            # asks "did a card really render?" rather than assuming one did.
+            self._last_spoken_text = speak or ""
+            if getattr(self, "_last_render_emitted", False):
+                return speak or ""
+            return (show.get("content") or "").strip() or speak
         # ── speak_tool / tool result ──────────────────────────────────────────
         # The DER tool-calling path may return the speak_tool's result as its
         # final output.  If the JSON carries a "spoken" field, extract and
@@ -3378,6 +3622,17 @@ class AgentKernel:
         try:
             _parsed = json.loads(response)
             if isinstance(_parsed, dict) and "spoken" in _parsed:
+                # KNOWN BUG, NOT YET FIXED (2026-08-16): this returns the TTS
+                # line as the display text. When the payload also carries the
+                # written answer under another key, the rest is discarded — an
+                # 887-char DER result was shown and persisted as 55 chars.
+                #
+                # An attempted fix (prefer the longer field) is REVERTED because
+                # it could not be verified: in a repro the function returned raw
+                # JSON instead of either value, so some earlier return in
+                # _process_structured_response fires first and the path is not
+                # yet understood. Fixing this needs one pass over EVERY return
+                # in this function, not another spot patch — see the session pin.
                 return _parsed["spoken"]
         except (json.JSONDecodeError, TypeError):
             pass
@@ -6033,7 +6288,12 @@ Respond with a JSON object:
         # are kept only as a SAFETY FLOOR (never go below a sane minimum), never
         # as a ceiling. No upper cap: a 256k model gets ~230k of step budget, a
         # 32k local model gets ~29k — each uses its real capacity.
-        _model_window = self.resolve_context_window()
+        # Sized by the SMALLEST window among the roles this turn will actually
+        # spend against — DER issues both reasoning calls and tool_execution
+        # calls, and a Brain/Tool split can put them on very different models.
+        # Using the reasoning window alone budgeted ~230k for a turn whose tool
+        # steps ran on an 8k model (2026-08-16).
+        _model_window = self.resolve_turn_context_window()
         _token_budget: int = resolve_der_token_budget(_model_window, task_class)
         _tokens_used: int = 0
         logger.info(
@@ -8987,7 +9247,8 @@ Respond with a JSON object:
                 'Respond with: {"steps": [{"step_id": "r1", "description": "...", '
                 '"tool": "...", "params": {}, "depends_on": []}]}'
             )
-            _raw = self.infer(prompt, role="EXECUTION", max_tokens=400, temperature=0.2)
+            # Recovery planning is THINKING, not tool execution -> Brain (2026-08-16).
+            _raw = self.infer(prompt, role="reasoning", max_tokens=400, temperature=0.2)
             _text = _raw.raw_text or ""
             _m = _re.search(r"\{[\s\S]+\}", _text)
             if not _m:
@@ -9112,9 +9373,13 @@ Respond with a JSON object:
                 f"STEPS EXECUTED:\n{_done}\n\n"
                 f"STEPS THAT FAILED:\n{_failed}\n\n"
                 "Provide a friendly, user-facing summary of what was accomplished, "
-                "what failed, and what to do next."
+                "what failed, and what to do next.\n\n"
+                + _READABLE_FORMAT_RULES
             )
-            _res = self.infer(_prompt, role="EXECUTION", max_tokens=400, temperature=0.3)
+            # The user-facing outcome summary is THINKING -> Brain (2026-08-16).
+            _res = self.infer(_prompt, role="reasoning",
+                              max_tokens=self.response_max_tokens(floor=400),
+                              temperature=self.response_temperature())
             return _res.raw_text or ""
         except Exception as _e:
             logger.warning("[DER] outcome synthesis failed: %s", _e)
@@ -9291,7 +9556,7 @@ Respond with a JSON object:
                 "query string only."
             )
             _refined = self.infer(
-                _refine_prompt, role="EXECUTION", max_tokens=30, temperature=0.0
+                _refine_prompt, role="reasoning", max_tokens=30, temperature=0.0
             )
             _out = (_refined.raw_text or "").strip().strip('"').strip()
             if _out and _out.lower() != query.lower():
@@ -9467,8 +9732,15 @@ Respond with a JSON object:
                 f"STEP {item.step_number}: {item.description}\n\n"
                 "Complete this step. Respond with the result only."
             ).strip()
+            # THINKING RUNS ON THE BRAIN (2026-08-16). This is the tool-less
+            # step path — there is no tool to execute, only reasoning — so it
+            # belongs to the reasoning binding. It used to run on
+            # role="EXECUTION" (the tool_execution binding), which meant that
+            # with Brain and Tool on different models the actual thinking was
+            # done by whichever model the user picked for TOOLS. The Tool model
+            # executes tools; it does not think.
             result = self.infer(
-                prompt, role="EXECUTION", max_tokens=512, temperature=0.3
+                prompt, role="reasoning", max_tokens=512, temperature=0.3
             )
             return result.raw_text or f"[step {item.step_number} completed]"
         except Exception as _e:
@@ -11662,7 +11934,7 @@ Respond with a JSON object:
             )
 
             response = self.infer(
-                prompt, role="EXECUTION", max_tokens=400, temperature=0.1
+                prompt, role="reasoning", max_tokens=400, temperature=0.1
             )
             raw = response.raw_text or ""
 
@@ -11721,7 +11993,7 @@ Respond with a JSON object:
             )
 
             response = self.infer(
-                prompt, role="EXECUTION", max_tokens=300, temperature=0.1
+                prompt, role="reasoning", max_tokens=300, temperature=0.1
             )
             raw = response.raw_text or ""
 
@@ -11852,6 +12124,8 @@ Tool execution results:
 
 Based on the tool results above, provide a natural response to the user's request.
 If any tools failed, address those issues in your response.
+
+{_READABLE_FORMAT_RULES}
 """
 
         try:
@@ -11904,7 +12178,7 @@ If any tools failed, address those issues in your response.
                 _syn_text, _syn_think, _syn_tools = self._router.generate(
                     "reasoning",
                     [{"role": "user", "content": synthesis_prompt}],
-                    max_tokens=4096,
+                    max_tokens=self.response_max_tokens(),
                     temperature=0.6,
                 )
                 self._accrue_tokens(
@@ -12143,10 +12417,23 @@ If any tools failed, address those issues in your response.
         reasoning_model = self._normalize_model_id(reasoning_model)
         tool_execution_model = self._normalize_model_id(tool_execution_model)
 
+        # API keys are pasted from dashboards/emails and routinely carry stray
+        # leading/trailing whitespace. A key with a space is sent verbatim as
+        # `Bearer  <key>` and rejected by every provider (401). Strip once at
+        # the entry point so the keyring, provider instances, and transports
+        # all see the clean value.
+        if api_key:
+            api_key = api_key.strip()
+
         try:
             # Swarm mode is the highest-priority configuration.
             # If swarm is enabled, do NOT let the Models card overwrite
-            # provider='iris_local' or the swarm model names back to UI selections.
+            # provider='iris_local' or the swarm model names back to UI
+            # selections. This used to guard only the (now removed) legacy-field
+            # assignments, while the role rebind below ran anyway — so the card
+            # re-pointed the router away from the swarm even as the log line
+            # claimed the selection was ignored. Returning here makes the guard
+            # mean what it says.
             if getattr(self, "_swarm_enabled", False):
                 if reasoning_model or tool_execution_model or model_provider:
                     logger.info(
@@ -12155,14 +12442,12 @@ If any tools failed, address those issues in your response.
                         f"reasoning='{self._selected_reasoning_model}', "
                         f"tool='{self._selected_tool_execution_model}')"
                     )
-            else:
-                self._selected_reasoning_model = reasoning_model
-                self._selected_tool_execution_model = tool_execution_model
-                if model_provider and not preserve_bindings:
-                    # Explicit selection (Dashboard): the provider is authoritative.
-                    # For preserve_bindings (confirm_card), role_bindings are
-                    # canonical — the provider field is synced from them elsewhere.
-                    self._model_provider = model_provider
+                    return True
+
+            # The selection is applied by binding the roles further down (see
+            # the `_r.bind_role(...)` calls). There is nothing to assign here:
+            # `_selected_reasoning_model`, `_selected_tool_execution_model` and
+            # `_model_provider` are derived from those bindings.
 
             # ── Resolve provider credentials EARLY ─────────────────────────
             # Must happen BEFORE peer propagation / snapshot sync so secondary
@@ -12173,6 +12458,7 @@ If any tools failed, address those issues in your response.
             # Cerebras key to OpenAI → 401.
             if api_key:
                 self._api_key = api_key
+                self._api_key_provider = model_provider or ""
                 try:
                     from backend.agent.inference.keyring import set_secret
 
@@ -12212,25 +12498,23 @@ If any tools failed, address those issues in your response.
                 f"context_window={ctx_window}, token_budget={token_budget}"
             )
 
-            # Propagate to all peer kernels so secondary sessions (e.g.
-            # session_iris_integration used by the wake-word path) stay in sync
-            # with the model the user just selected in the main UI session.
+            # Propagate CREDENTIALS and endpoints to peer kernels so secondary
+            # sessions (e.g. session_iris_integration used by the wake-word
+            # path) can authenticate. The MODEL and PROVIDER are no longer
+            # copied: peers read them from the shared role table, so they were
+            # already in sync, and writing them here is what let one session's
+            # in-flight selection stamp itself onto every other session.
             for peer_id, peer_kernel in _agent_kernel_instances.items():
                 if peer_kernel is not self:
                     if getattr(peer_kernel, "_swarm_enabled", False):
                         logger.debug(
                             f"[AgentKernel] Peer '{peer_id}' swarm enabled — "
-                            f"skipping model_selection overwrite"
+                            f"skipping credential propagation"
                         )
                         continue
-                    peer_kernel._selected_reasoning_model = reasoning_model
-                    peer_kernel._selected_tool_execution_model = tool_execution_model
-                    if model_provider:
-                        peer_kernel._model_provider = model_provider
-                    # Propagate API credentials so peers can call infer()
-                    # through the API provider path (Cohere, OpenAI, Groq, etc.)
                     if self._api_key:
                         peer_kernel._api_key = self._api_key
+                        peer_kernel._api_key_provider = self._api_key_provider
                     if self._api_base_url:
                         peer_kernel._api_base_url = self._api_base_url
                     if self._lmstudio_endpoint:
@@ -12239,44 +12523,15 @@ If any tools failed, address those issues in your response.
                         self._context_window_overrides
                     )
                     logger.debug(
-                        f"[AgentKernel] Propagated model config to peer session '{peer_id}'"
+                        f"[AgentKernel] Propagated credentials to peer session '{peer_id}'"
                     )
 
-            # Keep the module-level snapshot in sync so lazily-created kernels
-            # (and the 'default' inheritance source) pick up the new provider
-            # even if no peer kernel existed when this call fired. Without this,
-            # a provider configured in the Dashboard/Models card is persisted to
-            # cfg.inference but never reaches NEW conversations — they revert to
-            # the startup snapshot (e.g. cohere) instead of the selected provider.
-            if _model_config_snapshot is not None:
-                if model_provider:
-                    _model_config_snapshot["provider"] = model_provider
-                if reasoning_model is not None:
-                    _model_config_snapshot["reasoning_model"] = reasoning_model
-                if tool_execution_model is not None:
-                    _model_config_snapshot["tool_execution_model"] = tool_execution_model
-                if self._api_key:
-                    _model_config_snapshot["api_key"] = self._api_key
-                if self._api_base_url:
-                    _model_config_snapshot["api_base_url"] = self._api_base_url
-
-            # Ensure the 'default' peer kernel (the inheritance source for new
-            # conversations) reflects the selection. get_agent_kernel("default")
-            # creates it if absent; once created it inherits from a configured
-            # peer (this kernel), so it ends up with the selected provider.
-            try:
-                _default_kernel = get_agent_kernel("default")
-                if _default_kernel is not self:
-                    _default_kernel._selected_reasoning_model = reasoning_model
-                    _default_kernel._selected_tool_execution_model = tool_execution_model
-                    if model_provider:
-                        _default_kernel._model_provider = model_provider
-                    if self._api_key:
-                        _default_kernel._api_key = self._api_key
-                    if self._api_base_url:
-                        _default_kernel._api_base_url = self._api_base_url
-            except Exception as e:
-                logger.debug(f"[AgentKernel] Could not sync 'default' peer kernel: {e}")
+            # The 'default' kernel used to be force-created here so it could act
+            # as the "inheritance source" new conversations copied their model
+            # from. There is no inheritance any more — every kernel reads the
+            # shared role table — so this block existed only to keep a copy
+            # warm, and creating a phantom 'default' kernel as a side effect of
+            # a model pick was itself a known problem (Wave 5).
 
             # Sync the router with the selection so InferenceRouter is always
             # consistent with the legacy field assignments above.
@@ -12290,6 +12545,7 @@ If any tools failed, address those issues in your response.
                 # and the UI can learn the key is already configured.
                 if api_key:
                     self._api_key = api_key
+                    self._api_key_provider = model_provider or ""
                     # Persist the per-provider key to the keyring so it survives
                     # restarts and _build_transport can retrieve it by cred_ref.
                     # Without this, a key applied per provider was memory-only and
@@ -12303,10 +12559,19 @@ If any tools failed, address those issues in your response.
                 if api_base_url:
                     self._api_base_url = api_base_url.rstrip("/")
                 # Resolve the effective key: freshly supplied key wins; else the
-                # key already on the kernel; else fall back to IRISConfig ONLY
-                # when this provider is the one configured there (so we don't
-                # falsely report a Cerebras key as valid for, say, DeepSeek).
-                _effective_key = api_key or getattr(self, '_api_key', '') or ""
+                # key already on the kernel — but ONLY when it belongs to THIS
+                # provider. `self._api_key` is a single shared field holding the
+                # LAST applied key regardless of provider; using it as a blanket
+                # fallback attaches, e.g., a Cerebras key to a Cohere provider
+                # instance (and the registry then reports it as valid), which
+                # 401s at call time. Track which provider the kernel key belongs
+                # to and only reuse it for that same provider.
+                _effective_key = _resolve_effective_key(
+                    api_key=api_key,
+                    kernel_key=getattr(self, "_api_key", "") or "",
+                    kernel_key_provider=getattr(self, "_api_key_provider", "") or "",
+                    model_provider=model_provider,
+                )
                 if not _effective_key:
                     try:
                         from backend.iris_config import load_config as _lc
@@ -12316,6 +12581,7 @@ If any tools failed, address those issues in your response.
                         if _cfg_key and model_provider == _cfg_provider:
                             _effective_key = _cfg_key
                             self._api_key = _cfg_key
+                            self._api_key_provider = model_provider or ""
                     except Exception:
                         pass
                 # Namespace the bare "local" provider id (REQ-4 AC1) so it never
@@ -12358,7 +12624,7 @@ If any tools failed, address those issues in your response.
                 _inst_model = reasoning_model or None
                 if (
                     _inst_model
-                    and _kind == ProviderKind.API
+                    and _kind in (ProviderKind.API, ProviderKind.OLLAMA)
                     and not model_belongs_to_provider(model_provider, _inst_model)
                 ):
                     logger.warning(
@@ -12378,7 +12644,7 @@ If any tools failed, address those issues in your response.
                 _tool_model = tool_execution_model or None
                 if (
                     _tool_model
-                    and _kind == ProviderKind.API
+                    and _kind in (ProviderKind.API, ProviderKind.OLLAMA)
                     and not model_belongs_to_provider(model_provider, _tool_model)
                 ):
                     _tool_model = None
@@ -12402,6 +12668,60 @@ If any tools failed, address those issues in your response.
                 _r = getattr(self, "_router", None)
                 if _r is not None:
                     _r.add_provider(_inst)
+                    # PERSIST the provider, not just register it (2026-08-16).
+                    #
+                    # add_provider() writes the LIVE registry only. The config's
+                    # `inference.providers` collection — which the registry is
+                    # rebuilt from at startup — was written by a different path
+                    # that only the explicit provider-setup flow calls. So a
+                    # provider chosen through the Models card existed until the
+                    # next restart and then vanished: ollama disappeared from the
+                    # ModelSwitcher dropdown and both roles fell back to cohere,
+                    # because the id they were bound to no longer existed.
+                    #
+                    # This is provider-agnostic by construction — the same hole
+                    # swallowed any provider (and would swallow a loaded local
+                    # model) that was never registered through provider setup.
+                    # Credentials are NOT written here; the key already went to
+                    # the keyring above and config only records the cred_ref.
+                    try:
+                        from backend.iris_config import (
+                            ProviderEntry as _PE,
+                            load_config as _lc2,
+                            save_config as _sc2,
+                        )
+
+                        _cfg2 = _lc2()
+                        _existing = (_cfg2.inference.providers or {}).get(_inst_id)
+                        _cfg2.inference.providers[_inst_id] = _PE(
+                            id=_inst_id,
+                            label=model_provider or _inst_id,
+                            kind=_kind.name,
+                            model=_inst_model or "",
+                            purpose=getattr(_inst, "purpose", "chat") or "chat",
+                            endpoint=getattr(_inst, "api_base_url", "") or "",
+                            cred_ref=(
+                                _inst_id if _effective_key
+                                else getattr(_existing, "cred_ref", "") or ""
+                            ),
+                            model_path=getattr(_existing, "model_path", "") or "",
+                            profile=getattr(_existing, "profile", "balanced")
+                            or "balanced",
+                        )
+                        _cfg2.inference.config_version = max(
+                            getattr(_cfg2.inference, "config_version", 0) or 0, 2
+                        )
+                        _sc2(_cfg2)
+                        logger.info(
+                            "[AgentKernel] persisted provider %r to config "
+                            "(kind=%s model=%r) — survives restart",
+                            _inst_id, _kind.name, _inst_model,
+                        )
+                    except Exception as _pp_err:
+                        logger.warning(
+                            "[AgentKernel] provider persist failed for %r: %s "
+                            "(live registry still updated)", _inst_id, _pp_err,
+                        )
                     if preserve_bindings:
                         # confirm_card path: role_bindings (set by the Brain/Tool
                         # dropdowns / chat ModelSwitcher via set_role_binding) are
@@ -12477,22 +12797,19 @@ If any tools failed, address those issues in your response.
             _r = getattr(self, "_router", None)
             if _r is None:
                 return False
+            # THE write. The table is process-wide, so this one call is visible
+            # to every kernel, every peer session, every future conversation,
+            # and every subagent — immediately and without propagation.
+            #
+            # Nothing follows it. There used to be two sync blocks here: one
+            # updating the module-global `_model_config_snapshot` and one
+            # updating the legacy fields. Both were copies of this line's
+            # effect, and both are gone — the snapshot with its consumer, the
+            # legacy fields into properties that read the binding directly.
+            # (The legacy sync was also subtly wrong: it assigned `instance_id`
+            # — a PROVIDER id — into `_selected_reasoning_model`, a MODEL
+            # field, so anything reading it for a model name got "cohere".)
             _r.bind_role(role, instance_id, model_override=model_override)
-            # Keep legacy field assignments in sync for any code that reads them.
-            if role == "reasoning":
-                self._selected_reasoning_model = instance_id
-                # REQ-1 AC2: keep the provider field in sync with the binding so
-                # context-window resolution / scheduler labels agree with actual
-                # routing — the resolver now reads the router first, but legacy
-                # readers still rely on this field.
-                try:
-                    _bound = _r.resolve("reasoning")
-                    if _bound is not None:
-                        self._model_provider = self._provider_string_for_instance(_bound)
-                except Exception:
-                    pass
-            elif role == "tool_execution":
-                self._selected_tool_execution_model = instance_id
             return True
         except Exception as e:
             logger.error(f"[AgentKernel] Failed to set role binding: {e}")
@@ -12634,14 +12951,17 @@ def get_desktop_control_enabled() -> bool:
 # inheritance (which fails if all peers were also created post-swarm).
 _swarm_config_snapshot: Optional[dict] = None
 
-# Normal (non-swarm) persisted model config snapshot. Set at startup
-# from iris_config.json. Any kernel lazily created by a WebSocket
-# client (e.g. session_iris) whose provider is still "uninitialized"
-# reads from this snapshot — so it inherits cerebras/gemma (the
-# "use same model" setting) instead of falling back to a local
-# model or staying uninitialized. Mirrors _swarm_config_snapshot
-# but for the standard launch path.
-_model_config_snapshot: Optional[dict] = None
+# REMOVED 2026-08-16: `_model_config_snapshot`. It was a module-global copy of
+# the persisted model config, stashed at startup so lazily-created kernels could
+# hydrate from it. It is gone because the thing it hydrated is gone: kernels now
+# read the process-wide role-binding table, which already holds the live choice.
+#
+# It was also the third of the five competing sources of truth for "which model
+# is active", and the one that made the others hard to reason about — it was
+# written by set_model_selection under one key spelling ("tool_execution_model")
+# and read under another ("tool_model"), and its reader had been raising
+# TypeError on every call since the day set_model_selection's signature changed.
+# Startup seeding now happens once, in InferenceRouter._apply_config.
 
 
 def get_agent_kernel(
@@ -12705,68 +13025,59 @@ def get_agent_kernel(
                 f"[AgentKernel] Memory interface not available for conv={conversation_id}: {e}"
             )
 
-        # Inherit model configuration from any already-configured kernel.
+        # Inherit inference BEHAVIOUR settings from any already-configured peer.
         #
-        # Context: the user configures a model once (in session_iris / the main UI
+        # Context: the user configures things once (in session_iris / the main UI
         # session).  Secondary sessions — such as session_iris_integration which is
-        # created when the wake-word fires — are spun up lazily with no model
-        # provider set.  Without this inheritance every wake-word-triggered response
-        # returns None from _respond_direct, crashing the voice pipeline.
+        # created when the wake-word fires — are spun up lazily.  Without this,
+        # a wake-word-triggered response ran with default behaviour settings.
         #
-        # We look for the first peer kernel whose provider is not the default
-        # "uninitialized" sentinel and copy its full model configuration.
-        if kernel._model_provider == "uninitialized":
-            for peer_key, peer_kernel in _agent_kernel_instances.items():
-                if peer_kernel._model_provider not in (None, "uninitialized"):
-                    # Use the MODEL CONFIG SNAPSHOT's api_base_url (which has
-                    # the correct Cerebras URL from the config file) rather than
-                    # peer_kernel._api_base_url (which may be the __init__ default
-                    # "https://api.openai.com/v1" if _configure_kernel didn't set it
-                    # via set_model_selection's api_base_url param).
-                    _snap_url = (
-                        _model_config_snapshot.get("api_base_url")
-                        if _model_config_snapshot else ""
-                    ) or ""
-                    _snap_key = (
-                        _model_config_snapshot.get("api_key")
-                        if _model_config_snapshot else ""
-                    ) or ""
-                    kernel.set_model_selection(
-                        reasoning_model=peer_kernel._selected_reasoning_model,
-                        tool_execution_model=peer_kernel._selected_tool_execution_model,
-                        model_provider=peer_kernel._model_provider,
-                        api_base_url=_snap_url,
-                        api_key=_snap_key,
-                    )
-                    # Also copy the LM Studio endpoint in case it was customised.
-                    kernel._lmstudio_endpoint = peer_kernel._lmstudio_endpoint
-                    # Copy API configuration for remote API providers.
-                    # These are redundant when set_model_selection already received
-                    # them above, but kept for backward compat / other consumers that
-                    # read _api_key / _api_base_url directly.
-                    if peer_kernel._api_key:
-                        kernel._api_key = peer_kernel._api_key
-                    if peer_kernel._api_base_url:
-                        kernel._api_base_url = peer_kernel._api_base_url
-                    # Also copy inference behaviour settings so all sessions share them.
-                    kernel._thinking_style = peer_kernel._thinking_style
-                    kernel._response_length = peer_kernel._response_length
-                    kernel._reasoning_effort = peer_kernel._reasoning_effort
-                    kernel._tool_mode = peer_kernel._tool_mode
-                    logger.info(
-                        f"[AgentKernel] Conv '{conversation_id}' inherited model config "
-                        f"from '{peer_key}' "
-                        f"(provider={peer_kernel._model_provider!r}, "
-                        f"model={peer_kernel._selected_reasoning_model!r})"
-                    )
-                    break
+        # WHICH MODEL SERVES WHICH ROLE IS NOT COPIED HERE (2026-08-16). It used
+        # to be: this block called ``set_model_selection(model_provider=peer.
+        # _model_provider, ...)`` without ``preserve_bindings``, which fell
+        # through to ``bind_role`` and REBOUND the process-wide role table from
+        # the peer's LEGACY fields. Those fields are not updated by the gateway's
+        # role-binding path, so they held the startup provider — and every new
+        # conversation therefore reverted the user's live pick (the recurring
+        # "picked cohere, sent a message, back to cerebras" bug).
+        #
+        # There is nothing to copy: the role table and the provider registry are
+        # process-wide singletons (REQ-5), so this kernel's router already sees
+        # the user's live choice the moment it is constructed. Model/provider
+        # state is READ from the router (see the ``_model_provider`` /
+        # ``_selected_*_model`` properties), never stored per kernel.
+        #
+        # Credentials likewise live on the ProviderInstance in the shared
+        # registry; ``_api_key`` / ``_api_base_url`` are copied only as a
+        # compatibility convenience for the remaining direct readers.
+        for peer_key, peer_kernel in _agent_kernel_instances.items():
+            if peer_kernel is kernel:
+                continue
+            if peer_kernel._model_provider in (None, "uninitialized"):
+                continue
+            kernel._lmstudio_endpoint = peer_kernel._lmstudio_endpoint
+            if peer_kernel._api_key:
+                kernel._api_key = peer_kernel._api_key
+                kernel._api_key_provider = peer_kernel._api_key_provider
+            if peer_kernel._api_base_url:
+                kernel._api_base_url = peer_kernel._api_base_url
+            kernel._thinking_style = peer_kernel._thinking_style
+            kernel._response_length = peer_kernel._response_length
+            kernel._reasoning_effort = peer_kernel._reasoning_effort
+            kernel._tool_mode = peer_kernel._tool_mode
+            logger.info(
+                f"[AgentKernel] Conv '{conversation_id}' inherited inference "
+                f"behaviour from '{peer_key}' "
+                f"(active model comes from the shared router: "
+                f"provider={kernel._model_provider!r}, "
+                f"model={kernel._selected_reasoning_model!r})"
+            )
+            break
 
-            # If no peer was configured but a global swarm snapshot exists,
+        if kernel._model_provider == "uninitialized":
+            # If no role is bound yet and a global swarm snapshot exists,
             # auto-hydrate this kernel so it doesn't stay "uninitialized".
-            if (
-                kernel._model_provider == "uninitialized"
-                and _swarm_config_snapshot is not None
-            ):
+            if _swarm_config_snapshot is not None:
                 # SLICE 5: wire the router (not the legacy compat client) so
                 # DER/Pacman inference paths actually use the swarm endpoint.
                 try:
@@ -12796,12 +13107,6 @@ def get_agent_kernel(
                     logger.warning(
                         f"[AgentKernel] Swarm auto-hydrate router wire failed: {_sw_err}"
                     )
-                kernel._selected_reasoning_model = _swarm_config_snapshot.get(
-                    "reasoning_model"
-                )
-                kernel._selected_tool_execution_model = _swarm_config_snapshot.get(
-                    "tool_model"
-                )
                 kernel._swarm_enabled = True
                 logger.info(
                     f"[AgentKernel] Conv '{conversation_id}' auto-hydrated from "
@@ -12809,49 +13114,18 @@ def get_agent_kernel(
                     f"endpoint={_swarm_config_snapshot.get('endpoint')!r})"
                 )
 
-            # Normal (non-swarm) persisted config snapshot. Set at
-            # startup from iris_config.json. Any kernel lazily created
-            # by a WebSocket client (e.g. session_iris) whose
-            # provider is still "uninitialized" reads from this snapshot
-            # so it inherits cerebras/gemma (the "use same model"
-            # setting) instead of falling back to a local model or
-            # staying uninitialized. This is the fix for DER tool
-            # calls failing with provider=uninitialized / RotorQuant
-            # available=False — the execution model must be the
-            # configured remote model, never a hardcoded local one.
-            if (
-                kernel._model_provider == "uninitialized"
-                and _model_config_snapshot is not None
-            ):
-                try:
-                    kernel.set_model_selection(
-                        reasoning_model=_model_config_snapshot.get(
-                            "reasoning_model"
-                        ),
-                        tool_execution_model=_model_config_snapshot.get(
-                            "tool_model"
-                        ),
-                        provider=_model_config_snapshot.get("provider"),
-                        api_base_url=_model_config_snapshot.get("api_base_url"),
-                        api_key=_model_config_snapshot.get("api_key"),
-                        thinking_style=_model_config_snapshot.get(
-                            "thinking_style"
-                        ),
-                        response_length=_model_config_snapshot.get(
-                            "response_length"
-                        ),
-                        tool_mode=_model_config_snapshot.get("tool_mode"),
-                    )
-                    logger.info(
-                        f"[AgentKernel] Conv '{conversation_id}' hydrated "
-                        f"from model snapshot "
-                        f"(provider={_model_config_snapshot.get('provider')!r}, "
-                        f"model={_model_config_snapshot.get('reasoning_model')!r})"
-                    )
-                except Exception as _snap_err:
-                    logger.warning(
-                        f"[AgentKernel] model snapshot hydrate failed: {_snap_err}"
-                    )
+            # NOTE (2026-08-16): a "persisted model config snapshot" hydrate
+            # used to live here, replaying `_model_config_snapshot` through
+            # set_model_selection. It was removed for two reasons. First, it
+            # had never run: it passed `provider=`, `thinking_style=`,
+            # `response_length=` and `tool_mode=`, none of which are parameters
+            # of set_model_selection, so every call raised TypeError straight
+            # into the handler below it and logged "model snapshot hydrate
+            # failed". Second, even working it would have been wrong — it
+            # replayed a STORED copy of the user's choice over the live
+            # process-wide role table, which is the same class of bug as the
+            # peer-inheritance rebind above. Startup seeding belongs in
+            # InferenceRouter._apply_config, which now binds only unbound roles.
 
         _agent_kernel_instances[conversation_id] = kernel
 

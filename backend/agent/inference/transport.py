@@ -266,6 +266,13 @@ def parse_thinking(text: str) -> Tuple[str, str]:
     """
     thinking_parts: List[str] = []
 
+    # A tool-call-only response carries no text at all. Callers pass whatever
+    # the provider returned, and every OpenAI-compatible provider returns null
+    # content in that case — so accept it here rather than making each call site
+    # remember to coerce (2026-08-16).
+    if not text:
+        return "", ""
+
     # ── Tagged blocks ────────────────────────────────────────────────
     for m in _re.finditer(r"<think>(.*?)</think>", text, flags=_re.DOTALL):
         thinking_parts.append(m.group(1).strip())
@@ -813,7 +820,13 @@ class ApiHttpxTransport:
         self.last_usage = _extract_usage(result)
 
         _msg = result.get("choices", [{}])[0].get("message", {})
-        _reply = _msg.get("content", "")
+        # `.get("content", "")` returns None when the key is PRESENT and null —
+        # the default only applies to a missing key. An OpenAI-compatible API
+        # sets content=null on a tool-call-only response, which is the normal
+        # shape for every tool call, so this fed None straight into
+        # parse_thinking and crashed the step with "expected string or
+        # bytes-like object, got 'NoneType'" (2026-08-16, DER step 5).
+        _reply = _msg.get("content") or ""
         _tool_calls = _msg.get("tool_calls") or []
 
         if not _reply and not _tool_calls:
@@ -1165,7 +1178,8 @@ class OpenAICompatTransport:
         self.last_usage = _extract_usage(result)
 
         _msg = result.get("choices", [{}])[0].get("message", {})
-        _reply = _msg.get("content", "")
+        # null content on a tool-call-only response — see the note above.
+        _reply = _msg.get("content") or ""
         _tool_calls = _msg.get("tool_calls") or []
 
         if not _reply and not _tool_calls:
@@ -1305,7 +1319,7 @@ class OllamaTransport:
                     )
                 result = _resp.json()
                 self.last_usage = _extract_ollama_usage(result)
-                _reply = result.get("message", {}).get("content", "")
+                _reply = result.get("message", {}).get("content") or ""
         except Exception:
             logger.warning(
                 "[OllamaTransport] inference failed for model=%s", model

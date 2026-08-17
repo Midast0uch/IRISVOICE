@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, within, fireEvent } from "@testing-library/react";
 import { ModelInferenceSection } from "@/components/ModelInferenceSection";
 
 /* ------------------------------------------------------------------ */
@@ -29,14 +29,17 @@ jest.mock("framer-motion", () => {
 });
 
 // Mock CustomDropdown: render all option labels visibly so the test can
-// assert which providers appear in the Brain / Tool selectors.
+// assert which providers appear in the Brain / Tool selectors. Also wires
+// onChange so tests can drive provider/model selection.
 jest.mock("@/components/ui/CustomDropdown", () => ({
   CustomDropdown: ({
     options,
     placeholder,
+    onChange,
   }: {
     options: { label: string; value: string }[];
     placeholder?: string;
+    onChange?: (value: string) => void;
   }) => {
     const React = require("react");
     return React.createElement(
@@ -52,6 +55,7 @@ jest.mock("@/components/ui/CustomDropdown", () => ({
             {
               key: o.value,
               "data-testid": `dropdown-option-${o.value}`,
+              onClick: () => onChange?.(o.value),
             },
             o.label,
           ),
@@ -148,5 +152,52 @@ describe("ModelInferenceSection — REQ-6 AC3 provider filter", () => {
       /^dropdown-option-/,
     );
     expect(brainOptions).toHaveLength(1);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  Key-leak regression — provider switch must clear the typed key     */
+/* ------------------------------------------------------------------ */
+
+describe("ModelInferenceSection — provider switch clears stale API key", () => {
+  it("does not send the previous provider's key when applying a new provider", () => {
+    const sendModelSelection = jest.fn();
+    const props = {
+      ...defaultProps,
+      sendModelSelection,
+      providers: [
+        { id: "p1", label: "GPT-4o", kind: "openai", model: "gpt-4o", purpose: "chat" },
+        { id: "p2", label: "Cohere", kind: "api", model: "command-a-plus-05-2026", purpose: "chat" },
+      ],
+      provider_presets: [
+        { id: "p1", label: "GPT-4o", kind: "openai", needs_key: true, api_base_url: "https://api.openai.com/v1" },
+        { id: "p2", label: "Cohere", kind: "api", needs_key: true, api_base_url: "https://api.cohere.ai/compatibility/v1" },
+      ],
+    };
+    render(<ModelInferenceSection {...props} />);
+
+    // 1. Select provider p1 (GPT-4o) and type a key for it.
+    fireEvent.click(screen.getByTestId("dropdown-option-p1"));
+    const keyInput = screen.getByPlaceholderText("sk-...");
+    fireEvent.change(keyInput, { target: { value: "sk-gpt4o-secret" } });
+
+    // 2. Switch to provider p2 (Cohere) WITHOUT typing a new key.
+    fireEvent.click(screen.getByTestId("dropdown-option-p2"));
+
+    // 3. Apply — the payload must NOT carry the p1 key. The key input was
+    // cleared by the provider switch, so either Apply is disabled (key
+    // required but empty) or it fires without api_key. Both are correct;
+    // sending the stale p1 key is the bug.
+    const applyBtn = screen.getByText("Apply Provider").closest("button");
+    const disabled = applyBtn ? (applyBtn as HTMLButtonElement).disabled : false;
+    if (disabled) {
+      // Key required + cleared => Apply disabled => nothing sent. Correct.
+      expect(sendModelSelection).not.toHaveBeenCalled();
+    } else {
+      const lastCall = sendModelSelection.mock.calls.at(-1)?.[0];
+      expect(lastCall).toBeDefined();
+      expect(lastCall.model_provider).toBe("p2");
+      expect(lastCall.api_key).toBeUndefined();
+    }
   });
 });

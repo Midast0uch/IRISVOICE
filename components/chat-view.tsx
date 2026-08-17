@@ -394,6 +394,26 @@ export function ChatWing({
     if (isChatTyping) setLocalTyping(false)
   }, [isChatTyping])
 
+  // Safety timeout — localTyping must never be able to pin the typing
+  // indicator on. The effect above only fires on the transition INTO
+  // isChatTyping=true, so any turn where that transition is not observed (the
+  // response arriving before the event, a chat_typing frame lost, or
+  // isChatTyping already true from a previous turn so React sees no change)
+  // used to leave this stuck true forever, and `isTyping` with it.
+  //
+  // The primary clear is now in handleTextResponse, which runs as soon as the
+  // answer arrives. This is the backstop for a turn that never produces one at
+  // all — it mirrors the 30s guard useIRISWebSocket already keeps on
+  // isChatTyping, which is what kept THAT input from sticking.
+  useEffect(() => {
+    if (!localTyping) return
+    const timer = setTimeout(() => {
+      setLocalTyping(false)
+      console.log("[ChatView] localTyping safety timeout — reset")
+    }, 30_000)
+    return () => clearTimeout(timer)
+  }, [localTyping])
+
   // Get theme colors from BrandColorContext for real-time updates
   const { getThemeConfig } = useBrandColor();
   const brandTheme = getThemeConfig();
@@ -489,6 +509,20 @@ export function ChatWing({
       }
       const { text, sender = 'assistant', thinking } = detail
       if (!text) return
+
+      // The response for this turn has arrived — the optimistic typing flag is
+      // done, whatever we do with the text below.
+      //
+      // This MUST stay above the early returns that follow (prism-card turns
+      // and turn_id dedup). `localTyping` was previously cleared only as a side
+      // effect of `isChatTyping` transitioning INTO true, which leaves it stuck
+      // whenever that transition is not observed — and every early return below
+      // is such a case. A stuck `localTyping` pins `isTyping` true forever
+      // (nothing else clears it on the WebSocket path), so the Xur typing
+      // indicator kept spinning under a finished answer. Verified live
+      // 2026-08-16: voiceState='idle', isChatTyping=false, spinner still
+      // rendering — localTyping was the only input left holding it up.
+      setLocalTyping(false)
 
       const turnId = detail.turn_id
 

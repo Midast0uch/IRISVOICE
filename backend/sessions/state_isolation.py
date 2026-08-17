@@ -308,27 +308,25 @@ class IsolatedStateManager:
                     )
 
     async def _restore_model_selections(self) -> None:
-        try:
-            from backend.agent.agent_kernel import get_agent_kernel
+        """No-op. Kept as a named step so the initialize() sequence still reads
+        in order; restoring the active model is not this class's job.
 
-            agent_kernel = get_agent_kernel()
-            fv = getattr(self._state, "field_values", {}) or {}
-            ms_fv = fv.get("model_selection", {})
-            reasoning = ms_fv.get("reasoning_model")
-            tool_exec = ms_fv.get("tool_execution_model")
-            provider = ms_fv.get("provider")
-            if reasoning or tool_exec:
-                try:
-                    success = agent_kernel.set_model_selection(
-                        reasoning_model=reasoning,
-                        tool_exec_model=tool_exec,
-                        provider=provider,
-                        session_id=self.session_id,
-                    )
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        REMOVED 2026-08-16. This method looked like a restore path and had never
+        performed one: it called ``set_model_selection(tool_exec_model=...,
+        provider=..., session_id=...)``, and none of those three are parameters
+        of that method, so every invocation raised TypeError into the bare
+        ``except`` two lines below and did nothing. It ran on every session
+        initialize().
+
+        It is not being repaired, because a working version would be a bug. Which
+        model serves which role is process-wide live state owned by the
+        role-binding table (REQ-5), not per-session persisted UI state. Replaying
+        a session's saved ``field_values["model_selection"]`` at session start
+        would re-apply a stale copy of the user's choice over their current one —
+        the same failure as the config replay and the peer-inheritance rebind
+        that were removed alongside it.
+        """
+        return
 
     async def _save_category(self, category: str) -> None:
         if not self._persistence_dir:

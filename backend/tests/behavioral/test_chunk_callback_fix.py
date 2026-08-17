@@ -18,6 +18,42 @@ from unittest.mock import MagicMock, patch, PropertyMock
 import pytest
 
 
+def _stub_router(provider, model):
+    """Private router with `provider`/`model` bound to the reasoning role.
+
+    Replaces the old `k._model_provider = ...` / `k._selected_reasoning_model
+    = ...` staging: both are read-only properties derived from the binding as
+    of 2026-08-16. The registry and role table here are LOCAL instances, not
+    the process-wide singletons, so this stub cannot leak into another test.
+    """
+    from backend.agent.inference.provider import ProviderInstance, ProviderKind
+    from backend.agent.inference.registry import ProviderRegistry
+    from backend.agent.inference.roles import RoleBindingTable
+    from backend.agent.inference.router import InferenceRouter
+
+    # Kind chosen so `_provider_string_for_instance` maps back to the exact
+    # provider string the stub asked for (OLLAMA->"local", INPROCESS->
+    # "iris_local", LOCAL_OPENAI->"lmstudio", API->the instance id).
+    _kind = {
+        "local": ProviderKind.OLLAMA,
+        "iris_local": ProviderKind.INPROCESS,
+        "lmstudio": ProviderKind.LOCAL_OPENAI,
+    }.get(provider, ProviderKind.API)
+    _reg = ProviderRegistry()
+    _reg.add(
+        ProviderInstance(id=provider, label=provider, kind=_kind, model=model)
+    )
+    _r = InferenceRouter.__new__(InferenceRouter)
+    object.__setattr__(_r, "_registry", _reg)
+    object.__setattr__(_r, "_roles", RoleBindingTable(_reg))
+    object.__setattr__(_r, "_default_role", "reasoning")
+    object.__setattr__(_r, "_transports", {})
+    object.__setattr__(_r, "_inprocess_mgr", None)
+    _r.bind_role("reasoning", provider, model_override=model)
+    return _r
+
+
+
 class TestDispatchAPINonStreamingChunkCallback:
     """_dispatch_api non-streaming path must call chunk_callback."""
 
@@ -26,11 +62,10 @@ class TestDispatchAPINonStreamingChunkCallback:
         from backend.agent.agent_kernel import AgentKernel
 
         kernel = AgentKernel.__new__(AgentKernel)
-        kernel._selected_reasoning_model = "test-model"
+        kernel._router = _stub_router("test", "test-model")
         kernel._api_key = "test-key"
         kernel._api_base_url = "https://test.api.com/v1"
         kernel._broadcast_inference_event = MagicMock()
-        kernel._model_provider = "test"
         kernel._lmstudio_endpoint = "http://localhost:1234"
 
         # Mock httpx to return a non-streaming response
@@ -91,11 +126,10 @@ class TestDispatchAPINonStreamingChunkCallback:
         from backend.agent.agent_kernel import AgentKernel
 
         kernel = AgentKernel.__new__(AgentKernel)
-        kernel._selected_reasoning_model = "test-model"
+        kernel._router = _stub_router("test", "test-model")
         kernel._api_key = "test-key"
         kernel._api_base_url = "https://test.api.com/v1"
         kernel._broadcast_inference_event = MagicMock()
-        kernel._model_provider = "test"
         kernel._lmstudio_endpoint = "http://localhost:1234"
 
         mock_response = MagicMock()
@@ -132,11 +166,10 @@ class TestDispatchOpenAICompatNonStreamingChunkCallback:
         from backend.agent.agent_kernel import AgentKernel
 
         kernel = AgentKernel.__new__(AgentKernel)
-        kernel._selected_reasoning_model = "test-model"
+        kernel._router = _stub_router("test", "test-model")
         kernel._api_key = "test-key"
         kernel._api_base_url = "http://localhost:1234/v1"
         kernel._broadcast_inference_event = MagicMock()
-        kernel._model_provider = "test"
         kernel._lmstudio_endpoint = "http://localhost:1234"
 
         mock_response = MagicMock()

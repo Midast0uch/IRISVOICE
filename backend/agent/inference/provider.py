@@ -111,6 +111,8 @@ PROVIDER_PRESETS: list[dict] = [
      "api_base_url": "https://api.venice.ai/api/v1"},
     {"id": "lmstudio", "label": "LM Studio", "kind": "local_openai", "needs_key": False,
      "api_base_url": "http://localhost:1234"},
+    {"id": "ollama", "label": "Ollama", "kind": "ollama", "needs_key": False,
+     "api_base_url": "http://localhost:11434"},
 ]
 
 

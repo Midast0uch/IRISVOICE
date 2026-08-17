@@ -106,6 +106,52 @@ def _caducean_scheduler_isolation(monkeypatch):
     _reset()
 
 
+# ── Inference role-binding / provider-registry isolation ─────────────────
+#
+# Same class of problem as the scheduler fixture above, for the same reason:
+# `RoleBindingTable` and `ProviderRegistry` are process-wide singletons by
+# design (REQ-5 — role bindings live in ONE place, so the API endpoint and the
+# live session cannot disagree about which provider serves which role).
+#
+# Until 2026-08-16 the leakage was masked: `InferenceRouter._apply_config` re-bound
+# every role from config on EVERY router construction, and a router is built in
+# every AgentKernel.__init__ — so any binding a test leaked was incidentally
+# overwritten by the next test that constructed a kernel. That re-seeding was the
+# bug (it also overwrote the USER's live choice on every new conversation, which
+# is what made the ModelSwitcher revert), so config now seeds only unbound roles.
+# Correct in production — there is one seed at startup and the user is the only
+# writer — but it removes the accidental cleanup the suite had been relying on.
+# Reset explicitly instead of depending on a bug to do it.
+@_pytest.fixture(autouse=True)
+def _inference_binding_isolation():
+    """Restore the process-wide role table + provider registry around each test."""
+    try:
+        from backend.agent.inference.registry import get_provider_registry
+        from backend.agent.inference.roles import get_role_binding_table
+    except Exception:
+        yield  # inference package unavailable — nothing to isolate
+        return
+
+    _reg = get_provider_registry()
+    _roles = get_role_binding_table()
+    _saved_providers = list(_reg.list())
+    _saved_bindings = list(_roles.list())
+
+    def _restore() -> None:
+        try:
+            for _b in list(_roles.list()):
+                _roles.unbind(_b.role)
+            for _b in _saved_bindings:
+                _roles.bind(_b.role, _b.instance_id, _b.model_override)
+            for _p in _saved_providers:
+                _reg.add(_p)
+        except Exception:
+            pass
+
+    yield
+    _restore()
+
+
 # ── Search-provider singleton isolation ──────────────────────────────────
 #
 # backend/crawler/search_providers/__init__.py caches its provider in a

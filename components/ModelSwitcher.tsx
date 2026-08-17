@@ -105,14 +105,21 @@ export default function ModelSwitcher({
   // the portaled panel (mirrors ConversationChips), so the panel is not clipped
   // by the chat view's overflow:hidden + transform ancestor.
 
-  // REQ-2 AC2/AC3/AC4: API providers need `has_key`; local/inprocess/ollama
-  // providers need `loaded`; chat purpose only (embedding/rerank excluded —
-  // Phase 4 already filters the settings panel, this is the chat-row
-  // equivalent, not a duplicate of that logic).
+  // REQ-2 AC2/AC3/AC4: API providers need `has_key`; local/inprocess
+  // providers need `loaded`; ollama is ALWAYS available — the ollama server
+  // loads models on demand, so `loaded` (which tracks in-process llama-cpp
+  // loads) is never set for it and must not gate it (2026-08-16: ollama
+  // showed "(unavailable)" while routing worked fine). Chat purpose only
+  // (embedding/rerank excluded — Phase 4 already filters the settings panel,
+  // this is the chat-row equivalent, not a duplicate of that logic).
   const entries: SwitcherEntry[] = useMemo(() => {
     return providers
       .filter((p) => !p.purpose || p.purpose === "chat")
-      .filter((p) => (isApiKind(p.kind) ? !!p.has_key : !!p.loaded))
+      .filter((p) => {
+        if (isApiKind(p.kind)) return !!p.has_key
+        if ((p.kind || "").toLowerCase() === "ollama") return true
+        return !!p.loaded
+      })
       .map((p) => ({
         id: p.id,
         label: p.model ? `${p.label} · ${p.model}` : p.label,
@@ -125,11 +132,18 @@ export default function ModelSwitcher({
   )
 
   const getLabel = useCallback(
-    (instanceId?: string) => {
+    (binding?: { instance_id?: string; model_override?: string }) => {
+      const instanceId = binding?.instance_id
       if (!instanceId) return null
       const p = providers.find((prov) => prov.id === instanceId)
       if (!p) return instanceId
-      return p.model ? `${p.label} · ${p.model}` : p.label
+      // The ACTIVE model is the role binding's model_override (what the user
+      // picked in the dashboard Brain/Tool dropdowns), NOT the provider's
+      // default `model`. Showing the default here desyncs the switcher from
+      // the settings panel and from what routing actually uses (e.g. ollama
+      // defaulted to gpt-oss:120b-cloud while the user chose nemotron).
+      const model = binding?.model_override || p.model
+      return model ? `${p.label} · ${model}` : p.label
     },
     [providers]
   )
@@ -140,7 +154,7 @@ export default function ModelSwitcher({
   // REQ-2 AC6: what's active BEFORE the dropdown opens. If the bound
   // instance is no longer in `entries` (key removed / unloaded), it still
   // shows — as unavailable, never as a silently-working model (edge case).
-  const activeLabel = getLabel(brainBinding?.instance_id)
+  const activeLabel = getLabel(brainBinding)
   const brainAvailable = !!entries.find((e) => e.id === brainBinding?.instance_id)
   const abbreviatedActive = abbreviateLabel(activeLabel)
   const truncatedActive =
@@ -160,7 +174,7 @@ export default function ModelSwitcher({
     ? "Loading models…"
     : activeLabel
       ? `Brain: ${activeLabel}${brainAvailable ? "" : " (unavailable)"}\nTool: ${
-          getLabel(toolBinding?.instance_id) || "—"
+          getLabel(toolBinding) || "—"
         }\nClick to switch model`
       : "No model bound — click to choose one"
 

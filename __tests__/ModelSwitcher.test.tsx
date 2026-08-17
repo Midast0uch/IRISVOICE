@@ -8,7 +8,7 @@
  * states are distinct (REQ-2 AC9); no key or fragment ever renders (D-4).
  */
 import "@testing-library/jest-dom"
-import { render, screen, fireEvent, act } from "@testing-library/react"
+import { render, screen, fireEvent, act, within } from "@testing-library/react"
 import React from "react"
 import ModelSwitcher from "@/components/ModelSwitcher"
 import { useInferenceState } from "@/hooks/useInferenceState"
@@ -205,5 +205,58 @@ describe("ModelSwitcher (Phase 5 REQ-2)", () => {
     const { container } = render(<ModelSwitcher />)
     fireEvent.click(screen.getByTestId("model-switcher-trigger"))
     expect(container.innerHTML).not.toMatch(/sk-should-never-render/)
+  })
+
+  it("shows the role binding's model_override, not the provider default (desync guard)", () => {
+    // Regression guard (2026-08-16): the trigger used to display
+    // providers[instance].model — the provider's DEFAULT — so after the user
+    // picked a specific model in the dashboard (role binding model_override),
+    // the chat switcher still showed e.g. "ollama · gpt-oss:120b-cloud" while
+    // routing actually used the override. The trigger must show the override.
+    mockUseInferenceState.mockReturnValue(
+      baseState({
+        providers: [
+          { id: "ollama", label: "Ollama", kind: "local", model: "gpt-oss:120b-cloud", loaded: true, purpose: "chat" },
+        ],
+        role_bindings: [
+          { role: "reasoning", instance_id: "ollama", model_override: "nemotron-3-super-cloud" },
+          { role: "tool_execution", instance_id: "ollama", model_override: "nemotron-3-super-cloud" },
+        ],
+      })
+    )
+    render(<ModelSwitcher />)
+    const trigger = screen.getByTestId("model-switcher-trigger")
+    const title = trigger.getAttribute("title") || ""
+    expect(title).toMatch(/nemotron-3-super-cloud/)
+    expect(title).not.toMatch(/gpt-oss:120b-cloud/)
+  })
+
+  it("offers ollama even when loaded=false (on-demand server, desync guard)", () => {
+    // Regression guard (2026-08-16): ollama never sets `loaded` (it loads
+    // models on demand, unlike in-process llama-cpp), so the old
+    // `!!p.loaded` gate excluded it — the trigger showed "(unavailable)"
+    // while routing worked fine. Ollama must always be offered.
+    mockUseInferenceState.mockReturnValue(
+      baseState({
+        providers: [
+          { id: "ollama", label: "Ollama", kind: "ollama", model: "llama3.2", loaded: false, purpose: "chat" },
+        ],
+        role_bindings: [
+          { role: "reasoning", instance_id: "ollama", model_override: "llama3.2" },
+          { role: "tool_execution", instance_id: "ollama", model_override: "llama3.2" },
+        ],
+      })
+    )
+    render(<ModelSwitcher />)
+    const trigger = screen.getByTestId("model-switcher-trigger")
+    const title = trigger.getAttribute("title") || ""
+    // Available: no "(unavailable)" suffix, and the dropdown offers ollama.
+    expect(title).not.toMatch(/unavailable/)
+    fireEvent.click(trigger)
+    const panel = screen.getByTestId("model-switcher-panel")
+    expect(panel).toBeInTheDocument()
+    // The dropdown offers ollama (the panel may list it more than once —
+    // option row + current selection — so assert at least one match).
+    expect(within(panel).getAllByText(/Ollama/).length).toBeGreaterThan(0)
   })
 })

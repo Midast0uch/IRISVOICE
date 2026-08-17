@@ -174,7 +174,7 @@ const ModelInferenceSection = memo(function ModelInferenceSection({
   const handleBrainChange = (encoded: string) => {
     setBindError(null);
     const [providerId, modelId] = encoded.split("::");
-    if (providerId) setSelectedProvider(providerId);
+    if (providerId) { setSelectedProvider(providerId); setApiKey(""); }
     sendRoleBinding("reasoning", providerId, modelId || undefined);
     if (useSameModel) {
       sendRoleBinding("tool_execution", providerId, modelId || undefined);
@@ -184,7 +184,7 @@ const ModelInferenceSection = memo(function ModelInferenceSection({
   const handleToolChange = (encoded: string) => {
     setBindError(null);
     const [providerId, modelId] = encoded.split("::");
-    if (providerId) setSelectedProvider(providerId);
+    if (providerId) { setSelectedProvider(providerId); setApiKey(""); }
     sendRoleBinding("tool_execution", providerId, modelId || undefined);
   };
 
@@ -271,7 +271,7 @@ const ModelInferenceSection = memo(function ModelInferenceSection({
             <CustomDropdown
               value={selectedProvider}
               options={providerSetupOptions}
-              onChange={(v) => { setSelectedProvider(v); setProviderMsg(null); }}
+              onChange={(v) => { setSelectedProvider(v); setApiKey(""); setProviderMsg(null); }}
               glowColor={glowColor}
               className="text-[10px] py-1 px-2 h-7 w-full"
               placeholder="Select provider…"

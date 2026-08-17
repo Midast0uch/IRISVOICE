@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional, TYPE_CHECKING
 
 logger = logging.getLogger(__name__)
@@ -99,6 +99,22 @@ class RoleBindingTable:
                 )
                 return
         with self._lock:
+            _existing = self._bindings.get(canon)
+            if (
+                model_override is None
+                and _existing is not None
+                and _existing.instance_id == instance_id
+            ):
+                # Provider-only rebind (no model): preserve the existing
+                # model override. Without this, a provider-only
+                # set_role_binding (chat ModelSwitcher, dashboard provider
+                # pick) wipes the user's model choice and the router falls
+                # back to the provider's registered default model — which
+                # may be stale (nemotron-3-super-cloud restored from the
+                # startup snapshot, 2026-08-16). A rebind to a DIFFERENT
+                # instance still resets the model (new provider, no choice
+                # yet).
+                model_override = _existing.model_override
             self._bindings[canon] = RoleBinding(
                 role=canon,
                 instance_id=instance_id,
@@ -132,12 +148,34 @@ class RoleBindingTable:
                 f"Provider instance '{binding.instance_id}' (bound to role "
                 f"'{role}') not found in registry"
             )
+        if binding.model_override:
+            # The binding's model_override is the user's explicit per-role
+            # choice (dashboard Brain/Tool dropdowns). It must win over the
+            # provider's registered default model — otherwise the override is
+            # decorative (displayed but never routed): e.g. ollama defaulted
+            # to gpt-oss:120b-cloud while the user chose nemotron-3-super-cloud
+            # (2026-08-16). Return a copy so the registry entry is untouched.
+            inst = replace(inst, model=binding.model_override)
         return inst
 
     def list(self) -> list[RoleBinding]:
         """Return a snapshot of all current role bindings."""
         with self._lock:
             return list(self._bindings.values())
+
+    def is_bound(self, role: str) -> bool:
+        """True if *role* currently has a binding (case/alias-insensitive).
+
+        This is the guard that makes persisted config a SEED rather than a
+        continuous authority. The table is a process-wide singleton holding the
+        user's LIVE choice; anything replaying a stored copy of that choice
+        (``InferenceRouter._apply_config``, which runs on every router
+        construction and therefore on every new conversation kernel) must
+        consult this first and bind only what nobody has chosen yet.
+        """
+        canon = self._canon(role)
+        with self._lock:
+            return canon in self._bindings
 
     def unbind(self, role: str) -> None:
         """Remove the binding for *role* (case-insensitive). No-op if unbound."""

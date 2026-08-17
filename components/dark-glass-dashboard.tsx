@@ -755,22 +755,14 @@ export function DarkGlassDashboard({
     try { localStorage.removeItem('iris-card-values'); } catch {}
   }, []);
 
-  // Keep model_inference.model_provider in sync with the active role binding
-  // so the Dashboard APPLY never sends a stale model_provider that overrides
-  // a provider set via the Brain/Tool dropdowns or chat ModelSwitcher.
-  const brainBindingProvider = role_bindings?.find((r: any) => r.role === "reasoning")?.instance_id;
-  useEffect(() => {
-    if (brainBindingProvider) {
-      setLocalFieldValues((prev: any) => {
-        const current = prev?.model_inference?.model_provider;
-        if (current === brainBindingProvider) return prev;
-        return {
-          ...prev,
-          model_inference: { ...(prev?.model_inference || {}), model_provider: brainBindingProvider },
-        };
-      });
-    }
-  }, [brainBindingProvider]);
+  // NOTE: model_inference / model_selection are deliberately NOT auto-synced
+  // into localFieldValues anymore. ModelInferenceSection owns its state and
+  // live-sends every change (sendModelSelection / sendRoleBinding /
+  // sendInferenceMode); syncing model_provider here from the role binding made
+  // the bottom APPLY re-send a STALE provider (the binding is not updated by
+  // APPLY PROVIDER) and reverted the user's choice — the recurring
+  // cerebras↔cohere cross-contamination. handleApplySettings skips these
+  // sections; see the filter there.
 
   const seededRef = useRef(false);
   useEffect(() => {
@@ -790,27 +782,6 @@ export function DarkGlassDashboard({
       seededRef.current = true;
     }
   }, [contextFieldValues]);
-
-  // Keep localFieldValues['model_inference'].model_provider in sync with the
-  // active role binding so the Dashboard APPLY uses the provider the user
-  // actually selected (cerebras/cohere/...) instead of a stale localFieldValues
-  // default (cohere). Without this, APPLY fires confirm_card with the wrong
-  // model_provider, the backend applies set_model_selection, and the router
-  // overrides the user's Brain/Tool role binding.
-  const brainBinding = role_bindings.find((r) => r.role === "reasoning");
-  useEffect(() => {
-    const active = brainBinding?.instance_id || "";
-    if (active) {
-      setLocalFieldValues((prev) => {
-        const current = prev?.model_inference?.model_provider;
-        if (current === active) return prev;
-        return {
-          ...prev,
-          model_inference: { ...(prev?.model_inference || {}), model_provider: active },
-        };
-      });
-    }
-  }, [brainBinding?.instance_id]);
 
   // Wire CustomEvent listeners for tab system and crawler status.
   // iris:open_tab / iris:close_tab are dispatched by useIRISWebSocket when
@@ -1105,8 +1076,21 @@ export function DarkGlassDashboard({
       // Send 'confirm_card' for EVERY section that has values, not just the
       // currently-visible tab.  This way voice / model / theme changes are
       // persisted regardless of which tab the user was on when they clicked APPLY.
+      // model_inference / model_selection are self-managed by
+      // ModelInferenceSection: it live-sends every change (sendModelSelection /
+      // sendRoleBinding / sendInferenceMode) the moment it happens. Re-sending
+      // them from here with localFieldValues pushes STALE values — e.g. a
+      // model_provider that was auto-synced from a role binding which APPLY
+      // PROVIDER never updated — and reverts the user's choice to the previous
+      // provider (the recurring cerebras↔cohere cross-contamination). These
+      // sections must be excluded from the APPLY loop.
       const allSections = Object.entries(localFieldValues).filter(
-        ([_sectionId, values]) => values && typeof values === 'object' && Object.keys(values).length > 0
+        ([sectionId, values]) =>
+          sectionId !== 'model_inference' &&
+          sectionId !== 'model_selection' &&
+          values &&
+          typeof values === 'object' &&
+          Object.keys(values).length > 0
       );
       for (const [sectionId, sectionValues] of allSections) {
         

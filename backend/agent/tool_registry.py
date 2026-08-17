@@ -338,6 +338,74 @@ def get_all_specs() -> List[ToolSpec]:
     return list(_REGISTRY.values())
 
 
+def to_function_schema(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Convert IRIS-internal tool descriptors to provider function-calling schema.
+
+    IRIS's internal shape puts the parameters in a BARE PROPERTY MAP::
+
+        {"name": "vision_detect_element",
+         "parameters": {"description": {"type": "string", ...}}}
+
+    A provider expects JSON Schema, where ``parameters`` is an object and
+    ``description`` is one of its RESERVED STRING fields::
+
+        {"parameters": {"type": "object",
+                        "properties": {"description": {...}},
+                        "required": [...]}}
+
+    Passing the internal shape through unconverted puts an object where the
+    schema reserves a string. OpenAI-compatible endpoints tolerate it; Cohere
+    validates strictly and rejects the whole request::
+
+        API returned 422: invalid type: parameter
+        'tools.function.parameters.description' is of type object but should be
+        of type string
+
+    Observed live 2026-08-16 with Tool bound to Cohere: every tool call failed
+    while the identical payload worked on Cerebras. This is exactly the failure
+    mode a model-agnostic product cannot have — a tool schema that is valid only
+    for the provider it happened to be developed against.
+
+    Any property named ``description``, ``type``, ``required`` or ``properties``
+    triggers it; ``vision_detect_element`` has one, so the break is not exotic.
+
+    This function is the ONE converter. ``AgentKernel._get_openai_tools`` and
+    ``ToolDecisionBox`` both route through it — they used to have separate
+    handling, and only one of them converted at all.
+    """
+    out: List[Dict[str, Any]] = []
+    for t in tools or []:
+        props: Dict[str, Any] = {}
+        required: List[str] = []
+        for pname, pspec in (t.get("parameters") or {}).items():
+            if not isinstance(pspec, dict):
+                # A bare {"name": "string"} style entry — treat it as the type.
+                props[pname] = {"type": str(pspec) or "string", "description": ""}
+                required.append(pname)
+                continue
+            props[pname] = {
+                "type": pspec.get("type", "string"),
+                "description": pspec.get("description", "") or "",
+            }
+            if not pspec.get("optional", False):
+                required.append(pname)
+        out.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": t.get("name", ""),
+                    "description": t.get("description", "") or "",
+                    "parameters": {
+                        "type": "object",
+                        "properties": props,
+                        "required": required,
+                    },
+                },
+            }
+        )
+    return out
+
+
 def get_registry_tools() -> List[Dict[str, Any]]:
     """LLM-facing tool descriptors for function calling.
 
@@ -664,7 +732,7 @@ def register_builtin_tools() -> None:
             description="Show recent commit history",
             parameters={
                 "repo_path": {"type": "string"},
-                "n": {"type": "integer", "description": "Number of commits to show (default 10)"},
+                "n": {"type": "integer", "description": "Number of commits to show (default 10)", "optional": True},
             },
             category="git", executor="dev", permission_tier="read_only", parallel_safe=True,
         ),
@@ -697,7 +765,7 @@ def register_builtin_tools() -> None:
             description="Push current branch to origin",
             parameters={
                 "repo_path": {"type": "string"},
-                "force": {"type": "boolean", "description": "Force push (default false)"},
+                "force": {"type": "boolean", "description": "Force push (default false)", "optional": True},
             },
             category="git", executor="dev", permission_tier="side_effect", parallel_safe=False,
         ),
@@ -706,7 +774,7 @@ def register_builtin_tools() -> None:
             description="Run a shell command in the project directory (npm, python, pytest, etc.)",
             parameters={
                 "command": {"type": "string", "description": "Command to run"},
-                "cwd": {"type": "string", "description": "Working directory (defaults to IRISVOICE root)"},
+                "cwd": {"type": "string", "description": "Working directory (defaults to IRISVOICE root)", "optional": True},
             },
             category="shell", executor="dev", permission_tier="side_effect", parallel_safe=False,
         ),
@@ -740,8 +808,8 @@ def register_builtin_tools() -> None:
                 "action": {"type": "string", "enum": ["run_now", "start", "stop", "status"], "description": "What to do"},
                 "topic": {"type": "string", "description": "What to improve — a short label like 'Python debugging' or 'response formatting'. Used with run_now."},
                 "content": {"type": "string", "description": "The current version of the text/concept to improve. If omitted, picks the lowest-confidence item from memory. Used with run_now."},
-                "test_prompts": {"type": "array", "items": {"type": "string"}, "description": "Optional: custom test prompts to benchmark variants against (only used with run_now)"},
-                "interval": {"type": "number", "description": "Optional: loop interval in seconds when using action=start (default 1800)"},
+                "test_prompts": {"type": "array", "items": {"type": "string"}, "description": "Optional: custom test prompts to benchmark variants against (only used with run_now)", "optional": True},
+                "interval": {"type": "number", "description": "Optional: loop interval in seconds when using action=start (default 1800)", "optional": True},
             },
             category="research", executor="research", permission_tier="side_effect", parallel_safe=False,
         ),
@@ -753,12 +821,12 @@ def register_builtin_tools() -> None:
                         "the parked source is resumed when the answer arrives.",
             parameters={
                 "text": {"type": "string", "description": "The question to ask"},
-                "options": {"type": "array", "items": {"type": "string"}, "description": "Optional: multiple-choice options"},
-                "allow_other": {"type": "boolean", "description": "Allow free-form input (default: true)"},
-                "non_blocking": {"type": "boolean", "description": "If true, raise the card and return immediately (REQ-13 AC1)"},
-                "parked_url": {"type": "string", "description": "Source URL to park behind the question (REQ-13 AC2)"},
-                "run_id": {"type": "string", "description": "Research run id for the parked-source registry (REQ-13 AC6)"},
-                "wall_kind": {"type": "string", "enum": ["captcha", "login", "paywall", "unknown"], "description": "Wall that blocked the source (REQ-13)"},
+                "options": {"type": "array", "items": {"type": "string"}, "description": "Optional: multiple-choice options", "optional": True},
+                "allow_other": {"type": "boolean", "description": "Allow free-form input (default: true)", "optional": True},
+                "non_blocking": {"type": "boolean", "description": "If true, raise the card and return immediately (REQ-13 AC1)", "optional": True},
+                "parked_url": {"type": "string", "description": "Source URL to park behind the question (REQ-13 AC2)", "optional": True},
+                "run_id": {"type": "string", "description": "Research run id for the parked-source registry (REQ-13 AC6)", "optional": True},
+                "wall_kind": {"type": "string", "enum": ["captcha", "login", "paywall", "unknown"], "description": "Wall that blocked the source (REQ-13)", "optional": True},
             },
             category="system", executor="internal", permission_tier="read_only", parallel_safe=False,
         ),
@@ -774,8 +842,8 @@ def register_builtin_tools() -> None:
             ),
             parameters={
                 "text": {"type": "string", "description": "The text to speak (max 500 characters)"},
-                "priority": {"type": "string", "enum": ["normal", "high", "low"], "description": "Speech priority (default: normal)"},
-                "interrupt": {"type": "boolean", "description": "If true and priority is high, interrupt current TTS to speak immediately (default: false)"},
+                "priority": {"type": "string", "enum": ["normal", "high", "low"], "description": "Speech priority (default: normal)", "optional": True},
+                "interrupt": {"type": "boolean", "description": "If true and priority is high, interrupt current TTS to speak immediately (default: false)", "optional": True},
             },
             category="system", executor="internal", permission_tier="read_only", parallel_safe=True,
         ),

@@ -105,8 +105,13 @@ def test_ct9_batch_dispatch_uses_role_binding():
     _router = _BatchRouter()
     k = AgentKernel.__new__(AgentKernel)
     k._router = _router
-    # Legacy field intentionally set to the WRONG model — the bug used it.
-    k._selected_reasoning_model = "llama3.2:latest"
+    # This used to also set `k._selected_reasoning_model = "llama3.2:latest"` —
+    # "the legacy field intentionally set to the WRONG model, because the bug
+    # used it". As of 2026-08-16 that field is a read-only property derived from
+    # the role binding, so a legacy value can no longer disagree with the
+    # binding and the staged condition is unrepresentable. The assertion below
+    # (the call must be keyed on the "reasoning" role) is unchanged, but note it
+    # can no longer fail the specific way it was written to catch.
     k._der_turn_calls = 0
     k._live_ctx = None
     k._memory_interface = None

@@ -587,13 +587,46 @@ async def lifespan(app: FastAPI):
                     # The old `if _provider == "api"` branch was dead code
                     # because _provider is "cerebras" (or another named
                     # provider), never the literal "api".
+                    #
+                    # preserve_bindings: this call reads the LEGACY FLAT config
+                    # fields (inference.provider / reasoning_model), which are a
+                    # denormalised copy of the role bindings. InferenceRouter.
+                    # _apply_config has already seeded the roles from
+                    # inference.role_bindings — the authoritative record — by the
+                    # time we get here. Rebinding from the flat copy overwrote
+                    # that seed and lost the user's choice across a restart:
+                    # observed 2026-08-16, role_bindings said cohere, the flat
+                    # provider said cerebras, and the process came up on
+                    # cerebras. Worse, the wrong binding was then persisted back
+                    # over inference.provider, so the staleness reinforced itself
+                    # on every subsequent boot.
+                    #
+                    # So: register the provider, credentials and endpoint (which
+                    # is what this call is really for) and bind ONLY the roles
+                    # that nothing has claimed — a genuinely fresh config with no
+                    # role_bindings still gets working roles below.
+                    _r = getattr(kernel, "_router", None)
+                    _already_bound = False
+                    if _r is not None:
+                        try:
+                            _already_bound = _r.roles.is_bound("reasoning")
+                        except Exception:
+                            _already_bound = False
                     kernel.set_model_selection(
                         reasoning_model=_reasoning,
                         tool_execution_model=_tool_exec or _reasoning,
                         model_provider=_provider,
                         api_base_url=_api_base_url or "",
                         api_key=_api_key or "",
+                        preserve_bindings=_already_bound,
                     )
+                    if _already_bound:
+                        logger.info(
+                            "    [Model] Roles already seeded from "
+                            "inference.role_bindings — registered provider "
+                            "%r without rebinding (legacy flat fields are a "
+                            "stale copy, not the authority)", _provider,
+                        )
 
                 try:
                     # Configure the default kernel (used during startup)
@@ -609,35 +642,14 @@ async def lifespan(app: FastAPI):
                         _configure_kernel(_iris_kernel)
                         logger.info(f"    [Model] Also configured session_iris kernel")
 
-                    # Stash the persisted model config as a global snapshot
-                    # so any kernel lazily created later by a WebSocket
-                    # client (e.g. session_iris) inherits cerebras/gemma
-                    # (the "use same model" setting) instead of staying
-                    # "uninitialized" and falling back to a local model.
-                    try:
-                        from backend.agent.agent_kernel import (
-                            _model_config_snapshot as _mcs,
-                        )
-                        _mcs = {
-                            "provider": _provider,
-                            "reasoning_model": _reasoning,
-                            "tool_model": _tool_exec,
-                            "api_base_url": _api_base_url,
-                            "api_key": _api_key,
-                            "thinking_style": _thinking_style,
-                            "response_length": _response_length,
-                            "tool_mode": _tool_mode,
-                        }
-                        import backend.agent.agent_kernel as _ak_mod
-                        _ak_mod._model_config_snapshot = _mcs
-                        logger.info(
-                            f"    [Model] Snapshot stashed for lazy kernels "
-                            f"(provider={_provider!r}, model={_reasoning!r})"
-                        )
-                    except Exception as _snap_err:
-                        logger.warning(
-                            f"    [Model] Snapshot stash failed: {_snap_err}"
-                        )
+                    # The global `_model_config_snapshot` stash that used to sit
+                    # here is gone (2026-08-16). Lazily-created kernels no longer
+                    # hydrate from a stored copy of this config — they read the
+                    # process-wide role-binding table, which the
+                    # `_configure_kernel` calls above have just seeded. Config
+                    # seeds the router once, at startup; from then on the router
+                    # is the authority and this block would only have been a
+                    # second, diverging copy of it.
 
                     logger.info(
                         f"    [Model] Restored provider={_provider} "
@@ -1808,10 +1820,20 @@ async def api_config_save(body: dict = {}):
                 cfg.inference.lm_studio_url = values["lm_studio_url"]
             if "ollama_url" in values:
                 cfg.inference.ollama_url = values["ollama_url"]
-            # Save api_key to disk so both WS and HTTP handlers persist it
-            # (WS confirm_card already does this; HTTP must as well).
+            # API keys NEVER persist in the config file. The kernel's fallback
+            # (agent_kernel._resolve_effective_key) reads cfg.inference.api_key
+            # and serves it to any provider whose id matches
+            # cfg.inference.provider, so a stale value here cross-contaminates
+            # providers (the recurring cerebras-key-sent-to-cohere 401). Route
+            # the key to the OS keyring — the same store set_model_selection
+            # uses — and clear the legacy field so the fallback can never serve
+            # an outdated credential.
             if "api_key" in values:
-                cfg.inference.api_key = values["api_key"]
+                if provider:
+                    from backend.agent.inference.keyring import set_secret
+
+                    set_secret(provider, values["api_key"])
+                cfg.inference.api_key = ""
 
         # ── inference_mode ───────────────────────────────────────────────
         elif section_id == "inference_mode":

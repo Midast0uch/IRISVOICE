@@ -87,15 +87,24 @@ export const CustomDropdown: React.FC<CustomDropdownProps> = ({
     return () => document.removeEventListener("mousedown", handle)
   }, [open])
 
-  // Close on scroll/resize so the portaled list doesn't drift from the trigger
+  // Close on scroll/resize so the portaled list doesn't drift from the trigger.
+  // Scrolls originating INSIDE the list itself (e.g. scrollIntoView on hover /
+  // keyboard focus) must NOT close it — only ancestor/page scrolls that would
+  // make the fixed-position list drift from its trigger.
   useEffect(() => {
     if (!open) return
-    const close = () => setOpen(false)
+    const close = (e: Event) => {
+      const t = e.target as Node | null
+      if (t && listRef.current && listRef.current.contains(t)) return
+      if (t && containerRef.current && containerRef.current.contains(t)) return
+      setOpen(false)
+    }
+    const closeResize = () => setOpen(false)
     window.addEventListener("scroll", close, true)
-    window.addEventListener("resize", close)
+    window.addEventListener("resize", closeResize)
     return () => {
       window.removeEventListener("scroll", close, true)
-      window.removeEventListener("resize", close)
+      window.removeEventListener("resize", closeResize)
     }
   }, [open])
 

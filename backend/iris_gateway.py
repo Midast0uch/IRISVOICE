@@ -1658,13 +1658,13 @@ class IRISGateway:
                             f"provider='{provider}' did not override them.",
                             extra={"session_id": session_id, "client_id": client_id},
                         )
-                    # role_bindings are canonical — keep the kernel's provider
-                    # field in sync with the reasoning binding so context-window
-                    # resolution / scheduler labels agree with actual routing.
-                    try:
-                        kernel._model_provider = _effective_provider
-                    except Exception:
-                        pass
+                    # role_bindings are canonical, and `kernel._model_provider`
+                    # now DERIVES from the reasoning binding — so context-window
+                    # resolution and scheduler labels agree with actual routing
+                    # without an assignment here. The assignment that used to
+                    # live here could disagree with the bindings it claimed to
+                    # mirror, because it ran even when the branches above had
+                    # deliberately preserved a different binding.
                     self._logger.info(
                         f"[Session: {session_id}] Model selection applied on confirm: "
                         f"reasoning={_effective_reasoning}, tool={_effective_tool}, "
@@ -5193,7 +5193,13 @@ class IRISGateway:
                 # Off-thread: _speak_response blocks on synthesis+playback and
                 # must never hold the WS handler.
                 try:
-                    _spoken_text = agent_kernel.prepare_spoken_text(response, text)
+                    # Prefer the agent's OWN `speak` line when it supplied one
+                    # (the speak/show contract). `response` now carries the FULL
+                    # answer — it is no longer the short form — so deriving a
+                    # summary from it is the fallback, not the primary path.
+                    _spoken_text = (
+                        getattr(agent_kernel, "_last_spoken_text", "") or ""
+                    ).strip() or agent_kernel.prepare_spoken_text(response, text)
                     if _spoken_text and _spoken_text.strip():
                         self._logger.info(
                             "[D2-TEXT-TTS] speaking final answer (%d chars) for "
@@ -6391,14 +6397,36 @@ class IRISGateway:
                             tool_execution_model or ""
                         )
                         if model_provider:
-                            _bindings = getattr(cfg.inference, "role_bindings", []) or []
-                            for _role in ("reasoning", "tool_execution"):
-                                _bindings = [b for b in _bindings if b.get("role") != _role]
-                            if reasoning_model:
-                                _bindings.append({"role": "reasoning", "instance_id": model_provider})
-                            if tool_execution_model:
-                                _bindings.append({"role": "tool_execution", "instance_id": model_provider})
-                            cfg.inference.role_bindings = _bindings
+                            # Project the LIVE router bindings, do not synthesise.
+                            #
+                            # This used to rebuild the list by hand as bare
+                            # {"role", "instance_id"} pairs, dropping every
+                            # model_override on the way through (2026-08-16: the
+                            # router held cohere/command-a-plus-05-2026 while the
+                            # file recorded cohere with no model). Config is the
+                            # SEED that _apply_config replays at startup, so a
+                            # lossy projection silently downgrades the user's
+                            # model to the provider's registered default on the
+                            # next restart — the same choice-losing behaviour as
+                            # the reverts, just deferred until a restart.
+                            #
+                            # set_model_selection has already bound the roles on
+                            # the process-wide table above; snapshot() is the
+                            # faithful, override-carrying view of that, and the
+                            # same projection _persist_and_broadcast_role_bindings
+                            # writes. One shape, one writer's worth of truth.
+                            _r = getattr(agent_kernel, "_router", None)
+                            if _r is not None:
+                                try:
+                                    cfg.inference.role_bindings = _r.snapshot()[
+                                        "role_bindings"
+                                    ]
+                                except Exception as _rb_err:
+                                    self._logger.warning(
+                                        "[set_model_selection] role_bindings "
+                                        "projection failed, leaving config "
+                                        "bindings untouched: %s", _rb_err,
+                                    )
                         # Resolve api_base_url: frontend-sent > canonical preset endpoint > existing
                         if api_base_url:
                             cfg.inference.api_base_url = api_base_url
@@ -9194,8 +9222,19 @@ class IRISGateway:
             )
             _prev_instance_id = _prev_binding.instance_id if _prev_binding else None
 
-            # Bind on this kernel. The registry is process-wide (REQ-5), so peer
-            # kernels observe the same binding automatically — no fan-out loop.
+            # Bind on this kernel's router. The registry and role table are
+            # process-wide (REQ-5), so peer kernels observe the same binding
+            # automatically — no fan-out loop.
+            #
+            # This calls the router directly and that is correct. Pins from
+            # 2026-08-16 flagged it as a bypass of `AgentKernel.set_role_binding`,
+            # whose legacy-field and snapshot syncs therefore never ran for real
+            # UI actions. Those syncs are gone — they were copies of state that
+            # is now derived — so the two paths are equivalent again, and the
+            # single function that mutates a binding is `RoleBindingTable.bind`,
+            # one level down, where it has always been. Routing this through the
+            # kernel would only couple the gateway to an object that holds no
+            # authority over the binding.
             _router.bind_role(role, instance_id, model_override)
 
             # REQ-7 AC1/AC3: log off the critical path — a logging failure

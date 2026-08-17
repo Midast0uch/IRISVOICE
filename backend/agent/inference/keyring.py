@@ -77,8 +77,12 @@ def get_secret(provider_id: str) -> Optional[str]:
 def set_secret(provider_id: str, key: str) -> None:
     """Store *key* for *provider_id*.
 
-    Never logs *key*.
+    Never logs *key*. Strips surrounding whitespace — keys are pasted from
+    dashboards/emails and a stray space makes every provider reject the
+    credential (401) because it is sent verbatim as ``Bearer  <key>``.
     """
+    if key:
+        key = key.strip()
     if _HAS_KEYRING:
         try:
             _keyring_lib.set_password(

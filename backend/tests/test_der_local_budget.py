@@ -15,6 +15,42 @@ import types
 import pytest
 
 
+def _stub_router(provider, model):
+    """Private router with `provider`/`model` bound to the reasoning role.
+
+    Replaces the old `k._model_provider = ...` / `k._selected_reasoning_model
+    = ...` staging: both are read-only properties derived from the binding as
+    of 2026-08-16. The registry and role table here are LOCAL instances, not
+    the process-wide singletons, so this stub cannot leak into another test.
+    """
+    from backend.agent.inference.provider import ProviderInstance, ProviderKind
+    from backend.agent.inference.registry import ProviderRegistry
+    from backend.agent.inference.roles import RoleBindingTable
+    from backend.agent.inference.router import InferenceRouter
+
+    # Kind chosen so `_provider_string_for_instance` maps back to the exact
+    # provider string the stub asked for (OLLAMA->"local", INPROCESS->
+    # "iris_local", LOCAL_OPENAI->"lmstudio", API->the instance id).
+    _kind = {
+        "local": ProviderKind.OLLAMA,
+        "iris_local": ProviderKind.INPROCESS,
+        "lmstudio": ProviderKind.LOCAL_OPENAI,
+    }.get(provider, ProviderKind.API)
+    _reg = ProviderRegistry()
+    _reg.add(
+        ProviderInstance(id=provider, label=provider, kind=_kind, model=model)
+    )
+    _r = InferenceRouter.__new__(InferenceRouter)
+    object.__setattr__(_r, "_registry", _reg)
+    object.__setattr__(_r, "_roles", RoleBindingTable(_reg))
+    object.__setattr__(_r, "_default_role", "reasoning")
+    object.__setattr__(_r, "_transports", {})
+    object.__setattr__(_r, "_inprocess_mgr", None)
+    _r.bind_role("reasoning", provider, model_override=model)
+    return _r
+
+
+
 def _load_kernel_module(monkeypatch, loaded_n_ctx):
     """Import AgentKernel with a stubbed local manager reporting loaded_n_ctx."""
     # Stub backend.agent.local_model_manager before import
@@ -31,8 +67,7 @@ def _load_kernel_module(monkeypatch, loaded_n_ctx):
     from backend.agent import agent_kernel
     # Build a minimal kernel (avoid full __init__)
     k = agent_kernel.AgentKernel.__new__(agent_kernel.AgentKernel)
-    k._model_provider = "local"
-    k._selected_reasoning_model = "Ternary-Bonsai-27B-dspark-Q4_1"
+    k._router = _stub_router("local", "Ternary-Bonsai-27B-dspark-Q4_1")
     k._context_window_overrides = {}
     return k
 
