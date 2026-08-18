@@ -1,5 +1,19 @@
 import React, { useEffect, useState } from 'react';
 
+/** What the backend auto-loader WOULD do with this model, computed by the same
+ *  recommend_profile + derive_config the load path runs. Shown before the click
+ *  so the card promises exactly what the loader delivers. */
+interface LoadPlan {
+  profile: string;
+  n_ctx: number;
+  native_ctx: number;
+  kv_cache: string;
+  vram_gb: number;
+  vram_free_gb: number;
+  fits: boolean;
+  reason: string;
+}
+
 interface ModelEntry {
   path: string;
   filename: string;
@@ -11,16 +25,27 @@ interface ModelEntry {
   vram_estimate_gb: number;
   native_ctx: number;
   loaded: boolean;
+  plan?: LoadPlan;
 }
 
 interface ModelBrowserPanelProps {
   glowColor: string;
   fontColor: string;
+  /** WebSocket sender from the dashboard. Loading and unloading both go
+   *  straight down this — see the note on doLoad. */
+  sendMessage?: (type: string, payload?: any) => boolean;
 }
 
 const LOADED_GREEN = '#22c55e';
 
-export function ModelBrowserPanel({ glowColor, fontColor }: ModelBrowserPanelProps) {
+/** 65536 -> "64k". Context numbers are the thing being compared here, and the
+ *  raw digits are too wide for the card's second row. */
+function fmtCtx(n: number): string {
+  if (!n) return '';
+  return n >= 1024 ? `${Math.round(n / 1024)}k` : String(n);
+}
+
+export function ModelBrowserPanel({ glowColor, fontColor, sendMessage }: ModelBrowserPanelProps) {
   const [models, setModels] = useState<ModelEntry[]>([]);
   const [modelsDir, setModelsDir] = useState('');
   const [loading, setLoading] = useState(true);
@@ -38,8 +63,17 @@ export function ModelBrowserPanel({ glowColor, fontColor }: ModelBrowserPanelPro
   const fetchModels = async () => {
     setLoading(true);
     setError('');
+    // Bounded fetch. Without the abort, a request issued while the backend is
+    // still starting hangs forever against the dev proxy's dead upstream, so
+    // `loading` never clears — and because Rescan is `disabled={loading}`, the
+    // panel wedges permanently on "Scanning models..." with no way for the user
+    // to retry. Observed live: two fetches fired at mount during a backend
+    // restart and never settled, while the same call from the page returned 200
+    // in 365 ms.
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 15000);
     try {
-      const res = await fetch('/api/models');
+      const res = await fetch('/api/models', { signal: ctl.signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setModels(data.models || []);
@@ -47,6 +81,7 @@ export function ModelBrowserPanel({ glowColor, fontColor }: ModelBrowserPanelPro
     } catch (err: any) {
       setError(err.message || 'Failed to load models');
     } finally {
+      clearTimeout(timer);
       setLoading(false);
     }
   };
@@ -56,6 +91,10 @@ export function ModelBrowserPanel({ glowColor, fontColor }: ModelBrowserPanelPro
   }, []);
 
   // ── WS progress listener ─────────────────────────────────────────────
+  // Terminal states are handled explicitly. This used to treat only
+  // ready/pct>=100 as an ending and leave every other outcome to a blind
+  // 60-second timeout in doLoad, so a load that ERRORED showed a spinner for a
+  // full minute and then quietly stopped — indistinguishable from success.
   useEffect(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent).detail;
@@ -67,13 +106,29 @@ export function ModelBrowserPanel({ glowColor, fontColor }: ModelBrowserPanelPro
       const payload = detail.payload ?? detail; // normalize nested payload
       if (!msgType.startsWith('local_model')) return;
 
+      const status = payload.status ?? '';
       const pct = payload.pct ?? payload.percent ?? 0;
+
+      if (status === 'error' || status === 'crashed' || payload.error) {
+        setIsLoading(false);
+        setLoadingPath('');
+        setLoadPct(0);
+        setLoadPhase('error');
+        setLoadMsg('✗ ' + (payload.error || payload.msg || 'Load failed'));
+        fetchModels();
+        return;
+      }
+
       setLoadPct(pct);
       setLoadMsg(payload.msg || payload.message || '');
-      setLoadPhase(payload.phase || payload.status || '');
-      setIsLoading(pct < 100 && payload.status !== 'ready');
-      if (pct >= 100 || payload.status === 'ready') {
+      setLoadPhase(payload.phase || status);
+
+      if (pct >= 100 || status === 'ready' || status === 'unloaded') {
+        setIsLoading(false);
+        setLoadingPath('');
         setTimeout(() => fetchModels(), 500);
+      } else {
+        setIsLoading(true);
       }
     };
     window.addEventListener('iris:ws_message', handler as EventListener);
@@ -81,62 +136,66 @@ export function ModelBrowserPanel({ glowColor, fontColor }: ModelBrowserPanelPro
   }, []);
 
   // ── Load a model ─────────────────────────────────────────────────────
-  // Route through the WebSocket `load_local_model` path (same path the
-  // dashboard's "Load Model" button uses). That handler is the single source
-  // of truth: it honors the backend load result and wires the kernel to the
-  // iris_local provider, which is what makes a local model behave like an
-  // API-key provider in the reasoning/tool dropdowns. The HTTP
-  // /api/models/load endpoint is NOT used here because it cannot wire the
-  // kernel and previously reported "loaded" even on failure.
-  const doLoad = async (path: string) => {
+  // Straight down the WebSocket `load_local_model` path. That handler is the
+  // single source of truth: it honors the backend load result, wires the kernel
+  // to the iris_local provider, and registers the provider in the
+  // InferenceRouter — which is what makes a local model behave like an API-key
+  // provider in the reasoning/tool dropdowns.
+  //
+  // This used to dispatch a `model-load-request` CustomEvent that
+  // dark-glass-dashboard listened for and forwarded to the same sendMessage.
+  // The panel is a direct child of that dashboard, so the bounce bought
+  // nothing and cost the one thing that matters: if the listener was not
+  // mounted, the click vanished with no error and the spinner ran for a
+  // minute. sendMessage arrives as a prop now, and its absence is reported.
+  //
+  // No `profile` is sent. The backend picks it per model from the real GGUF
+  // shape and free VRAM (recommend_profile -> derive_config); a hardcoded
+  // 'balanced' here would just be overridden.
+  const doLoad = (path: string) => {
     if (!path || isLoading) return;
+    if (!sendMessage) {
+      setLoadPhase('error');
+      setLoadMsg('✗ Not connected to backend');
+      return;
+    }
     setLoadingPath(path);
     setIsLoading(true);
-    setLoadMsg('Loading model…');
+    setLoadPct(0);
     setLoadPhase('loading');
-    try {
-      window.dispatchEvent(
-        new CustomEvent('model-load-request', {
-          detail: { path, profile: 'balanced' },
-        })
-      );
-      setLoadMsg('Loading… (via local model server)');
-      setLoadPct(0);
-    } catch (err: any) {
-      setLoadMsg('✗ ' + (err.message || 'Failed to request load'));
-      setLoadPct(0);
-    } finally {
+    setLoadMsg('Loading model…');
+    const sent = sendMessage('load_local_model', { model_path: path });
+    if (!sent) {
+      setIsLoading(false);
       setLoadingPath('');
-      // Keep progress bar alive until WS says 100% / done, or timeout.
-      // The WS model_load_progress listener flips isLoading off on 100%.
-      setTimeout(() => setIsLoading(false), 60000);
+      setLoadPhase('error');
+      setLoadMsg('✗ WebSocket not connected — load not sent');
     }
   };
 
   // ── Unload current model ─────────────────────────────────────────────
-  const doUnload = async () => {
+  // Also over the WebSocket, so load and unload share ONE path. The HTTP
+  // /api/models/unload endpoint stops the server but cannot de-wire the kernel
+  // or drop the provider from the router, which left a dead `local:<stem>`
+  // entry selectable in the Brain/Tool dropdowns after an unload.
+  const doUnload = () => {
     if (isLoading) return;
-    setIsLoading(true);
-    setLoadMsg('Unloading model…');
-    setLoadPhase('unloading');
-    try {
-      const res = await fetch('/api/models/unload', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
-      const data = await res.json();
-      if (data.status === 'ok') {
-        setLoadMsg('Model unloaded ✓');
-        setSelectedPath('');
-        setTimeout(() => fetchModels(), 300);
-      } else {
-        setLoadMsg('✗ ' + (data.message || 'Unknown'));
-      }
-    } catch (err: any) {
-      setLoadMsg('✗ ' + (err.message || 'Connection failed'));
-    } finally {
-      setTimeout(() => setIsLoading(false), 2500);
+    if (!sendMessage) {
+      setLoadPhase('error');
+      setLoadMsg('✗ Not connected to backend');
+      return;
     }
+    setIsLoading(true);
+    setLoadPhase('unloading');
+    setLoadMsg('Unloading model…');
+    const sent = sendMessage('unload_local_model', {});
+    if (!sent) {
+      setIsLoading(false);
+      setLoadPhase('error');
+      setLoadMsg('✗ WebSocket not connected — unload not sent');
+      return;
+    }
+    setSelectedPath('');
   };
 
   // ── Select a model (fills the field in inference mode) ───────────────
@@ -235,12 +294,37 @@ export function ModelBrowserPanel({ glowColor, fontColor }: ModelBrowserPanelPro
                 <div className={`font-medium truncate ${m.loaded ? 'text-green-400' : ''}`}>
                   {m.display_name || m.filename}
                 </div>
+                {/* Row 1 — what the file IS. Row 2 — what loading it WILL do.
+                    The plan comes from the backend's own recommend_profile +
+                    derive_config, so it cannot drift from the loader. */}
                 <div className="flex gap-2 text-[9px] opacity-50">
-                  {m.quantization && <span>{m.quantization}</span>}
-                  {m.params_b > 0 && <span>{m.params_b.toFixed(1)}B</span>}
-                  {m.vram_estimate_gb > 0 && <span>~{m.vram_estimate_gb.toFixed(1)}GB VRAM</span>}
+                  {m.quantization && m.quantization !== 'unknown' && <span>{m.quantization}</span>}
                   {m.size_gb > 0 && <span>{m.size_gb.toFixed(1)}GB</span>}
+                  {m.native_ctx > 0 && <span>{fmtCtx(m.native_ctx)} native</span>}
                 </div>
+                {m.plan && (
+                  <div
+                    className="flex gap-2 text-[9px]"
+                    style={{ color: m.plan.fits ? glowColor : '#f59e0b', opacity: 0.85 }}
+                    title={
+                      m.plan.fits
+                        ? `Loads with the ${m.plan.profile} profile: ${m.plan.n_ctx} context, `
+                          + `${m.plan.kv_cache} KV cache, ~${m.plan.vram_gb}GB of `
+                          + `${m.plan.vram_free_gb}GB free VRAM`
+                        : m.plan.reason
+                    }
+                  >
+                    {m.plan.fits ? (
+                      <>
+                        <span>→ {fmtCtx(m.plan.n_ctx)} ctx</span>
+                        <span>{m.plan.vram_gb.toFixed(1)}GB VRAM</span>
+                        <span className="opacity-70">{m.plan.profile}</span>
+                      </>
+                    ) : (
+                      <span>⚠ {m.plan.reason || "won't fit"}</span>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* ── Per-model action button ── */}

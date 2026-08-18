@@ -21,6 +21,9 @@ import { useInferenceState } from "@/hooks/useInferenceState"
 interface SwitcherEntry {
   id: string
   label: string
+  /** True for a local/in-process provider whose weights are loaded right now.
+   *  Used to float it above the API catalog entries. */
+  resident?: boolean
 }
 
 const ROLE_LABELS: Record<string, string> = {
@@ -123,7 +126,16 @@ export default function ModelSwitcher({
       .map((p) => ({
         id: p.id,
         label: p.model ? `${p.label} · ${p.model}` : p.label,
+        // A locally-loaded model is resident in VRAM right now and is almost
+        // always what the user just came here to pick. Everything else is a
+        // catalog entry that is merely reachable.
+        resident: !isApiKind(p.kind) && (p.kind || "").toLowerCase() !== "ollama" && !!p.loaded,
       }))
+      // Loaded local models first, preserving registry order within each group.
+      // Without this the local provider is appended after every API preset —
+      // measured live: the freshly loaded local model sat below ~40 Cohere /
+      // OpenAI / Cerebras / OpenCodeGo entries and had to be scrolled to.
+      .sort((a, b) => Number(b.resident) - Number(a.resident))
   }, [providers])
 
   const options = useMemo(

@@ -941,6 +941,38 @@ app.add_middleware(_IdleTrackerMiddleware)
 
 
 @app.get("/")
+@app.get("/debug/stacks")
+async def debug_thread_stacks():
+    """Dump every live thread's Python stack. DIAGNOSTIC — read-only.
+
+    Added 2026-08-17 to locate a reproducible stall: a DER turn stops producing
+    log lines after the final step's TOOL_DISPATCH and never returns from
+    process_text_message, with the process blocked rather than spinning (0.2 s
+    CPU over 5 s). Logs alone cannot say which call is parked, and a sampling
+    profiler is not installed — but sys._current_frames() is stdlib and answers
+    it directly: hit this endpoint while the turn is hung and read the frame.
+
+    Localhost-only surface, no arguments, mutates nothing.
+    """
+    import sys as _sys
+    import threading as _threading
+    import traceback as _traceback
+
+    names = {t.ident: t.name for t in _threading.enumerate()}
+    frames = _sys._current_frames()
+    out = []
+    for tid, frame in frames.items():
+        out.append({
+            "thread_id": tid,
+            "name": names.get(tid, "?"),
+            "stack": [
+                f"{fs.filename}:{fs.lineno} in {fs.name}"
+                for fs in _traceback.extract_stack(frame)
+            ][-25:],
+        })
+    return {"thread_count": len(out), "threads": out}
+
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint — used by the frontend WS hook before opening the socket.
@@ -1608,6 +1640,18 @@ async def api_inference_state():
         )
 
 
+# NOTE (2026-08-17): this endpoint has NO callers in the tree — the frontend
+# loads over the WebSocket `load_local_model` path, which is the only one that
+# also wires the kernel to the iris_local provider and registers it in the
+# InferenceRouter. A model loaded through HERE is resident in VRAM but invisible
+# to the Brain/Tool dropdowns and unreachable by inference.
+#
+# It is kept because test_local_model_load.py pins its behaviour
+# (test_api_load_model_reports_error_on_failed_load /
+# ..._reports_ok_on_successful_load) — those tests exist because of a real
+# "false loaded" regression. Removing the endpoint means removing its tests,
+# which is a deliberate decision to make explicitly, not a side effect of a
+# cleanup. Do not delete one without the other.
 @app.post("/api/models/load")
 async def api_load_model(body: dict):
     """Load a GGUF model. Body: { path, profile? }

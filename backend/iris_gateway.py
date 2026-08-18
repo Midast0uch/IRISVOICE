@@ -5094,11 +5094,31 @@ class IRISGateway:
 
                 # Send final complete message (updates the UI with the full text + metadata)
                 thinking = getattr(agent_kernel, "_pending_thinking", "") or ""
+                # THE SPOKEN LINE IS PART OF THE MESSAGE (2026-08-17).
+                #
+                # This is the same text the TTS leg below speaks. It used to be
+                # computed only there, so the UI never received it — and the
+                # word-highlight had nothing legitimate to attach to. ChatView
+                # was highlighting `message.words[i]` (words of the FULL body)
+                # against word indices the backend emits for THIS summary, so on
+                # a long answer the highlight crawled the first N words of the
+                # body while something else entirely was being spoken.
+                #
+                # Sending it means: body renders in full (no highlight), the
+                # spoken briefing is visible and is what the highlight tracks.
+                # Computed here rather than at the TTS call so both use one value.
+                try:
+                    _spoken_line = (
+                        getattr(agent_kernel, "_last_spoken_text", "") or ""
+                    ).strip() or agent_kernel.prepare_spoken_text(response, text)
+                except Exception:  # noqa: BLE001 — never fail the turn for TTS text
+                    _spoken_line = ""
                 _final_msg = {
                     "type": "chat_message",
                     "payload": {
                         "role": "assistant",
                         "content": response,
+                        "spoken": _spoken_line or "",
                         "thinking": thinking,
                         "timestamp": datetime.now().isoformat(),
                         "turn_id": turn_id,
@@ -5197,9 +5217,11 @@ class IRISGateway:
                     # (the speak/show contract). `response` now carries the FULL
                     # answer — it is no longer the short form — so deriving a
                     # summary from it is the fallback, not the primary path.
-                    _spoken_text = (
-                        getattr(agent_kernel, "_last_spoken_text", "") or ""
-                    ).strip() or agent_kernel.prepare_spoken_text(response, text)
+                    #
+                    # Reuse the value already sent to the UI as the message's
+                    # `spoken` field: what is heard and what the highlight tracks
+                    # must be the SAME string, or the highlight desyncs again.
+                    _spoken_text = _spoken_line
                     if _spoken_text and _spoken_text.strip():
                         self._logger.info(
                             "[D2-TEXT-TTS] speaking final answer (%d chars) for "
@@ -8176,6 +8198,33 @@ class IRISGateway:
                 },
             )
 
+    def _infer_local_purpose(self, session_id: str) -> str:
+        """Return ``"tool"`` when a REMOTE provider already holds the reasoning
+        role, else ``"chat"``.
+
+        "chat" means the local model is (or may become) the Brain, so it needs
+        its full context — a local Brain does its own tool calling. "tool" means
+        an API/Ollama provider is reasoning and the local model only executes
+        steps, so it can be sized down.
+
+        Fails to ``"chat"`` on any error: over-provisioning context costs VRAM,
+        under-provisioning a Brain silently truncates its window.
+        """
+        try:
+            from .agent.agent_kernel import peek_active_kernel
+            from .agent.inference.provider import ProviderKind
+
+            kernel = peek_active_kernel(session_id)
+            router = getattr(kernel, "_router", None) if kernel else None
+            if router is None:
+                return "chat"
+            inst = router.resolve("reasoning")
+            remote = {ProviderKind.API, ProviderKind.OLLAMA}
+            return "tool" if getattr(inst, "kind", None) in remote else "chat"
+        except Exception as exc:
+            self._logger.debug(f"[LocalModel] purpose inference fell back: {exc}")
+            return "chat"
+
     async def _handle_load_local_model(
         self, session_id: str, client_id: str, message: dict
     ) -> None:
@@ -8286,10 +8335,29 @@ class IRISGateway:
                 except Exception:
                     pass
 
+            # Decide what this local model is FOR before sizing it.
+            #
+            # If a remote provider already holds the reasoning role, the local
+            # model is only ever going to turn a step into a tool call — it sees
+            # tool schemas and one step, not the brain's window — so it is loaded
+            # with the tool context cap and leaves VRAM free. If the local model
+            # will BE the brain (reasoning unbound, or already bound to a local
+            # provider) it does its own tool calling and gets the full window.
+            #
+            # Only one local model fits on a single consumer GPU at a time, so
+            # the memory a tool-only model does not take is memory nothing else
+            # can use. An explicit payload `purpose` overrides the inference.
+            purpose = payload.get("purpose") or self._infer_local_purpose(session_id)
+            self._logger.info(
+                f"[LocalModel] loading {model_path} purpose={purpose} "
+                f"profile={profile}"
+            )
+
             ok = await mgr.load_model(
                 model_path,
                 profile,
                 custom_params,
+                purpose=purpose,
                 progress_cb=_progress_cb,
                 crash_cb=_crash_cb,
             )
@@ -8334,12 +8402,39 @@ class IRISGateway:
                 except Exception as kw_err:
                     self._logger.warning(f"[iris_local] Kernel wire failed: {kw_err}")
 
-                # Persist loaded status to config (parity with prior behaviour).
+                # Persist the loaded model to config.
+                #
+                # This used to write ONLY local_model_status="loaded", leaving
+                # local_model_path/local_model_id empty and the provider itself
+                # unpersisted — it lived on the in-memory registry and nowhere
+                # else. After a restart the role_bindings entry still named
+                # "local:<stem>" but no such provider existed, so resolve() fell
+                # back to whatever default was around, while the config claimed
+                # a model was loaded. Writing the ProviderEntry alongside the
+                # path/id keeps the binding resolvable across the restart.
                 try:
+                    from pathlib import Path as _P
+
+                    from .iris_config import ProviderEntry as _PE
                     from .iris_config import load_config as _lc, save_config as _sc
 
                     _cfg = _lc()
+                    _stem_p = _P(model_path).stem
                     _cfg.inference.local_model_status = "loaded"
+                    _cfg.inference.local_model_path = model_path
+                    _cfg.inference.local_model_id = _stem_p
+                    _cfg.inference.local_model_profile = profile
+                    _inproc_p = getattr(mgr, "_llm", None) is not None
+                    _cfg.inference.providers[f"local:{_stem_p}"] = _PE(
+                        id=f"local:{_stem_p}",
+                        label=f"Local: {_P(model_path).name}",
+                        kind="INPROCESS" if _inproc_p else "LOCAL_OPENAI",
+                        model=_stem_p,
+                        purpose="chat",
+                        endpoint="" if _inproc_p else mgr.ENDPOINT,
+                        model_path=model_path,
+                        profile=profile,
+                    )
                     _sc(_cfg)
                 except Exception as cfg_err:
                     self._logger.debug(f"[iris_local] status save skipped: {cfg_err}")
@@ -8414,17 +8509,25 @@ class IRISGateway:
                 # ever sent `local_model_loading` (a progress channel); the badge
                 # listens on `local_model_status`, so it sat at UNLOADED even
                 # after a successful load.
-                await self._ws_manager.broadcast_to_session(
-                    session_id,
-                    {
-                        "type": "local_model_status",
-                        "payload": {
-                            "loaded": True,
-                            "status": "loaded",
-                            "model_path": model_path,
-                            "profile": profile,
-                        },
+                # Send to the REQUESTING CLIENT as well as the session.
+                # broadcast_to_session silently returns when the session lookup
+                # misses, and the MODEL STATUS badge is driven only by this
+                # message while the progress bar is driven by send_to_client —
+                # which is why a load could complete, wire the kernel and
+                # register the provider while the badge still read UNLOADED.
+                # The initiator must always be told, session or no session.
+                _status_msg = {
+                    "type": "local_model_status",
+                    "payload": {
+                        "loaded": True,
+                        "status": "loaded",
+                        "model_path": model_path,
+                        "profile": profile,
                     },
+                }
+                await self._ws_manager.send_to_client(client_id, _status_msg)
+                await self._ws_manager.broadcast_to_session(
+                    session_id, _status_msg, exclude_clients={client_id}
                 )
 
                 await self._handle_get_available_models(session_id, client_id, {})
@@ -8446,17 +8549,18 @@ class IRISGateway:
                 # Same badge channel on the failure path, so a load that did not
                 # come up is shown as ERROR rather than left at whatever the
                 # badge said before.
-                await self._ws_manager.broadcast_to_session(
-                    session_id,
-                    {
-                        "type": "local_model_status",
-                        "payload": {
-                            "loaded": False,
-                            "status": "error",
-                            "model_path": model_path,
-                            "error": payload_out.get("error", "Model load failed"),
-                        },
+                _err_msg = {
+                    "type": "local_model_status",
+                    "payload": {
+                        "loaded": False,
+                        "status": "error",
+                        "model_path": model_path,
+                        "error": payload_out.get("error", "Model load failed"),
                     },
+                }
+                await self._ws_manager.send_to_client(client_id, _err_msg)
+                await self._ws_manager.broadcast_to_session(
+                    session_id, _err_msg, exclude_clients={client_id}
                 )
         except Exception as e:
             self._logger.error(f"[LocalModel] load_local_model error: {e}")

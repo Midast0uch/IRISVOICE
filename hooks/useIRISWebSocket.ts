@@ -257,6 +257,9 @@ export function useIRISWebSocket(
   // True while a text_message is being processed — drives ChatView typing indicator
   // independently of voiceState so the IrisOrb never animates for typed messages.
   const [isChatTyping, setIsChatTyping] = useState<boolean>(false)
+  // Bumped on every inbound WS frame. Feeds the typing-indicator watchdog below
+  // so it measures SILENCE from the backend rather than elapsed turn time.
+  const [typingActivityTick, setTypingActivityTick] = useState(0)
   // Single source of truth for the ACTIVE conversation thread.  Initialized
   // from localStorage so thread identity survives component unmounts, widget
   // drags, Tauri window reopens, and WS reconnects — the active thread must
@@ -337,17 +340,31 @@ export function useIRISWebSocket(
   // disagree about which thread was live. There is nothing left to synchronise:
   // the store IS the value, and it owns the localStorage write.
 
-  // Safety timeout: reset typing indicator if no chat_typing:false event
-  // arrives within 30s. Covers the case where backend crashes mid-response
-  // or chat_typing event is lost, leaving thinking... stuck.
+  // Safety timeout: reset the typing indicator if the backend goes SILENT.
+  // Covers a backend crash mid-response or a lost chat_typing:false event,
+  // which would otherwise leave "thinking…" stuck forever.
+  //
+  // SILENCE WATCHDOG, NOT A FIXED CAP (2026-08-17). This was a flat 30 s from
+  // the moment typing began, so it fired on every healthy multi-step turn —
+  // measured live: typing went true at t=26 s and false at t=56 s, exactly 30 s
+  // later, while step 4 of 4 was still running. The indicator then stayed off
+  // until the answer arrived, leaving the UI completely blank for the rest of
+  // the turn (16 s on a 45 s turn; 62 s on a slower one). A DER turn legitimately
+  // runs far past 30 s, so the cap was guaranteed to misfire.
+  //
+  // `typingActivityTick` bumps on every inbound WS frame, so the timer restarts
+  // whenever the backend is demonstrably alive. It now only fires after a real
+  // stretch of silence — which is the condition it was written for.
   useEffect(() => {
     if (!isChatTyping) return;
     const timer = setTimeout(() => {
       setIsChatTyping(false);
-      console.log("[IRIS WebSocket] Typing indicator safety timeout — reset");
-    }, 30_000);
+      console.log(
+        "[IRIS WebSocket] Typing indicator reset — no backend activity for 90s",
+      );
+    }, 90_000);
     return () => clearTimeout(timer);
-  }, [isChatTyping])
+  }, [isChatTyping, typingActivityTick])
 
   const isConnected = connectionState === "connected"
 
@@ -531,6 +548,10 @@ export function useIRISWebSocket(
   // Handle incoming messages
   const handleMessage = useCallback((message: Record<string, unknown>) => {
     const type = message.type
+    // Proof of life for the typing watchdog: any frame from the backend means
+    // it is still working, so the "stuck indicator" timer restarts. Cheap —
+    // a counter bump, and the watchdog is the only reader.
+    setTypingActivityTick((n) => n + 1)
     // BUG-01 FIX: Extract payload correctly.
     // Backend sends EITHER { type, payload: {...} } (nested) OR { type, key1, key2 } (flat).
     // Old code `const { type, ...payload } = message` double-nested when backend used "payload" key,
@@ -800,6 +821,11 @@ export function useIRISWebSocket(
         const content = typeof payload.content === 'string' ? payload.content : null
         if (content) {
           const thinking = typeof payload.thinking === 'string' ? payload.thinking : undefined
+          // `spoken` is the line TTS actually says — a short briefing when the
+          // answer is long (iris_gateway builds it alongside `content`). ChatView
+          // needs it because the backend's tts_word indices count words of THIS
+          // string, not of the body.
+          const spoken = typeof payload.spoken === 'string' ? payload.spoken : undefined
           setLastTextResponse({
             text: content,
             sender: "assistant",
@@ -808,7 +834,7 @@ export function useIRISWebSocket(
           // Also dispatch CustomEvent so chat-view synchronous listener catches it
           if (typeof window !== 'undefined') {
             window.dispatchEvent(new CustomEvent('iris:text_response', {
-              detail: { text: content, sender: 'assistant', thinking }
+              detail: { text: content, sender: 'assistant', thinking, spoken }
             }))
           }
         }
@@ -1248,8 +1274,19 @@ export function useIRISWebSocket(
         } else {
           status = 'unloaded'
         }
+        // The badge field is declared in data/cards.ts under section id
+        // 'local-model-card' (hyphens), and dark-glass-dashboard resolves a
+        // field's value by that SECTION id. Writing only to `local_model`
+        // dropped every update into a bucket nothing renders, which is why a
+        // load could succeed, wire the kernel and register the provider while
+        // MODEL STATUS still read UNLOADED. Write both: the hyphenated section
+        // the card actually uses, and the legacy key other panels read.
         setFieldValues((prev) => ({
           ...prev,
+          'local-model-card': {
+            ...((prev as any)['local-model-card'] || {}),
+            local_model_status: status,
+          },
           local_model: { ...(prev.local_model || {}), local_model_status: status },
         }))
         // Forward to any panel that listens on iris:ws_message

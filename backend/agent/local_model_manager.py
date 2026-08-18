@@ -37,7 +37,7 @@ import time
 from multiprocessing import cpu_count
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, AsyncGenerator, Dict, Iterator, List, Optional
+from typing import Any, AsyncGenerator, Dict, Iterator, List, Optional, Tuple
 from dataclasses import dataclass
 
 import httpx
@@ -71,6 +71,22 @@ IRISVOICE_ROOT = Path(__file__).parent.parent.parent
 
 # ── Quantization bits-per-weight table (for VRAM estimation) ──
 QUANT_BPW: Dict[str, float] = {
+    # Sub-2-bit families. Without these a Bonsai Q1_0 or a maple TQ1_0 fell to
+    # the 4.85 default and its weights were priced 4-5x over — a 3.5 GB file
+    # was estimated at 18 GB, which no card here has, so the deriver collapsed
+    # its context to the floor.
+    "TQ1_0": 1.69,
+    "TQ2_0": 2.06,
+    "Q1_0": 1.75,
+    "Q2_0": 2.25,
+    "IQ2_XXS": 2.06,
+    "IQ2_XS": 2.31,
+    "IQ2_S": 2.5,
+    "IQ2_M": 2.7,
+    "IQ3_XXS": 3.06,
+    "IQ3_S": 3.44,
+    "IQ3_M": 3.66,
+    "IQ4_XS": 4.25,
     "Q2_K": 2.56,
     "Q3_K_S": 3.0,
     "Q3_K_M": 3.35,
@@ -419,6 +435,80 @@ class ConfigCache:
             logger.warning(f"[ConfigCache] failed to persist cache: {exc}")
 
 
+def _nvidia_smi_info(info: Dict[str, Any]) -> bool:
+    """Fill *info* with GPU name / total / free VRAM from the NVIDIA driver.
+
+    Returns True when the driver answered, False when nvidia-smi is missing or
+    reports no device (so the caller can fall back). Mutates *info* in place
+    only on success, so a failed probe cannot leave half-written fields.
+
+    Deliberately shells out rather than importing a CUDA-linked library: this
+    runs on every hardware refresh, and importing torch/llama_cpp here would
+    initialise a CUDA context (360 MB + driver init) just to read two numbers.
+    """
+    # Retry once on timeout. nvidia-smi can take many seconds to answer while
+    # the driver is busy — measured live at >10 s during backend startup with a
+    # model loading. A single timeout used to fall straight through to the torch
+    # branch, and with a CPU-only torch wheel that reports cuda_available=False,
+    # so ONE slow driver call made every local model unloadable
+    # ("GPU offload required"). The card is still there; the probe was just slow.
+    proc = None
+    for attempt, timeout_s in enumerate((20, 30)):
+        try:
+            proc = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=name,memory.total,memory.free",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+            )
+            break
+        except subprocess.TimeoutExpired as exc:
+            logger.warning(
+                f"[LocalModelManager] nvidia-smi timed out after {timeout_s}s "
+                f"(attempt {attempt + 1}/2): {exc}"
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            # Not installed / not on PATH — no point retrying.
+            logger.debug(f"[LocalModelManager] nvidia-smi unavailable: {exc}")
+            return False
+    if proc is None:
+        logger.warning(
+            "[LocalModelManager] nvidia-smi did not answer; falling back to "
+            "torch for GPU detection (a CPU-only torch build will report no GPU)"
+        )
+        return False
+    if proc.returncode != 0:
+        logger.debug(
+            f"[LocalModelManager] nvidia-smi exit {proc.returncode}: "
+            f"{(proc.stderr or '').strip()[:200]}"
+        )
+        return False
+
+    line = next((ln for ln in proc.stdout.splitlines() if ln.strip()), "")
+    parts = [p.strip() for p in line.split(",")]
+    if len(parts) < 3:
+        return False
+    try:
+        name, total_mib, free_mib = parts[0], float(parts[1]), float(parts[2])
+    except ValueError:
+        logger.debug(f"[LocalModelManager] nvidia-smi parse failed: {line!r}")
+        return False
+
+    info.update(
+        {
+            "cuda_available": True,
+            "gpu_name": name,
+            "vram_total_gb": round(total_mib / 1024.0, 1),
+            "vram_free_gb": round(free_mib / 1024.0, 1),
+        }
+    )
+    return True
+
+
 def resolve_device_policy(
     purpose: str,
     user_override: Optional[str] = None,
@@ -528,6 +618,34 @@ _GGML_TYPE_INT: Dict[str, int] = {
 # When present in a profile and the fork IS installed, they are forwarded to
 # Llama(cache_type_k=..., cache_type_v=...) as strings.
 _ROTORQUANT_KV_TYPES = frozenset({"planar3", "iso3", "planarquant", "isoquant"})
+
+# TOOL_CTX_CAP — context ceiling for a local model loaded for TOOL-ONLY duty
+# (an API/Ollama provider holds the reasoning role, the local model just turns a
+# step into a tool call).
+#
+# A tool call sees the tool schemas, the current step and a little history — it
+# does not need the brain's window. Sizing one at its native context is pure
+# waste on a single-GPU box: TwIL-LM3 at its full 65536 occupies 6477 MB of an
+# 8 GB card, where the same model at 16384 leaves ~2 GB free. Nothing else can
+# use that memory, because only one local model fits at a time.
+#
+# A local model serving the REASONING role is never capped here — it does its
+# own tool calling and needs the full window.
+TOOL_CTX_CAP = int(os.environ.get("IRIS_TOOL_CTX_CAP", "16384"))
+
+# Fidelity ranking of KV cache types, used ONLY to break a tie between two
+# profiles that deliver the same context. Higher is more faithful. A tool model
+# emits structured calls that must parse, so when the context is equal the
+# less-compressed cache is the better pick.
+_KV_QUALITY: Dict[str, int] = {
+    "f32": 5, "f16": 4, "bf16": 4, "q8_0": 3, "q5_1": 2, "q5_0": 2,
+    "q4_1": 1, "q4_0": 1,
+}
+
+# KV cache types that store one byte per element. Used to size the cache
+# honestly: f16 is 2 bytes, and budgeting f16 for a q8_0 cache halves the
+# context the deriver will hand the loader.
+_ONE_BYTE_KV_TYPES = frozenset({"q8_0", "q8_1", "q4_0", "q4_1", "q5_0", "q5_1"})
 
 
 class LocalModelManager:
@@ -650,10 +768,45 @@ class LocalModelManager:
     # ─────────────────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _inprocess_enabled() -> bool:
-        """Feature flag — default on. Set IRIS_INPROCESS_LLAMA=0 to restore
-        the subprocess path while the in-process implementation is verified."""
-        return os.environ.get("IRIS_INPROCESS_LLAMA", "1") != "0"
+    def _inprocess_gpu_capable() -> bool:
+        """True when the installed llama-cpp-python can offload to the GPU.
+
+        Importing llama_cpp here is cheap relative to a model load and this is
+        only reached on the load path, never at startup.
+        """
+        try:
+            import llama_cpp
+
+            return bool(llama_cpp.llama_supports_gpu_offload())
+        except Exception as exc:
+            logger.debug(f"[LocalModelManager] llama_cpp GPU probe failed: {exc}")
+            return False
+
+    @classmethod
+    def _inprocess_enabled(cls) -> bool:
+        """Feature flag — default on, but only when the in-process runtime can
+        actually reach the GPU.
+
+        ``IRIS_INPROCESS_LLAMA=0`` still forces the subprocess path. What is new
+        is the capability check: the wheel installed in this venv
+        (llama-cpp-python 0.3.29) reports ``llama_supports_gpu_offload() ==
+        False``, so the default in-process path accepted ``n_gpu_layers=-1``,
+        ignored it, and ran every local model on the CPU with no error and no
+        log line. The "GPU-ONLY, never accept n_gpu_layers=0" rule was enforced
+        only in ``_build_server_cmd`` — the path this flag routes AWAY from.
+        Rather than fail the load, fall back to the compiled CUDA llama-server,
+        which is present and does honour the offload.
+        """
+        if os.environ.get("IRIS_INPROCESS_LLAMA", "1") == "0":
+            return False
+        if not cls._inprocess_gpu_capable():
+            logger.warning(
+                "[LocalModelManager] in-process llama-cpp-python has no GPU "
+                "offload support; routing to the compiled llama-server instead "
+                "(a CPU load is never an acceptable fallback for a local brain)"
+            )
+            return False
+        return True
 
     def _build_llama_ctor_kwargs(
         self, model_path: str, params: Dict[str, Any]
@@ -919,6 +1072,25 @@ class LocalModelManager:
             vm = psutil.virtual_memory()
             info["ram_total_gb"] = round(vm.total / (1024**3), 1)
 
+        # ── Primary: nvidia-smi ────────────────────────────────────────────
+        # The driver is the authority on what the GPU is and how much of it is
+        # free. torch was the only detector here, and a CPU-only torch wheel
+        # (torch 2.12.0+cpu) reports cuda_available=False on a machine with a
+        # working CUDA llama-server — which made _preflight_resource_check
+        # reject EVERY local model with "GPU offload required". A CPU build of
+        # an unrelated library must never decide whether this box has a GPU.
+        #
+        # nvidia-smi is also the only source that reports TRUE free VRAM.
+        # torch.memory_allocated() counts only torch's own allocations, so the
+        # old vram_free_gb ignored the llama-server subprocess entirely and
+        # reported the card as empty while a model was resident in it.
+        if _nvidia_smi_info(info):
+            info["models_dir"] = str(self.effective_models_dir)
+            self._hw_cache = info
+            self._hw_cache_time = _time.monotonic()
+            return info
+
+        # ── Fallback: torch (only if nvidia-smi is unavailable) ────────────
         # Lazy torch import — avoids 360 MB cost at startup.
         try:
             import torch as _torch
@@ -1075,7 +1247,17 @@ class LocalModelManager:
 
             size_gb = round(st.st_size / (1024**3), 2)
             quant = meta.get("quantization") or self._quant_from_filename(stem)
-            vram_est = self.estimate_vram_gb(meta) if meta.get("params_b") else 0.0
+
+            # What the auto-loader WOULD do with this model, computed by the
+            # same recommender + deriver the load path runs. The browser card
+            # can then show the decision before the click instead of after.
+            #
+            # The old `vram_estimate_gb` was estimate_vram_gb(meta) with no
+            # n_ctx, so it silently used the model's NATIVE context — 262144 for
+            # Bonsai-27B — and printed a VRAM figure for a configuration nobody
+            # would ever load. It was also gated on params_b, which most GGUFs
+            # here do not carry, so it usually read 0.0 anyway.
+            plan = self.plan_load(meta, size_gb)
 
             model_settings = settings.get(filename, {})
 
@@ -1088,7 +1270,10 @@ class LocalModelManager:
                 "params_b": meta.get("params_b", 0),
                 "native_ctx": meta.get("context_length", 0),
                 "quantization": quant,
-                "vram_estimate_gb": round(vram_est, 1),
+                # VRAM at the context this model would actually be loaded with,
+                # not at its native maximum.
+                "vram_estimate_gb": plan["vram_gb"],
+                "plan": plan,
                 "loaded": (
                     self._current_model_path is not None
                     and Path(self._current_model_path).resolve() == gguf_path.resolve()
@@ -1109,346 +1294,279 @@ class LocalModelManager:
         models.sort(key=lambda m: (not m["pinned"], m["display_name"].lower()))
         return models
 
-    def parse_gguf_metadata(self, path: Path) -> Dict[str, Any]:
-        """
-        Read GGUF binary header to extract architecture, parameter count,
-        context length, and quantization type.
+    # ── GGUF value-type enum (ggml/src/gguf.cpp, gguf_type) ────────────────
+    # There is exactly ONE encoding. An earlier revision of this method carried
+    # three ("auto" / "standard" / "non_standard") on the belief that LM Studio
+    # wrote a variant enum where 4=UINT32 and 8=STRING. It does not — every
+    # file under ~/.lmstudio/models is ordinary GGUF v3. The heuristics
+    # desynced the cursor on the first non-string value, so architecture (the
+    # first key, and a string under either reading) survived while
+    # context_length / block_count / embedding_length / head counts came back
+    # None for nearly every model, and the few numbers that did land were
+    # wrong. Everything downstream — derive_config, estimate_vram_gb, the
+    # browser's quant/params/VRAM columns — was reading that noise.
+    _GGUF_UINT8, _GGUF_INT8 = 0, 1
+    _GGUF_UINT16, _GGUF_INT16 = 2, 3
+    _GGUF_UINT32, _GGUF_INT32 = 4, 5
+    _GGUF_FLOAT32, _GGUF_BOOL = 6, 7
+    _GGUF_STRING, _GGUF_ARRAY = 8, 9
+    _GGUF_UINT64, _GGUF_INT64, _GGUF_FLOAT64 = 10, 11, 12
 
-        Optimised for WSL / network mounts: reads the entire header block
-        into memory once, then parses from a buffer.  Avoids hundreds of
-        tiny 1-8 byte reads across the 9P boundary which hang on
-        Windows-mounted drives.
+    # struct format + byte width for every fixed-width GGUF scalar.
+    _GGUF_SCALARS: Dict[int, Tuple[str, int]] = {
+        0: ("<B", 1), 1: ("<b", 1), 2: ("<H", 2), 3: ("<h", 2),
+        4: ("<I", 4), 5: ("<i", 4), 6: ("<f", 4), 7: ("<?", 1),
+        10: ("<Q", 8), 11: ("<q", 8), 12: ("<d", 8),
+    }
+
+    # general.file_type -> quantization label (llama_ftype in llama.h). Only the
+    # values that name a quantization we can price in QUANT_BPW are listed; an
+    # unknown ftype falls back to the filename sniff.
+    _GGUF_FTYPE_QUANT: Dict[int, str] = {
+        0: "F32", 1: "F16", 2: "Q4_0", 3: "Q4_1", 7: "Q8_0", 8: "Q5_0",
+        9: "Q5_1", 10: "Q2_K", 11: "Q3_K_S", 12: "Q3_K_M", 13: "Q3_K_L",
+        14: "Q4_K_S", 15: "Q4_K_M", 16: "Q5_K_S", 17: "Q5_K_M", 18: "Q6_K",
+        19: "IQ2_XXS", 20: "IQ2_XS", 23: "IQ3_XXS", 25: "IQ3_S", 26: "IQ3_M",
+        27: "IQ2_S", 28: "IQ2_M", 29: "IQ4_XS", 30: "BF16",
+        36: "TQ1_0", 37: "TQ2_0",
+    }
+
+    def parse_gguf_metadata(self, path: Path) -> Dict[str, Any]:
+        """Read a GGUF header and return both the raw KV pairs and the derived
+        fields the loader needs.
+
+        Derived keys (the contract callers depend on):
+            architecture, model_name, params_b, context_length, block_count,
+            embed_dim, n_head, n_head_kv, head_dim, quantization,
+            is_mtp, is_moe
+
+        Raw ``general.*`` / ``<arch>.*`` keys are returned alongside them
+        because :meth:`_detect_quantization` scans the raw map for RotorQuant
+        markers. Array values are collapsed to a short ``"<array:N>"`` marker
+        so a 150 k-entry tokenizer vocabulary never lands in memory.
+
+        Reads one bounded slice of the file rather than many small reads — the
+        original motivation, which still holds on WSL / network mounts where
+        per-read latency dominates. Returns ``{}`` for anything that is not a
+        readable GGUF; callers already treat an empty dict as "unknown".
         """
         meta: Dict[str, Any] = {}
-        GGUF_MAGIC = b"GGUF"
+        raw: Dict[str, Any] = {}
+        tensor_pos = 0
+        try:
+            file_size = path.stat().st_size
+        except OSError:
+            file_size = 0
 
-        # Read just the fixed header first (24 bytes) to validate
-        with open(path, "rb") as f:
-            header = f.read(24)
-        if len(header) < 24 or header[:4] != GGUF_MAGIC:
-            return meta
+        try:
+            # Buffered reads against the open handle rather than one fixed
+            # slurp. A fixed buffer has to be sized for the largest tokenizer
+            # vocabulary in existence or it truncates mid-metadata — an 8 MB
+            # slice already cut Bonsai-27B off at key 31 of 39. Seeking past
+            # array payloads costs nothing and has no ceiling. The 1 MB
+            # buffering keeps the WSL / network-mount case (many tiny reads
+            # across a 9P boundary) fast, which is why this read was batched in
+            # the first place.
+            with open(path, "rb", buffering=1 << 20) as f:
+                header = f.read(24)
+                if len(header) < 24 or header[:4] != b"GGUF":
+                    return meta
+                version = struct.unpack("<I", header[4:8])[0]
+                if version not in (1, 2, 3):
+                    return meta
+                kv_count = struct.unpack("<Q", header[16:24])[0]
 
-        version = struct.unpack("<I", header[4:8])[0]
-        if version not in (1, 2, 3):
-            return meta
+                def _take(n: int) -> bytes:
+                    chunk = f.read(n)
+                    if len(chunk) < n:
+                        raise EOFError(f"GGUF truncated: wanted {n}, got {len(chunk)}")
+                    return chunk
 
-        _tensor_count = struct.unpack("<Q", header[8:16])[0]
-        kv_count = struct.unpack("<Q", header[16:24])[0]
+                def _read_string() -> str:
+                    length = struct.unpack("<Q", _take(8))[0]
+                    if length > file_size:
+                        raise ValueError(f"implausible GGUF string length {length}")
+                    return _take(length).decode("utf-8", errors="replace")
 
-        # Now read a reasonably-sized chunk that should contain all metadata.
-        # Most GGUF files have < 32 KB of metadata, but MoE models (e.g.
-        # LFM2.5-8B-A1B with 32 experts) can have ~900 KB. We cap at 2 MB.
-        META_READ_SIZE = 2_097_152
-        with open(path, "rb") as f:
-            f.read(24)  # skip header we already parsed
-            buf = f.read(META_READ_SIZE)
+                def _read_value(vtype: int) -> Any:
+                    spec = self._GGUF_SCALARS.get(vtype)
+                    if spec is not None:
+                        fmt, width = spec
+                        return struct.unpack(fmt, _take(width))[0]
+                    if vtype == self._GGUF_STRING:
+                        return _read_string()
+                    if vtype == self._GGUF_ARRAY:
+                        elem_type = struct.unpack("<I", _take(4))[0]
+                        count = struct.unpack("<Q", _take(8))[0]
+                        elem_spec = self._GGUF_SCALARS.get(elem_type)
+                        if elem_spec is not None:
+                            f.seek(count * elem_spec[1], 1)
+                        elif elem_type == self._GGUF_STRING:
+                            for _ in range(count):
+                                f.seek(struct.unpack("<Q", _take(8))[0], 1)
+                        else:
+                            raise ValueError(
+                                f"GGUF array of unknown type {elem_type}"
+                            )
+                        return f"<array:{count}>"
+                    raise ValueError(f"unknown GGUF value type {vtype}")
 
-        pos = 0
-        buf_len = len(buf)
-
-        def _read(n: int) -> bytes:
-            nonlocal pos
-            end = pos + n
-            if end > buf_len:
-                raise EOFError()
-            data = buf[pos:end]
-            pos = end
-            return data
-
-        def read_str() -> str:
-            length = struct.unpack("<Q", _read(8))[0]
-            return _read(length).decode("utf-8", errors="replace")
-
-        # GGUF value type readers. This file uses a non-standard type enum
-        # (type 4 = UINT32, type 8 = STRING) that differs from the GGUF spec
-        # (type 4 = STRING, type 8 = ARRAY). We support BOTH encodings by
-        # treating type 4 and type 8 as STRING, and type 0 as UINT32.
-        # The non-standard mapping is what LM Studio / HF cache GGUF files use.
-        _GGUF_TYPE_READERS = {
-            0: lambda: struct.unpack("<I", _read(4))[0],   # UINT32
-            1: lambda: struct.unpack("<i", _read(4))[0],   # INT32
-            2: lambda: struct.unpack("<f", _read(4))[0],   # FLOAT32
-            3: lambda: struct.unpack("<?", _read(1))[0],   # BOOL
-            5: lambda: struct.unpack("<Q", _read(8))[0],   # UINT64
-            6: lambda: struct.unpack("<q", _read(8))[0],   # INT64
-            7: lambda: struct.unpack("<d", _read(8))[0],   # FLOAT64
-            9: lambda: struct.unpack("<H", _read(2))[0],   # UINT16 (standard) — may be ARRAY (non-standard)
-            11: lambda: read_str(),                        # STRING_DEPRECATED
-        }
-
-        def _try_string() -> Any:
-            """Try to read a STRING value (8-byte length + data).
-            Returns None if the length looks unreasonable."""
-            nonlocal pos
-            peek = buf[pos:pos+8]
-            if len(peek) < 8:
-                return None
-            slen = struct.unpack("<Q", peek)[0]
-            if slen > 0 and slen < 65536 and pos + 8 + slen <= buf_len:
-                pos += 8
-                return _read(slen).decode("utf-8", errors="replace")
-            return None
-
-        class _StopParsing(Exception):
-            """Raised when a value's length cannot be determined (cursor unrecoverable)."""
-
-        def _read_str_strict() -> str:
-            slen = struct.unpack("<Q", _read(8))[0]
-            if slen <= 0 or slen >= 65536 or pos + slen > buf_len:
-                raise _StopParsing()
-            return _read(slen).decode("utf-8", errors="replace")
-
-        def _read_array_strict() -> list:
-            elem_type = struct.unpack("<I", _read(4))[0]
-            count = struct.unpack("<Q", _read(8))[0]
-            if elem_type not in _GGUF_TYPE_READERS or count >= 1024:
-                raise _StopParsing()
-            return [read_value(elem_type, "auto") for _ in range(count)]
-
-        def _skip_string() -> bool:
-            slen = struct.unpack("<Q", _read(8))[0]
-            if slen <= 0 or slen >= 65536 or pos + slen > buf_len:
-                return False
-            _read(slen)
-            return True
-
-        def _skip_array() -> bool:
-            elem_type = struct.unpack("<I", _read(4))[0]
-            count = struct.unpack("<Q", _read(8))[0]
-            if elem_type not in _GGUF_TYPE_READERS or count >= 1024:
-                return False
-            for _ in range(count):
-                if not _skip_value(elem_type, "auto"):
-                    return False
-            return True
-
-        def _skip_value(vtype: int, mode: str = "auto") -> bool:
-            """Advance pos past a value of `vtype`. Return False if the type's
-            length cannot be determined (cursor unrecoverable)."""
-            if vtype in (0, 1, 2, 3):
-                _read({0: 4, 1: 4, 2: 4, 3: 1}[vtype]); return True
-            if vtype in (5, 6, 7):
-                _read(8); return True
-            if vtype == 10:
-                return False  # COMPLEX — unsized
-            if vtype == 11:  # STRING_DEPRECATED
-                slen = struct.unpack("<Q", _read(8))[0]
-                _read(slen); return True
-            if vtype == 4:  # STRING or UINT32
-                if mode == "non_standard":
-                    _read(4); return True
-                peek = buf[pos:pos + 8]
-                if len(peek) >= 8:
-                    slen = struct.unpack("<Q", peek)[0]
-                    if 0 < slen < 65536 and pos + 8 + slen <= buf_len:
-                        _read(8 + slen); return True
-                if mode == "standard":
-                    return False
-                _read(4); return True  # auto UINT32 fallback
-            if vtype == 8:  # STRING or ARRAY
-                if mode == "non_standard":
-                    return _skip_string()
-                peek = buf[pos:pos + 8]
-                if len(peek) >= 8:
-                    slen = struct.unpack("<Q", peek)[0]
-                    if 0 < slen < 65536 and pos + 8 + slen <= buf_len:
-                        _read(8 + slen); return True
-                if mode == "standard":
-                    return _skip_array()
-                return _skip_array()  # auto: try array
-            if vtype == 9:  # ARRAY or UINT16
-                if mode == "standard":
-                    _read(2); return True
-                peek = buf[pos:pos + 12]
-                if len(peek) >= 12:
-                    elem_type = struct.unpack("<I", peek[:4])[0]
-                    count = struct.unpack("<Q", peek[4:12])[0]
-                    if elem_type in _GGUF_TYPE_READERS and count < 1024:
-                        _read(12)
-                        for _ in range(count):
-                            if not _skip_value(elem_type, mode):
-                                return False
-                        return True
-                if mode == "non_standard":
-                    return False
-                _read(2); return True  # auto UINT16 fallback
-            return False
-
-        def read_value(vtype: int, mode: str = "auto") -> Any:
-            nonlocal pos
-            if mode == "standard":
-                if vtype == 4:
-                    return _read_str_strict()
-                if vtype == 8:
-                    return _read_array_strict()
-                if vtype == 9:
-                    return struct.unpack("<H", _read(2))[0]
-            elif mode == "non_standard":
-                if vtype == 4:
-                    return struct.unpack("<I", _read(4))[0]
-                if vtype == 8:
-                    return _read_str_strict()
-                if vtype == 9:
-                    return _read_array_strict()
-            # auto (default) — tries STRING first, falls back (current behavior)
-            if vtype == 4:
-                result = _try_string()
-                if result is not None:
-                    return result
-                return struct.unpack("<I", _read(4))[0]
-            if vtype == 8:
-                result = _try_string()
-                if result is not None:
-                    return result
-                elem_type = struct.unpack("<I", _read(4))[0]
-                count = struct.unpack("<Q", _read(8))[0]
-                if elem_type in _GGUF_TYPE_READERS and count < 1024:
-                    return [read_value(elem_type, mode) for _ in range(count)]
-                raise _StopParsing()
-            if vtype == 9:
-                peek = buf[pos:pos + 12]
-                if len(peek) >= 12:
-                    elem_type = struct.unpack("<I", peek[:4])[0]
-                    count = struct.unpack("<Q", peek[4:12])[0]
-                    if elem_type in _GGUF_TYPE_READERS and count < 1024:
-                        pos += 12
-                        return [read_value(elem_type, mode) for _ in range(count)]
-                return struct.unpack("<H", _read(2))[0]
-            if vtype == 10:  # COMPLEX — not needed for metadata
-                raise _StopParsing()
-            reader = _GGUF_TYPE_READERS.get(vtype)
-            if reader is None:
-                raise _StopParsing()
-            return reader()
-
-        def _is_sane_architecture(arch: Any) -> bool:
-            if not isinstance(arch, str) or not arch:
-                return False
-            return all(32 <= ord(c) < 127 for c in arch)
-
-        def _parse_once(mode: str) -> Dict[str, Any]:
-            """Parse the KV section once under enum `mode`.
-
-            GAP 2 fix: a single unparseable key no longer discards every key
-            after it. On a per-key failure we skip the value and continue with
-            the NEXT key; we stop (marked ``_partial``) only when the cursor is
-            genuinely unrecoverable.
-            """
-            nonlocal pos
-            pos = 0
-            result: Dict[str, Any] = {}
-            skipped: list = []
-            for _ in range(min(kv_count, 256)):
                 try:
-                    key = read_str()
-                    vtype = struct.unpack("<I", _read(4))[0]
-                    val = read_value(vtype, mode)
-                except _StopParsing:
-                    result["_partial"] = True
-                    break
-                except Exception:
-                    # Recoverable error (e.g. truncated buffer): skip the value
-                    # and continue instead of discarding all remaining keys.
-                    try:
-                        if not _skip_value(vtype, mode):
-                            result["_partial"] = True
-                            break
-                    except Exception:
-                        result["_partial"] = True
-                        break
-                    skipped.append(key)
-                    continue
-                if key == "general.architecture" and isinstance(val, str):
-                    result["architecture"] = val
-                elif key == "general.parameter_count" and isinstance(val, int):
-                    result["params_b"] = round(val / 1e9, 1)
-                elif key == "general.name" and isinstance(val, str):
-                    result["model_name"] = val
-                    if "mtp" in val.lower():
-                        result["is_mtp"] = True
-                elif key == "general.size_label" and isinstance(val, str):
-                    # e.g. "1.2B", "450M", "8B" — fallback when parameter_count is absent
-                    try:
-                        val_stripped = val.strip().upper()
-                        if "X" in val_stripped:
-                            # MoE format: "32x959M" → 32 experts × 959M = 30.7B total params
-                            parts = val_stripped.split("X")
-                            if len(parts) == 2:
-                                n_experts = int(parts[0])
-                                per_expert = parts[1]
-                                if per_expert.endswith("M"):
-                                    per_b = float(per_expert[:-1]) / 1000
-                                elif per_expert.endswith("B"):
-                                    per_b = float(per_expert[:-1])
-                                else:
-                                    per_b = float(per_expert)
-                                result["params_b"] = round(n_experts * per_b, 1)
-                                result["is_moe"] = True
-                        elif val_stripped.endswith("B"):
-                            result["params_b"] = float(val_stripped[:-1])
-                        elif val_stripped.endswith("M"):
-                            result["params_b"] = round(float(val_stripped[:-1]) / 1000, 1)
-                    except (ValueError, IndexError):
-                        pass
-                elif key.endswith(".context_length") and isinstance(val, int):
-                    result["context_length"] = val
-                elif key.endswith(".block_count") and isinstance(val, int):
-                    result["block_count"] = val
-            if skipped or result.get("_partial"):
-                logger.info(
-                    f"[LocalModelManager] parse_gguf_metadata: parsed "
-                    f"{len([k for k in result if not k.startswith('_')])} fields, "
-                    f"skipped {len(skipped)} key(s)={skipped}, "
-                    f"partial={result.get('_partial', False)}"
-                )
-            return result
+                    for _ in range(kv_count):
+                        key = _read_string()
+                        vtype = struct.unpack("<I", _take(4))[0]
+                        raw[key] = _read_value(vtype)
+                except (EOFError, ValueError, struct.error) as exc:
+                    # A malformed metadata block desyncs the cursor; every key
+                    # after that point is unrecoverable. Keep what was read,
+                    # mark it, and SAY so — silently returning a short dict is
+                    # what made the previous parser's failures invisible.
+                    meta["_partial"] = True
+                    logger.warning(
+                        f"[LocalModelManager] GGUF metadata for {path.name} "
+                        f"stopped after {len(raw)}/{kv_count} keys: {exc}"
+                    )
+                else:
+                    tensor_pos = f.tell()
+                    mtp_window = f.read(65536)
+        except OSError as exc:
+            logger.warning(f"[LocalModelManager] cannot read GGUF {path.name}: {exc}")
+            return meta
 
-        # GAP 3: detect, do not assume. Auto-parse first; if the architecture is
-        # not sane ASCII, retry with explicit standard / non-standard enums and
-        # keep whichever yields a sane architecture. Log the selected enum.
-        meta = _parse_once("auto")
-        arch = meta.get("architecture")
-        if not _is_sane_architecture(arch):
-            chosen = None
-            for mode in ("standard", "non_standard"):
-                cand = _parse_once(mode)
-                if _is_sane_architecture(cand.get("architecture")):
-                    meta = cand
-                    chosen = mode
-                    break
-            if chosen is not None:
-                logger.info(
-                    f"[LocalModelManager] parse_gguf_metadata: auto enum produced "
-                    f"non-sane architecture ({arch!r}); selected enum={chosen}"
-                )
-            else:
-                logger.warning(
-                    f"[LocalModelManager] parse_gguf_metadata: architecture not "
-                    f"sane under any enum ({arch!r}); using auto result"
-                )
+        meta.update(raw)
+        if file_size:
+            # The bytes that actually get uploaded to the device. Carried on the
+            # metadata so every VRAM estimate has it without re-stat'ing, and so
+            # a weights estimate never has to be reconstructed from a parameter
+            # count times a quantization guess.
+            meta["file_size_gb"] = file_size / (1024 ** 3)
 
-        # Tensor-based MTP detection: peek at first few tensor names for mtp. prefix
-        if not meta.get("is_mtp"):
-            try:
-                # Read tensor name count and a small slice of tensor names
-                tensor_count = struct.unpack("<Q", buf[pos : pos + 8])[0]
-                pos += 8
-                for _ in range(min(tensor_count, 20)):
-                    name_len = struct.unpack("<I", buf[pos : pos + 4])[0]
-                    pos += 4
-                    name = buf[pos : pos + name_len].decode("utf-8", errors="replace")
-                    pos += name_len
-                    if name.startswith("mtp.") or ".mtp." in name:
-                        meta["is_mtp"] = True
-                        break
-                    # Skip type (4) + offset (8) + dimensions
-                    pos += 4 + 8
-                    ndim = struct.unpack("<I", buf[pos - 4 : pos])[0] if pos >= 4 else 0
-                    pos += ndim * 8
-            except Exception:
-                pass
+        arch = raw.get("general.architecture")
+        if isinstance(arch, str) and arch:
+            meta["architecture"] = arch
+
+        def _arch_key(suffix: str) -> Any:
+            if not isinstance(arch, str):
+                return None
+            return raw.get(f"{arch}.{suffix}")
+
+        name = raw.get("general.name")
+        if isinstance(name, str):
+            meta["model_name"] = name
+            if "mtp" in name.lower():
+                meta["is_mtp"] = True
+
+        n_params = raw.get("general.parameter_count")
+        if isinstance(n_params, int) and n_params > 0:
+            meta["params_b"] = round(n_params / 1e9, 1)
+        else:
+            size_label = raw.get("general.size_label")
+            if isinstance(size_label, str):
+                parsed = self._params_b_from_size_label(size_label)
+                if parsed is not None:
+                    meta["params_b"], is_moe = parsed
+                    if is_moe:
+                        meta["is_moe"] = True
+
+        for key, suffix in (
+            ("context_length", "context_length"),
+            ("block_count", "block_count"),
+            ("embed_dim", "embedding_length"),
+            ("n_head", "attention.head_count"),
+            ("n_head_kv", "attention.head_count_kv"),
+        ):
+            val = _arch_key(suffix)
+            if isinstance(val, int) and val > 0:
+                meta[key] = val
+        if _arch_key("expert_count"):
+            meta["is_moe"] = True
+
+        # GQA/MQA head dimension. Prefer the explicit key; otherwise derive it
+        # from embedding_length / head_count. This is what makes the KV-cache
+        # estimate GQA-aware — sizing it off embed_dim assumes MHA and
+        # over-counts by n_head/n_head_kv (6x on every model shipped here).
+        head_dim = _arch_key("attention.key_length")
+        if not isinstance(head_dim, int) or head_dim <= 0:
+            embed, n_head = meta.get("embed_dim"), meta.get("n_head")
+            if embed and n_head:
+                head_dim = embed // n_head
+        if isinstance(head_dim, int) and head_dim > 0:
+            meta["head_dim"] = head_dim
+        if "n_head_kv" not in meta and "n_head" in meta:
+            meta["n_head_kv"] = meta["n_head"]  # MHA: every head carries a KV
+
+        ftype = raw.get("general.file_type")
+        quant = self._GGUF_FTYPE_QUANT.get(ftype) if isinstance(ftype, int) else None
+        meta["quantization"] = quant or self._quant_from_filename(path.stem)
+
+        if not meta.get("is_mtp") and tensor_pos:
+            meta["is_mtp"] = self._has_mtp_tensors(mtp_window, 0)
 
         return meta
+
+    @staticmethod
+    def _params_b_from_size_label(label: str) -> Optional[Tuple[float, bool]]:
+        """Parse ``general.size_label`` (e.g. ``"8B"``, ``"450M"``, ``"32x959M"``)
+        into ``(params_in_billions, is_moe)``. Returns None if unparseable."""
+        text = label.strip().upper()
+        if not text:
+            return None
+
+        def _scale(part: str) -> Optional[float]:
+            try:
+                if part.endswith("M"):
+                    return float(part[:-1]) / 1000.0
+                if part.endswith("B"):
+                    return float(part[:-1])
+                return float(part)
+            except ValueError:
+                return None
+
+        if "X" in text:  # MoE, e.g. "32x959M" -> 32 experts of 959M
+            experts, _, per = text.partition("X")
+            per_b = _scale(per)
+            try:
+                n_experts = int(experts)
+            except ValueError:
+                return None
+            if per_b is None:
+                return None
+            return round(n_experts * per_b, 1), True
+        val = _scale(text)
+        return (round(val, 1), False) if val is not None else None
+
+    @staticmethod
+    def _has_mtp_tensors(buf: bytes, pos: int) -> bool:
+        """Peek at the first tensor names for an ``mtp.`` prefix.
+
+        The tensor block follows the KV block: each entry is
+        ``name(str) n_dims(u32) dims(u64 * n_dims) type(u32) offset(u64)``.
+        The previous implementation read those fields in the wrong order and
+        re-read n_dims from bytes it had already consumed, so it walked off the
+        record after the first tensor and never matched anything.
+        """
+        try:
+            for _ in range(32):
+                if pos + 8 > len(buf):
+                    return False
+                name_len = struct.unpack("<Q", buf[pos:pos + 8])[0]
+                pos += 8
+                if name_len > 1024 or pos + name_len > len(buf):
+                    return False
+                name = buf[pos:pos + name_len].decode("utf-8", errors="replace")
+                pos += name_len
+                if name.startswith("mtp.") or ".mtp." in name:
+                    return True
+                if pos + 4 > len(buf):
+                    return False
+                n_dims = struct.unpack("<I", buf[pos:pos + 4])[0]
+                pos += 4
+                if n_dims > 8:
+                    return False
+                pos += n_dims * 8 + 4 + 8  # dims + type + offset
+        except (struct.error, IndexError):
+            return False
+        return False
 
     def _quant_from_filename(self, stem: str) -> str:
         """Fallback: extract quantization type from filename."""
@@ -1463,7 +1581,12 @@ class LocalModelManager:
     # ─────────────────────────────────────────────────────────────────────────
 
     def estimate_vram_gb(
-        self, model_meta: Dict[str, Any], n_ctx: Optional[int] = None
+        self,
+        model_meta: Dict[str, Any],
+        n_ctx: Optional[int] = None,
+        *,
+        file_size_gb: float = 0.0,
+        kv_bytes: int = 2,
     ) -> float:
         """
         Estimate VRAM requirement: weights + KV cache.
@@ -1472,28 +1595,48 @@ class LocalModelManager:
         not weights-only). The KV cache grows linearly with n_ctx and
         is computed from the model's architecture metadata.
 
-        Formula:
-            weights = params_B × bits_per_weight / 8 × 1.1 overhead
-            kv_cache = 2 × n_layers × n_ctx × hidden_size × 2 bytes (fp16)
-            total = weights + kv_cache
+        Weights: the GGUF's size on disk when known — that IS the byte count
+        uploaded to the device, and it needs no quantization table. ``params_b
+        × bits_per_weight`` is the fallback, and it is only ever an
+        approximation (it misses the unquantized embedding/output tensors that
+        a mixed quant keeps at higher precision).
+
+        KV cache: ``2 (K+V) × n_layers × n_ctx × n_head_kv × head_dim ×
+        kv_bytes``. The ``n_head_kv × head_dim`` term is the point — sizing the
+        cache off ``embed_dim`` (= ``n_head × head_dim``) assumes multi-head
+        attention and over-counts by ``n_head / n_head_kv``. Every model in
+        this project is GQA with a 4:1 or 6:1 ratio, so the old formula
+        inflated the cache 4-6x and the deriver shrank n_ctx to compensate for
+        VRAM that was never going to be used.
 
         Args:
             model_meta: Parsed GGUF metadata dict.
             n_ctx: Target context length. If None, uses model_meta's
                    native context_length or MIN_CTX as fallback.
+            file_size_gb: Size of the GGUF on disk, when the caller knows it.
+            kv_bytes: Bytes per KV element — 2 for f16 (default), 1 for the
+                      q8_0 cache the GPU profiles actually request.
 
         Returns:
-            Estimated VRAM in GB (weights + KV cache).
+            Estimated VRAM in GB (weights + KV cache), or 0.0 when neither the
+            file size nor a parameter count is known.
         """
         params_b = model_meta.get("params_b", 0)
-        quant = model_meta.get("quantization", "Q4_K_M")
+        quant = model_meta.get("quantization") or "Q4_K_M"
         bpw = QUANT_BPW.get(quant.upper(), 4.85)
 
-        if not params_b:
-            return 0.0
-
         # ── Weights (context-independent) ──
-        weights_gb = params_b * bpw / 8.0 * 1.1
+        # parse_gguf_metadata carries the on-disk size, so callers that only
+        # hold the metadata dict still get the exact byte count rather than a
+        # params x bits-per-weight reconstruction.
+        if file_size_gb <= 0:
+            file_size_gb = float(model_meta.get("file_size_gb") or 0.0)
+        if file_size_gb > 0:
+            weights_gb = file_size_gb * 1.05  # driver/alloc overhead
+        elif params_b:
+            weights_gb = params_b * bpw / 8.0 * 1.1
+        else:
+            return 0.0
 
         # ── KV cache (context-dependent, D-3) ──
         # Use provided n_ctx, or fall back to metadata, or MIN_CTX
@@ -1501,17 +1644,22 @@ class LocalModelManager:
             n_ctx = model_meta.get("context_length") or model_meta.get("n_ctx") or MIN_CTX
 
         block_count = model_meta.get("block_count", 0)
+        n_head_kv = model_meta.get("n_head_kv", 0)
+        head_dim = model_meta.get("head_dim", 0)
         embed_dim = model_meta.get("embed_dim", 0)
 
-        if block_count and embed_dim and n_ctx:
-            # Standard transformer KV cache:
-            #   2 (K+V) × n_layers × n_ctx × hidden_size × 2 bytes (fp16)
-            kv_cache_gb = 2 * block_count * n_ctx * embed_dim * 2 / (1024 ** 3)
+        if block_count and n_head_kv and head_dim and n_ctx:
+            kv_per_token = 2 * block_count * n_head_kv * head_dim * kv_bytes
+            kv_cache_gb = kv_per_token * n_ctx / (1024 ** 3)
+        elif block_count and embed_dim and n_ctx:
+            # No head counts in the metadata — fall back to the MHA shape.
+            # Over-estimates on a GQA model, which is the safe direction.
+            kv_cache_gb = 2 * block_count * n_ctx * embed_dim * kv_bytes / (1024 ** 3)
+        elif params_b:
+            # Neither shape available: ~1 byte of KV per parameter per token.
+            kv_cache_gb = params_b * n_ctx * kv_bytes / (1024 ** 3)
         else:
-            # Fallback: estimate KV cache from params and n_ctx.
-            # Approximate: KV cache ≈ params × n_ctx × 2 bytes / 1e9
-            # (assumes ~1 byte of KV cache per parameter per token)
-            kv_cache_gb = params_b * n_ctx * 2 / (1024 ** 3)
+            kv_cache_gb = 0.0
 
         return weights_gb + kv_cache_gb
 
@@ -1527,26 +1675,171 @@ class LocalModelManager:
             base.update(custom)
         return base
 
-    def recommend_profile(self, model_meta: Dict[str, Any]) -> str:
-        """
-        Auto-select profile based on model size + available hardware.
-        Returns profile name string.
+    # Chat profiles ordered by the context they target, widest first. The
+    # recommender walks this list and takes the first entry whose weights + KV
+    # cache fit the free VRAM, so a model is never handed a profile the card
+    # cannot hold — and never handed a smaller one than it can.
+    _PROFILE_LADDER: Tuple[str, ...] = (
+        "research",      # ~100k ctx, q4_0 KV
+        "balanced",      # 32k ctx, q8_0 KV
+        "performance",   # 16k ctx, q8_0 KV
+        "voice_first",   # 8k ctx, q8_0 KV
+    )
+
+    def plan_load(
+        self,
+        model_meta: Dict[str, Any],
+        file_size_gb: float = 0.0,
+        purpose: str = "chat",
+    ) -> Dict[str, Any]:
+        """Return the configuration this model WOULD be loaded with.
+
+        One function, called by both the model browser (before the click) and
+        by ``load_model`` (at the click), so the card cannot promise a context
+        the loader will not deliver. Never raises — a model whose metadata
+        could not be read reports ``fits=False`` with a reason rather than
+        breaking the scan.
+
+        Keys: ``profile``, ``n_ctx``, ``native_ctx``, ``kv_cache``,
+        ``vram_gb``, ``vram_free_gb``, ``fits``, ``reason``.
         """
         hw = self.get_hardware_info()
-        vram = hw.get("vram_free_gb", 0.0)
-        cuda = hw.get("cuda_available", False)
-        vram_needed = self.estimate_vram_gb(model_meta)
+        free = float(hw.get("vram_free_gb", 0.0) or 0.0)
+        native = int(
+            model_meta.get("context_length") or model_meta.get("n_ctx") or 0
+        )
+        plan: Dict[str, Any] = {
+            "profile": "", "n_ctx": 0, "native_ctx": native, "kv_cache": "",
+            "vram_gb": 0.0, "vram_free_gb": round(free, 1),
+            "fits": False, "reason": "", "purpose": purpose,
+        }
+        if not hw.get("cuda_available"):
+            plan["reason"] = "no CUDA device detected"
+            return plan
+        try:
+            profile = self.recommend_profile(model_meta, file_size_gb, purpose=purpose)
+            params = self.get_profile_params(profile, {})
+            ceiling = int(params.get("n_ctx", MAX_CTX))
+            if purpose == "tool":
+                ceiling = min(ceiling, TOOL_CTX_CAP)
+            derived = self.derive_config(
+                model_meta,
+                vram_budget_gb=free * 0.92,
+                file_size_gb=file_size_gb,
+                kv_cache_type=params.get("cache_type_k", "q8_0"),
+                max_ctx=ceiling,
+            )
+            n_ctx = min(ceiling, derived["n_ctx"])
+            vram = self.estimate_vram_gb(
+                model_meta, n_ctx=n_ctx, file_size_gb=file_size_gb,
+                kv_bytes=1 if str(params.get("cache_type_k", "f16")).lower()
+                in _ONE_BYTE_KV_TYPES else 2,
+            )
+            plan.update(
+                profile=profile,
+                n_ctx=n_ctx,
+                kv_cache=params.get("cache_type_k", ""),
+                vram_gb=round(vram, 2),
+                fits=vram <= free * 0.92,
+                purpose=purpose,
+            )
+            derived = {"vram_est_gb": vram}
+            if not plan["fits"]:
+                plan["reason"] = (
+                    f"needs ~{derived['vram_est_gb']:.1f}GB, {free:.1f}GB free"
+                )
+        except Exception as exc:
+            plan["reason"] = f"could not plan: {exc}"
+            logger.debug(f"[LocalModelManager] plan_load failed: {exc}")
+        return plan
 
-        # GPU-ONLY policy: never recommend the CPU 'eco' profile. If CUDA is
-        # missing or VRAM is tight, still prefer a GPU profile (balanced) and
-        # let the pre-flight check reject the load if VRAM is truly insufficient
-        # — rather than silently falling back to CPU.
-        if vram_needed > 0 and vram_needed > vram * 0.9:
-            # Tight VRAM: try performance (more aggressive offload) but stay on GPU.
-            return "performance"
-        # Always prefer balanced (32k ctx / 1536 batch) — it's the 24GB RAM sweet spot.
-        # performance is only for explicit user override.
-        return "balanced"
+    def recommend_profile(
+        self,
+        model_meta: Dict[str, Any],
+        file_size_gb: float = 0.0,
+        purpose: str = "chat",
+    ) -> str:
+        """Pick the profile that gives this model the most context it can hold.
+
+        The old implementation returned ``"balanced"`` for essentially every
+        model and ``"performance"`` only when VRAM was tight — a two-state
+        guess that ignored both the model's trained context and the card. This
+        walks :attr:`_PROFILE_LADDER` widest-first and returns the first
+        profile whose estimated footprint fits, clamped to the model's own
+        trained context so a 4k model is never given a 100k profile.
+
+        Model families that require particular kernels win outright: an MTP
+        model needs ``balanced_mtp`` (speculative decoding, subprocess only)
+        and a RotorQuant model needs ``research_rotorquant`` (planar3 KV).
+
+        GPU-ONLY: ``eco`` is never recommended. If nothing fits, the narrowest
+        GPU profile is returned and pre-flight decides whether to reject —
+        rather than silently falling back to CPU.
+        """
+        if model_meta.get("is_mtp"):
+            return "balanced_mtp"
+        if str(model_meta.get("quantization", "")).lower() in _ROTORQUANT_KV_TYPES:
+            return "research_rotorquant"
+
+        hw = self.get_hardware_info()
+        vram = hw.get("vram_free_gb", 0.0)
+        native_ctx = (
+            model_meta.get("context_length") or model_meta.get("n_ctx") or MAX_CTX
+        )
+
+        # Score each profile by the context it can ACTUALLY deliver, not by
+        # whether its literal n_ctx fits as-is. A first-fit walk rejects a
+        # profile the moment its full context overflows — so Bonsai-27B, which
+        # runs at 16k-24k, fell past `performance` (16384 flat) all the way to
+        # `voice_first` (8192) even though the deriver would have narrowed the
+        # wider profile to something better. Deriving inside the loop also lets
+        # a q4_0-KV profile win on the strength of its cheaper cache.
+        best_name, best_ctx, best_kv = "", 0, -1
+        for name in self._PROFILE_LADDER:
+            prof = PROFILES.get(name)
+            if not prof:
+                continue
+            kv_type = str(prof.get("cache_type_k", "f16"))
+            profile_ctx = min(int(prof.get("n_ctx", MIN_CTX)), int(native_ctx))
+            if purpose == "tool":
+                # Tool-only duty: stop competing on context. Past TOOL_CTX_CAP
+                # every profile scores identically, so the tie-break below would
+                # otherwise keep the first (widest) entry and its q4_0 KV — the
+                # aggressive cache is the wrong default for a model whose whole
+                # job is emitting well-formed structured calls.
+                profile_ctx = min(profile_ctx, TOOL_CTX_CAP)
+            if profile_ctx < MIN_CTX:
+                continue
+            try:
+                derived = self.derive_config(
+                    model_meta,
+                    vram_budget_gb=vram * 0.92,
+                    file_size_gb=file_size_gb,
+                    kv_cache_type=kv_type,
+                    max_ctx=profile_ctx,
+                )
+            except Exception as exc:
+                logger.debug(f"[LocalModelManager] profile {name} not derivable: {exc}")
+                continue
+            n_ctx = min(profile_ctx, derived["n_ctx"])
+            kv_quality = _KV_QUALITY.get(kv_type.lower(), 0)
+            # More context wins; equal context is broken by KV fidelity.
+            if (n_ctx, kv_quality) > (best_ctx, best_kv):
+                best_name, best_ctx, best_kv = name, n_ctx, kv_quality
+
+        if best_name:
+            logger.info(
+                f"[LocalModelManager] profile={best_name} selected: "
+                f"usable n_ctx={best_ctx} purpose={purpose} "
+                f"(native {native_ctx}, {vram:.1f}GB free)"
+            )
+            return best_name
+
+        logger.info(
+            f"[LocalModelManager] no profile fits {vram:.1f}GB free VRAM "
+            f"(file={file_size_gb:.2f}GB); falling back to voice_first"
+        )
+        return "voice_first"
 
     # ─────────────────────────────────────────────────────────────────────────
     # ConfigDeriver: compute optimal n_ctx, n_gpu_layers, n_batch
@@ -1558,6 +1851,10 @@ class LocalModelManager:
         target_tps: float = TARGET_TPS,
         base_tps: Optional[float] = None,
         vram_budget_gb: Optional[float] = None,
+        *,
+        file_size_gb: float = 0.0,
+        kv_cache_type: str = "f16",
+        max_ctx: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Derive the optimal inference config for a model.
@@ -1596,6 +1893,7 @@ class LocalModelManager:
         # instead of each model having to be run slowly three times to learn its own
         # lesson. Falls back to the flat 50.0 only when no calibration exists yet.
         calibrated = False
+        caller_supplied_base_tps = base_tps is not None
         if base_tps is None:
             base_tps = 50.0
             try:
@@ -1619,7 +1917,15 @@ class LocalModelManager:
         )
 
         native_ctx = model_meta.get("context_length") or model_meta.get("n_ctx") or MAX_CTX
-        max_ctx = min(native_ctx, MAX_CTX)
+        # MAX_CTX is the DEFAULT ceiling, not an absolute one. It predates the
+        # models in use here — TwIL-LM3 trains at 65536 and Bonsai-27B at
+        # 262144, and clamping to 32768 leaves measured headroom unused (TwIL
+        # holds 117.6 tok/s at its full 65536 on this card). A caller that has
+        # chosen a wider profile passes its n_ctx as `max_ctx`; a bare call
+        # keeps the conservative default, which is what the deriver's tests
+        # pin.
+        ceiling = int(max_ctx) if max_ctx else MAX_CTX
+        max_ctx = min(native_ctx, max(ceiling, MIN_CTX))
 
         # Throughput model: tps decreases as n_ctx increases.
         # tps = base_tps * sqrt(MIN_CTX / n_ctx)
@@ -1629,16 +1935,42 @@ class LocalModelManager:
                 return 0.0
             return base_tps * (MIN_CTX / n_ctx) ** 0.5
 
-        # Binary search for the largest n_ctx that satisfies both constraints.
+        # The throughput model may only VETO a context when its base_tps means
+        # something: a machine-bandwidth calibration, or a figure the caller
+        # supplied deliberately. What it may NOT do is veto on the hardcoded
+        # 50.0 fallback — `50 * sqrt(4096/n) >= 25` caps n_ctx at 16384 on any
+        # cold machine no matter how much VRAM is free, a ceiling derived from
+        # a constant rather than from the hardware. Measured on this box
+        # (RTX 3070, full offload, q8_0 KV): TwIL-LM3 holds 117.6 tok/s at
+        # 65536 and Bonsai-27B 38.1 at 16384, both far above TARGET_TPS, so the
+        # sqrt curve does not describe a fully-offloaded model. VRAM is the
+        # real constraint until a measurement says otherwise.
+        enforce_tps = calibrated or caller_supplied_base_tps
+
+        # KV cache element width. Defaults to f16 (2 bytes) so a bare call
+        # stays conservative and agrees with estimate_vram_gb's own default;
+        # load_model passes the profile's real cache type, and every GPU
+        # profile asks for q8_0 (1 byte), which is what buys the extra context.
+        kv_bytes = 1 if str(kv_cache_type).lower() in _ONE_BYTE_KV_TYPES else 2
+
+        def fits(n_ctx: int) -> bool:
+            est = self.estimate_vram_gb(
+                model_meta, n_ctx=n_ctx,
+                file_size_gb=file_size_gb, kv_bytes=kv_bytes,
+            )
+            if est <= 0:
+                return True  # unknown footprint — preflight is the backstop
+            if est > vram_budget_gb:
+                return False
+            return not enforce_tps or expected_tps(n_ctx) >= target_tps
+
+        # Binary search for the largest n_ctx that fits.
         lo, hi = MIN_CTX, max_ctx
         best_n_ctx = MIN_CTX
 
         while lo <= hi:
             mid = (lo + hi) // 2
-            vram_est = self.estimate_vram_gb(model_meta, n_ctx=mid)
-            tps_est = expected_tps(mid)
-
-            if vram_est <= vram_budget_gb and tps_est >= target_tps:
+            if fits(mid):
                 best_n_ctx = mid
                 lo = mid + 1
             else:
@@ -1651,11 +1983,21 @@ class LocalModelManager:
         # D-2: n_gpu_layers ALWAYS -1 for chat (full GPU offload, never CPU offload).
         n_gpu_layers = -1
 
+        # The returned key set is pinned by test_config_has_all_keys — it is an
+        # exact-equality contract, so diagnostics go to the log, not the dict.
+        logger.debug(
+            f"[LocalModelManager] derive_config: n_ctx={best_n_ctx} of native "
+            f"{native_ctx} (kv={kv_bytes}B/elem, tps_enforced={enforce_tps})"
+        )
+
         return {
             "n_ctx": best_n_ctx,
             "n_gpu_layers": n_gpu_layers,
             "n_batch": n_batch,
-            "vram_est_gb": self.estimate_vram_gb(model_meta, n_ctx=best_n_ctx),
+            "vram_est_gb": self.estimate_vram_gb(
+                model_meta, n_ctx=best_n_ctx,
+                file_size_gb=file_size_gb, kv_bytes=kv_bytes,
+            ),
             "expected_tps": expected_tps(best_n_ctx),
         }
 
@@ -1805,16 +2147,25 @@ class LocalModelManager:
                     # Heuristic: Qwen ~2.2 layers per B, Llama ~4 layers per B
                     total_layers = max(24, int(params_b * 2.5))
 
-            # Estimate KV cache RAM. For dense transformers this is roughly
-            # 2 bytes * n_ctx * n_layers / 2 (K+V) ~ (ctx/1000) * 0.1 GB.
-            # Hybrid-attention models (Qwen/Bonsai with 64 blocks) grow a
-            # full-attention cache on only ~25% of layers, making the cache
-            # ~4x smaller.
-            kv_cache_gb = (n_ctx / 1000.0) * 0.1
-            if total_layers >= 48:
-                # Likely hybrid attention (e.g. Qwen3.6-27B: 64 blocks,
-                # 16 full-attention). Scale cache down 4x.
-                kv_cache_gb *= 0.25
+            # KV cache size. Use the same estimator the deriver uses, so the
+            # two cannot disagree: this check used a flat
+            # `(n_ctx/1000) * 0.1 GB` with a hand-tuned 4x discount for
+            # >=48-layer models, which rejected a config derive_config had just
+            # certified as fitting (and vice versa). One formula, fed the real
+            # head counts and the profile's actual KV element width.
+            kv_bytes = (
+                1
+                if str(params.get("cache_type_k", "f16")).lower() in _ONE_BYTE_KV_TYPES
+                else 2
+            )
+            kv_cache_gb = max(
+                0.0,
+                self.estimate_vram_gb(
+                    model_meta or {}, n_ctx=n_ctx,
+                    file_size_gb=file_gb, kv_bytes=kv_bytes,
+                )
+                - file_gb * 1.05,
+            )
 
             # Scale weight VRAM by fraction of layers offloaded to GPU
             if n_gpu != 0 and hw.get("cuda_available"):
@@ -2098,14 +2449,35 @@ class LocalModelManager:
             await self.unload_model()
             self._invalidate_hw_cache()  # VRAM state will change during load
 
+            # Parse metadata early: the profile recommender, the deriver and
+            # the pre-flight check all need the model's real shape.
+            model_meta = self.parse_gguf_metadata(Path(model_path))
+            try:
+                file_size_gb = Path(model_path).stat().st_size / (1024 ** 3)
+            except OSError:
+                file_size_gb = 0.0
+
+            # AUTO PROFILE (REQ-1). "balanced" is the frontend's default for
+            # every model, so every model got a 32k/q8_0 config regardless of
+            # whether the card could hold it or the model was trained for it.
+            # Let the recommender choose off the model's real shape and the
+            # free VRAM; an explicit non-default profile from the user still
+            # wins untouched.
+            if profile in ("auto", "balanced") and not custom_params:
+                recommended = self.recommend_profile(
+                    model_meta, file_size_gb, purpose=purpose
+                )
+                if recommended != profile:
+                    logger.info(
+                        f"[LocalModelManager] auto profile: {profile} -> "
+                        f"{recommended} for {Path(model_path).name}"
+                    )
+                profile = recommended
+
             # Resolve requested profile; may fall back if the fork isn't
             # installed and the profile demands it.
             profile = self._resolve_profile_for_environment(profile)
             params = self.get_profile_params(profile, custom_params or {})
-
-            # Parse metadata early so preflight check can use layer count for
-            # accurate partial-offload VRAM estimation.
-            model_meta = self.parse_gguf_metadata(Path(model_path))
             # Track meta for ConfigCache corrections (REQ-5). Only used by
             # record_tps after a successful load; harmless if load fails.
             self._current_model_meta = model_meta
@@ -2128,23 +2500,49 @@ class LocalModelManager:
                         f"(n_ctx={params['n_ctx']}, measured_tps="
                         f"{cached.measured_tps}) as known-good start"
                     )
-                elif not custom_params and profile == "balanced":
+                elif not custom_params:
                     # REQ-1: no known-good cache and no user override → DERIVE the
                     # optimal config from model + hardware. This is the primary
-                    # path; PROFILES remain available only as explicit overrides.
+                    # path; PROFILES supply the KV type and kernel flags, the
+                    # deriver supplies the context that actually fits.
+                    #
+                    # Previously gated on `profile == "balanced"`, so the moment
+                    # a model was auto-assigned any other profile the deriver
+                    # was skipped and the profile's flat n_ctx literal was used
+                    # unchecked against VRAM.
                     try:
                         hw = self.get_hardware_info()
                         derived = self.derive_config(
                             model_meta,
-                            vram_budget_gb=hw.get("vram_free_gb", 0.0),
+                            # Same 0.92 headroom _preflight_resource_check
+                            # applies. Deriving against the full free VRAM and
+                            # then checking against 92% of it guarantees the
+                            # deriver's own answer fails pre-flight and has to
+                            # be walked back down the degradation ladder.
+                            vram_budget_gb=hw.get("vram_free_gb", 0.0) * 0.92,
+                            file_size_gb=file_size_gb,
+                            kv_cache_type=params.get("cache_type_k", "q8_0"),
+                            max_ctx=(
+                                min(int(params.get("n_ctx", MAX_CTX)), TOOL_CTX_CAP)
+                                if purpose == "tool"
+                                else params.get("n_ctx")
+                            ),
                         )
-                        params["n_ctx"] = derived["n_ctx"]
+                        # The deriver may only NARROW a profile's context, never
+                        # widen it past what the profile (and its KV type) was
+                        # written for.
+                        params["n_ctx"] = min(
+                            int(params.get("n_ctx", derived["n_ctx"])),
+                            derived["n_ctx"],
+                        )
                         params["n_batch"] = derived["n_batch"]
                         params["n_gpu_layers"] = derived["n_gpu_layers"]
                         config_source = "derived"
                         logger.info(
                             f"[LocalModelManager] derived config (source=derived): "
-                            f"n_ctx={params['n_ctx']}, n_batch={params['n_batch']}, "
+                            f"profile={profile} n_ctx={params['n_ctx']} "
+                            f"(native {model_meta.get('context_length')}), "
+                            f"n_batch={params['n_batch']}, "
                             f"est_vram={derived['vram_est_gb']:.1f}GB, "
                             f"exp_tps={derived['expected_tps']:.1f}"
                         )
@@ -2880,6 +3278,23 @@ class LocalModelManager:
                     )
                 n_gpu = -1
             cmd += ["--n-gpu-layers", str(n_gpu)]
+            # Disable llama.cpp's own auto-fit search.
+            #
+            # b9591 defaults to `--fit on`, which probes device memory to adjust
+            # any argument we left unset. We leave nothing meaningful unset —
+            # derive_config already sized n_ctx / n_batch / n_gpu_layers against
+            # measured free VRAM — so the search is redundant, and it fights our
+            # numbers by silently overriding them.
+            #
+            # It is also slow to the point of looking like a hang: measured on
+            # this box, LFM2.5-8B-A1B (MoE, 32 experts) sat in "fitting params to
+            # device memory ..." for 12-36 MINUTES and never reached the serving
+            # loop, while TwIL and Bonsai-27B converged in seconds. load_model's
+            # deadline is 180 s, so every affected model would be reported as
+            # "Server did not start within timeout" — a false failure on a model
+            # that loads fine. llama.cpp's own log points at this: "for bugs
+            # during this step try to reproduce them with -fit off".
+            cmd += ["--fit", "off"]
             if params.get("n_ctx"):
                 cmd += ["--ctx-size", str(params["n_ctx"])]
             if params.get("n_batch"):
@@ -2892,8 +3307,19 @@ class LocalModelManager:
                 cmd += ["--cache-type-v", params["cache_type_v"]]
             if params.get("use_mmap", True):
                 cmd += ["--mmap"]
-            if params.get("keep_model_in_memory"):
+            # --mlock pins the mmap'd weights in physical RAM. That is worth it
+            # only when layers actually run on the CPU. Under FULL GPU offload
+            # the weights are uploaded to VRAM and the host mapping is dead
+            # weight after load — measured live: llama-server held a 3.8 GB
+            # working set for a 4.8 GB model that was already resident in VRAM,
+            # on a 16 GB machine. Lock only on partial offload.
+            if params.get("keep_model_in_memory") and n_gpu != -1:
                 cmd += ["--mlock"]
+            elif params.get("keep_model_in_memory"):
+                logger.info(
+                    "[LocalModelManager] skipping --mlock: full GPU offload "
+                    "(n_gpu_layers=-1) makes the locked host copy redundant"
+                )
             if params.get("offload_kv_cache"):
                 cmd += ["--kv-offload"]
             else:

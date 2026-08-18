@@ -1251,7 +1251,16 @@ class AgentKernel:
         #    This is the source of truth for a locally-run model — it was
         #    launched with a specific n_ctx, and a substring guess would
         #    under/over-size the budget vs the real window.
-        if provider == "local":
+        #
+        #    Gated on the provider KIND, not on the string "local". The string
+        #    map in _provider_string_for_instance sends OLLAMA -> "local",
+        #    LOCAL_OPENAI -> "lmstudio" and INPROCESS -> "iris_local", so a test
+        #    for "local" fired for Ollama (which has no LocalModelManager and
+        #    always fell through) and NEVER for a real local model. A model
+        #    loaded at 32768 then fell past the substring table to the 8192
+        #    default — the same silent truncation the gpt-oss entry below was
+        #    added to fix, reintroduced by REQ-4's id namespacing.
+        if provider in ("local", "lmstudio", "iris_local"):
             try:
                 from .local_model_manager import get_local_model_manager
 
@@ -1704,26 +1713,49 @@ class AgentKernel:
             pass
 
         # Issue C.1 — structured speak/show response contract.
-        # When the answer is long or contains structured data, the LLM returns
-        # JSON so TTS reads only the short `speak` summary while the full
-        # content renders visually.  Short conversational replies stay plain text.
+        # `show` means STORE THIS AS A DOCUMENT, not "this answer is long".
+        # The old rule here was length-based ("longer than about 3 sentences ->
+        # respond with JSON"), which made ordinary conversation arrive at
+        # _process_structured_response wearing a `show` payload. The kernel then
+        # had to guess whether it was really an artifact, and that guess is what
+        # kept discarding answers. Length is a FORMATTING question, answered by
+        # _READABLE_FORMAT_RULES; `show` is a STORAGE question, answered here.
         base += (
             "\n\n[RESPONSE FORMAT]\n"
-            "When your answer is longer than about 3 sentences or contains "
-            "structured data (tables, lists, diagrams, code, comparisons), "
-            "respond with JSON:\n"
+            "Two different things, decided separately:\n"
+            "\n"
+            "1. LENGTH is not a reason to use JSON. A long answer is still an "
+            "answer — write it as plain text and format it readably (headings, "
+            "bullets, tables, code fences). It is shown in full in the chat "
+            "thread. NEVER shorten an answer because it is long.\n"
+            "\n"
+            "2. Use the JSON `show` payload ONLY when the content is a DOCUMENT "
+            "— something STORED in the document store so the user can reopen, "
+            "reformat or refer back to it later:\n"
+            "  - web-search / web-crawl results and the evidence behind them\n"
+            "  - a file or document you generated (a report, a plan, a spec)\n"
+            "  - code you produced as a deliverable\n"
+            "  - a data table, dataset or diagram meant to be kept\n"
+            "  - a revision of a document you already stored (pass its "
+            "`document_id`)\n"
+            "If the user is simply asking you something and you are answering "
+            "them — however long the answer — that is CONVERSATION. Use plain "
+            "text. A document card is not a way to present a reply.\n"
+            "\n"
+            "When it IS a document, respond with JSON:\n"
             '{"speak": "<2-3 sentence conversational summary of what you say>", '
             '"show": {"format": "markdown|html|table|diagram|text", '
-            '"content": "<the full content>", '
+            '"content": "<the full document>", '
+            '"document_id": "<only when revising a document you already stored>", '
             '"alternatives": ["<other formats you could render>"], '
             '"variants": {"<format>": "<full content rendered in that format>", ...} '
             '// optional but encouraged: also include the SAME content rendered in '
             'other formats (e.g. {"markdown": "...", "html": "..."}) so the user can '
             'switch formats instantly without re-generating}}\n'
             "The `speak` field is what the user HEARS via TTS — keep it brief "
-            "and natural (1-3 sentences). The `show` field is what renders "
-            "visually — put the detail there. For short conversational replies, "
-            "respond with plain text (no JSON).\n"
+            "and natural (1-3 sentences). The `show` field is the document that "
+            "is stored and rendered as a card; the chat thread keeps your spoken "
+            "line so the document is not duplicated inline.\n"
             "\n"
             "[WEB SEARCH RESULTS]\n"
             "When you present web-search / web-crawl results, you MUST render them "
@@ -3342,6 +3374,59 @@ class AgentKernel:
     # Issue C.1 — structured speak/show response contract
     # ------------------------------------------------------------------
 
+    def _finalize_response(
+        self, display: str, spoken: Optional[str] = None
+    ) -> str:
+        """Single exit for :meth:`_process_structured_response`.
+
+        THE RULE (user, 2026-08-16): the FULL text goes to the thread, the
+        spoken line goes to TTS, and a card is only for a stored artifact.
+        Every return in ``_process_structured_response`` goes through here, so
+        the rule is enforced in ONE place instead of at nine separate returns.
+        Three of those returns had each caused the same truncation bug in turn
+        (``return speak``; the card branch owning the content; the speak-tool
+        ``spoken`` field) — the shape, not the individual returns, was the bug.
+
+        ``spoken`` is the agent's own TTS line when it supplied one. It is
+        always assigned (empty when absent) so a previous turn's line can never
+        leak into this one.
+        """
+        self._last_spoken_text = (spoken or "").strip()
+        return display or ""
+
+    @staticmethod
+    def _unwrap_tool_envelope(response: str) -> Tuple[str, Optional[str]]:
+        """Return ``(display_text, spoken_line)`` for a tool-result envelope.
+
+        The DER path can hand back a TOOL RESULT as its final output. The speak
+        tool returns ``{"status": "ok", "utterance_id": ..., "spoken": text}``
+        — JSON with neither ``speak`` nor ``show``, so
+        ``parse_structured_response`` reports it as unstructured.
+
+        When the envelope also carries a written answer (a longer
+        text/content/response field), that is the display text and ``spoken``
+        stays the TTS line. Otherwise the spoken text is both — it is the only
+        text there is, and it must be shown in full.
+
+        Returns ``(response, None)`` when this is not a tool envelope, so the
+        caller falls through to the plain-text path unchanged.
+        """
+        try:
+            parsed = json.loads(response)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return (response, None)
+        if not isinstance(parsed, dict) or "spoken" not in parsed:
+            return (response, None)
+        spoken = parsed.get("spoken")
+        if not isinstance(spoken, str):
+            return (response, None)
+        display = spoken
+        for _key in ("text", "content", "response", "display", "answer"):
+            _val = parsed.get(_key)
+            if isinstance(_val, str) and len(_val.strip()) > len(display.strip()):
+                display = _val
+        return (display, spoken)
+
     def _process_structured_response(
         self,
         response: Optional[str],
@@ -3350,21 +3435,39 @@ class AgentKernel:
     ) -> str:
         """Apply the Issue C.1 speak/show contract to a final LLM response.
 
-        Parses ``response`` as structured JSON.  If it is structured:
-          * emits a ``DOCUMENT_RENDER`` event carrying the ``show`` payload
-            (so the frontend renders the full document visually), and
-          * returns the ``speak`` field (so conversation memory and the
-            ``text_response`` only contain the short spoken summary).
+        ONE RULE, ONE EXIT (2026-08-17). Returns the text for the thread and
+        assigns the TTS line to ``self._last_spoken_text``; a card renders only
+        for a stored artifact. Every exit goes through
+        :meth:`_finalize_response` — three separate returns each caused the same
+        truncation in turn, so the exits are now consolidated rather than
+        patched individually.
 
-        If the response is NOT structured JSON, it is returned as plain text
-        and rendered by the frontend's short-message chat bubble path (with
-        TTS word highlighting).  Only structured responses with an actual
-        ``show`` payload emit a ``DOCUMENT_RENDER`` event and get the
-        RichDocument prism card treatment.
+        Every path, and what it returns:
 
-        The distinction:
-        - Plain conversational response ("That's 4!") → chat bubble
-        - Actual document (structured JSON, code block, table, etc.) → prism card
+        ==============================  ==========================  ===========
+        input                           display (return)            card
+        ==============================  ==========================  ===========
+        empty                           ``""``                      no
+        tool envelope (``spoken``)      written answer, else        no
+                                        the spoken text IN FULL
+        plain text, no card             the text unchanged          no
+        plain text + auto-render        supportive excerpt          yes
+        ``show`` revising a document    ``""``                      revised
+        ``show`` + ``speak``            the ``speak`` line          yes
+        ``show``, card emit failed      the full show content       no
+        ``show`` with no ``speak``      ``""``                      yes
+        ==============================  ==========================  ===========
+
+        The distinction that drives it is decided by the AGENT, not inferred
+        here: ``show`` means "this is a DOCUMENT — store it", so it renders a
+        card and the thread keeps the spoken line. Everything else is
+        conversation and goes to the thread as text, in full, however long. The
+        [RESPONSE FORMAT] prompt in :meth:`_build_system_prompt` is the other
+        half of this contract; the two must be read together.
+
+        Content lives in exactly one place. With a card, that place is the card
+        and the document store. Without one, it is the chat message — which is
+        why no path here may shorten it.
         """
         if not response:
             return response or ""
@@ -3372,14 +3475,31 @@ class AgentKernel:
         # Reset the per-response render flag; set True below if a DOCUMENT_RENDER
         # is emitted (agent's format choice). Used by _maybe_escalate_web_format.
         self._last_render_emitted = False
-        # Reset the per-response spoken line. Set below when the agent supplies
-        # an explicit `speak`; the TTS path prefers it over a derived summary,
-        # and a stale value from a previous turn must never be spoken.
+        # Reset the per-response spoken line. Set at every exit by
+        # _finalize_response, so a stale value from a previous turn can never
+        # be spoken even on the paths that supply no spoken line.
         self._last_spoken_text = ""
 
         from backend.agent.structured_response import parse_structured_response
 
         speak, show = parse_structured_response(response)
+
+        # ── Tool-result envelope ──────────────────────────────────────────
+        # ROOT CAUSE of the last truncation (2026-08-16, fixed 2026-08-17):
+        # a speak-tool result reaches here as {"status", "utterance_id",
+        # "spoken"}. It has neither `speak` nor `show`, so it fell into the
+        # plain-text branch below and _supportive_text excerpted the RAW JSON —
+        # an 887-char answer displayed and persisted as 55 chars.
+        #
+        # A handler for the "spoken" field DID exist, but it sat AFTER the
+        # `show is None` return, so it could never run. That is why the earlier
+        # spot-fix appeared to "return raw JSON": the branch it patched was
+        # dead. Unwrapping HERE — before any return — is the fix. The dead
+        # branch is gone.
+        if speak is None and show is None:
+            _display, _spoken = self._unwrap_tool_envelope(response)
+            if _spoken is not None:
+                return self._finalize_response(_display, _spoken)
 
         if show is None:
             # ── Plain-text response ──────────────────────────────────────────
@@ -3467,12 +3587,23 @@ class AgentKernel:
                         )
             except Exception:  # noqa: BLE001 — auto-render must never block the response
                 pass
-            # UX contract (user 2026-07-31): the prism card IS the document — the
-            # text/speech response must SUPPORT it, not duplicate it. Return a
-            # short excerpt (first sentences, ~200 chars) so the bubble and the
-            # card show different, complementary content.
-            _support = self._supportive_text(response)
-            return _support if _support else response
+            # UX contract (user 2026-07-31): when a prism card IS the document,
+            # the text/speech response must SUPPORT it, not duplicate it — a
+            # short excerpt so the bubble and the card show complementary
+            # content.
+            #
+            # ONLY when a card actually rendered (user rule 2026-08-16: the
+            # text must never be truncated and a document render must not be
+            # REQUIRED). This excerpt used to run unconditionally, so every
+            # plain answer over ~200 chars was cut down to its first sentence
+            # with nothing else holding the rest. `_last_render_emitted` is set
+            # at the real emit above, so this asks "did a card really render?".
+            _support = (
+                self._supportive_text(response)
+                if getattr(self, "_last_render_emitted", False)
+                else ""
+            )
+            return self._finalize_response(_support or response)
 
         # ── Structured response — emit DOCUMENT_RENDER ────────────────────
         # Trust-routing W3: 'untrusted' when this turn touched external/web
@@ -3489,21 +3620,27 @@ class AgentKernel:
         # for a CONVERSATIONAL answer, that same branch throws the real answer
         # away: observed live with der_response_len=1787 persisted as 201 chars.
         #
-        # `_pacman_zone_for_turn() == "reference"` is the existing signal for
-        # "this turn handled stored/reference content" and is already used by the
-        # auto-render fallback below. Gating on it means under-rendering is the
-        # failure mode (answer stays in chat, in full) rather than over-rendering
-        # (answer lost) — the same safe direction the rest of this file takes.
-        _is_artifact_turn = self._pacman_zone_for_turn() == "reference"
-        if not _is_artifact_turn:
-            logger.info(
-                "[AgentKernel] show payload on a conversational turn — "
-                "returning it as chat text instead of a card (len=%d)",
-                len(show.get("content") or ""),
-            )
-            self._last_spoken_text = speak or ""
-            return (show.get("content") or "").strip() or (speak or "")
-
+        # `show` IS THE STORAGE SIGNAL (2026-08-17). No gate here.
+        #
+        # A previous kernel-side gate tried to infer, per turn, whether the
+        # content "was really an artifact" — first from the web/reference zone,
+        # then from the payload's content. Both are guesses, and the guess is
+        # not decidable: `{"format": "markdown", "content": "plain doc"}` with no
+        # provenance is required to render by
+        # test_document_rehydration_wave2::test_ct_doc_2_render_absent_sources_for_plain
+        # and required NOT to render by
+        # test_display_text_never_truncated::test_conversational_turn_...
+        # Nothing structural separates those two inputs, because the intent
+        # lives with the AGENT, not with the shape of the payload.
+        #
+        # So the two paths are split at the source instead: the [RESPONSE FORMAT]
+        # prompt now defines `show` as "a document to be STORED and reopened",
+        # not "a long answer" (the old length rule is what made ordinary
+        # conversation arrive here wearing a `show` payload). A `show` payload
+        # therefore means store it and render it — and the answer can no longer
+        # be lost, because the card and the document store both hold it, while
+        # every path WITHOUT a `show` returns the full text to the thread.
+        #
         # trust != 'trusted'.
         trust = (
             "untrusted"
@@ -3527,7 +3664,9 @@ class AgentKernel:
             conversation_id=conversation_id,
             alternatives=show.get("alternatives", []) or [],
         ):
-            return ""
+            # The card was revised in place — it owns the content. The agent's
+            # spoken line still reaches TTS.
+            return self._finalize_response("", speak)
         document_id = str(uuid.uuid4())
         # W4: persist the canonical DATA (underlying structured content),
         # keyed by document_id, BEFORE the render so provenance (sources /
@@ -3610,39 +3749,20 @@ class AgentKernel:
             #
             # `_last_render_emitted` is set at the actual emit above, so this
             # asks "did a card really render?" rather than assuming one did.
-            self._last_spoken_text = speak or ""
             if getattr(self, "_last_render_emitted", False):
-                return speak or ""
-            return (show.get("content") or "").strip() or speak
-        # ── speak_tool / tool result ──────────────────────────────────────────
-        # The DER tool-calling path may return the speak_tool's result as its
-        # final output.  If the JSON carries a "spoken" field, extract and
-        # return it as the display text (the TTS already spoke it; this gives
-        # the ChatView the same text to show).
-        try:
-            _parsed = json.loads(response)
-            if isinstance(_parsed, dict) and "spoken" in _parsed:
-                # KNOWN BUG, NOT YET FIXED (2026-08-16): this returns the TTS
-                # line as the display text. When the payload also carries the
-                # written answer under another key, the rest is discarded — an
-                # 887-char DER result was shown and persisted as 55 chars.
-                #
-                # An attempted fix (prefer the longer field) is REVERTED because
-                # it could not be verified: in a repro the function returned raw
-                # JSON instead of either value, so some earlier return in
-                # _process_structured_response fires first and the path is not
-                # yet understood. Fixing this needs one pass over EVERY return
-                # in this function, not another spot patch — see the session pin.
-                return _parsed["spoken"]
-        except (json.JSONDecodeError, TypeError):
-            pass
-        # speak is None.  If a visual document was emitted above, say nothing —
-        # never return the raw JSON, or it would be spoken by TTS and shown in
-        # chat as the assistant's message.  Otherwise fall back to the plain
-        # text response (backward compatible).
-        if show is not None:
-            return ""
-        return response
+                return self._finalize_response(speak or "", speak)
+            return self._finalize_response(
+                (show.get("content") or "").strip() or speak, speak
+            )
+        # speak is None and a `show` payload exists. The card carries the
+        # content; returning the raw JSON here would speak it and show it as the
+        # assistant's message.
+        #
+        # The speak-tool "spoken" handler that used to sit here was DEAD CODE —
+        # reaching it required `show` to be a dict AND the same JSON to carry a
+        # top-level "spoken", which the speak tool never produces. Its real
+        # payload is unwrapped at the top of this function now.
+        return self._finalize_response("")
 
     # ── W4: canonical document-data storage ────────────────────────────────
     def _get_document_store(self):
@@ -3857,14 +3977,33 @@ class AgentKernel:
             logger.warning("[AgentKernel] document_data store failed: %s", exc)
 
         # ── Mycelium: semantic/episodic store ──────────────────────────────
+        # OFF THE CRITICAL PATH (2026-08-17, same rule as the pacman_fragment
+        # mediator). Storing means embedding, and the CPU-only encoder costs
+        # ~5 s per 1 KB chunk — a 14-chunk document blocked the DER loop for
+        # ~50-90 s per step. Measured live: three inter-step gaps of 88 s, 72 s
+        # and 84 s accounted for 244 s of a 311 s turn, while the mediator's own
+        # fragments (already async) filed in the background without stalling it.
+        #
+        # Same background writer, so ALL filing is uniform: one serialized
+        # worker, a bounded queue, and a FILED / FILE FAILED / QUEUE FULL log
+        # line for every job (user rule: nothing waits on the filing, but it
+        # must be trackable if it breaks).
         try:
             mi = getattr(self, "_memory_interface", None)
             if mi is not None and getattr(mi, "episodic", None) is not None:
-                mi.episodic.fragment_and_store(
-                    canonical_text,
-                    conversation_id,
-                    chunk_type="document_data",
-                    zone=zone,
+                from backend.agent.mcm_protocol.actions.pacman_fragment import (
+                    _submit_fragment_job,
+                )
+
+                _episodic = mi.episodic
+                _submit_fragment_job(
+                    lambda: _episodic.fragment_and_store(
+                        canonical_text,
+                        conversation_id,
+                        chunk_type="document_data",
+                        zone=zone,
+                    ),
+                    f"document_data/{document_id} ({len(canonical_text)} chars)",
                 )
         except Exception as exc:
             logger.warning("[AgentKernel] document_data Mycelium store failed: %s", exc)
@@ -10758,11 +10897,22 @@ Respond with a JSON object:
                         self._memory_interface.episodic, "fragment_and_store"
                     )
                 ):
-                    self._memory_interface.episodic.fragment_and_store(
-                        _der_text,
-                        session_id=_session,
-                        chunk_type="der_output",
-                        zone=_der_zone,
+                    # Background, same writer as every other fragment path —
+                    # see the note at the document_data store above.
+                    from backend.agent.mcm_protocol.actions.pacman_fragment import (
+                        _submit_fragment_job,
+                    )
+
+                    _ep = self._memory_interface.episodic
+                    _submit_fragment_job(
+                        lambda: _ep.fragment_and_store(
+                            _der_text,
+                            session_id=_session,
+                            chunk_type="der_output",
+                            zone=_der_zone,
+                        ),
+                        f"der_output/step{getattr(item, 'step_number', '?')} "
+                        f"({len(_der_text)} chars)",
                     )
         except Exception as _frag_exc:
             loud_error(_frag_exc, "der_pacman_fragment")
@@ -10783,11 +10933,20 @@ Respond with a JSON object:
                         self._memory_interface.episodic, "fragment_and_store"
                     )
                 ):
-                    self._memory_interface.episodic.fragment_and_store(
-                        _fail_text,
-                        session_id=_session,
-                        chunk_type="der_failure",
-                        zone="tool",
+                    from backend.agent.mcm_protocol.actions.pacman_fragment import (
+                        _submit_fragment_job,
+                    )
+
+                    _ep_f = self._memory_interface.episodic
+                    _submit_fragment_job(
+                        lambda: _ep_f.fragment_and_store(
+                            _fail_text,
+                            session_id=_session,
+                            chunk_type="der_failure",
+                            zone="tool",
+                        ),
+                        f"der_failure/step{getattr(item, 'step_number', '?')} "
+                        f"({len(_fail_text)} chars)",
                     )
         except Exception as _fail_frag_exc:
             loud_error(_fail_frag_exc, "der_pacman_fragment_failure")

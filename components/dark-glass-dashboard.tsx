@@ -839,24 +839,11 @@ export function DarkGlassDashboard({
     return () => window.removeEventListener('model-selected', onModelSelected)
   }, [localUpdateField])
 
-  // Listen for model-load-request events from the ModelBrowserPanel and route
-  // them through the WebSocket `load_local_model` path. This is the single
-  // source of truth for loading: it honors the backend load result and wires
-  // the kernel to the iris_local provider (so a local model drives reasoning
-  // and tool execution exactly like an API-key provider).
-  useEffect(() => {
-    const onModelLoadRequest = (e: Event) => {
-      const detail = (e as CustomEvent).detail
-      if (detail?.path && sendMessage) {
-        sendMessage('load_local_model', {
-          model_path: detail.path,
-          profile: detail.profile || 'balanced',
-        })
-      }
-    }
-    window.addEventListener('model-load-request', onModelLoadRequest)
-    return () => window.removeEventListener('model-load-request', onModelLoadRequest)
-  }, [sendMessage])
+  // NOTE: the `model-load-request` CustomEvent listener that used to live here
+  // was removed (2026-08-17). ModelBrowserPanel is rendered directly below, so
+  // it now takes `sendMessage` as a prop and calls `load_local_model` itself.
+  // The bounce through `window` added a failure mode and nothing else: when
+  // this listener was not mounted the panel's click disappeared silently.
 
   const fieldValues = localFieldValues;
   const updateField = localUpdateField;
@@ -1842,7 +1829,7 @@ export function DarkGlassDashboard({
         ) : activeSubApp === 'inference_console' ? (
           <InferenceConsolePanel key="inference_console" glowColor={glowColor} fontColor="white" />
         ) : activeSubApp === 'models' ? (
-          <ModelBrowserPanel key="model_browser" glowColor={glowColor} fontColor="white" />
+          <ModelBrowserPanel key="model_browser" glowColor={glowColor} fontColor="white" sendMessage={sendMessage} />
         ) : null}
     </div>
   );
