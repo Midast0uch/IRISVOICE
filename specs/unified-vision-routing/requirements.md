@@ -237,6 +237,41 @@ that I can tell whether the hierarchy is behaving and what it costs.
 **Edge Cases:**
 - High-frequency vision calls -> logging stays off the inference path.
 
+### REQ-10: User-configurable, model-agnostic vision fallback ladder
+**User Story:** As a user I want to choose which of MY models act as the vision
+fallback, from my own models directory, so that IRIS never hardcodes a model I did
+not pick.
+
+**Verified:** NEW. Candidate discovery comes free from REQ-5, which already attaches
+`has_vision` / `mmproj_path` / `mmproj_size_gb` to every projector-paired base model.
+Precedent for the selection shape: `_PROFILE_LADDER` + `recommend_profile` in
+`backend/agent/local_model_manager.py` (widest-first, take the first that fits).
+
+**Acceptance Criteria:**
+- AC1: THE SYSTEM SHALL offer every scanned model with `has_vision: true` as a
+  candidate for the vision fallback ladder.
+- AC2: THE SYSTEM SHALL let the user select and ORDER that ladder from the frontend.
+- AC3: THE SYSTEM SHALL persist the chosen ladder in `cfg.inference` so it survives
+  a restart.
+- AC4: WHEN the user has chosen a ladder THEN REQ-3 size-selection SHALL apply to
+  THAT ladder rather than to any built-in list.
+- AC5: IF the user has chosen nothing THEN THE SYSTEM SHALL auto-select the widest
+  `has_vision` model that fits — never a hardcoded model id.
+- AC6: IF a configured model is missing from disk THEN THE SYSTEM SHALL skip it,
+  log it, and continue down the ladder.
+- AC7: THE SYSTEM SHALL contain no hardcoded GGUF model id in the fallback path.
+
+**Edge Cases:**
+- User selects a model whose projector was deleted -> skipped, logged.
+- User orders a model first that cannot fit any plausible free VRAM -> skipped at
+  selection time with the reason logged, not a hard failure.
+- No `has_vision` models at all -> explicit error naming what is required.
+
+**Note for the implementer:** the models named in REQ-3 (LFM2.5-VL-3B, 450M) are
+DEFAULTS AND EXAMPLES, not a contract. This requirement is the house style for any
+future model ladder — user picks, system size-selects — so nothing in the loader
+ever names a specific GGUF again.
+
 ## Non-Requirements (Out of Scope)
 - Writing CUDA kernels for ternary types (maple - dropped by the user).
 - Multi-model concurrent serving; llama-server is one model per process.

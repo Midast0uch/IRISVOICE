@@ -99,6 +99,15 @@
   not good enough, T7's ladder needs a quality floor and the whole
   fast-brain-plus-fallback story changes.
 
+- [ ] **T15 (REQ-10)**: Frontend surface to select and order the vision fallback
+  ladder from scanned `has_vision` models; persist in `cfg.inference`; auto-select
+  when unset — `components/dashboard/ModelBrowserPanel.tsx`,
+  `backend/iris_config.py`, `backend/tools/lfm_vl_provider.py`
+  RIPPLE: consumes T1's `has_vision` metadata, so it needs T1 but nothing else.
+  Changes T7's input from a built-in ladder to a configured one — land T7 first,
+  then swap its source. Add a contract test asserting no hardcoded GGUF id in the
+  fallback path and graceful degradation when configured models are absent.
+
 ## Dependency / parallelization notes
 - **Wave 1 is fully parallel.** T3 and T4 are independent of everything; T4 alone
   may resolve the slow-first-vision complaint — land and measure it before Wave 3.
@@ -110,5 +119,7 @@
   and `vision_guided_operator.py` are consumers, not resolvers (evidence in the
   Ripple-Effect Map) — no code change, but CT-3 pins the lease/idle contract they
   depend on.
+- **T15 needs only T1**, and de-risks T14: if the 450M proves too weak, the user
+  can simply choose a better fallback rather than the ladder needing a quality floor.
 - **T14 is a quality gate, not code.** It can run in parallel from day one and
   should, because a negative result changes T7's design.
