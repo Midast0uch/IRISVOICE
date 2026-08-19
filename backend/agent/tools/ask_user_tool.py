@@ -19,7 +19,7 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from backend.agent.event_bus import (
     EventBus,
@@ -40,7 +40,14 @@ _VOICE_RESOLVE_THRESHOLD = 0.7
 
 @dataclass
 class Question:
-    """A pending AskUserQuestion."""
+    """A pending AskUserQuestion.
+
+    T3 (REQ-5): `set_id`, `header` and `multi_select` are additive fields
+    that only ever get non-default values via `ask_set()`. A question
+    created through the original `ask()` keeps `set_id=None`,
+    `header=""`, `multi_select=False` — no behaviour change for existing
+    callers.
+    """
     question_id: str = field(default_factory=lambda: f"q_{uuid.uuid4().hex[:8]}")
     text: str = ""
     options: List[str] = field(default_factory=list)
@@ -48,8 +55,40 @@ class Question:
     created_at: float = field(default_factory=time.time)
     timeout_seconds: int = ASK_USER_QUESTION_TIMEOUT
     status: str = "pending"  # pending | answered | timed_out
-    answer: Optional[str] = None
+    answer: Optional[Any] = None  # str, or list[str] for multi_select (REQ-5 AC3)
     filler_count: int = 0
+    turn_id: Optional[str] = None
+    set_id: Optional[str] = None  # REQ-5: the QuestionSet this belongs to, if any
+    header: str = ""              # REQ-5 AC4: per-question label
+    multi_select: bool = False    # REQ-5 AC3
+
+
+@dataclass
+class QuestionSpec:
+    """One question's spec passed into `ask_set()` (REQ-5 AC1/AC2/AC3/AC4).
+
+    Mirrors `ask()`'s parameters, minus `timeout_seconds`/`turn_id` which
+    are shared across the whole set.
+    """
+    text: str = ""
+    options: List[str] = field(default_factory=list)
+    allow_other: bool = False
+    multi_select: bool = False
+    header: str = ""
+
+
+@dataclass
+class QuestionSet:
+    """A set of N questions asked together (REQ-5 AC1).
+
+    Each `Question` in `questions` has its OWN `question_id` and resolves
+    independently through `resolve_answer()` — the same single funnel
+    `ask()`'s question uses (REQ-6 edge case: "each question resolves
+    independently through the same funnel"). There is no set-level
+    resolution call.
+    """
+    set_id: str = field(default_factory=lambda: f"qs_{uuid.uuid4().hex[:8]}")
+    questions: List[Question] = field(default_factory=list)
     turn_id: Optional[str] = None
 
 
@@ -105,7 +144,120 @@ class AskUserTool:
         )
         return question
 
-    def receive_answer(self, question_id: str, answer: str) -> Optional[Question]:
+    # ── T3 (REQ-5): question sets ───────────────────────────────────────────
+
+    def ask_set(
+        self,
+        specs: List[QuestionSpec],
+        *,
+        timeout_seconds: int = ASK_USER_QUESTION_TIMEOUT,
+        turn_id: Optional[str] = None,
+    ) -> QuestionSet:
+        """Ask N questions as one set and return immediately (REQ-5 AC1).
+
+        Every question gets its OWN `question_id` and is stored in
+        `_pending` exactly like a question created by `ask()` — there is
+        no separate storage or resolution path. Each resolves
+        independently through `resolve_answer(question_id, answer)`
+        (REQ-6 edge case), so one answered question never blocks or
+        invalidates the others (REQ-5 AC5 edge case).
+
+        WIRE PAYLOAD (REQ-5 AC6, CT-2): the emitted `question:ask` event
+        ALWAYS carries `set_id` and a `questions` array. When the set has
+        EXACTLY ONE question, the event ALSO carries the legacy top-level
+        `question_id`/`text`/`options`/`allow_other` keys mirroring that
+        question, so an unmodified (pre-T10) QuestionCard keeps working —
+        this is additive, never a breaking change to the single-question
+        shape.
+        """
+        qset = QuestionSet(turn_id=turn_id)
+        for spec in specs:
+            question = Question(
+                text=spec.text,
+                options=list(spec.options),
+                allow_other=spec.allow_other,
+                multi_select=spec.multi_select,
+                header=spec.header,
+                timeout_seconds=timeout_seconds,
+                turn_id=turn_id,
+                set_id=qset.set_id,
+            )
+            qset.questions.append(question)
+            self._pending[question.question_id] = question
+
+        data: Dict[str, Any] = {
+            "set_id": qset.set_id,
+            "questions": [
+                {
+                    "question_id": q.question_id,
+                    "text": q.text,
+                    "options": q.options,
+                    "allow_other": q.allow_other,
+                    "multi_select": q.multi_select,
+                    "header": q.header,
+                    "status": q.status,
+                }
+                for q in qset.questions
+            ],
+            "timeout_seconds": timeout_seconds,
+        }
+        if len(qset.questions) == 1:
+            only = qset.questions[0]
+            data.update({
+                "question_id": only.question_id,
+                "text": only.text,
+                "options": only.options,
+                "allow_other": only.allow_other,
+            })
+
+        self._bus.emit(self._IRISStreamEvent.QUESTION_ASK, data=data, turn_id=turn_id)
+        logger.info(
+            "[AskUser] Asked set=%s (%d question(s), timeout=%ds)",
+            qset.set_id, len(qset.questions), timeout_seconds,
+        )
+        return qset
+
+    def wait_for_set(
+        self,
+        qset: QuestionSet,
+        poll_interval: float = 0.1,
+        filler_interval: float = FILLER_INTERVAL,
+    ) -> QuestionSet:
+        """Block until every question in the set is answered or its own
+        timeout elapses (REQ-5 AC5).
+
+        Polls all still-pending questions on ONE shared clock rather than
+        waiting on them one at a time, so an early answer to question A
+        never delays question B's own deadline. Each question times out
+        independently: on return, the set is a mix of `answered` /
+        `timed_out` per-question statuses — never one failed whole (edge
+        case: "timeout with a partially-answered set reports answered
+        ones as answered and unanswered as unanswered").
+        """
+        last_filler = time.time()
+        while True:
+            open_questions = [q for q in qset.questions if q.question_id in self._pending]
+            if not open_questions:
+                break
+            now = time.time()
+            for question in open_questions:
+                if now - question.created_at >= question.timeout_seconds:
+                    self._pending.pop(question.question_id, None)
+                    question.status = "timed_out"
+                    self._bus.emit(
+                        self._IRISStreamEvent.QUESTION_TIMEOUT,
+                        data={"question_id": question.question_id, "set_id": qset.set_id},
+                        turn_id=question.turn_id,
+                    )
+            if now - last_filler >= filler_interval:
+                for question in open_questions:
+                    if question.question_id in self._pending:
+                        self.send_filler(question.question_id)
+                last_filler = now
+            time.sleep(poll_interval)
+        return qset
+
+    def receive_answer(self, question_id: str, answer: Any) -> Optional[Question]:
         """Receive an answer from the frontend or voice pipeline.
 
         Returns the Question (with status updated) or None if not found.
@@ -168,14 +320,32 @@ class AskUserTool:
             )
         return question
 
-    def resolve_answer(self, question_id: str, answer: str) -> Optional[Question]:
-        """SINGLE resolution funnel (REQ-14 AC5, CT-4 first-wins).
+    def resolve_answer(self, question_id: str, answer: Union[str, List[str]]) -> Optional[Question]:
+        """SINGLE resolution funnel (REQ-14 AC5, CT-4 first-wins; T3/REQ-6
+        AC1: card click, free text, and voice ALL route through here).
 
         Card click and voice BOTH route through here. First caller wins:
         `receive_answer` pops the question from `_pending`, so a second answer
         (e.g. voice after click) is a no-op. A parked source linked to the
         question is resumed (REQ-13 AC3) so the research run can pick it up.
+
+        T3 (REQ-5 point 6 — multi-select normalization): a `multi_select`
+        question's answer is normalized to a list of option strings here,
+        regardless of whether the caller passed a bare string or a list, so
+        every downstream consumer (the QUESTION_ANSWERED event, the stored
+        `Question.answer`) sees one consistent type. A non-multi-select
+        question always resolves to a string. Voice stays single-select —
+        `fuzzy_match_answer` matches exactly one option, and multi-select by
+        voice is explicitly out of scope; `resolve_via_voice` never passes a
+        list here.
+
+        AC5: an unknown or already-resolved `question_id` reaches
+        `receive_answer`, which returns None without raising — callers (the
+        gateway) log that outcome themselves.
         """
+        pending = self._pending.get(question_id)
+        if pending is not None:
+            answer = _normalize_answer(pending, answer)
         question = self.receive_answer(question_id, answer)
         if question is not None:
             registry = get_parked_source_registry()
@@ -291,6 +461,29 @@ class AskUserTool:
             turn_id=question.turn_id,
         )
         return question
+
+
+# ── T3 (REQ-5 point 6): multi-select answer normalization ──────────────────
+
+
+def _normalize_answer(question: Question, answer: Union[str, List[str]]) -> Union[str, List[str]]:
+    """Normalize an answer at the funnel so every downstream consumer sees
+    one consistent type for a given question (T3 design point 6).
+
+    - `question.multi_select` -> always a list of option strings, even if
+      the caller passed a bare string (a single selection made on a
+      multi-select question).
+    - Otherwise -> always a string; a list answer (should not normally
+      happen off the click/text path) collapses to a comma-joined string
+      rather than being rejected, since resolution must never raise.
+    """
+    if question.multi_select:
+        if isinstance(answer, list):
+            return [str(a) for a in answer]
+        return [] if answer is None else [str(answer)]
+    if isinstance(answer, list):
+        return ", ".join(str(a) for a in answer)
+    return answer
 
 
 # ── Fuzzy matching ─────────────────────────────────────────────────────────

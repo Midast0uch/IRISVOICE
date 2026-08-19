@@ -1589,6 +1589,17 @@ export function useIRISWebSocket(
         break
       }
 
+      // ── Card re-hydration (T7a, REQ-4 AC2/AC4/AC5) ───────────────────────
+      // Response to a `get_cards` request. Forwarded to iris:cards so
+      // useTaskProgress can merge persisted cards back into its per-conversation
+      // map on open/switch — the read half of the T4/T4a write path.
+      case "cards": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:cards', { detail: payload }))
+        }
+        break
+      }
+
       // ── Execution-hardening plan events (Phase 4.1) ─────────────────────
       // VALIDATION_FAILED / RECOVERY_START / TOPOLOGY_RECOVERY / BUDGET_EXHAUSTED
       // from the agent kernel, bridged via WSEventBridge. Forwarded to
@@ -1717,6 +1728,7 @@ export function useIRISWebSocket(
     'text_message',
     'voice_command_start',
     'get_documents',
+    'get_cards',
     'sync_state',
     // LEARN from thread changes too, so the stored id tracks the active
     // thread instead of going stale (a stale id is what caused the merge).

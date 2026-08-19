@@ -118,6 +118,15 @@ except Exception:
             return False
         return depth_layer <= 1 and result_tokens < 400
 
+# REQ-1 AC8 (T2b, Decision 13 — revised 2026-08-19): the user-facing copy for
+# the child steps of a sub-loop split. `branchLabel` is free text on the
+# wire — CardChassis's ChassisBranchBadge renders whatever string arrives
+# here, so the wording is owned in this ONE constant, not inlined at each
+# emit site. NEVER "Sub-Loop" / "Detour" — those remain internal identifiers
+# (sub_loop_split / is_subloop) and are UNCHANGED; this is the user-facing
+# label only.
+DER_SUBLOOP_BRANCH_LABEL = "Diving Deeper"
+
 @dataclass
 class TaskContext:
     """
@@ -332,6 +341,16 @@ class AgentKernel:
         # Used by resolve_context_window() so memory, conversation history,
         # and MCM budgets are never hardcoded — they adapt to the model.
         self._context_window_overrides: dict[str, int] = {}
+
+        # ── REQ-3 (T2): backend-declared task-card identity registry ────────
+        # Maps DER task_id -> card_id so the SAME task's early-skeleton and
+        # DER-queue task:start emits (and every lifecycle event after it)
+        # resolve to one Liquid Ink card instead of two. Bounded — this is a
+        # per-kernel-lifetime dict, not per-turn, so it must not grow forever
+        # (see _register_card's eviction).
+        self._card_by_task: dict[str, str] = {}
+        self._active_card_id: Optional[str] = None
+        self._CARD_REGISTRY_CAP: int = 200
 
         # Domain 4.5 — proactive skill creation.
         # Tracks how many times each normalized tool-name sequence (joined with "→")
@@ -5583,10 +5602,14 @@ class AgentKernel:
                             len(_steps),
                             " | ".join(s["description"] for s in _steps)[:300],
                         )
+                        _card_task_id = task_id or _plan.original_task[:40]
+                        _card_id, _card_relation = self._resolve_card_identity(
+                            _card_task_id, "initial"
+                        )
                         _bus.emit(
                             IRISStreamEvent.TASK_START,
                             data=self._task_start_payload(
-                                task_id=task_id or _plan.original_task[:40],
+                                task_id=_card_task_id,
                                 description=_plan.original_task[:200],
                                 plan_title=(
                                     _plan.plan_title[:80] if _plan.plan_title else ""
@@ -5599,8 +5622,24 @@ class AgentKernel:
                                 # channel with origin "sub_loop_split" (REQ-4/13)
                                 # or "user_steering" (REQ-15).
                                 origin="initial",
+                                # REQ-3 (T2): backend-declared card identity.
+                                card_id=_card_id,
+                                card_relation=_card_relation,
+                                conversation_id=self.conversation_id,
                             ),
                             session_id=session_id or self.session_id,
+                        )
+                        # T4a (REQ-4 AC1): persist the card at task:start —
+                        # upsert with terminal_state="running".
+                        self._persist_card_snapshot(
+                            card_id=_card_id,
+                            conversation_id=self.conversation_id,
+                            card_relation=_card_relation,
+                            plan_title=(_plan.plan_title[:80] if _plan.plan_title else ""),
+                            mode=_mode_name,
+                            steps=_steps,
+                            total_steps=len(_plan.steps),
+                            terminal_state="running",
                         )
                     except Exception:
                         pass  # never block execution on an event emission failure
@@ -6585,32 +6624,52 @@ Respond with a JSON object:
         try:
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
             bus = get_event_bus()
+            _card_task_id = _turn_id or plan.original_task[:40]
+            _card_id, _card_relation = self._resolve_card_identity(
+                _card_task_id, "initial"
+            )
+            _start_steps = [
+                {
+                    "id": it.step_id,
+                    "description": it.description,
+                    "status": "pending",
+                    "toolName": it.tool,
+                }
+                for it in items
+            ]
             bus.emit(
                 IRISStreamEvent.TASK_START,
                 data=self._task_start_payload(
-                    task_id=_turn_id or plan.original_task[:40],
+                    task_id=_card_task_id,
                     description=plan.original_task[:200],
                     plan_title=(
                         plan.plan_title[:80] if plan.plan_title else ""
                     ),
                     mode=initial_mode.value,
-                    steps=[
-                        {
-                            "id": it.step_id,
-                            "description": it.description,
-                            "status": "pending",
-                            "toolName": it.tool,
-                        }
-                        for it in items
-                    ],
+                    steps=_start_steps,
                     total_steps=len(items),
                     # REQ-14 (T23): execution-start announcement — still the
                     # INITIAL plan; revisions re-emit with a distinct origin.
                     origin="initial",
+                    # REQ-3 (T2): backend-declared card identity.
+                    card_id=_card_id,
+                    card_relation=_card_relation,
+                    conversation_id=self.conversation_id,
                 ),
                 turn_id=_turn_id,
                 conversation_id=self.conversation_id,
                 session_id=_session,
+            )
+            # T4a (REQ-4 AC1): persist the card at task:start.
+            self._persist_card_snapshot(
+                card_id=_card_id,
+                conversation_id=self.conversation_id,
+                card_relation=_card_relation,
+                plan_title=(plan.plan_title[:80] if plan.plan_title else ""),
+                mode=initial_mode.value,
+                steps=_start_steps,
+                total_steps=len(items),
+                terminal_state="running",
             )
         except Exception:
             pass  # EventBus is optional — no crash if it fails
@@ -7050,14 +7109,18 @@ Respond with a JSON object:
             # Emit TOOL_CALL event for the frontend / TaskKernel
             try:
                 from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+                _lifecycle_task_id = _turn_id or item.step_id
                 get_event_bus().emit(
                     IRISStreamEvent.TOOL_CALL,
                     data={
-                        "task_id": _turn_id or item.step_id,
+                        "task_id": _lifecycle_task_id,
                         "tool_name": item.tool or "direct",
                         "description": item.description[:200],
                         "params": item.params,
                         "step_number": item.step_number,
+                        # REQ-3 AC6 (T2): card_id stays stable across every
+                        # event of a card's lifetime, not just task:start.
+                        **self._card_envelope(_lifecycle_task_id),
                     },
                     turn_id=_turn_id,
                     conversation_id=self.conversation_id,
@@ -7360,10 +7423,11 @@ Respond with a JSON object:
         self._der_step_count = len(completed_items)
         try:
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+            _lifecycle_task_id = _turn_id or plan.original_task[:40]
             get_event_bus().emit(
                 IRISStreamEvent.TASK_DONE if outcome == "success" else IRISStreamEvent.TASK_FAIL,
                 data={
-                    "task_id": _turn_id or plan.original_task[:40],
+                    "task_id": _lifecycle_task_id,
                     "outcome": outcome,
                     # REQ-15 AC3 (T25): a stop is explicit — the user sees it.
                     "cancelled": outcome == "cancelled",
@@ -7385,10 +7449,27 @@ Respond with a JSON object:
                         }
                         for _fi in queue.failed_ids
                     ],
+                    # REQ-3 AC6 (T2): card_id stays stable across every
+                    # event of a card's lifetime, not just task:start.
+                    **self._card_envelope(_lifecycle_task_id),
                 },
                 turn_id=_turn_id,
                 conversation_id=self.conversation_id,
                 session_id=_session,
+            )
+            # T4a (REQ-4 AC1): persist the terminal state. Mirrors the same
+            # outcome == "success" condition used to pick TASK_DONE vs
+            # TASK_FAIL above — no separate terminal-state taxonomy invented.
+            _envelope = self._card_envelope(_lifecycle_task_id)
+            self._persist_card_snapshot(
+                card_id=_envelope.get("card_id"),
+                conversation_id=self.conversation_id,
+                card_relation="continues",
+                plan_title=(plan.plan_title[:80] if getattr(plan, "plan_title", None) else ""),
+                mode=queue.mode.value if getattr(queue, "mode", None) else None,
+                steps=self._queue_steps_snapshot(queue),
+                total_steps=len(queue.items),
+                terminal_state="done" if outcome == "success" else "fail",
             )
         except Exception:
             pass  # EventBus is optional — no crash if it fails
@@ -7594,17 +7675,27 @@ Respond with a JSON object:
         steps: list,
         total_steps: int,
         origin: str,
+        card_id: str,
+        card_relation: str,
+        conversation_id: Optional[str],
     ) -> dict:
-        """The ``task:start`` payload contract (REQ-14 / T23).
+        """The ``task:start`` payload contract (REQ-14 / T23; REQ-3 / T1).
 
         ONE construction point for every ``task:start`` emit so the
         merge-by-id contract keys (useTaskProgress.ts:210-227 —
         task_id / description / plan_title / mode / steps / total_steps)
         stay identical across sites, plus ``origin`` distinguishing the
         initial announcement from revisions: ``"initial"`` (both initial
-        emits), ``"sub_loop_split"`` (REQ-4/REQ-13 split), or
-        ``"user_steering"`` (REQ-15). REQ-18's trace reads ``origin`` to
+        emits), ``"sub_loop_split"`` (REQ-4/REQ-13 split), ``"user_steering"``
+        (REQ-15), or ``"amendment"``. REQ-18's trace reads ``origin`` to
         attribute a revision.
+
+        T1 (REQ-3): ADDITIVE ONLY — ``card_id`` / ``card_relation`` /
+        ``conversation_id`` are the three new keys; nothing about the seven
+        keys above changed. Kept a @staticmethod on purpose: identity
+        resolution (``_resolve_card_identity``, which needs kernel state)
+        stays a separate, independently-testable step, and every caller
+        resolves it before building this payload.
         """
         return {
             "task_id": task_id,
@@ -7614,7 +7705,210 @@ Respond with a JSON object:
             "steps": steps,
             "total_steps": total_steps,
             "origin": origin,
+            "card_id": card_id,
+            "card_relation": card_relation,
+            "conversation_id": conversation_id,
         }
+
+    def _register_card(self, task_id: str, card_id: str) -> None:
+        """Bind ``task_id -> card_id`` in the per-kernel registry (REQ-3/T2).
+
+        Bounded at ``_CARD_REGISTRY_CAP`` — evicts the oldest insertion first
+        (dict preserves insertion order) so a long-running kernel process
+        cannot leak memory one entry per DER task forever.
+        """
+        if task_id in self._card_by_task:
+            return
+        if len(self._card_by_task) >= self._CARD_REGISTRY_CAP:
+            oldest_task_id = next(iter(self._card_by_task))
+            del self._card_by_task[oldest_task_id]
+        self._card_by_task[task_id] = card_id
+
+    def _resolve_card_identity(self, task_id: str, origin: str) -> tuple:
+        """REQ-3 AC2/AC3/AC5 (T2): decide ``card_id`` / ``card_relation`` for
+        one ``task:start`` emit, entirely from backend state.
+
+        a. ``task_id`` already registered -> same card_id, "continues". This
+           is the known double-emit case: the early LLM-plan skeleton then
+           the DER queue emit for one task (REQ-3 edge case — no flicker).
+        b. ``origin != "initial"`` and there is an active card -> register
+           ``task_id`` against the ACTIVE card and continue it. Written as
+           "not initial" ON PURPOSE, rather than an explicit membership test
+           against sub_loop_split / user_steering / amendment: a non-initial
+           origin is by definition a revision of a running task, so a future
+           fifth origin still continues the card instead of silently
+           starting a new one. A sub-loop split CONTINUES the parent card —
+           a branch WITHIN a card, never a second card.
+        c. otherwise -> a genuinely new task; mint ``card_{task_id}``,
+           register it, make it the active card, return "new".
+
+        Never raises — a resolution failure logs and falls back to a fresh,
+        unregistered card_id rather than breaking the task:start emit.
+        """
+        try:
+            if not task_id:
+                logger.warning(
+                    "[AgentKernel] card identity: empty task_id (origin=%s conv=%s) "
+                    "— minting an unregistered card; continuation will not track it",
+                    origin, self.conversation_id,
+                )
+                import uuid as _uuid
+                return f"card_unknown_{_uuid.uuid4().hex[:8]}", "new"
+
+            existing = self._card_by_task.get(task_id)
+            if existing is not None:
+                logger.info(
+                    "[AgentKernel] card identity: task=%s origin=%s conv=%s -> "
+                    "continues existing card=%s (double-emit)",
+                    task_id, origin, self.conversation_id, existing,
+                )
+                return existing, "continues"
+
+            if origin != "initial" and self._active_card_id is not None:
+                card_id = self._active_card_id
+                self._register_card(task_id, card_id)
+                logger.info(
+                    "[AgentKernel] card identity: task=%s origin=%s conv=%s -> "
+                    "continues active card=%s (non-initial origin revises "
+                    "the running task)",
+                    task_id, origin, self.conversation_id, card_id,
+                )
+                return card_id, "continues"
+
+            card_id = f"card_{task_id}"
+            self._register_card(task_id, card_id)
+            self._active_card_id = card_id
+            logger.info(
+                "[AgentKernel] card identity: task=%s origin=%s conv=%s -> "
+                "new card=%s",
+                task_id, origin, self.conversation_id, card_id,
+            )
+            return card_id, "new"
+        except Exception as _card_exc:  # noqa: BLE001 — never break a task emit
+            logger.warning(
+                "[AgentKernel] card identity resolution failed "
+                "(task=%s origin=%s conv=%s): %s",
+                task_id, origin, self.conversation_id, _card_exc,
+            )
+            return f"card_{task_id or 'unknown'}", "new"
+
+    def _card_envelope(self, task_id: Optional[str]) -> dict:
+        """REQ-3 AC6 (T2): keep ``card_id`` stable across every event of a
+        card's lifetime, not just ``task:start``. LOOKS UP (never registers)
+        the card already bound to ``task_id`` and returns the pair to merge
+        into a lifecycle emit dict (tool:call, tool:result, task:done/fail,
+        task:progress). Unknown ``task_id`` -> ``card_id`` is None — a wrong
+        id is worse than a missing one. Never raises.
+        """
+        try:
+            card_id = self._card_by_task.get(task_id) if task_id else None
+        except Exception:
+            card_id = None
+        return {"card_id": card_id, "conversation_id": self.conversation_id}
+
+    @staticmethod
+    def _queue_steps_snapshot(queue) -> list:
+        """T4a (REQ-4 AC1/AC5): the FULL, cumulative step list + derived
+        status, for card PERSISTENCE — distinct from the task:start WIRE
+        payload, which for revision origins (user_steering/amendment)
+        intentionally emits only the delta for the frontend's merge-by-id
+        reducer (useTaskProgress.ts). A persisted card has no earlier
+        partial payload to merge against, so persistence always walks
+        ``queue.items`` (already cumulative by the time any revision emits)
+        and derives status from completed_ids/failed_ids/vetoed_ids rather
+        than reusing the wire delta. Never raises — a malformed queue
+        persists as "no steps" rather than breaking the emit it rides on.
+        """
+        try:
+            return [
+                {
+                    "id": it.step_id,
+                    "description": it.description,
+                    "status": (
+                        "done" if it.step_id in queue.completed_ids
+                        else "failed" if it.step_id in queue.failed_ids
+                        else "vetoed" if it.step_id in queue.vetoed_ids
+                        else "pending"
+                    ),
+                    "toolName": it.tool,
+                }
+                for it in queue.items
+            ]
+        except Exception:
+            return []
+
+    def _persist_card_snapshot(
+        self,
+        *,
+        card_id: Optional[str],
+        conversation_id: Optional[str],
+        card_relation: str = "new",
+        plan_title: Optional[str] = None,
+        mode: Optional[str] = None,
+        steps: Optional[list] = None,
+        total_steps: int = 0,
+        terminal_state: str = "running",
+    ) -> None:
+        """T4a (REQ-4 AC1/AC5): mirror one card lifecycle moment
+        (task:start, a task:progress step transition, or task:done/fail)
+        into the persistent card store.
+
+        ONE construction point, called from every emit site that carries
+        card identity (mirrors ``_task_start_payload``'s pattern), so the
+        shape handed to ``CardState``/``CardStepSnapshot`` never drifts
+        between call sites.
+
+        NON-BLOCKING: hands the snapshot to
+        ``conversation_context_store.enqueue_card_write`` — a bounded,
+        coalescing background queue — rather than calling
+        ``store.save_card()`` (synchronous SQLite) directly. These emit
+        sites run on the DER worker thread (iris_gateway.py's
+        ``run_in_executor`` pool), not inside a coroutine, so there is no
+        event loop to offload to; the queue's own background thread is the
+        offload.
+
+        Missing ``card_id``/``conversation_id`` (unknown task_id, no active
+        card) is a no-op — there is nothing to persist. Never raises: a
+        persistence failure must never block a card emit or a user
+        response.
+        """
+        try:
+            if not card_id or not conversation_id:
+                return
+            from backend.agent.conversation_context_store import (
+                CardState,
+                CardStepSnapshot,
+                enqueue_card_write,
+            )
+
+            _steps = [
+                CardStepSnapshot(
+                    id=str(s.get("id", "")),
+                    description=str(s.get("description", "")),
+                    status=str(s.get("status", "pending")),
+                    tool_name=s.get("toolName") or s.get("tool_name"),
+                )
+                for s in (steps or [])
+            ]
+            _done = sum(1 for s in _steps if s.status not in ("pending",))
+            enqueue_card_write(
+                CardState(
+                    card_id=card_id,
+                    conversation_id=conversation_id,
+                    card_relation=card_relation,
+                    plan_title=plan_title,
+                    mode=mode,
+                    steps=_steps,
+                    current_step=_done,
+                    total_steps=total_steps or len(_steps),
+                    terminal_state=terminal_state,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — persistence must never block a card emit
+            logger.debug(
+                "[AgentKernel] card persistence skipped (card_id=%s): %s",
+                card_id, exc,
+            )
 
     # ── REQ-15 (T25): mid-task steering channel ──────────────────────────
 
@@ -7773,10 +8067,14 @@ Respond with a JSON object:
             queue.items.extend(_fresh)
 
             # REQ-14 revision signal with the user_steering origin.
+            _card_task_id = self.conversation_id or _session
+            _card_id, _card_relation = self._resolve_card_identity(
+                _card_task_id, "user_steering"
+            )
             get_event_bus().emit(
                 IRISStreamEvent.TASK_START,
                 data=self._task_start_payload(
-                    task_id=self.conversation_id or _session,
+                    task_id=_card_task_id,
                     description=text,
                     plan_title=(
                         (getattr(plan, "plan_title", "") or "")[:80]
@@ -7794,10 +8092,29 @@ Respond with a JSON object:
                     ],
                     total_steps=len(_fresh),
                     origin="user_steering",
+                    # REQ-3 (T2): backend-declared card identity.
+                    card_id=_card_id,
+                    card_relation=_card_relation,
+                    conversation_id=self.conversation_id,
                 ),
                 turn_id=self.conversation_id or _session,
                 conversation_id=self.conversation_id,
                 session_id=_session,
+            )
+            # T4a (REQ-4 AC1): persist the revised card. The WIRE payload
+            # above intentionally carries only `_fresh` (the delta the
+            # frontend merges) — the STORED snapshot must stay the FULL
+            # cumulative step list (queue.items, already extended with
+            # _fresh), or a restore would show only the newest steps.
+            self._persist_card_snapshot(
+                card_id=_card_id,
+                conversation_id=self.conversation_id,
+                card_relation=_card_relation,
+                plan_title=((getattr(plan, "plan_title", "") or "")[:80] if plan else ""),
+                mode=_mode,
+                steps=self._queue_steps_snapshot(queue),
+                total_steps=len(queue.items),
+                terminal_state="running",
             )
             # REQ-18 AC3 (T31): correlate the user-steering revision.
             try:
@@ -7936,6 +8253,12 @@ Respond with a JSON object:
                 from backend.agent.event_bus import get_event_bus, IRISStreamEvent
 
                 _mode = queue.mode.value if getattr(queue, "mode", None) else "full"
+                # REQ-3 (T2): "amendment" is a fourth, undocumented origin —
+                # handled generically by the "not initial" rule in
+                # _resolve_card_identity rather than special-cased here.
+                _card_id, _card_relation = self._resolve_card_identity(
+                    _task_id, "amendment"
+                )
                 get_event_bus().emit(
                     IRISStreamEvent.TASK_START,
                     data=self._task_start_payload(
@@ -7959,10 +8282,28 @@ Respond with a JSON object:
                         ],
                         total_steps=len(_fresh),
                         origin="amendment",
+                        # REQ-3 (T2): backend-declared card identity.
+                        card_id=_card_id,
+                        card_relation=_card_relation,
+                        conversation_id=self.conversation_id,
                     ),
                     turn_id=_task_id,
                     conversation_id=self.conversation_id,
                     session_id=_session,
+                )
+                # T4a (REQ-4 AC1): persist the amended card — full
+                # cumulative queue.items (already extended with _fresh
+                # above), not the wire delta (same reasoning as the
+                # user_steering site).
+                self._persist_card_snapshot(
+                    card_id=_card_id,
+                    conversation_id=self.conversation_id,
+                    card_relation=_card_relation,
+                    plan_title=((getattr(plan, "plan_title", "") or "")[:80] if plan else ""),
+                    mode=_mode,
+                    steps=self._queue_steps_snapshot(queue),
+                    total_steps=len(queue.items),
+                    terminal_state="running",
                 )
             except Exception:
                 pass  # never block an amendment on an emit failure
@@ -10218,10 +10559,11 @@ Respond with a JSON object:
                             IRISStreamEvent,
                         )
 
+                        _lifecycle_task_id = _turn_id or item.step_id
                         get_event_bus().emit(
                             IRISStreamEvent.TOOL_CALL,
                             data={
-                                "task_id": _turn_id or item.step_id,
+                                "task_id": _lifecycle_task_id,
                                 "tool_name": item.tool or "direct",
                                 "description": (
                                     item.description
@@ -10230,6 +10572,9 @@ Respond with a JSON object:
                                 )[:200],
                                 "params": item.params or {},
                                 "step_number": item.step_number,
+                                # REQ-3 AC6 (T2): card_id stays stable across
+                                # every event of a card's lifetime.
+                                **self._card_envelope(_lifecycle_task_id),
                             },
                             turn_id=_turn_id,
                             conversation_id=self.conversation_id,
@@ -10865,14 +11210,18 @@ Respond with a JSON object:
         # ── EventBus: emit tool:result or tool:error ────────────────
         try:
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+            _lifecycle_task_id = _turn_id or item.step_id
             if step_success:
                 get_event_bus().emit(
                     IRISStreamEvent.TOOL_RESULT,
                     data={
-                        "task_id": _turn_id or item.step_id,
+                        "task_id": _lifecycle_task_id,
                         "result_summary": step_result[:200],
                         "tool_name": item.tool or "direct",
                         "step_number": item.step_number,
+                        # REQ-3 AC6 (T2): card_id stays stable across every
+                        # event of a card's lifetime.
+                        **self._card_envelope(_lifecycle_task_id),
                     },
                     turn_id=_turn_id,
                     conversation_id=self.conversation_id,
@@ -11257,11 +11606,28 @@ Respond with a JSON object:
                                 if getattr(queue, "mode", None)
                                 else str(_phase)
                             )
+                            # REQ-3 (T2) edge case: a sub-loop split CONTINUES
+                            # the parent card — it is a branch WITHIN a card,
+                            # never a second card. Handled generically by the
+                            # "not initial" rule in _resolve_card_identity.
+                            _card_task_id = _turn_id or getattr(
+                                plan, "original_task", ""
+                            )[:40]
+                            _card_id, _card_relation = self._resolve_card_identity(
+                                _card_task_id, "sub_loop_split"
+                            )
+                            # T2b (REQ-1 AC8): the badge marks the nested row,
+                            # so the label is set on the CHILD steps this
+                            # split just produced — never on the parent or
+                            # any sibling already in the queue. A step
+                            # outside `_children` carries no `branchLabel`
+                            # key at all (not an empty string), so
+                            # ChassisBranchBadge renders on branch rows only.
+                            _branch_child_ids = {c.step_id for c in _children}
                             get_event_bus().emit(
                                 IRISStreamEvent.TASK_START,
                                 data=self._task_start_payload(
-                                    task_id=_turn_id
-                                    or getattr(plan, "original_task", "")[:40],
+                                    task_id=_card_task_id,
                                     description=getattr(
                                         plan, "original_task", ""
                                     )[:200],
@@ -11275,15 +11641,39 @@ Respond with a JSON object:
                                             "description": it.description,
                                             "status": "pending",
                                             "toolName": it.tool,
+                                            **(
+                                                {"branchLabel": DER_SUBLOOP_BRANCH_LABEL}
+                                                if it.step_id in _branch_child_ids
+                                                else {}
+                                            ),
                                         }
                                         for it in queue.items
                                     ],
                                     total_steps=len(queue.items),
                                     origin="sub_loop_split",
+                                    # REQ-3 (T2): backend-declared card identity.
+                                    card_id=_card_id,
+                                    card_relation=_card_relation,
+                                    conversation_id=self.conversation_id,
                                 ),
                                 turn_id=_turn_id,
                                 conversation_id=self.conversation_id,
                                 session_id=_session,
+                            )
+                            # T4a (REQ-4 AC1): persist the split card. Uses
+                            # _queue_steps_snapshot (derives done/failed from
+                            # queue state) rather than the wire payload's
+                            # blanket "pending" — a mid-run restore should
+                            # show already-finished steps as finished.
+                            self._persist_card_snapshot(
+                                card_id=_card_id,
+                                conversation_id=self.conversation_id,
+                                card_relation=_card_relation,
+                                plan_title=((getattr(plan, "plan_title", "") or "")[:80]),
+                                mode=_rev_mode,
+                                steps=self._queue_steps_snapshot(queue),
+                                total_steps=len(queue.items),
+                                terminal_state="running",
                             )
                             # REQ-18 AC3 (T31): correlate the sub-loop-split
                             # revision (REQ-4/REQ-13).
@@ -11867,7 +12257,27 @@ Respond with a JSON object:
                                 "step_number": _next_item.step_number,
                                 "description": _next_item.description[:200],
                                 "tool_name": _next_item.tool,
+                                # REQ-3 AC6 (T2): card_id stays stable across
+                                # every event of a card's lifetime.
+                                **self._card_envelope(_turn_id),
                             },
+                        )
+                        # T4a (REQ-4 AC5): persist the step addition so a
+                        # card interrupted mid-run restores with the
+                        # explorer-discovered step included.
+                        _add_step_envelope = self._card_envelope(_turn_id)
+                        self._persist_card_snapshot(
+                            card_id=_add_step_envelope.get("card_id"),
+                            conversation_id=self.conversation_id,
+                            card_relation="continues",
+                            # save_card upserts the WHOLE row — plan_title/mode
+                            # must be re-sent every write or a step-transition
+                            # snapshot would null out what task:start set.
+                            plan_title=((getattr(plan, "plan_title", "") or "")[:80]),
+                            mode=queue.mode.value if getattr(queue, "mode", None) else None,
+                            steps=self._queue_steps_snapshot(queue),
+                            total_steps=len(queue.items),
+                            terminal_state="running",
                         )
                     except Exception:
                         pass  # never block the DER loop on an emit failure
@@ -11923,7 +12333,24 @@ Respond with a JSON object:
                     "step_number": item.step_number,
                     "description": item.description[:200],
                     "success": step_success,
+                    # REQ-3 AC6 (T2): card_id stays stable across every
+                    # event of a card's lifetime.
+                    **self._card_envelope(_turn_id),
                 },
+            )
+            # T4a (REQ-4 AC5): persist the step transition so a card
+            # interrupted mid-run restores with current step statuses —
+            # the whole point of AC5, since a crash never reaches task:done.
+            _step_done_envelope = self._card_envelope(_turn_id)
+            self._persist_card_snapshot(
+                card_id=_step_done_envelope.get("card_id"),
+                conversation_id=self.conversation_id,
+                card_relation="continues",
+                plan_title=((getattr(plan, "plan_title", "") or "")[:80] if plan else ""),
+                mode=queue.mode.value if getattr(queue, "mode", None) else None,
+                steps=self._queue_steps_snapshot(queue),
+                total_steps=len(queue.items),
+                terminal_state="running",
             )
         except Exception:
             pass

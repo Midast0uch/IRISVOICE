@@ -24,9 +24,11 @@ module.exports = {
     // dompurify ships ESM by default; jest's CJS loader needs the CJS build.
     "^dompurify$": "<rootDir>/node_modules/dompurify/dist/purify.cjs.js",
   },
-  // Transform the ESM-only deps we actually pull in (framer-motion, lucide,
-  // markdown libs). Everything else in node_modules stays ignored.
+  // Transform the ESM-only deps we actually pull in. react-markdown pulls a whole
+  // ESM-only transitive tree (unified/remark/micromark/hast/mdast + devlop), and
+  // listing only the direct deps let `devlop` break the InputRow suite at import.
+  // Everything else in node_modules stays ignored.
   transformIgnorePatterns: [
-    "/node_modules/(?!(framer-motion|motion-dom|motion-utils|lucide-react|react-markdown|remark-gfm)/)",
+    "/node_modules/(?!(framer-motion|motion-dom|motion-utils|lucide-react|react-markdown|remark-.*|rehype-.*|unified|bail|is-plain-obj|trough|vfile.*|unist-util-.*|mdast-util-.*|micromark.*|hast-util-.*|hastscript|property-information|space-separated-tokens|comma-separated-tokens|html-url-attributes|decode-named-character-reference|character-entities.*|zwitch|longest-streak|ccount|escape-string-regexp|markdown-table|trim-lines|devlop|estree-util-.*|style-to-js|style-to-object|inline-style-parser|web-namespaces|stringify-entities)/)",
   ],
 }

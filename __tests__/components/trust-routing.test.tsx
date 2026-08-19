@@ -22,7 +22,18 @@ jest.mock("framer-motion", () => {
   const passthrough = React.forwardRef((props, ref) =>
     React.createElement("div", { ...props, ref })
   )
-  return { __esModule: true, motion: new Proxy({}, { get: () => passthrough }) }
+  // AnimatePresence added 2026-08-19 — SETUP ONLY, no assertion changed.
+  // RichDocument now renders through CardChassis (T11), and the chassis uses
+  // AnimatePresence for its collapse region. Without it in this file's mock the
+  // element resolves to `undefined` and the component fails to MOUNT — so the
+  // sanitization assertions below never ran at all. They are unchanged; this
+  // only lets the component render so they can execute again.
+  return {
+    __esModule: true,
+    motion: new Proxy({}, { get: () => passthrough }),
+    AnimatePresence: ({ children }: { children: React.ReactNode }) =>
+      React.createElement(React.Fragment, null, children),
+  }
 })
 
 // Avoid loading ESM-only markdown libs — the HTML branch doesn't use them.

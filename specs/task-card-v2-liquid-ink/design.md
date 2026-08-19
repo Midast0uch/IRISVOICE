@@ -156,7 +156,7 @@ conflicts with the legibility floor (Decision 14), the floor wins and the change
 | Node · crystallized | 2.5px emerald-400 dot, `0 0 10px rgba(52,211,153,.8)` | |
 | Node · done | 2px dot in vein colour, `0 0 6px ${veinColor}80` | |
 | Node · pending | 1.5px dot, `bg-white/20 border-white/15` | |
-| Detour badge | purple-300/80 on purple-500/10, border purple-500/20; row indented `pl-4` | 8px → **10px** (floor); label "Sub-Loop" → **"Detour"** |
+| Diving Deeper badge | purple-300/80 on purple-500/10, border purple-500/20; row indented `pl-4` | 8px → **10px** (floor); label "Sub-Loop" → **"Diving Deeper"** |
 | Target | 10.5px mono, white/85, truncate, flex-1 | |
 | Inline summary | 9px mono white/25, `max-w-[170px]`, prefixed `·` | de-emphasized, 9px allowed |
 | Expanded summary | `ml-6`, `bg-black/50`, border white/6, `break-words` | 9px → **10px** (floor) |
@@ -165,10 +165,20 @@ conflicts with the legibility floor (Decision 14), the floor wins and the change
 
 **Type floor (Decision 14).** The variant uses 8px in three places and 9px in five. The
 rule applied here: nothing below 9px; anything a user must read to understand what
-happened is at least 10px. That moves the THK badge, the Detour badge and the expanded
+happened is at least 10px. That moves the THK badge, the Diving Deeper badge and the expanded
 summary up. The inline summary and the counter stay at 9–9.5px as de-emphasized chrome.
 
-**Detour, not Sub-Loop (Decision 13).** `branchLabel` is free text rendered as
+**CORRECTION 2026-08-19 — the three 8px elements named above were wrong.** Verified by
+grepping `text-\[8px\]` in `temp/task-card-redesign/variants/VariantLiquidInk.tsx`. The
+THK badge and the expanded summary were ALREADY 9px in the variant; they were never 8px.
+The actual three are: the header's crystallized "done" badge (`:89`), the branch /
+Diving Deeper badge (`:172`), and the footnote `data/memory.db` label (`:218`).
+Resolution as built in `CardChassis.tsx`: the header badge and the branch badge carry
+MEANING and go to 10px (`ChassisBadge`, `ChassisBranchBadge`); the footnote label is
+de-emphasised chrome and goes to 9px (`ChassisChromeLabel`), the same class as the counter
+and inline summary this document already allows to sit at 9–9.5px.
+
+**Diving Deeper, not Sub-Loop (Decision 13).** `branchLabel` is free text rendered as
 `↳ [{branchLabel}]` — purple on the card
 (`VariantLiquidInk.tsx:172-176`) and bright magenta in the CLI
 (`CLITaskProgressRenderer.ts:103,174,243,315`). Changing the word touches the DATA the
@@ -194,7 +204,7 @@ decision wins and the change is noted.
 | Node · done | `●` brightCyan bold | verb takes the same colour |
 | Node · crystallized | `✦` brightGreen bold | verb takes the same colour |
 | Verb | `s.verb.toUpperCase().padEnd(6)` | **already 6 — the variant's own choice, which is why Decision 12 caps at 6** |
-| Detour chamber | `┌┄┄ ↳ [label] ┄┄┐` brightMagenta, body nested under `┊ ┊`, closed by `└┄┄┘` | label "Sub-Loop" → **"Detour"** (Decision 13) |
+| Diving Deeper chamber | `┌┄┄ ↳ [label] ┄┄┐` brightMagenta, body nested under `┊ ┊`, closed by `└┄┄┘` | label "Sub-Loop" → **"Diving Deeper"** (Decision 13) |
 | Step summary | `└─ {summary}` dim, indented under its step | |
 | Empty state | `┊ ○  Awaiting execution...` dim | |
 | Footer | built by `buildFooter(task, wall, close, useColor)` | stacked context lines |

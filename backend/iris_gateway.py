@@ -701,6 +701,9 @@ class IRISGateway:
             elif msg_type == "get_documents":
                 await self._handle_get_documents(session_id, client_id, message)
 
+            elif msg_type == "get_cards":
+                await self._handle_get_cards(session_id, client_id, message)
+
             elif msg_type == "download_gguf_model":
                 await self._handle_download_gguf_model(session_id, client_id, message)
 
@@ -5389,14 +5392,30 @@ class IRISGateway:
                 self._logger.warning(f"[Permissions] notification_response failed: {_perm_err}")
 
         elif msg_type == "question_response":
-            # Handle question responses from AskUserTool
+            # Handle question responses from AskUserTool.
+            # T3 (REQ-6 AC1/AC2): route through resolve_answer(), the SAME
+            # single funnel voice uses (resolve_via_voice -> resolve_answer),
+            # so a card click also resumes any parked source (AC2) and
+            # shares first-wins semantics (AC3). Previously this called
+            # receive_answer() directly, bypassing the funnel — that was
+            # the exact defect pinned by
+            # test_answer_funnel_baseline.py::test_gateway_question_response_bypasses_funnel
+            # (now inverted, see that file's updated header).
             try:
                 from backend.agent.tools.ask_user_tool import get_ask_user_tool
                 tool = get_ask_user_tool()
                 question_id = payload.get("question_id", "")
                 answer = payload.get("answer", "")
                 if question_id and answer:
-                    tool.receive_answer(question_id, answer)
+                    resolved = tool.resolve_answer(question_id, answer)
+                    # AC5: unknown or already-resolved question_id -> log,
+                    # never raise. resolve_answer/receive_answer already
+                    # return None for that case; this just makes it visible.
+                    if resolved is None:
+                        self._logger.info(
+                            f"[AskUser] question_response for unknown/already-"
+                            f"resolved question_id={question_id!r} (session={session_id})"
+                        )
             except Exception as _q_err:
                 self._logger.warning(f"[AskUser] question_response failed: {_q_err}")
 
@@ -9153,6 +9172,53 @@ class IRISGateway:
                 await self._ws_manager.send_to_client(
                     client_id,
                     {"type": "documents", "payload": {"documents": documents}},
+                )
+        except Exception:
+            pass
+
+    async def _handle_get_cards(
+        self, session_id: str, client_id: str, message: dict
+    ) -> None:
+        """WS handler (T7a, REQ-4 AC2/AC4/AC5): return conv-scoped persisted
+        task-card state so the frontend can rehydrate cards on a fresh
+        conversation open/switch — the read half of T4/T4a's write path.
+
+        Response uses the SAME wrapped convention as ``_handle_get_documents``
+        (``{type:"cards", payload:{cards:[...]}}``), not a flat shape.
+        Scoped by ``conversation_id`` so other threads are never returned
+        (mirrors REQ-12 thread isolation). Unknown/empty conversation ->
+        empty list, never raises.
+
+        Cards come back through ``ConversationContextStore.get_cards_for_conversation``,
+        which ALREADY resolves a card left ``terminal_state == "running"`` into
+        "terminated_unknown" on read (a process that crashed mid-task never
+        gets a turn to write its own terminal state) — that value is passed
+        through here UNCHANGED (AC5: transport faithfully, do not
+        re-decide it a second time in the gateway).
+        """
+        payload = (message or {}).get("payload", {})
+        conversation_id = payload.get("conversation_id") or session_id
+        cards: list = []
+        try:
+            if conversation_id:
+                from backend.agent.conversation_context_store import get_context_store
+
+                store = get_context_store()
+                card_states = store.get_cards_for_conversation(conversation_id)
+                cards = [c.to_dict() for c in card_states]
+            self._logger.info(
+                "[iris_gateway] GET CARDS conv=%s returned=%d",
+                conversation_id,
+                len(cards),
+            )
+        except Exception as exc:
+            self._logger.warning("[iris_gateway] get_cards failed: %s", exc)
+            cards = []
+        try:
+            if self._ws_manager:
+                await self._ws_manager.send_to_client(
+                    client_id,
+                    {"type": "cards", "payload": {"cards": cards}},
                 )
         except Exception:
             pass

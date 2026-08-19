@@ -11,6 +11,7 @@ import {
   AlertTriangle,
 } from "lucide-react"
 import { useBrandColor } from "@/contexts/BrandColorContext"
+import { CardChassis, ChassisBadge } from "@/components/chat/CardChassis"
 
 export type PermissionTier = "read_only" | "side_effect" | "destructive"
 
@@ -63,9 +64,12 @@ function formatValue(value: unknown): string {
 
 /**
  * PermissionCard — inline tool-approval UI in the chat stream.
- * Orbital (borderless) treatment: glowing action core + the requested tool as
- * the action badge (derived from the agent's request, never hardcoded). Glow
- * tracks the brand color (XurOrb).
+ * T11 (REQ-2): rendered on the shared Liquid Ink `CardChassis` so it reads as
+ * part of the same chat-stream system as the task/question/document cards.
+ * The tier drives the accent vein colour (REQ-2 AC2) — the card's role is
+ * expressed through the chassis, not a separate borderless "orbital" surface.
+ * Glowing action core + tool badge (derived from the agent's request, never
+ * hardcoded) still track the brand colour (XurOrb), unchanged.
  */
 export function PermissionCard({
   requestId,
@@ -118,53 +122,58 @@ export function PermissionCard({
   )
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -8 }}
-      transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
-      className="my-2 w-full"
+    <CardChassis
+      veinColor={tierCfg.color}
+      isActive={timeLeft > 0}
+      collapsible={false}
+      aria-label={`Permission request: ${toolName}`}
+      header={
+        <>
+          {/* Action core — glowing brand-color node, unchanged from the
+              orbital treatment. */}
+          <span
+            className="relative shrink-0"
+            style={{
+              width: 10,
+              height: 10,
+              borderRadius: "50%",
+              background: `radial-gradient(circle at 35% 30%, #aef3ff, ${glowColor} 60%, #006b8a)`,
+              boxShadow: `0 0 10px ${glowColor}, inset 0 0 4px rgba(255,255,255,0.6)`,
+            }}
+          />
+          {/* Tool badge — was 9px; a tool name carries meaning (which tool is
+              asking), so it moves to the chassis's 10px meaning floor
+              (Decision 15) via ChassisBadge. */}
+          <ChassisBadge
+            color={glowColor}
+            background={`${glowColor}1a`}
+            border={`1px solid ${glowColor}30`}
+          >
+            {toolName}
+          </ChassisBadge>
+          {/* Tier label — same reasoning: read_only/side_effect/destructive
+              is meaning, not chrome, so 9px -> 10px. */}
+          <span
+            className="text-[10px] font-semibold uppercase tracking-wide shrink-0"
+            style={{ color: tierCfg.color }}
+          >
+            {tierCfg.label}
+          </span>
+          {/* Timer stays at 9px — chrome, per the same de-emphasized-timer
+              precedent CardChassis documents for TaskListCard's footnote. */}
+          <div
+            className="ml-auto flex items-center gap-1 text-[9px] tabular-nums shrink-0"
+            style={{
+              color:
+                timeLeft <= 10 ? "rgba(239,68,68,0.8)" : "rgba(255,255,255,0.3)",
+            }}
+          >
+            <Clock size={9} />
+            {minutes}:{seconds.toString().padStart(2, "0")}
+          </div>
+        </>
+      }
     >
-      {/* Header: action core + tool badge + tier + timer */}
-      <div className="flex items-center gap-2.5 mb-2.5">
-        <span
-          className="relative shrink-0"
-          style={{
-            width: 10,
-            height: 10,
-            borderRadius: "50%",
-            background: `radial-gradient(circle at 35% 30%, #aef3ff, ${glowColor} 60%, #006b8a)`,
-            boxShadow: `0 0 10px ${glowColor}, inset 0 0 4px rgba(255,255,255,0.6)`,
-          }}
-        />
-        <span
-          className="px-1.5 py-0.5 rounded text-[9px] font-semibold tracking-wide uppercase"
-          style={{
-            color: glowColor,
-            backgroundColor: `${glowColor}1a`,
-            border: `1px solid ${glowColor}30`,
-          }}
-        >
-          {toolName.toUpperCase()}
-        </span>
-        <span
-          className="text-[9px] font-semibold uppercase tracking-wide"
-          style={{ color: tierCfg.color }}
-        >
-          {tierCfg.label}
-        </span>
-        <div
-          className="ml-auto flex items-center gap-1 text-[9px] tabular-nums"
-          style={{
-            color:
-              timeLeft <= 10 ? "rgba(239,68,68,0.8)" : "rgba(255,255,255,0.3)",
-          }}
-        >
-          <Clock size={9} />
-          {minutes}:{seconds.toString().padStart(2, "0")}
-        </div>
-      </div>
-
       {description && (
         <p className="text-[11px] leading-snug mb-2" style={{ color: "rgba(255,255,255,0.85)" }}>
           {description}
@@ -263,6 +272,6 @@ export function PermissionCard({
           </motion.div>
         )}
       </AnimatePresence>
-    </motion.div>
+    </CardChassis>
   )
 }

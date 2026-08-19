@@ -4,10 +4,10 @@ import React, { useMemo, useState, useRef, useEffect, lazy, Suspense } from "rea
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import type { Components } from "react-markdown"
-import { motion } from "framer-motion"
 import { useBrandColor } from "@/contexts/BrandColorContext"
 import { Expand, ChevronDown } from "lucide-react"
 import DOMPurify from "dompurify"
+import { CardChassis, ChassisBadge } from "@/components/chat/CardChassis"
 
 // Lazy-load mermaid only when a ```mermaid block is present
 const MermaidDiagram = lazy(() => import("./MermaidDiagram"))
@@ -70,6 +70,15 @@ const _SOURCE_MARK: Record<string, { glyph: string; label: string; dim: number }
  *
  * Adapts to react-markdown v10+ API (no `inline` prop on code component;
  * uses `node.parent.tagName === 'pre'` to detect block vs inline code).
+ *
+ * T11 (REQ-2): the outer card frame is now the shared Liquid Ink
+ * `CardChassis` — chassis swap ONLY (REQ-2 AC4: no capability change). Only
+ * the outer glass-card wrapper (the `rounded-xl` frame, its top light-catch
+ * and edge-fresnel overlays, and the `borderLeft: glowColor` accent rail)
+ * was replaced by the chassis's own ink surface + vein, coloured from the
+ * same `glowColor`. Content logic, the sanitization/truncation pipeline, the
+ * height-cap/overflow measurement, and every `getMarkdownComponents` override
+ * below are untouched.
  */
 export function RichDocument({
   content,
@@ -86,8 +95,6 @@ export function RichDocument({
   const theme = getThemeConfig()
   const glowColor = glowColorProp ?? theme.glow.color
   const shimmerPrimary = theme.shimmer.primary
-  const glassBlur = theme.glass.blur
-  const glassOpacity = theme.glass.opacity
 
   // Detect mermaid blocks for conditional lazy loading
   const hasMermaid = useMemo(() => /```mermaid/.test(content), [content])
@@ -164,105 +171,57 @@ export function RichDocument({
   }, [truncatedContent, format])
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 8, scale: 0.98 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, y: -8, scale: 0.98 }}
-      transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
-      className="my-3 w-full"
-    >
-      {/* `border` after `borderLeft` in the same style object OVERWROTE the
-          2px brand edge — the shorthand wins, so the card's signature accent
-          rail had silently become a flat 1px hairline on all four sides. The
-          longhand now comes last, and the rail is drawn as an inset ring so it
-          follows the rounded corner instead of squaring it off. */}
-      <div
-        className="rounded-xl overflow-hidden relative group/doc transition-shadow duration-200"
-        style={{
-          background: `linear-gradient(140deg, rgba(12,13,24,${0.66 + glassOpacity * 2}) 0%, rgba(16,17,30,${0.72 + glassOpacity * 2}) 100%)`,
-          backdropFilter: `blur(${glassBlur}px)`,
-          WebkitBackdropFilter: `blur(${glassBlur}px)`,
-          border: `1px solid ${glowColor}22`,
-          borderLeft: `2px solid ${glowColor}`,
-          boxShadow: `
-            inset 0 1px 0 rgba(255,255,255,0.06),
-            inset 0 -1px 0 rgba(0,0,0,0.45),
-            0 1px 0 rgba(0,0,0,0.55),
-            0 6px 24px rgba(0,0,0,0.42)
-          `,
-        }}
-      >
-        {/* Top light-catch: a single hairline that reads as the glass edge
-            picking up the brand colour, so the card has a defined top rather
-            than fading into the message list. */}
-        <div
-          className="absolute top-0 left-0 right-0 h-px pointer-events-none"
-          style={{
-            background: `linear-gradient(90deg, ${glowColor}00, ${glowColor}66 18%, ${glowColor}22 60%, ${glowColor}00)`,
-          }}
-        />
-        {/* Edge fresnel */}
-        <div
-          className="absolute inset-0 pointer-events-none"
-          style={{
-            background: `
-              linear-gradient(90deg, ${shimmerPrimary}06 0%, transparent 20%, transparent 80%, ${shimmerPrimary}06 100%),
-              linear-gradient(0deg, ${shimmerPrimary}04 0%, transparent 20%, transparent 80%, ${shimmerPrimary}04 100%)
-            `,
-            borderRadius: "10px",
-          }}
-        />
-
-        <div className="relative">
-          {/* Document header — its own band, separated by a rule. It used to
-              float directly above the body with only a margin, so the badge
-              read as part of the prose. */}
-          <div
-            className="flex items-center gap-2 px-3 py-2 border-b"
-            style={{ borderColor: "rgba(255,255,255,0.06)" }}
+    <CardChassis
+      veinColor={glowColor}
+      collapsible={false}
+      aria-label={`${format} document`}
+      header={
+        <>
+          {/* Format badge — was a bespoke pill at 9px; ChassisBadge is the
+              chassis's own 10px meaning-floor primitive (Decision 15), same
+              glowColor treatment. */}
+          <ChassisBadge
+            color={glowColor}
+            background={`${glowColor}14`}
+            border={`1px solid ${glowColor}33`}
           >
+            {format}
+          </ChassisBadge>
+          {/* Untrusted content is web-sourced and sanitized. That was only
+              ever visible as a behaviour (stripped HTML), never as a fact the
+              reader could see. Was 8px (below the REQ-1 AC7 floor); bumped to
+              9px as chrome, matching the chassis's chrome-label precedent. */}
+          {trust && trust !== "trusted" && (
             <span
-              className="text-[9px] font-semibold tracking-[0.12em] uppercase px-1.5 py-[3px] rounded leading-none"
+              className="text-[9px] font-medium tracking-[0.1em] uppercase leading-none px-1.5 py-[3px] rounded shrink-0"
               style={{
-                color: glowColor,
-                backgroundColor: `${glowColor}14`,
-                border: `1px solid ${glowColor}33`,
+                color: "rgba(255,255,255,0.38)",
+                border: "1px solid rgba(255,255,255,0.1)",
               }}
+              title="Sourced from the web — HTML is sanitized before rendering"
             >
-              {format}
+              web
             </span>
-            {/* Untrusted content is web-sourced and sanitized. That was only
-                ever visible as a behaviour (stripped HTML), never as a fact the
-                reader could see. */}
-            {trust && trust !== "trusted" && (
-              <span
-                className="text-[8px] font-medium tracking-[0.1em] uppercase leading-none px-1.5 py-[3px] rounded"
-                style={{
-                  color: "rgba(255,255,255,0.38)",
-                  border: "1px solid rgba(255,255,255,0.1)",
-                }}
-                title="Sourced from the web — HTML is sanitized before rendering"
-              >
-                web
-              </span>
-            )}
-            {onExpand && (
-              <button
-                onClick={onExpand}
-                className="ml-auto p-1 rounded transition-all duration-150 hover:brightness-125 opacity-60 group-hover/doc:opacity-100"
-                style={{
-                  color: "rgba(255,255,255,0.55)",
-                  backgroundColor: "rgba(255,255,255,0.04)",
-                  border: "1px solid rgba(255,255,255,0.08)",
-                }}
-                title="Expand to panel"
-              >
-                <Expand size={11} />
-              </button>
-            )}
-          </div>
-
-          {/* Document body. `overflowWrap: anywhere` is the actual fix for text
+          )}
+          {onExpand && (
+            <button
+              onClick={onExpand}
+              className="ml-auto p-1 rounded transition-all duration-150 hover:brightness-125 opacity-60 hover:opacity-100"
+              style={{
+                color: "rgba(255,255,255,0.55)",
+                backgroundColor: "rgba(255,255,255,0.04)",
+                border: "1px solid rgba(255,255,255,0.08)",
+              }}
+              title="Expand to panel"
+            >
+              <Expand size={11} />
+            </button>
+          )}
+        </>
+      }
+    >
+      <div className="relative">
+        {/* Document body. `overflowWrap: anywhere` is the actual fix for text
               disappearing at the right edge: a long URL or an unbroken token in
               a paragraph overflowed the card, and the card's `overflow-hidden`
               clipped it outright — the characters were painted outside the
@@ -488,7 +447,6 @@ export function RichDocument({
               )}
             </div>
           )}
-        </div>
       </div>
 
       {/* The body used the browser's default scrollbar — a ~17px opaque bar on
@@ -528,7 +486,7 @@ export function RichDocument({
           word-break: break-word;
         }
       `}</style>
-    </motion.div>
+    </CardChassis>
   )
 }
 

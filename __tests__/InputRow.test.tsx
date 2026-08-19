@@ -25,6 +25,7 @@ import "@testing-library/jest-dom"
 import { render, screen, fireEvent, act } from "@testing-library/react"
 import React from "react"
 import ChatWing from "@/components/chat-view"
+import { CrawlProvider } from "@/hooks/CrawlProvider"
 
 // jsdom has no matchMedia — useReducedMotion (pulled in by chat-view) needs it.
 beforeAll(() => {
@@ -108,6 +109,14 @@ function getTextarea(): HTMLTextAreaElement {
   return screen.getByPlaceholderText(/type command or drop file|listening/i) as HTMLTextAreaElement
 }
 
+// ChatWing calls useCrawlContext() (chat-view.tsx:468), which throws outside a
+// <CrawlProvider> (hooks/CrawlProvider.tsx:68). The real provider is used —
+// not a mock — because with no session id in sessionStorage its mount effect
+// (hooks/CrawlProvider.tsx:47-55) finds nothing to restore and returns without
+// fetching, and its inner useCrawl -> useCrawlSSE only opens an EventSource
+// when the (unused here) primary WS is reported down, so mounting it does no
+// network/websocket I/O in this test file.
+
 beforeEach(() => {
   mockNav.voiceState = "idle"
   mockNav.isChatTyping = false
@@ -126,7 +135,11 @@ beforeEach(() => {
 describe("Chat input row — Send pill removed, Enter carries the guards (REQ-1)", () => {
   it("AC1: no Send button is rendered in the input row", async () => {
     await act(async () => {
-      render(<ChatWing isOpen onClose={() => {}} onDashboardClick={() => {}} />)
+      render(
+        <CrawlProvider>
+          <ChatWing isOpen onClose={() => {}} onDashboardClick={() => {}} />
+        </CrawlProvider>
+      )
     })
     expect(screen.queryByTitle("Send message")).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /send message/i })).not.toBeInTheDocument()
@@ -135,7 +148,11 @@ describe("Chat input row — Send pill removed, Enter carries the guards (REQ-1)
   it("AC2: Enter sends when nothing blocks it — input clears", async () => {
     const sendMessage = jest.fn()
     await act(async () => {
-      render(<ChatWing isOpen onClose={() => {}} onDashboardClick={() => {}} sendMessage={sendMessage} />)
+      render(
+        <CrawlProvider>
+          <ChatWing isOpen onClose={() => {}} onDashboardClick={() => {}} sendMessage={sendMessage} />
+        </CrawlProvider>
+      )
     })
     await act(async () => {
       fireEvent.change(getTextarea(), { target: { value: "hello iris" } })
@@ -156,7 +173,11 @@ describe("Chat input row — Send pill removed, Enter carries the guards (REQ-1)
   it("AC2: Shift+Enter does not send", async () => {
     const sendMessage = jest.fn()
     await act(async () => {
-      render(<ChatWing isOpen onClose={() => {}} onDashboardClick={() => {}} sendMessage={sendMessage} />)
+      render(
+        <CrawlProvider>
+          <ChatWing isOpen onClose={() => {}} onDashboardClick={() => {}} sendMessage={sendMessage} />
+        </CrawlProvider>
+      )
     })
     await act(async () => {
       fireEvent.change(getTextarea(), { target: { value: "line one" } })
@@ -173,7 +194,11 @@ describe("Chat input row — Send pill removed, Enter carries the guards (REQ-1)
     it("blocks when input is empty", async () => {
       const sendMessage = jest.fn()
       await act(async () => {
-        render(<ChatWing isOpen onClose={() => {}} onDashboardClick={() => {}} sendMessage={sendMessage} />)
+        render(
+        <CrawlProvider>
+          <ChatWing isOpen onClose={() => {}} onDashboardClick={() => {}} sendMessage={sendMessage} />
+        </CrawlProvider>
+      )
       })
       expect(getTextarea().value).toBe("")
       await act(async () => {
@@ -191,7 +216,11 @@ describe("Chat input row — Send pill removed, Enter carries the guards (REQ-1)
       mockNav.isChatTyping = true
       const sendMessage = jest.fn()
       await act(async () => {
-        render(<ChatWing isOpen onClose={() => {}} onDashboardClick={() => {}} sendMessage={sendMessage} />)
+        render(
+        <CrawlProvider>
+          <ChatWing isOpen onClose={() => {}} onDashboardClick={() => {}} sendMessage={sendMessage} />
+        </CrawlProvider>
+      )
       })
       await act(async () => {
         fireEvent.change(getTextarea(), { target: { value: "queued message" } })
@@ -211,7 +240,11 @@ describe("Chat input row — Send pill removed, Enter carries the guards (REQ-1)
       mockNav.voiceState = "listening"
       const sendMessage = jest.fn()
       await act(async () => {
-        render(<ChatWing isOpen onClose={() => {}} onDashboardClick={() => {}} sendMessage={sendMessage} />)
+        render(
+        <CrawlProvider>
+          <ChatWing isOpen onClose={() => {}} onDashboardClick={() => {}} sendMessage={sendMessage} />
+        </CrawlProvider>
+      )
       })
       // Programmatically set a value even though the textarea is disabled
       // while listening — proves the BLOCK comes from the guard inside
@@ -228,7 +261,11 @@ describe("Chat input row — Send pill removed, Enter carries the guards (REQ-1)
 
   it("AC4: the other row controls (web toggle, upload, model switcher) remain present and enabled", async () => {
     await act(async () => {
-      render(<ChatWing isOpen onClose={() => {}} onDashboardClick={() => {}} />)
+      render(
+        <CrawlProvider>
+          <ChatWing isOpen onClose={() => {}} onDashboardClick={() => {}} />
+        </CrawlProvider>
+      )
     })
     expect(screen.getByTitle(/web mode/i)).toBeInTheDocument()
     expect(screen.getByTitle(/upload file/i)).toBeEnabled()

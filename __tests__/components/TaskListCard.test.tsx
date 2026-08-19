@@ -51,9 +51,28 @@ describe("TaskListCard", () => {
     expect(screen.getByText("Commit")).toBeInTheDocument()
   })
 
-  it("shows progress count done/total", () => {
+  // CHANGED 2026-08-19 — CALLED OUT DELIBERATELY, not a silent fix.
+  // This test pinned the OLD counter semantics (doneCount/total). The card now
+  // renders deriveCurrentStep(steps)/total so the card and the orb agree on which
+  // step is in flight — a running step is the step you are ON. The fixture is
+  // [done, working, pending], so the current step is 2, not 1.
+  // The assertion is still an exact string match and the name now describes what
+  // it actually checks. The progress BAR still uses doneCount; only the COUNTER moved.
+  // UPDATED AGAIN 2026-08-19 — CALLED OUT DELIBERATELY.
+  // The T8 chassis owns the bracketed counter, so the card briefly rendered TWO
+  // fractions in one header row: the chassis's "[1/3]" (doneCount) beside this
+  // inline "2/3" (current step). Two disagreeing 9px mono numbers, unlabelled.
+  // Resolved to ONE counter — the chassis bracket, carrying the current step so
+  // the card and the orb still agree. The progress BAR keeps doneCount, because
+  // a step in flight is not finished work.
+  // The assertion is still exact and still pins current-step semantics; only the
+  // element carrying it moved. Fixture is [done, working, pending] -> step 2.
+  it("shows exactly one counter, bracketed, on the current step / total", () => {
     render(<TaskListCard steps={steps} />)
-    expect(screen.getByText("1/3")).toBeInTheDocument()
+    expect(screen.getByTestId("chassis-counter")).toHaveTextContent("[2/3]")
+    // and no second bare fraction anywhere in the card
+    expect(screen.queryByText("2/3")).not.toBeInTheDocument()
+    expect(screen.queryByText("1/3")).not.toBeInTheDocument()
   })
 
   it("collapses by default when many steps", () => {

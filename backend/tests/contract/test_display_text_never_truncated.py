@@ -140,16 +140,23 @@ class TestCardsAreForArtifactsNotConversation:
         )
         return k, out
 
-    def test_conversational_turn_keeps_the_full_text_and_renders_no_card(
-        self, monkeypatch
-    ):
-        k, out = self._run(monkeypatch, "chat")
-        assert k._last_render_emitted is False, (
-            "a conversational answer was turned into a document card"
-        )
-        assert FULL.strip() in out, (
-            f"the answer was truncated to {len(out)} chars on a turn with no card"
-        )
+    # REMOVED 2026-08-17 (user authorised):
+    # test_conversational_turn_keeps_the_full_text_and_renders_no_card.
+    #
+    # It asserted that a `show` payload on a chat-zone turn renders NO card —
+    # the kernel-side "is this really an artifact?" gate, which is now deleted.
+    # That gate was undecidable: this test and
+    # test_document_rehydration_wave2::test_ct_doc_2_render_absent_sources_for_plain
+    # demanded OPPOSITE outcomes for the same payload shape (markdown + prose,
+    # no document_id, no sources, no web). Nothing structural separates them,
+    # because the intent belongs to the AGENT.
+    #
+    # The split is now made at the source: the [RESPONSE FORMAT] prompt defines
+    # `show` as "a document to be STORED", not "a long answer", so ordinary
+    # conversation no longer arrives here wearing a `show` payload at all.
+    # The truncation this test guarded is covered against the real function by
+    # tests/contract/test_speak_tool_envelope_not_truncated.py, which asserts
+    # the full text survives on every path WITHOUT a `show`.
 
     def test_reference_turn_renders_a_card_and_does_not_duplicate_inline(
         self, monkeypatch

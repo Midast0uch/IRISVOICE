@@ -5,6 +5,11 @@ ConversationContextStore — Persistent per-thread agent context.
 Keys agent context by conversation_id so switching threads or surviving a WS
 disconnect preserves the agent's state.  Bounded (max 50 convs, 200 msgs each).
 
+Also persists task CARD state (REQ-4 AC1), keyed by card_id and scoped to
+its conversation — a separate table (conversation_cards) from the message
+snapshot, upserted the same way document_store.py upserts document_data.
+Cards follow the same bound as messages and evict with their conversation.
+
 Storage: SQLite in data/databases/ (WAL mode for thread-safety).
 
 Error handling follows the memory/interface.py try/except pattern:
@@ -20,8 +25,10 @@ import json
 import logging
 import os
 import sqlite3
+import threading
 import time
 import uuid
+from collections import OrderedDict
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -50,6 +57,63 @@ class ConversationMessage:
     content: str
     timestamp: float = field(default_factory=time.time)
     turn_id: Optional[str] = None
+
+
+@dataclass
+class CardStepSnapshot:
+    """One step's persisted state within a task card (REQ-4 AC1)."""
+
+    id: str
+    description: str
+    status: str
+    tool_name: Optional[str] = None
+
+
+# Terminal states a persisted card can settle into. "running" is the only
+# NON-terminal value; every card starts there and moves to one of these
+# three when the process that owns it observes the card stop moving.
+CARD_STATE_RUNNING = "running"
+CARD_TERMINAL_STATES = {"done", "fail", "terminated_unknown"}
+
+
+@dataclass
+class CardState:
+    """Persisted snapshot of a task card (REQ-4 AC1), scoped to its
+    conversation (AC3: a card must never appear in a conversation it was
+    not created in).
+
+    Deliberately a SEPARATE record from ``ConversationMessage`` rather than
+    a field bolted onto it — mirrors the shape ``document_store.py`` already
+    uses for rich documents (a dedicated table keyed by the entity's own id,
+    upserted idempotently), which is the working precedent for this kind of
+    "renders independently of the message stream" state. ``ConversationMessage``
+    stays exactly {role, content, timestamp, turn_id}.
+    """
+
+    card_id: str
+    conversation_id: str
+    card_relation: str = "new"  # "new" | "continues"
+    plan_title: Optional[str] = None
+    mode: Optional[str] = None
+    steps: List[CardStepSnapshot] = field(default_factory=list)
+    current_step: int = 0
+    total_steps: int = 0
+    # AC5: restored as "terminated_unknown" if still "running" on read —
+    # see ConversationContextStore.get_cards_for_conversation().
+    terminal_state: str = CARD_STATE_RUNNING
+    created_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
+
+    def to_dict(self) -> Dict[str, Any]:
+        result = asdict(self)
+        result["steps"] = [asdict(s) for s in self.steps]
+        return result
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "CardState":
+        steps = [CardStepSnapshot(**s) for s in data.get("steps", [])]
+        data = {**data, "steps": steps}
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
 
 @dataclass
@@ -214,12 +278,134 @@ class ConversationContextStore:
                 "DELETE FROM conversation_contexts WHERE conversation_id = ?",
                 (conversation_id,),
             )
+            # Cards follow the conversation's own lifecycle — a cleared
+            # conversation must not leave orphaned cards a later conversation
+            # could never reach (AC3: cards are scoped to conversation_id).
+            self._execute(
+                "DELETE FROM conversation_cards WHERE conversation_id = ?",
+                (conversation_id,),
+            )
             return True
         except Exception as exc:
             logger.warning(
                 f"[ConversationContextStore] clear({conversation_id}) failed: {exc}"
             )
             return False
+
+    # ── Card state (REQ-4 AC1/AC3/AC5) ─────────────────────────────────
+
+    def save_card(self, card: CardState) -> bool:
+        """Upsert a card's persisted state, scoped to ``card.conversation_id``.
+
+        Duplicate ``card_id`` updates the existing row rather than creating a
+        second one (same upsert shape as ``document_store.store()``).
+        ``created_at`` is preserved across updates — only set on first insert.
+
+        Never raises: a failed card write must not block execution or a
+        user response (T4/T5 shared rule) — logged and returns False.
+        """
+        try:
+            data_json = json.dumps(card.to_dict())
+            now = time.time()
+            conn = self._get_connection()
+            try:
+                conn.execute(
+                    """INSERT INTO conversation_cards
+                       (card_id, conversation_id, data_json, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?)
+                       ON CONFLICT(card_id) DO UPDATE SET
+                           conversation_id = excluded.conversation_id,
+                           data_json = excluded.data_json,
+                           updated_at = excluded.updated_at""",
+                    (card.card_id, card.conversation_id, data_json, card.created_at, now),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+            self._enforce_card_bounds(card.conversation_id)
+            return True
+        except Exception as exc:
+            logger.warning(
+                f"[ConversationContextStore] save_card(card_id={card.card_id}, "
+                f"conversation_id={card.conversation_id}) failed: {exc}"
+            )
+            return False
+
+    def get_cards_for_conversation(self, conversation_id: str) -> List[CardState]:
+        """Return every card for a conversation, oldest first (REQ-4 AC1/AC3).
+
+        AC5: a card whose stored ``terminal_state`` is still "running" means
+        the process that owned it never reached the write path that would
+        have marked it done/fail — it was cut off mid-execution (crash,
+        disconnect, navigate-away). Resolved to "terminated_unknown" HERE, on
+        READ, rather than at write/shutdown time: a crash never gets a turn
+        to run a shutdown-time write, so read-time is the only place this
+        transform is guaranteed to run. The stored row itself is left
+        untouched — only the returned snapshot is corrected — so a later,
+        legitimate task:done for the same card_id can still land normally.
+
+        Never raises: a broken store degrades to "no cards" (empty list)
+        rather than blocking conversation load. A single corrupt row is
+        skipped (never rendered as a partial card) without failing the rest.
+        """
+        try:
+            rows = self._fetch_all(
+                "SELECT data_json FROM conversation_cards WHERE conversation_id = ? "
+                "ORDER BY created_at ASC",
+                (conversation_id,),
+            )
+        except Exception as exc:
+            logger.warning(
+                f"[ConversationContextStore] get_cards_for_conversation("
+                f"{conversation_id}) failed: {exc}"
+            )
+            return []
+
+        cards: List[CardState] = []
+        for row in rows:
+            try:
+                data = json.loads(row[0])
+                card = CardState.from_dict(data)
+            except Exception as exc:
+                logger.warning(
+                    f"[ConversationContextStore] skipping corrupt card row "
+                    f"for conversation_id={conversation_id}: {exc}"
+                )
+                continue
+            if card.conversation_id != conversation_id:
+                # AC3: never let a scope mismatch (corrupt row, bad write)
+                # leak a card into a conversation it wasn't created in.
+                continue
+            if card.terminal_state == CARD_STATE_RUNNING:
+                card.terminal_state = "terminated_unknown"
+            cards.append(card)
+        return cards
+
+    def _enforce_card_bounds(self, conversation_id: str) -> None:
+        """Cards follow the conversation's EXISTING retention rule: the same
+        per-conversation cap as ``MAX_MESSAGES_PER_CONV``, oldest evicted
+        first. A card is dropped whole (DELETE), never truncated — the edge
+        case explicitly forbids persisting or restoring a partial card.
+        """
+        try:
+            conn = self._get_connection()
+            try:
+                conn.execute(
+                    """DELETE FROM conversation_cards WHERE conversation_id = ? AND card_id IN (
+                        SELECT card_id FROM conversation_cards WHERE conversation_id = ?
+                        ORDER BY created_at ASC
+                        LIMIT -1 OFFSET ?
+                    )""",
+                    (conversation_id, conversation_id, MAX_MESSAGES_PER_CONV),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.warning(
+                f"[ConversationContextStore] _enforce_card_bounds("
+                f"{conversation_id}) failed: {exc}"
+            )
 
     def close(self) -> None:
         """Close all connections and free resources. Called by fixtures on teardown.
@@ -264,6 +450,23 @@ class ConversationContextStore:
                     updated_at REAL NOT NULL
                 )"""
             )
+            # REQ-4 AC1: card state, keyed by card_id and scoped to its
+            # conversation. A dedicated table (mirrors document_data in
+            # document_store.py) rather than a column on conversation_contexts
+            # — cards render and evict independently of the message snapshot.
+            conn.execute(
+                """CREATE TABLE IF NOT EXISTS conversation_cards (
+                    card_id TEXT PRIMARY KEY,
+                    conversation_id TEXT NOT NULL,
+                    data_json TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                )"""
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_cards_conversation "
+                "ON conversation_cards(conversation_id)"
+            )
             conn.execute("PRAGMA journal_mode=WAL")
             conn.commit()
         except Exception as exc:
@@ -303,23 +506,179 @@ class ConversationContextStore:
             conn.close()
 
     def _enforce_bounds(self) -> None:
-        """Keep the DB bounded at MAX_CONVERSATIONS."""
+        """Keep the DB bounded at MAX_CONVERSATIONS.
+
+        Cascades to conversation_cards: a conversation evicted by LRU must
+        not leave its cards behind as orphans nothing will ever load again.
+        """
         try:
             conn = self._get_connection()
-            conn.execute(
-                """DELETE FROM conversation_contexts WHERE conversation_id IN (
-                    SELECT conversation_id FROM conversation_contexts
-                    ORDER BY updated_at DESC
-                    LIMIT -1 OFFSET ?
-                )""",
-                (MAX_CONVERSATIONS,),
-            )
-            conn.commit()
-            conn.close()
+            try:
+                evicted = conn.execute(
+                    """SELECT conversation_id FROM conversation_contexts
+                       ORDER BY updated_at DESC
+                       LIMIT -1 OFFSET ?""",
+                    (MAX_CONVERSATIONS,),
+                ).fetchall()
+                evicted_ids = [r[0] for r in evicted]
+                conn.execute(
+                    """DELETE FROM conversation_contexts WHERE conversation_id IN (
+                        SELECT conversation_id FROM conversation_contexts
+                        ORDER BY updated_at DESC
+                        LIMIT -1 OFFSET ?
+                    )""",
+                    (MAX_CONVERSATIONS,),
+                )
+                if evicted_ids:
+                    placeholders = ",".join("?" * len(evicted_ids))
+                    conn.execute(
+                        f"DELETE FROM conversation_cards WHERE conversation_id IN ({placeholders})",
+                        evicted_ids,
+                    )
+                conn.commit()
+            finally:
+                conn.close()
         except Exception as exc:
             logger.warning(
                 f"[ConversationContextStore] _enforce_bounds failed: {exc}"
             )
+
+
+# ── Card write queue (T4a — REQ-4 AC1/AC5) ──────────────────────────────────
+#
+# ``save_card`` is synchronous SQLite. The kernel's emit sites (task:start,
+# task:progress step transitions, task:done/fail) run on the DER worker
+# thread — ``iris_gateway.py``'s ``loop.run_in_executor(None, _execute_agent)``
+# pool, never inside a coroutine on the asyncio event loop, so there is no
+# running loop to hand a blocking call to via ``asyncio.to_thread``. A single
+# background daemon thread drains a coalescing queue instead: ``enqueue()``
+# from the emit site is an O(1) dict write under a lock and returns
+# immediately, never touching disk on the calling (DER) thread.
+
+
+CARD_WRITE_QUEUE_MAX = 200  # mirrors AgentKernel._CARD_REGISTRY_CAP — a kernel
+# process tracks at most that many live cards, so the write queue never needs
+# to hold more distinct card_ids than the kernel itself would track.
+
+
+class CardWriteQueue:
+    """Bounded, coalescing, non-blocking writer for ``CardState`` snapshots.
+
+    COALESCING: keyed by ``card_id``. A burst of step-transition snapshots
+    for the same card overwrites the same pending entry, so the writer
+    thread issues at most one ``save_card`` per card per drain cycle — not
+    one per emit.
+
+    BOUND: at most ``CARD_WRITE_QUEUE_MAX`` distinct card_ids waiting to be
+    written at once. A NEW card_id that would exceed the bound evicts the
+    OLDEST still-pending card_id (dropped, with a warning) — that card's
+    last snapshot is lost and it falls back to whatever was last durably
+    written (or nothing, if it never wrote). This bounds memory without
+    blocking the caller; it never blocks admission of the newest write.
+
+    FAILURE: a ``save_card`` failure is logged and dropped — it never
+    raises back into the DER loop and never retries indefinitely (the next
+    snapshot for that card_id, if any, supersedes it naturally).
+    """
+
+    def __init__(self, store_getter) -> None:
+        self._store_getter = store_getter
+        self._lock = threading.Lock()
+        self._pending: "OrderedDict[str, Any]" = OrderedDict()
+        self._wake = threading.Event()
+        self._idle = threading.Event()
+        self._idle.set()
+        self._thread: Optional[threading.Thread] = None
+
+    def enqueue(self, card: "CardState") -> None:
+        """Admit a card snapshot for eventual persistence. Never blocks on
+        disk I/O and never raises — a queue-admission failure is logged and
+        the write is simply dropped, matching the T4/T5 "never block a user
+        response" rule."""
+        try:
+            with self._lock:
+                if card.card_id not in self._pending and (
+                    len(self._pending) >= CARD_WRITE_QUEUE_MAX
+                ):
+                    _oldest_id, _ = self._pending.popitem(last=False)
+                    logger.warning(
+                        "[CardWriteQueue] pending bound (%d) hit — dropping "
+                        "unwritten snapshot for card_id=%s to admit card_id=%s",
+                        CARD_WRITE_QUEUE_MAX, _oldest_id, card.card_id,
+                    )
+                self._pending[card.card_id] = card
+                self._idle.clear()
+                self._ensure_thread_started_locked()
+            self._wake.set()
+        except Exception as exc:  # noqa: BLE001 — admission must never raise
+            logger.warning("[CardWriteQueue] enqueue failed: %s", exc)
+
+    def _ensure_thread_started_locked(self) -> None:
+        """Must be called with self._lock held."""
+        if self._thread is None or not self._thread.is_alive():
+            self._thread = threading.Thread(
+                target=self._run, name="card-write-queue", daemon=True
+            )
+            self._thread.start()
+
+    def _run(self) -> None:
+        while True:
+            self._wake.wait(timeout=5.0)
+            self._wake.clear()
+            with self._lock:
+                batch = list(self._pending.values())
+                self._pending.clear()
+            if not batch:
+                self._idle.set()
+                continue
+            store = self._store_getter()
+            for card in batch:
+                try:
+                    store.save_card(card)
+                except Exception as exc:  # noqa: BLE001 — never crash the writer thread
+                    logger.warning(
+                        "[CardWriteQueue] save_card failed for card_id=%s: %s",
+                        card.card_id, exc,
+                    )
+            with self._lock:
+                if not self._pending:
+                    self._idle.set()
+
+    def wait_idle(self, timeout: float = 2.0) -> bool:
+        """TEST-ONLY: block until the queue has drained and no write is in
+        flight. The real emit path never calls this — it exists so contract
+        tests can assert a write landed without sleeping arbitrarily.
+        Returns False on timeout."""
+        return self._idle.wait(timeout=timeout)
+
+
+_card_write_queue: Optional[CardWriteQueue] = None
+
+
+def get_card_write_queue() -> CardWriteQueue:
+    """Get or create the singleton CardWriteQueue, wired to the singleton
+    ConversationContextStore (get_context_store) — resolved lazily on each
+    drain so tests that swap the store via reset_context_store_for_testing()
+    are still picked up."""
+    global _card_write_queue
+    if _card_write_queue is None:
+        _card_write_queue = CardWriteQueue(get_context_store)
+    return _card_write_queue
+
+
+def enqueue_card_write(card: "CardState") -> None:
+    """Non-blocking entry point for emit sites: hand a card snapshot to the
+    background writer. Never raises, never touches disk on this thread."""
+    try:
+        get_card_write_queue().enqueue(card)
+    except Exception as exc:  # noqa: BLE001 — never block the emit site
+        logger.warning("[CardWriteQueue] enqueue_card_write failed: %s", exc)
+
+
+def reset_card_write_queue_for_testing() -> None:
+    """Reset the singleton — for test isolation only."""
+    global _card_write_queue
+    _card_write_queue = None
 
 
 # ── Singleton ──────────────────────────────────────────────────────────────

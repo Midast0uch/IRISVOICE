@@ -25,6 +25,7 @@ import TaskListCard from "@/components/chat/TaskListCard";
 import ContextPill from "@/components/chat/ContextPill";
 import ModelSwitcher from "@/components/ModelSwitcher";
 import { RichDocument } from "@/components/chat/RichDocument";
+import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
 import { DocumentPanel } from "@/components/chat/DocumentPanel";
 import { useTaskProgress } from "@/hooks/useTaskProgress";
 import { useCrawlContext } from "@/hooks/CrawlProvider";
@@ -47,7 +48,9 @@ export type ContentType = 'markdown' | 'email' | 'video' | 'picture' | 'text';
 const MESSAGE_THRESHOLDS = {
   TRUNCATE_AT: 500,            // plain text expand/collapse threshold
   DOCUMENT_MODE_AT: 400,       // artifact card threshold for media/email/file uploads
-  MARKDOWN_ARTIFACT_AT: 800,   // artifact card threshold for long markdown from assistant
+  // MARKDOWN_ARTIFACT_AT removed 2026-08-17 — length is not what makes something a
+  // document. See the isDocumentMode comment below: a document is what the agent
+  // stored via a `show` payload and arrives as DOCUMENT_RENDER.
   WARNING_AT: 3000
 } as const;
 
@@ -109,7 +112,14 @@ interface Message {
   sender: "user" | "assistant" | "error" | "system"
   timestamp: Date
   errorType?: "agent" | "voice" | "validation"
-  words?: string[]; // For TTS word highlighting
+  // The line TTS actually speaks. For a long answer this is a short summary
+  // BRIEFING, not the body (backend: iris_gateway builds it beside `content`).
+  // Kept separate because the backend's tts_word indices count words of THIS
+  // string — highlighting the body against them pointed at the wrong words.
+  spoken?: string;
+  // For TTS word highlighting — the words of `spoken` (what is being said),
+  // NOT of `text`. Only meaningful while this message is the speaking message.
+  words?: string[];
   // NOTE: currentWordIndex is NOT stored in message state — it lives in ttsWordIndex
   // component state to avoid re-serialising all conversations on every 200 ms tick.
   feedback?: 'positive' | 'negative' | null; // User feedback on AI responses
@@ -403,16 +413,18 @@ export function ChatWing({
   //
   // The primary clear is now in handleTextResponse, which runs as soon as the
   // answer arrives. This is the backstop for a turn that never produces one at
-  // all — it mirrors the 30s guard useIRISWebSocket already keeps on
-  // isChatTyping, which is what kept THAT input from sticking.
-  useEffect(() => {
-    if (!localTyping) return
-    const timer = setTimeout(() => {
-      setLocalTyping(false)
-      console.log("[ChatView] localTyping safety timeout — reset")
-    }, 30_000)
-    return () => clearTimeout(timer)
-  }, [localTyping])
+  // all — it mirrors the guard useIRISWebSocket keeps on isChatTyping.
+  //
+  // SILENCE WATCHDOG, NOT A FIXED CAP (2026-08-17). This was a flat 30 s and it
+  // is the SECOND of a matched pair — fixing only the one in useIRISWebSocket
+  // changed nothing, because `isTyping` is an OR of both inputs and this one
+  // still expired on schedule. Measured live: typing true at t=12 s, false at
+  // t=42 s, exactly 30 s later, with the agent still on step 2 of 4 and the
+  // answer 130 s away.
+  //
+  // Task progress is proof the turn is alive, so the timer restarts whenever a
+  // step advances. It now only fires after a real stretch of no progress.
+  // (effect defined below, after taskProgress is available)
 
   // Get theme colors from BrandColorContext for real-time updates
   const { getThemeConfig } = useBrandColor();
@@ -423,6 +435,54 @@ export function ChatWing({
 
   // Task progress (drives TaskListCard + OrbBadge)
   const taskProgress = useTaskProgress()
+
+  // T7 (REQ-4 AC2): keep useTaskProgress's per-conversation card view in sync
+  // with which conversation this component is actually showing. New
+  // conversations created via the first message (chat-view.tsx:642, :936,
+  // :3657) never get a backend `conversation_switched` ack — only an
+  // explicit switch does — so relying on that ack alone left the hook
+  // pointed at the wrong (or no) conversation the moment a fresh thread
+  // started. Reuses the SAME two window events useTaskProgress already
+  // listens for (iris:conversation_switched / iris:new_conversation)
+  // instead of inventing a third channel; both are idempotent, so this and
+  // the WS-driven dispatch can never disagree for long.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    if (activeConversationId) {
+      window.dispatchEvent(
+        new CustomEvent('iris:conversation_switched', { detail: { conversation_id: activeConversationId } })
+      )
+    } else {
+      window.dispatchEvent(new CustomEvent('iris:new_conversation'))
+    }
+  }, [activeConversationId])
+  // Is the TaskListCard still driving its own progress indicator? Only while at
+  // least one step is unresolved. Once every step is done/skipped/failed the
+  // card is static, so the chat's own thinking indicator must take over for the
+  // synthesis phase — otherwise the UI goes completely silent between the last
+  // step and the answer (measured live at 79 s: 12:16:00 -> 12:17:19).
+  const taskProgressStillRunning =
+    taskProgress.steps.length > 0 &&
+    taskProgress.steps.some(
+      (s) => s.status === "working" || s.status === "pending" || s.status === "unknown"
+    )
+
+  // localTyping backstop — see the note above where localTyping is declared.
+  // Lives here because it watches taskProgress, which is declared just above.
+  useEffect(() => {
+    if (!localTyping) return
+    const timer = setTimeout(() => {
+      setLocalTyping(false)
+      console.log("[ChatView] localTyping reset — no task progress for 90s")
+    }, 90_000)
+    return () => clearTimeout(timer)
+  }, [
+    localTyping,
+    taskProgress.currentStep,
+    taskProgress.steps.length,
+    taskProgress.isWorking,
+    isChatTyping,
+  ])
   // Crawl state (drives the plan card's source list). Owned by CrawlProvider in
   // app/layout.tsx, ABOVE this component, so the list survives a panel unmount
   // mid-run (REQ-12 AC3) instead of resetting when the user drags the widget.
@@ -505,10 +565,16 @@ export function ChatWing({
   useEffect(() => {
     function handleTextResponse(e: Event) {
       const detail = (e as CustomEvent).detail as {
-        text: string; sender?: 'user' | 'assistant' | 'error'; thinking?: string; turn_id?: string
+        text: string; sender?: 'user' | 'assistant' | 'error'; thinking?: string;
+        turn_id?: string; spoken?: string
       }
-      const { text, sender = 'assistant', thinking } = detail
+      const { text, sender = 'assistant', thinking, spoken } = detail
       if (!text) return
+      // `words` must be the SPOKEN words — tts_word indices count those. When
+      // the backend sent no spoken line, fall back to the body (short answers,
+      // where displayed and spoken are the same text anyway).
+      const spokenLine = (spoken || '').trim()
+      const highlightSource = spokenLine || text
 
       // The response for this turn has arrived — the optimistic typing flag is
       // done, whatever we do with the text below.
@@ -570,7 +636,8 @@ export function ChatWing({
                       ...updated[existingIdx],
                       text,
                       thinking: thinking || updated[existingIdx].thinking,
-                      words: text.split(' '),
+                      spoken: spokenLine || updated[existingIdx].spoken,
+                      words: highlightSource.split(' '),
                     }
                     return updated
                   }
@@ -579,7 +646,8 @@ export function ChatWing({
                     text,
                     sender,
                     timestamp: new Date(),
-                    words: isUserVoice ? undefined : text.split(' '),
+                    spoken: isUserVoice ? undefined : (spokenLine || undefined),
+                    words: isUserVoice ? undefined : highlightSource.split(' '),
                     feedback: isUserVoice ? undefined : null,
                     thinking: thinking || undefined,
                   }
@@ -606,7 +674,8 @@ export function ChatWing({
               text,
               sender,
               timestamp: new Date(),
-              words: isUserVoice ? undefined : text.split(' '),
+              spoken: isUserVoice ? undefined : (spokenLine || undefined),
+              words: isUserVoice ? undefined : highlightSource.split(' '),
               feedback: isUserVoice ? undefined : null,
               thinking: thinking || undefined,
             }],
@@ -2582,7 +2651,20 @@ ${message.text}`;
                 <DeveloperWorkspace conversationId={activeConversationId || undefined} />
               </Suspense>
             ) : (
-            <div ref={messagesContainerRef} className="flex-1 overflow-y-auto px-3 py-3 relative z-10">
+            <div
+              ref={messagesContainerRef}
+              className="flex-1 overflow-y-auto px-3 py-3 relative z-10"
+              // DIAGNOSTIC (2026-08-17): surfaces the exact values that decide
+              // whether the thinking indicator renders, so the blind window
+              // between "steps finished" and "answer arrives" can be measured
+              // instead of inferred from page text. Remove once the indicator
+              // and the task-card counter are confirmed in sync.
+              data-dbg-typing={String(isTyping)}
+              data-dbg-steps-running={String(taskProgressStillRunning)}
+              data-dbg-steps={`${taskProgress.currentStep}/${taskProgress.totalSteps}`}
+              data-dbg-statuses={taskProgress.steps.map((s) => s.status).join(",")}
+              data-dbg-working={String(taskProgress.isWorking)}
+            >
               {messages.length === 0 && !isTyping ? (
                 <div 
                   className="flex-1 flex items-center justify-center h-full"
@@ -2618,9 +2700,41 @@ ${message.text}`;
                     //     This keeps voice-first UX clean: the full response is always readable,
                     //     but the chat thread stays concise — tap to expand if needed.
                     //   - Plain conversational text → always flows as chat (truncate/expand only)
+                    // Is TTS saying something OTHER than this body? For a long
+                    // answer the backend speaks a short summary briefing, and
+                    // its tts_word indices count THAT string's words — so the
+                    // body must not be highlighted against them (user rule
+                    // 2026-08-17: long content is read, not spoken along to).
+                    //
+                    // The briefing itself is deliberately NOT rendered: it is a
+                    // summary of text already fully visible right here, and
+                    // showing both duplicates content. It exists as data only,
+                    // to answer this one question.
+                    const spokenLineForMsg = (message.spoken || '').trim();
+                    const spokenDiffersFromBody =
+                      message.sender === 'assistant' &&
+                      spokenLineForMsg.length > 0 &&
+                      spokenLineForMsg !== message.text.trim() &&
+                      spokenLineForMsg.length < message.text.trim().length;
                     const isExplicitFile = message.text.startsWith('[File:') || message.text.startsWith('[IMAGE:') || message.text.startsWith('[VIDEO:');
-                    const isAssistantMarkdown = message.sender === 'assistant' && contentType === 'markdown' && charCount > MESSAGE_THRESHOLDS.MARKDOWN_ARTIFACT_AT;
-                    const isDocumentMode = (isExplicitFile || contentType === 'email' || contentType === 'picture' || contentType === 'video' || isAssistantMarkdown) && charCount > MESSAGE_THRESHOLDS.DOCUMENT_MODE_AT;
+                    // REMOVED 2026-08-17: isAssistantMarkdown — a long assistant answer
+                    // was turned into a "document" purely by LENGTH + markdown syntax
+                    // (contentType==='markdown' && charCount > 800), with no backend
+                    // involvement at all.
+                    //
+                    // That produced a FAKE document: no document_id, nothing in the
+                    // document store, no format alternatives, no reformat, no prism
+                    // card — just a 3-line clip, a char count, and a modal rendering
+                    // the raw markdown in <pre> monospace. Strictly worse than leaving
+                    // it in the thread, and it is the same error the backend carried
+                    // until today: LENGTH used as a proxy for "this is a document".
+                    //
+                    // A document is what the AGENT stored via a `show` payload. Those
+                    // arrive as DOCUMENT_RENDER, are keyed by documentId, and render
+                    // through <RichDocument> (the prism card) further down. Everything
+                    // else is conversation and stays in the thread, in full, with
+                    // truncate/expand for length.
+                    const isDocumentMode = (isExplicitFile || contentType === 'email' || contentType === 'picture' || contentType === 'video') && charCount > MESSAGE_THRESHOLDS.DOCUMENT_MODE_AT;
                     
                     // Content type icon mapping
                     const ContentTypeIcon = ({ size = 12 }: { size?: number }) => {
@@ -2973,28 +3087,18 @@ ${message.text}`;
                                   <span className="text-[9px] text-white/50 uppercase tracking-wide">{contentType}</span>
                                 </div>
                                 <div className="relative">
-                                  <div className="text-[13px] leading-relaxed text-white/85 prose prose-invert prose-sm max-w-none">
-                                    {isExpanded ? (
-                                      message.words ? message.words.map((word, idx) => {
-                                        const activeIdx = message.id === currentTtsMessageId ? ttsWordIndex : -1;
-                                        return (
-                                        <motion.span
-                                          key={idx}
-                                          initial={idx === activeIdx ? { opacity: 0.5 } : false}
-                                          animate={{
-                                            opacity: idx === activeIdx ? 1 : idx < activeIdx ? 0.7 : 0.85,
-                                            color: idx === activeIdx ? glowColor : 'rgba(255,255,255,0.85)',
-                                          }}
-                                          transition={{ duration: prefersReducedMotion ? 0 : 0.1 }}
-                                        >
-                                          {word}{' '}
-                                        </motion.span>
-                                        );
-                                      }) : message.text
-                                    ) : (
-                                      message.text.slice(0, MESSAGE_THRESHOLDS.TRUNCATE_AT) + '...'
-                                    )}
-                                  </div>
+                                  {/* Body: markdown, never word-highlighted.
+                                      A long answer is READ, not spoken — the
+                                      spoken briefing below is what TTS says and
+                                      what the highlight tracks (user rule
+                                      2026-08-17). Collapsed state clamps the
+                                      RENDERED output with CSS instead of slicing
+                                      the source, which would cut markdown
+                                      mid-syntax and break the render. */}
+                                  <MarkdownMessage
+                                    text={message.text}
+                                    className={isExpanded ? '' : 'line-clamp-6'}
+                                  />
                                   {!isExpanded && (
                                     <div 
                                       className="absolute bottom-0 left-0 right-0 h-6 pointer-events-none"
@@ -3036,25 +3140,19 @@ ${message.text}`;
                                 )}
                               </div>
                             ) : (
-                              // Short message - display fully with TTS highlighting
-                              <div className="text-[13px] leading-relaxed text-white/85 prose prose-invert prose-sm max-w-none">
-                                {message.words ? message.words.map((word, idx) => {
-                                  const activeIdx = message.id === currentTtsMessageId ? ttsWordIndex : -1;
-                                  return (
-                                  <motion.span
-                                    key={idx}
-                                    initial={idx === activeIdx ? { opacity: 0.5 } : false}
-                                    animate={{
-                                      opacity: idx === activeIdx ? 1 : idx < activeIdx ? 0.7 : 0.85,
-                                      color: idx === activeIdx ? glowColor : 'rgba(255,255,255,0.85)',
-                                    }}
-                                    transition={{ duration: prefersReducedMotion ? 0 : 0.1 }}
-                                  >
-                                    {word}{' '}
-                                  </motion.span>
-                                  );
-                                }) : renderWithLinks(message.text)}
-                              </div>
+                              // Short message — displayed in full. When the
+                              // spoken line IS this text (the usual short case),
+                              // the highlight rides directly on the rendered
+                              // markdown via the overlay. When TTS is saying a
+                              // different (summary) line, the body stays plain
+                              // and the briefing below carries the highlight.
+                              <MarkdownMessage
+                                text={message.text}
+                                highlightActive={
+                                  message.id === currentTtsMessageId && !spokenDiffersFromBody
+                                }
+                                highlightIndex={ttsWordIndex}
+                              />
                             )}
                             
                             {/* Feedback action bar */}
@@ -3275,11 +3373,23 @@ ${message.text}`;
                   })()}
 
                   {/* Typing Indicator — suppressed while a TaskListCard is
-                      visible (taskProgress.steps.length > 0): the card
-                      renders its own working-step Xur, so showing this one
-                      too doubles the indicator. Still correct for no-step
-                      turns (a direct reply with no task plan). */}
-                  {isTyping && taskProgress.steps.length === 0 && (
+                      ACTIVELY working (it renders its own working-step Xur, so
+                      showing this one too doubles the indicator).
+
+                      BUT NOT AFTER THE LAST STEP RESOLVES (2026-08-17). The old
+                      condition was `steps.length === 0`, so once a plan existed
+                      the indicator stayed suppressed for the REST of the turn —
+                      including the synthesis phase that runs after the final
+                      step. Measured live: last step finished 12:16:00, answer
+                      arrived 12:17:19. For that 79 s the card showed every step
+                      done, the orb's radial progress was gone, and nothing
+                      anywhere said the agent was still working — it read as
+                      finished-but-broken.
+
+                      So: hide it while steps are still running, show it again
+                      once they have all resolved and we are waiting on the
+                      answer. */}
+                  {isTyping && !taskProgressStillRunning && (
                     <div>
                       <div 
                         className="h-px w-full my-3"
@@ -3305,16 +3415,27 @@ ${message.text}`;
 
                   <div ref={messagesEndRef} />
 
-                  {/* Agent task plan / progress (drives TaskListCard) */}
-                  {taskProgress.steps.length > 0 && (
-                    <TaskListCard
-                      steps={taskProgress.steps}
-                      turnId={taskProgress.turnId}
-                      mode={taskProgress.mode}
-                      planTitle={taskProgress.planTitle}
-                      learningSignal={taskProgress.learningSignal}
-                    />
-                  )}
+                  {/* Agent task plan / progress (drives TaskListCard).
+                      T7 (REQ-3/REQ-4): every card belonging to the
+                      conversation currently being viewed, in the order they
+                      were created — not just the single most recent one. Keyed
+                      on card_id so switching away and back (or a duplicate
+                      task:start for a card already merged into) never renders
+                      the same card twice — the same no-duplicate guard
+                      document rehydration already relies on
+                      (__tests__/components/chat-view-rehydration.test.ts). */}
+                  {taskProgress.cards
+                    .filter((card) => card.steps.length > 0)
+                    .map((card) => (
+                      <TaskListCard
+                        key={card.cardId}
+                        steps={card.steps}
+                        turnId={card.turnId}
+                        mode={card.mode}
+                        planTitle={card.planTitle}
+                        learningSignal={card.learningSignal}
+                      />
+                    ))}
 
 
                   {/* Permission Cards — inline tool approval UI */}

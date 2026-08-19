@@ -53,9 +53,20 @@ class TestTaskStartRevisionOrigin:
         """REQ-14 AC5: the payload is one construction point with the
         merge-by-id contract keys PLUS an origin in the documented
         vocabulary (initial | sub_loop_split | user_steering)."""
+        # UPDATED 2026-08-19 by task-card-v2-liquid-ink T1 (REQ-3 AC1/AC2) —
+        # CALLED OUT DELIBERATELY, not a silent fix.
+        # This test and backend/tests/unit/test_task_start_payload_baseline.py
+        # pin the SAME producer from two different specs. T1 adds three identity
+        # keys (card_id / card_relation / conversation_id) to every task:start
+        # payload, so the exact-equality literal here moves from 7 keys to 10.
+        # WHAT THIS TEST ASSERTS IS UNCHANGED: one construction point, no drift
+        # between emit sites, and the origin vocabulary passing through. The
+        # assertion is still EXACT equality — that strictness is the whole point,
+        # because it is what proves T1 was additive rather than a rewrite.
         payload = AgentKernel._task_start_payload(
             task_id="t1", description="d", plan_title="p", mode="full",
             steps=[{"id": "s1"}], total_steps=1, origin="initial",
+            card_id="card_t1", card_relation="new", conversation_id="conv_1",
         )
         assert payload == {
             "task_id": "t1",
@@ -65,11 +76,19 @@ class TestTaskStartRevisionOrigin:
             "steps": [{"id": "s1"}],
             "total_steps": 1,
             "origin": "initial",
+            "card_id": "card_t1",
+            "card_relation": "new",
+            "conversation_id": "conv_1",
         }
+        # NOTE: a fourth origin, "amendment", exists in agent_kernel.py and is not
+        # in this docstring's vocabulary. Left as found — correcting that belongs
+        # to specs/long-horizon-der-execution, not here. The three below still
+        # pass through unchanged, which is what this loop asserts.
         for origin in ("initial", "sub_loop_split", "user_steering"):
             assert AgentKernel._task_start_payload(
                 task_id="t", description="d", plan_title="p", mode="m",
                 steps=[], total_steps=0, origin=origin,
+                card_id="card_t", card_relation="new", conversation_id="conv_1",
             )["origin"] == origin
 
     def test_split_revision_reemits_with_sub_loop_split_origin(self, monkeypatch):
