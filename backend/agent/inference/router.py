@@ -25,6 +25,8 @@ Config schema (``iris_config.json``) is auto-applied on init if present::
 from __future__ import annotations
 
 import logging
+import uuid
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .keyring import get_secret
@@ -83,6 +85,149 @@ def _key_fingerprint(api_key: str) -> str:
     if not api_key:
         return ""
     return api_key[-8:]
+
+
+# ---------------------------------------------------------------------------
+# Vision capability resolution (specs/unified-vision-routing T5/T6)
+# ---------------------------------------------------------------------------
+
+# REQ-1 AC4 / edge case: an unreachable Ollama daemon must never block vision
+# resolution. Short and fixed — this is a capability probe, not inference.
+_OLLAMA_SHOW_TIMEOUT_S = 2.0
+
+
+def supports_vision(instance: Optional[ProviderInstance]) -> bool:
+    """REQ-1 AC1: does *instance* serve vision right now?
+
+    - ``API``: resolved from the ``(provider_id, model_substring)`` table in
+      ``AgentKernel._KNOWN_VISION_MODELS`` (mirrors ``_KNOWN_CONTEXT_WINDOWS``).
+    - ``LOCAL_OPENAI`` / ``INPROCESS``: ONLY ``instance.vision_loaded`` — a
+      projector actually attached when the RUNNING server was launched.
+      NEVER a sibling ``mmproj-*.gguf`` existing on disk (REQ-1 AC3) — a file
+      on disk says nothing about whether the running process can see.
+    - ``OLLAMA``: the model's advertised capabilities via ``/api/show``.
+      Unreachable -> False, logged, never raised (REQ-1 AC4 edge case).
+    - Anything else, including a future/unrecognised ``ProviderKind`` -> False
+      (REQ-1 AC5, CT-1). This function must never raise.
+    """
+    if instance is None:
+        return False
+    try:
+        kind = getattr(instance, "kind", None)
+        if kind == ProviderKind.API:
+            return _supports_vision_api(instance)
+        if kind in (ProviderKind.LOCAL_OPENAI, ProviderKind.INPROCESS):
+            return bool(getattr(instance, "vision_loaded", False))
+        if kind == ProviderKind.OLLAMA:
+            return _supports_vision_ollama(instance)
+        # Unrecognised/undeterminable kind -> False, not a raise (CT-1).
+        return False
+    except Exception as exc:  # noqa: BLE001 — must never raise into the caller
+        logger.warning(
+            "[supports_vision] undetermined for instance=%s kind=%s: %s",
+            getattr(instance, "id", "?"), getattr(instance, "kind", "?"), exc,
+        )
+        return False
+
+
+def _supports_vision_api(instance: ProviderInstance) -> bool:
+    """REQ-1 AC2: ``(provider_id, model_substring)`` table lookup.
+
+    Mirrors ``_KNOWN_CONTEXT_WINDOWS``'s matching rule exactly: EXACT
+    ``provider_id`` match, case-insensitive SUBSTRING match on the model,
+    first row wins. No I/O — pure lookup, cheap to call per resolution.
+
+    Lazy import: ``agent_kernel.py`` imports ``InferenceRouter`` at module
+    level, so importing ``AgentKernel`` back at THIS module's top level would
+    deadlock the import graph. Importing inside the function breaks the cycle.
+    """
+    from ..agent_kernel import AgentKernel
+
+    provider_id = getattr(instance, "id", "") or ""
+    model = (getattr(instance, "model", "") or "").lower().strip()
+    if not provider_id or not model:
+        return False
+    for reg_provider, reg_substring in AgentKernel._KNOWN_VISION_MODELS:
+        if reg_provider == provider_id and reg_substring in model:
+            return True
+    return False
+
+
+def _supports_vision_ollama(instance: ProviderInstance) -> bool:
+    """REQ-1 AC4: resolve vision from Ollama's own ``/api/show`` capabilities.
+
+    Guarded, time-bounded (``_OLLAMA_SHOW_TIMEOUT_S``) HTTP call. An
+    unreachable daemon, a non-200 response, or any parse failure all resolve
+    to False, logged — never raised and never left to block the caller.
+    """
+    model = (getattr(instance, "model", "") or "").strip()
+    if not model:
+        return False
+    base = (getattr(instance, "api_base_url", "") or "http://localhost:11434").rstrip("/")
+    try:
+        import httpx  # lazy — keeps the API/local paths free of network-lib cost
+
+        with httpx.Client(timeout=httpx.Timeout(_OLLAMA_SHOW_TIMEOUT_S)) as client:
+            resp = client.post(f"{base}/api/show", json={"model": model})
+        if resp.status_code != 200:
+            logger.info(
+                "[supports_vision] ollama /api/show non-200 provider=%s model=%s status=%s",
+                getattr(instance, "id", "?"), model, resp.status_code,
+            )
+            return False
+        data = resp.json()
+    except Exception as exc:  # noqa: BLE001 — unreachable Ollama must never raise
+        logger.warning(
+            "[supports_vision] ollama unreachable provider=%s model=%s: %s",
+            getattr(instance, "id", "?"), model, exc,
+        )
+        return False
+    capabilities = data.get("capabilities") or []
+    return "vision" in capabilities
+
+
+def _free_vram_gb() -> float:
+    """Best-effort free-VRAM read for REQ-9 logging.
+
+    Never raises — design.md's Error Handling table: "VRAM query unreadable
+    -> choose the most conservative candidate"; here that means reporting
+    0.0 rather than blocking vision resolution on a hardware probe.
+    """
+    try:
+        from ..local_model_manager import get_local_model_manager
+
+        info = get_local_model_manager().get_hardware_info()
+        return float(info.get("vram_free_gb", 0.0))
+    except Exception as exc:  # noqa: BLE001 — logging-only path, never fatal
+        logger.debug("[resolve_vision_provider] free VRAM unreadable: %s", exc)
+        return 0.0
+
+
+@dataclass
+class VisionResolution:
+    """REQ-2 AC1 / design.md Data Models — the provider that will serve vision.
+
+    Attributes:
+        tier: ``"brain"`` | ``"tool"`` | ``"fallback"``.
+        provider_id: The resolved provider's id (or the fallback's synthetic id
+            when no bound role can see).
+        requires_load: Whether serving vision needs a model load first.
+        free_vram_gb: Free VRAM at decision time (REQ-9 AC1), best-effort.
+        model_path: Fallback-tier only — the VL model GGUF path.
+        mmproj_path: Fallback-tier only — the paired projector GGUF path.
+        takes_lease: Decisions Locked 8 — True whenever the resolved provider
+            kind is LOCAL_OPENAI or INPROCESS, at ANY tier (brain/tool/
+            fallback); False for a REMOTE provider (API/OLLAMA), which has no
+            local process to protect from idle-stop.
+    """
+
+    tier: str
+    provider_id: str
+    requires_load: bool
+    free_vram_gb: float
+    model_path: Optional[str] = None
+    mmproj_path: Optional[str] = None
+    takes_lease: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -492,6 +637,119 @@ class InferenceRouter:
                     pass
             raise
 
+    def resolve_vision_provider(self) -> VisionResolution:
+        """REQ-2: resolve vision to whoever can already serve it.
+
+        Hierarchy, first that can serve wins:
+            1. ``reasoning`` binding ("brain")
+            2. ``tool_execution`` binding ("tool")
+            3. VL fallback (tier 3 — existing entry point in
+               ``backend.tools.lfm_vl_provider``; size-selection is T7, not
+               implemented here)
+
+        Edge cases (REQ-2):
+            - An unbound role, or ``self.resolve()`` raising for any reason,
+              is treated as "no vision" and the hierarchy continues — never
+              propagated.
+            - Both roles bound to the SAME multimodal provider are returned
+              ONCE: the loop returns on the first (brain-tier) match, so the
+              tool tier is never separately evaluated or logged.
+
+        REQ-9: logs the tier, provider id, whether a load is required and
+        free VRAM at decision time, tagged with a short per-resolution
+        context id so a ladder's log lines correlate. Kept off any inference
+        hot path — this runs once per vision *resolution*, not per token.
+        """
+        ctx = uuid.uuid4().hex[:8]
+        for tier, role in (("brain", "reasoning"), ("tool", "tool_execution")):
+            try:
+                inst = self.resolve(role)
+            except Exception as exc:  # noqa: BLE001 — unbound role = no vision, keep going
+                logger.debug(
+                    "[resolve_vision_provider] ctx=%s tier=%s role=%s unresolved: %s",
+                    ctx, tier, role, exc,
+                )
+                continue
+            if not supports_vision(inst):
+                continue
+            free_vram = _free_vram_gb()
+            takes_lease = inst.kind in (ProviderKind.LOCAL_OPENAI, ProviderKind.INPROCESS)
+            resolution = VisionResolution(
+                tier=tier,
+                provider_id=inst.id,
+                requires_load=False,
+                free_vram_gb=free_vram,
+                takes_lease=takes_lease,
+            )
+            logger.info(
+                "[resolve_vision_provider] ctx=%s tier=%s provider=%s requires_load=%s "
+                "free_vram_gb=%.2f takes_lease=%s",
+                ctx, resolution.tier, resolution.provider_id, resolution.requires_load,
+                resolution.free_vram_gb, resolution.takes_lease,
+            )
+            return resolution
+
+        # Tier 3 — VL fallback. Scope: T6 calls the EXISTING entry point only;
+        # size-selecting a ladder against free VRAM is T7's job. The fallback
+        # is always a local llama-server process, so it always takes a lease.
+        free_vram = _free_vram_gb()
+        model_path: Optional[str] = None
+        mmproj_path: Optional[str] = None
+        ladder_note = "no candidate found"
+        try:
+            from backend.tools.lfm_vl_provider import (
+                VisionModelUnavailable,
+                _find_vision_model,
+            )
+
+            pair = _find_vision_model()
+            if pair:
+                model_path, mmproj_path = pair
+                ladder_note = f"selected {model_path}"
+            else:
+                ladder_note = "no VL model found on disk"
+        except VisionModelUnavailable:
+            # T16 fix: this is REQ-3 AC4's "fail loudly" case — no VL model
+            # exists, or none fit free VRAM. ``_find_vision_model`` already
+            # logged and emitted VISION_UNAVAILABLE (AC6) before raising.
+            # Swallowing it here (the old behavior) returned a clean
+            # ``VisionResolution(model_path=None)`` and silently defeated the
+            # user's explicit decision at the hierarchy's own entry point —
+            # re-raise so it actually reaches the caller.
+            logger.warning(
+                "[resolve_vision_provider] ctx=%s tier=fallback: no VL model "
+                "usable — propagating VisionModelUnavailable (REQ-3 AC4)",
+                ctx,
+            )
+            raise
+        except Exception as exc:  # noqa: BLE001 — genuinely unrelated lookup
+            # errors (e.g. an import failure) still degrade cleanly; only the
+            # user's explicit fail-loud case above propagates.
+            ladder_note = f"fallback lookup failed: {exc}"
+            logger.warning(
+                "[resolve_vision_provider] ctx=%s fallback lookup error: %s", ctx, exc
+            )
+
+        resolution = VisionResolution(
+            tier="fallback",
+            provider_id="lfm_vl_fallback",
+            requires_load=True,
+            free_vram_gb=free_vram,
+            model_path=model_path,
+            mmproj_path=mmproj_path,
+            takes_lease=True,
+        )
+        # REQ-9 AC2: log the candidate ladder and why it was chosen. T7 owns
+        # widening this to a real multi-candidate ladder with per-rejection
+        # reasons; today's entry point returns a single pair, so the "ladder"
+        # is that one candidate (or its absence).
+        logger.info(
+            "[resolve_vision_provider] ctx=%s tier=fallback provider=%s requires_load=True "
+            "free_vram_gb=%.2f takes_lease=True ladder=%s",
+            ctx, resolution.provider_id, resolution.free_vram_gb, ladder_note,
+        )
+        return resolution
+
     def set_inprocess_manager(self, mgr: Any) -> None:
         """Set the local model manager for ``INPROCESS`` transport."""
         self._inprocess_mgr = mgr
@@ -775,3 +1033,213 @@ class InferenceRouter:
         except Exception as exc:  # noqa: BLE001 — fail-open, always
             logger.warning("[InferenceRouter] rate_window_probe failed open: %s", exc)
             return None
+
+
+# ---------------------------------------------------------------------------
+# T16 (REQ-2, REQ-3 AC4) — WIRING. resolve_vision_provider() had zero
+# production callers; every vision consumer constructed the tier-3
+# LFMVLProvider directly, so production routed every vision task to the
+# dedicated VL server regardless of what the bound brain/tool could already
+# do. This is the ONE place a vision consumer should get its serving client
+# from — it resolves the hierarchy and hands back an object with the SAME
+# method surface as ``LFMVLProvider`` (``analyze_screen`` /
+# ``find_ui_element`` / ``suggest_action`` / ``health_check``) regardless of
+# which tier answers, so callers' own tool semantics (prompts, response
+# parsing, action execution) never change — only which endpoint serves them.
+# ---------------------------------------------------------------------------
+
+
+class _DirectVisionClient:
+    """Tier 1/2 vision client: serves a vision request via the ALREADY-bound
+    brain/tool provider — the same OpenAI vision chat-completion shape and
+    prompt semantics as ``LFMVLProvider`` — with NO spawn / lease / idle-stop
+    bookkeeping. That lifecycle is tier 3's alone (CT-3 pins it); this
+    provider is already running, so there is nothing here to start or stop.
+
+    Deliberately NOT built on top of ``LFMVLProvider._call``: that method is
+    entangled with the owned-vision-server lifecycle
+    (``_ensure_vision_server_running`` / ``_touch_vision_use``), which must
+    never fire for an externally-owned endpoint (a cloud API, or a local
+    model's own already-running server).
+    """
+
+    def __init__(self, inst: ProviderInstance, *, timeout: float = 30.0) -> None:
+        self._id = inst.id
+        self._model = inst.model or "gpt-4o"
+        self._base_url = (inst.api_base_url or "").rstrip("/")
+        self._timeout = timeout
+        api_key = inst.api_key or ""
+        if not api_key:
+            try:
+                api_key = get_secret(inst.id) or ""
+            except Exception:  # noqa: BLE001 — missing credential is not fatal here
+                api_key = ""
+        self._api_key = api_key
+
+    def _call(self, img_bytes: bytes, prompt: str, max_tokens: int = 128) -> str:
+        """Same request/response shape as ``LFMVLProvider._call`` — an
+        OpenAI-compatible vision chat completion — just pointed at the
+        resolved provider's own endpoint and model, with an auth header when
+        a credential is configured. Never raises: mirrors ``LFMVLProvider``'s
+        contract of returning an error string on any failure."""
+        if not self._base_url:
+            return f"Vision unavailable: provider '{self._id}' has no endpoint"
+        try:
+            import base64
+
+            import httpx
+
+            img_b64 = base64.b64encode(img_bytes).decode("ascii")
+            headers = {}
+            if self._api_key:
+                headers["Authorization"] = f"Bearer {self._api_key}"
+            payload = {
+                "model": self._model,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/png;base64,{img_b64}"},
+                            },
+                            {"type": "text", "text": prompt},
+                        ],
+                    }
+                ],
+                "temperature": 0.1,
+                "max_tokens": max_tokens,
+            }
+            response = httpx.post(
+                f"{self._base_url}/chat/completions",
+                json=payload,
+                headers=headers,
+                timeout=self._timeout,
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data["choices"][0]["message"]["content"].strip()
+        except Exception as exc:  # noqa: BLE001 — never raise into the caller
+            logger.warning(
+                "[_DirectVisionClient] provider=%s call failed: %s", self._id, exc
+            )
+            return f"Vision unavailable: {exc}"
+
+    def analyze_screen(self, img_bytes: bytes, question: str = "") -> str:
+        prompt = question if question else "Describe what is visible on this screen in detail."
+        return self._call(img_bytes, prompt, max_tokens=256)
+
+    def find_ui_element(self, img_bytes: bytes, description: str) -> Dict[str, Any]:
+        prompt = (
+            f'Find the UI element described as: "{description}". '
+            "Describe where it is located on screen (top-left, center, bottom-right, etc.) "
+            "and whether it is visible. Keep response brief."
+        )
+        response = self._call(img_bytes, prompt, max_tokens=64)
+        if response.startswith("Vision unavailable"):
+            return {"found": False, "location_hint": response}
+        found = not any(
+            word in response.lower()
+            for word in ["not found", "not visible", "cannot find", "don't see", "no such"]
+        )
+        return {"found": found, "location_hint": response}
+
+    def suggest_action(self, img_bytes: bytes, goal: str) -> Dict[str, Any]:
+        prompt = (
+            f'Goal: "{goal}". '
+            "Looking at the current screen, what is the single best next action? "
+            "Reply with: ACTION: [click/type/scroll/wait], TARGET: [what to interact with], REASON: [brief reason]."
+        )
+        response = self._call(img_bytes, prompt, max_tokens=128)
+        if response.startswith("Vision unavailable"):
+            return {"action": "error", "target": "", "reasoning": response}
+        result: Dict[str, Any] = {"action": "unknown", "target": "", "reasoning": response}
+        for line in response.splitlines():
+            line_lower = line.lower()
+            if line_lower.startswith("action:"):
+                result["action"] = line.split(":", 1)[1].strip().lower()
+            elif line_lower.startswith("target:"):
+                result["target"] = line.split(":", 1)[1].strip()
+            elif line_lower.startswith("reason:"):
+                result["reasoning"] = line.split(":", 1)[1].strip()
+        return result
+
+    def health_check(self) -> bool:
+        # resolve_vision_provider() only ever returns this tier when
+        # supports_vision() already confirmed the instance can see, so there
+        # is no separate readiness probe to run here (unlike tier 3's
+        # dedicated, possibly-not-yet-started llama-server).
+        return bool(self._base_url)
+
+
+def resolve_vision_client(router: Optional["InferenceRouter"] = None) -> Tuple[Optional[VisionResolution], Any]:
+    """The single entry point a vision consumer should use instead of
+    constructing ``LFMVLProvider()`` directly (T16).
+
+    Usage::
+
+        resolution, client = resolve_vision_client()
+        text = client.analyze_screen(img_bytes, "what's on screen?")
+
+    Returns ``(resolution, client)``:
+      - Tier 1/2 (``resolution.tier in ("brain", "tool")``): ``client`` is a
+        ``_DirectVisionClient`` bound to the already-live provider — no
+        llama-server spawn, no lease/idle bookkeeping.
+      - Tier 3 (``resolution.tier == "fallback"``): ``client`` is a plain
+        ``LFMVLProvider()`` — lifecycle (spawn / lease / idle-stop /
+        owned-PID) is completely UNCHANGED, CT-3 pins it.
+
+    ``VisionModelUnavailable`` (REQ-3 AC4, "fail loudly") PROPAGATES —
+    callers must catch it and turn it into a clean, user-facing failure
+    rather than let it escape into the agent loop; never silently degrade to
+    a client that would just fail on first use. The ONE thing this function
+    itself swallows is failing to even REACH a live router (e.g. no kernel
+    constructed yet) — that degrades to the tier-3 default, logged, so a
+    fresh process still has a working vision path on first call.
+
+    *router*: pass an already-resolved ``InferenceRouter`` when the caller
+    has one cleanly at hand (e.g. a WS handler holding ``session_id``).
+    Standalone consumers (automation/vision.py, vision_guided_operator.py)
+    have no router of their own — they call with no argument and this
+    resolves the process-wide live router via ``get_active_kernel`` (the
+    established accessor for "the" kernel outside a per-request scope; see
+    ``iris_gateway.py``, ``api/status_snapshot.py``, ``api/caducean_debug.py``).
+    """
+    from backend.tools.lfm_vl_provider import LFMVLProvider
+
+    if router is None:
+        try:
+            from ..agent_kernel import get_active_kernel
+
+            router = getattr(get_active_kernel("session_iris"), "_router", None)
+        except Exception as exc:  # noqa: BLE001 — no live kernel yet; degrade
+            logger.warning(
+                "[resolve_vision_client] no live router reachable (%s); "
+                "using tier-3 default", exc,
+            )
+            router = None
+
+    if router is None:
+        return None, LFMVLProvider()
+
+    # VisionModelUnavailable propagates out of here on the real no-fit case
+    # (REQ-3 AC4) — see the T16 fix in resolve_vision_provider() above.
+    resolution = router.resolve_vision_provider()
+
+    if resolution.tier == "fallback":
+        return resolution, LFMVLProvider()
+
+    # Look up on THIS router's own registry (not the process-wide singleton
+    # directly) — production routers always share the singleton (REQ-5), but
+    # this keeps resolve_vision_client() correct for any router built its
+    # own way (e.g. a test double with an isolated ProviderRegistry).
+    inst = router.registry.get(resolution.provider_id)
+    if inst is None:  # registry/resolution disagreed — defensive, should not happen
+        logger.warning(
+            "[resolve_vision_client] resolved provider '%s' missing from the "
+            "registry; falling back to the tier-3 default",
+            resolution.provider_id,
+        )
+        return resolution, LFMVLProvider()
+
+    return resolution, _DirectVisionClient(inst)

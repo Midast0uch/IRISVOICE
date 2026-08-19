@@ -1289,6 +1289,20 @@ export function useIRISWebSocket(
           },
           local_model: { ...(prev.local_model || {}), local_model_status: status },
         }))
+        // T10b (REQ-7 AC1/AC2): dark-glass-dashboard keeps its OWN field-value
+        // store (`localFieldValues`) which only merges `fieldValues` (above)
+        // ONCE on mount (its `seededRef` guard) or on an `iris:initial_state`
+        // push — so a live `local_model_status` message (including the
+        // mount-time seed reply from the `get_local_model_status` request the
+        // dashboard now sends) updated THIS hook's state but never reached the
+        // badge. Dispatch the already-computed status string as a dedicated
+        // event so the dashboard can merge it on every occurrence, not just
+        // the first.
+        if (type === 'local_model_status' && typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:local_model_status', {
+            detail: { status }
+          }))
+        }
         // Forward to any panel that listens on iris:ws_message
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('iris:ws_message', {
@@ -1582,7 +1596,13 @@ export function useIRISWebSocket(
       case "plan:budget_exhausted":
       case "plan:validation_failed":
       case "plan:recovery_start":
-      case "plan:topology_recovery": {
+      case "plan:topology_recovery":
+      // REQ-3 AC6: no VL model fits free VRAM. Fails loudly rather than
+      // degrading to CPU, and escalates here as a chat system message
+      // carrying free VRAM, the smallest candidate's requirement and the
+      // rejected ladder — so the user can unload a model or pick a smaller
+      // fallback instead of watching vision silently crawl.
+      case "vision:unavailable": {
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('iris:plan_event', {
             detail: { type, ...(payload as Record<string, unknown>) }

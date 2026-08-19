@@ -52,11 +52,16 @@ class VisionModelClient:
                 "note": "Use vision.* MCP tools via AgentToolBridge for screen analysis"
             }
         elif self.provider == VisionProvider.LOCAL:
-            # llama-cpp-python direct — requires LFM25VLChatHandler to be registered
+            # T16: resolve through the vision hierarchy (brain -> tool ->
+            # VL fallback) instead of constructing the tier-3 provider
+            # directly — same client surface either way.
             try:
-                from backend.tools.lfm_vl_provider import LFMVLProvider
-                self._client = LFMVLProvider()
-                return {"success": True, "provider": "local_lfm"}
+                from backend.agent.inference.router import resolve_vision_client
+                resolution, self._client = resolve_vision_client()
+                return {
+                    "success": True,
+                    "provider": resolution.tier if resolution else "fallback",
+                }
             except Exception as e:
                 return {"success": False, "error": str(e)}
         elif self.provider == VisionProvider.VOLCENGINE:
@@ -74,11 +79,11 @@ class VisionModelClient:
             return None
 
     async def _detect_with_lfm(self, screenshot_bytes: bytes, description: str) -> Optional[ElementDetection]:
-        """Use LFM2.5-VL via MCP tools to locate a UI element."""
+        """Resolve the vision hierarchy (T16) and locate a UI element."""
         try:
-            from backend.tools.lfm_vl_provider import LFMVLProvider
+            from backend.agent.inference.router import resolve_vision_client
             import asyncio
-            provider = LFMVLProvider()
+            _resolution, provider = resolve_vision_client()
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 None, provider.find_ui_element, screenshot_bytes, description
@@ -105,9 +110,9 @@ class VisionModelClient:
         if self.provider == VisionProvider.LLAMA_SERVER:
             return {"action": "error", "message": "Use vision.* MCP tools for LFM2.5-VL screen analysis"}
         try:
-            from backend.tools.lfm_vl_provider import LFMVLProvider
+            from backend.agent.inference.router import resolve_vision_client
             import asyncio
-            provider = LFMVLProvider()
+            _resolution, provider = resolve_vision_client()
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 None, provider.suggest_action, screenshot_bytes, instruction

@@ -26,6 +26,14 @@ User-resolved. Do not re-litigate.
 7. **Priority is speed and context.** A single multimodal brain costs ~5x
    generation speed (224 -> 42 tok/s), so it is a deliberate choice, never a
    default.
+8. **A LOCAL model serving vision uses the vision path and tools, and takes a
+   vision LEASE — whichever tier it is.** User-resolved 2026-08-18. There is no
+   special case for "the brain happens to be able to see": if the model serving
+   vision is local (LOCAL_OPENAI / INPROCESS with `vision_loaded`), it flows
+   through the same vision tool path as tier 3 and takes `acquire_vision_lease()`,
+   so idle accounting and lifecycle are uniform across tiers 1, 2 and 3. A REMOTE
+   provider (API / Ollama) serving vision takes NO lease — there is no local
+   process to protect from idle-stop.
 
 ## Introduction
 Vision today always routes to a dedicated LFM2.5-VL llama-server, even when the
@@ -114,6 +122,22 @@ requirement changes it.
   free VRAM and the smallest candidate's requirement - never silently load on CPU.
 - AC5: THE SYSTEM SHALL log the chosen model, its estimated footprint and the free
   VRAM figure that decided it.
+- AC6: WHEN no VL model fits THEN THE SYSTEM SHALL escalate to the user as a CHAT
+  SYSTEM MESSAGE, not merely a log line. User-resolved 2026-08-18: "fail loudly and
+  alert the user through a system message."
+  MECHANISM — reuse what exists, do not invent: `WSEventBridge` already forwards a
+  set of events specifically "so the frontend can surface recovery / validation /
+  budget signals in the chat as system messages"
+  (`backend/agent/ws_event_bridge.py:50-68`). The frontend fans those into
+  `iris:plan_event` (`hooks/useIRISWebSocket.ts:1582-1591`) and chat-view renders
+  them as system messages. Add `VISION_UNAVAILABLE = "vision:unavailable"` to
+  `IRISStreamEvent` (`backend/agent/event_bus.py`), add it to the bridged tuple, and
+  emit it on the no-fit path.
+  Do NOT reuse `BUDGET_EXHAUSTED` or `VALIDATION_FAILED` — neither means "no GPU
+  memory for vision", and borrowing one corrupts the telemetry those events carry.
+  PAYLOAD SHALL name: free VRAM, the smallest candidate's requirement, and the full
+  rejected ladder with a per-candidate reason — the same facts AC4 requires in the
+  error, so the user can act (unload a model, pick a smaller fallback per REQ-10).
 
 **Edge Cases:**
 - No VL model present on disk -> explicit error naming the expected repos.
@@ -186,7 +210,11 @@ reported "vision server slow on first request".
 **User Story:** As a user I want the badge to tell me the truth about what is
 loaded.
 
-**Verified:** REAL GAP, PARTIALLY FIXED. The WS handler wrote only
+**Verified:** REAL GAP, PARTIALLY FIXED. Baseline pinned by T0e in
+`backend/tests/contract/test_local_model_status_baseline.py` (13 tests). Note the
+config field `InferenceConfig.local_model_status` ALREADY EXISTS
+(`backend/iris_config.py:275`, default `"unloaded"`) — the gap is that nothing reads
+it back out to the frontend, not that it is missing. The WS handler wrote only
 `fieldValues.local_model` while the field is declared under section id
 `local-model-card` (`data/cards.ts:237`) and resolved by SECTION id
 (`components/dark-glass-dashboard.tsx:263`). Fixed in e9d2fc89. The REMAINING
@@ -200,6 +228,15 @@ read UNLOADED live while a model was demonstrably resident on the GPU.
 - AC2: WHILE a model is loaded THE SYSTEM SHALL display LOADED after any page
   reload.
 - AC3: WHEN a load fails THEN THE SYSTEM SHALL display ERROR, not UNLOADED.
+  **BLOCKED AT THE BACKEND (found by T0e, 2026-08-18).** `"error"` is NEVER written
+  to `cfg.inference.local_model_status` by any path in `iris_gateway.py` — only
+  `"loaded"` (`:8423`) and `"unloaded"` (`:8606`, `:1906`). A FAILED load persists
+  NOTHING, so after a reload a failed load is indistinguishable from never having
+  loaded. AC3 therefore cannot be satisfied by frontend seeding alone; the load-error
+  path (`:8553`) must persist `"error"` first. T10 was scoped frontend-only and is
+  now split — see T10a/T10b.
+- AC4: THE SYSTEM SHALL persist `"error"` on a failed load, so ERROR survives a
+  reload rather than decaying to UNLOADED.
 
 **Edge Cases:**
 - Config says loaded but no server is listening -> reconcile to UNLOADED.
@@ -280,8 +317,53 @@ ever names a specific GGUF again.
 - Deleting the vision subsystem (explicitly reversed; see Decisions Locked 5).
 
 ## Open Questions
-- Is LFM2.5-VL-450M's vision quality sufficient for real browser/desktop control?
-  It becomes the DEFAULT whenever a local brain is resident, so this matters more
-  than when it was one of two equal options. **Test before shipping.**
-- Should a multimodal local brain answering vision itself still take a vision
-  LEASE, so idle accounting stays uniform across tiers?
+- ~~Is LFM2.5-VL-450M's vision quality sufficient for real browser/desktop control?~~
+  **RESOLVED 2026-08-18 by the user: YES.** They ran the 450M for browser control
+  before the 3B upgrade and it was good enough. No quality floor is needed in T7's
+  ladder, and the fast-brain-plus-small-fallback story stands as designed.
+  WHAT REMAINS is not a quality question but a PATH question: confirm in LIVE testing
+  that the hierarchy actually routes and serves — see T14 (rescoped).
+- ~~Should a multimodal local brain answering vision itself still take a vision
+  LEASE?~~ **RESOLVED 2026-08-18 by the user.** See Decisions Locked 8.
+
+### ~~CONFLICT~~ RESOLVED 2026-08-18 by the user: FAIL LOUDLY + SYSTEM MESSAGE
+User's decision, verbatim intent: "fail loudly and alert the user through a system
+message." REQ-3 AC4 STANDS. `_compute_vision_gpu_layers`'s silent drop to CPU is
+REMOVED for the no-fit case — see REQ-3 AC6 for the escalation contract. The
+Ripple-Effect Map row for `_compute_vision_gpu_layers` moves from UNRESOLVED to
+CHANGE NEEDED, owned by T7. Historical context of the conflict is preserved below.
+
+### CONFLICT (HISTORICAL — now resolved above): REQ-3 AC4 vs the existing CPU fallback
+REQ-3 AC4 states: "IF no VL model fits THEN THE SYSTEM SHALL fail with a message
+naming the free VRAM and the smallest candidate's requirement — never silently load
+on CPU."
+
+`backend/tools/lfm_vl_provider.py:_compute_vision_gpu_layers` (:374-460) does the opposite,
+deliberately and with a documented rationale: when `needed_gb > free_gb -
+_VISION_VRAM_RESERVE_GB` it returns 0 (= CPU) and logs a warning, "rather than gamble
+a partial offload that could OOM the machine" (:392-394). It is not silent — it warns
+— but it does not fail.
+
+Neither reading is obviously right, and the spec currently asserts both:
+  - AC4 is correct IF a CPU-speed vision answer is worse than no answer.
+  - `_compute_vision_gpu_layers` is correct IF a slow answer beats a hard failure, which is
+    the position the existing code took on purpose.
+
+Compounding it, `_compute_vision_gpu_layers` is **absent from the Ripple-Effect Map** and
+named by no task, yet it contains a SECOND, independent VRAM estimator: it computes
+`model_gb + mmproj_gb + 0.3` inline (:439-444) with a hardcoded KV constant, while
+T7 is told to use the GQA- and KV-quant-aware `estimate_vram_gb`. So after T7 the
+fallback path would size-select with one estimator and then decide GPU-vs-CPU with a
+different one. The spec never says which wins.
+
+**Required before T7 starts:** decide AC4-fails vs CPU-degrades, add
+`_compute_vision_gpu_layers` to the Ripple-Effect Map with that decision, and name the single
+estimator both paths use. T0c pins today's behavior so whichever way it goes is
+measurable.
+
+### GAP: REQ-10 AC3 names no schema
+AC3 requires the ladder be persisted "in `cfg.inference`" but neither this document
+nor design.md's Data Models section defines the field name, element shape, or ordering
+representation. T15 would invent a config contract that nothing pins. Define it here
+(suggested: `cfg.inference.vision_fallback_ladder: list[str]` of model ids, order =
+priority, empty/absent = auto) and add it to design.md's Data Models.

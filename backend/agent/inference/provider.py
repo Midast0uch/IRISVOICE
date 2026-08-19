@@ -39,6 +39,12 @@ class ProviderInstance:
         loaded: Whether the model backing this (local) provider is currently
             loaded into memory. Additive to the payload (REQ-3 AC2).
         loading: Whether a load is in progress. Additive to the payload.
+        vision_loaded: Whether a projector was ACTUALLY attached when this
+            (local) provider's server was launched — never inferred from a
+            sibling ``mmproj-*.gguf`` merely existing on disk (REQ-1 AC3 of
+            specs/unified-vision-routing). Defaults False. Set by the loader
+            (T8), read by ``supports_vision()`` (T5); this field only carries
+            the fact. Additive to the payload.
     """
 
     id: str
@@ -50,6 +56,7 @@ class ProviderInstance:
     purpose: str = "chat"
     loaded: bool = False
     loading: bool = False
+    vision_loaded: bool = False
 
     def to_dict(self) -> dict:
         """Serialize to a JSON-friendly dict (enum → its string value).
@@ -83,6 +90,10 @@ class ProviderInstance:
             "loaded": self.loaded,
             "loading": self.loading,
             "purpose": self.purpose,
+            # Additive vision-capability fact (REQ-1 AC3, specs/unified-
+            # vision-routing). True only when a projector was actually
+            # attached at load time — never disk presence alone.
+            "vision_loaded": self.vision_loaded,
         }
 
 

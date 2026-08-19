@@ -63,18 +63,52 @@ class ScreenMonitor:
 
         # Lazy-loaded provider + screen capture
         self._vision_provider = None
+        self._vision_resolved_at = 0.0
         self._screen_capture = None
 
         ScreenMonitor._initialized = True
 
+    # T17: resolve_vision_client() calls router.resolve_vision_provider(),
+    # which reads free VRAM via get_hardware_info() — a real subprocess call
+    # (nvidia-smi). The monitor polls on `interval_seconds` (default 10s);
+    # re-resolving on every poll would put that subprocess call on a loop.
+    # Resolution is honestly per-use — the bound brain/tool can change while
+    # the monitor runs — but bounded by this TTL so most polls reuse the
+    # cached client and a binding change is still picked up within one TTL
+    # window rather than never.
+    _VISION_RESOLUTION_TTL_SEC = 30.0
+
     def _get_vision_provider(self):
-        """Lazy-load LFMVLProvider."""
-        if self._vision_provider is None:
+        """Resolve the vision hierarchy (T17: brain -> tool -> VL fallback)
+        instead of always constructing LFMVLProvider directly. Cached with a
+        bounded TTL — see _VISION_RESOLUTION_TTL_SEC — so the per-poll hot
+        loop does not pay resolution cost every tick."""
+        now = time.monotonic()
+        if (
+            self._vision_provider is not None
+            and (now - self._vision_resolved_at) < self._VISION_RESOLUTION_TTL_SEC
+        ):
+            return self._vision_provider
+        try:
+            from backend.agent.inference.router import resolve_vision_client
+            from backend.tools.lfm_vl_provider import VisionModelUnavailable
             try:
-                from backend.tools.lfm_vl_provider import LFMVLProvider
-                self._vision_provider = LFMVLProvider()
-            except Exception as e:
-                logger.error(f"[ScreenMonitor] Cannot load LFMVLProvider: {e}")
+                _resolution, client = resolve_vision_client()
+            except VisionModelUnavailable as exc:
+                # REQ-3 AC4 — fail loudly at the resolver. The monitor is a
+                # background loop, not a user-facing request: degrade to
+                # "vision unavailable this cycle" instead of crashing the
+                # thread; the next TTL window retries.
+                logger.warning(f"[ScreenMonitor] vision unavailable: {exc}")
+                self._vision_provider = None
+                self._vision_resolved_at = now
+                return None
+            self._vision_provider = client
+            self._vision_resolved_at = now
+        except Exception as e:
+            logger.error(f"[ScreenMonitor] Cannot resolve vision client: {e}")
+            self._vision_provider = None
+            self._vision_resolved_at = now
         return self._vision_provider
 
     def _is_vision_available(self) -> bool:

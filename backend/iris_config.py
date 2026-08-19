@@ -218,6 +218,34 @@ def _local_stem(model_id: str) -> str:
     return stem or "local"
 
 
+def _local_model_endpoint() -> str:
+    """Resolve the local-model server endpoint for the migration path (T3 /
+    REQ-8).
+
+    Single source of truth: ``LocalModelManager.PORT``, which itself honors
+    ``IRIS_LOCAL_MODEL_PORT`` (default 8082). This used to be hardcoded to
+    ``8081`` here — the VISION server's port, not the local model server's —
+    so a migrated binding pointed at the wrong process.
+
+    Imported lazily (not at module scope) so config load — which runs on
+    every startup — never pays for importing ``local_model_manager`` unless a
+    legacy flat config with ``local_model_id`` is actually being migrated.
+    Degrades to the same 8082 default on any import failure rather than
+    raising out of config load (nothing here may block a user response).
+    """
+    try:
+        from backend.agent.local_model_manager import LocalModelManager
+
+        port = LocalModelManager.PORT
+    except Exception as exc:
+        logger.warning(
+            f"[Config] Could not resolve LocalModelManager.PORT during "
+            f"migration ({exc}); falling back to the documented default port."
+        )
+        port = int(os.environ.get("IRIS_LOCAL_MODEL_PORT", "8082"))
+    return f"http://127.0.0.1:{port}"
+
+
 def _build_providers(raw: Any) -> "Dict[str, ProviderEntry]":
     """Normalize a persisted ``providers`` value into ``id -> ProviderEntry``.
 
@@ -275,6 +303,14 @@ class InferenceConfig:
     local_model_status: str = "unloaded"  # unloaded | loaded | loading | error
     models_directory: str = ""
     hardware_profile: str = "balanced"
+
+    # REQ-10 (T15): user-chosen vision fallback ladder — a list of model
+    # `path` strings (the SAME identity scan_models()/the model browser
+    # already use to address a model), ORDER = priority. Empty/absent means
+    # "auto" (REQ-10 AC5: widest has_vision model that fits, chosen with NO
+    # hardcoded id). Never a model id/name literal — only what the user
+    # actually has on disk and picked.
+    vision_fallback_ladder: list = field(default_factory=list)
 
     # Generation parameters
     temperature: float = 0.6
@@ -379,7 +415,7 @@ class InferenceConfig:
                 label="Local Model",
                 kind="LOCAL_OPENAI",
                 model=local_id,
-                endpoint="http://127.0.0.1:8081",
+                endpoint=_local_model_endpoint(),
             )
 
         self.providers = new_providers
@@ -415,6 +451,7 @@ class InferenceConfig:
             local_model_status=d.get("local_model_status", "unloaded"),
             models_directory=d.get("models_directory", ""),
             hardware_profile=d.get("hardware_profile", "balanced"),
+            vision_fallback_ladder=list(d.get("vision_fallback_ladder", []) or []),
             temperature=float(d.get("temperature", 0.6)),
             max_tokens=int(d.get("max_tokens", 4096)),
             reasoning_effort=d.get("reasoning_effort", "balanced"),

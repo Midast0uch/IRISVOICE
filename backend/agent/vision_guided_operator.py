@@ -50,14 +50,22 @@ class VisionGuidedOperator:
 
     async def find_element(self, description: str) -> Optional[Tuple[int, int]]:
         """
-        Ask LFM2.5-VL for pixel coordinates of a UI element.
+        Resolve the vision hierarchy (T16: brain -> tool -> VL fallback) and
+        ask whoever answers for pixel coordinates of a UI element.
         Prompt enforces strict format: x=NNN y=NNN
         Returns (x, y) or None.
         """
         if self._vision is None:
             return None
-        from backend.tools.lfm_vl_provider import LFMVLProvider
-        provider = LFMVLProvider()
+        from backend.agent.inference.router import resolve_vision_client
+        from backend.tools.lfm_vl_provider import VisionModelUnavailable
+        try:
+            _resolution, provider = resolve_vision_client()
+        except VisionModelUnavailable as exc:
+            # REQ-3 AC4 — fail loudly at the resolver, but never crash the
+            # operator loop: a clean "not found" is the correct surface here.
+            logger.warning(f"[VGO] vision unavailable: {exc}")
+            return None
         loop = asyncio.get_event_loop()
         img = await self.screenshot()
         prompt = (

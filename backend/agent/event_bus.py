@@ -127,6 +127,16 @@ class IRISStreamEvent(enum.Enum):
     RECOVERY_START = "plan:recovery_start"
     TOPOLOGY_RECOVERY = "plan:topology_recovery"
 
+    # ── Vision routing (unified-vision-routing REQ-3 AC6) ───────────────
+    # Emitted when the VL fallback ladder has no candidate that fits current
+    # free VRAM (or no VL model exists on disk at all). User-resolved
+    # 2026-08-18: "fail loudly and alert the user through a system message"
+    # — this is a DISTINCT event from BUDGET_EXHAUSTED (token budget) and
+    # VALIDATION_FAILED (RC1 validation); reusing either would corrupt their
+    # telemetry. Payload carries free VRAM, the smallest candidate's
+    # requirement, and the full rejected ladder with a per-candidate reason.
+    VISION_UNAVAILABLE = "vision:unavailable"
+
 
 # ── Event payload ──────────────────────────────────────────────────────────
 

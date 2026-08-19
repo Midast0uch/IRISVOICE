@@ -1087,6 +1087,41 @@ class AgentKernel:
         ("local", "glm-5.1", 202_752),
     ]
 
+    # Known vision-capable API models. Keyed (provider_id, model_substring),
+    # mirroring _KNOWN_CONTEXT_WINDOWS's shape and matching rule directly
+    # above: substring match is case-insensitive, first match wins. Sibling
+    # table for specs/unified-vision-routing REQ-1 AC2 — this is DATA only,
+    # not a raise site. A model id that matches no row here is simply absent
+    # from the table; the "unknown -> False" behaviour of REQ-1 AC5 is owned
+    # by supports_vision() (backend/agent/inference/router.py), which must
+    # treat "no row matched" as False rather than erroring.
+    #
+    # provider_id follows the same vocabulary as _KNOWN_CONTEXT_WINDOWS: the
+    # literal instance id registered for an API ProviderInstance (e.g.
+    # "openai", "anthropic" — see PROVIDER_PRESETS in
+    # backend/agent/inference/provider.py), not the ProviderKind enum value.
+    _KNOWN_VISION_MODELS: list[tuple[str, str]] = [
+        # OpenAI — the GPT-4o family and later multimodal generations accept
+        # image input natively.
+        ("openai", "gpt-4o"),
+        ("openai", "gpt-4-turbo"),
+        ("openai", "gpt-4.5"),
+        # Anthropic — every Claude 3 and later model accepts image input.
+        ("anthropic", "claude-3"),
+        ("anthropic", "claude-opus"),
+        ("anthropic", "claude-sonnet"),
+        ("anthropic", "claude-haiku"),
+        # Gemini — multimodal since 1.5. No "gemini" id exists in
+        # PROVIDER_PRESETS today (no dedicated Google preset is registered
+        # yet); this row is forward-compatible with a directly-configured
+        # Gemini-compatible API provider registered under instance id
+        # "gemini", and the substring also matches vendor-prefixed ids such
+        # as an aggregator's "google/gemini-2.0-flash-001" once such a
+        # provider exists. Deliberately NOT guessing at a provider id that
+        # is not yet a real preset beyond this one forward-compatible row.
+        ("gemini", "gemini"),
+    ]
+
     # ── Active-model state: DERIVED from the router, never stored ─────────
     #
     # These three read like plain attributes because ~120 call sites across the

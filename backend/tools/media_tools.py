@@ -105,8 +105,13 @@ def _transcribe_chunk(chunk_bytes: bytes, url: str = PARAKEET_URL) -> Dict:
 
 # ── Vision default ────────────────────────────────────────────────────────────
 def _default_analyze(frame_bytes: bytes, question: str) -> str:
-    from backend.tools.lfm_vl_provider import LFMVLProvider
-    provider = LFMVLProvider()
+    """T17: resolve the vision hierarchy (brain -> tool -> VL fallback)
+    instead of always constructing LFMVLProvider directly. VisionModelUnavailable
+    (REQ-3 AC4, fail loudly) propagates — analyze_video_frames' own try/except
+    already turns any exception here into a clean {"success": False, "error": ...}
+    result, so no extra handling is needed at this layer."""
+    from backend.agent.inference.router import resolve_vision_client
+    _resolution, provider = resolve_vision_client()
     return provider.analyze_screen(frame_bytes, question)
 
 

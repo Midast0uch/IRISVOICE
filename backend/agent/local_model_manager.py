@@ -28,6 +28,7 @@ import io
 import json
 import logging
 import os
+import re
 import signal
 import struct
 import subprocess
@@ -584,6 +585,11 @@ def resolve_device_policy(
 
 _SPLIT_SUFFIX_PART = "-of-"
 
+# REQ-5: vision projector files (llama.cpp CLIP adapters) are identified by
+# this filename prefix and must never be offered as loadable brains — they
+# are attached as metadata to their base model instead.
+_MMPROJ_PREFIX_RE = re.compile(r"^mmproj[-_.]", re.IGNORECASE)
+
 # ── GGML type string → llama_cpp integer constant ─────────────────────────
 # Kept module-scope so _load_inprocess and _build_server_cmd share one source
 # of truth. Values mirror llama_cpp.GGML_TYPE_* (verified against
@@ -713,6 +719,11 @@ class LocalModelManager:
         self._current_params: Dict[str, Any] = {}
         self._current_model_meta: Dict[str, Any] = {}
         self._current_purpose: str = "chat"
+        # REQ-4 AC4: true only when a projector was ACTUALLY passed to the
+        # running server via --mmproj — never inferred from a sibling
+        # mmproj-*.gguf merely existing on disk. Read by get_status() and by
+        # iris_gateway.py to set ProviderInstance.vision_loaded truthfully.
+        self._current_vision_loaded: bool = False
         self._lock = threading.Lock()
         # [10.6] Async lock — prevents concurrent load_model() calls racing
         self._load_lock: Optional[asyncio.Lock] = None
@@ -1195,6 +1206,15 @@ class LocalModelManager:
         """
         settings = self.load_model_settings()
         seen_bases: Dict[str, Dict[str, Any]] = {}  # base_name -> entry
+        # Raw parsed GGUF metadata per base_stem, kept only long enough to
+        # re-plan a base model once its projector is matched below (REQ-4
+        # AC3) — plan_load needs the full metadata (block_count, head
+        # counts, ...), not just what survives onto the entry dict.
+        base_metas: Dict[str, Dict[str, Any]] = {}
+        # REQ-5: projector files are collected here instead of becoming their
+        # own entries, then matched onto their base model in a second,
+        # in-memory-only pass (no extra directory walk or stat storm).
+        projectors: List[Tuple[Path, str, os.stat_result]] = []  # (path, stem, stat)
 
         for gguf_path in self._iter_gguf_paths():
             filename = gguf_path.name
@@ -1204,6 +1224,13 @@ class LocalModelManager:
             try:
                 st = gguf_path.stat()
             except OSError:
+                continue
+
+            # REQ-5 AC1: mmproj-*.gguf is never a loadable brain — set it
+            # aside for the vision-attach pass below instead of building an
+            # entry for it.
+            if self._is_projector_filename(filename):
+                projectors.append((gguf_path, stem, st))
                 continue
 
             # Detect split shards (e.g., model-00001-of-00003)
@@ -1286,13 +1313,114 @@ class LocalModelManager:
                 "is_mtp_capable": meta.get("is_mtp", False)
                 or "mtp" in filename.lower()
                 or "mtp" in base_stem.lower(),
+                # REQ-5 AC2: default to no-vision; the pass below attaches a
+                # matching projector, if any. Models with no projector keep
+                # these exactly as set here — no behavior change for them.
+                "has_vision": False,
+                "mmproj_path": None,
+                "mmproj_size_gb": 0.0,
             }
             seen_bases[base_stem] = entry
+            base_metas[base_stem] = meta
+
+        # REQ-5 AC2: attach each projector to its base model by normalized
+        # stem — the base model and its projector are quantized
+        # independently (e.g. gemma-4-E4B-it-Q4_K_M base vs
+        # mmproj-gemma-4-E4B-it-BF16 projector) and are frequently in
+        # different directories, so path/directory is not a valid key.
+        if projectors:
+            stem_index: Dict[str, List[str]] = {}
+            for base_stem, entry in seen_bases.items():
+                key = self._normalize_stem_for_vision_match(base_stem)
+                stem_index.setdefault(key, []).append(base_stem)
+
+            for proj_path, proj_stem, proj_st in projectors:
+                try:
+                    proj_size_gb = round(proj_st.st_size / (1024**3), 2)
+                    base_name = _MMPROJ_PREFIX_RE.sub("", proj_stem, count=1)
+                    match_key = self._normalize_stem_for_vision_match(base_name)
+                    matched_bases = stem_index.get(match_key, [])
+                    if not matched_bases:
+                        logger.debug(
+                            f"[LocalModelManager] Orphan vision projector "
+                            f"'{proj_path.name}' has no matching base model "
+                            f"(match key '{match_key}') — excluded."
+                        )
+                        continue
+                    for base_stem in matched_bases:
+                        entry = seen_bases[base_stem]
+                        if entry["has_vision"]:
+                            # Multiple projectors matched the same base —
+                            # keep the first, log the rest rather than
+                            # clobbering a prior match.
+                            logger.debug(
+                                f"[LocalModelManager] Base model '{base_stem}' "
+                                f"already has a projector; skipping additional "
+                                f"match '{proj_path.name}'."
+                            )
+                            continue
+                        entry["has_vision"] = True
+                        entry["mmproj_path"] = str(proj_path)
+                        entry["mmproj_size_gb"] = proj_size_gb
+                        # REQ-4 AC3/AC5: the entry's plan/vram_estimate_gb was
+                        # computed above BEFORE the projector was known —
+                        # re-plan now that it is, so the browser card's VRAM
+                        # figure and n_ctx already include the projector's
+                        # footprint rather than promising a text-only config
+                        # for a model that will load with --mmproj by default.
+                        try:
+                            replanned = self.plan_load(
+                                base_metas.get(base_stem, {}),
+                                entry["size_gb"],
+                                mmproj_size_gb=proj_size_gb,
+                            )
+                            entry["plan"] = replanned
+                            entry["vram_estimate_gb"] = replanned["vram_gb"]
+                        except Exception as exc:
+                            logger.debug(
+                                f"[LocalModelManager] vision re-plan failed for "
+                                f"'{base_stem}': {exc}"
+                            )
+                except Exception as e:
+                    # A malformed/unreadable projector must degrade to
+                    # has_vision=False on its base model, never crash the scan.
+                    logger.debug(
+                        f"[LocalModelManager] Could not attach projector "
+                        f"'{proj_path}' to a base model: {e}"
+                    )
+                    continue
 
         models = list(seen_bases.values())
         # Pinned models float to top
         models.sort(key=lambda m: (not m["pinned"], m["display_name"].lower()))
         return models
+
+    def _find_projector_for_model(
+        self, model_path: str
+    ) -> Tuple[Optional[str], float]:
+        """Return ``(mmproj_path, mmproj_size_gb)`` for *model_path*, or
+        ``(None, 0.0)`` if it has no matching projector.
+
+        REQ-4 AC3: reuses ``scan_models()``'s own projector-matching pass —
+        the same stem-normalized match REQ-5 AC2 defines — rather than a
+        second, potentially divergent heuristic. ``scan_models()`` already
+        caches GGUF header parsing by ``path::mtime`` (``_metadata_cache``),
+        so a load-time call here costs a directory walk + stat pass, not a
+        second full metadata parse of every model on disk.
+        """
+        try:
+            resolved = Path(model_path).resolve()
+        except OSError:
+            resolved = Path(model_path)
+        for entry in self.scan_models():
+            try:
+                if Path(entry["path"]).resolve() == resolved:
+                    mmproj_path = entry.get("mmproj_path")
+                    mmproj_size_gb = float(entry.get("mmproj_size_gb") or 0.0)
+                    return (mmproj_path, mmproj_size_gb) if mmproj_path else (None, 0.0)
+            except OSError:
+                continue
+        return None, 0.0
 
     # ── GGUF value-type enum (ggml/src/gguf.cpp, gguf_type) ────────────────
     # There is exactly ONE encoding. An earlier revision of this method carried
@@ -1576,6 +1704,35 @@ class LocalModelManager:
                 return quant
         return "unknown"
 
+    @staticmethod
+    def _is_projector_filename(filename: str) -> bool:
+        """REQ-5 AC1: `mmproj-*.gguf` (any separator/case) is a CLIP projector,
+        never a loadable brain."""
+        return bool(_MMPROJ_PREFIX_RE.match(filename))
+
+    @staticmethod
+    def _normalize_stem_for_vision_match(stem: str) -> str:
+        """Reduce a GGUF stem to a name key for projector<->base-model matching.
+
+        Separators are normalized and the trailing quantization/precision
+        token (from QUANT_BPW, e.g. Q4_K_M, BF16, F16) is stripped, so
+        'gemma-4-E4B-it-Q4_K_M' (base) and 'gemma-4-E4B-it-BF16' (projector,
+        after stripping its 'mmproj-' prefix) both reduce to
+        'gemma-4-e4b-it' and match by stem as REQ-5 AC2 requires — the base
+        model and its projector are quantized independently and rarely share
+        a literal filename.
+
+        Only '.' is folded into the '-' separator, NOT '_' — QUANT_BPW keys
+        (e.g. "Q4_K_M", "IQ2_XXS") are internally underscore-joined, so
+        splitting on '_' too would shred a single quant token into three and
+        make it unrecognizable.
+        """
+        normalized = stem.replace(".", "-")
+        tokens = [t for t in normalized.split("-") if t]
+        if tokens and tokens[-1].upper() in QUANT_BPW:
+            tokens = tokens[:-1]
+        return "-".join(t.lower() for t in tokens)
+
     # ─────────────────────────────────────────────────────────────────────────
     # VRAM estimation
     # ─────────────────────────────────────────────────────────────────────────
@@ -1587,6 +1744,7 @@ class LocalModelManager:
         *,
         file_size_gb: float = 0.0,
         kv_bytes: int = 2,
+        mmproj_size_gb: float = 0.0,
     ) -> float:
         """
         Estimate VRAM requirement: weights + KV cache.
@@ -1616,10 +1774,17 @@ class LocalModelManager:
             file_size_gb: Size of the GGUF on disk, when the caller knows it.
             kv_bytes: Bytes per KV element — 2 for f16 (default), 1 for the
                       q8_0 cache the GPU profiles actually request.
+            mmproj_size_gb: On-disk size of the vision projector (CLIP/mmproj
+                             GGUF), when one will be attached with --mmproj.
+                             REQ-4 AC3: it is a SEPARATE GGUF and is absent
+                             from file_size_gb, so it is ADDED to the weights
+                             term rather than assumed included. 0.0 when no
+                             projector is attached (default, and every
+                             existing caller).
 
         Returns:
-            Estimated VRAM in GB (weights + KV cache), or 0.0 when neither the
-            file size nor a parameter count is known.
+            Estimated VRAM in GB (weights + projector + KV cache), or 0.0
+            when neither the file size nor a parameter count is known.
         """
         params_b = model_meta.get("params_b", 0)
         quant = model_meta.get("quantization") or "Q4_K_M"
@@ -1637,6 +1802,11 @@ class LocalModelManager:
             weights_gb = params_b * bpw / 8.0 * 1.1
         else:
             return 0.0
+
+        if mmproj_size_gb > 0:
+            # Same driver/alloc overhead factor as the base weights — the
+            # projector is uploaded to the GPU the same way.
+            weights_gb += mmproj_size_gb * 1.05
 
         # ── KV cache (context-dependent, D-3) ──
         # Use provided n_ctx, or fall back to metadata, or MIN_CTX
@@ -1691,6 +1861,7 @@ class LocalModelManager:
         model_meta: Dict[str, Any],
         file_size_gb: float = 0.0,
         purpose: str = "chat",
+        mmproj_size_gb: float = 0.0,
     ) -> Dict[str, Any]:
         """Return the configuration this model WOULD be loaded with.
 
@@ -1701,9 +1872,28 @@ class LocalModelManager:
         breaking the scan.
 
         Keys: ``profile``, ``n_ctx``, ``native_ctx``, ``kv_cache``,
-        ``vram_gb``, ``vram_free_gb``, ``fits``, ``reason``.
+        ``vram_gb``, ``vram_free_gb``, ``fits``, ``reason``, ``mmproj_gb``.
+
+        mmproj_size_gb (REQ-4 AC3/AC5): on-disk size of the model's vision
+        projector, when it has one and will be attached. It is a SEPARATE
+        GGUF absent from ``file_size_gb`` — ADDED to the weights term here
+        and in ``estimate_vram_gb``, not assumed included. Surfaced back on
+        the plan as ``mmproj_gb`` so the model browser can show the added
+        cost separately (Decisions Locked 6: gemma-4-E4B measured
+        64.5 -> 42.1 tok/s, -35% generation, +1.2GB VRAM, when attaching —
+        default to attaching, but the cost must be visible, never hidden).
+        0.0 (default) reproduces the old text-only-only plan unchanged.
         """
-        hw = self.get_hardware_info()
+        try:
+            hw = self.get_hardware_info()
+        except Exception as exc:
+            # Docstring promise ("never raises") did not actually cover this
+            # call — a broken hardware probe (T15: exposed once vision's
+            # candidate discovery started calling scan_models(), which calls
+            # plan_load() per model) used to crash the whole scan instead of
+            # reporting fits=False. Degrade like "no CUDA device detected".
+            logger.debug(f"[LocalModelManager] get_hardware_info() failed in plan_load: {exc}")
+            hw = {"cuda_available": False, "vram_free_gb": 0.0}
         free = float(hw.get("vram_free_gb", 0.0) or 0.0)
         native = int(
             model_meta.get("context_length") or model_meta.get("n_ctx") or 0
@@ -1712,6 +1902,7 @@ class LocalModelManager:
             "profile": "", "n_ctx": 0, "native_ctx": native, "kv_cache": "",
             "vram_gb": 0.0, "vram_free_gb": round(free, 1),
             "fits": False, "reason": "", "purpose": purpose,
+            "mmproj_gb": round(mmproj_size_gb, 2) if mmproj_size_gb else 0.0,
         }
         if not hw.get("cuda_available"):
             plan["reason"] = "no CUDA device detected"
@@ -1722,9 +1913,14 @@ class LocalModelManager:
             ceiling = int(params.get("n_ctx", MAX_CTX))
             if purpose == "tool":
                 ceiling = min(ceiling, TOOL_CTX_CAP)
+            # Reserve the projector's own footprint (+overhead) out of the
+            # budget handed to context derivation, so a vision-capable model
+            # is never derived a context that then overflows once --mmproj is
+            # added back in below.
+            mmproj_overhead_gb = mmproj_size_gb * 1.05 if mmproj_size_gb > 0 else 0.0
             derived = self.derive_config(
                 model_meta,
-                vram_budget_gb=free * 0.92,
+                vram_budget_gb=max(0.0, free * 0.92 - mmproj_overhead_gb),
                 file_size_gb=file_size_gb,
                 kv_cache_type=params.get("cache_type_k", "q8_0"),
                 max_ctx=ceiling,
@@ -1734,6 +1930,7 @@ class LocalModelManager:
                 model_meta, n_ctx=n_ctx, file_size_gb=file_size_gb,
                 kv_bytes=1 if str(params.get("cache_type_k", "f16")).lower()
                 in _ONE_BYTE_KV_TYPES else 2,
+                mmproj_size_gb=mmproj_size_gb,
             )
             plan.update(
                 profile=profile,
@@ -2104,7 +2301,7 @@ class LocalModelManager:
 
     def _preflight_resource_check(
         self, model_path: str, params: Dict[str, Any], model_meta: Dict[str, Any] = None,
-        purpose: str = "chat",
+        purpose: str = "chat", mmproj_size_gb: float = 0.0,
     ) -> Optional[str]:
         """
         Estimate VRAM/RAM requirements before spawning the subprocess.
@@ -2112,6 +2309,13 @@ class LocalModelManager:
 
         T3.3: Branches on resolve_device_policy(purpose). CPU purposes
         (embedding, rerank) skip the GPU check entirely.
+
+        mmproj_size_gb (REQ-4 AC3): on-disk size of the vision projector that
+        will be attached with --mmproj, if any. It is a SEPARATE GGUF not
+        included in the base model's file size, so it is added to the
+        weight-VRAM term here — a projector's CLIP tower is resident on the
+        GPU independent of the base model's offload fraction. 0.0 (default)
+        reproduces the old text-only check unchanged.
 
         Returns an error string if resources are insufficient, None if OK.
         Fails open (returns None) if hardware info is unavailable —
@@ -2179,6 +2383,12 @@ class LocalModelManager:
                 else:
                     # Fallback: assume all on GPU when we don't know layer count
                     weight_vram = file_gb * 1.05
+
+                if mmproj_size_gb > 0:
+                    # REQ-4 AC3: separate GGUF, absent from file_gb — its own
+                    # CLIP tower is fully resident on GPU regardless of the
+                    # base model's offload fraction.
+                    weight_vram += mmproj_size_gb * 1.05
 
                 vram_needed = weight_vram + kv_cache_gb
                 vram_free = hw.get("vram_free_gb", 0.0)
@@ -2406,6 +2616,7 @@ class LocalModelManager:
         purpose: str = "chat",
         progress_cb=None,  # async callable(event: dict) — optional progress hook
         crash_cb=None,  # async callable() — called if subprocess dies after load
+        with_projector: bool = True,
     ) -> bool:
         """
         Stop existing subprocess (if any), spawn new llama-cpp-python server.
@@ -2417,6 +2628,13 @@ class LocalModelManager:
 
         T3.1: GPU-only degradation ladder — if VRAM is tight, shrink n_ctx
         first (step 1), then n_batch (step 2). Never CPU offload.
+
+        with_projector (REQ-4 AC1/AC2): when the base model has a matching
+        vision projector, attach it with --mmproj by DEFAULT (True). Pass
+        False to opt out and load text-only even though a projector exists.
+        Absent from any caller written before this parameter existed —
+        every such call keeps the new default (attach), so nothing already
+        wired to load_model() changes behavior (CT-5).
 
         [10.6] Held under _load_lock — concurrent calls return False immediately.
         [10.5] Pre-flight resource check before spawning subprocess.
@@ -2456,6 +2674,22 @@ class LocalModelManager:
                 file_size_gb = Path(model_path).stat().st_size / (1024 ** 3)
             except OSError:
                 file_size_gb = 0.0
+
+            # REQ-4 AC1/AC2: resolve the matching projector, if any, BEFORE
+            # sizing anything else — the deriver and pre-flight both need to
+            # reserve its footprint when it will be attached. Looked up
+            # unconditionally (even when the caller opted out) purely for the
+            # opt-out log line below; it costs a directory walk, not a second
+            # metadata parse (_find_projector_for_model reuses scan_models's
+            # own mtime-cached parsing).
+            mmproj_path, mmproj_size_gb = self._find_projector_for_model(model_path)
+            attach_projector = bool(with_projector) and bool(mmproj_path)
+            if mmproj_path and not with_projector:
+                logger.info(
+                    f"[LocalModelManager] vision projector available for "
+                    f"{Path(model_path).name} ({mmproj_size_gb:.2f}GB) but "
+                    f"caller opted out (with_projector=False); loading text-only."
+                )
 
             # AUTO PROFILE (REQ-1). "balanced" is the frontend's default for
             # every model, so every model got a 32k/q8_0 config regardless of
@@ -2512,6 +2746,14 @@ class LocalModelManager:
                     # unchecked against VRAM.
                     try:
                         hw = self.get_hardware_info()
+                        # REQ-4 AC3: reserve the projector's own footprint out
+                        # of the budget handed to the deriver, so the FIRST
+                        # context it proposes already leaves room for --mmproj
+                        # instead of relying on the degradation ladder to
+                        # discover that at pre-flight time.
+                        _mmproj_reserve = (
+                            mmproj_size_gb * 1.05 if attach_projector else 0.0
+                        )
                         derived = self.derive_config(
                             model_meta,
                             # Same 0.92 headroom _preflight_resource_check
@@ -2519,7 +2761,10 @@ class LocalModelManager:
                             # then checking against 92% of it guarantees the
                             # deriver's own answer fails pre-flight and has to
                             # be walked back down the degradation ladder.
-                            vram_budget_gb=hw.get("vram_free_gb", 0.0) * 0.92,
+                            vram_budget_gb=max(
+                                0.0,
+                                hw.get("vram_free_gb", 0.0) * 0.92 - _mmproj_reserve,
+                            ),
                             file_size_gb=file_size_gb,
                             kv_cache_type=params.get("cache_type_k", "q8_0"),
                             max_ctx=(
@@ -2561,37 +2806,63 @@ class LocalModelManager:
                 f"n_batch={params.get('n_batch')}"
             )
 
-            # [10.5] Pre-flight resource check — fail fast before spawning
-            preflight_error = self._preflight_resource_check(
-                model_path, params, model_meta, purpose=purpose
-            )
-
-            # T3.1: Degradation ladder — if pre-flight fails, try shrinking n_ctx
-            # then n_batch. Never CPU offload.
-            if preflight_error:
-                policy = resolve_device_policy(purpose)
-                if policy.device == "gpu" and policy.ladder:
-                    degraded_params = self._degrade_config(
-                        params, model_meta, purpose=purpose
-                    )
-                    if degraded_params is not None:
-                        # Retry pre-flight with degraded config
-                        retry_error = self._preflight_resource_check(
-                            model_path, degraded_params, model_meta, purpose=purpose
+            # [10.5] Pre-flight resource check — fail fast before spawning,
+            # with the GPU-only ctx/batch degradation ladder (T3.1). Wrapped
+            # in a closure so it can be run TWICE: once reserving the
+            # projector's VRAM (if attaching), and — per REQ-4's edge case
+            # ("projector present but VRAM insufficient WITH it -> offer the
+            # text-only load rather than failing outright") — a second time
+            # without it, only if the first attempt fails.
+            def _preflight_with_ladder(
+                reserve_mmproj_gb: float,
+            ) -> Tuple[Optional[str], Dict[str, Any]]:
+                trial_params = dict(params)
+                err = self._preflight_resource_check(
+                    model_path, trial_params, model_meta, purpose=purpose,
+                    mmproj_size_gb=reserve_mmproj_gb,
+                )
+                if err:
+                    policy = resolve_device_policy(purpose)
+                    if policy.device == "gpu" and policy.ladder:
+                        degraded_params = self._degrade_config(
+                            trial_params, model_meta, purpose=purpose,
+                            mmproj_size_gb=reserve_mmproj_gb,
                         )
-                        if retry_error is None:
-                            logger.info(
-                                f"[LocalModelManager] Degradation succeeded: "
-                                f"n_ctx={degraded_params.get('n_ctx')} "
-                                f"n_batch={degraded_params.get('n_batch')}"
+                        if degraded_params is not None:
+                            retry_error = self._preflight_resource_check(
+                                model_path, degraded_params, model_meta,
+                                purpose=purpose, mmproj_size_gb=reserve_mmproj_gb,
                             )
-                            params = degraded_params
-                            preflight_error = None
-                        else:
+                            if retry_error is None:
+                                logger.info(
+                                    f"[LocalModelManager] Degradation succeeded: "
+                                    f"n_ctx={degraded_params.get('n_ctx')} "
+                                    f"n_batch={degraded_params.get('n_batch')}"
+                                )
+                                return None, degraded_params
                             logger.warning(
                                 f"[LocalModelManager] Degradation failed: {retry_error}"
                             )
-                            preflight_error = retry_error
+                            return retry_error, trial_params
+                return err, trial_params
+
+            preflight_error, params = _preflight_with_ladder(
+                mmproj_size_gb if attach_projector else 0.0
+            )
+
+            if preflight_error and attach_projector:
+                # Edge case (REQ-4): the projector doesn't fit — degrade to
+                # text-only rather than failing the load outright. The user
+                # still gets a working brain; they just don't get vision from
+                # it (VL fallback / a tool call can still serve vision).
+                logger.warning(
+                    f"[LocalModelManager] vision projector for "
+                    f"{Path(model_path).name} does not fit ({preflight_error}); "
+                    f"retrying text-only."
+                )
+                attach_projector = False
+                preflight_error, params = _preflight_with_ladder(0.0)
+
             if preflight_error:
                 logger.error(
                     f"[LocalModelManager] Pre-flight failed: {preflight_error}"
@@ -2611,6 +2882,19 @@ class LocalModelManager:
                 or "mtp" in Path(model_path).name.lower()
             )
             force_server = params.get("force_subprocess", False) or is_mtp
+
+            # REQ-4 AC1/AC4: --mmproj is a compiled-server flag (_build_server_cmd);
+            # the in-process llama_cpp binding here has no wired vision chat
+            # handler. Route a vision-attached load to the subprocess path,
+            # same as the other force_server special cases below, so
+            # `vision_loaded` is only ever set True when a server that
+            # actually understands --mmproj is the one that comes up.
+            if attach_projector:
+                force_server = True
+                logger.info(
+                    f"[LocalModelManager] Vision projector will be attached for "
+                    f"{Path(model_path).name}; routing to compiled llama-server."
+                )
 
             if is_mtp and self._inprocess_enabled():
                 logger.info(
@@ -2678,8 +2962,11 @@ class LocalModelManager:
                     f"{Path(model_path).name}; falling back to server."
                 )
 
-            # ── Subprocess path (MTP, RotorQuant, or in-process fallback) ───
-            cmd = self._build_server_cmd(model_path, params, is_mtp=is_mtp)
+            # ── Subprocess path (MTP, RotorQuant, vision, or in-process fallback) ─
+            cmd = self._build_server_cmd(
+                model_path, params, is_mtp=is_mtp,
+                mmproj_path=mmproj_path if attach_projector else None,
+            )
             logger.info(f"[LocalModelManager] Starting llama-server: {' '.join(cmd)}")
 
             loop = asyncio.get_running_loop()
@@ -2815,12 +3102,18 @@ class LocalModelManager:
                         "last_gpu_layers": params.get("n_gpu_layers", -1),
                     },
                 )
+                # REQ-4 AC4: truthful only here — the server that just came up
+                # actually got --mmproj on its argv (or didn't).
+                self._current_vision_loaded = attach_projector
                 self._invalidate_hw_cache()  # refresh VRAM after model occupies GPU
                 # [10.7] Start watchdog — detects subprocess death after load
                 self._watchdog_task = asyncio.ensure_future(
                     self._run_watchdog(crash_cb=crash_cb)
                 )
-                logger.info(f"[LocalModelManager] Model ready at {self.ENDPOINT}")
+                logger.info(
+                    f"[LocalModelManager] Model ready at {self.ENDPOINT} "
+                    f"(vision_loaded={attach_projector})"
+                )
             else:
                 logger.error(
                     "[LocalModelManager] Timed out waiting for server to start"
@@ -2833,6 +3126,7 @@ class LocalModelManager:
         params: Dict[str, Any],
         model_meta: Dict[str, Any],
         purpose: str = "chat",
+        mmproj_size_gb: float = 0.0,
     ) -> Optional[Dict[str, Any]]:
         """
         T3.1: Degradation ladder for GPU-only models.
@@ -2848,6 +3142,10 @@ class LocalModelManager:
             params: Original inference params (n_ctx, n_gpu_layers, n_batch).
             model_meta: Parsed GGUF metadata.
             purpose: Model purpose ("chat", "tool", "embedding", "rerank").
+            mmproj_size_gb: REQ-4 AC3 — reserve the vision projector's own
+                footprint out of the VRAM budget before deriving n_ctx, so a
+                degraded config still leaves room for --mmproj. 0.0 (default)
+                when no projector is being attached.
 
         Returns:
             Degraded params dict, or None if degradation is not applicable
@@ -2859,6 +3157,8 @@ class LocalModelManager:
 
         hw = self.get_hardware_info()
         vram_budget = hw.get("vram_free_gb", 0.0) * 0.92  # 8% safety margin
+        if mmproj_size_gb > 0:
+            vram_budget = max(0.0, vram_budget - mmproj_size_gb * 1.05)
 
         if vram_budget <= 0:
             return None
@@ -2936,6 +3236,7 @@ class LocalModelManager:
             with self._lock:
                 self._current_model_path = None
                 self._current_params = {}
+                self._current_vision_loaded = False
             self._invalidate_hw_cache()
             logger.info("[LocalModelManager] In-process model unloaded")
             return True
@@ -2957,6 +3258,7 @@ class LocalModelManager:
                 self._process = None
                 self._current_model_path = None
                 self._current_params = {}  # [10.9] reset param tracking
+                self._current_vision_loaded = False
         self._invalidate_hw_cache()
         logger.info("[LocalModelManager] Model unloaded")
         return True
@@ -3003,6 +3305,10 @@ class LocalModelManager:
             else (self._process.pid if loaded and self._process else None),
             "inprocess": inprocess,
             "rotorquant": self._rotorquant_available,
+            # REQ-4 AC4: truthful only when --mmproj was actually passed to
+            # the running server for THIS load — never derived from a
+            # sibling projector file merely existing on disk.
+            "vision_loaded": self._current_vision_loaded if loaded else False,
         }
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -3225,7 +3531,11 @@ class LocalModelManager:
         return sys.executable
 
     def _build_server_cmd(
-        self, model_path: str, params: Dict[str, Any], is_mtp: bool = False
+        self,
+        model_path: str,
+        params: Dict[str, Any],
+        is_mtp: bool = False,
+        mmproj_path: Optional[str] = None,
     ) -> List[str]:
         """
         Build the inference server command.
@@ -3237,6 +3547,12 @@ class LocalModelManager:
           --batch-size instead of --n_batch
           --n-gpu-layers instead of --n_gpu_layers
           --threads instead of --n_threads
+
+        mmproj_path (REQ-4 AC1/AC2): when set, ``--mmproj <path>`` is passed
+        so the base model actually sees. ``None`` (default) reproduces the
+        old text-only argv unchanged — the caller (``load_model``) is
+        responsible for resolving whether a projector exists AND whether the
+        caller opted in (default: yes).
         """
         # Model-aware server selection: RotorQuant/ternary GGUFs require the
         # llama-cpp-turboquant fork; everything else uses the stock server.
@@ -3266,6 +3582,17 @@ class LocalModelManager:
                 "--threads",
                 str(cpu_count()),
             ]
+            if mmproj_path:
+                # REQ-4 AC1: attach the vision projector by default whenever
+                # the base model has one and the caller did not opt out.
+                # Decisions Locked 6: costs measured ~-35% generation
+                # (64.5 -> 42.1 tok/s on gemma-4-E4B) and +1.2GB VRAM — the
+                # cost is surfaced (plan_load/pre-flight), never hidden, but
+                # the DEFAULT is still to attach.
+                cmd += ["--mmproj", str(mmproj_path)]
+                logger.info(
+                    f"[LocalModelManager] Attaching vision projector: {mmproj_path}"
+                )
             # GPU-ONLY: local models must run on the GPU. Never allow a CPU
             # offload (n_gpu_layers == 0). Default to full offload (-1) if the
             # profile omitted it, and reject any explicit 0.
@@ -3386,6 +3713,14 @@ class LocalModelManager:
                 "--n_threads",
                 str(cpu_count()),
             ]
+            if mmproj_path:
+                # llama_cpp.server's CLI flag for the CLIP/mmproj adapter
+                # (Settings.clip_model_path) — same intent as --mmproj on the
+                # compiled server, different flag name (REQ-4 AC1).
+                cmd += ["--clip_model_path", str(mmproj_path)]
+                logger.info(
+                    f"[LocalModelManager] Attaching vision projector: {mmproj_path}"
+                )
             n_gpu = params.get("n_gpu_layers")
             if n_gpu is not None:
                 cmd += ["--n_gpu_layers", str(n_gpu)]

@@ -4,7 +4,8 @@ HTTP client wrapping llama-server on the configured vision port (default 18181).
 Provides synchronous screen analysis, UI element detection, OCR, and action suggestion.
 
 Auto-start: If llama-server is not running on the vision port, the provider attempts to
-spawn it using the LFM2.5-VL-3B GGUF model found in the models dir.
+spawn it using the widest vision-capable GGUF model that fits current free VRAM,
+discovered from the scanned models directory (REQ-10) — never a hardcoded model id.
 """
 import base64
 import logging
@@ -36,6 +37,16 @@ _VISION_PORT: int = _load_vl_config().ports.vision_port
 # by the desktop, the 3B (~2.6GB with mmproj+KV) fits while reserving this
 # margin; the local-model loader budgets the SAME free-VRAM figure).
 _VISION_VRAM_RESERVE_GB = 1.0
+
+# REQ-6 (T4): explicit ctx/batch size passed to the vision llama-server so
+# nothing is left for `--fit` (llama.cpp b9591's auto-fit device-memory
+# probe, on by default) to guess at. Mirrors
+# local_model_manager._build_server_cmd's "leave nothing meaningful unset"
+# rationale (commit e9d2fc89) — that probe was measured stalling 12-36
+# minutes on MoE models. The vision server spawn is a separate code path
+# that never got the fix until now.
+_VISION_CTX_SIZE = 4096
+_VISION_BATCH_SIZE = 2048
 
 # PID of the llama-server subprocess IRIS spawned (None = we didn't start one).
 # Tracked so disable() can stop only servers we own — a user-run llama-server on
@@ -234,6 +245,26 @@ def _kill_pid(pid: Optional[int]) -> None:
         pass
 
 
+def _read_log_tail(log_path: str, max_lines: int = 20) -> str:
+    """Best-effort read of the last ``max_lines`` of a log file, never raising.
+
+    Used on the failed-start edge case (REQ-6): when the vision server exits
+    during start, its own stderr is far more useful than a generic timeout
+    message. Returns an explanatory string instead of raising if the file is
+    missing, empty, or unreadable (e.g. still locked on Windows).
+    """
+    try:
+        with open(log_path, "rb") as f:
+            raw = f.read()
+        if not raw:
+            return "(stderr log is empty)"
+        text = raw.decode("utf-8", errors="replace")
+        lines = text.splitlines()
+        return "\n".join(lines[-max_lines:])
+    except Exception as exc:  # noqa: BLE001 — diagnostics must never block
+        return f"(failed to read stderr log {log_path}: {exc})"
+
+
 def _idle_stop() -> None:
     """Idle watchdog callback: stop the owned server if it is still idle."""
     global _idle_timer
@@ -272,70 +303,381 @@ class LFMVLConfig:
     timeout: float = 30.0
 
 
+class VisionModelUnavailable(RuntimeError):
+    """Raised when no vision-language model can be found on disk, or none of
+    the discovered candidates fit current free VRAM (REQ-3 AC4).
+
+    Carries the facts AC4's error message and AC6's VISION_UNAVAILABLE chat
+    system message both need, computed exactly once (``_fail_vision_
+    unavailable`` populates both from this object) so the log, the raise and
+    the event can never disagree.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        free_gb: float = 0.0,
+        smallest_requirement_gb: float = 0.0,
+        ladder: Optional[list] = None,
+    ) -> None:
+        super().__init__(message)
+        self.free_gb = free_gb
+        self.smallest_requirement_gb = smallest_requirement_gb
+        self.ladder = ladder or []
+
+
+def _fail_vision_unavailable(
+    message: str,
+    *,
+    free_gb: float,
+    smallest_requirement_gb: float,
+    ladder: list,
+) -> None:
+    """Log, escalate (REQ-3 AC6) and raise (REQ-3 AC4) — the single exit for
+    every "no usable VL model" path, so AC4's error and AC6's chat system
+    message always carry the same facts.
+
+    Emitting VISION_UNAVAILABLE is best-effort: the EventBus is optional
+    infrastructure (mirrors the existing BUDGET_EXHAUSTED/VALIDATION_FAILED
+    emit sites in agent_kernel.py) — a broken bus must never suppress the
+    raise, which is the part that actually stops a doomed spawn.
+    """
+    logger.error("[LFMVLProvider] %s", message)
+    try:
+        from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+
+        get_event_bus().emit(
+            IRISStreamEvent.VISION_UNAVAILABLE,
+            data={
+                "message": message,
+                "free_vram_gb": round(free_gb, 2),
+                "smallest_requirement_gb": round(smallest_requirement_gb, 2),
+                "ladder": ladder,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 — EventBus is optional, never blocks the raise
+        logger.warning("[LFMVLProvider] failed to emit VISION_UNAVAILABLE: %s", exc)
+    raise VisionModelUnavailable(
+        message,
+        free_gb=free_gb,
+        smallest_requirement_gb=smallest_requirement_gb,
+        ladder=ladder,
+    )
+
+
+def _read_free_vram_gb() -> Tuple[float, bool, bool]:
+    """Read TRUE free VRAM — the ONE source both candidate selection
+    (``_find_vision_model``) and the GPU-vs-CPU decision
+    (``_compute_vision_gpu_layers``) read from, so they never disagree about
+    what "free" means.
+
+    nvidia-smi first (sees every process on the card — the driver, not
+    torch, is the authority on free VRAM; torch.cuda.memory_allocated only
+    counts torch's own tensors and reported ~8GB "free" on a card where the
+    desktop + a loaded local model already held ~5GB, verified 2026-08-12).
+    Falls back to LocalModelManager.get_hardware_info() only when nvidia-smi
+    is unavailable.
+
+    Returns ``(free_gb, readable, cuda_available)``:
+      - ``readable=False`` — neither source produced a trustworthy figure
+        (REQ-3 edge case: "Free VRAM unreadable -> use the most conservative
+        candidate").
+      - ``cuda_available=False`` — no GPU was detected at all. This is NOT a
+        "does not fit" failure (there is no VRAM budget to fail against); it
+        is handled as its own case by callers.
+    """
+    import shutil as _shutil
+    import subprocess as _sp
+
+    _nvsmi = _shutil.which("nvidia-smi")
+    if _nvsmi:
+        try:
+            _out = _sp.run(
+                [_nvsmi, "--query-gpu=memory.free,memory.total",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if _out.returncode == 0 and _out.stdout.strip():
+                _free_mib, _total_mib = (float(x) for x in _out.stdout.split(",")[:2])
+                return _free_mib / 1024.0, True, True
+        except Exception:
+            pass  # fall through to the hardware-info fallback below
+
+    try:
+        from backend.agent.local_model_manager import get_local_model_manager
+
+        hw = get_local_model_manager().get_hardware_info()
+    except Exception:
+        return 0.0, False, False
+
+    cuda_available = bool(hw.get("cuda_available"))
+    if not cuda_available:
+        return 0.0, True, False  # readable: we KNOW there is no GPU
+    free_gb = hw.get("vram_free_gb")
+    if free_gb is None:
+        return 0.0, False, True
+    return float(free_gb), True, True
+
+
+def _estimate_vision_footprint_gb(model_path: str, mmproj_path: str) -> float:
+    """THE single VRAM estimator for vision — used by both candidate
+    selection (``_find_vision_model``, REQ-3 AC1/AC2) and the GPU-vs-CPU
+    offload decision (``_compute_vision_gpu_layers``).
+
+    Before this change the two functions carried INDEPENDENT estimators:
+    this one (via ``_find_vision_model``, which did no VRAM math at all) and
+    ``_compute_vision_gpu_layers``'s inline ``model_gb + mmproj_gb + 0.3``
+    with a hardcoded KV constant — they could disagree about what "fits"
+    means. Reconciled: both now call this, which delegates weights+KV math
+    to ``LocalModelManager.estimate_vram_gb`` — the GQA- and KV-quant-aware
+    estimator every local-model load already budgets against (e9d2fc89).
+
+    Real GGUF header metadata (block_count, n_head_kv, head_dim) is parsed
+    when the file is a well-formed GGUF, giving an accurate, architecture-
+    aware KV term. ``parse_gguf_metadata`` never raises and degrades to
+    ``{}`` for an unreadable/foreign file, in which case
+    ``estimate_vram_gb``'s own per-parameter KV fallback applies — there is
+    no vision-specific hardcoded constant left in this module at all.
+    """
+    model_gb = (os.path.getsize(model_path) or 0) / (1024 ** 3)
+    mmproj_gb = (os.path.getsize(mmproj_path) or 0) / (1024 ** 3)
+
+    from backend.agent.local_model_manager import get_local_model_manager
+
+    lm = get_local_model_manager()
+    try:
+        model_meta = lm.parse_gguf_metadata(Path(model_path))
+    except Exception:
+        model_meta = {}
+
+    return lm.estimate_vram_gb(
+        model_meta,
+        n_ctx=_VISION_CTX_SIZE,
+        file_size_gb=model_gb,
+        # REQ-3 AC2: the projector is a SEPARATE GGUF, absent from the base
+        # model's file size — added to the weights term, not assumed included.
+        mmproj_size_gb=mmproj_gb,
+        kv_bytes=1,  # q8_0 cache — matches the GPU profiles this project uses
+    )
+
+
+def _configured_vision_ladder() -> list:
+    """Read the user's chosen vision fallback ladder (REQ-10 AC2/AC3).
+
+    ``cfg.inference.vision_fallback_ladder`` is a list of model ``path``
+    strings — the SAME identity ``scan_models()`` and the model browser
+    already use to address a model — in USER-CHOSEN PRIORITY ORDER.
+    Empty/absent means "auto" (AC5). A malformed value (wrong type, garbage
+    entries) degrades to auto rather than raising: a broken config must
+    never crash vision (never-crash contract; mirrors every other config
+    read in this module).
+    """
+    try:
+        cfg = _load_vl_config()
+        ladder = getattr(cfg.inference, "vision_fallback_ladder", None) or []
+        if not isinstance(ladder, list):
+            logger.warning(
+                "[LFMVLProvider] cfg.inference.vision_fallback_ladder is not "
+                "a list (got %s) -> falling back to auto-selection",
+                type(ladder).__name__,
+            )
+            return []
+        return [str(entry) for entry in ladder if entry]
+    except Exception as exc:  # noqa: BLE001 — a broken config must never crash vision
+        logger.warning(
+            "[LFMVLProvider] failed to read vision_fallback_ladder from "
+            "config (%s) -> falling back to auto-selection", exc,
+        )
+        return []
+
+
+def _discover_vision_candidates() -> list:
+    """Discover vision-capable candidates from the SCANNED models directory
+    (REQ-10 AC1/AC7) — no hardcoded GGUF model id or directory name anywhere
+    in this path.
+
+    Source: ``LocalModelManager.scan_models()`` already attaches
+    ``has_vision`` / ``mmproj_path`` / ``mmproj_size_gb`` to every
+    projector-paired base model (REQ-5, T1) — every ``has_vision: true``
+    entry it returns IS the candidate list. This replaces the earlier
+    hardcoded, model-family-named directory walk (see git history) with the
+    SAME discovery the model browser already relies on — one mechanism, not
+    two.
+
+    Ordering (REQ-3 AC1's size-FIT arithmetic in ``_find_vision_model``
+    applies identically either way — this function only decides the WALK
+    ORDER candidates are offered in):
+      - Configured (``cfg.inference.vision_fallback_ladder`` non-empty,
+        REQ-10 AC2/AC3/AC4): candidates are ordered exactly as the user
+        chose. A configured entry that is no longer vision-capable (deleted
+        from disk, or its projector deleted) is SKIPPED and LOGGED (AC6),
+        never a hard failure — the walk continues to the next entry.
+      - Auto (nothing configured, REQ-10 AC5): candidates are ranked
+        widest-first by measured footprint — unchanged default behavior.
+
+    Bounded and cheap: ``scan_models()`` is the SAME call the model browser
+    already makes per rescan (its own GGUF-metadata cache keeps repeat scans
+    fast), and this only runs on a cold vision-server start — the per-
+    request hot path short-circuits via an httpx health check in
+    ``_ensure_vision_server_running`` before this is ever reached.
+    """
+    try:
+        from backend.agent.local_model_manager import get_local_model_manager
+
+        scanned = get_local_model_manager().scan_models()
+    except Exception as exc:  # noqa: BLE001 — a broken scan must never crash vision
+        logger.warning(
+            "[LFMVLProvider] scan_models() failed during vision candidate "
+            "discovery (%s) -> no vision candidates", exc,
+        )
+        return []
+
+    vision_models = {
+        m["path"]: m
+        for m in scanned
+        if m.get("has_vision") and m.get("mmproj_path")
+    }
+
+    configured = _configured_vision_ladder()
+    if configured:
+        entries = []
+        for model_id in configured:
+            entry = vision_models.get(model_id)
+            if entry is None:
+                # REQ-10 AC6 / edge case: missing from disk OR its projector
+                # was deleted since it was chosen — either way scan_models()
+                # no longer reports it has_vision, so it is not in the dict
+                # above. Skip and log; the ladder walk continues.
+                logger.info(
+                    "[LFMVLProvider] configured vision candidate SKIPPED "
+                    "(missing from disk or no longer has a matching "
+                    "projector): %s",
+                    model_id,
+                )
+                continue
+            entries.append(entry)
+        auto = False
+    else:
+        entries = list(vision_models.values())
+        auto = True
+
+    candidates = []
+    for entry in entries:
+        try:
+            needed_gb = _estimate_vision_footprint_gb(entry["path"], entry["mmproj_path"])
+        except Exception as exc:  # noqa: BLE001 — one bad candidate must not drop the rest
+            logger.warning(
+                "[LFMVLProvider] vision candidate SKIPPED (footprint "
+                "estimate failed: %s): %s", exc, entry.get("path"),
+            )
+            continue
+        candidates.append({
+            "model_path": entry["path"],
+            "mmproj_path": entry["mmproj_path"],
+            "needed_gb": needed_gb,
+        })
+
+    if auto:
+        # AC5: nothing configured -> widest-first, the prior default.
+        candidates.sort(key=lambda c: c["needed_gb"], reverse=True)
+    # else: AC2/AC4 — preserve the user's chosen priority order verbatim;
+    # _find_vision_model walks it top-to-bottom and takes the first whose
+    # weights + projector + KV fit (REQ-3's arithmetic, unchanged) — a
+    # candidate ordered first that cannot fit any plausible free VRAM is
+    # rejected there and logged, not treated as a hard failure (edge case).
+    return candidates
+
+
 def _find_vision_model() -> Optional[Tuple[str, str]]:
     """
-    Find the LFM2.5-VL-3B GGUF model + mmproj files (upgraded from the 450M).
+    Size-select the VL fallback model from a widest-first ladder walked
+    against REAL free VRAM (REQ-3 AC1), taking the first candidate whose
+    weights + projector + KV fit — never an unconditional size preference.
 
-    2026-08-12: the vision model was upgraded from LFM2.5-VL-450M to the newer
-    LFM2.5-VL-3B (same repo family: LiquidAI/LFM2.5-VL-3B-GGUF). The 3B
-    directory is searched FIRST so the upgrade takes effect automatically when
-    present; the 450M remains as a fallback for setups that never downloaded
-    the 3B. Searches the same directory LocalModelManager uses for brain
-    models (IRIS_MODELS_DIR env var → ~/.lmstudio/models → project root
-    models/gguf). Returns (model_path, mmproj_path) or None if not found.
+    Returns ``(model_path, mmproj_path)``.
+
+    FAIL LOUDLY (REQ-3 AC4/AC6, user-resolved 2026-08-18: "fail loudly and
+    alert the user through a system message") — raises
+    ``VisionModelUnavailable`` when either no VL model exists on disk at all,
+    or none of the discovered candidates fit current free VRAM. The raise
+    always follows a VISION_UNAVAILABLE chat system message emit and a log
+    line naming the same facts (``_fail_vision_unavailable``). Callers must
+    catch ``VisionModelUnavailable`` — this is a clean, reported failure,
+    never an exception left to escape into the agent loop.
     """
-    # Resolve project root from this file's location: backend/tools/ -> project root
-    project_root = Path(__file__).resolve().parents[2]
+    candidates = _discover_vision_candidates()
 
-    # Import LocalModelManager to reuse its MODELS_DIR resolution
-    try:
-        from backend.agent.local_model_manager import LocalModelManager
-        lm_models_dir = LocalModelManager.MODELS_DIR
-    except Exception:
-        lm_models_dir = None
+    if not candidates:
+        msg = (
+            "No vision-capable model found. IRIS looks for a base GGUF with "
+            "a matching mmproj*.gguf projector inside the configured models "
+            "directory (scanned the same way the model browser does) — "
+            "REQ-10: any such pair works, none is hardcoded. Download one "
+            "(e.g. python scripts/models/download_vision_model.py) or point "
+            "the models directory at one you already have."
+        )
+        _fail_vision_unavailable(
+            msg, free_gb=0.0, smallest_requirement_gb=0.0, ladder=[],
+        )
 
-    search_dirs = [
-        # Upgraded vision model (2026-08-12): LFM2.5-VL-3B, same repo family
-        # as the 450M it replaces. Prefer it when present.
-        lm_models_dir / "LFM2.5-VL-3B" if lm_models_dir else None,
-        lm_models_dir / "LiquidAI" / "LFM2.5-VL-3B-GGUF" if lm_models_dir else None,
-        # Legacy 450M — fallback only (kept for setups without the 3B).
-        lm_models_dir / "LFM2.5-VL-450M" if lm_models_dir else None,
-        lm_models_dir / "LiquidAI" / "LFM2.5-VL-450M-GGUF" if lm_models_dir else None,
-        # Fallback paths
-        project_root / "models" / "LFM2.5-VL-3B",
-        project_root / "models" / "LFM2.5-VL-450M",
-        Path.home() / "models" / "LFM2.5-VL-3B",
-        Path.home() / "models" / "LFM2.5-VL-450M",
-        Path.home() / ".iris" / "models" / "LFM2.5-VL-3B",
-        Path.home() / ".iris" / "models" / "LFM2.5-VL-450M",
-    ]
+    free_gb, vram_readable, _cuda_available = _read_free_vram_gb()
 
-    for d in search_dirs:
-        if d is None or not d.exists():
-            continue
-        ggufs = list(d.glob("*.gguf"))
-        mmproj = list(d.glob("mmproj*.gguf"))
-        if ggufs and mmproj:
-            return str(ggufs[0]), str(mmproj[0])
+    if not vram_readable:
+        # REQ-3 edge case: free VRAM unreadable -> most conservative
+        # candidate (narrowest estimated footprint), no fit arithmetic —
+        # there is no trustworthy free-VRAM figure to compare against.
+        chosen = candidates[-1]
+        logger.warning(
+            "[LFMVLProvider] free VRAM unreadable -> choosing most "
+            "conservative vision candidate: %s (needs ~%.2fGB)",
+            chosen["model_path"], chosen["needed_gb"],
+        )
+        return chosen["model_path"], chosen["mmproj_path"]
 
-    # Last resort: recursive scan of the shared models dir for any dir
-    # containing both a .gguf and mmproj*.gguf (catches arbitrary nesting).
-    # Prefer 3B over 450M when both are nested.
-    if lm_models_dir and lm_models_dir.exists():
-        found: list[Tuple[str, str]] = []
-        for d in lm_models_dir.rglob("*/"):
-            ggufs = list(d.glob("*.gguf"))
-            mmproj = list(d.glob("mmproj*.gguf"))
-            if ggufs and mmproj:
-                # Verify it's actually the vision model by checking the stem
-                if any("LFM2.5-VL" in g.name for g in ggufs):
-                    found.append((str(ggufs[0]), str(mmproj[0])))
-        if found:
-            found.sort(key=lambda pair: "3B" in pair[0], reverse=True)
-            return found[0]
+    rejected: list = []
+    for c in candidates:
+        headroom = free_gb - _VISION_VRAM_RESERVE_GB
+        if c["needed_gb"] <= headroom:
+            logger.info(
+                "[LFMVLProvider] vision candidate ladder (widest-first): %s",
+                [cand["model_path"] for cand in candidates],
+            )
+            if rejected:
+                logger.info(
+                    "[LFMVLProvider] vision candidates rejected before selection: %s",
+                    rejected,
+                )
+            logger.info(
+                "[LFMVLProvider] vision model SELECTED: %s needs %.2fGB, "
+                "%.2fGB free (reserving %.2fGB for a later local-model load)",
+                c["model_path"], c["needed_gb"], free_gb, _VISION_VRAM_RESERVE_GB,
+            )
+            return c["model_path"], c["mmproj_path"]
+        reason = (
+            f"needs {c['needed_gb']:.2f}GB, only {headroom:.2f}GB available "
+            f"after the {_VISION_VRAM_RESERVE_GB:.2f}GB reserve"
+        )
+        logger.info(
+            "[LFMVLProvider] vision candidate REJECTED: %s (%s)",
+            c["model_path"], reason,
+        )
+        rejected.append({
+            "model_path": c["model_path"],
+            "needed_gb": round(c["needed_gb"], 2),
+            "reason": reason,
+        })
 
-    return None
+    smallest = min(c["needed_gb"] for c in candidates)
+    msg = (
+        f"No vision-language model fits current free VRAM: {free_gb:.2f}GB "
+        f"free (reserving {_VISION_VRAM_RESERVE_GB:.2f}GB for a later "
+        f"local-model load), smallest candidate needs {smallest:.2f}GB."
+    )
+    _fail_vision_unavailable(
+        msg, free_gb=free_gb, smallest_requirement_gb=smallest, ladder=rejected,
+    )
+    return None  # unreachable — _fail_vision_unavailable always raises; keeps mypy happy
 
 
 def _find_llama_server_binary() -> Optional[str]:
@@ -374,74 +716,62 @@ def _find_llama_server_binary() -> Optional[str]:
 def _compute_vision_gpu_layers(model_path: str, mmproj_path: str) -> int:
     """Decide how many GPU layers the vision llama-server should offload.
 
-    The vision model runs on the GPU when VRAM allows (2026-08-12: upgraded
-    to LFM2.5-VL-3B, previously the 450M ran un-offloaded). The spawn command
-    used to pass NO -ngl flag, so llama.cpp defaulted to 0 GPU layers = pure
-    CPU — confirmed live: VRAM flat at 4839 MiB before/after the 3B loaded.
+    The vision model runs on the GPU when VRAM allows (2026-08-12: this used
+    to default to CPU-only — the spawn command passed NO -ngl flag, so
+    llama.cpp defaulted to 0 GPU layers, confirmed live by flat VRAM
+    before/after a vision model load).
 
     This is deliberate about headroom: the brain/tool models are normally
     cloud API providers (Cerebras etc.), but a USER may load a local model
     for brain or tool execution at any time. Vision must therefore never
     grab so much VRAM that a subsequent local-model load OOMs. We:
 
-      1. Read CURRENT free VRAM via LocalModelManager.get_hardware_info()
-         (torch-based, cached 60s — the same source the local-model loader
-         budgets against, so both agree on what is "free").
-      2. Estimate the vision model's weight footprint (weights + mmproj +
-         KV cache) using the SAME estimator the local-model path uses.
-      3. Offload ALL layers only if the model fits with a reserved margin
-         (see _VISION_VRAM_RESERVE_GB); otherwise offload none (CPU) rather
-         than gamble a partial offload that could OOM the machine.
+      1. Read CURRENT free VRAM via ``_read_free_vram_gb`` — the SAME
+         reader ``_find_vision_model`` uses, so selection and this decision
+         never disagree about what "free" means.
+      2. Estimate the model's footprint (weights + mmproj + KV cache) via
+         ``_estimate_vision_footprint_gb`` — the SAME estimator
+         ``_find_vision_model`` uses (REQ-3: one estimator, not two; the old
+         inline ``model_gb + mmproj_gb + 0.3`` with a hardcoded KV constant
+         is gone).
+      3. Offload ALL layers if the model fits with the reserved margin (see
+         _VISION_VRAM_RESERVE_GB).
 
-    Returning 0 = CPU (safe fallback). Returning a large number = full
-    GPU offload. llama.cpp accepts -ngl N with N > layer count meaning "all".
+    REQ-3 AC4/AC6 (user-resolved 2026-08-18: "fail loudly and alert the user
+    through a system message"): when CUDA IS available but the given model
+    does NOT fit, this now raises ``VisionModelUnavailable`` — the CPU
+    degrade this function used to perform for that case is REMOVED.
+    ``_find_vision_model`` already screens candidates against free VRAM
+    before returning one, so this path fires only if free VRAM changed
+    between selection and spawn (a concurrent load) or a caller supplies an
+    unscreened pair directly.
+
+    A machine with NO GPU at all is a DIFFERENT case — there is no VRAM
+    budget to fail against, so CPU (0) remains the correct, unchanged
+    outcome; only the VRAM-insufficient case became a hard failure.
+
+    Returning 0 = CPU. Returning a large number = full GPU offload.
+    llama.cpp accepts -ngl N with N > layer count meaning "all".
     """
     if not model_path or not mmproj_path:
         return 0
     try:
-        # Free VRAM MUST come from nvidia-smi (sees every process), not torch:
-        # torch.cuda.memory_allocated only counts torch's own tensors, so it
-        # reports ~8GB "free" on a card where the desktop + any llama-cpp-
-        # loaded local model already hold ~5GB (verified 2026-08-12: torch said
-        # vram_free 8.0 while nvidia-smi showed 4.8GB used). Budgeting against
-        # the torch figure let vision think a 2.6GB model has the whole card.
-        import shutil as _shutil
-        import subprocess as _sp
+        free_gb, vram_readable, cuda_available = _read_free_vram_gb()
 
-        free_gb = 0.0
-        _nvsmi = _shutil.which("nvidia-smi")
-        if _nvsmi:
-            try:
-                _out = _sp.run(
-                    [_nvsmi, "--query-gpu=memory.free,memory.total",
-                     "--format=csv,noheader,nounits"],
-                    capture_output=True, text=True, timeout=10,
-                )
-                if _out.returncode == 0 and _out.stdout.strip():
-                    _free_mib, _total_mib = (float(x) for x in _out.stdout.split(",")[:2])
-                    free_gb = _free_mib / 1024.0
-            except Exception:
-                free_gb = 0.0
-        if free_gb <= 0:
-            # Fallback: torch figure (may over-report; still better than CPU
-            # when nvidia-smi is unavailable).
-            from backend.agent.local_model_manager import get_local_model_manager
-
-            hw = get_local_model_manager().get_hardware_info()
-            if not hw.get("cuda_available"):
-                return 0  # no GPU — CPU
-            free_gb = float(hw.get("vram_free_gb", 0.0))
-        if free_gb <= 0:
+        if not cuda_available:
+            logger.info(
+                "[LFMVLProvider] No CUDA device detected -> vision runs on "
+                "CPU (ngl=0); no VRAM budget applies"
+            )
+            return 0
+        if not vram_readable:
+            logger.warning(
+                "[LFMVLProvider] free VRAM unreadable -> vision runs on CPU "
+                "(ngl=0) rather than offload against an unknown budget"
+            )
             return 0
 
-        # Weight footprint: model + mmproj + KV cache (n_ctx 4096 as spawned).
-        # Q4_K_M ~1.6GB + F16 mmproj ~0.8GB + KV ~0.2GB ≈ 2.6GB for the 3B.
-        import os as _os
-
-        model_gb = (_os.path.getsize(model_path) or 0) / (1024 ** 3)
-        mmproj_gb = (_os.path.getsize(mmproj_path) or 0) / (1024 ** 3)
-        _kv_overhead_gb = 0.3  # 4096 ctx KV + CUDA compute buffers (estimate)
-        needed_gb = model_gb + mmproj_gb + _kv_overhead_gb
+        needed_gb = _estimate_vision_footprint_gb(model_path, mmproj_path)
 
         if needed_gb <= free_gb - _VISION_VRAM_RESERVE_GB:
             logger.info(
@@ -450,13 +780,27 @@ def _compute_vision_gpu_layers(model_path: str, mmproj_path: str) -> int:
                 needed_gb, free_gb, _VISION_VRAM_RESERVE_GB,
             )
             return 999  # "all layers" — llama.cpp clamps to the model's count
-        logger.warning(
-            "[LFMVLProvider] GPU offload SKIPPED: vision needs %.2fGB, %.2fGB "
-            "free (%.2fGB reserved) -> running on CPU to avoid OOM",
-            needed_gb, free_gb, _VISION_VRAM_RESERVE_GB,
+
+        reason = (
+            f"needs {needed_gb:.2f}GB, only "
+            f"{free_gb - _VISION_VRAM_RESERVE_GB:.2f}GB available after the "
+            f"{_VISION_VRAM_RESERVE_GB:.2f}GB reserve"
         )
-        return 0
-    except Exception as _exc:  # noqa: BLE001 — VRAM probe must never block vision
+        msg = (
+            f"Vision model does not fit free VRAM: {free_gb:.2f}GB free "
+            f"(reserving {_VISION_VRAM_RESERVE_GB:.2f}GB), model needs "
+            f"{needed_gb:.2f}GB."
+        )
+        _fail_vision_unavailable(
+            msg,
+            free_gb=free_gb,
+            smallest_requirement_gb=needed_gb,
+            ladder=[{"model_path": model_path, "needed_gb": round(needed_gb, 2), "reason": reason}],
+        )
+        return 0  # unreachable — _fail_vision_unavailable always raises
+    except VisionModelUnavailable:
+        raise
+    except Exception as _exc:  # noqa: BLE001 — VRAM probe must never crash vision
         logger.warning("[LFMVLProvider] GPU layer probe failed (%s) -> CPU fallback", _exc)
         return 0
 
@@ -490,7 +834,16 @@ def _ensure_vision_server_running(base_url: str = "") -> bool:
     # Not running — try to auto-start
     logger.info(f"[LFMVLProvider] Vision server not running on port {requested_port}. Attempting auto-start...")
 
-    model_files = _find_vision_model()
+    # REQ-3 AC4/AC6: _find_vision_model FAILS LOUDLY (raises + emits
+    # VISION_UNAVAILABLE) when no VL model exists or none fits free VRAM,
+    # rather than returning None. Caught here so the failure is a clean,
+    # reported "vision unavailable" rather than an exception escaping into
+    # the agent loop — the caller of start()/_call() only ever sees False.
+    try:
+        model_files = _find_vision_model()
+    except VisionModelUnavailable as exc:
+        logger.warning(f"[LFMVLProvider] vision unavailable: {exc}")
+        return False
     if not model_files:
         logger.warning("[LFMVLProvider] Vision model not found. Run: python scripts/models/download_vision_model.py")
         return False
@@ -504,18 +857,31 @@ def _ensure_vision_server_running(base_url: str = "") -> bool:
     # GPU offload: compute -ngl from CURRENT free VRAM, reserving headroom so
     # a user's later local brain/tool model load cannot OOM. Without -ngl,
     # llama.cpp runs the vision model on CPU (confirmed 2026-08-12: VRAM flat
-    # before/after the 3B loaded). 999 = "all layers".
-    ngl = _compute_vision_gpu_layers(model_path, mmproj_path)
+    # before/after a vision model load). 999 = "all layers". Same FAIL
+    # LOUDLY contract as _find_vision_model above (REQ-3 AC4/AC6).
+    try:
+        ngl = _compute_vision_gpu_layers(model_path, mmproj_path)
+    except VisionModelUnavailable as exc:
+        logger.warning(f"[LFMVLProvider] vision unavailable: {exc}")
+        return False
     cmd = [
         binary,
         "-m", model_path,
         "--mmproj", mmproj_path,
         "--port", str(requested_port),
         "--host", "127.0.0.1",
-        "-c", "4096",
         "-np", "1",
         "-n", "512",
-        "-ngl", str(ngl),
+        "--n-gpu-layers", str(ngl),
+        # REQ-6 (T4): --fit off + explicit ctx/batch sizing, mirroring
+        # local_model_manager._build_server_cmd (e9d2fc89). b9591 defaults to
+        # `--fit on`, which probes device memory to size anything left
+        # unset — measured stalling 12-36 minutes on MoE models. This spawn
+        # path never got that fix until now; it is the likely root cause of
+        # the reported "vision server slow on first request".
+        "--fit", "off",
+        "--ctx-size", str(_VISION_CTX_SIZE),
+        "--batch-size", str(_VISION_BATCH_SIZE),
         "--no-warmup",  # Prevents crash with upstream llama.cpp on WSL
     ]
 
@@ -526,6 +892,7 @@ def _ensure_vision_server_running(base_url: str = "") -> bool:
         env["LD_LIBRARY_PATH"] = str(binary_path.parent) + ":" + env.get("LD_LIBRARY_PATH", "")
 
     logger.info(f"[LFMVLProvider] Spawning vision server: {' '.join(cmd)}")
+    _spawn_start = time.monotonic()  # REQ-6 AC3: time-to-ready measurement
     try:
         # Capture llama-server stderr to a file so future load failures are
         # diagnosable (previously DEVNULL hid failures entirely — the 2026-08-12
@@ -534,10 +901,10 @@ def _ensure_vision_server_running(base_url: str = "") -> bool:
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs"
         )
         os.makedirs(log_dir, exist_ok=True)
-        vision_stderr = open(
-            os.path.join(log_dir, f"vision-llama-server-{time.strftime('%Y%m%d-%H%M%S')}.log"),
-            "wb",
+        log_path = os.path.join(
+            log_dir, f"vision-llama-server-{time.strftime('%Y%m%d-%H%M%S')}.log"
         )
+        vision_stderr = open(log_path, "wb")
 
         # Windows CUDA parent quirk (verified live 2026-08-12): a llama-server
         # child spawned DIRECTLY from a parent that has loaded torch/transformers
@@ -547,7 +914,7 @@ def _ensure_vision_server_running(base_url: str = "") -> bool:
         # RSS). Spawning through a tiny launcher python (imports only
         # subprocess/sys, so NO torch/CUDA state) gives llama-server a clean
         # parent: load completes in ~25-40s. Direct spawn = hang, launcher spawn
-        # = READY (reproduced back-to-back on LFM2.5-VL-3B Q4_K_M, -ngl 999).
+        # = READY (reproduced back-to-back with a vision model at -ngl 999).
         _LAUNCHER = "import subprocess,sys; sys.exit(subprocess.run(sys.argv[1:]).returncode)"
         proc = subprocess.Popen(
             [sys.executable, "-c", _LAUNCHER] + cmd,
@@ -568,21 +935,38 @@ def _ensure_vision_server_running(base_url: str = "") -> bool:
     # every iteration raised and the loop always fell through to the
     # timeout warning.
     #
-    # 2026-08-12: the model was upgraded from LFM2.5-VL-450M (~450M params,
-    # loads in seconds) to LFM2.5-VL-3B (Q4_K_M ~2GB + F16 mmproj, loads in
-    # well over 30s). The old fixed 30s window reported "not ready" for a
-    # server that was still loading, so the first vision call failed and
-    # the UI showed vision as down. Scale the window by model size: ~90s
-    # for the 3B, ~30s for the 450M.
+    # 2026-08-12: a fixed 30s window reported "not ready" for a server that
+    # was still loading a larger model, so the first vision call failed and
+    # the UI showed vision as down. Scale the window by the model's MEASURED
+    # footprint (REQ-10 AC7 — no hardcoded model-name substring to key off
+    # of; any vision model the user picked can be small or large) rather
+    # than a name heuristic: ~90s above a ~1.5GB footprint, ~30s at/under it.
     ready_url = base_url or f"http://localhost:{requested_port}/v1"
-    _big_model = "3B" in model_path
-    _ready_attempts = 180 if _big_model else 60  # 0.5s each → 90s / 30s
+    try:
+        _footprint_gb = _estimate_vision_footprint_gb(model_path, mmproj_path)
+    except Exception:
+        _footprint_gb = 0.0
+    _ready_attempts = 180 if _footprint_gb >= 1.5 else 60  # 0.5s each → 90s / 30s
+    _exited_early = False
     for _ in range(_ready_attempts):
         time.sleep(0.5)
+        # Edge case (REQ-6): if the launcher process has already exited, the
+        # llama-server it wrapped exited too (the launcher runs it
+        # synchronously via subprocess.run and only exits after it returns) —
+        # stop polling immediately instead of waiting out the full timeout
+        # window for a process that is not coming back.
+        if proc.poll() is not None:
+            _exited_early = True
+            break
         try:
             r = httpx.get(f"{ready_url}/models", timeout=1.0)
             if r.status_code == 200:
-                logger.info("[LFMVLProvider] Vision server ready.")
+                _elapsed = time.monotonic() - _spawn_start
+                logger.info(
+                    "[LFMVLProvider] vision_server_ready port=%s ttr_sec=%.2f "
+                    "ctx=%s ngl=%s batch=%s",
+                    requested_port, _elapsed, _VISION_CTX_SIZE, ngl, _VISION_BATCH_SIZE,
+                )
                 # Adopt the REAL llama-server pid (the launcher pid is not the
                 # server's), so _stop_owned_vision_server kills the server, not
                 # the launcher wrapper.
@@ -593,10 +977,26 @@ def _ensure_vision_server_running(base_url: str = "") -> bool:
                 return True
         except Exception:
             pass
-    logger.warning(
-        "[LFMVLProvider] Vision server did not become ready within %.0fs.",
-        _ready_attempts * 0.5,
-    )
+
+    _elapsed = time.monotonic() - _spawn_start
+    vision_stderr.close()
+    if _exited_early:
+        # Edge case (REQ-6): surface the server's own last stderr lines
+        # instead of a generic timeout — the process exited, it did not
+        # merely take too long, and the log usually names the real cause
+        # (bad flag, missing file, OOM).
+        _exit_code = proc.poll()
+        logger.warning(
+            "[LFMVLProvider] vision_server_exited_during_start port=%s "
+            "exit_code=%s ttr_sec=%.2f last_stderr=\n%s",
+            requested_port, _exit_code, _elapsed, _read_log_tail(log_path),
+        )
+    else:
+        logger.warning(
+            "[LFMVLProvider] vision_server_not_ready port=%s timeout_sec=%.0f "
+            "ttr_sec=%.2f",
+            requested_port, _ready_attempts * 0.5, _elapsed,
+        )
     # Failed: clean up what we spawned. Nothing was listening on the port
     # before we spawned (the health check above only auto-starts when the
     # server is down), so any listener on the port now is OURS — kill it
@@ -606,7 +1006,6 @@ def _ensure_vision_server_running(base_url: str = "") -> bool:
         _kill_pid(_stray)
     _kill_pid(proc.pid)
     _VISION_SERVER_PID = None
-    vision_stderr.close()
     return False
 
 
@@ -677,12 +1076,11 @@ class LFMVLProvider:
             tokens = max_tokens or self.config.image_max_tokens
 
             payload = {
-                # 2026-08-12: upgraded from lfm2.5-vl (450M) to the newer
-                # LFM2.5-VL-3B — same model family, same repo source
-                # (LiquidAI/LFM2.5-VL-3B-GGUF). The string is informational for
-                # llama-server (which serves whatever -m it was launched with);
-                # kept in sync with _find_vision_model's 3B preference.
-                "model": "lfm2.5-vl-3b",
+                # REQ-10 AC7: this string is purely informational for the
+                # OpenAI-compat request shape — llama-server serves whatever
+                # -m it was launched with regardless of what is sent here,
+                # so it deliberately names no specific model id.
+                "model": "vision-model",
                 "messages": [
                     {
                         "role": "user",

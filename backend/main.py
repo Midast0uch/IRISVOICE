@@ -1587,12 +1587,23 @@ async def api_list_models():
     """List available GGUF models scanned from the configured models directory."""
     try:
         from .agent.local_model_manager import get_local_model_manager
+        from .iris_config import load_config
 
         mgr = get_local_model_manager()
         models = mgr.scan_models()
+        # REQ-10 AC2/AC3: surface the user's persisted vision fallback ladder
+        # alongside the candidates it was built from, so ModelBrowserPanel can
+        # seed its selection/order from the SAME fetch it already makes â€”
+        # no extra round trip. Reading config never raises on a missing/empty
+        # field (dataclass default is []), so this cannot break model listing.
+        try:
+            ladder = load_config().inference.vision_fallback_ladder or []
+        except Exception:
+            ladder = []
         return {
             "models": models,
             "models_dir": str(mgr.effective_models_dir),
+            "vision_fallback_ladder": ladder,
         }
     except Exception as e:
         from fastapi.responses import JSONResponse

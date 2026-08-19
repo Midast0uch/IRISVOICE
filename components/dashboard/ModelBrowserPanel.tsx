@@ -12,6 +12,11 @@ interface LoadPlan {
   vram_free_gb: number;
   fits: boolean;
   reason: string;
+  /** REQ-4 AC3/AC5: on-disk size of the projector this plan already folded
+   *  into vram_gb, when the model has one and it is attached by default.
+   *  Optional — an older backend payload simply omits it, and the card
+   *  must render as text-only rather than crash. */
+  mmproj_gb?: number;
 }
 
 interface ModelEntry {
@@ -26,6 +31,13 @@ interface ModelEntry {
   native_ctx: number;
   loaded: boolean;
   plan?: LoadPlan;
+  /** REQ-5 AC2/AC3: attached by scan_models when a sibling mmproj-*.gguf
+   *  matched this base model by stem. All three are OPTIONAL — a payload
+   *  from before T1/T8 simply omits them, and the card must degrade to a
+   *  plain text-only row rather than throw. */
+  has_vision?: boolean;
+  mmproj_path?: string | null;
+  mmproj_size_gb?: number;
 }
 
 interface ModelBrowserPanelProps {
@@ -57,7 +69,20 @@ export function ModelBrowserPanel({ glowColor, fontColor, sendMessage }: ModelBr
   const [isLoading, setIsLoading] = useState(false);
   const [loadingPath, setLoadingPath] = useState('');
 
+  // REQ-10 AC2: user-chosen, ordered vision fallback ladder. Holds model
+  // `path` strings only — order in the array IS priority. Seeded from
+  // `cfg.inference.vision_fallback_ladder` on every fetch (single source of
+  // truth is the backend, not local-only state), filtered to models that are
+  // both has_vision AND still present in the current scan (REQ-10 AC6: a
+  // configured model missing from disk is dropped here too, not just in the
+  // backend's own skip-and-continue).
+  const [visionLadder, setVisionLadder] = useState<string[]>([]);
+  const [ladderMsg, setLadderMsg] = useState('');
+
   const loadedModel = models.find(m => m.loaded);
+  // REQ-10 AC1: every scanned has_vision model is a ladder candidate — no
+  // separate discovery mechanism, same data T9 already put on the payload.
+  const visionCandidates = models.filter(m => m.has_vision);
 
   // ── Fetch model list ────────────────────────────────────────────────
   const fetchModels = async () => {
@@ -76,8 +101,23 @@ export function ModelBrowserPanel({ glowColor, fontColor, sendMessage }: ModelBr
       const res = await fetch('/api/models', { signal: ctl.signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
-      setModels(data.models || []);
+      const fetchedModels: ModelEntry[] = data.models || [];
+      setModels(fetchedModels);
       setModelsDir(data.models_dir || '');
+      // Seed the ladder from the backend's persisted config (T15b/AC3), not
+      // from anything held only in this component — a second browser tab or
+      // a config edit on disk must show up here on the next fetch. Filtered
+      // to paths that are both has_vision and still on disk right now, so a
+      // deleted model silently drops out of the UI's selection instead of
+      // rendering an order entry for a candidate that no longer exists.
+      const visionPaths = new Set(
+        fetchedModels.filter(m => m.has_vision).map(m => m.path)
+      );
+      const persistedLadder: unknown = data.vision_fallback_ladder;
+      const nextLadder = Array.isArray(persistedLadder)
+        ? persistedLadder.filter((p): p is string => typeof p === 'string' && visionPaths.has(p))
+        : [];
+      setVisionLadder(nextLadder);
     } catch (err: any) {
       setError(err.message || 'Failed to load models');
     } finally {
@@ -152,7 +192,13 @@ export function ModelBrowserPanel({ glowColor, fontColor, sendMessage }: ModelBr
   // No `profile` is sent. The backend picks it per model from the real GGUF
   // shape and free VRAM (recommend_profile -> derive_config); a hardcoded
   // 'balanced' here would just be overridden.
-  const doLoad = (path: string) => {
+  //
+  // withProjector (REQ-4 AC2): defaults to true — attaching the projector is
+  // the default per Decisions Locked 6. `with_projector` is only added to the
+  // payload when the caller opted OUT, mirroring the backend's own
+  // back-compat contract (`payload.get("with_projector", True)` — an ABSENT
+  // key still means attach; CT-5).
+  const doLoad = (path: string, withProjector: boolean = true) => {
     if (!path || isLoading) return;
     if (!sendMessage) {
       setLoadPhase('error');
@@ -163,8 +209,10 @@ export function ModelBrowserPanel({ glowColor, fontColor, sendMessage }: ModelBr
     setIsLoading(true);
     setLoadPct(0);
     setLoadPhase('loading');
-    setLoadMsg('Loading model…');
-    const sent = sendMessage('load_local_model', { model_path: path });
+    setLoadMsg(withProjector ? 'Loading model…' : 'Loading model (text-only)…');
+    const payload: { model_path: string; with_projector?: false } = { model_path: path };
+    if (!withProjector) payload.with_projector = false;
+    const sent = sendMessage('load_local_model', payload);
     if (!sent) {
       setIsLoading(false);
       setLoadingPath('');
@@ -212,6 +260,47 @@ export function ModelBrowserPanel({ glowColor, fontColor, sendMessage }: ModelBr
     }));
   };
 
+  // ── Vision fallback ladder (REQ-10 AC2/AC3) ──────────────────────────
+  // Persisted straight down the SAME confirm_card channel every other
+  // settings section on this WebSocket already uses (see the local_model /
+  // inference_mode sections in iris_gateway.py) — no new message type.
+  // `section_id: 'vision_fallback_ladder'` is a new confirm_card section,
+  // not a new channel. Fires on every add/remove/reorder; there is no
+  // separate Save step, matching this panel's existing "action = persisted
+  // immediately" idiom (doLoad/doUnload).
+  const persistLadder = (next: string[]) => {
+    setVisionLadder(next);
+    if (!sendMessage) {
+      setLadderMsg('✗ Not connected to backend — ladder not saved');
+      return;
+    }
+    const sent = sendMessage('confirm_card', {
+      section_id: 'vision_fallback_ladder',
+      values: { vision_fallback_ladder: next },
+    });
+    setLadderMsg(sent ? '' : '✗ WebSocket not connected — ladder not saved');
+  };
+
+  const toggleLadderModel = (path: string) => {
+    const next = visionLadder.includes(path)
+      ? visionLadder.filter(p => p !== path)
+      : [...visionLadder, path];
+    persistLadder(next);
+  };
+
+  // Order = priority (REQ-10 AC2). Swaps the entry with its neighbor rather
+  // than a full drag-and-drop reorder — fewer moving parts, same result, and
+  // matches the up/down idiom already legible at a glance.
+  const moveLadderModel = (path: string, direction: -1 | 1) => {
+    const idx = visionLadder.indexOf(path);
+    if (idx === -1) return;
+    const swapIdx = idx + direction;
+    if (swapIdx < 0 || swapIdx >= visionLadder.length) return;
+    const next = [...visionLadder];
+    [next[idx], next[swapIdx]] = [next[swapIdx], next[idx]];
+    persistLadder(next);
+  };
+
   return (
     <div className="flex flex-col h-full" style={{ color: fontColor }}>
       {/* ── Header ─────────────────────────────────────────────────── */}
@@ -222,6 +311,102 @@ export function ModelBrowserPanel({ glowColor, fontColor, sendMessage }: ModelBr
           {modelsDir || 'No directory'}
         </div>
       </div>
+
+      {/* ── Vision fallback ladder (REQ-10 AC1/AC2/AC5) ───────────────
+          Only rendered when there is at least one has_vision candidate —
+          an empty section for a models directory with no vision models
+          would just be noise. Order is priority, made legible with a
+          numbered pill per selected model rather than leaving it implicit
+          in list position alone. */}
+      {visionCandidates.length > 0 && (
+        <div
+          className="px-3 py-2 border-b shrink-0"
+          style={{ borderColor: glowColor + '30' }}
+          data-testid="vision-ladder-section"
+        >
+          <div className="flex items-center justify-between mb-1.5">
+            <div className="text-[10px] font-semibold tracking-wide" style={{ color: glowColor }}>
+              VISION FALLBACK LADDER
+            </div>
+            {/* REQ-10 AC5: nothing chosen must read as a deliberate AUTO
+                state, never an empty/broken list. */}
+            {visionLadder.length === 0 ? (
+              <span
+                className="text-[9px] px-1.5 py-[1px] rounded font-medium"
+                style={{ backgroundColor: glowColor + '15', color: glowColor }}
+                title="No models selected — the widest has_vision model that fits current free VRAM is used"
+              >
+                AUTO — widest that fits
+              </span>
+            ) : (
+              <span className="text-[9px] opacity-50">{visionLadder.length} in ladder</span>
+            )}
+          </div>
+          <div className="flex flex-col gap-1">
+            {visionCandidates.map(m => {
+              const priority = visionLadder.indexOf(m.path);
+              const inLadder = priority !== -1;
+              return (
+                <div
+                  key={m.path}
+                  data-testid={`vision-candidate-${m.path}`}
+                  className="flex items-center gap-1.5 text-[10px] px-1.5 py-1 rounded"
+                  style={{ backgroundColor: inLadder ? glowColor + '10' : 'transparent' }}
+                >
+                  <button
+                    onClick={() => toggleLadderModel(m.path)}
+                    title={
+                      inLadder
+                        ? 'Remove from the vision fallback ladder'
+                        : 'Add to the vision fallback ladder'
+                    }
+                    className="w-4 h-4 rounded-full flex items-center justify-center text-[9px]
+                      font-bold shrink-0 border transition-colors"
+                    style={{
+                      borderColor: glowColor + '50',
+                      backgroundColor: inLadder ? glowColor : 'transparent',
+                      color: inLadder ? '#000' : glowColor,
+                    }}
+                  >
+                    {inLadder ? priority + 1 : '+'}
+                  </button>
+                  <span className="flex-1 truncate">{m.display_name || m.filename}</span>
+                  {/* Size + projector cost — the fallback's footprint is
+                      weights + projector, and that must be visible to make
+                      the choice informed (REQ-10 AC2 in spirit). */}
+                  <span className="opacity-50 shrink-0">
+                    {m.size_gb > 0 ? `${m.size_gb.toFixed(1)}GB` : ''}
+                    {(m.mmproj_size_gb ?? 0) > 0 ? ` +${(m.mmproj_size_gb ?? 0).toFixed(1)}GB proj` : ''}
+                  </span>
+                  {inLadder && (
+                    <div className="flex gap-0.5 shrink-0">
+                      <button
+                        onClick={() => moveLadderModel(m.path, -1)}
+                        disabled={priority === 0}
+                        title="Higher priority"
+                        className="w-4 h-4 flex items-center justify-center disabled:opacity-20"
+                        style={{ color: glowColor }}
+                      >
+                        ↑
+                      </button>
+                      <button
+                        onClick={() => moveLadderModel(m.path, 1)}
+                        disabled={priority === visionLadder.length - 1}
+                        title="Lower priority"
+                        className="w-4 h-4 flex items-center justify-center disabled:opacity-20"
+                        style={{ color: glowColor }}
+                      >
+                        ↓
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          {ladderMsg && <div className="text-[9px] mt-1" style={{ color: '#ff6b6b' }}>{ladderMsg}</div>}
+        </div>
+      )}
 
       {/* ── Load progress bar (global, visible while any model loads) ── */}
       {isLoading && (
@@ -247,7 +432,7 @@ export function ModelBrowserPanel({ glowColor, fontColor, sendMessage }: ModelBr
       )}
 
       {/* ── Model list ─────────────────────────────────────────────── */}
-      <div className="flex-1 overflow-y-auto px-2 py-1">
+      <div className="flex-1 overflow-y-auto px-2 py-1" data-testid="model-list">
         {loading && (
           <div className="flex items-center justify-center h-24">
             <div className="text-xs animate-pulse">Scanning models…</div>
@@ -271,6 +456,7 @@ export function ModelBrowserPanel({ glowColor, fontColor, sendMessage }: ModelBr
           return (
             <div
               key={m.path}
+              data-testid={`model-row-${m.path}`}
               className={`group flex items-center gap-1.5 px-2 py-1.5 rounded cursor-pointer text-xs transition-all ${
                 m.loaded ? 'bg-green-500/8' : isSelected ? 'bg-white/10' : 'hover:bg-white/5'
               }`}
@@ -293,6 +479,20 @@ export function ModelBrowserPanel({ glowColor, fontColor, sendMessage }: ModelBr
               <div className="flex-1 min-w-0 cursor-pointer" onClick={() => selectModel(m)}>
                 <div className={`font-medium truncate ${m.loaded ? 'text-green-400' : ''}`}>
                   {m.display_name || m.filename}
+                  {/* REQ-5 AC3: has_vision comes straight off scan_models — a
+                      sibling mmproj-*.gguf matched this base model by stem
+                      (T1). The projector itself never appears as its own
+                      row (REQ-5 AC1); this badge is the only place its
+                      existence surfaces. */}
+                  {m.has_vision && (
+                    <span
+                      className="ml-1.5 px-1 py-[1px] rounded text-[8px] font-semibold align-middle"
+                      style={{ backgroundColor: glowColor + '20', color: glowColor }}
+                      title="Vision-capable — a CLIP projector loads alongside this model by default"
+                    >
+                      VISION
+                    </span>
+                  )}
                 </div>
                 {/* Row 1 — what the file IS. Row 2 — what loading it WILL do.
                     The plan comes from the backend's own recommend_profile +
@@ -319,6 +519,25 @@ export function ModelBrowserPanel({ glowColor, fontColor, sendMessage }: ModelBr
                         <span>→ {fmtCtx(m.plan.n_ctx)} ctx</span>
                         <span>{m.plan.vram_gb.toFixed(1)}GB VRAM</span>
                         <span className="opacity-70">{m.plan.profile}</span>
+                        {/* REQ-4 AC5 (Decisions Locked 6): the projector is
+                            attached by default and its cost must be SURFACED,
+                            never hidden. vram_gb above already includes it
+                            (T8 re-plans with mmproj_size_gb) — this adds the
+                            isolated figure plus the measured generation-speed
+                            hit, so the user can knowingly trade speed for
+                            sight rather than discover the cost after the
+                            click. The -35% is the one measured reference
+                            point we have (gemma-4-E4B); per-model generation
+                            speed is not measured here, so the tooltip names
+                            the source rather than implying it is per-model. */}
+                        {m.has_vision && (m.plan.mmproj_gb ?? 0) > 0 && (
+                          <span
+                            style={{ color: '#f59e0b' }}
+                            title={`Vision projector adds ${(m.plan.mmproj_gb ?? 0).toFixed(1)}GB VRAM (already counted above). Attaching a projector measurably slows generation — gemma-4-E4B: 64.5 → 42.1 tok/s (~-35%). Use "Text only" to load without it.`}
+                          >
+                            +{(m.plan.mmproj_gb ?? 0).toFixed(1)}GB vision (~-35% gen)
+                          </span>
+                        )}
                       </>
                     ) : (
                       <span>⚠ {m.plan.reason || "won't fit"}</span>
@@ -371,26 +590,51 @@ export function ModelBrowserPanel({ glowColor, fontColor, sendMessage }: ModelBr
                 // Not loaded → glass-pill Load on hover/select
                 const show = isSelected || false;  // always visible when selected
                 return (
-                  <button
-                    onClick={(e) => { e.stopPropagation(); doLoad(m.path); }}
-                    disabled={isLoading}
-                    className={`flex items-center gap-1.5 text-[10px] font-semibold px-2.5 py-1 rounded-full
-                      transition-all duration-200 shrink-0 disabled:opacity-20
-                      hover:scale-105 active:scale-95 ${
-                        isSelected ? '' : 'opacity-0 group-hover:opacity-100'
-                      }`}
-                    style={{
-                      backgroundColor: glowColor + '12',
-                      color: glowColor,
-                      border: `1px solid ${glowColor}25`,
-                      backdropFilter: 'blur(8px)',
-                    }}
-                  >
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                      <polygon points="5 3 19 12 5 21 5 3" />
-                    </svg>
-                    Load
-                  </button>
+                  <div className="flex items-center gap-1 shrink-0">
+                    {/* REQ-4 AC2: load without the projector. Only offered for
+                        has_vision models — a text-only model has nothing to
+                        opt out of. Sends with_projector: false; default Load
+                        (right) stays attach-by-default (CT-5 back-compat). */}
+                    {m.has_vision && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); doLoad(m.path, false); }}
+                        disabled={isLoading}
+                        title="Load without the vision projector — text-only, faster generation, no vision VRAM"
+                        className={`text-[9px] font-medium px-2 py-1 rounded-full border
+                          transition-all duration-200 disabled:opacity-20
+                          hover:scale-105 active:scale-95 ${
+                            isSelected ? '' : 'opacity-0 group-hover:opacity-100'
+                          }`}
+                        style={{
+                          backgroundColor: 'transparent',
+                          color: fontColor + 'aa',
+                          borderColor: glowColor + '25',
+                        }}
+                      >
+                        Text only
+                      </button>
+                    )}
+                    <button
+                      onClick={(e) => { e.stopPropagation(); doLoad(m.path); }}
+                      disabled={isLoading}
+                      className={`flex items-center gap-1.5 text-[10px] font-semibold px-2.5 py-1 rounded-full
+                        transition-all duration-200 shrink-0 disabled:opacity-20
+                        hover:scale-105 active:scale-95 ${
+                          isSelected ? '' : 'opacity-0 group-hover:opacity-100'
+                        }`}
+                      style={{
+                        backgroundColor: glowColor + '12',
+                        color: glowColor,
+                        border: `1px solid ${glowColor}25`,
+                        backdropFilter: 'blur(8px)',
+                      }}
+                    >
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                        <polygon points="5 3 19 12 5 21 5 3" />
+                      </svg>
+                      Load
+                    </button>
+                  </div>
                 );
               })()}
             </div>

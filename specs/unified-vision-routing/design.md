@@ -113,7 +113,8 @@ ProviderInstance += {
 
 | Area / File | Change? | Classification | Why / Evidence |
 |---|---|---|---|
-| `backend/tools/lfm_vl_provider.py` | Yes | CHANGE NEEDED | Size-select instead of unconditional 3B preference (`:277-299`); add `--fit off` to spawn (REQ-6) |
+| `backend/tools/lfm_vl_provider.py` `_find_vision_model` | Yes | CHANGE NEEDED | Size-select instead of unconditional 3B preference (`:275-305`); today it returns ONE `(model, mmproj)` pair — T7 needs a candidate LADDER, a signature change rippling to every caller. Add `--fit off` to spawn (REQ-6) |
+| `backend/tools/lfm_vl_provider.py` `_compute_vision_gpu_layers` | Yes | CHANGE NEEDED (T7) | `:374-460` holds a SECOND, independent VRAM estimator (`model_gb + mmproj_gb + 0.3` inline, hardcoded KV constant) and degrades to CPU where REQ-3 AC4 says fail. Omitted from this map in the first draft. See requirements.md → "CONFLICT: REQ-3 AC4 vs the existing CPU fallback". RESOLVED 2026-08-18: fail loudly per REQ-3 AC4 + emit VISION_UNAVAILABLE as a chat system message per REQ-3 AC6. The inline estimator must be reconciled with `estimate_vram_gb` — ONE estimator decides both selection and offload |
 | `backend/agent/local_model_manager.py` `_build_server_cmd` | Yes | CHANGE NEEDED | `grep -c mmproj` == 0; must pass `--mmproj` (REQ-4) |
 | `backend/agent/local_model_manager.py` `scan_models` | Yes | CHANGE NEEDED | Live `/api/models` returned 3 projector rows as loadable (REQ-5) |
 | `backend/agent/local_model_manager.py` `plan_load` / `estimate_vram_gb` | Yes | CHANGE NEEDED | Projector size must enter the weights term (REQ-3 AC2, REQ-4 AC3) |
@@ -122,8 +123,9 @@ ProviderInstance += {
 | `backend/iris_config.py:382` | Yes | CHANGE NEEDED | Hardcoded `8081` for a LOCAL_OPENAI entry vs `PORT` 8082 (REQ-8) |
 | `hooks/useIRISWebSocket.ts` + dashboard seeding | Yes | CHANGE NEEDED | Badge unfixed on reload (REQ-7); WS bucket already fixed in e9d2fc89 |
 | `components/dashboard/ModelBrowserPanel.tsx` | Yes | CHANGE NEEDED | Show vision capability + projector cost (REQ-4 AC5, REQ-5 AC3) |
-| `backend/automation/vision.py` | No | NO CHANGE (verified) | Consumes `LFMVLProvider` at `:57,:79,:108` - a consumer of the resolved endpoint, not the resolver |
-| `backend/agent/vision_guided_operator.py` | No | NO CHANGE (verified) | Consumes `screenshot_to_bytes` / `LFMVLProvider` at `:45,:59` - same |
+| `backend/automation/vision.py` | **YES — was WRONG** | CHANGE NEEDED (T16) | Originally marked NO CHANGE on the reasoning that it "consumes the resolved endpoint, not the resolver". But it instantiates `LFMVLProvider()` DIRECTLY at `:57,:79,:108` — it resolves nothing. Nothing ever changed what it resolves TO, so it still goes straight to tier 3 |
+| `backend/agent/vision_guided_operator.py` | **YES — was WRONG** | CHANGE NEEDED (T16) | Same error: instantiates `LFMVLProvider()` directly at `:59-60` |
+| `backend/iris_gateway.py:195` `self._vision_provider` | **YES — was MISSED** | CHANGE NEEDED (T16) | A third direct `LFMVLProvider()` construction, absent from the original map entirely |
 | Vision lease / idle-stop lifecycle | No code | CONTRACT LOCK | `acquire_vision_lease` / `should_idle_stop` / `_stop_owned_vision_server` semantics must survive tier-3 changes - CT-3 |
 | `local_model_status` WS event shape | No code | CONTRACT LOCK | Badge depends on it; already broke once by writing the wrong section key - CT-4 |
 | `load_local_model` WS payload | No code | CONTRACT LOCK | Adding `with_projector` must not break existing senders - CT-5 |

@@ -65,6 +65,10 @@ _BRIDGED_EVENTS: Tuple[IRISStreamEvent, ...] = (
     IRISStreamEvent.TASK_PAUSED,
     IRISStreamEvent.TASK_RESUMED,
     IRISStreamEvent.STEERING_ACK,
+    # ── Vision routing (REQ-3 AC6) ───────────────────────────────────────
+    # No VL fallback candidate fit free VRAM — surfaced as a chat system
+    # message the same way BUDGET_EXHAUSTED/VALIDATION_FAILED are.
+    IRISStreamEvent.VISION_UNAVAILABLE,
 )
 
 # Events added at runtime (e.g. future additions) so the tuple above stays

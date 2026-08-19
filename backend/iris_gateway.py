@@ -191,7 +191,12 @@ class IRISGateway:
         self._cleanup_analyzer = CleanupAnalyzer()
         self._logger.info("[IRISGateway] Cleanup analyzer initialized")
 
-        # Initialize LFM2.5-VL vision provider (connects to llama-server on vision_port)
+        # Tier-3 (VL fallback) vision provider — connects to the dedicated
+        # LFM2.5-VL llama-server on vision_port. T16: this is no longer the
+        # ONLY vision path; `_resolve_vision_availability` below checks the
+        # full hierarchy (brain -> tool -> this fallback) first, and only
+        # falls through to health-checking THIS server when tier 1/2 cannot
+        # see. Kept here unchanged as the tier-3 default (CT-3's lifecycle).
         self._vision_provider = LFMVLProvider()
         self._logger.info(
             "[IRISGateway] Vision provider initialized (LFM2.5-VL @ http://localhost:%d/v1)",
@@ -1927,6 +1932,36 @@ class IRISGateway:
                         exc_info=True,
                     )
 
+            # â”€â”€ Vision fallback ladder (T15b, REQ-10 AC2/AC3) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ModelBrowserPanel sends the user's chosen order over this same
+            # confirm_card channel â€” no new WS message type. `values` carries
+            # a plain list of model `path` strings (the same identity
+            # scan_models()/the browser already use); order = priority
+            # (REQ-10 AC2). Empty list is a valid, deliberate choice â€” it
+            # means AUTO (REQ-10 AC5) â€” so an empty list is persisted too,
+            # not skipped.
+            elif section_id == "vision_fallback_ladder" and values is not None:
+                try:
+                    cfg = load_config()
+                    ladder = values.get("vision_fallback_ladder", [])
+                    if not isinstance(ladder, list):
+                        raise ValueError(
+                            f"vision_fallback_ladder must be a list, got {type(ladder)}"
+                        )
+                    cfg.inference.vision_fallback_ladder = [
+                        str(p) for p in ladder if p
+                    ]
+                    save_config(cfg)
+                    self._logger.info(
+                        f"[Session: {session_id}] Vision fallback ladder saved on "
+                        f"confirm: {cfg.inference.vision_fallback_ladder}"
+                    )
+                except Exception as e:
+                    self._logger.error(
+                        f"[Session: {session_id}] Error applying vision_fallback_ladder: {e}",
+                        exc_info=True,
+                    )
+
             # â”€â”€ Swarm Setup card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             # Apply swarm_setup card values when that section is confirmed.
             # NOTE: This only saves config. Swarm is started/stopped by the
@@ -2059,7 +2094,12 @@ class IRISGateway:
             if not state or not state.current_category:
                 # Model selection and critical config sections should work
                 # even without an active orbit category â€” they're global settings.
-                if section_id in ("model_selection", "identity", "inference_mode"):
+                if section_id in (
+                    "model_selection",
+                    "identity",
+                    "inference_mode",
+                    "vision_fallback_ladder",
+                ):
                     logger.info(
                         f"[Gateway] confirm_card {section_id} applied (no active category â€” "
                         "skipping orbit confirmation)"
@@ -6755,6 +6795,49 @@ class IRISGateway:
             },
         )
 
+        # T10c (REQ-7 AC3): surface the PERSISTED local_model_status on every
+        # WS open/reconnect. T10a persists "error" to cfg.inference on a
+        # failed load, but the only channel that read it back
+        # (_handle_get_local_model_status) returns the LIVE manager view
+        # (loaded: bool, no status/error field at all) — so a failed load
+        # was invisible after a page reload no matter what the frontend did.
+        # Read the persisted value DIRECTLY here (never the manager's live
+        # view) and push it on the SAME `local_model_status` channel the
+        # load/unload handlers already use — useIRISWebSocket.ts merges it
+        # into the badge and re-dispatches `iris:local_model_status` on
+        # every occurrence, not just first mount, so this covers reconnect
+        # for real. Reconciling "config says loaded but nothing is
+        # listening" to UNLOADED (REQ-7 edge case) stays the LIVE check's
+        # job (_handle_get_local_model_status, called by the frontend on
+        # mount) — this seam only supplies persisted truth, it never
+        # second-guesses it. A failed config read must never propagate into
+        # the WS handler (this fires on every reconnect); degrade to
+        # "unloaded" and log instead.
+        try:
+            from .iris_config import load_config as _load_cfg_for_status
+
+            _persisted_status = (
+                getattr(
+                    _load_cfg_for_status().inference, "local_model_status", "unloaded"
+                )
+                or "unloaded"
+            )
+        except Exception as _status_err:
+            self._logger.warning(
+                "[Session: %s] request_state: persisted local_model_status "
+                "read failed, degrading to 'unloaded': %s",
+                session_id, _status_err,
+            )
+            _persisted_status = "unloaded"
+
+        await self._ws_manager.send_to_client(
+            client_id,
+            {
+                "type": "local_model_status",
+                "payload": {"status": _persisted_status},
+            },
+        )
+
         # Push the FULL inference snapshot (providers + role_bindings +
         # provider_presets + model_catalog) on request_state — the frontend
         # sends request_state on EVERY open and reconnect (useIRISWebSocket
@@ -7595,10 +7678,51 @@ class IRISGateway:
             )
             await self._send_error(client_id, f"Error executing tool: {str(e)}")
 
+    async def _resolve_vision_availability(self, session_id: str) -> bool:
+        """T16: True when vision can be served RIGHT NOW at ANY tier.
+
+        Tier 1/2 (a bound brain/tool already sees) reports available
+        immediately — no server is touched, no llama-server spawned. Tier 3
+        falls back to the EXISTING LFM2.5-VL llama-server health check
+        (unchanged — CT-3 owns that lifecycle). A resolution failure,
+        including REQ-3 AC4's "nothing fits" (``VisionModelUnavailable``),
+        reports unavailable rather than raising into the WS handler.
+        """
+        import asyncio
+
+        loop = asyncio.get_event_loop()
+        try:
+            from .agent.agent_kernel import get_agent_kernel
+            from .agent.inference.router import resolve_vision_client
+            from .tools.lfm_vl_provider import VisionModelUnavailable
+
+            router = getattr(get_agent_kernel(session_id), "_router", None)
+            resolution, _client = await loop.run_in_executor(
+                None, resolve_vision_client, router
+            )
+        except VisionModelUnavailable as exc:
+            self._logger.info(
+                f"[Session: {session_id}] vision unavailable at any tier: {exc}"
+            )
+            return False
+        except Exception as exc:
+            self._logger.warning(
+                f"[Session: {session_id}] vision hierarchy resolution failed, "
+                f"falling back to tier-3 health check: {exc}"
+            )
+            return await loop.run_in_executor(None, self._vision_provider.health_check)
+
+        if resolution is not None and resolution.tier in ("brain", "tool"):
+            return True  # already-live provider — nothing to probe
+
+        return await loop.run_in_executor(None, self._vision_provider.health_check)
+
     async def _handle_enable_vision(self, session_id: str, client_id: str) -> None:
         """
-        Handle enable_vision message — checks if LFM2.5-VL llama-server is reachable.
-        Vision is a separate process (llama-server on vision_port); enabling = health check.
+        Handle enable_vision message — resolves the vision hierarchy (T16):
+        a vision-capable brain/tool already bound (tier 1/2) is available
+        with no server touched; otherwise falls back to the existing
+        LFM2.5-VL llama-server health check, unchanged.
         """
         try:
             self._logger.info(
@@ -7622,11 +7746,7 @@ class IRISGateway:
                 },
             )
 
-            import asyncio
-
-            available = await asyncio.get_event_loop().run_in_executor(
-                None, self._vision_provider.health_check
-            )
+            available = await self._resolve_vision_availability(session_id)
 
             status_payload = {
                 "status": "enabled" if available else "error",
@@ -7705,14 +7825,11 @@ class IRISGateway:
 
     async def _handle_get_vision_status(self, session_id: str, client_id: str) -> None:
         """
-        Handle get_vision_status message â€” pings LFM2.5-VL server.
+        Handle get_vision_status message — resolves the vision hierarchy
+        (T16); pings the LFM2.5-VL server only when tier 1/2 cannot see.
         """
         try:
-            import asyncio
-
-            available = await asyncio.get_event_loop().run_in_executor(
-                None, self._vision_provider.health_check
-            )
+            available = await self._resolve_vision_availability(session_id)
             await self._ws_manager.send_to_client(
                 client_id,
                 {
@@ -8235,6 +8352,11 @@ class IRISGateway:
         model_path = payload.get("model_path", "")
         profile = payload.get("profile", "balanced")
         custom_params = payload.get("custom_params", {})
+        # REQ-4 AC1/AC2, CT-5: default to attaching a matching vision
+        # projector. A sender written before this key existed simply omits
+        # it — `.get(..., True)` reproduces the new default for that payload
+        # rather than requiring every caller to be updated in lockstep.
+        with_projector = bool(payload.get("with_projector", True))
 
         if not model_path:
             await self._ws_manager.send_to_client(
@@ -8350,17 +8472,23 @@ class IRISGateway:
             purpose = payload.get("purpose") or self._infer_local_purpose(session_id)
             self._logger.info(
                 f"[LocalModel] loading {model_path} purpose={purpose} "
-                f"profile={profile}"
+                f"profile={profile} with_projector={with_projector}"
             )
 
-            ok = await mgr.load_model(
-                model_path,
-                profile,
-                custom_params,
-                purpose=purpose,
-                progress_cb=_progress_cb,
-                crash_cb=_crash_cb,
-            )
+            # Only pass with_projector when the caller actually opted OUT of
+            # the default. LocalModelManager.load_model()'s own default is
+            # already "attach" (REQ-4 AC1), so the common case reproduces the
+            # exact pre-T8 call shape — narrower callables that pre-date this
+            # parameter (e.g. test doubles standing in for the manager) still
+            # work unchanged, and only the opt-out path needs the new kwarg.
+            _load_kwargs: Dict[str, Any] = {
+                "purpose": purpose,
+                "progress_cb": _progress_cb,
+                "crash_cb": _crash_cb,
+            }
+            if not with_projector:
+                _load_kwargs["with_projector"] = False
+            ok = await mgr.load_model(model_path, profile, custom_params, **_load_kwargs)
             status = "ready" if ok else "error"
             payload_out = {
                 "status": status,
@@ -8456,6 +8584,11 @@ class IRISGateway:
                     if _router is not None:
                         _inproc = getattr(mgr, "_llm", None) is not None
                         _stem = _Path(model_path).stem
+                        # REQ-4 AC4 / REQ-1 AC3: read back whether --mmproj was
+                        # ACTUALLY passed to the server that just came up —
+                        # never inferred from a sibling projector file merely
+                        # existing on disk.
+                        _vision_loaded = bool(mgr.get_status().get("vision_loaded", False))
                         _local_inst = ProviderInstance(
                             id=f"local:{_stem}",
                             label=f"Local: {_Path(model_path).name}",
@@ -8467,6 +8600,7 @@ class IRISGateway:
                             model=_stem,
                             api_base_url="" if _inproc else mgr.ENDPOINT,
                             loaded=True,
+                            vision_loaded=_vision_loaded,
                         )
                         # Register on the process-wide registry ONCE. Every
                         # kernel shares this registry (REQ-5), so no peer
@@ -8562,6 +8696,21 @@ class IRISGateway:
                 await self._ws_manager.broadcast_to_session(
                     session_id, _err_msg, exclude_clients={client_id}
                 )
+
+                # Persist the failure to config (REQ-7 AC3/AC4, T10a). Without
+                # this, a failed load left the config field exactly as it was
+                # (usually "unloaded"), so after a reload ERROR was
+                # indistinguishable from "never loaded". Same
+                # load-config/mutate/save-config shape as the success and
+                # unload branches above.
+                try:
+                    from .iris_config import load_config as _lc, save_config as _sc
+
+                    _cfg = _lc()
+                    _cfg.inference.local_model_status = "error"
+                    _sc(_cfg)
+                except Exception as cfg_err:
+                    self._logger.debug(f"[iris_local] error status save skipped: {cfg_err}")
         except Exception as e:
             self._logger.error(f"[LocalModel] load_local_model error: {e}")
             await self._ws_manager.send_to_client(

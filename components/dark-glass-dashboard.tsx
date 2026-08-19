@@ -857,6 +857,18 @@ export function DarkGlassDashboard({
   // Uses the same custom-event pattern as SidePanel so both views stay in sync.
   useEffect(() => {
     if (sendMessage) sendMessage('request_state', {});
+    // T10b (REQ-7 AC1/AC2): seed the MODEL STATUS badge from the backend's
+    // live model-manager state on mount (and on every reconnect, since this
+    // effect re-runs whenever `sendMessage` identity changes). Reuses the
+    // EXISTING `get_local_model_status` WS handler (iris_gateway.py:685),
+    // which had no frontend caller before this. Its response comes back as
+    // mgr.get_status() (loaded: boolean, no `status`/`error` key), which
+    // useIRISWebSocket.ts's existing "local_model_status" fallback chain
+    // already maps to loaded/unloaded correctly. Because it reflects the
+    // manager's LIVE state rather than the persisted config, a reload where
+    // nothing is actually listening naturally reconciles to UNLOADED even if
+    // the config still claims "loaded".
+    if (sendMessage) sendMessage('get_local_model_status', {});
 
     const handleInitialState = (event: CustomEvent) => {
       const state = event.detail?.state || {};
@@ -893,16 +905,33 @@ export function DarkGlassDashboard({
       if (words.length > 0) setWakeWords(words);
     };
 
+    // T10b (REQ-7 AC1/AC2): receives the computed status string dispatched by
+    // useIRISWebSocket.ts's "local_model_status" case — both the seed reply
+    // triggered above AND any later live push (load/unload/error) during this
+    // session. Merges directly into localFieldValues so it is not dropped by
+    // the one-time seededRef guard on contextFieldValues.
+    const handleLocalModelStatus = (event: CustomEvent) => {
+      const status = event.detail?.status;
+      if (typeof status !== 'string') return;
+      setLocalFieldValues((prev) => ({
+        ...prev,
+        local_model: { ...(prev.local_model || {}), local_model_status: status },
+        'local-model-card': { ...(prev['local-model-card'] || {}), local_model_status: status },
+      }));
+    };
+
     window.addEventListener('iris:initial_state',   handleInitialState   as EventListener);
     window.addEventListener('iris:available_models', handleAvailableModels as EventListener);
     window.addEventListener('iris:audio_devices',    handleAudioDevices    as EventListener);
     window.addEventListener('iris:wake_words_list',  handleWakeWords       as EventListener);
+    window.addEventListener('iris:local_model_status', handleLocalModelStatus as EventListener);
 
     return () => {
       window.removeEventListener('iris:initial_state',   handleInitialState   as EventListener);
       window.removeEventListener('iris:available_models', handleAvailableModels as EventListener);
       window.removeEventListener('iris:audio_devices',    handleAudioDevices    as EventListener);
       window.removeEventListener('iris:wake_words_list',  handleWakeWords       as EventListener);
+      window.removeEventListener('iris:local_model_status', handleLocalModelStatus as EventListener);
     };
   }, [sendMessage]);
 
