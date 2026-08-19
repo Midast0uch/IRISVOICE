@@ -4,7 +4,10 @@
     {
       "name": "iris-frontend",
       "runtimeExecutable": "C:\\Program Files\\nodejs\\node.exe",
-      "runtimeArgs": ["C:\\dev\\IRISVOICE\\node_modules\\next\\dist\\bin\\next", "dev"],
+      "runtimeArgs": [
+        "C:\\dev\\IRISVOICE\\node_modules\\next\\dist\\bin\\next",
+        "dev"
+      ],
       "cwd": "C:\\dev\\IRISVOICE",
       "port": 3000,
       "autoPort": true
@@ -12,17 +15,25 @@
     {
       "name": "iris-backend",
       "runtimeExecutable": "C:\\Python314\\python.exe",
-      "runtimeArgs": ["C:\\dev\\IRISVOICE\\start-backend.py"],
+      "runtimeArgs": [
+        "C:\\dev\\IRISVOICE\\start-backend.py"
+      ],
       "cwd": "C:\\dev\\IRISVOICE",
       "port": 8090,
       "autoPort": false
     },
     {
       "name": "iris-launcher",
-      "runtimeExecutable": "C:\\Windows\\System32\\cmd.exe",
-      "runtimeArgs": ["/c", "IRISVOICE\\scripts\\start-launcher.bat"],
-      "port": 5174,
-      "autoPort": false
+      "runtimeExecutable": "C:\\Program Files\\nodejs\\node.exe",
+      "runtimeArgs": [
+        "C:\\dev\\IRISVOICE\\iris-launcher\\node_modules\\vite\\bin\\vite.js",
+        "--port",
+        "8080",
+        "--host"
+      ],
+      "port": 8080,
+      "autoPort": false,
+      "cwd": "C:\\dev\\IRISVOICE\\iris-launcher"
     }
   ]
 }
