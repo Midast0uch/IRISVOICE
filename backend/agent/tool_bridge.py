@@ -2532,15 +2532,88 @@ class AgentToolBridge:
             # (hooks/useBrowserNavOverlay.ts) listens for open_tab /
             # crawler_started / crawler_page_fetched / crawler_complete and
             # received none of them. REQ-16 AC6-AC9.
+            #
+            # Session 244 (live-run findings): the browser-panel emitter alone
+            # still left the CHAT CARD dead — no task:progress ever reached it,
+            # so step actions never updated and per-page URLs (detail_url)
+            # never rendered. This path now emits BOTH vocabularies: the
+            # browser-panel events AND the TASK_PROGRESS frames the card
+            # consumes (phase labels + per-page detail/detail_url), mirroring
+            # what crawler_query has always done.
+            from backend.agent.event_bus import get_event_bus as _geb, IRISStreamEvent as _ISE
+
+            _bus = _geb()
+            _last_phase_emit = [0.0]
+
+            def _emit_phase(phase: str, seq: int) -> None:
+                import time as _time
+                now = _time.time()
+                if now - _last_phase_emit[0] < 2.0:  # throttle phase spam
+                    return
+                _last_phase_emit[0] = now
+                _label = phase.replace("_", " ").capitalize()
+                try:
+                    _bus.emit(
+                        _ISE.TASK_PROGRESS,
+                        data={
+                            "description": _label,
+                            "action": _label,
+                            "update_step": True,
+                            "detail": _label,
+                            "detail_progress": "",
+                            "phase": phase,
+                            "phase_sequence": seq,
+                        },
+                        session_id=session_id,
+                    )
+                except Exception:
+                    pass  # never block the crawl on an event emit failure
+
+            def _on_page(url: str, page_number: int, total: int, title: str = "") -> None:
+                _label = title or url or "source"
+                try:
+                    _bus.emit(
+                        _ISE.TASK_PROGRESS,
+                        data={
+                            "description": f"Reading {_label} ({page_number}/{total})",
+                            "action": f"Reading {_label} ({page_number}/{total})",
+                            "update_step": True,
+                            "detail": _label,
+                            "detail_url": url or "",
+                            "detail_progress": f"{page_number}/{total}",
+                        },
+                        session_id=session_id,
+                    )
+                except Exception:
+                    pass
+
+            _ui_emit = _crawl_ui_emitter(session_id)
+
+            def _combined_on_progress(progress) -> None:
+                # Browser panel first (its vocabulary, best-effort).
+                try:
+                    _ui_emit(progress)
+                except Exception:
+                    pass
+                ev = getattr(progress, "event", "")
+                pl = getattr(progress, "payload", {}) or {}
+                if ev == "CRAWLER_PAGE_FETCHED":
+                    _on_page(
+                        pl.get("url", ""), pl.get("page_number", 0),
+                        pl.get("total", 0), title=pl.get("title", ""),
+                    )
+                elif ev == "CRAWLER_PHASE" and isinstance(pl, dict):
+                    _emit_phase(pl.get("phase", "unknown"), pl.get("phase_sequence", 0))
+
             orch = CrawlOrchestrator()
             crawl_result = await orch.research(
                 query=query,
                 mode="agent",
                 session_id=session_id,
-                on_progress=_crawl_ui_emitter(session_id),
+                on_progress=_combined_on_progress,
             )
         except Exception as exc:
-            logger.error("[web_search] crawl failed: %s", exc)
+            logger.exception("[web_search] crawl failed: %s", exc)
             return {"success": False, "error": f"search failed: {exc}"}
 
         if getattr(crawl_result, "error", None):

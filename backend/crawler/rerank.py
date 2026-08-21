@@ -13,12 +13,19 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import re
+import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum
 
 from .orchestrator import Passage
+
+# Session 244: wall-clock budget for the whole embedding pass in one rerank.
+# Exceeding it degrades to BM25-only (instant) instead of hanging the end of
+# every search behind a cold local embedding model.
+_EMBED_BUDGET_S = float(os.environ.get("IRIS_RERANK_EMBED_BUDGET_S", "20"))
 
 logger = logging.getLogger(__name__)
 
@@ -116,17 +123,33 @@ def _bm25(query_tokens: list[str], docs: list[list[str]], k1: float = 1.5, b: fl
 # ---------------------------------------------------------------------------
 # Embedding similarity (optional, lazy)
 # ---------------------------------------------------------------------------
-def _embed(texts: list[str]) -> Optional[list[list[float]]]:
+def _embed(texts: list[str], deadline: Optional[float] = None) -> Optional[list[list[float]]]:
     """Encode texts via EmbeddingService (Phase 4 LFM2.5 integration).
 
     Routes through ``EmbeddingService.encode`` instead of loading a
     standalone SentenceTransformer, so the same backend selection and
     chunking logic applies (T1.6).
+
+    Session 244 (live-run stall, pin_5c3c379e2505 follow-up): encode() is
+    single-text, so N passages meant N sequential server calls — against a
+    local embedding model that was STILL LOADING WEIGHTS when rerank started.
+    That alone turned the end of every search into a multi-minute hang
+    (400+ server-init warnings observed). The deadline bounds the WHOLE
+    embedding pass: on exceed we return None and the caller degrades to
+    BM25-only, which is instant and already the designed fallback. Speed is
+    guaranteed by bounded work, not by hope.
     """
+    budget_note = f"embed budget {_EMBED_BUDGET_S:.0f}s exceeded"
     try:
         from backend.memory.embedding import get_embedding_service
         svc = get_embedding_service()
-        return [svc.encode(t) for t in texts]
+        out = []
+        for t in texts:
+            if deadline is not None and time.monotonic() > deadline:
+                logger.warning("[rerank] %s — falling back to BM25-only", budget_note)
+                return None
+            out.append(svc.encode(t))
+        return out
     except Exception as exc:
         logger.warning("[rerank] embedding service unavailable: %s", exc)
         return None
@@ -157,10 +180,12 @@ def rerank_passages(passages: list[Passage], query: str, cred_map) -> RerankOutc
     doc_tokens = [_tokenize(p.text) for p in passages]
     bm25 = _bm25(q_tokens, doc_tokens)
 
+    # Session 244: bounded embedding pass — BM25-only fallback on exceed.
+    _embed_deadline = time.monotonic() + _EMBED_BUDGET_S
     emb_query = None
-    emb_docs = _embed([p.text for p in passages])
+    emb_docs = _embed([p.text for p in passages], deadline=_embed_deadline)
     if emb_docs:
-        q_emb = _embed([query])
+        q_emb = _embed([query], deadline=_embed_deadline + 5.0)
         emb_query = q_emb[0] if q_emb else None
 
     for i, p in enumerate(passages):

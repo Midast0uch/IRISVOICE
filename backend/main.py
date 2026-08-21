@@ -2463,11 +2463,20 @@ _main_event_loop: asyncio.AbstractEventLoop = None
 
 
 async def _async_preload_tts(tts_manager) -> None:
-    """Pre-load Pocket-TTS model in background to cache on first use."""
+    """Pre-load Pocket-TTS model in background to cache on first use.
+
+    Session 244 fix (pin_1fd290307cac): ``_load_pocket_tts`` is SYNCHRONOUS and
+    slow (HF hub fetch + 438MB weight load + voice-state encode — 282s cold).
+    Called directly inside this coroutine it ran ON THE EVENT LOOP, starving
+    everything else: uvicorn could not bind :8090 until TTS finished, so the
+    whole backend appeared dead for ~5 minutes despite 'background' logging.
+    Offloading to a worker thread keeps the loop free — the server binds and
+    serves while the model loads.
+    """
     try:
-        logger.info("[TTS] Starting Pocket-TTS pre-load...")
+        logger.info("[TTS] Starting Pocket-TTS pre-load (worker thread)...")
         t0 = time.monotonic()
-        success = tts_manager._load_pocket_tts()
+        success = await asyncio.to_thread(tts_manager._load_pocket_tts)
         elapsed = time.monotonic() - t0
         if success:
             logger.info(f"[TTS] Pocket-TTS pre-loaded in {elapsed:.1f}s")
