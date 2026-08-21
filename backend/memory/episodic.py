@@ -22,6 +22,8 @@ from backend.memory.embedding import (
     BACKEND_BGE,
     BACKEND_LFM,
     BACKEND_HASH,
+    EMBED_MAX_CHARS,
+    EMBED_OVERLAP_CHARS,
 )
 from backend.memory.reindex import get_reindex_manager
 
@@ -89,9 +91,21 @@ class EpisodicStore:
     DEDUP_THRESHOLD = 0.95
 
     # ── Pacman fragmentation constants (Option B / PACMAN.md) ────────────────
-    # Max chars per chunk ≈ 512 tokens (4 chars/token). Overlap keeps sentences whole.
-    _CHUNK_MAX_CHARS: int = 2048
-    _CHUNK_OVERLAP:   int = 200   # trailing chars re-included in next chunk
+    # ONE CUTTING STANDARD, shared with the embedder (2026-08-17, user rule).
+    #
+    # Pacman and the embedding layer serve the same purpose by different means,
+    # so they must slice text the same way. These used to be independent: Pacman
+    # cut at 2048 chars on the assumption "≈512 tokens at 4 chars/token", then
+    # the embedder re-cut the result at 480 whitespace WORDS. 4 chars/token
+    # holds for prose but not for the paths and JSON this system actually
+    # stores (~1 char/token), so a piece could blow past the encoder's 512-token
+    # context — which aborts llama.cpp and takes the whole backend with it.
+    #
+    # EMBED_MAX_CHARS/EMBED_OVERLAP_CHARS are defined in memory/embedding.py,
+    # the layer that owns the model constraint. Import them; never re-derive a
+    # second rule here.
+    _CHUNK_MAX_CHARS: int = EMBED_MAX_CHARS
+    _CHUNK_OVERLAP:   int = EMBED_OVERLAP_CHARS  # trailing chars re-included
     _CHUNK_MIN_CHARS: int = 50    # skip near-empty slivers
 
     # Lower than episode DEDUP so we deduplicate near-identical fragment repeats

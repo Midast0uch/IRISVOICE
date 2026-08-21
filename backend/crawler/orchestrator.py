@@ -335,6 +335,11 @@ class CrawlOrchestrator:
         self._planner = planner
         self._extractor = extractor
         self._backend_override: Optional[FetchBackend] = None  # test seam (no live web)
+        # Session 244: per-run park ledger — job_id -> [(domain, wall_kind)].
+        # Populated by _park_source; consumed to build CrawlResult.park_summary
+        # (the structured outcome DER's reviewer reads instead of a content-free
+        # "empty_result") and to skip the provably-futile broadened retry.
+        self._parks_by_job: dict[str, list[tuple[str, str]]] = {}
 
     async def research(
         self,
@@ -446,6 +451,24 @@ class CrawlOrchestrator:
         # REQ-19 AC6: mark vision-discovered URLs' pages so their provenance
         # is distinguishable from planner-supplied URLs (REQ-18 AC2 pattern).
         self._stamp_discovery_provenance(fetched, discovered_urls)
+        # Session 244: attach the structured park outcome. DER's reviewer reads
+        # THIS instead of a content-free "empty_result" — it can then tell
+        # "no information exists" apart from "our sources got walled" and branch
+        # accordingly (diversify / ask user / report honestly).
+        _parks = self._parks_by_job.get(job_id) or []
+        if _parks:
+            from collections import Counter
+            _by = Counter(f"{d}:{k}" for d, k in _parks)
+            _domains = sorted({d for d, _ in _parks})
+            fetched.park_summary = (
+                f"{len(_parks)}/{len(plan.urls)} sources parked "
+                f"({'; '.join(f'{d}: {k} x{n}' for (d, k), n in _by.most_common())}; "
+                f"distinct domains: {len(_domains)})"
+            )
+            logger.info(
+                "[CrawlOrchestrator] park_summary job_id=%s %s", job_id,
+                fetched.park_summary,
+            )
         # Wave 0 (REQ-14/REQ-18): down-weight dead/stale domains from HAR evidence.
         self._apply_har_penalties(fetched, query)
         # Wave 0 (REQ-18/REQ-19): register successful URLs so future crawls for
@@ -458,7 +481,24 @@ class CrawlOrchestrator:
         # The old gate counted empty-markdown fallback pages as successes, so
         # this retry had fired ZERO times in 401MB of history.
         ok_pages = [p for p in fetched.pages if page_is_usable(p).usable]
-        if (fetched.error or not ok_pages) and not getattr(fetched, "_retried", False):
+        # Session 244: FUTILE-RETRY GUARD — when every planned URL was parked
+        # on a single domain, a broadened re-plan of the SAME query re-asks for
+        # the same walled site; skip the wave and let the typed park_summary
+        # drive DER's decision instead. This is what turned one slow GitHub
+        # page into a 14-minute park/re-dispatch loop.
+        _futile = (
+            not ok_pages
+            and _parks
+            and len(_parks) >= len(plan.urls)
+            and len({d for d, _ in _parks}) == 1
+        )
+        if _futile:
+            logger.info(
+                "[CrawlOrchestrator] skipping futile broadened retry job_id=%s — "
+                "all %d sources parked on one domain (%s)",
+                job_id, len(_parks), next(iter({d for d, _ in _parks})),
+            )
+        elif (fetched.error or not ok_pages) and not getattr(fetched, "_retried", False):
             broader_query = _broaden_query(query)
             logger.info(
                 "[CrawlOrchestrator] Exa retry job_id=%s query=%s → %s usable_pages=%d/%d (REQ-2)",
@@ -1010,6 +1050,15 @@ class CrawlOrchestrator:
         """T14 (REQ-13): park a walled source in the shared registry and emit
         CRAWLER_SOURCE_PARKED so the frontend lists it (AC4) and the agent can
         raise one non-blocking question per domain (AC6). Never raises."""
+        # Session 244: ledger the park for this run so research() can attach a
+        # structured park_summary to the CrawlResult (DAG awareness).
+        try:
+            from urllib.parse import urlparse as _up
+            self._parks_by_job.setdefault(run_id, []).append(
+                (_up(url).netloc or url, wall_kind)
+            )
+        except Exception:
+            pass
         try:
             from urllib.parse import urlparse
 

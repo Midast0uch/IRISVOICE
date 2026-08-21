@@ -131,6 +131,8 @@ export function useWorkspacePersistence(conversationId?: string) {
         showArchive: state.showArchive,
         showKanban: state.showKanban,
         kanbanCompact: state.kanbanCompact,
+        // T9 (REQ-5 AC4): multi-agent Kanban state persists across sessions
+        agentTasks: state.agentTasks,
       }
       const json = JSON.stringify(payload)
       if (json === lastSavedRef.current) return

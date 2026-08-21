@@ -9,9 +9,11 @@ import { useWorkspacePersistence } from '@/hooks/useWorkspacePersistence'
 import { WorkspaceTabBar } from './WorkspaceTabBar'
 import { KanbanCanvas } from './KanbanCanvas'
 import { ArchiveDock } from './ArchiveDock'
-import { WorkspaceToolbar } from './WorkspaceToolbar'
+import { Xur } from '@/components/Xur'
+import { HelpPanel } from '@/components/terminal/HelpPanel'
 import { FloatingPanel } from './FloatingPanel'
-import { Focus, Terminal, Eye, EyeOff, Archive as ArchiveIcon, LayoutGrid } from 'lucide-react'
+import { useAgentTaskEvents } from '@/hooks/useAgentTaskEvents'
+import { Focus, Terminal, Eye, EyeOff, Archive as ArchiveIcon, LayoutGrid, HelpCircle, Undo2, Redo2, Camera, RotateCcw } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 
 const TerminalWidget = lazy(() => import('../terminal/TerminalWidget'))
@@ -117,11 +119,13 @@ function TerminalSection() {
   )
 }
 
+// T8 (REQ-6): Focus presets now control multi-agent card filtering and
+// board density — FULL / ACTIVE / PROJECT / COMPACT.
 const PRESET_LABELS: Record<string, string> = {
-  full: 'Full',
-  work: 'Work',
-  chat: 'Chat',
-  zen: 'Zen',
+  full: 'FULL',
+  active: 'ACTIVE',
+  project: 'PROJECT',
+  compact: 'COMPACT',
 }
 
 function FocusToggle() {
@@ -196,12 +200,36 @@ interface PoppedOutCard {
 }
 
 export function DeveloperWorkspace({ conversationId }: { conversationId?: string }) {
-  const { tabs, showTerminal, showArchive, showKanban, addTab, removeTab, sections } = useWorkspaceStore()
+  const { tabs, showArchive, showKanban, addTab, removeTab, sections, isProcessing, takeSnapshot, restoreSnapshot } = useWorkspaceStore()
+  const temporal = (useWorkspaceStore as any).temporal ?? null
+  const canUndo = (useWorkspaceStore as any).canUndo ?? false
+  const canRedo = (useWorkspaceStore as any).canRedo ?? false
   const [draggedTabId, setDraggedTabId] = React.useState<string | null>(null)
+  const [helpOpen, setHelpOpen] = React.useState(false)
+  const [cliTools, setCliTools] = React.useState<{ name: string; display_name: string; when_to_use: string; available: boolean; reason: string | null }[]>([])
+  const handleHelp = React.useCallback(async () => {
+    try {
+      const res = await fetch('/api/dev/cli-tools')
+      if (res.ok) {
+        const d = await res.json()
+        setCliTools(Array.isArray(d?.tools) ? d.tools : [])
+      } else setCliTools([])
+    } catch { setCliTools([]) }
+    setHelpOpen((v) => !v)
+  }, [])
+  React.useEffect(() => {
+    const h = () => handleHelp()
+    window.addEventListener('iris:toggle_help', h)
+    return () => window.removeEventListener('iris:toggle_help', h)
+  }, [handleHelp])
   const [floatingPanels, setFloatingPanels] = React.useState<PoppedOutCard[]>([])
 
   // ── Persistence: auto-save/restore workspace state ──
   const { isOnline, isRestoring } = useWorkspacePersistence(conversationId)
+
+  // T9 (REQ-5 AC1): wire the multi-agent Kanban board to backend task
+  // lifecycle events (task:start / progress / done) with backend-emitted tags.
+  useAgentTaskEvents()
 
   // ── File Watcher: live card updates from external file changes ──
   useFileWatcher({
@@ -273,36 +301,48 @@ export function DeveloperWorkspace({ conversationId }: { conversationId?: string
             background: 'linear-gradient(180deg, rgba(10,11,22,0.2) 0%, rgba(6,7,14,0.1) 100%)',
           }}
         >
-        {/* Top toolbar row: Focus toggle + Tab bar + Section toggles */}
+        {/* Top toolbar — ONE row, 32px compact (not 40px). Help + history + snapshots in one line. */}
         <div
-          className="shrink-0 flex items-center gap-2 px-2 py-1.5"
-          style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}
+          className="shrink-0 flex items-center gap-2 px-2 py-1 relative"
+          style={{ borderBottom: '1px solid rgba(255,255,255,0.04)', minHeight: '32px' }}
         >
           <FocusToggle />
           <div className="flex-1 min-w-0">
             <WorkspaceTabBar />
           </div>
+          <div className="h-4 w-px bg-white/10 shrink-0" />
           <div className="flex items-center gap-1 shrink-0">
-            <SectionToggle section="terminal" label="Term" icon={Eye} />
+            <button
+              onClick={() => window.dispatchEvent(new CustomEvent('iris:toggle_help'))}
+              title="Command reference (/help)"
+              className="flex items-center gap-1 px-1.5 py-1 rounded text-[9px] transition-all"
+              style={{ background: 'transparent', color: 'rgba(255,255,255,0.45)', border: '1px solid rgba(255,255,255,0.06)' }}
+              onMouseEnter={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.75)'; e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.45)'; e.currentTarget.style.background = 'transparent'; }}
+            >
+              <HelpCircle size={9} /> <span className="hidden sm:inline">Help</span>
+            </button>
             <SectionToggle section="archive" label="Arch" icon={ArchiveIcon} />
             <SectionToggle section="kanban" label="Board" icon={LayoutGrid} />
           </div>
+          <div className="h-4 w-px bg-white/10 shrink-0" />
+          <div className="flex items-center gap-1 shrink-0">
+            <button onClick={() => (useWorkspaceStore as any).getState?.().temporal?.undo?.()} disabled={!canUndo} title="Undo" className={`p-1 rounded text-[10px] ${canUndo ? 'text-white/40 hover:text-white/70 hover:bg-white/5' : 'text-white/10 cursor-not-allowed'}`}><Undo2 size={10} /></button>
+            <button onClick={() => (useWorkspaceStore as any).getState?.().temporal?.redo?.()} disabled={!canRedo} title="Redo" className={`p-1 rounded text-[10px] ${canRedo ? 'text-white/40 hover:text-white/70 hover:bg-white/5' : 'text-white/10 cursor-not-allowed'}`}><Redo2 size={10} /></button>
+            <div className="w-px h-3 bg-white/10 mx-1" />
+            <button onClick={takeSnapshot} title="Save snapshot" className="flex items-center gap-1 px-1.5 py-1 rounded text-[9px] text-white/30 hover:text-white/60 hover:bg-white/5"><Camera size={10} /><span className="hidden sm:inline">Snap</span></button>
+            <button onClick={restoreSnapshot} title="Restore snapshot" className="flex items-center gap-1 px-1.5 py-1 rounded text-[9px] text-white/30 hover:text-white/60 hover:bg-white/5"><RotateCcw size={10} /><span className="hidden sm:inline">Restore</span></button>
+            {isProcessing && <span style={{ color: '#60a5fa' }}><Xur size={12} /></span>}
+            <span className="text-[9px] text-white/20 ml-1">Workspace v1</span>
+          </div>
+          {helpOpen && (
+            <div className="absolute top-full right-2 mt-2 z-30 w-[380px] max-h-[60vh] overflow-y-auto shadow-2xl">
+              <HelpPanel tools={cliTools} onClose={() => setHelpOpen(false)} />
+            </div>
+          )}
         </div>
 
-        <AnimatePresence initial={false}>
-          {showTerminal && (
-            <motion.div
-              key="terminal"
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 'auto', opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
-              className="shrink-0 overflow-hidden"
-            >
-              <TerminalSection />
-            </motion.div>
-          )}
-        </AnimatePresence>
+        {/* TerminalSection removed — ChatWing now owns the single hybrid CLI (TerminalSlideOver) via terminalScrollback store. Workspace's Term tab was duplicate. */}
 
         <AnimatePresence initial={false}>
           {showArchive && (
@@ -334,7 +374,6 @@ export function DeveloperWorkspace({ conversationId }: { conversationId?: string
           )}
         </AnimatePresence>
 
-        <WorkspaceToolbar />
       </div>
     </DndContext>
 

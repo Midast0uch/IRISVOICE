@@ -91,19 +91,19 @@ export function TerminalWidget() {
       })
       const { r, g, b } = hexToRgb(glowColor)
       term.writeln(`\x1b[2m\u2502\x1b[0m  \x1b[1m\x1b[38;2;${r};${g};${b}mIRIS Developer Terminal\x1b[0m                \x1b[2m\u2502\x1b[0m`)
-      term.writeln('\x1b[2m\u2502  Direct shell access \u2022 Security filtered  \u2502\x1b[0m')
+      term.writeln('\x1b[2m\u2502  Delegate mode \u2022 IRIS picks the tool  \u2502\x1b[0m')
       term.writeln('\x1b[2m\u2514\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2518\x1b[0m')
       term.writeln('')
       term.write('$ ')
 
-      // Input handler — direct shell via terminal_input
+      // Input handler — delegate via dev_cli (matches TerminalPanel; REQ-20 AC4)
       term.onData((data: string) => {
         if (data === '\r') {
           const line = lineBufferRef.current
           lineBufferRef.current = ''
           term.write('\r\n')
           if (line.trim()) {
-            sendRef.current('terminal_input', { line })
+            sendRef.current('dev_cli', { query: line })
           } else {
             term.write('$ ')
           }

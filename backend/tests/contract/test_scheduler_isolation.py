@@ -62,15 +62,46 @@ def _restore_scheduler_modules():
 
     Snapshotting and restoring keeps the contract probes while leaving the
     process's module identity exactly as it was found.
+
+    DEBT FIX (pin_fd5b312e69bf / c01534199cdb): restoring ``sys.modules``
+    entries alone was NOT enough. A re-imported submodule also REBINDS the
+    parent package's attribute (``setattr(backend.agent, 'phase_manager',
+    <second object>)``), and stray second copies of OTHER ``backend.*``
+    modules can linger. Both leave the package graph inconsistent, which
+    later surfaced as ``AttributeError: 'module' object at backend.agent has
+    no attribute ...`` in every ``monkeypatch.setattr("backend.agent.…")``
+    downstream (provider-switch, display-text, speak-envelope,
+    task-start-revision suites). Now we restore parent attributes too and
+    evict any stray backend.* second copies so the graph is exactly as found.
     """
     _saved = {
         _m: sys.modules[_m] for _m in _SCHEDULER_MODULES if _m in sys.modules
     }
+    _saved_backend = {
+        _m: _mod for _m, _mod in sys.modules.items()
+        if _m == "backend" or _m.startswith("backend.")
+    }
     try:
         yield
     finally:
+        # 1. Evict stray second copies of ANY backend.* module that was not
+        #    in the snapshot (they are re-importable on demand).
+        for _m in list(sys.modules):
+            if (_m == "backend" or _m.startswith("backend.")) and _m not in _saved_backend:
+                del sys.modules[_m]
+        # 2. Restore the original module objects.
         for _m, _mod in _saved.items():
             sys.modules[_m] = _mod
+        # 3. Rebind parent-package attributes to the ORIGINAL objects.
+        for _m, _mod in _saved.items():
+            _parent, _, _leaf = _m.rpartition(".")
+            if _leaf:
+                _parent_mod = sys.modules.get(_parent)
+                if _parent_mod is not None:
+                    try:
+                        setattr(_parent_mod, _leaf, _mod)
+                    except Exception:
+                        pass  # frozen/namespace parent — nothing to rebind
 
 
 def _check_and_unpatch(mod_name, forbidden, label):

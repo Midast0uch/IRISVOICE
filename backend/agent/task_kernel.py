@@ -111,6 +111,9 @@ class TaskKernel:
         self._event_bus.subscribe(IRISStreamEvent.TOOL_RESULT, self._on_tool_result)
         self._event_bus.subscribe(IRISStreamEvent.TOOL_ERROR, self._on_tool_error)
         self._event_bus.subscribe(IRISStreamEvent.TASK_START, self._on_task_start)
+        # T8c (REQ-10 AC1): forward memory events (recall/compress/episodic) to
+        # the frontend so the card's memory slot can render them.
+        self._event_bus.subscribe(IRISStreamEvent.MEMORY_EVENT, self._on_memory_event)
 
     def _on_tool_call(self, payload: EventPayload) -> None:
         """Handle a tool:call event."""
@@ -228,6 +231,12 @@ class TaskKernel:
         )
 
     # ── Helper: emit to frontend ────────────────────────────────────────
+
+    def _on_memory_event(self, payload: EventPayload) -> None:
+        """Forward memory events (recall/compress/episodic) to the frontend
+        (T8c, REQ-10 AC1) so the card's memory slot can render them."""
+        data = payload.data or {}
+        self._emit_frontend("memory:event", data, payload)
 
     def _emit_frontend(
         self,

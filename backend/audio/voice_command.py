@@ -75,15 +75,24 @@ class ParakeetTranscriber:
                 # resolve-check against the Hub, so startup is instant and works
                 # with no internet.  Fall back to a normal (network) load only if
                 # the cache is missing (first-ever install / fresh machine).
+                # NO device_map (2026-08-17). `device_map="cuda"` routes the load
+                # through accelerate, which dispatches weights to the device
+                # TENSOR BY TENSOR from Python — that is the ~723-tensor Python
+                # walk this file's warm-up comment blames for GIL starvation, and
+                # it is why a fully-cached local load took 5-6 MINUTES here
+                # (12:12:24 -> 12:18:32) with no cache miss and 6.4 GB of VRAM
+                # free. The cache was never the problem; the dispatch method was.
+                #
+                # Loading plainly and then moving the whole module in one .to()
+                # keeps the per-tensor work in C rather than in the interpreter,
+                # so it neither drags nor holds the GIL for minutes.
+                _load_kwargs = {"torch_dtype": torch.float16}
                 try:
                     self._processor = AutoProcessor.from_pretrained(
                         model_name, local_files_only=True
                     )
                     self._model = ParakeetForTDT.from_pretrained(
-                        model_name,
-                        torch_dtype=torch.float16,
-                        device_map="cuda",
-                        local_files_only=True,
+                        model_name, local_files_only=True, **_load_kwargs
                     )
                 except (OSError, ValueError):
                     logger.warning(
@@ -92,10 +101,9 @@ class ParakeetTranscriber:
                     )
                     self._processor = AutoProcessor.from_pretrained(model_name)
                     self._model = ParakeetForTDT.from_pretrained(
-                        model_name,
-                        torch_dtype=torch.float16,
-                        device_map="cuda",
+                        model_name, **_load_kwargs
                     )
+                self._model.to("cuda")
                 self._model.eval()
 
                 # Free any residual CPU memory from processor init
@@ -625,6 +633,24 @@ class VoiceCommandHandler:
             target=_do_warm_up, daemon=True, name="iris-stt-warmup"
         ).start()
 
+    @staticmethod
+    def _agent_turn_active() -> bool:
+        """True while any AgentKernel is executing a DER turn.
+
+        Read defensively: this only gates an optimisation, so any error here
+        must report "not busy" and let the warm-up proceed rather than block it
+        forever.
+        """
+        try:
+            from backend.agent.agent_kernel import _agent_kernel_instances
+
+            return any(
+                getattr(k, "_der_active", False)
+                for k in list(_agent_kernel_instances.values())
+            )
+        except Exception:  # noqa: BLE001 — never let a probe stop the warm-up
+            return False
+
     def _parakeet_warm_up(self) -> None:
         """
         Pre-load the Parakeet GPU model in a background daemon thread so
@@ -662,6 +688,31 @@ class VoiceCommandHandler:
                     time.sleep(_delay)
             except Exception:
                 pass  # a bad env value must never skip the warm-up entirely
+
+            # DO NOT LOAD WHILE A TURN IS RUNNING (2026-08-17).
+            #
+            # The fixed delay above only protects the STARTUP BIND race. It does
+            # nothing about a user turn that starts while the warm-up is still
+            # pending — and this load is the GIL hog described above, so the two
+            # starve each other. Measured live: a DER turn arriving ~60 s after
+            # start turned a normally-quick load into 11:59:22 -> 12:04:21 (5
+            # minutes), while the turn's own between-step work crawled.
+            #
+            # So wait for idle. The warm-up is an optimisation with no deadline;
+            # a user turn is the actual work and always wins. Bounded so the
+            # pre-load still happens on a busy system rather than never.
+            _idle_deadline = time.time() + float(
+                os.environ.get("IRIS_STT_WARM_MAX_WAIT_S", "300") or 300
+            )
+            _waited_for_turn = False
+            while time.time() < _idle_deadline and self._agent_turn_active():
+                _waited_for_turn = True
+                time.sleep(2.0)
+            if _waited_for_turn:
+                logger.info(
+                    "[VoiceCommand] Parakeet pre-warm waited for the agent to go "
+                    "idle before loading (avoids GIL contention with the turn)"
+                )
 
             try:
                 if self._parakeet._ensure_loaded():

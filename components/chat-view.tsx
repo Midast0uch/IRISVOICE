@@ -1,8 +1,8 @@
 "use client"
 
-import React, { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from "react"
+import React, { useState, useEffect, useRef, useCallback, useMemo, useSyncExternalStore } from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { Send, X, BarChart3, Plus, Trash2, AlertCircle, Bell, AlertTriangle, Shield, Loader, CheckCircle, Info, History, Pin, Copy, ThumbsUp, ThumbsDown, Volume2, ChevronDown, ChevronUp, Download, Share, FileText, Mail, Video, Image, File, Smile, ExternalLink, RefreshCw, Pencil } from 'lucide-react';
+import { Send, X, BarChart3, Plus, Trash2, AlertCircle, Bell, AlertTriangle, Shield, Loader, CheckCircle, Info, History, Pin, Copy, ThumbsUp, ThumbsDown, Volume2, ChevronDown, ChevronUp, Download, Share, FileText, Mail, Video, Image, File, Smile, ExternalLink, RefreshCw, Pencil, Archive } from 'lucide-react';
 import { Icon } from '@iconify/react';
 import { Xur } from "@/components/Xur";
 import { useNavigation } from "@/contexts/NavigationContext";
@@ -17,11 +17,36 @@ import { useLauncherMode } from "@/hooks/useLauncherMode";
 import { ConversationChips } from "@/components/chat/ConversationChips";
 
 // Lazy-load entire workspace — only bundles in developer mode
-const DeveloperWorkspace = lazy(() => import("@/components/workspace/DeveloperWorkspace"))
+// (cli-workspace-unification T1: ChatView no longer replaces its body with the
+// workspace in dev mode — the unified scroll IS the dev-mode body. The Visual
+// Workspace Hub lives in the Dashboard Wing, not here.)
 import { SuggestionPills } from "@/components/chat/SuggestionPills";
 import { PermissionCard } from "@/components/chat/PermissionCard";
 import { QuestionCard } from "@/components/chat/QuestionCard";
+// cli-workspace-unification T5/T6 (REQ-4): project folder bar + archive dock
+import { WorkspaceTabBar } from "@/components/workspace/WorkspaceTabBar";
+import { ArchiveDock } from "@/components/workspace/ArchiveDock";
+import { useWorkspaceStore } from "@/stores/workspaceStore";
 import TaskListCard from "@/components/chat/TaskListCard";
+import {
+  renderBlueprintCellMatrixCLI,
+  type TaskCardProps,
+  type TaskStepItem,
+} from "@/lib/cli/CLITaskProgressRenderer";
+import type { TaskCard } from "@/hooks/useTaskProgress";
+import { isConversationReplyCard } from "@/hooks/useTaskProgress";
+import { logStructured } from "@/lib/logger";
+import {
+  subscribe as subscribeTerminal,
+  getSnapshot as getTerminalSnapshot,
+  toggleOpen as toggleTerminalOpen,
+  appendCommand,
+  appendOutput,
+  appendSystem,
+  clear as clearTerminal,
+  resolveTerminalAnswer,
+  TERMINAL_HELP,
+} from "@/components/terminal/terminalScrollback";
 import ContextPill from "@/components/chat/ContextPill";
 import ModelSwitcher from "@/components/ModelSwitcher";
 import { RichDocument } from "@/components/chat/RichDocument";
@@ -137,6 +162,56 @@ interface Conversation {
   isPinned: boolean;
   lastMessagePreview: string;
 }
+
+// ── cli-workspace-unification T4 (REQ-3): TaskCard → Blueprint Matrix ──────
+// The GUI card (TaskListCard) and the ASCII renderer must describe the SAME
+// task from the SAME store (useTaskProgress cards); only ONE renders per mode
+// (pin_d222bf18dc6b). This conversion never re-maps verbs locally — the
+// backend tool name flows straight into resolveVerb() (T8a contract).
+
+function taskStepStatusToMatrix(status: TaskCard["steps"][number]["status"]): TaskStepItem["status"] {
+  switch (status) {
+    case "working": return "running"
+    case "done": return "done"
+    case "fail":
+    case "error": return "failed"
+    case "vetoed": return "rerouted"
+    default: return "pending" // pending / skipped / unknown
+  }
+}
+
+function taskCardToMatrixProps(card: TaskCard): TaskCardProps {
+  return {
+    objective: card.planTitle || card.currentAction || "Task",
+    steps: card.steps.map((s): TaskStepItem => ({
+      id: s.id,
+      verb: s.toolName || "exec",
+      target: s.activeDetail
+        ? `${s.description} — ${s.activeDetail}${s.activeProgress ? ` (${s.activeProgress})` : ""}`
+        : s.description,
+      status: taskStepStatusToMatrix(s.status),
+      summary: s.resultPreview,
+      // branchLabel stays free-form backend data ("Diving Deeper" etc.) —
+      // never the literal "Sub-Loop" (task-card-v2 CT-9).
+      branchLabel: undefined,
+    })),
+    isThinking: card.isWorking && !card.currentAction,
+    currentThought: card.currentAction,
+    isCrystallized: card.learningSignal === "crystallized" || card.terminalState === "done",
+    memoryEvents: (card.memoryEvents || []).map((m) => ({
+      direction:
+        String(m.kind).includes("cryst")
+          ? "crystallize"
+          : String(m.kind).includes("store") || String(m.kind).includes("compress")
+            ? "store"
+            : "retrieve",
+      engine: "episodic" as const,
+      detail: typeof m.data?.detail === "string" ? m.data.detail : String(m.kind || "memory activity"),
+      timestamp: m.at,
+    })),
+  }
+}
+
 
 // Rich document pushed by the agent via the document:render WS event (plan Issue D.3).
 interface DocRender {
@@ -389,6 +464,25 @@ export function ChatWing({
   const [isInputFocused, setIsInputFocused] = useState(false)
   const [uploadHovered, setUploadHovered] = useState(false)
 
+  // Help lives in Workspace Bar (one-row, 32px) — chat's /help delegates there via iris:toggle_help
+  const handleHelp = useCallback(async () => {
+    window.dispatchEvent(new CustomEvent('iris:toggle_help'))
+  }, [])
+  // T2: the slide-over is gone; isOpen is kept only so legacy `>term` /
+  // question-answer auto-open calls in handleSendMessage stay no-op-safe.
+  const terminalOpen = useSyncExternalStore(subscribeTerminal, () => getTerminalSnapshot().isOpen, () => false)
+  // T6 (REQ-4): archive item count for the top-bar badge
+  const archivedCount = useWorkspaceStore((s) => s.archived.length)
+  const terminalQuestionCount = useSyncExternalStore(
+    subscribeTerminal,
+    () => getTerminalSnapshot().questions.length,
+    () => 0,
+  )
+  // cli-workspace-unification T4: full scrollback snapshot for the unified
+  // chronological scroll. The store keeps a stable cached snapshot object, so
+  // this only re-renders when the store actually mutates (bounded at 500 lines).
+  const terminalSnapshot = useSyncExternalStore(subscribeTerminal, getTerminalSnapshot, getTerminalSnapshot)
+
   // Suggestion pills — populated from text_response WS payload, cleared on send or dismiss
   const [currentSuggestions, setCurrentSuggestions] = useState<Suggestion[]>([])
 
@@ -518,6 +612,112 @@ export function ChatWing({
       }))
   ), [messages])
 
+  // ── cli-workspace-unification T1/T4 (REQ-1/REQ-3): unified timeline ──────
+  // Developer mode renders ONE chronological stream: chat messages and shell
+  // lines interleaved by timestamp inside a single overflow-y-auto. Lines the
+  // scrollback store mirrored from `iris:text_response` are EXCLUDED — those
+  // are already rendered as regular assistant messages here (source: "chat").
+  const unifiedTimeline = useMemo(() => {
+    if (!isDeveloper) return null
+    const items: Array<
+      | { kind: "message"; ts: number; message: Message; index: number }
+      | { kind: "shell"; ts: number; line: (typeof terminalSnapshot.lines)[number] }
+    > = []
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i]
+      items.push({ kind: "message", ts: m.timestamp?.getTime?.() ?? 0, message: m, index: i })
+    }
+    for (const line of terminalSnapshot.lines) {
+      if (line.source === "chat") continue
+      items.push({ kind: "shell", ts: line.ts, line })
+    }
+    items.sort((a, b) => a.ts - b.ts)
+    return items
+  }, [isDeveloper, messages, terminalSnapshot])
+
+  // ── Session 244: card↔response inline join ─────────────────────────────
+  // Cards render INLINE with the assistant message they belong to (matched
+  // by responseTurnId === message.id — the same join documents use), not
+  // bottom-stacked. Cards with no match (legacy replays, rehydrated cards
+  // whose response scrolled away) fall back to the bottom in creation order.
+  // Conversation-reply cards (settled, tool-less — isConversationReplyCard)
+  // are suppressed entirely: cards are for artifacts, not conversation.
+  const renderTimeline = useMemo(() => {
+    type Entry =
+      | { kind: "message"; ts: number; message: Message; index: number }
+      | { kind: "shell"; ts: number; line: (typeof terminalSnapshot.lines)[number] }
+      | { kind: "card"; ts: number; card: TaskCard }
+    const base: Entry[] = unifiedTimeline
+      ? [...unifiedTimeline]
+      : messages.map((message, index) => ({
+          kind: "message" as const,
+          ts: message.timestamp?.getTime?.() ?? 0,
+          message,
+          index,
+        }))
+    const out: Entry[] = []
+    const matched = new Set<string>()
+    for (const entry of base) {
+      out.push(entry)
+      if (entry.kind !== "message") continue
+      for (const card of taskProgress.cards) {
+        if (!card.responseTurnId || card.responseTurnId !== entry.message.id) continue
+        if (isConversationReplyCard(card)) continue
+        matched.add(card.cardId)
+        out.push({ kind: "card", ts: entry.ts, card })
+      }
+    }
+    // Unmatched cards: bottom fallback, creation order (suppressed ones too).
+    for (const card of taskProgress.cards) {
+      if (matched.has(card.cardId) || isConversationReplyCard(card)) continue
+      out.push({ kind: "card", ts: Number.MAX_SAFE_INTEGER, card })
+    }
+    return out
+  }, [unifiedTimeline, messages, taskProgress.cards])
+
+  // REQ-3 AC2: elapsed running timer for the active Blueprint Matrix. Ticks
+  // ONLY while a card is working (interval cleaned up on settle — bounded).
+  const [matrixElapsedSec, setMatrixElapsedSec] = useState(0)
+  const anyCardWorking = taskProgress.cards.some((c) => c.isWorking)
+  useEffect(() => {
+    if (!anyCardWorking) {
+      setMatrixElapsedSec(0)
+      return
+    }
+    const t = setInterval(() => setMatrixElapsedSec((s) => s + 1), 1000)
+    return () => clearInterval(t)
+  }, [anyCardWorking])
+
+  // REQ-10 AC1/AC2: true only in the dead-air window between prompt submit
+  // and the first streamed block — the glyph's exact mount window.
+  const awaitingFirstBlock = useMemo(() => {
+    if (!isDeveloper || !isTyping || taskProgressStillRunning) return false
+    if (!unifiedTimeline || unifiedTimeline.length === 0) return false
+    const last = unifiedTimeline[unifiedTimeline.length - 1]
+    return last.kind === "message" && last.message.sender === "user"
+  }, [isDeveloper, isTyping, taskProgressStillRunning, unifiedTimeline])
+
+  // T11 (REQ-8 AC1): Blueprint Matrix transition log — every status change of
+  // any card is recorded with ISO ts + conversation id. Compares a compact
+  // signature so unchanged renders never log.
+  const matrixSignatureRef = useRef<string>("")
+  useEffect(() => {
+    const sig = taskProgress.cards
+      .map((c) => `${c.cardId}:${c.steps.map((s) => s.status[0]).join("")}`)
+      .join("|")
+    if (sig === matrixSignatureRef.current) return
+    const prev = matrixSignatureRef.current
+    matrixSignatureRef.current = sig
+    if (!prev) return // first sight of the cards — not a transition
+    logStructured("matrix_transition", {
+      conversation_id: activeConversationId,
+      from: prev,
+      to: sig,
+    })
+  }, [taskProgress.cards, activeConversationId])
+
+
+
   const handleChipClick = useCallback((messageId: string) => {
     const el = document.getElementById(`msg-${messageId}`)
     if (!el) return
@@ -530,6 +730,20 @@ export function ChatWing({
   useEffect(() => {
     setUnreadCount(notifications.filter(n => !n.read).length);
   }, [notifications]);
+
+  // cli-workspace-unification T9 (REQ-5 AC3): deep-link from a Kanban card
+  // to its conversation thread. Fired by openAgentThread() in the Workspace
+  // Hub; switches only when the conversation exists locally.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const handler = (e: Event) => {
+      const id = (e as CustomEvent<{ conversation_id?: string }>).detail?.conversation_id
+      if (!id) return
+      handleSelectConversation(id)
+    }
+    window.addEventListener('iris:open_conversation', handler as EventListener)
+    return () => window.removeEventListener('iris:open_conversation', handler as EventListener)
+  }, [])
 
   // Mark all as read when notification panel opens
   useEffect(() => {
@@ -1281,6 +1495,87 @@ export function ChatWing({
     // impossible states: empty input and an actively-listening mic.
     if (!inputText.trim() || voiceState === 'listening') return
     const text = inputText.trim()
+
+    if (text === '/help' || text.toLowerCase().startsWith('/help ')) {
+      setInputText('')
+      setJustSent(true)
+      setTimeout(() => setJustSent(false), 300)
+      await handleHelp()
+      return
+    }
+
+    if (isDeveloper) {
+      const lower = text.toLowerCase()
+      const snap = getTerminalSnapshot()
+      const resolved = resolveTerminalAnswer(text, snap.questions)
+      if (resolved) {
+        setInputText('')
+        setJustSent(true)
+        setTimeout(() => setJustSent(false), 300)
+        appendCommand(text)
+        logStructured('cli_dispatch', { command: text, kind: 'question_answer', conversation_id: activeConversationId })
+        sendMessage?.('question_response', { question_id: resolved.questionId, answer: resolved.answer, source: 'cli' })
+        appendSystem(`[answered question ${resolved.questionId}]`)
+        if (!snap.isOpen) toggleTerminalOpen()
+        return
+      }
+      if (lower === '>term') {
+        setInputText('')
+        setJustSent(true)
+        setTimeout(() => setJustSent(false), 300)
+        appendCommand(text)
+        toggleTerminalOpen()
+        return
+      }
+      if (lower === 'clear' && snap.isOpen) {
+        setInputText('')
+        setJustSent(true)
+        setTimeout(() => setJustSent(false), 300)
+        clearTerminal()
+        return
+      }
+      if (lower === 'help' && snap.isOpen) {
+        setInputText('')
+        setJustSent(true)
+        setTimeout(() => setJustSent(false), 300)
+        appendCommand(text)
+        appendOutput(TERMINAL_HELP)
+        return
+      }
+      if (text.startsWith('/run ')) {
+        const query = text.slice(5).trim()
+        setInputText('')
+        setJustSent(true)
+        setTimeout(() => setJustSent(false), 300)
+        if (query) {
+          appendCommand(text)
+          appendSystem('[delegate] /run → dev_cli')
+          logStructured('cli_dispatch', { command: text, kind: 'run_delegate', conversation_id: activeConversationId })
+          sendMessage?.('dev_cli', { query })
+          if (!snap.isOpen) toggleTerminalOpen()
+        }
+        return
+      }
+      if (text.startsWith('>')) {
+        const line = text.slice(1).trim()
+        if (!line) {
+          setInputText('')
+          setJustSent(true)
+          setTimeout(() => setJustSent(false), 300)
+          if (!snap.isOpen) toggleTerminalOpen()
+          return
+        }
+        setInputText('')
+        setJustSent(true)
+        setTimeout(() => setJustSent(false), 300)
+        appendCommand(text)
+        appendSystem('[shell] → terminal_input')
+        logStructured('cli_dispatch', { command: text, kind: 'shell', conversation_id: activeConversationId })
+        sendMessage?.('terminal_input', { line: text })
+        if (!snap.isOpen) toggleTerminalOpen()
+        return
+      }
+    }
 
     setInputText("")
     setJustSent(true)
@@ -2641,16 +2936,30 @@ ${message.text}`;
               )}
             </AnimatePresence>
 
-            {/* Messages Area — or Developer Workspace in developer mode (never on remote/mobile) */}
-            {isDeveloper && !isRemoteView ? (
-              <Suspense fallback={
-                <div className="flex-1 flex items-center justify-center">
-                  <span className="text-xs text-white/20">Loading workspace...</span>
+            {/* T5 (REQ-4 AC1/AC2): compact 30px project folder bar — active
+                folder pill + file tabs + [+] opening FilePickerModal. Dev
+                mode only; personal mode never sees it. */}
+            {isDeveloper && !isRemoteView && (
+              <div className="h-[30px] shrink-0 flex items-center justify-between overflow-hidden relative z-20" style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                <div className="flex items-center h-full min-w-0 flex-1">
+                  <WorkspaceTabBar />
                 </div>
-              }>
-                <DeveloperWorkspace conversationId={activeConversationId || undefined} />
-              </Suspense>
-            ) : (
+                {/* T6: archive item count badge in the top bar */}
+                <div
+                  className="flex items-center gap-1 px-2 py-0.5 mr-1 rounded-full flex-shrink-0"
+                  style={{ background: `${glowColor}10`, border: `1px solid ${glowColor}20` }}
+                  title={`${archivedCount} archived item${archivedCount === 1 ? '' : 's'}`}
+                >
+                  <Archive size={10} style={{ color: `${glowColor}90` }} />
+                  <span className="text-[9px] tabular-nums" style={{ color: `${glowColor}90` }}>{archivedCount}</span>
+                </div>
+              </div>
+            )}
+
+            {/* Messages Area — THE unified chronological scroll (T1, REQ-1).
+                Developer mode no longer replaces this body with the workspace:
+                chat messages, shell output and Blueprint matrices all interleave
+                in this ONE overflow-y-auto (pin_c86a41fa673b). */}
             <div
               ref={messagesContainerRef}
               className="flex-1 overflow-y-auto px-3 py-3 relative z-10"
@@ -2665,7 +2974,7 @@ ${message.text}`;
               data-dbg-statuses={taskProgress.steps.map((s) => s.status).join(",")}
               data-dbg-working={String(taskProgress.isWorking)}
             >
-              {messages.length === 0 && !isTyping ? (
+              {(unifiedTimeline ? unifiedTimeline.length === 0 : messages.length === 0) && !isTyping ? (
                 <div 
                   className="flex-1 flex items-center justify-center h-full"
                   style={{ color: `${fontColor}50` }}
@@ -2688,7 +2997,70 @@ ${message.text}`;
                 </div>
               ) : (
                 <div className="space-y-0">
-                  {messages.map((message, index) => {
+                  {renderTimeline.map((entry) => {
+                    // T4 (REQ-1/REQ-3): shell lines interleave chronologically
+                    // between chat messages in developer mode — one stream.
+                    if (entry.kind === "shell") {
+                      const line = entry.line
+                      return (
+                        <div key={`shell-${line.id}`} className="py-0.5 font-mono text-[10px] leading-snug break-all whitespace-pre-wrap"
+                          style={{
+                            color:
+                              line.kind === "command" ? glowColor
+                              : line.kind === "error" ? '#ef4444'
+                              : line.kind === "system" ? 'rgba(255,255,255,0.45)'
+                              : 'rgba(255,255,255,0.75)',
+                          }}
+                        >
+                          {line.text}
+                        </div>
+                      )
+                    }
+                    // Session 244: task cards render INLINE — after the
+                    // assistant message they belong to (responseTurnId join),
+                    // or at the bottom for unmatched/legacy cards. Dev mode
+                    // renders the Blueprint Matrix; personal the GUI card.
+                    if (entry.kind === "card") {
+                      const card = entry.card
+                      return isDeveloper ? (
+                        <div key={`card-${card.cardId}`} className="py-1">
+                          <pre
+                            className="font-mono text-[9px] leading-[1.35] overflow-x-auto whitespace-pre"
+                            style={{ color: 'rgba(255,255,255,0.85)' }}
+                          >
+                            {renderBlueprintCellMatrixCLI(taskCardToMatrixProps(card), false)
+                              .split("\n")
+                              .map((ln, i) =>
+                                ln.includes("TASK :") ? (
+                                  <span key={i} style={{ color: glowColor }}>{ln}{"\n"}</span>
+                                ) : (
+                                  <span key={i}>{ln}{"\n"}</span>
+                                )
+                              )}
+                          </pre>
+                          {/* REQ-3 AC2: elapsed running timer while live */}
+                          {card.isWorking && (
+                            <div className="font-mono text-[9px] mt-0.5" style={{ color: glowColor }}>
+                              ⏱ {String(Math.floor(matrixElapsedSec / 60)).padStart(2, "0")}:
+                              {String(matrixElapsedSec % 60).padStart(2, "0")}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <TaskListCard
+                          key={card.cardId}
+                          steps={card.steps}
+                          turnId={card.turnId}
+                          mode={card.mode}
+                          planTitle={card.planTitle}
+                          learningSignal={card.learningSignal}
+                          memoryEvents={card.memoryEvents}
+                          currentAction={card.currentAction}
+                        />
+                      )
+                    }
+                    const message = entry.message
+                    const index = entry.index
                     // Smart message length handling
                     const charCount = message.text.length;
                     const contentType = getContentType(message);
@@ -3389,7 +3761,19 @@ ${message.text}`;
                       So: hide it while steps are still running, show it again
                       once they have all resolved and we are waiting on the
                       answer. */}
-                  {isTyping && !taskProgressStillRunning && (
+                  {isDeveloper ? (
+                    /* REQ-10 (T4a): branded loading glyph — mounted ONLY
+                       between prompt submit and the first streamed block
+                       (last timeline item is still the user's message), so at
+                       most one instance lives in the stream and it unmounts
+                       the moment any content (message, shell output, matrix)
+                       arrives. No orphaned rAF loops. */
+                    awaitingFirstBlock && (
+                      <div className="flex justify-start py-2">
+                        <Xur size={32} color={glowColor} speed={1.5} />
+                      </div>
+                    )
+                  ) : isTyping && !taskProgressStillRunning && (
                     <div>
                       <div 
                         className="h-px w-full my-3"
@@ -3415,27 +3799,14 @@ ${message.text}`;
 
                   <div ref={messagesEndRef} />
 
-                  {/* Agent task plan / progress (drives TaskListCard).
-                      T7 (REQ-3/REQ-4): every card belonging to the
-                      conversation currently being viewed, in the order they
-                      were created — not just the single most recent one. Keyed
-                      on card_id so switching away and back (or a duplicate
-                      task:start for a card already merged into) never renders
-                      the same card twice — the same no-duplicate guard
-                      document rehydration already relies on
-                      (__tests__/components/chat-view-rehydration.test.ts). */}
-                  {taskProgress.cards
-                    .filter((card) => card.steps.length > 0)
-                    .map((card) => (
-                      <TaskListCard
-                        key={card.cardId}
-                        steps={card.steps}
-                        turnId={card.turnId}
-                        mode={card.mode}
-                        planTitle={card.planTitle}
-                        learningSignal={card.learningSignal}
-                      />
-                    ))}
+                  {/* Agent task cards now render INLINE via renderTimeline
+                      (session 244): matched cards sit after their assistant
+                      message (responseTurnId === message.id), unmatched ones
+                      fall back to the bottom, and settled conversation-reply
+                      cards are suppressed entirely (cards are for artifacts,
+                      not conversation). The old bottom-stacked block is
+                      superseded — see the `entry.kind === "card"` branch in
+                      the render loop above. */}
 
 
                   {/* Permission Cards — inline tool approval UI */}
@@ -3482,21 +3853,26 @@ ${message.text}`;
                         options={q.options}
                         allowOther={q.allowOther}
                         timeoutSeconds={q.timeoutSeconds}
-                        onAnswer={(id, answer) => {
+                        onAnswer={(id, answer, source) => {
                           sendMessage?.('question_response', {
                             question_id: id,
                             answer,
+                            // T11-adjacent (REQ-8): forward the card's answer
+                            // provenance ("click" | "text") so GUI answers are
+                            // distinguishable from terminal answers
+                            // (source:'cli') end-to-end. Backend ignores
+                            // unknown fields — additive only.
+                            source,
                           })
                         }}
                       />
-                    ))}
-                  </AnimatePresence>
-                </div>
-              )}
-            </div>
-            )}
+                     ))}
+                   </AnimatePresence>
+                 </div>
+               )}
+             </div>
 
-            {/* Document View Modal */}
+             {/* Document View Modal */}
             <AnimatePresence>
               {documentModalMessage && (
                 <motion.div
@@ -3657,7 +4033,16 @@ ${message.text}`;
               })()}
             </AnimatePresence>
 
-            {/* Input Area - Command Line Style with Drag & Drop */}
+            {/* T6 (REQ-4 AC3): ArchiveDock directly above the input footer —
+                minimized card pills with 1-click restore; auto-collapses to a
+                2px glow line when empty. Dev mode only. */}
+            {isDeveloper && !isRemoteView && <ArchiveDock />}
+
+            {/* Input Area — single fused input for chat + shell.
+                T2 (REQ-1 AC3): TerminalSlideOver / TerminalWidget are removed
+                from developer mode ENTIRELY (decision locked 2026-08-21) —
+                all shell output streams into the unified scroll above via
+                terminalScrollback subscriptions, which are preserved. */}
             <div
               className={isRemoteView ? "px-4 pb-4 pt-4 flex-shrink-0 relative z-30 bg-black/60 border-t" : "px-3 pb-3 pt-4 flex-shrink-0 relative z-30 bg-black/60 border-t"}
               style={{ borderColor: 'rgba(255,255,255,0.05)' }}
@@ -3723,37 +4108,47 @@ ${message.text}`;
                 )}
               </AnimatePresence>
 
-                <div className={isRemoteView ? "relative flex items-end gap-2 px-1" : "relative flex items-end gap-2"} style={{ marginRight: '4px' }}>
+                {/* Mode-split input area (cli-workspace-unification scope fix):
+                    DEVELOPER gets the REQ-1/REQ-2 attached two-row footer;
+                    PERSONAL keeps the ORIGINAL single-row layout (Web toggle
+                    LEFT of the textarea, pill cluster RIGHT of it on the same
+                    row, aligned to the textarea glow line). REQ-2's user story
+                    is developer-scoped — the restructured footer must not leak
+                    into personal mode. */}
+                <div className={isDeveloper ? "relative" : (isRemoteView ? "relative flex items-end gap-2 px-1" : "relative flex items-end gap-2")} style={{ marginRight: '4px' }}>
 
-                {/* Web toggle — internet-access capability gate (plan Issue E).
-                    Left of the text area. OFF by default: agent has no web tools.
-                    ON: agent is granted web tools and decides when to use them.
-                    Every message still goes to the agent — this only flips the
-                    global internet-access flag via the set_web_mode WS message. */}
-                <div className="flex-shrink-0" style={{ transform: 'translateY(-6.5px)' }}>
-                <motion.button
-                  type="button"
-                  onClick={() => setWebMode(v => !v)}
-                  disabled={voiceState === 'listening'}
-                  className="flex items-center justify-center w-[32px] h-[32px] transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
-                  style={{
-                    color: webMode ? glowColor : 'rgba(255,255,255,0.5)',
-                    background: 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
-                    border: `1px solid ${webMode ? glowColor : `${fontColor}80`}`,
-                    borderRadius: '9999px',
-                    boxShadow: webMode ? `0 0 12px ${glowColor}40, inset 0 1px 0 rgba(255,255,255,0.03)` : '0 1px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.03)',
-                  }}
-                  whileHover={{ scale: 1.08 }}
-                  whileTap={{ scale: 0.92 }}
-                  title={webMode ? 'Web mode ON — next send researches on the web' : 'Web mode OFF — chat with the agent'}
-                  aria-pressed={webMode}
-                  aria-label="Toggle web research mode"
-                >
-                  <Icon icon={webMode ? 'mdi:web' : 'mdi:web-off'} width={14} height={14} />
-                </motion.button>
-                </div>
+                {/* PERSONAL MODE ONLY — original Web toggle LEFT of the textarea
+                    (restored from pre-spec HEAD). Developer mode keeps its Web
+                    toggle inside the REQ-2 toolbar row below. */}
+                {!isDeveloper && (
+                  <div className="flex-shrink-0" style={{ transform: 'translateY(-6.5px)' }}>
+                    <motion.button
+                      type="button"
+                      onClick={() => setWebMode(v => !v)}
+                      disabled={voiceState === 'listening'}
+                      className="flex items-center justify-center w-[32px] h-[32px] transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+                      style={{
+                        color: webMode ? glowColor : 'rgba(255,255,255,0.5)',
+                        background: 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
+                        border: `1px solid ${webMode ? glowColor : `${fontColor}80`}`,
+                        borderRadius: '9999px',
+                        boxShadow: webMode ? `0 0 12px ${glowColor}40, inset 0 1px 0 rgba(255,255,255,0.03)` : '0 1px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.03)',
+                      }}
+                      whileHover={{ scale: 1.08 }}
+                      whileTap={{ scale: 0.92 }}
+                      title={webMode ? 'Web mode ON — next send researches on the web' : 'Web mode OFF — chat with the agent'}
+                      aria-pressed={webMode}
+                      aria-label="Toggle web research mode"
+                    >
+                      <Icon icon={webMode ? 'mdi:web' : 'mdi:web-off'} width={14} height={14} />
+                    </motion.button>
+                  </div>
+                )}
 
-                <div className="flex-1 relative">
+                {/* Row 1 — prompt textarea. DEVELOPER: full-width (the ONE input,
+                    REQ-1). PERSONAL: flex-1 between the Web toggle and the pill
+                    cluster, per the original layout. */}
+                <div className={isDeveloper ? "relative" : "flex-1 relative"}>
                   <textarea
                     ref={inputRef as any}
                     value={inputText}
@@ -3796,22 +4191,47 @@ ${message.text}`;
                   )}
                 </div>
 
-                {/* Pill icons — bottom border matches textarea glow line */}
-                <div
-                  className="flex items-center gap-2 flex-shrink-0"
-                  style={{
-                    borderBottom: `1px solid ${inputText ? glowColor : `${glowColor}30`}`,
-                    transform: 'translateY(-6.5px)',
-                  }}
-                >
+                {/* DEVELOPER MODE ONLY — attached horizontal footer toolbar (REQ-2).
+                    Exact sequence: [Web 32] →8px→ [Upload 32] →12px→ |1px| →12px→
+                    [Model 116] →12px→ |1px| →12px→ [Chips 32] →10px→ [ContextPill 174]
+                    = 454px explicit width, centered in the 486px usable width
+                    (balanced ≈16px distribution margin). The ⏎ enter icon stays
+                    removed (AC4); its width is allocated to ContextPill (174px). */}
+                {isDeveloper ? (
+                <div className="flex items-center justify-center mt-2 h-[32px] flex-shrink-0">
+
+                  {/* Web toggle — internet-access capability gate (plan Issue E).
+                      OFF by default: agent has no web tools. ON: agent is granted
+                      web tools and decides when to use them. Every message still
+                      goes to the agent — this only flips the global internet-access
+                      flag via the set_web_mode WS message. Exact original glass
+                      styling preserved (REQ-2 AC3). */}
+                  <motion.button
+                    type="button"
+                    onClick={() => setWebMode(v => !v)}
+                    disabled={voiceState === 'listening'}
+                    className="flex items-center justify-center w-[32px] h-[32px] transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+                    style={{
+                      color: webMode ? glowColor : 'rgba(255,255,255,0.5)',
+                      background: 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
+                      border: `1px solid ${webMode ? glowColor : `${fontColor}80`}`,
+                      borderRadius: '9999px',
+                      boxShadow: webMode ? `0 0 12px ${glowColor}40, inset 0 1px 0 rgba(255,255,255,0.03)` : '0 1px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.03)',
+                    }}
+                    whileHover={{ scale: 1.08 }}
+                    whileTap={{ scale: 0.92 }}
+                    title={webMode ? 'Web mode ON — next send researches on the web' : 'Web mode OFF — chat with the agent'}
+                    aria-pressed={webMode}
+                    aria-label="Toggle web research mode"
+                  >
+                    <Icon icon={webMode ? 'mdi:web' : 'mdi:web-off'} width={14} height={14} />
+                  </motion.button>
 
                   {/* Send pill removed (Phase 5 REQ-1 AC1) — Enter already sends
-                      (:1535, :3459 onKeyDown handlers) and the button's disabled
-                      conditions now live inside handleSendMessage (:1137,
-                      REQ-1 AC3 / D-1), so removing it drops no guard. The
-                      model switcher takes the freed slot below. */}
+                      and the ⏎ icon is permanently removed by cli-workspace-unification
+                      REQ-2 AC4; its width is allocated to ContextPill. */}
 
-                  {/* Upload pill — glows on hover */}
+                  {/* Upload pill — glows on hover. Exact original glass styling (AC3). */}
                   <input
                     ref={fileInputRef}
                     type="file"
@@ -3824,7 +4244,7 @@ ${message.text}`;
                     onMouseEnter={() => setUploadHovered(true)}
                     onMouseLeave={() => setUploadHovered(false)}
                     disabled={voiceState === 'listening'}
-                    className="flex items-center justify-center w-[32px] h-[32px] transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
+                    className="flex items-center justify-center w-[32px] h-[32px] ml-[8px] transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
                     style={{
                       color: uploadHovered ? glowColor : 'rgba(255,255,255,0.7)',
                       background: 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
@@ -3839,24 +4259,23 @@ ${message.text}`;
                     <Icon icon="material-symbols:arrow-upload-progress" width={18} />
                   </motion.button>
 
-                  {/* Divider */}
-                  <div className="flex-shrink-0 rounded-full" style={{ width: '1px', height: '20px', background: glowColor, opacity: 0.3 }} />
+                  {/* Divider 1 */}
+                  <div className="flex-shrink-0 rounded-full ml-[12px]" style={{ width: '1px', height: '20px', background: glowColor, opacity: 0.3 }} />
 
                   {/* Model switcher — Phase 5 REQ-2. Sibling of ContextPill
                       (D-2), never a new ContextPill prop (CT-S1). Reads
                       useInferenceState and writes through its existing
-                      sendRoleBinding — no new backend surface (D-3).
-                      Rendered on the LEFT per layout order. */}
-                  <ModelSwitcher glowColor={glowColor} fontColor={fontColor} />
+                      sendRoleBinding — no new backend surface (D-3). */}
+                  <div className="ml-[12px] flex-shrink-0">
+                    <ModelSwitcher glowColor={glowColor} fontColor={fontColor} />
+                  </div>
 
                   {/* Conversation chips pill — its own fixed 32x32 icon
                       button, sits BETWEEN the ModelSwitcher and ContextPill
-                      per layout order. Phase 5 REQ-3 edge case: this
-                      container used to also hold ContextPill, clipping the
-                      pill's own max-w-[200px] glass panel to 32px. Split
-                      apart below. */}
+                      per the REQ-2 sequence. Opens its popover drawer to the
+                      LEFT of ContextPill (REQ-2 AC5). */}
                   <div
-                    className="flex items-center justify-center w-[32px] h-[32px] flex-shrink-0 ml-1.5"
+                    className="flex items-center justify-center w-[32px] h-[32px] flex-shrink-0 ml-[12px]"
                     style={{
                       background: 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
                       border: `1px solid ${fontColor}80`,
@@ -3872,20 +4291,92 @@ ${message.text}`;
                     />
                   </div>
 
-                  {/* ContextPill — declares its own dark-glass panel
-                      (max-w-[200px]); it is no longer squeezed into a fixed
-                      w-[32px] h-[32px] container (REQ-3 edge case). Freed by
-                      REQ-1's Send-pill removal below. Rendered to the RIGHT of
-                      the ConversationChips. Internal order is phase label then
-                      token numbers (numbers sit to the right of the working
-                      state, e.g. "IDLE  0 / 128.0k"). */}
-                  <ContextPill
-                    usedTokens={contextUsage.used}
-                    maxTokens={contextUsage.max}
-                    phase={voiceState}
-                    currentAction={taskProgress.currentAction}
-                  />
+                  {/* ContextPill — declares its own dark-glass panel; the ⏎
+                      enter icon's freed width gives it the full 174px REQ-2
+                      allocation. Rendered LAST in the sequence (far right).
+                      Internal order is phase label then token numbers
+                      (e.g. "IDLE  0 / 128.0k"). */}
+                  <div className="ml-[10px] flex-shrink-0">
+                    <ContextPill
+                      usedTokens={contextUsage.used}
+                      maxTokens={contextUsage.max}
+                      phase={voiceState}
+                      currentAction={taskProgress.currentAction}
+                    />
+                  </div>
                 </div>
+                ) : (
+                <>
+                  {/* PERSONAL MODE — original single-row pill cluster, restored
+                      from pre-spec HEAD. Pills sit RIGHT of the textarea on the
+                      SAME row; bottom border matches the textarea glow line.
+                      The send/⏎ pill was already removed in Phase 5 (pre-spec),
+                      so its absence here is original behavior, not REQ-2 AC4. */}
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    onChange={handleFileInputChange}
+                    className="hidden"
+                    accept="*/*"
+                  />
+                  <div
+                    className="flex items-center gap-2 flex-shrink-0"
+                    style={{
+                      borderBottom: `1px solid ${inputText ? glowColor : `${glowColor}30`}`,
+                      transform: 'translateY(-6.5px)',
+                    }}
+                  >
+                    <motion.button
+                      onClick={() => fileInputRef.current?.click()}
+                      onMouseEnter={() => setUploadHovered(true)}
+                      onMouseLeave={() => setUploadHovered(false)}
+                      disabled={voiceState === 'listening'}
+                      className="flex items-center justify-center w-[32px] h-[32px] transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
+                      style={{
+                        color: uploadHovered ? glowColor : 'rgba(255,255,255,0.7)',
+                        background: 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
+                        border: `1px solid ${fontColor}80`,
+                        borderRadius: '9999px',
+                        boxShadow: uploadHovered ? `0 0 12px ${glowColor}30, inset 0 1px 0 rgba(255,255,255,0.03)` : '0 1px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.03)',
+                      }}
+                      whileHover={{ scale: 1.08 }}
+                      whileTap={{ scale: 0.92 }}
+                      title="Upload file"
+                    >
+                      <Icon icon="material-symbols:arrow-upload-progress" width={18} />
+                    </motion.button>
+
+                    {/* Divider */}
+                    <div className="flex-shrink-0 rounded-full" style={{ width: '1px', height: '20px', background: glowColor, opacity: 0.3 }} />
+
+                    <ModelSwitcher glowColor={glowColor} fontColor={fontColor} />
+
+                    <div
+                      className="flex items-center justify-center w-[32px] h-[32px] flex-shrink-0 ml-1.5"
+                      style={{
+                        background: 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
+                        border: `1px solid ${fontColor}80`,
+                        borderRadius: '6px',
+                        boxShadow: '0 1px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.03)',
+                      }}
+                    >
+                      <ConversationChips
+                        chips={conversationChips}
+                        glowColor={glowColor}
+                        onChipClick={handleChipClick}
+                        containerRef={messagesContainerRef}
+                      />
+                    </div>
+
+                    <ContextPill
+                      usedTokens={contextUsage.used}
+                      maxTokens={contextUsage.max}
+                      phase={voiceState}
+                      currentAction={taskProgress.currentAction}
+                    />
+                  </div>
+                </>
+                )}
               </div>
             </div>
           </motion.div>

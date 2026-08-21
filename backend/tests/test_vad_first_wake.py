@@ -28,7 +28,13 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-logging.disable(logging.CRITICAL)
+# DEBT FIX (pin_fd5b312e69bf): was module-level logging.disable(CRITICAL) -
+# process-global state that killed all caplog assertions in later tests.
+@pytest.fixture(autouse=True)
+def _silence_logs():
+    logging.disable(logging.CRITICAL)
+    yield
+    logging.disable(logging.NOTSET)
 
 # Stub the heavy backend.audio submodules so we can import pipeline +
 # voice_command without loading sounddevice/torch.  We do NOT stub `backend`

@@ -87,6 +87,15 @@ export interface CardChassisProps {
   onCollapsedChange?: (collapsed: boolean) => void
   defaultCollapsed?: boolean
   className?: string
+  /**
+   * Fill mode (T11a) — makes the chassis occupy its parent's full height as a
+   * flex column (surface `h-full flex flex-col`, body `flex-1 overflow-y-auto`),
+   * so the EXPANDED document panel (`DocumentPanel`) renders on the SAME Liquid
+   * Ink surface as the inline `RichDocument` card it expands from (REQ-2 AC6) —
+   * expanding must not change the surface mid-interaction. Off by default, so
+   * the inline card tests (T8/T9/T10/T11) are untouched.
+   */
+  fill?: boolean
   "aria-label"?: string
 }
 
@@ -103,6 +112,7 @@ export function CardChassis({
   onCollapsedChange,
   defaultCollapsed = false,
   className = "",
+  fill = false,
   ...rest
 }: CardChassisProps) {
   const [internalCollapsed, setInternalCollapsed] = useState(defaultCollapsed)
@@ -122,12 +132,14 @@ export function CardChassis({
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -4 }}
       transition={{ duration: 0.22 }}
-      className={`my-2 w-full select-none antialiased ${className}`}
+      className={`w-full select-none antialiased ${fill ? "h-full my-0" : "my-2"} ${className}`}
       aria-label={rest["aria-label"]}
     >
       <div
         data-testid="chassis-surface"
-        className="relative rounded-lg overflow-hidden transition-all duration-300"
+        className={`relative rounded-lg overflow-hidden transition-all duration-300 ${
+          fill ? "h-full flex flex-col" : ""
+        }`}
         style={{
           background:
             "linear-gradient(135deg, rgba(8, 8, 16, 0.97) 0%, rgba(14, 12, 20, 0.98) 50%, rgba(8, 8, 16, 0.97) 100%)",
@@ -155,9 +167,14 @@ export function CardChassis({
         {/* REQ-1 AC5 padding — the ONLY place it is applied. Cards receive
             slots inside this element and have no way to render a sibling
             that sits outside it, so padding cannot be accidentally skipped. */}
-        <div className="relative p-4 pl-5" data-testid="chassis-padding">
+        <div
+          className={`relative p-4 pl-5 ${
+            fill ? "flex-1 flex flex-col min-h-0" : ""
+          }`}
+          data-testid="chassis-padding"
+        >
           {/* Header row */}
-          <div className="flex items-center justify-between gap-2.5">
+          <div className={`flex items-center justify-between gap-2.5 ${fill ? "shrink-0" : ""}`}>
             <div className="flex items-center gap-2 min-w-0 flex-1">{header}</div>
 
             <div className="flex items-center gap-2 shrink-0">
@@ -199,12 +216,12 @@ export function CardChassis({
           {/* Collapsible body */}
           <AnimatePresence initial={false}>
             {children && (!canCollapse || !isCollapsed) && (
-              <motion.div
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: "auto", opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                className="mt-2.5"
-              >
+               <motion.div
+                 initial={{ height: 0, opacity: 0 }}
+                 animate={{ height: "auto", opacity: 1 }}
+                 exit={{ height: 0, opacity: 0 }}
+                 className={`mt-2.5 ${fill ? "flex-1 overflow-y-auto min-h-0" : ""}`}
+               >
                 {children}
               </motion.div>
             )}

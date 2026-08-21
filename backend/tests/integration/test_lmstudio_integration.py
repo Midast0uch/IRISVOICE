@@ -16,8 +16,15 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 # ── Path setup ──────────────────────────────────────────────────────────────
-_TEST_DIR    = os.path.dirname(os.path.abspath(__file__))  # IRISVOICE/backend/tests
-_BACKEND_PKG = os.path.dirname(_TEST_DIR)                  # IRISVOICE/backend
+# DEBT FIX (pin_fd5b312e69bf): derive paths from the REAL package location,
+# not from __file__ + CWD assumptions — when pytest collects with a relative
+# __file__ under a different cwd this used to resolve IRISVOICE to
+# .../backend and look for backend/backend/iris_gateway.py (FileNotFoundError
+# at setup, order-dependent).
+import backend as _backend_pkg
+
+_TEST_DIR    = os.path.dirname(os.path.abspath(__file__))
+_BACKEND_PKG = os.path.dirname(os.path.abspath(_backend_pkg.__file__))  # IRISVOICE/backend
 _IRISVOICE   = os.path.dirname(_BACKEND_PKG)               # IRISVOICE
 if _IRISVOICE not in sys.path:
     sys.path.insert(0, _IRISVOICE)

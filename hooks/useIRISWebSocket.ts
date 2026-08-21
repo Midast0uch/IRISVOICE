@@ -1537,6 +1537,7 @@ export function useIRISWebSocket(
       case "task:done":
       case "task:fail":
       case "task:learning":
+      case "memory:event":
       case "tool:call":
       case "tool:result":
       case "tool:error": {
@@ -1708,6 +1709,13 @@ export function useIRISWebSocket(
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('iris:sync_state_ack', { detail: payload }))
         }
+        break
+      }
+
+      case 'model:download_progress': {
+        // cli-workspace-unification T10 (REQ-9 AC7): HF download progress
+        // broadcast — mirror to a window event for the unified surface.
+        window.dispatchEvent(new CustomEvent('iris:model_download_progress', { detail: payload }))
         break
       }
 

@@ -65,6 +65,11 @@ const CARD_PATH_SURFACES: Array<{ name: string; file: string; owner: string }> =
     file: "components/chat/DocumentPanel.tsx",
     owner: "T11a — MISSED IN THE FIRST DRAFT; this is the row that catches it",
   },
+  {
+    name: "PermissionsSettingsCard",
+    file: "components/chat/PermissionsSettingsCard.tsx",
+    owner: "T26 — permissions settings surface (effective mode + standing list)",
+  },
 ]
 
 /** MESSAGE-PATH / non-card surfaces (REQ-2 AC7) — `Message.sender` is

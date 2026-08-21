@@ -147,6 +147,17 @@ class MCM:
         # der_fan_traces (written by DCP Pass 4). Mode-agnostic.
         fan_summary = self._build_fan_summary(self.session_id)
 
+        # T8c (REQ-10 AC5): emit a memory event so the card's memory slot
+        # renders REAL compression activity (never fabricated). Fire-and-forget.
+        self._emit_memory_event(
+            "compress",
+            {
+                "active_task": active_task,
+                "active_files": active_files,
+                "compressed_at": time.time(),
+            },
+        )
+
         return {
             "nbl": nbl,
             "active_task": active_task,
@@ -157,6 +168,27 @@ class MCM:
             "fan_summary": fan_summary,
             "compressed_at": time.time(),
         }
+
+    # ── Memory-event emit (T8c, REQ-10 AC5) ───────────────────────────────
+    def _emit_memory_event(self, kind: str, data: Optional[dict] = None) -> None:
+        """Fire-and-forget memory-event emit.
+
+        Off the hot path: never blocks the caller and never raises. The
+        EventBus is optional infrastructure — a failure here must never crash
+        compression or recall (which the Wormhole doc flags as a latency-
+        sensitive path). Mirrors the existing ``_emit_context_usage`` pattern
+        in agent_kernel.py.
+        """
+        try:
+            from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+
+            get_event_bus().emit(
+                IRISStreamEvent.MEMORY_EVENT,
+                data={"kind": kind, **(data or {})},
+                session_id=self.session_id,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("[MCM] memory event emit skipped: %s", exc)
 
     def recall(self, query: str) -> list[dict]:
         """
@@ -207,6 +239,11 @@ class MCM:
                     "source": "file_match",
                     "files": matched,
                 })
+
+        # T8c (REQ-10 AC5): emit a memory event for the recall pass. Fire-and-
+        # forget and OFF the recall hot path — the Wormhole doc flags mid-stream
+        # recall latency as unresolved, so this must never block the return.
+        self._emit_memory_event("recall", {"query": (query or "")[:120]})
 
         return results
 

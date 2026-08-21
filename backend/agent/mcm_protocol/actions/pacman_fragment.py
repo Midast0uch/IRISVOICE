@@ -5,6 +5,10 @@ Skips conversational turns — only stores tool outputs and DER results.
 """
 from __future__ import annotations
 import logging
+import queue
+import threading
+import time
+from typing import Callable, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +137,79 @@ def fragment_document_provenance(episodic, document_id: str, conversation_id: st
         logger.debug("[pacman_fragment] document provenance skipped: %s", exc)
 
 
+# ── Off-critical-path fragment writer (2026-08-17) ─────────────────────────
+# Storing a fragment means EMBEDDING it, and the embedder is CPU-only by spec
+# (REQ-1 AC6 / Phase 3 — n_gpu_layers=0 in memory/embedding.py). Measured on
+# this host: 2.9 s per ~1 KB chunk, so a 14-chunk tool result costs ~41 s.
+#
+# That was being paid INSIDE the DER step loop, so the user's answer waited on
+# memory bookkeeping: last step finished 12:16:00, answer arrived 12:17:19.
+# Roughly 70 of those 79 seconds were embedding, not thinking.
+#
+# This action is already contractually best-effort ("Never blocks", "a Pacman
+# write failure must not affect the doc store"), so moving it off the turn's
+# critical path keeps the contract and returns the time to the user. A SINGLE
+# serialized worker (not a thread per call) so CPU embedding never thrashes,
+# and a bounded queue so a burst degrades by dropping the oldest bookkeeping
+# rather than growing without limit.
+_FRAGMENT_QUEUE: "queue.Queue[tuple[Callable[[], None], str]]" = queue.Queue(maxsize=64)
+_FRAGMENT_WORKER: Optional[threading.Thread] = None
+_FRAGMENT_WORKER_LOCK = threading.Lock()
+
+
+def _fragment_worker_loop() -> None:
+    # Filing happens in the background, so nothing downstream waits on it and
+    # nothing checks that it landed (user decision 2026-08-17: speed preferred).
+    # That makes the LOG the only evidence the note was actually filed — every
+    # job reports success or failure at INFO with its queue depth, so a silent
+    # breakage is visible in the log instead of showing up as missing memory
+    # weeks later.
+    while True:
+        job, label = _FRAGMENT_QUEUE.get()
+        _t0 = time.time()
+        try:
+            job()
+            logger.info(
+                "[pacman_fragment] FILED %s in %.1fs (queue depth %d)",
+                label, time.time() - _t0, _FRAGMENT_QUEUE.qsize(),
+            )
+        except Exception as exc:  # noqa: BLE001 — bookkeeping never escalates
+            logger.error(
+                "[pacman_fragment] FILE FAILED %s after %.1fs: %s",
+                label, time.time() - _t0, exc, exc_info=True,
+            )
+        finally:
+            _FRAGMENT_QUEUE.task_done()
+
+
+def _submit_fragment_job(job: "Callable[[], None]", label: str = "fragment") -> bool:
+    """Hand a store to the background worker. True if queued.
+
+    Returns False when the queue is saturated so the caller can decide; the
+    caller drops it, because a late fragment is worth less than a stalled turn.
+    """
+    global _FRAGMENT_WORKER
+    if _FRAGMENT_WORKER is None or not _FRAGMENT_WORKER.is_alive():
+        with _FRAGMENT_WORKER_LOCK:
+            if _FRAGMENT_WORKER is None or not _FRAGMENT_WORKER.is_alive():
+                _FRAGMENT_WORKER = threading.Thread(
+                    target=_fragment_worker_loop,
+                    daemon=True,
+                    name="iris-pacman-fragment",
+                )
+                _FRAGMENT_WORKER.start()
+    try:
+        _FRAGMENT_QUEUE.put_nowait((job, label))
+        return True
+    except queue.Full:
+        # Loud: a dropped fragment is memory that will never exist, and the
+        # user explicitly asked to be able to track filing failures.
+        logger.error(
+            "[pacman_fragment] QUEUE FULL — dropped %s (memory not filed)", label,
+        )
+        return False
+
+
 def _is_fragment_candidate(text: str) -> bool:
     """Return True if text looks like a DER step output worth storing."""
     if len(text) < _MIN_FRAGMENT_CHARS:
@@ -159,39 +236,49 @@ def execute(ctx: dict, params: dict) -> dict:
         if not episodic or not hasattr(episodic, "fragment_and_store"):
             return ctx
 
-        # Persist credibility/citation provenance for external/web tools
-        # (REQ-22) BEFORE the content fragment, so the untrusted scoring is
-        # recallable in the reference zone. Never blocks the content store.
-        if is_external_tool(tool_name):
-            _store_credibility_metadata(
-                episodic,
-                session_id,
-                tool_name,
-                ctx.get("credibility_map"),
-                ctx.get("citation_index"),
-            )
-
         # Strip MCM_MITO tags before storing
         import re
         clean_text = re.sub(r"<MCM_MITO>.*?</MCM_MITO>", "", response_text,
                             flags=re.DOTALL).strip()
 
-        if not _is_fragment_candidate(clean_text):
+        _is_external = is_external_tool(tool_name)
+        _credibility = ctx.get("credibility_map")
+        _citations = ctx.get("citation_index")
+        _store_content = _is_fragment_candidate(clean_text)
+        if not _store_content and not _is_external:
             return ctx
 
         chunk_type = "der_output" if tool_name else "context_fragment"
         # An explicit zone hint (e.g. from a turn that touched external
         # sources) wins; otherwise route by tool_name. See trust-routing W2.
         zone = ctx.get("zone") or _zone_for_tool(tool_name)
-        episodic.fragment_and_store(
-            content=clean_text,
-            session_id=session_id,
-            chunk_type=chunk_type,
-            zone=zone,
-            tool_name=tool_name or None,
+
+        def _do_store() -> None:
+            # Credibility/citation provenance for external/web tools (REQ-22)
+            # goes in BEFORE the content fragment, so the untrusted scoring is
+            # recallable in the reference zone. Order preserved by running both
+            # inside one job on the single serialized worker.
+            if _is_external:
+                _store_credibility_metadata(
+                    episodic, session_id, tool_name, _credibility, _citations,
+                )
+            if _store_content:
+                episodic.fragment_and_store(
+                    content=clean_text,
+                    session_id=session_id,
+                    chunk_type=chunk_type,
+                    zone=zone,
+                    tool_name=tool_name or None,
+                )
+                logger.debug(
+                    "[pacman_fragment] stored %s fragment (%d chars)",
+                    chunk_type, len(clean_text),
+                )
+
+        _submit_fragment_job(
+            _do_store,
+            f"{chunk_type}/{tool_name or 'conversation'} ({len(clean_text)} chars)",
         )
-        logger.debug("[pacman_fragment] stored %s fragment (%d chars)",
-                     chunk_type, len(clean_text))
 
     except Exception as exc:
         logger.debug("[pacman_fragment] skipped: %s", exc)

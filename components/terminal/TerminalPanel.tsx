@@ -105,7 +105,7 @@ export function TerminalPanel({ glowColor = '#60a5fa', sendMessage }: TerminalPa
       // Welcome banner
       term.writeln('\x1b[2m┌─────────────────────────────────────────┐\x1b[0m')
       term.writeln(`\x1b[2m│\x1b[0m  \x1b[1m\x1b[38;2;96;165;250mIRIS Developer Terminal\x1b[0m                \x1b[2m│\x1b[0m`)
-      term.writeln('\x1b[2m│  Routes through agent kernel DER loop   │\x1b[0m')
+      term.writeln('\x1b[2m│  Delegate — IRIS picks the tool for you   │\x1b[0m')
       term.writeln('\x1b[2m└─────────────────────────────────────────┘\x1b[0m')
       term.writeln('')
       term.write('$ ')

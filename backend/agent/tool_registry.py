@@ -450,23 +450,53 @@ def register_builtin_tools() -> None:
     specs: List[ToolSpec] = []
 
     # ── Vision (routed to the vision MCP server) ─────────────────────────────
+    # THESE TOOLS LOOK AT THE USER'S LIVE SCREEN. Their descriptions must say so
+    # and must carry the same anti-misuse guardrail `take_screenshot` already
+    # has, because the model picks tools by reading them.
+    #
+    # Observed live 2026-08-17 (conv-23): DER step 4 was "Extract dev script and
+    # RAM amount from COLLECTED DATA" — pure synthesis over steps 1-3 — and the
+    # Tool-role model chose `vision_get_context`, whose entire description was
+    # "Get current screen context from VisionSystem". Reading that list, "get
+    # current screen CONTEXT" looks like "retrieve the context I collected". It
+    # then blocked 4m41s cold-loading the vision server and returned a
+    # description of an unrelated YouTube page that fed into the final answer.
+    #
+    # Vision is NOT browser-only (it reads the desktop too), so the fix is not
+    # to gate it on web mode — it is to make the descriptions unambiguous about
+    # what they see and when NOT to reach for them.
+    _VISION_GUARD = (
+        " ONLY use when the task requires SEEING what is on the user's screen "
+        "right now. Do NOT use it to retrieve, recall or summarise data that "
+        "earlier steps already collected — that data is in the step results, "
+        "not on the screen."
+    )
     specs += [
         ToolSpec(
             name="vision_detect_element",
-            description="Detect a GUI element in a screenshot by description",
+            description=(
+                "Locate a GUI element on the user's LIVE SCREEN by description."
+                + _VISION_GUARD
+            ),
             parameters={"description": {"type": "string", "description": "Element to find"}},
             category="vision", executor="mcp", mcp_server="vision",
             mcp_tool="vision.find_ui_element", parallel_safe=True,
         ),
         ToolSpec(
             name="vision_analyze_screen",
-            description="Analyze the current screen and describe what's visible",
+            description=(
+                "Capture the user's LIVE SCREEN and describe what is visible on it."
+                + _VISION_GUARD
+            ),
             parameters={}, category="vision", executor="mcp", mcp_server="vision",
             mcp_tool="vision.analyze_screen", parallel_safe=True,
         ),
         ToolSpec(
             name="vision_validate_action",
-            description="Validate if an action can be performed on an element",
+            description=(
+                "Check whether a GUI action can be performed on an element "
+                "currently visible on the user's LIVE SCREEN." + _VISION_GUARD
+            ),
             parameters={
                 "action": {"type": "string", "description": "Action (click, type, etc.)"},
                 "target": {"type": "string", "description": "Element description"},
@@ -476,7 +506,10 @@ def register_builtin_tools() -> None:
         ),
         ToolSpec(
             name="vision_get_context",
-            description="Get current screen context from VisionSystem",
+            description=(
+                "Describe what is on the user's LIVE SCREEN at this moment "
+                "(captures a frame from the display)." + _VISION_GUARD
+            ),
             parameters={}, category="vision", executor="mcp", mcp_server="vision",
             mcp_tool="vision.describe_live_frame", parallel_safe=True,
         ),

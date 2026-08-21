@@ -33,6 +33,39 @@ logger = logging.getLogger(__name__)
 RING_BUFFER_SIZE = 100
 MAX_EVENT_QUEUE_SIZE = 1000
 
+# cli-workspace-unification T11 (REQ-8): structured lifecycle logging.
+# Task-lifecycle emits are appended as JSON lines to .iris-logs/ with
+# ISO-8601 timestamps and the conversation id, so CLI dispatches, matrix
+# transitions and card events can be correlated end-to-end. Uses the stdlib
+# logging pipeline (thread-safe, buffered) — never blocks the emit path on
+# user-facing latency, and a logging failure is swallowed by design.
+_STRUCTURED_LIFECYCLE_EVENTS: Optional[Set[str]] = {"task:start", "task:done", "task:fail"}
+_structured_logger = logging.getLogger("iris.structured.events")
+_structured_logger.setLevel(logging.INFO)
+_structured_logger.propagate = False
+_structured_logger_initialized = False
+
+
+def _ensure_structured_handler() -> None:
+    """Attach the JSONL file handler once (lazy — no I/O at import time)."""
+    global _structured_logger_initialized
+    if _structured_logger_initialized:
+        return
+    _structured_logger_initialized = True
+    try:
+        from pathlib import Path
+        from logging.handlers import RotatingFileHandler
+
+        log_dir = Path(".iris-logs")
+        log_dir.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(
+            log_dir / "backend-events.jsonl", maxBytes=5_000_000, backupCount=1
+        )
+        handler.setFormatter(logging.Formatter("%(message)s"))
+        _structured_logger.addHandler(handler)
+    except Exception as exc:  # pragma: no cover — observability is best-effort
+        logger.warning("[EventBus] structured log handler unavailable: %s", exc)
+
 
 # ── Event types ────────────────────────────────────────────────────────────
 
@@ -79,6 +112,12 @@ class IRISStreamEvent(enum.Enum):
     # crystallized (VERIFIED -> skill captured). Drives the Pacman OrbCanvas
     # particles on the TaskListCard border. Carries real state, never narration.
     TASK_LEARNING = "task:learning"
+    # REQ-10 (T8c): memory activity events (recall / compress / episodic) emitted
+    # by MCM (mcm.py compress/recall) and the agent kernel (get_task_context).
+    # Forwarded to the frontend so the card's memory slot renders REAL memory
+    # activity (AC1) — never fabricated. Payload: {"kind", ...fields} matching
+    # the MemoryEventKind registry on the frontend.
+    MEMORY_EVENT = "memory:event"
     # REQ-10: a critical step failed past the recovery budget (grafts
     # exhausted / cycle limit hit with incomplete critical work). The agent
     # MUST NOT silently report partial completion — it escalates to the user
@@ -257,6 +296,32 @@ class EventBus:
 
         # Push to ring buffer for replay
         self._ring.push(payload)
+
+        # T11 (REQ-8): structured lifecycle log — ISO-8601 ts + conversation
+        # id, JSONL in .iris-logs/backend-events.jsonl. Best-effort: any
+        # failure here must never affect event delivery.
+        if event.value in _STRUCTURED_LIFECYCLE_EVENTS:
+            try:
+                _ensure_structured_handler()
+                from datetime import datetime, timezone
+
+                import json as _json
+
+                # True JSONL (not repr) so downstream tooling can parse it.
+                _structured_logger.info(
+                    _json.dumps(
+                        {
+                            "ts": datetime.now(timezone.utc).isoformat(),
+                            "event": event.value,
+                            "conversation_id": conversation_id,
+                            "turn_id": turn_id,
+                            "session_id": session_id,
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+            except Exception:
+                pass
 
         # Deliver to subscribers
         with self._lock:

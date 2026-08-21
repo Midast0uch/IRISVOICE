@@ -78,7 +78,7 @@ export const MEMORY_EVENT_REGISTRY: Record<MemoryEventKind, MemoryEntry> = {
     emitting: true,
   },
 
-  // NOT emitting yet (T8c adds `mcm.py:161` MCM.recall() -> event bus).
+  // Emitting since T8c ( `mcm.py:161` MCM.recall() -> event bus).
   // Reserved Wormhole vocabulary — see RESERVED_WORMHOLE_FIELDS above and
   // Wormhole doc Section 9's fixed-order format:
   //   [RECALL @ hex_bin_id]
@@ -93,10 +93,10 @@ export const MEMORY_EVENT_REGISTRY: Record<MemoryEventKind, MemoryEntry> = {
     label: "Recall",
     glyph: "↻", // ↻
     fields: [...RESERVED_WORMHOLE_FIELDS],
-    emitting: false,
+    emitting: true,
   },
 
-  // NOT emitting yet (T8c adds `mcm.py:86` MCM.compress()). Fields grounded
+  // Emitting since T8c ( `mcm.py:86` MCM.compress()). Fields grounded
   // in MCM.compress()'s actual return dict (nbl, active_task, active_files,
   // unverified_edits, warnings, recovery_preamble, compressed_at) — a concise
   // "what got checkpointed and when" slice rather than the full payload.
@@ -105,10 +105,10 @@ export const MEMORY_EVENT_REGISTRY: Record<MemoryEventKind, MemoryEntry> = {
     label: "Compress",
     glyph: "⚙", // ⚙
     fields: ["active_task", "active_files", "compressed_at"],
-    emitting: false,
+    emitting: true,
   },
 
-  // NOT emitting yet (T8c adds `agent_kernel.py:752` get_task_context()).
+  // Emitting since T8c ( `agent_kernel.py:752` get_task_context()).
   // Fields grounded in `backend/memory/episodic.py`'s Episode dataclass
   // (task_summary, outcome_type, duration_ms are the fields meaningful to a
   // user-facing footer; tool_sequence / full_content are not).
@@ -117,7 +117,7 @@ export const MEMORY_EVENT_REGISTRY: Record<MemoryEventKind, MemoryEntry> = {
     label: "Episodic",
     glyph: "☷", // ☷
     fields: ["task_summary", "outcome_type", "duration_ms"],
-    emitting: false,
+    emitting: true,
   },
 }
 

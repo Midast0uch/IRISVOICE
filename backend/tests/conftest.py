@@ -47,6 +47,45 @@ if _project_root not in sys.path:
 import pytest as _pytest
 
 
+# ── Module-identity isolation (the backend.* package graph) ───────────────
+#
+# DEBT FIX (pin_fd5b312e69bf / c01534199cdb): several suites probe imports by
+# deleting/re-importing modules (test_scheduler_isolation, the VAD/tool-format
+# importlib loaders). A delete+re-import installs a SECOND module object AND
+# rebinds the parent package's attribute, leaving the graph inconsistent.
+# Downstream this surfaced as order-dependent failures —
+#   AttributeError: 'module' object at backend.agent has no attribute ...
+# in every monkeypatch.setattr("backend.agent.…") call of the provider-switch,
+# display-text, speak-envelope and task-start-revision suites — all passing in
+# isolation. This autouse fixture repairs the graph around EVERY test: any
+# backend.* module that was replaced gets its ORIGINAL object back, and each
+# parent package's attribute is rebound to that original. Conservative: it
+# never evicts modules it did not see before (intentional stubs survive).
+@_pytest.fixture(autouse=True)
+def _backend_module_identity_repair():
+    import sys as _sys
+
+    _saved = {
+        _m: _mod
+        for _m, _mod in _sys.modules.items()
+        if _m == "backend" or _m.startswith("backend.")
+    }
+    yield
+
+    for _m, _orig in _saved.items():
+        _cur = _sys.modules.get(_m)
+        if _cur is not _orig:
+            _sys.modules[_m] = _orig
+        _parent, _, _leaf = _m.rpartition(".")
+        if _leaf:
+            _parent_mod = _sys.modules.get(_parent)
+            if _parent_mod is not None and getattr(_parent_mod, _leaf, None) is not _orig:
+                try:
+                    setattr(_parent_mod, _leaf, _orig)
+                except Exception:
+                    pass  # frozen/namespace parent — nothing to rebind
+
+
 @_pytest.fixture(autouse=True)
 def _caducean_scheduler_isolation(monkeypatch):
     """Reset all phase-scheduler global state around every test.

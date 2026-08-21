@@ -43,7 +43,7 @@ export interface QuestionCardProps {
   timeoutSeconds?: number
   /** `answer` is a plain string for a single-select question and a list of
    *  option strings for a `multiSelect` one (REQ-5 AC3). */
-  onAnswer: (questionId: string, answer: string | string[]) => void
+  onAnswer: (questionId: string, answer: string | string[], source?: string) => void
 }
 
 /**
@@ -105,11 +105,11 @@ export function QuestionCard({
   )
 
   const submitAnswer = useCallback(
-    (q: QuestionSetItem, answer: string | string[]) => {
+    (q: QuestionSetItem, answer: string | string[], source?: string) => {
       const cleaned = Array.isArray(answer) ? answer.map((a) => a.trim()).filter(Boolean) : answer.trim()
       if (Array.isArray(cleaned) ? cleaned.length === 0 : !cleaned) return
       setLocallyAnswered((prev) => ({ ...prev, [q.questionId]: cleaned }))
-      onAnswer(q.questionId, cleaned)
+      onAnswer(q.questionId, cleaned, source)
     },
     [onAnswer]
   )
@@ -210,7 +210,7 @@ export function QuestionCard({
                             key={i}
                             type="button"
                             onClick={() =>
-                              q.multiSelect ? toggleSelection(q, opt) : submitAnswer(q, opt)
+                              q.multiSelect ? toggleSelection(q, opt) : submitAnswer(q, opt, "click")
                             }
                             className="px-2.5 py-1 rounded text-[10px] transition-colors"
                             style={{
@@ -228,7 +228,7 @@ export function QuestionCard({
                       {q.multiSelect && (
                         <button
                           type="button"
-                          onClick={() => submitAnswer(q, selected)}
+                          onClick={() => submitAnswer(q, selected, "click")}
                           disabled={selected.length === 0}
                           className="flex items-center gap-1 px-2.5 py-1 rounded text-[10px] font-semibold disabled:opacity-40"
                           style={{ color: "#05060c", backgroundColor: glowColor }}
@@ -251,7 +251,7 @@ export function QuestionCard({
                           setCustomAnswers((prev) => ({ ...prev, [q.questionId]: e.target.value }))
                         }
                         onKeyDown={(e) => {
-                          if (e.key === "Enter") submitAnswer(q, customValue)
+                          if (e.key === "Enter") submitAnswer(q, customValue, "text")
                         }}
                         placeholder="Type your answer…"
                         className="flex-1 px-2 py-1 rounded text-[10px] outline-none"
@@ -263,7 +263,7 @@ export function QuestionCard({
                       />
                       <button
                         type="button"
-                        onClick={() => submitAnswer(q, customValue)}
+                        onClick={() => submitAnswer(q, customValue, "text")}
                         className="flex items-center gap-1 px-2 py-1 rounded text-[10px] font-semibold"
                         style={{ color: "#05060c", backgroundColor: glowColor }}
                       >

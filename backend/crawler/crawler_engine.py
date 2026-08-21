@@ -67,6 +67,17 @@ _DEFAULT_DELAY_MS = int(os.environ.get("CRAWL4AI_DEFAULT_DELAY", "1000"))
 _DELAY_JITTER = float(os.environ.get("CRAWL4AI_DELAY_JITTER", "0.5"))
 _MAX_PAGES = int(os.environ.get("CRAWL4AI_MAX_PAGES", "5"))
 _TIMEOUT_MS = int(os.environ.get("CRAWL4AI_TIMEOUT", "10000"))
+
+# Session 244 (pin_4979f57589c6): TRUE total ceiling per fetch. crawl4ai's
+# page_timeout covers NAVIGATION only — rendering, waiting and markdown
+# generation continue past it, which is how one GitHub releases page consumed
+# 88.6s of the orchestrator's shared 90s run budget and starved every other
+# URL in the wave. This wait_for caps the WHOLE arun call. On timeout the page
+# is judged unusable and crawl_runner's existing plain-HTTP merge re-fetches
+# it in seconds (server-rendered sites like GitHub answer httpx quickly), so
+# the content is usually SALVAGED rather than lost — bidirectional optimization:
+# fail fast inbound, recover fast outbound.
+_ARUN_TOTAL_S = float(os.environ.get("IRIS_CRAWL_ARUN_TOTAL_S", "25"))
 _BM25_THRESHOLD = float(os.environ.get("CRAWL4AI_BM25_THRESHOLD", "1.0"))
 
 
@@ -211,6 +222,11 @@ class CrawlResult:
     # --- Document-rehydration HAR evidence (Wave 0, REQ-13/REQ-14) ---
     har_entries: list = field(default_factory=list)      # light per-request HAR entries
     har_path: Optional[str] = None                       # path to data/har/<job_id>.har
+    # --- Session 244: structured park outcome for the DAG (REQ: feed the loop
+    # its own language) --- e.g. "5/5 sources parked (github.com: run_budget x5)".
+    # None when nothing was parked. Consumed by tool_bridge to emit the typed
+    # `sources_parked` error so DER's reviewer can branch instead of blind-retry.
+    park_summary: Optional[str] = None
 
 
 class CrawlerEngine:
@@ -377,7 +393,19 @@ class CrawlerEngine:
                 resp_headers = {}
                 md = ""
                 try:
-                    result = await self._crawler.arun(url=url, config=request_config)
+                    # Total-ceiling wrapper: page_timeout alone cannot bound the
+                    # whole arun call (see _ARUN_TOTAL_S note above).
+                    try:
+                        result = await asyncio.wait_for(
+                            self._crawler.arun(url=url, config=request_config),
+                            timeout=_ARUN_TOTAL_S,
+                        )
+                    except asyncio.TimeoutError as _te:
+                        raise TimeoutError(
+                            f"fetch budget exceeded: total arun ceiling "
+                            f"{_ARUN_TOTAL_S:.0f}s (page_timeout={_TIMEOUT_MS}ms "
+                            f"covers navigation only)"
+                        ) from _te
                     status = getattr(result, "status_code", None)
 
                     # --- 403 retry (T13) ---
@@ -422,7 +450,10 @@ class CrawlerEngine:
                             page_timeout=_TIMEOUT_MS,
                             user_agent=self._current_ua,
                         )
-                        result = await self._crawler.arun(url=url, config=request_config)
+                        result = await asyncio.wait_for(
+                            self._crawler.arun(url=url, config=request_config),
+                            timeout=_ARUN_TOTAL_S,
+                        )
                         status = getattr(result, "status_code", None)
                         logger.info(
                             "[CrawlerEngine] 403 retry complete url=%s status=%s",

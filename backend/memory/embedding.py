@@ -49,6 +49,26 @@ BACKEND_LFM = "lfm25-emb-350m"
 BACKEND_HASH = "hash"
 BACKEND_NEURAL = (BACKEND_BGE, BACKEND_LFM)
 
+# ── THE ONE CHUNK STANDARD (2026-08-17) ────────────────────────────────────
+# Pacman (episodic.fragment_and_store) and this module's Chunker were each
+# cutting text with their OWN rule for the same purpose, and text got cut twice:
+# Pacman sliced at 2048 chars ("≈512 tokens at 4 chars/token"), then handed the
+# piece here to be re-sliced at 480 whitespace WORDS. Neither unit is what the
+# model actually counts.
+#
+# The GGUF encoder's context is 512 MODEL tokens. 4 chars/token holds for prose
+# but not for the text this system actually stores — a path like
+# C:\dev\IRISVOICE\app\components\ui\button.tsx is ~1 char/token — so both rules
+# could produce a piece far past the context. Overrunning it does not raise; it
+# aborts the process inside ggml (GGML_ASSERT in ops.cpp), which is how the
+# backend kept vanishing mid-turn.
+#
+# So there is now ONE standard, defined here because this layer owns the model
+# constraint, and imported by episodic.py so both cut identically:
+#   512 tokens x ~2 chars/token (pessimistic, safe for symbol-dense text).
+EMBED_MAX_CHARS = 1024
+EMBED_OVERLAP_CHARS = 128
+
 # Chunking defaults (OQ-1: start 480 / 64; tune against REQ-8 AC1).
 DEFAULT_CHUNK_TOKENS = 480
 DEFAULT_OVERLAP_TOKENS = 64
@@ -237,17 +257,50 @@ class Chunker:
         if not text or not text.strip():
             return [text or ""], False
         tokens = self.tokenize(text)
-        if len(tokens) <= self.window:
+        # `tokens` are WHITESPACE-separated words, not model tokens. One word of
+        # dense symbol-heavy text (a Windows path, a JSON blob) can be 15-20
+        # model tokens, so a word count inside `window` says nothing about
+        # whether the text fits the backend's TOKEN context — and overrunning it
+        # aborts llama.cpp at the C level (see _GGUF_MAX_CHARS). Require the
+        # character length to be within the shared EMBED_MAX_CHARS standard
+        # before declaring it a fit.
+        if len(tokens) <= self.window and len(text) <= EMBED_MAX_CHARS:
             return [text], False
         chunks: List[str] = []
         start = 0
         n = len(tokens)
+        # Character ceiling per chunk, for the same reason as above: the word
+        # budget alone does not bound model tokens. ~2 chars/model-token against
+        # the window is deliberately pessimistic — under-filling a chunk costs a
+        # little recall quality; over-filling it kills the process.
+        _char_cap = EMBED_MAX_CHARS
         while start < n:
             end = min(start + self.chunk_tokens, n)
-            chunks.append(" ".join(tokens[start:end]))
+            piece = " ".join(tokens[start:end])
+            if len(piece) > _char_cap:
+                # Walk back until the piece fits the character ceiling, so a
+                # symbol-dense span splits into several safe chunks instead of
+                # one oversized one.
+                lo, hi = start + 1, end
+                while lo < hi:
+                    mid = (lo + hi + 1) // 2
+                    if len(" ".join(tokens[start:mid])) <= _char_cap:
+                        lo = mid
+                    else:
+                        hi = mid - 1
+                end = lo
+                piece = " ".join(tokens[start:end])
+                if len(piece) > _char_cap:
+                    # A SINGLE token longer than the ceiling (minified JSON, a
+                    # base64 blob, one enormous path) cannot be split on
+                    # whitespace at all — clip it. Binary search alone can never
+                    # fix this case because there is no boundary to find.
+                    piece = piece[:_char_cap]
+                    end = start + 1
+            chunks.append(piece)
             if end >= n:
                 break
-            start += self.chunk_tokens - self.overlap_tokens
+            start = max(end - self.overlap_tokens, start + 1)
         truncated = False
         if len(chunks) > self.max_chunks:
             logger.warning(
@@ -570,14 +623,76 @@ class EmbeddingService:
         """Backends that are currently usable (loaded model or hash fallback)."""
         return [b for b, m in self._models.items() if m is not None]
 
+    # Hard character ceiling for one GGUF embed call.
+    #
+    # THE CHUNKER COUNTS WORDS, llama.cpp COUNTS TOKENS (2026-08-17). Chunker
+    # budgets against `window=512` using tokenize() == text.split(), i.e.
+    # WHITESPACE-separated words, while the GGUF context is n_ctx=512 MODEL
+    # tokens. For prose those are close (~1.3 tokens/word) so it never showed.
+    # For a directory listing or JSON one "word" like
+    # C:\dev\IRISVOICE\app\components\ui\button.tsx is 15-20 model tokens, so a
+    # 480-word chunk becomes thousands of tokens, overruns the context, and
+    # llama.cpp does not raise — it ABORTS THE PROCESS:
+    #   ggml-cpu/ops.cpp:4938:  GGML_ASSERT(i1 >= 0 && i1 < ne1) failed
+    #   llama-context.cpp:1833: GGML_ASSERT(out_ids.size() == n_outputs) failed
+    # Observed live: the backend died mid-turn right after read_file /
+    # list_directory, leaving no Python traceback, no persisted answer and a
+    # dead port — which read as "the agent hung".
+    #
+    # Uses the shared EMBED_MAX_CHARS standard. Truncating here is a LAST-RESORT
+    # guard at the one call that can kill the process; correct-size chunking
+    # upstream does the real work, and a clipped tail costs recall quality,
+    # never the process.
+    _GGUF_MAX_CHARS: int = EMBED_MAX_CHARS
+
+    # Serializes ALL native inference. Class-level: the guard must hold across
+    # every EmbeddingService instance, because the underlying llama.cpp model
+    # objects are shared/singleton — a per-instance lock would let two services
+    # into the same context. Held only for the embed call itself.
+    _INFERENCE_LOCK = Lock()
+
     def _encode_chunk_with(self, text: str, backend: str) -> List[float]:
-        """Embed a single chunk with the given backend, else hash fallback."""
+        """Embed a single chunk with the given backend, else hash fallback.
+
+        INFERENCE IS SERIALIZED (2026-08-17). ``llama_cpp.Llama`` is NOT
+        thread-safe: one context owns one batch/KV buffer, and two concurrent
+        ``embed()`` calls corrupt it. ggml does not raise on corrupt state — it
+        ABORTS THE PROCESS:
+            ggml-cpu/ops.cpp:4938: GGML_ASSERT(i1 >= 0 && i1 < ne1) failed
+        which surfaced as the backend vanishing mid-turn with no traceback, a
+        dead port, and a stale LISTENING entry in netstat — i.e. it looked
+        exactly like the agent hanging.
+
+        The existing _lock/_model_lock guard model LOADING only. Encoding was
+        unprotected while being called from several threads at once: the DER
+        turn (similarity search, recall), the encoder pre-warm, and the
+        background Pacman fragment writer. Moving fragment storage off the
+        critical path raised that overlap from occasional to routine, which is
+        what turned an intermittent crash into a reproducible one.
+        """
         model = self._models.get(backend)
         if backend == BACKEND_BGE and model is not None:
             emb = model.encode(text, convert_to_numpy=True)
             return emb.tolist()
         if backend == BACKEND_LFM and model is not None:
-            return list(model.embed(text))
+            safe = text[: self._GGUF_MAX_CHARS]
+            if len(text) > self._GGUF_MAX_CHARS:
+                logger.debug(
+                    "[EmbeddingService] clipped chunk %d -> %d chars for the "
+                    "GGUF context (word-count budget can exceed n_ctx tokens)",
+                    len(text), self._GGUF_MAX_CHARS,
+                )
+            try:
+                with self._INFERENCE_LOCK:
+                    return list(model.embed(safe))
+            except Exception as exc:  # noqa: BLE001
+                # A native abort cannot be caught, but any Python-level failure
+                # must degrade to the hash fallback rather than kill the turn.
+                logger.warning(
+                    "[EmbeddingService] GGUF embed failed (%s); using hash fallback",
+                    exc,
+                )
+                return _hash_embed(safe, self.EMBEDDING_DIM)
         return _hash_embed(text, self.EMBEDDING_DIM)
 
     def _encode_uncached_with(self, text: str, backend: str) -> Embedding:

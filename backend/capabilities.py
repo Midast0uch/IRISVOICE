@@ -64,13 +64,24 @@ class CapabilitySet:
 
     @classmethod
     def get_mode(cls) -> str:
-        """Read the persisted launcher mode from iris_config.json."""
+        """Read the persisted launcher mode from iris_config.json.
+
+        REQ-16 AC3 + edge case: an ABSENT or unreadable config must NOT resolve
+        to the most permissive policy ("personal", which AUTO_APPROVES
+        SIDE_EFFECT tools). Fail CLOSED to "developer" — the more restrictive
+        policy that requires approval for SIDE_EFFECT tools.
+        """
         try:
             with open(_CFG_PATH, encoding="utf-8") as f:
                 cfg = json.load(f)
-            return cfg.get("mode", "personal")
+            mode = cfg.get("mode")
+            if mode in ("personal", "developer"):
+                return mode
+            # Absent / malformed mode value -> fail closed to the restrictive policy
+            return "developer"
         except Exception:
-            return "personal"
+            # Unreadable config -> fail CLOSED to the more restrictive policy
+            return "developer"
 
     @classmethod
     def is_developer(cls) -> bool:
@@ -91,11 +102,17 @@ class CapabilitySet:
             )
 
     @classmethod
-    def allowed_tools(cls) -> Set[str]:
-        """Return the set of tool names permitted in the current mode."""
+    def blocked_tools(cls) -> Set[str]:
+        """Return the set of tool names BLOCKED in the current mode.
+
+        NOTE: historically named `allowed_tools` but it actually returned the
+        BLOCKED set (developer -> empty = block nothing). Renamed to
+        `blocked_tools` in T20 to remove the inverted-name trap. Its only
+        caller reads it correctly as `blocked = CapabilitySet.blocked_tools()`.
+        """
         mode = cls.get_mode()
         if mode == "developer":
-            # All tools allowed
+            # All tools allowed -> nothing blocked
             return set()
         # Personal mode: block repo and terminal tools
         return cls._REPO_TOOLS | cls._TERMINAL_TOOLS

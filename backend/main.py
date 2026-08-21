@@ -1125,6 +1125,48 @@ async def set_launcher_mode(request: dict):
     return {"mode": mode, "status": "ok"}
 
 
+@app.post("/api/approved-tools")
+async def api_save_approved_tools(request: dict = {}):
+    """Persist the user's standing approved-tools list (REQ-19 AC3).
+
+    Body: { "approved_tools": ["write_file", "git_commit", ...] }
+    ALWAYS_ASK tools are rejected (they can never be pre-approved, AC4/AC8).
+    """
+    from fastapi import Response as FastAPIResponse
+    from backend.agent.permissions import approval_class, ApprovalClass
+
+    raw = request.get("approved_tools")
+    if not isinstance(raw, list):
+        return FastAPIResponse(
+            content=json.dumps({"error": "approved_tools must be a list of tool names"}),
+            status_code=422,
+            media_type="application/json",
+        )
+    validated = []
+    seen = set()
+    for name in raw:
+        if not isinstance(name, str) or not name.strip():
+            continue
+        low = name.strip().lower()
+        if low in seen:
+            continue
+        if approval_class(low) == ApprovalClass.ALWAYS_ASK:
+            return FastAPIResponse(
+                content=json.dumps(
+                    {"error": f"Tool '{low}' is ALWAYS_ASK and cannot be pre-approved"}
+                ),
+                status_code=422,
+                media_type="application/json",
+            )
+        seen.add(low)
+        validated.append(low)
+
+    cfg = _load_iris_config()
+    cfg["approved_tools"] = validated
+    _save_iris_config(cfg)
+    return {"status": "ok", "approved_tools": validated}
+
+
 @app.get("/api/mode")
 async def get_launcher_mode():
     """Returns the currently configured launch mode."""
@@ -1133,12 +1175,80 @@ async def get_launcher_mode():
     return {"mode": mode}
 
 
+@app.get("/api/config")
+async def get_config():
+    """Single source of truth for the permissions UI (REQ-16 AC2, REQ-19 AC3/AC5).
+
+    Returns the EFFECTIVE mode (not just the stored value) plus the standing
+    approved-tools list and the set of tools the user is allowed to pre-approve.
+    The UI reflects `effective_mode` immediately after a toggle (REQ-19 AC5).
+
+    Both `mode` and `effective_mode` are read from the SAME config source that
+    `CapabilitySet.get_mode()` consults, so they can never diverge even if the
+    two path constants (`_IRIS_CONFIG_PATH` vs `_CFG_PATH`) ever drift.
+    """
+    from backend.agent.permissions import get_approvable_tools
+    from backend.capabilities import CapabilitySet, _CFG_PATH
+
+    effective_mode = CapabilitySet.get_mode()
+    stored_mode = None
+    approved: list = []
+    try:
+        with open(_CFG_PATH, encoding="utf-8") as _f:
+            _cfg = json.load(_f)
+        stored_mode = _cfg.get("mode")
+        _raw = _cfg.get("approved_tools") or []
+        if isinstance(_raw, list):
+            approved = [t for t in _raw if isinstance(t, str)]
+    except Exception:
+        pass
+    return {
+        "mode": stored_mode,
+        "effective_mode": effective_mode,
+        "approved_tools": approved,
+        "available_tools": get_approvable_tools(),
+    }
+
+
 @app.get("/api/worktree/status", dependencies=[_require_dev])
 async def get_worktree_status():
     """Returns developer worktree isolation status."""
     from backend import dev_worktree
 
     return dev_worktree.status()
+
+
+@app.get("/api/dev/cli-tools", dependencies=[_require_dev])
+async def get_cli_tools():
+    """
+    Expose the CLI tool registry (display_name + when_to_use) to the UI.
+
+    REQ-20 AC5: surface the EXISTING backend/dev/cli_tools.yaml — never a
+    second hardcoded copy in the frontend. A tool whose command is not on
+    PATH renders as available=false with a reason (REQ-20 edge case), never
+    hidden.
+    """
+    try:
+        try:
+            from backend.dev.cli_registry import get_cli_registry
+        except ImportError:  # pragma: no cover - server runs with backend/ on path
+            from dev.cli_registry import get_cli_registry
+
+        registry = get_cli_registry()
+        tools = []
+        for tool in registry.all_tools():
+            available = tool.is_available()
+            tools.append({
+                "name": tool.name,
+                "display_name": tool.display_name,
+                "when_to_use": tool.when_to_use.strip(),
+                "available": available,
+                "reason": None if available else f"{tool.command} not found on PATH",
+            })
+        return {"tools": tools}
+    except Exception as exc:  # pragma: no cover - defensive: help must never break
+        logger.error("[api/dev/cli-tools] failed to load registry: %s", exc)
+        return {"tools": []}
 
 
 @app.get("/api/launcher/status")
@@ -1739,6 +1849,229 @@ async def api_unload_model():
         return {"status": "ok", "message": "Model unloaded"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+# ============================================================================
+# Hugging Face Hub bridge (cli-workspace-unification T10 / REQ-9)
+# Search + streamed 1-click downloads into the scanned models/ directory.
+# Error-handling contract (design.md): cancel/fail deletes the partial file;
+# unsafe filenames are rejected (path-traversal guard); upstream failures are
+# surfaced, never fabricated; a missing token degrades to public search.
+# ============================================================================
+
+_HF_API_BASE = "https://huggingface.co/api/models"
+_HF_RESOLVE_BASE = "https://huggingface.co"
+# Bounded registry of in-flight downloads (quality check: bounded footprint).
+_HF_DOWNLOAD_JOBS: dict = {}
+_HF_MAX_CONCURRENT_DOWNLOADS = 3
+
+
+def _hf_headers() -> dict:
+    """User-agent always; Authorization only when a token is configured.
+    Token-absent degrades to public search (gated repos marked unavailable)."""
+    import os as _os
+
+    headers = {"user-agent": "IRIS-Voice/1.0 (+local-model-manager)"}
+    token = _os.environ.get("HF_TOKEN") or _os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    if token:
+        headers["authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _sanitize_hf_filename(name: str) -> str:
+    """REQ-9 AC7 path-traversal guard: a remote filename containing path
+    separators, '..' or non-asset characters is REJECTED before anything is
+    written under models/. Only .gguf weight files are accepted."""
+    import re as _re
+
+    if not name or not isinstance(name, str):
+        raise HTTPException(status_code=400, detail="missing filename")
+    name = name.strip()
+    if "/" in name or "\\" in name or ".." in name:
+        raise HTTPException(status_code=400, detail=f"unsafe filename: {name!r}")
+    if not _re.fullmatch(r"[A-Za-z0-9._\- ]+", name):
+        raise HTTPException(status_code=400, detail=f"unsafe filename: {name!r}")
+    if not name.lower().endswith(".gguf"):
+        raise HTTPException(status_code=400, detail=f"only .gguf files are downloadable, got: {name!r}")
+    return name
+
+
+@app.get("/api/models/hf/search")
+async def api_hf_search(q: str = "", limit: int = 20):
+    """Search the Hugging Face Hub index for GGUF/text-generation models.
+    Returns repo title, author, likes, downloads and available .gguf quant
+    files with sizes. Upstream failure -> surfaced error, no fabricated rows."""
+    import httpx
+    from fastapi.responses import JSONResponse
+
+    try:
+        params = {
+            "search": q or "gguf",
+            "limit": max(1, min(int(limit), 50)),
+            "sort": "downloads",
+            "direction": -1,
+            "blobs": "true",
+        }
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+            resp = await client.get(_HF_API_BASE, params=params, headers=_hf_headers())
+        if resp.status_code != 200:
+            return JSONResponse(
+                status_code=502,
+                content={"error": f"Hugging Face API returned {resp.status_code}"},
+            )
+        repos = resp.json()
+    except Exception as e:
+        return JSONResponse(status_code=502, content={"error": f"Hugging Face API unreachable: {e}"})
+
+    results = []
+    for repo in repos or []:
+        siblings = [
+            {
+                "filename": s.get("rfilename", ""),
+                "size": s.get("size"),
+            }
+            for s in (repo.get("siblings") or [])
+            if str(s.get("rfilename", "")).lower().endswith(".gguf")
+        ]
+        results.append(
+            {
+                "repo_id": repo.get("id", ""),
+                "author": (repo.get("id", "").split("/")[0] if "/" in repo.get("id", "") else ""),
+                "likes": repo.get("likes", 0),
+                "downloads": repo.get("downloads", 0),
+                "gated": bool(repo.get("gated")),
+                "gguf_files": siblings,
+            }
+        )
+    return {"results": results}
+
+
+async def _hf_download_job(job_id: str, repo_id: str, filename: str, dest, job: dict):
+    """Stream one HF file into models/ via a .part temp file. Cancel/fail
+    deletes the partial; success renames atomically and triggers an
+    automatic scan_models() rescan (REQ-9 AC7/AC8)."""
+    import asyncio
+    import time
+
+    import httpx
+    from backend.ws_manager import get_websocket_manager
+
+    part_path = dest.with_suffix(dest.suffix + ".part")
+    ws = get_websocket_manager()
+
+    async def _broadcast(payload: dict):
+        try:
+            await ws.broadcast({"type": "model:download_progress", **payload})
+        except Exception:
+            pass  # progress is best-effort; never kill the download for it
+
+    last_broadcast = 0.0
+    try:
+        url = f"{_HF_RESOLVE_BASE}/{repo_id}/resolve/main/{filename}"
+        async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client:
+            async with client.stream("GET", url, headers=_hf_headers()) as resp:
+                if resp.status_code != 200:
+                    raise RuntimeError(f"HF returned {resp.status_code} for {repo_id}/{filename}")
+                total = int(resp.headers.get("content-length") or 0)
+                job.update(status="downloading", total=total, received=0)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                started = time.monotonic()
+                received = 0
+                with open(part_path, "wb") as fh:
+                    async for chunk in resp.aiter_bytes(1 << 20):
+                        if job.get("cancel"):
+                            raise asyncio.CancelledError()
+                        fh.write(chunk)
+                        received += len(chunk)
+                        now = time.monotonic()
+                        if now - last_broadcast >= 0.5 or received == total:
+                            elapsed = max(now - started, 1e-6)
+                            last_broadcast = now
+                            await _broadcast(
+                                {
+                                    "job_id": job_id,
+                                    "filename": filename,
+                                    "pct": round(received * 100.0 / total, 1) if total else 0,
+                                    "speed_mb": round((received / (1024 * 1024)) / elapsed, 2),
+                                    "received": received,
+                                    "total": total,
+                                }
+                            )
+        # Atomic promote — a truncated weight can never appear under its real
+        # name, so a later scan can never offer it for loading.
+        part_path.replace(dest)
+        job.update(status="done", pct=100.0)
+        await _broadcast({"job_id": job_id, "filename": filename, "pct": 100.0, "speed_mb": 0, "received": job.get("total", 0), "total": job.get("total", 0)})
+        # REQ-9 AC8: automatic rescan so the model appears ready to load.
+        try:
+            from .agent.local_model_manager import get_local_model_manager
+
+            get_local_model_manager().scan_models()
+        except Exception as scan_err:
+            logger.warning(f"[HF download] post-download rescan failed: {scan_err}")
+    except asyncio.CancelledError:
+        job.update(status="cancelled")
+        part_path.unlink(missing_ok=True)
+        await _broadcast({"job_id": job_id, "filename": filename, "pct": 0, "speed_mb": 0, "cancelled": True})
+    except Exception as e:
+        job.update(status="failed", error=str(e))
+        # Never leave a truncated weight a later scan could offer for loading.
+        part_path.unlink(missing_ok=True)
+        await _broadcast({"job_id": job_id, "filename": filename, "pct": 0, "speed_mb": 0, "error": str(e)})
+
+
+@app.post("/api/models/hf/download")
+async def api_hf_download(body: dict = {}):
+    """Start a streamed download of {repo_id, filename} into models/.
+    Returns {job_id}; progress streams over WS as model:download_progress."""
+    import asyncio
+    import uuid
+    from pathlib import Path as _Path
+
+    from .agent.local_model_manager import get_local_model_manager
+
+    repo_id = str(body.get("repo_id", "")).strip()
+    filename = _sanitize_hf_filename(str(body.get("filename", "")))
+    if not repo_id or "/" not in repo_id or any(c in repo_id for c in ("..", "\\")):
+        raise HTTPException(status_code=400, detail=f"unsafe repo_id: {repo_id!r}")
+
+    active = sum(1 for j in _HF_DOWNLOAD_JOBS.values() if j.get("status") == "downloading")
+    if active >= _HF_MAX_CONCURRENT_DOWNLOADS:
+        raise HTTPException(status_code=429, detail="too many concurrent downloads")
+
+    mgr = get_local_model_manager()
+    models_dir = mgr.effective_models_dir.resolve()
+    dest = (models_dir / filename).resolve()
+    # Double-guard: even a sanitized name must resolve INSIDE models/.
+    if dest.parent != models_dir:
+        raise HTTPException(status_code=400, detail="destination escapes models directory")
+
+    job_id = uuid.uuid4().hex[:12]
+    job = {"status": "queued", "repo_id": repo_id, "filename": filename, "cancel": False}
+    _HF_DOWNLOAD_JOBS[job_id] = job
+    asyncio.create_task(_hf_download_job(job_id, repo_id, filename, dest, job))
+    return {"job_id": job_id, "status": "queued", "filename": filename}
+
+
+@app.post("/api/models/hf/download/cancel")
+async def api_hf_download_cancel(body: dict = {}):
+    """Cancel an in-flight download. The partial .part file is deleted by the
+    worker — never left for a later scan to offer."""
+    job_id = str(body.get("job_id", ""))
+    job = _HF_DOWNLOAD_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="unknown job_id")
+    job["cancel"] = True
+    return {"status": "cancelling", "job_id": job_id}
+
+
+@app.get("/api/models/hf/download/status")
+async def api_hf_download_status(job_id: str = ""):
+    """Poll fallback for clients that missed WS progress frames."""
+    job = _HF_DOWNLOAD_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="unknown job_id")
+    return {k: v for k, v in job.items() if k != "cancel"}
 
 
 @app.post("/api/swarm/start")

@@ -61,10 +61,44 @@ export function deriveCurrentStep(steps: TaskStep[]): number {
 }
 
 /**
+ * Session 244 (card↔response inline join): tool-name values that are really
+ * DER mode labels, not tools. A step carrying one of these has NO tool —
+ * rendering "TOOL"/"DIRECT" as its verb would be label-noise.
+ */
+export const MODE_NON_TOOLS: ReadonlySet<string> = new Set([
+  "direct",
+  "plan",
+  "der",
+  "websearch",
+  "chitchat",
+])
+
+/**
+ * Session 244: a SETTLED card whose every step is tool-less is not an
+ * artifact — the prompt was answered with a normal conversation reply.
+ * Per the cards-are-for-artifacts-not-conversation contract, such a card
+ * must NOT stay rendered inline once the turn resolves. While it is still
+ * WORKING it renders (live progress is honest); on settle it disappears.
+ */
+export function isConversationReplyCard(card: Pick<TaskCard, "isWorking" | "steps">): boolean {
+  if (card.isWorking) return false
+  if (card.steps.length === 0) return false
+  return card.steps.every((s) => !s.toolName || MODE_NON_TOOLS.has(s.toolName.toLowerCase()))
+}
+
+/**
  * One task's execution surface (T6, REQ-3/REQ-4). Everything a card needs to
  * render on its own, plus the identity the backend declared for it
  * (`_task_start_payload` / `_resolve_card_identity`, agent_kernel.py:7660).
  */
+/** T8c (REQ-10): a memory-activity event emitted by the backend (recall /
+ * compress / episodic) and rendered in the card's memory slot. */
+export interface MemoryEvent {
+  kind: string
+  data: Record<string, unknown>
+  at: number
+}
+
 export interface TaskCard {
   cardId: string
   /** Which conversation this card belongs to (REQ-4 AC3: a card must never
@@ -82,6 +116,15 @@ export interface TaskCard {
   phase?: string
   phaseSequence?: number
   learningSignal?: "avoided" | "retried" | "crystallized" | null
+  /** Session 244: the response turn id from task:start (`turn_id`) — joins
+   * this card to the assistant Message whose `id` is that same turn id, so
+   * chat-view can render the card inline with its response instead of
+   * bottom-stacked. `undefined` on legacy cards (bottom-stack fallback). */
+  responseTurnId?: string
+  /** T8c (REQ-10 AC5): real memory-activity events (recall / compress /
+   * episodic) surfaced in the card's memory slot. Bounded — only the most
+   * recent entries are kept (quality check: memory footprint bounded). */
+  memoryEvents?: MemoryEvent[]
   /**
    * T7a (REQ-4 AC5): the persisted store's terminal state, present ONLY on a
    * card that arrived via rehydration (`get_cards`) — a live card never sets
@@ -194,6 +237,12 @@ interface TaskUpdateDetail {
   card_relation?: "new" | "continues"
   /** T1/T6 (REQ-4): which conversation this event's card belongs to. */
   conversation_id?: string
+  /** Session 244 (card↔response inline join): the kernel's current response
+   * turn id (`_current_turn_id`) — the SAME id space as the assistant
+   * message's `id` (chat-view sets message.id = text_response.turn_id), so
+   * the frontend can render the card INLINE with its response. Absent on
+   * legacy payloads; consumers fall back to bottom-stacking. */
+  turn_id?: string
 }
 
 // Maps a tool name to a short, human-readable action title for the plan card.
@@ -372,6 +421,7 @@ function freshStart(
     mode: d.mode,
     turnId: d.task_id,
     planTitle: d.plan_title,
+    responseTurnId: d.turn_id,
   }
 }
 
@@ -402,6 +452,9 @@ function mergeStart(existing: TaskCard, incoming: TaskStep[], d: TaskUpdateDetai
     mode: d.mode ?? existing.mode,
     turnId: d.task_id,
     planTitle: d.plan_title || existing.planTitle,
+    // Session 244: keep the ORIGINAL response join — a revision (task:start
+    // on the same card) belongs to the turn that created the card.
+    responseTurnId: existing.responseTurnId ?? d.turn_id,
   }
 }
 
@@ -801,6 +854,28 @@ function reduceTaskUpdate(prev: CardsState, d: TaskUpdateDetail): CardsState {
       }))
     }
 
+    case "memory:event": {
+      // T8c (REQ-10 AC5): append a real memory-activity event to the active
+      // card's memory slot. Session-level event (no card_id), so target the
+      // active conversation's active card; drop if none exists yet. Bounded to
+      // the 6 most recent entries (quality check: memory footprint bounded).
+      const convId = d.conversation_id || prev.activeConversationId
+      const conv = prev.byConversation[convId]
+      if (!conv) return prev
+      const active = deriveActiveCard(conv)
+      const targetId = active?.cardId ?? Object.keys(conv.byId).slice(-1)[0]
+      if (!targetId) return prev
+      const card = conv.byId[targetId]
+      const entry: MemoryEvent = {
+        kind: String((d as unknown as Record<string, unknown>).kind ?? "unknown"),
+        data: ((d as unknown as Record<string, unknown>).data as Record<string, unknown>) || {},
+        at: Date.now(),
+      }
+      const nextEvents = [...(card.memoryEvents || []), entry].slice(-6)
+      const nextConv = upsertCard(conv, targetId, { ...card, memoryEvents: nextEvents })
+      return { ...prev, byConversation: { ...prev.byConversation, [convId]: nextConv } }
+    }
+
     default:
       return prev
   }
@@ -900,6 +975,13 @@ export function useTaskProgress(): TaskProgress {
       const detail = (e as CustomEvent<{ cards?: PersistedCard[] }>).detail
       const cards = detail?.cards
       if (!cards || cards.length === 0) return
+      // T16 (REQ-12 AC4): card-lifecycle observability — rehydration count is
+      // logged off the render hot path (this is an event handler, not render).
+      console.info(
+        "[useTaskProgress] CARD_REHYDRATE count=%d ids=%s",
+        cards.length,
+        cards.slice(0, 5).map((c) => c.card_id).join(","),
+      )
       setCardsState((prev) => mergeHydratedCards(prev, cards))
     }
     window.addEventListener("iris:cards", handler)
@@ -929,9 +1011,18 @@ export function useTaskProgress(): TaskProgress {
       if (!d) return
       setCardsState((prev) => {
         const convId = prev.activeConversationId
-        const conv = prev.byConversation[convId]
-        const targetId = targetCardId(conv)
-        if (!conv || !targetId) return prev
+        const { byConversation, convTouchOrder } = touchConversation(prev, convId)
+        let conv = byConversation[convId]
+        let targetId = targetCardId(conv)
+        // REQ-12 AC4: crawl progress must flip the orb even before any
+        // task:start card exists (e.g. a standalone web crawl with the browser
+        // panel closed). Fabricate a card — exactly as applyToCard does for
+        // legacy task events — so the crawler's phase/stage has something to
+        // attach to instead of being silently dropped.
+        if (!targetId) {
+          targetId = `crawl_${convId}`
+          conv = upsertCard(conv, targetId, blankCard(targetId, convId))
+        }
         const card = conv.byId[targetId]
         const next: TaskCard = { ...card, isWorking: true }
         if (d.phase) {
@@ -939,7 +1030,11 @@ export function useTaskProgress(): TaskProgress {
           next.phaseSequence = d.phase_sequence ?? card.phaseSequence ?? 0
         }
         if (d.message) next.currentAction = d.message
-        return { ...prev, byConversation: { ...prev.byConversation, [convId]: upsertCard(conv, targetId, next) } }
+        return {
+          ...prev,
+          convTouchOrder,
+          byConversation: { ...byConversation, [convId]: upsertCard(conv, targetId, next) },
+        }
       })
     }
     const done = () => {

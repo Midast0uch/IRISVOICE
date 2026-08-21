@@ -38,7 +38,36 @@ export interface ArchiveDockItem {
   originalSectionId: string
 }
 
-export type FocusPreset = 'full' | 'work' | 'chat' | 'zen'
+// cli-workspace-unification T8 (REQ-6): Focus Mode no longer controls
+// terminal/archive collapse — it controls multi-agent card filtering and
+// board density inside the Visual Workspace Hub.
+export type FocusPreset = 'full' | 'active' | 'project' | 'compact'
+
+// ── Multi-agent Kanban tasks (T9, REQ-5) ────────────────────────────────────
+// Live agent task cards wired to backend task lifecycle events. The
+// (projectId, conversationId, agentId) tags are emitted by the BACKEND at
+// agent_kernel._task_start_payload — the frontend never fabricates them.
+// When the tags are absent (older emitter) cards fall back to
+// conversationId-only keying (design.md Error Handling).
+export type AgentTaskStatus = 'in_progress' | 'review' | 'crystallized'
+
+export interface AgentKanbanTask {
+  /** Dedupe key: card_id when present, else task_id (conversationId-only
+   *  keying fallback). */
+  key: string
+  taskId: string
+  title: string
+  status: AgentTaskStatus
+  failed?: boolean
+  currentStep: number
+  totalSteps: number
+  projectId: string | null
+  conversationId: string | null
+  agentId: string | null
+  updatedAt: number
+}
+
+const MAX_AGENT_TASKS = 50
 
 export interface WorkspaceState {
   tabs: WorkspaceTab[]
@@ -52,6 +81,7 @@ export interface WorkspaceState {
   showArchive: boolean
   showKanban: boolean
   kanbanCompact: boolean
+  agentTasks: AgentKanbanTask[]
 }
 
 interface TemporalApi {
@@ -94,6 +124,10 @@ interface WorkspaceStore extends WorkspaceState {
   toggleFocusMode: () => void
   setFocusPreset: (preset: FocusPreset) => void
 
+  // Multi-agent Kanban tasks (T9, REQ-5)
+  upsertAgentTask: (task: AgentKanbanTask) => void
+  clearAgentTasks: () => void
+
   // Section visibility
   toggleSectionVisible: (section: 'terminal' | 'archive' | 'kanban') => void
   toggleKanbanCompact: () => void
@@ -125,6 +159,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
       showArchive: true,
       showKanban: true,
       kanbanCompact: false,
+      agentTasks: [],
       snapshot: null,
       isProcessing: false,
 
@@ -282,30 +317,49 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
 
   setTerminalExpanded: (expanded: boolean) => set({ isTerminalExpanded: expanded }),
 
+  // T8 (REQ-6): Focus Mode cycles FULL -> ACTIVE -> PROJECT -> COMPACT.
+  // It no longer collapses terminal/archive sections — it controls multi-agent
+  // card filtering and board density, applied by KanbanCanvas from the preset:
+  //   full    — complete multi-column pipeline for all project folders
+  //   active  — board filtered to currently executing agent tasks only
+  //   project — columns grouped by project folder
+  //   compact — high-density minimized card strips (kanbanCompact)
   toggleFocusMode: () =>
     set((state: WorkspaceStore) => {
-      const presets: FocusPreset[] = ['full', 'work', 'chat', 'zen']
+      const presets: FocusPreset[] = ['full', 'active', 'project', 'compact']
       const idx = presets.indexOf(state.focusPreset)
       const next = presets[(idx + 1) % presets.length]
-      const configs: Record<FocusPreset, Partial<WorkspaceStore>> = {
-        full: { showTerminal: true, showArchive: true, showKanban: true, kanbanCompact: false, isTerminalExpanded: true },
-        work: { showTerminal: true, showArchive: false, showKanban: true, kanbanCompact: false, isTerminalExpanded: true },
-        chat: { showTerminal: false, showArchive: false, showKanban: true, kanbanCompact: true, isTerminalExpanded: false },
-        zen: { showTerminal: false, showArchive: false, showKanban: false, kanbanCompact: false, isTerminalExpanded: false },
-      }
-      return { focusPreset: next, isFocusMode: true, ...configs[next] }
+      return { focusPreset: next, isFocusMode: next !== 'full', kanbanCompact: next === 'compact' }
     }),
 
   setFocusPreset: (preset: FocusPreset) =>
+    set({ focusPreset: preset, isFocusMode: preset !== 'full', kanbanCompact: preset === 'compact' }),
+
+  // T9 (REQ-5 AC1/AC2): upsert a live agent task card keyed by card_id /
+  // task_id. Bounded at MAX_AGENT_TASKS — oldest-completed evicted first so a
+  // long session cannot leak memory (quality check: bounded footprint).
+  upsertAgentTask: (task: AgentKanbanTask) =>
     set((state: WorkspaceStore) => {
-      const configs: Record<FocusPreset, Partial<WorkspaceStore>> = {
-        full: { showTerminal: true, showArchive: true, showKanban: true, kanbanCompact: false, isTerminalExpanded: true },
-        work: { showTerminal: true, showArchive: false, showKanban: true, kanbanCompact: false, isTerminalExpanded: true },
-        chat: { showTerminal: false, showArchive: false, showKanban: true, kanbanCompact: true, isTerminalExpanded: false },
-        zen: { showTerminal: false, showArchive: false, showKanban: false, kanbanCompact: false, isTerminalExpanded: false },
+      const idx = state.agentTasks.findIndex((t) => t.key === task.key)
+      let next: AgentKanbanTask[]
+      if (idx >= 0) {
+        next = [...state.agentTasks]
+        next[idx] = { ...next[idx], ...task }
+      } else {
+        next = [task, ...state.agentTasks]
       }
-      return { focusPreset: preset, isFocusMode: true, ...configs[preset] }
+      if (next.length > MAX_AGENT_TASKS) {
+        // Evict settled (non-in_progress) oldest first; fall back to oldest.
+        const settleIdx = [...next]
+          .map((t, i) => ({ i, t }))
+          .filter(({ t }) => t.status !== 'in_progress')
+          .sort((a, b) => a.t.updatedAt - b.t.updatedAt)[0]?.i
+        next.splice(settleIdx ?? 0, 1)
+      }
+      return { agentTasks: next }
     }),
+
+  clearAgentTasks: () => set({ agentTasks: [] }),
 
   toggleSectionVisible: (section: 'terminal' | 'archive' | 'kanban') =>
     set((state: WorkspaceStore) => {
@@ -344,6 +398,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
       showArchive: state.showArchive,
       showKanban: state.showKanban,
       kanbanCompact: state.kanbanCompact,
+      agentTasks: state.agentTasks,
       isProcessing: state.isProcessing,
     }),
   }

@@ -141,7 +141,7 @@
   RIPPLE: `:3445-3459` renders one card today. Must not duplicate an already-rendered
   card — CT-4. Depends on T6.
 
-- [ ] **T7a (REQ-4 AC2/AC4/AC5) — ADDED 2026-08-19, THE TRANSPORT NOBODY OWNED**: Serve
+- [x] **T7a (REQ-4 AC2/AC4/AC5) — ADDED 2026-08-19, THE TRANSPORT NOBODY OWNED**: Serve
   persisted cards to the frontend on conversation open — `backend/iris_gateway.py`,
   `hooks/useIRISWebSocket.ts`, `hooks/useTaskProgress.ts`
   WHY THIS EXISTS: T4/T4a persist cards to the `conversation_cards` table and T6/T7 can
@@ -179,23 +179,23 @@
   apply the 9px/10px type floor (Decision 14, three 8px elements move up), and label the
   branch row "Diving Deeper" not "Sub-Loop" (Decision 13). Locked by CT-8.
 
-- [ ] **T9 (REQ-1, REQ-10)**: Task card on the chassis + memory activity in the header
+- [x] **T9 (REQ-1, REQ-10)**: Task card on the chassis + memory activity in the header
   — `components/chat/TaskListCard.tsx`
   RIPPLE: 434 lines today. Memory slot renders only from real events (REQ-10 AC4) —
   never fabricated. Depends on T8.
 
-- [ ] **T10 (REQ-2, REQ-5)**: Question card on the chassis + multi-question rendering
+- [x] **T10 (REQ-2, REQ-5)**: Question card on the chassis + multi-question rendering
   — `components/chat/QuestionCard.tsx`
   RIPPLE: consumes T3's question set. Per-question `multiSelect`, header, and unanswered
   state (REQ-5 AC3/AC4/AC5). Inverts T0d. Depends on T8 + T3.
 
-- [ ] **T11 (REQ-2)**: Permission and rich-document cards on the chassis
+- [x] **T11 (REQ-2)**: Permission and rich-document cards on the chassis
   — `components/chat/PermissionCard.tsx`, `components/chat/RichDocument.tsx`
   RIPPLE: RichDocument is 889 lines and the highest regression risk in the spec — swap
   the chassis ONLY, do not touch its content logic. REQ-2 AC4 forbids any capability
   change. Depends on T8.
 
-- [ ] **T11a (REQ-2 AC6) — FOUND IN FINAL AUDIT**: Expanded document panel on the chassis
+- [x] **T11a (REQ-2 AC6) — FOUND IN FINAL AUDIT**: Expanded document panel on the chassis
   — `components/chat/DocumentPanel.tsx`
   RIPPLE: it is the EXPANDED form of RichDocument (`chat-view.tsx:3606`) with its own
   gradient. Restyle T11's card without this and expanding a document jumps style
@@ -216,7 +216,7 @@
   RESERVE the Wormhole vocabulary (tier, posterior, hex_bin_id, resonance, elevation)
   without implementing it. Locked by CT-7.
 
-- [ ] **T8c (REQ-10 AC5)**: Emit the memory events the card renders —
+- [x] **T8c (REQ-10 AC5)**: Emit the memory events the card renders —
   `backend/agent/mcm.py`, `backend/agent/agent_kernel.py`
   RIPPLE: `mcm.py` has ZERO `emit`/`event_bus` references today, so `recall()` (`:161`)
   and `compress()` (`:86`) are silent, as is episodic `get_task_context`
@@ -246,7 +246,7 @@
   `renderCyberDoubleRailCLI` — the Flow Pipeline variant, NOT the selected Blueprint
   Matrix. Repoint it, and drop the unselected variants when promoting out of `temp/`.
 
-- [ ] **T13 (REQ-7)**: Render task blocks and question sets in the terminal; route CLI
+- [x] **T13 (REQ-7)**: Render task blocks and question sets in the terminal; route CLI
   answers through the REQ-6 funnel — `components/terminal/TerminalPanel.tsx`
   RIPPLE: input handling at `:113-140` is otherwise untouched (Decisions Locked 5). A
   question arriving mid-command must preserve the input buffer. Depends on T12 + T3.
@@ -259,14 +259,14 @@
   flag and pass the real value. Default to glyphs ON so nothing regresses; the ASCII path
   must hold the SAME column arithmetic (T12 measures by display width, and an ASCII frame
   must not quietly reintroduce the ragged-row bug in a second code path).
-- [ ] **T13a (REQ-13)**: Terminal becomes an on-demand slide-over — remove the resident
+- [x] **T13a (REQ-13)**: Terminal becomes an on-demand slide-over — remove the resident
   panel, keep the icon, position so it never occludes the composer or the active card;
   preserve scrollback across open/close
   — `components/workspace/DeveloperWorkspace.tsx`, `components/chat-view.tsx`
   RIPPLE: `FloatingPanel` (`DeveloperWorkspace.tsx:13`) already exists as the positioning
   primitive — reuse it rather than adding a second overlay system.
 
-- [ ] **T13b (REQ-13 AC5/AC6, REQ-20 AC1/AC4) — REWRITTEN 2026-08-19**: Make the two
+- [x] **T13b (REQ-13 AC5/AC6, REQ-20 AC1/AC4) — REWRITTEN 2026-08-19**: Make the two
   command channels DISTINCT AND LABELLED — `components/chat-view.tsx:1379-1387`,
   `components/terminal/TerminalPanel.tsx:122`,
   `components/terminal/TerminalWidget.tsx:106`, `backend/iris_gateway.py`
@@ -283,8 +283,13 @@
   do not "unify" it by deleting a channel.
   Wrap output in the T12 Blueprint Matrix block and LABEL THE BLOCK with its mode (AC3).
   Raw pty output that is not task-shaped still renders verbatim INSIDE the walls.
+  PROGRESS 2026-08-19 (session 240): channel distinction + SHELL/DELEGATE user labels +
+  TerminalWidget/TerminalPanel agreement DONE. chat-view routes `>`→SHELL (terminal_input)
+  and `/run `→DELEGATE (dev_cli); live mode badge shows active channel before commit; both
+  terminal banners relabelled user-facing (no "DER loop"). Blueprint-Matrix block mode-label
+  (AC3 output labelling) is delivered via T13a / REQ-13 AC5.
 
-- [ ] **T13c (REQ-20 AC5/AC6/AC7) — NEW**: Surface the command reference —
+- [x] **T13c (REQ-20 AC5/AC6/AC7) — NEW**: Surface the command reference —
   `backend/dev/cli_registry.py`, `backend/main.py`, `components/terminal/`,
   `components/chat-view.tsx`
   RIPPLE: `backend/dev/cli_tools.yaml` ALREADY carries `display_name` and `when_to_use`
@@ -301,6 +306,10 @@
   (`TerminalPanel.tsx:106-111`), neither of which tells anyone what to type.
   A tool in the registry that is not installed renders as unavailable WITH the reason,
   never hidden — same rule as REQ-19 AC5.
+  PROGRESS 2026-08-19 (session 240): replacement text DONE — chat placeholder now reads
+  "> shell • /run delegate" (developer) and terminal banners relabelled user-facing
+  (no "DER loop" / "Direct shell access"). PENDING: `/help` command (local, never to agent),
+  persistent affordance, and the cli_tools.yaml endpoint + render (AC5/AC6).
 
 ## Wave 4b — Permissions (independent of the visual work)
 
@@ -311,7 +320,7 @@
   BASELINE GAP: nothing asserts the gate is ever reached. This pins the user-reported
   symptom — "it has never once asked me" — as a test.
 
-- [ ] **T20 (REQ-16)**: Make the effective permission mode truthful — the launcher's
+- [x] **T20 (REQ-16)**: Make the effective permission mode truthful — the launcher's
   selection must reach `cfg["mode"]`, and an ABSENT mode must not resolve to the most
   permissive policy — `backend/capabilities.py:66-73`, `backend/main.py:1070-1083`
   RIPPLE: `get_mode()` is also used by `is_tool_allowed` / `allowed_tools`
@@ -335,12 +344,12 @@
   repo/terminal tools — that is T23 (REQ-18). Landing T20 alone leaves the user's
   reported symptom in place.
 
-- [ ] **T21 (REQ-16 AC2/AC5)**: Surface the effective mode in the UI and log the resolved
+- [x] **T21 (REQ-16 AC2/AC5)**: Surface the effective mode in the UI and log the resolved
   action per gated call — `components/chat-view.tsx`, `backend/agent/tool_bridge.py`
   RIPPLE: answers "why was I not asked" without reading a config file. Logging stays off
   the execution hot path.
 
-- [ ] **T22 (REQ-17)**: Prove enforcement — CT-11/CT-12/CT-13 plus behavioral drives
+- [x] **T22 (REQ-17)**: Prove enforcement — CT-11/CT-12/CT-13 plus behavioral drives
   — `backend/tests/contract/`, `backend/tests/behavioral/`
   RIPPLE: CT-11 is the "reached from a real path" test whose absence let the vision
   hierarchy ship fully built and unreachable. CT-12 pins that `_DESTRUCTIVE_TOOLS` names
@@ -356,7 +365,7 @@
   call REACHES Phase 4. For repo/terminal tools it does not. This is the sanctioned
   second edit to that file; call it out in the report.
 
-- [ ] **T23 (REQ-18)**: Turn capability denial into a permission ESCALATION —
+- [x] **T23 (REQ-18)**: Turn capability denial into a permission ESCALATION —
   `backend/agent/tool_bridge.py:1108-1116`, `backend/agent/permissions.py`
   RIPPLE: the `[13.3]` block must stop returning an error in personal mode and instead
   mark the call so Phase 4 gates it. Do NOT move the internet/desktop gate
@@ -366,7 +375,7 @@
   ALSO: make the Phase 4 `except Exception` fail CLOSED (AC6). It currently logs
   "allowing tool to proceed" and permits.
 
-- [ ] **T24 (REQ-19 AC1/AC2/AC7)**: Approval classes + per-session approval cache —
+- [x] **T24 (REQ-19 AC1/AC2/AC7)**: Approval classes + per-session approval cache —
   `backend/agent/permissions.py`
   RIPPLE: ALWAYS_ASK = `_DESTRUCTIVE_TOOLS` ∪ `_TERMINAL_TOOLS`; SESSION_APPROVABLE =
   `_REPO_TOOLS` − ALWAYS_ASK. DERIVE both from the module constants — a literal list here
@@ -379,7 +388,7 @@
   whose write path physically refuses ALWAYS_ASK names, so a future precedence bug cannot
   resurrect them.
 
-- [ ] **T25 (REQ-19 AC3/AC4/AC6)**: Persist and re-validate the standing list —
+- [x] **T25 (REQ-19 AC3/AC4/AC6)**: Persist and re-validate the standing list —
   `backend/capabilities.py`, `backend/main.py`
   RIPPLE: `cfg["approved_tools"]`, written through the same validated path
   `main.py:1070-1083` uses for `mode`. RE-VALIDATE ON READ: a hand-edited config naming
@@ -387,7 +396,7 @@
   file the user can edit, so storage is not trust. Unreadable config -> empty list AND
   still prompt (AC6), never open.
 
-- [ ] **T26 (REQ-19 AC3/AC5, REQ-16 AC2)**: The toggle surface — `data/cards.ts`,
+- [x] **T26 (REQ-19 AC3/AC5, REQ-16 AC2)**: The toggle surface — `data/cards.ts`,
   `data/navigation-constants.ts`, `components/wheel-view/fields/`,
   `components/wheel-view/SidePanel.tsx`, `backend/main.py`
   RIPPLE: define ONE card (section_id `permissions`) in `CARDS_BY_SECTION` and map it in
@@ -422,7 +431,7 @@
   `cfg["mode"]`, by design. Read the backend value for the POLICY display even where the
   frontend keeps using its own for FEATURE gating; do not unify the two in this task.
 
-- [ ] **T27 (REQ-18, REQ-19)**: Contract + behavioral proof — CT-14..CT-17
+- [x] **T27 (REQ-18, REQ-19)**: Contract + behavioral proof — CT-14..CT-17
   — `backend/tests/contract/`, `backend/tests/behavioral/`
   RIPPLE: CT-14 GATE ORDER — a capability-blocked tool reaches the permission gate, and
   the assertion is about ORDER, not merely that Phase 4 can emit. A test that proves only
@@ -436,7 +445,7 @@
 
 ## Wave 5 — Verification
 
-- [ ] **T14 (REQ-1..15)**: Contract tests CT-1..CT-10 — `backend/tests/contract/`,
+- [x] **T14 (REQ-1..15)**: Contract tests CT-1..CT-10 — `backend/tests/contract/`,
   `__tests__/`
   RIPPLE: CT-3 and CT-4 encode bugs observed live (dropped click answer, vanishing
   card). CT-10 encodes a spec bug — the two surfaces this document missed on its first
@@ -444,25 +453,25 @@
   Write CT-10 EARLY, not last: it is the one test that fails loudly if the stream is
   only partly restyled.
 
-- [ ] **T15 (REQ-3, REQ-4, REQ-5, REQ-6)**: Behavioral tests — continue vs branch,
+- [x] **T15 (REQ-3, REQ-4, REQ-5, REQ-6)**: Behavioral tests — continue vs branch,
   rehydration across a switch, multi-question independence, click-equals-voice
   — `backend/tests/behavioral/`, `__tests__/`
   RIPPLE: the continue-vs-branch test must assert the SECOND card does not appear on a
   follow-up — the whole point of REQ-3.
 
-- [ ] **T16 (REQ-12)**: Card lifecycle observability — `backend/agent/agent_kernel.py`,
+- [x] **T16 (REQ-12)**: Card lifecycle observability — `backend/agent/agent_kernel.py`,
   `hooks/useTaskProgress.ts`
   RIPPLE: log relation decisions, rehydration counts, and answer resolutions with their
   input path. Off the render and inference hot paths (REQ-12 AC4).
 
-- [ ] **T17 (REQ-3, REQ-4)**: Extend the standing CDD harness with a card lifecycle
+- [x] **T17 (REQ-3, REQ-4)**: Extend the standing CDD harness with a card lifecycle
   replay — `scripts/validate_der_card_lifecycle.py`
   RIPPLE: drives start -> continue -> branch -> switch -> rehydrate every run. Must be
   observed going RED before being trusted — a harness never seen to fail proves nothing.
 
 ## Wave 6 — Cleanup
 
-- [ ] **T18**: Delete `backend/agent/ask_user_tool.py` (192 lines, dead)
+- [x] **T18**: Delete `backend/agent/ask_user_tool.py` (192 lines, dead)
   RIPPLE: verified dead — every caller imports `backend.agent.tools.ask_user_tool`
   (agent_kernel `:4317`, tool_bridge `:1001`, iris_gateway `:2840`/`:5394`, crawler
   `:1016`). Do this LAST, after T3 has settled, so the diff is unambiguous.

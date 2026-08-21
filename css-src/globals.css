@@ -477,3 +477,160 @@ body {
   will-change: transform;
   transform-origin: center;
 }
+
+/* ── Chat markdown (2026-08-17) ─────────────────────────────────────────────
+   Assistant messages render as markdown so the structure the synthesis path is
+   instructed to produce (headings, bullets, tables, code) survives to screen.
+   Before this they rendered as <p>{text}</p>, which collapses newlines and
+   turned every long answer into one unbroken wall.
+
+   These rules must live HERE, not in app/globals.css — the app serves
+   public/globals.css, compiled from this file (see app/layout.tsx). They also
+   have to undo Tailwind preflight, which sets `ul,ol { list-style:none;
+   padding:0 }` and `h1-h6 { font-size:inherit; font-weight:inherit }` — that
+   reset is why lists showed no bullets and headings looked like body text.
+
+   Tuned for the narrow chat panel: readable hierarchy without huge type. */
+.iris-md {
+  /* Typography is doing real work here: 13px at 1.45 leading (the old inline
+     value) reads as a grey slab in a narrow dark panel. Slightly larger type,
+     looser leading and a touch of letter-spacing make long answers scannable. */
+  font-size: 13.5px;
+  line-height: 1.68;
+  letter-spacing: 0.005em;
+  color: rgba(255, 255, 255, 0.88);
+  overflow-wrap: anywhere;
+}
+.iris-md > :first-child { margin-top: 0 !important; }
+.iris-md > :last-child { margin-bottom: 0 !important; }
+.iris-md p { margin: 0 0 0.85em; }
+
+/* Headings: clear steps, generous space ABOVE so sections separate visually. */
+.iris-md h1,
+.iris-md h2,
+.iris-md h3,
+.iris-md h4,
+.iris-md h5,
+.iris-md h6 {
+  margin: 1.5em 0 0.5em;
+  font-weight: 700;
+  line-height: 1.25;
+  color: #fff;
+  letter-spacing: 0.01em;
+}
+.iris-md h1 { font-size: 17px; }
+.iris-md h2 {
+  font-size: 15.5px;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+}
+.iris-md h3 { font-size: 14px; color: rgba(255, 255, 255, 0.95); }
+.iris-md h4,
+.iris-md h5,
+.iris-md h6 {
+  font-size: 12.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+/* Lists: restore markers preflight removed, and indent enough to read as a list. */
+.iris-md ul,
+.iris-md ol {
+  margin: 0 0 0.85em;
+  padding-left: 1.5em;
+  list-style-position: outside;
+}
+.iris-md ul { list-style-type: disc; }
+.iris-md ol { list-style-type: decimal; }
+.iris-md ul ul { list-style-type: circle; margin-bottom: 0.2em; }
+.iris-md li { margin: 0.35em 0; padding-left: 0.15em; }
+.iris-md li::marker { color: rgba(125, 211, 252, 0.85); }
+.iris-md li > p { margin: 0 0 0.3em; }
+
+.iris-md strong { color: #fff; font-weight: 700; }
+.iris-md em { font-style: italic; }
+.iris-md a { color: #7dd3fc; text-decoration: underline; }
+
+.iris-md code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  padding: 0.12em 0.38em;
+  border-radius: 3px;
+  background: rgba(125, 211, 252, 0.12);
+  color: #bae6fd;
+}
+.iris-md pre {
+  margin: 0 0 0.85em;
+  padding: 0.7em 0.8em;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  overflow-x: auto;
+}
+.iris-md pre code {
+  background: none;
+  padding: 0;
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.9);
+}
+.iris-md blockquote {
+  margin: 0 0 0.85em;
+  padding: 0.1em 0 0.1em 0.8em;
+  border-left: 2px solid rgba(125, 211, 252, 0.5);
+  color: rgba(255, 255, 255, 0.72);
+}
+.iris-md hr {
+  margin: 1.2em 0;
+  border: 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+/* Tables were the worst casualty of the old renderer — pipes inline in a
+   paragraph. Columns must be visibly separated in a narrow dark panel, so:
+   real borders, a shaded header, zebra rows, and horizontal scroll rather than
+   squeezing columns until they are unreadable. */
+.iris-md .iris-md-table-wrap {
+  margin: 0 0 0.95em;
+  overflow-x: auto;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.iris-md table {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 420px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.iris-md thead { background: rgba(125, 211, 252, 0.14); }
+.iris-md th {
+  padding: 0.5em 0.7em;
+  text-align: left;
+  font-weight: 700;
+  color: #fff;
+  white-space: nowrap;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.22);
+  border-right: 1px solid rgba(255, 255, 255, 0.12);
+}
+.iris-md td {
+  padding: 0.5em 0.7em;
+  text-align: left;
+  vertical-align: top;
+  color: rgba(255, 255, 255, 0.85);
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+.iris-md th:last-child,
+.iris-md td:last-child { border-right: 0; }
+.iris-md tbody tr:nth-child(even) { background: rgba(255, 255, 255, 0.035); }
+
+/* TTS word highlight — painted OVER the rendered markdown via the CSS Custom
+   Highlight API, so it never has to wrap words in elements. Applied only to
+   text that is actually being SPOKEN (a long answer is read, not spoken along
+   to, so its body is never highlighted). */
+::highlight(iris-tts-word) {
+  color: #67e8f9;
+  background-color: rgba(103, 232, 249, 0.18);
+}

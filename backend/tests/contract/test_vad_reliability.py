@@ -16,7 +16,17 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-logging.disable(logging.CRITICAL)  # silence [VAD] logs during tests
+# DEBT FIX (pin_fd5b312e69bf / c01534199cdb): this used to be a module-level
+# `logging.disable(logging.CRITICAL)`, which is PROCESS-GLOBAL state — pytest
+# imports every collected module regardless of -k, so importing this file
+# silently killed ALL logging (and every caplog assertion) for the rest of the
+# session. Now scoped: disabled only while this module's tests run, restored
+# afterwards.
+@pytest.fixture(autouse=True)
+def _silence_vad_logs():
+    logging.disable(logging.CRITICAL)
+    yield
+    logging.disable(logging.NOTSET)
 
 # Stub out heavy audio deps so we can import voice_command without loading
 # sounddevice/torch (which hang or are slow on import in the test env).

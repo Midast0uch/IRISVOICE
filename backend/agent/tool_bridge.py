@@ -474,7 +474,7 @@ class AgentToolBridge:
 
         # [13.3] Filter developer-only tools in personal mode
         from backend.capabilities import CapabilitySet
-        blocked = CapabilitySet.allowed_tools()
+        blocked = CapabilitySet.blocked_tools()
         if blocked:
             tools = [t for t in tools if t.get("name") not in blocked]
 
@@ -1083,6 +1083,27 @@ class AgentToolBridge:
             return {"status": "error", "reason": str(exc)}
 
     async def execute_tool(self, tool_name: str, params: Dict, session_id: str = "unknown", plan_title: str = "", _skip_resilience: bool = False) -> Dict:
+        """FAULTLINE boundary (session 244) — universal typed outcomes.
+
+        EVERY tool result passes through here, so every failure leaving this
+        bridge carries the three-layer taxonomy: error_type (Layer-2 label),
+        retryable/blame/info_state (Layer-1 dimensions), details["raw"]
+        (preserved original). Legacy tools returning bare
+        {"success": False, "error": str(exc)} are classified automatically at
+        this choke point — universality by enforcement, not by convention.
+        Idempotent: already-typed results pass through with dimensions filled.
+        """
+        result = await self._execute_tool_dispatch(
+            tool_name, params, session_id, plan_title, _skip_resilience
+        )
+        try:
+            from backend.agent.tool_errors import normalize_failure
+            result = normalize_failure(result)
+        except Exception:  # noqa: BLE001 — taxonomy must never break execution
+            pass
+        return result
+
+    async def _execute_tool_dispatch(self, tool_name: str, params: Dict, session_id: str = "unknown", plan_title: str = "", _skip_resilience: bool = False) -> Dict:
         """
         Execute any tool by name with routing to appropriate server.
 
@@ -1105,15 +1126,56 @@ class AgentToolBridge:
             tool_name = spec.name  # canonical name (web_search/google_search -> search)
 
         # [13.3] Runtime capability gate (developer-only tools blocked in personal mode)
+        # REQ-18: a capability-blocked tool ESCALATES to a permission request (the user
+        # can override) instead of being silently denied with an error.
         from backend.capabilities import CapabilitySet
         if not CapabilitySet.is_tool_allowed(tool_name):
             logger.warning(
-                "[13.3] Tool '%s' blocked in '%s' mode", tool_name, CapabilitySet.get_mode()
+                "[13.3] Tool '%s' blocked in '%s' mode — escalating to permission request",
+                tool_name, CapabilitySet.get_mode(),
             )
-            return {
-                "error": f"Tool '{tool_name}' is not available in {CapabilitySet.get_mode()} mode",
-                "success": False,
-            }
+            try:
+                from backend.agent.permissions import classify_tool, get_permission_system
+
+                tier = classify_tool(tool_name, params)
+                level = CapabilitySet.get_mode()
+                perm_system = get_permission_system()
+                req = perm_system.request_permission(
+                    tool_name=tool_name,
+                    tier=tier,
+                    params=params,
+                    description=(
+                        f"Allow '{tool_name}'? It is blocked by the capability gate "
+                        f"in {level} mode."
+                    ),
+                    level=level,
+                    force=True,
+                    session_id=session_id,
+                )
+                if req.status == "pending":
+                    resolved = await perm_system.get_response_async(req)
+                    if resolved.status == "denied":
+                        return {
+                            "success": False,
+                            "error": f"Permission denied for tool '{tool_name}'",
+                            "permission_response": "denied",
+                        }
+                    if resolved.status == "timed_out":
+                        return {
+                            "success": False,
+                            "error": f"Permission timed out for tool '{tool_name}'",
+                            "permission_response": "timed_out",
+                        }
+                    # approved — fall through and execute the tool below
+            except Exception:
+                logger.warning(
+                    "[13.3] Capability escalation failed — blocking tool (fail closed)", exc_info=True
+                )
+                return {
+                    "success": False,
+                    "error": f"Permission check error for tool '{tool_name}'",
+                    "permission_response": "error",
+                }
 
         # ── Consolidated internet/desktop gate (Pillar A capability_allowed) ──
         # Replaces the old inline `if tool_name in ("search","crawler_query")` and
@@ -1177,6 +1239,11 @@ class AgentToolBridge:
             tier = classify_tool(tool_name, params)
             level = CapabilitySet.get_mode()
             action = get_permission_action(tier, level)
+            # REQ-16 AC5: log the resolved permission action for every gated call.
+            logger.info(
+                "[Permissions] gated_call tool=%s tier=%s mode=%s action=%s",
+                tool_name, tier.value, level, action.value,
+            )
 
             if action.value in ("require_approval", "require_confirmation"):
                 perm_system = get_permission_system()
@@ -1187,27 +1254,45 @@ class AgentToolBridge:
                     description=(
                         f"Execute '{tool_name}' with {len(params)} params"
                     ),
-                    level=level,
-                )
-
+                level=level,
+                session_id=session_id,
+            )
                 if req.status == "pending":
                     # Wait for user response (async)
                     resolved = await perm_system.get_response_async(req)
                     if resolved.status == "denied":
+                        logger.info(
+                            "[Permissions] resolved tool=%s action=denied", tool_name
+                        )
                         return {
                             "success": False,
                             "error": f"Permission denied for tool '{tool_name}'",
                             "permission_response": "denied",
                         }
                     if resolved.status == "timed_out":
+                        logger.warning(
+                            "[Permissions] resolved tool=%s action=timed_out", tool_name
+                        )
                         return {
                             "success": False,
                             "error": f"Permission timed out for tool '{tool_name}'",
                             "permission_response": "timed_out",
                         }
                     # approved — continue
+                    logger.info(
+                        "[Permissions] resolved tool=%s action=approved", tool_name
+                    )
         except Exception:
-            logger.warning("[Permissions] Permission check failed — allowing tool to proceed", exc_info=True)
+            # REQ-17: the gate must NOT silently bypass on error. Fail CLOSED
+            # (block the tool) rather than allowing it to proceed.
+            logger.warning(
+                "[Permissions] Permission check failed — blocking tool (fail closed)", exc_info=True
+            )
+            return {
+                "success": False,
+                "error": f"Permission check error for tool '{tool_name}'",
+                "permission_response": "error",
+            }
 
         # ── Live task progress (generic, ALL tools) ──────────────────────────
         # Emit a task:progress so the frontend ContextPill + plan card show what
@@ -1574,6 +1659,14 @@ class AgentToolBridge:
                 "params": _summarize(params),
                 "result": _summarize(result),
                 "plan_title": plan_title,
+                # FAULTLINE (session 244): failures enter the learning record
+                # with their typed taxonomy, so episodes are recallable by
+                # CAUSE ("walled", "transient", …) and their dimensions —
+                # not just a bare exception string.
+                "error_type": result.get("error_type"),
+                "retryable": result.get("retryable"),
+                "blame": result.get("blame"),
+                "info_state": result.get("info_state"),
             })
 
             def _ingest() -> None:
@@ -2199,13 +2292,24 @@ class AgentToolBridge:
         # the DER verifier (content-sufficiency) never sees a hollow "success"
         # and the step commits only when real content exists.
         if not _combined:
+            # Session 244: typed outcome for DER — "no usable content" is NOT
+            # one failure mode. When sources were parked, say so with the park
+            # summary so the reviewer can distinguish "the information does not
+            # exist" (rephrase/give up) from "our sources got walled" (diversify
+            # or ask the user) instead of blind-retrying the identical search.
+            _ps = getattr(crawl_result, "park_summary", None)
             _no_content = "crawler_query returned no usable content for query"
+            if _ps:
+                _no_content += (
+                    f" — {_ps}. A retry of the SAME search will fail identically; "
+                    f"diversify sources or ask the user."
+                )
             if _registry is not None:
                 await _registry.fail(job_id, _no_content)
             return {
                 "success": False,
                 "error": _no_content,
-                "error_type": "empty_result",
+                "error_type": "sources_parked" if _ps else "empty_result",
                 "job_id": job_id,
             }
 

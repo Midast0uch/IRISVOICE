@@ -24,7 +24,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
-logging.disable(logging.CRITICAL)
+# DEBT FIX (pin_fd5b312e69bf / c01534199cdb): was module-level
+# logging.disable(CRITICAL) — process-global state that killed all caplog
+# assertions in every later-collected test. Now scoped to this module.
+@pytest.fixture(autouse=True)
+def _silence_logs():
+    logging.disable(logging.CRITICAL)
+    yield
+    logging.disable(logging.NOTSET)
 
 
 def _load_router():

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, memo, useMemo, useCallback, useEffect, useRef } from 'react';
+import { useState, memo, useMemo, useCallback, useEffect, useRef, lazy, Suspense } from 'react';
 import { CustomDropdown } from '@/components/ui/CustomDropdown';
 import { ModelInferenceSection } from '@/components/ModelInferenceSection';
 
@@ -18,9 +18,15 @@ import { InferenceConsolePanel } from './dashboard/InferenceConsolePanel';
 import { LearnedSkillsPanel } from './wheel-view/LearnedSkillsPanel';
 import { ModelBrowserPanel } from './dashboard/ModelBrowserPanel';
 import { MarketplaceScreen } from './integrations/MarketplaceScreen';
+import { UnifiedMarketplaceModelsSurface } from './integrations/UnifiedMarketplaceModelsSurface';
 import { useLauncherMode } from '@/hooks/useLauncherMode';
 import { useInferenceState } from '@/hooks/useInferenceState';
 import { useCrawlContext } from '@/hooks/CrawlProvider';
+import { useWorkspaceStore } from '@/stores/workspaceStore';
+
+// cli-workspace-unification T7 (REQ-7 AC2): the Workspace Hub surface —
+// lazy-loaded so the hub bundle only loads when the rail node is clicked.
+const DeveloperWorkspace = lazy(() => import('@/components/workspace/DeveloperWorkspace'));
 import { DCPStatsPanel } from '@/components/dev/DCPStatsPanel';
 import { MonitorTabContainer } from '@/components/dashboard/MonitorTabContainer';
 import { BrowserNavigationOverlay } from '@/components/iris/browser/BrowserNavigationOverlay';
@@ -76,6 +82,7 @@ const CATEGORY_LABELS: Record<string, string> = {
   models: 'Models',
   inference_console: 'Inference Console',
   terminal: 'Terminal',
+  hub: 'Workspace Hub',
 };
 
 // Helper function to map icon names from SECTION_TO_ICON to Lucide components
@@ -485,6 +492,38 @@ export function DarkGlassDashboard({
   }>({ active: false, query: '', pagesDone: 0, pagesTotal: 0, error: null });
   const [isRailExpanded, setIsRailExpanded] = useState(true);
   const [isSidebarHidden, setIsSidebarHidden] = useState(false);
+  // T7 (REQ-7 AC1): dual-mode rail — SURFACES (live workspaces) vs SETTINGS
+  // (the 6 category nodes). Collapses to a 2-pip toggle at 56px rail width.
+  const [railMode, setRailMode] = useState<'surfaces' | 'settings'>('surfaces');
+  const [seamHover, setSeamHover] = useState(false);
+
+  // ── T7 telemetry badge sources (REQ-7 AC2) — EXISTING stores only, no new
+  // telemetry backend. If a source is unavailable the badge renders dimmed
+  // rather than fabricating a count (design.md Error Handling).
+  // [● N Running] ← workspaceStore active agent tasks (T9 store).
+  const runningAgentTasks = useWorkspaceStore(
+    (s) => s.agentTasks.filter((t) => t.status === 'in_progress').length
+  );
+  // [● N Tools] ← existing dev CLI tools endpoint (the tool registry the
+  // HelpPanel already reads). Fetched once; null = unavailable → dimmed.
+  const [mcpToolCount, setMcpToolCount] = useState<number | null>(null);
+  useEffect(() => {
+    // Guard: jsdom/test environments may not provide global fetch — the badge
+    // then renders dimmed ("source unavailable"), never a fabricated count.
+    if (typeof globalThis.fetch !== 'function') return;
+    let cancelled = false;
+    fetch('/api/dev/cli-tools')
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((d) => {
+        if (!cancelled) setMcpToolCount(Array.isArray(d?.tools) ? d.tools.length : null);
+      })
+      .catch(() => {
+        if (!cancelled) setMcpToolCount(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['input', 'model_inference', 'tools', 'power', 'theme', 'analytics']));
   const [isApplying, setIsApplying] = useState(false);
   const [applyStatus, setApplyStatus] = useState<"idle" | "applying" | "applied">("idle");
@@ -958,7 +997,7 @@ export function DarkGlassDashboard({
   const sectionsData = useSectionsData();
   const activeSections = sectionsData[activeTab] || [];
 
-  const VIRTUAL_SUB_APPS = new Set(['browser', 'marketplace', 'models', 'inference_console']);
+  const VIRTUAL_SUB_APPS = new Set(['browser', 'marketplace', 'models', 'inference_console', 'hub']);
 
   const handleSubAppChange = useCallback((appId: string) => {
     setActiveSubApp(appId);
@@ -1254,22 +1293,56 @@ export function DarkGlassDashboard({
     }
   }, [selectSectionWs]);
 
+  // T7 (REQ-7 AC2): SURFACES view — dedicated 36px circular orbs with live
+  // ambient telemetry badges fed from EXISTING stores.
+  const SURFACE_NODES = [
+    {
+      id: 'hub',
+      label: 'Workspace Hub',
+      icon: LayoutDashboard,
+      badge: { text: `${runningAgentTasks} Running`, live: runningAgentTasks > 0 },
+    },
+    {
+      id: 'browser',
+      label: 'Browser Surface',
+      icon: Globe,
+      // [● Live Web] ← browser-surface / crawl active state (existing store).
+      badge: crawlState.active
+        ? { text: 'Live Web', live: true }
+        : { text: 'Web Idle', live: false },
+    },
+    {
+      id: 'marketplace',
+      label: 'Marketplace & Models',
+      icon: ShoppingBag,
+      // [● N Tools] ← tool registry count; null source renders dimmed.
+      badge:
+        mcpToolCount != null
+          ? { text: `${mcpToolCount} Tools`, live: mcpToolCount > 0 }
+          : { text: '— Tools', live: false, dimmed: true },
+    },
+  ];
+
   const renderNavigationRail = () => (
-    <motion.nav 
+    <motion.nav
       initial={false}
-      animate={{ 
-        width: isSidebarHidden ? 0 : (isRailExpanded ? 120 : 56),
+      animate={{
+        width: isSidebarHidden ? 0 : (isRailExpanded ? 160 : 56),
         opacity: isSidebarHidden ? 0 : 1,
         x: isSidebarHidden ? -20 : 0
       }}
       transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
-      className="flex flex-col h-full border-r relative z-20 overflow-hidden shrink-0"
-      style={{ 
-        borderColor: 'rgba(255,255,255,0.05)',
+      className="flex flex-col h-full border-r relative z-20 overflow-visible shrink-0"
+      style={{
+        borderColor: 'rgba(255,255,255,0.06)',
         backgroundColor: 'rgba(0,0,0,0.3)'
       }}
     >
-      <div className="flex h-16 items-center px-4 mb-2 gap-3 border-b border-white/[0.03]">
+      {/* REQ-7 AC4: single unified <nav> container — internal scroll lists
+          handle content overflow; the nav itself is overflow-visible so the
+          seam affordance's right 8px is never clipped. */}
+
+      <div className="flex h-16 items-center px-4 mb-2 gap-3 border-b border-white/[0.03] shrink-0">
         {isRailExpanded ? (
           <motion.div className="flex items-center" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
             <span className="text-[14px] font-black tracking-[0.1em] text-white uppercase">
@@ -1283,68 +1356,144 @@ export function DarkGlassDashboard({
         )}
       </div>
 
-      {isRailExpanded && (
-        <div className="px-3 mb-6 pt-4 flex gap-2">
+      {/* REQ-7 AC1: dual-mode segmented glass pill switch — collapses to a
+          2-pip toggle [✦ | ⚙] when the rail is 56px. */}
+      {isRailExpanded ? (
+        <div className="px-3 mb-4 pt-1 flex gap-1 shrink-0">
           {[
-            { id: 'browser', label: 'BROWSER' },
-            { id: 'marketplace', label: 'MARKET' },
-          ].map(node => (
+            { id: 'surfaces', label: '✦ SURFACES' },
+            { id: 'settings', label: '⚙ SETTINGS' },
+          ].map((m) => (
             <button
-              key={node.id}
-              onClick={() => handleSubAppChange(node.id)}
-              className="flex-1 group flex items-center justify-center h-7 rounded transition-all relative overflow-hidden border border-white/[0.05]"
-              style={{ backgroundColor: activeSubApp === node.id ? `${glowColor}15` : 'rgba(255,255,255,0.02)' }}
+              key={m.id}
+              onClick={() => setRailMode(m.id as 'surfaces' | 'settings')}
+              className="flex-1 h-6 rounded-full text-[8px] font-black tracking-wider transition-all"
+              style={{
+                background: railMode === m.id ? `${glowColor}18` : 'rgba(255,255,255,0.03)',
+                color: railMode === m.id ? glowColor : 'rgba(255,255,255,0.4)',
+                border: `1px solid ${railMode === m.id ? `${glowColor}35` : 'rgba(255,255,255,0.05)'}`,
+              }}
             >
-              <span className="text-[9px] font-black uppercase tracking-[0.1em] opacity-60 group-hover:opacity-100 transition-opacity">
-                {node.label}
-              </span>
-              <div className="absolute bottom-0 left-0 right-0 h-[1px] opacity-0 group-hover:opacity-100 transition-opacity" style={{ backgroundColor: glowColor }} />
+              {m.label}
             </button>
           ))}
         </div>
-      )}
-      {!isRailExpanded && (
-        <div className="px-2 mb-6 pt-4 flex flex-col gap-3 items-center">
-           <button onClick={() => handleSubAppChange('browser')} className="text-white/30 hover:text-white"><Globe size={14} /></button>
-           <button onClick={() => handleSubAppChange('marketplace')} className="text-white/30 hover:text-white"><ShoppingBag size={14} /></button>
+      ) : (
+        <div className="px-2 mb-4 pt-1 flex flex-col gap-2 items-center shrink-0">
+          <button
+            onClick={() => setRailMode('surfaces')}
+            title="Surfaces"
+            className="w-6 h-6 rounded-full flex items-center justify-center transition-all"
+            style={{
+              color: railMode === 'surfaces' ? glowColor : 'rgba(255,255,255,0.35)',
+              background: railMode === 'surfaces' ? `${glowColor}18` : 'transparent',
+            }}
+          >
+            <Sparkles size={12} />
+          </button>
+          <button
+            onClick={() => setRailMode('settings')}
+            title="Settings"
+            className="w-6 h-6 rounded-full flex items-center justify-center transition-all"
+            style={{
+              color: railMode === 'settings' ? glowColor : 'rgba(255,255,255,0.35)',
+              background: railMode === 'settings' ? `${glowColor}18` : 'transparent',
+            }}
+          >
+            <Settings size={12} />
+          </button>
         </div>
       )}
 
-      <div className="h-[1px] bg-white/[0.05] mx-4 mb-4" />
-
-      <div className="flex-1 py-1 overflow-y-auto scrollbar-hide">
-        <div className="flex flex-col gap-3 px-2">
-          {MAIN_NODES_DATA.filter(n => !('developerOnly' in n && n.developerOnly && irisMode !== 'developer')).map((node) => {
-            const Icon = node.icon;
-            const isActive = activeTab === node.id && !activeSubApp;
-            const isExpanded = isRailExpanded;
-            return (
-              <button
-                key={node.id}
-                onClick={() => handleTabChange(node.id)}
-                className="group w-full flex items-center justify-center transition-all duration-200 relative rounded-full"
-                style={{
-                  height: 34,
-                  backgroundColor: isActive ? `${glowColor}2E` : 'transparent',
-                  border: isActive ? `1px solid ${glowColor}40` : '1px solid transparent',
-                  boxShadow: isActive ? `0 0 12px ${glowColor}26` : 'none',
-                  ...(isExpanded ? { paddingLeft: 12, paddingRight: 12, justifyContent: 'flex-start' } : { width: 34, margin: '0 auto' }),
-                }}
-                title={isExpanded ? undefined : node.label}
-              >
-                <Icon className="w-4 h-4 flex-shrink-0" style={{ color: isActive ? glowColor : 'rgba(255,255,255,0.35)' }} />
-                {isExpanded && (
-                  <span className="ml-3 text-[10px] font-semibold tracking-wider whitespace-nowrap" style={{ color: isActive ? 'white' : 'rgba(255,255,255,0.35)' }}>
-                    {node.label}
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
+      <div className="flex-1 py-1 overflow-y-auto overflow-x-hidden scrollbar-hide">
+        {railMode === 'surfaces' ? (
+          /* REQ-7 AC2: SURFACES — 36px circular nodes with live badges */
+          <div className="flex flex-col gap-3 px-2">
+            {SURFACE_NODES.map((node) => {
+              const Icon = node.icon;
+              const isActive = activeSubApp === node.id;
+              return (
+                <button
+                  key={node.id}
+                  onClick={() => handleSubAppChange(node.id)}
+                  title={isRailExpanded ? node.label : `${node.label} — ${node.badge.text}`}
+                  className="group w-full flex items-center transition-all duration-200 relative rounded-full"
+                  style={{
+                    height: 36,
+                    backgroundColor: isActive ? `${glowColor}2E` : 'transparent',
+                    border: isActive ? `1px solid ${glowColor}40` : '1px solid transparent',
+                    boxShadow: isActive ? `0 0 12px ${glowColor}26` : 'none',
+                    ...(isRailExpanded
+                      ? { paddingLeft: 12, paddingRight: 12, justifyContent: 'flex-start', gap: 10 }
+                      : { width: 36, margin: '0 auto', justifyContent: 'center' }),
+                  }}
+                >
+                  <Icon className="w-4 h-4 flex-shrink-0" style={{ color: isActive ? glowColor : 'rgba(255,255,255,0.35)' }} />
+                  {isRailExpanded && (
+                    <span className="flex flex-col min-w-0">
+                      <span className="text-[9px] font-semibold tracking-wide whitespace-nowrap" style={{ color: isActive ? 'white' : 'rgba(255,255,255,0.4)' }}>
+                        {node.label}
+                      </span>
+                      <span
+                        className="flex items-center gap-1 text-[8px] whitespace-nowrap"
+                        style={{ color: node.badge.live ? glowColor : 'rgba(255,255,255,0.25)', opacity: 'dimmed' in node.badge && node.badge.dimmed ? 0.45 : 1 }}
+                      >
+                        <span
+                          className="w-1 h-1 rounded-full"
+                          style={{
+                            background: node.badge.live ? glowColor : 'rgba(255,255,255,0.25)',
+                            boxShadow: node.badge.live ? `0 0 4px ${glowColor}` : 'none',
+                          }}
+                        />
+                        {node.badge.text}
+                      </span>
+                    </span>
+                  )}
+                  {!isRailExpanded && node.badge.live && (
+                    <span
+                      className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full"
+                      style={{ background: glowColor, boxShadow: `0 0 4px ${glowColor}` }}
+                    />
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          /* REQ-7 AC3: SETTINGS — all 6 MAIN_NODES_DATA category nodes as
+             36px rounded-full buttons */
+          <div className="flex flex-col gap-3 px-2">
+            {MAIN_NODES_DATA.map((node) => {
+              const Icon = node.icon;
+              const isActive = activeTab === node.id && !activeSubApp;
+              return (
+                <button
+                  key={node.id}
+                  onClick={() => handleTabChange(node.id)}
+                  className="group w-full flex items-center justify-center transition-all duration-200 relative rounded-full"
+                  style={{
+                    height: 36,
+                    backgroundColor: isActive ? `${glowColor}2E` : 'transparent',
+                    border: isActive ? `1px solid ${glowColor}40` : '1px solid transparent',
+                    boxShadow: isActive ? `0 0 12px ${glowColor}26` : 'none',
+                    ...(isRailExpanded ? { paddingLeft: 12, paddingRight: 12, justifyContent: 'flex-start', gap: 10 } : { width: 36, margin: '0 auto' }),
+                  }}
+                  title={isRailExpanded ? undefined : node.label}
+                >
+                  <Icon className="w-4 h-4 flex-shrink-0" style={{ color: isActive ? glowColor : 'rgba(255,255,255,0.35)' }} />
+                  {isRailExpanded && (
+                    <span className="text-[10px] font-semibold tracking-wider whitespace-nowrap" style={{ color: isActive ? 'white' : 'rgba(255,255,255,0.35)' }}>
+                      {node.label}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
-      <div className="p-4 border-t" style={{ borderColor: 'rgba(255,255,255,0.05)' }}>
+      <div className="p-4 border-t shrink-0" style={{ borderColor: 'rgba(255,255,255,0.05)' }}>
         <div className="flex items-center gap-3 min-w-0">
           <div className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center flex-shrink-0">
             <User className="w-4 h-4 text-white/50" />
@@ -1359,6 +1508,85 @@ export function DarkGlassDashboard({
           )}
         </div>
       </div>
+
+      {/* REQ-7 AC5-AC7: seam-anchored chevron affordance + neon laser shimmer.
+          Anchored to the rail's right boundary seam at vertical midpoint —
+          with width 16 and right -8 the internal X=8 axis sits exactly on the
+          1px border. Single unified column of 4 razor micro-chevrons whose
+          apex tips terminate on the seam; the shimmer line ignites on hover. */}
+      {!isSidebarHidden && (
+        <div
+          onClick={() => setIsRailExpanded((v) => !v)}
+          onMouseEnter={() => setSeamHover(true)}
+          onMouseLeave={() => setSeamHover(false)}
+          role="button"
+          aria-label={isRailExpanded ? 'Collapse navigation rail' : 'Expand navigation rail'}
+          title={isRailExpanded ? 'Collapse rail' : 'Expand rail'}
+          style={{
+            position: 'absolute',
+            right: -8,
+            top: '50%',
+            transform: 'translateY(-50%)',
+            width: 16,
+            height: 44,
+            zIndex: 50,
+            cursor: 'pointer',
+          }}
+        >
+          <svg
+            width="16"
+            height="44"
+            viewBox="0 0 16 44"
+            fill="none"
+            style={{
+              display: 'block',
+              overflow: 'visible',
+              filter: seamHover
+                ? `drop-shadow(0 0 6px ${glowColor}) drop-shadow(0 0 2px #ffffff)`
+                : 'none',
+              transition: 'filter 0.15s ease',
+            }}
+          >
+            <defs>
+              <linearGradient id="laserSeamShimmerGrad" x1="8" y1="3" x2="8" y2="37" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stopColor={glowColor} stopOpacity={0} />
+                <stop offset="25%" stopColor={glowColor} stopOpacity={seamHover ? 0.85 : 0.3} />
+                <stop offset="50%" stopColor="#ffffff" stopOpacity={seamHover ? 1 : 0.55} />
+                <stop offset="75%" stopColor={glowColor} stopOpacity={seamHover ? 0.85 : 0.3} />
+                <stop offset="100%" stopColor={glowColor} stopOpacity={0} />
+              </linearGradient>
+            </defs>
+            {/* Neon laser shimmer line down the seam axis, across the tips */}
+            <line
+              x1={8}
+              y1={3}
+              x2={8}
+              y2={37}
+              stroke="url(#laserSeamShimmerGrad)"
+              strokeWidth={seamHover ? 1.75 : 1.25}
+              strokeLinecap="round"
+            />
+            {/* Single unified vertical stack of 4 micro-chevrons — apex tips
+                terminate on the seam (X=8). Expanded: point LEFT (collapse
+                inward). Collapsed: point RIGHT (expand outward). */}
+            {(isRailExpanded
+              ? ['M 12 7 L 8 11 L 12 15', 'M 12 13 L 8 17 L 12 21', 'M 12 19 L 8 23 L 12 27', 'M 12 25 L 8 29 L 12 33']
+              : ['M 4 7 L 8 11 L 4 15', 'M 4 13 L 8 17 L 4 21', 'M 4 19 L 8 23 L 4 27', 'M 4 25 L 8 29 L 4 33']
+            ).map((d, i) => (
+              <path
+                key={i}
+                d={d}
+                stroke={glowColor}
+                strokeWidth={1.3}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                fill="none"
+                opacity={0.7 + i * 0.0833}
+              />
+            ))}
+          </svg>
+        </div>
+      )}
     </motion.nav>
   );
 
@@ -1435,7 +1663,7 @@ export function DarkGlassDashboard({
       </div>
 
       <div className="flex items-center gap-3 flex-1">
-        {(activeSubApp === 'browser' || activeSubApp === 'marketplace' || activeSubApp === 'models' || activeSubApp === 'inference_console') && isSidebarHidden && (
+        {(activeSubApp === 'browser' || activeSubApp === 'marketplace' || activeSubApp === 'models' || activeSubApp === 'inference_console' || activeSubApp === 'hub') && isSidebarHidden && (
           <button
             onClick={() => setIsSidebarHidden(false)}
             className="p-2 -ml-2 hover:bg-white/5 rounded-lg text-white/40 hover:text-white transition-colors"
@@ -1853,13 +2081,29 @@ export function DarkGlassDashboard({
          <ActivityPanel key="activity" glowColor={glowColor} fontColor="white" />
        ) : activeSubApp === 'logs' ? (
          <LogsPanel key="logs" glowColor={glowColor} fontColor="white" />
-       ) : activeSubApp === 'marketplace' ? (
-         <MarketplaceScreen key="marketplace" glowColor={glowColor} fontColor="white" />
-        ) : activeSubApp === 'inference_console' ? (
+        ) : activeSubApp === 'marketplace' ? (
+          /* T10 (REQ-9): unified Marketplace & Models surface — MCP tools and
+             Local Models + HF Hub combined behind one segmented pill. */
+          <UnifiedMarketplaceModelsSurface key="marketplace" glowColor={glowColor} fontColor="white" />
+         ) : activeSubApp === 'inference_console' ? (
           <InferenceConsolePanel key="inference_console" glowColor={glowColor} fontColor="white" />
         ) : activeSubApp === 'models' ? (
-          <ModelBrowserPanel key="model_browser" glowColor={glowColor} fontColor="white" sendMessage={sendMessage} />
-        ) : null}
+           <ModelBrowserPanel key="model_browser" glowColor={glowColor} fontColor="white" sendMessage={sendMessage} />
+        ) : activeSubApp === 'hub' ? (
+          /* T7/T8/T9 (REQ-7 AC2, REQ-5, REQ-6): the Visual Workspace Hub —
+             focus-mode-controlled multi-agent Kanban board. */
+          <div className="w-full h-full p-3">
+            <Suspense
+              fallback={
+                <div className="h-full flex items-center justify-center">
+                  <span className="text-xs text-white/20">Loading Workspace Hub…</span>
+                </div>
+              }
+            >
+              <DeveloperWorkspace />
+            </Suspense>
+          </div>
+         ) : null}
     </div>
   );
 

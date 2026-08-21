@@ -89,9 +89,15 @@ describe("TaskListCard â€” honest display (REQ-8 / T17a)", () => {
     expect(hasWorking).toBe(true);
     expect(hasPending).toBe(true);
 
-    // Real tool is shown as its human label (not fabricated, not the raw id):
-    // read_file renders as "Reading File" via the TOOL_TITLES map.
-    expect(screen.getByText(/reading file/i)).toBeInTheDocument();
+    // RE-INVERTED 2026-08-21, session 244 (task-card-v2 completion), CALLED
+    // OUT DELIBERATELY: the verb column is now the SINGLE tool representation
+    // (design.md token table: w-12 vein-coloured registry verb). The old
+    // human-label pill ("Reading File") was removed because it duplicated the
+    // verb — a row read "SEARCH … WebSearch", saying the same thing twice.
+    // WHAT THIS ASSERTION STILL PINS: the real tool drives the display (not
+    // fabricated, not the raw id) — read_file resolves through the SHARED
+    // verbRegistry to READ, exactly what the CLI renderer shows.
+    expect(screen.getByText("READ")).toBeInTheDocument();
 
     // The real result preview is shown once the step is expanded.
     const stepBtn = screen.getByText("Read the config file");

@@ -20,11 +20,15 @@ Error handling: try/except pattern — never blocks the DER loop.
 from __future__ import annotations
 
 import enum
+import json
 import logging
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+from backend.capabilities import CapabilitySet
+import backend.capabilities as _caps
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +73,9 @@ class ToolPermissionRequest:
     timeout_seconds: int = PERMISSION_TIMEOUT_SIDE_EFFECT
     status: str = "pending"  # pending | approved | denied | timed_out
     turn_id: Optional[str] = None
+    session_id: Optional[str] = None  # session this request belongs to (REQ-19 cache key)
+    session_approved: bool = False  # True when auto-approved from the per-session cache
+    standing_approved: bool = False  # True when auto-approved from the standing list
 
     def is_expired(self) -> bool:
         return time.time() > self.created_at + self.timeout_seconds
@@ -138,6 +145,103 @@ _DESTRUCTIVE_TOOLS: set = {
 }
 
 # Parameter patterns that escalate the tier
+# ── REQ-19: approval classes (derived from the tier/capability constants) ──
+class ApprovalClass(str, enum.Enum):
+    """How a gated tool is treated by the permission system.
+
+    Derived from the EXISTING tier/capability constants (never a standalone
+    hardcoded list) so the classes cannot drift from the tiers the matrix uses.
+    """
+    ALWAYS_ASK = "always_ask"
+    SESSION_APPROVABLE = "session_approvable"
+    UNGATED = "ungated"
+
+
+# ALWAYS_ASK = destructive tools ∪ terminal tools. SESSION_APPROVABLE = repo tools
+# minus the always-ask set. Everything else is UNGATED (no prompt).
+_ALWAYS_ASK_TOOLS = _DESTRUCTIVE_TOOLS | CapabilitySet._TERMINAL_TOOLS
+_SESSION_APPROVABLE_TOOLS = CapabilitySet._REPO_TOOLS - _ALWAYS_ASK_TOOLS
+
+
+def approval_class(tool_name: str) -> ApprovalClass:
+    """Classify a tool into an approval class from the tier/capability constants."""
+    name = tool_name.lower()
+    if name in _ALWAYS_ASK_TOOLS:
+        return ApprovalClass.ALWAYS_ASK
+    if name in _SESSION_APPROVABLE_TOOLS:
+        return ApprovalClass.SESSION_APPROVABLE
+    return ApprovalClass.UNGATED
+
+
+def get_approvable_tools() -> List[str]:
+    """Tools the user may pre-approve via the standing list (REQ-19 AC3).
+
+    These are exactly the SESSION_APPROVABLE tools — side-effect/repo tools that
+    would otherwise prompt every session. ALWAYS_ASK (destructive/terminal) and
+    UNGATED (read-only) tools are intentionally excluded: the former can never be
+    pre-approved, the latter never prompt.
+    """
+    return sorted(_SESSION_APPROVABLE_TOOLS)
+
+
+def _get_standing_approved_tools() -> Set[str]:
+    """Read the user's standing approved-tools list, RE-VALIDATED on every read
+    (REQ-19 AC4/AC6).
+
+    ALWAYS_ASK tools are dropped — they can never be pre-approved, even if a user
+    hand-edited the config file to add one. An unreadable config yields an empty
+    list and the system still prompts (AC6) — never 'everything approved'.
+    """
+    try:
+        with open(_caps._CFG_PATH, encoding="utf-8") as _f:
+            _cfg = json.load(_f)
+    except Exception:
+        return set()  # AC6: unreadable -> empty, still prompt
+    _raw = _cfg.get("approved_tools")
+    if not isinstance(_raw, list):
+        return set()
+    _validated: Set[str] = set()
+    for _name in _raw:
+        if not isinstance(_name, str):
+            continue
+        _low = _name.lower()
+        if approval_class(_low) == ApprovalClass.ALWAYS_ASK:
+            continue  # AC4: refuse ALWAYS_ASK on the standing list
+        _validated.add(_low)
+    return _validated
+
+
+class SessionApprovalCache:
+    """Per-session approval cache (REQ-19 AC2/AC8).
+
+    In-memory only — it does NOT survive a process restart, so approvals are
+    discarded on restart. ALWAYS_ASK tools are physically refused from entering
+    the cache (AC8): approving one records nothing, so the next call prompts
+    again. This is safer than writing an entry and then checking a precedence
+    rule against it later.
+    """
+    def __init__(self) -> None:
+        self._approved: Dict[Tuple[str, str], bool] = {}
+
+    def is_approved(self, session_id: str, tool_name: str) -> bool:
+        return self._approved.get((session_id, tool_name.lower()), False)
+
+    def record_approval(self, session_id: str, tool_name: str) -> None:
+        if approval_class(tool_name) == ApprovalClass.ALWAYS_ASK:
+            return  # AC8: ALWAYS_ASK never enters the cache
+        self._approved[(session_id, tool_name.lower())] = True
+
+    def clear_session(self, session_id: str) -> None:
+        for key in [k for k in self._approved if k[0] == session_id]:
+            del self._approved[key]
+
+    def clear_all(self) -> None:
+        self._approved.clear()
+
+
+_session_approval_cache = SessionApprovalCache()
+
+
 _DESTRUCTIVE_PARAM_PATTERNS: List[str] = [
     "rm -rf",
     "drop table",
@@ -186,22 +290,6 @@ def classify_tool(tool_name: str, params: Optional[Dict[str, Any]] = None) -> Pe
                 return PermissionTier.DESTRUCTIVE
 
     return base_tier
-
-
-def permission_level_from_config() -> str:
-    """Read the current permission level from CapabilitySet.
-
-    Returns "developer" or "personal".
-    """
-    try:
-        from backend.capabilities import CapabilitySet
-
-        if CapabilitySet.TERMINAL in CapabilitySet._DEVELOPER:
-            # If developer mode has TERMINAL, check if it's enabled
-            pass
-        return "developer"  # default to developer for the agent
-    except Exception:
-        return "developer"
 
 
 def get_permission_action(tier: PermissionTier, level: str) -> PermissionAction:
@@ -254,6 +342,8 @@ class ToolPermissionSystem:
         description: str = "",
         turn_id: Optional[str] = None,
         level: Optional[str] = None,
+        force: bool = False,
+        session_id: Optional[str] = None,
     ) -> ToolPermissionRequest:
         """Create and emit a permission request.
 
@@ -263,16 +353,49 @@ class ToolPermissionSystem:
         Never raises — logs and returns auto-approved request on error.
         """
         try:
-            _level = level or permission_level_from_config()
+            _level = level or CapabilitySet.get_mode()
             action = get_permission_action(tier, _level)
+            cls = approval_class(tool_name)
 
-            if action == PermissionAction.AUTO_APPROVE:
+            # REQ-19 AC7 precedence: ALWAYS_ASK > standing list > session approval > prompting.
+            # ALWAYS_ASK always prompts (never honoured by the standing list or cache).
+            if cls != ApprovalClass.ALWAYS_ASK:
+                standing = _get_standing_approved_tools()
+                if tool_name.lower() in standing:
+                    return ToolPermissionRequest(
+                        tool_name=tool_name,
+                        tier=tier,
+                        params=params or {},
+                        description=description,
+                        turn_id=turn_id,
+                        session_id=session_id,
+                        status="approved",
+                        standing_approved=True,
+                    )
+                # Session approval beats prompting (AC2). ALWAYS_ASK is never cached.
+                if cls == ApprovalClass.SESSION_APPROVABLE and session_id and _session_approval_cache.is_approved(session_id, tool_name):
+                    return ToolPermissionRequest(
+                        tool_name=tool_name,
+                        tier=tier,
+                        params=params or {},
+                        description=description,
+                        turn_id=turn_id,
+                        session_id=session_id,
+                        status="approved",
+                        session_approved=True,
+                    )
+
+            # REQ-18: force=True (capability escalation) must prompt even when the
+            # mode's policy would auto-approve — the user overrides the capability
+            # denial explicitly, so we must actually ask.
+            if not force and action == PermissionAction.AUTO_APPROVE:
                 req = ToolPermissionRequest(
                     tool_name=tool_name,
                     tier=tier,
                     params=params or {},
                     description=description,
                     turn_id=turn_id,
+                    session_id=session_id,
                     status="approved",
                 )
                 return req
@@ -290,6 +413,7 @@ class ToolPermissionSystem:
                 description=description,
                 timeout_seconds=timeout,
                 turn_id=turn_id,
+                session_id=session_id,
             )
 
             self._pending[req.request_id] = req
@@ -344,6 +468,12 @@ class ToolPermissionSystem:
             req.status = "approved" if approved else "denied"
             if approved and confirmed:
                 req.status = "approved"
+
+            # REQ-19 AC2: record SESSION_APPROVABLE approvals in the per-session cache.
+            # ALWAYS_ASK tools are refused by the cache itself (AC8), so they always
+            # prompt again next time.
+            if approved and approval_class(req.tool_name) == ApprovalClass.SESSION_APPROVABLE and req.session_id:
+                _session_approval_cache.record_approval(req.session_id, req.tool_name)
 
             # Emit response event
             event = (

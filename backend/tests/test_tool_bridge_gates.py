@@ -91,25 +91,36 @@ async def test_desktop_gate_blocks_open_url_when_off(monkeypatch):
 @pytest.mark.asyncio
 async def test_desktop_gate_dispatches_when_on(monkeypatch):
     r._desktop_provider = lambda: True
+    # This test verifies DISPATCH, not the permission mode. Pin personal mode
+    # (SIDE_EFFECT auto-approves) so the tool reaches the executor; T20 flipped
+    # the absent-mode default to developer (which would instead ASK).
+    import backend.capabilities as caps
+    monkeypatch.setattr(caps.CapabilitySet, "get_mode", staticmethod(lambda: "personal"))
     bridge = _make_bridge()
+    # open_url routes to _execute_open_url (in-app browser surface, REQ-16/T27),
+    # NOT through execute_mcp_tool — so patch the real handler to verify the
+    # desktop gate lets it dispatch (no real crawler / network involved).
     captured = {}
 
-    async def fake_mcp(server, tool, params, sid):
-        captured["server"] = server
-        captured["tool"] = tool
+    async def fake_open_url(params, sid):
+        captured["params"] = params
         return {"success": True, "fake": True}
 
-    monkeypatch.setattr(bridge, "execute_mcp_tool", fake_mcp)
+    monkeypatch.setattr(bridge, "_execute_open_url", fake_open_url)
     result = await bridge.execute_tool("open_url", {"url": "https://x"}, session_id="t")
     assert result.get("fake") is True
-    assert captured.get("server") == "browser"
-    assert captured.get("tool") == "open_url"
+    assert captured.get("params") == {"url": "https://x"}
 
 
 @pytest.mark.asyncio
 async def test_unknown_tool_not_resolved_but_still_runs_dispatch(monkeypatch):
     """An unknown tool name has no spec; execute_tool should fall through to its
     normal 'Unknown tool' outcome rather than crashing on the registry lookup."""
+    # Pin personal mode (SIDE_EFFECT auto-approves) so the unknown tool reaches
+    # the "Unknown tool" outcome; T20 flipped the absent-mode default to
+    # developer, which would instead ASK and time out headless.
+    import backend.capabilities as caps
+    monkeypatch.setattr(caps.CapabilitySet, "get_mode", staticmethod(lambda: "personal"))
     bridge = _make_bridge()
     result = await bridge.execute_tool("totally_unknown_tool_xyz", {}, session_id="t")
     assert result.get("error") is not None

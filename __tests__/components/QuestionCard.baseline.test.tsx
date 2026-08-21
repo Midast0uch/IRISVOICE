@@ -47,6 +47,13 @@ jest.mock("framer-motion", () => {
 })
 
 describe("QuestionCard — REQ-5 question set model (T10)", () => {
+  // RE-INVERTED 2026-08-21 (pre-existing-debt cleanup, pin_c01534199cdb item A2)
+  // — SANCTIONED EDIT, CALLED OUT: QuestionCard's onAnswer now carries a
+  // THIRD argument, `source` ("click" | "text"), reporting answer provenance
+  // (the terminal funnel already sends source:'cli' on question_response).
+  // The signature is (questionId, answer, source?) — consumers that ignore
+  // the third arg are unaffected. WHAT THESE ASSERTIONS CHECK IS UNCHANGED:
+  // EXACT arity and values, so the provenance channel itself stays pinned.
   it("1. legacy single-question props still render one question (REQ-5 AC6 back-compat)", () => {
     render(
       <QuestionCard
@@ -92,7 +99,7 @@ describe("QuestionCard — REQ-5 question set model (T10)", () => {
     fireEvent.click(screen.getByRole("button", { name: /yes/ }))
 
     expect(onAnswer).toHaveBeenCalledTimes(1)
-    expect(onAnswer).toHaveBeenCalledWith("q1", "yes")
+    expect(onAnswer).toHaveBeenCalledWith("q1", "yes", "click")
   })
 
   it("3b. onAnswer fires with the trimmed custom answer when allowOther is used", () => {
@@ -109,7 +116,7 @@ describe("QuestionCard — REQ-5 question set model (T10)", () => {
     fireEvent.change(input, { target: { value: "  a custom reply  " } })
     fireEvent.click(screen.getByRole("button", { name: /send/i }))
 
-    expect(onAnswer).toHaveBeenCalledWith("q1", "a custom reply")
+    expect(onAnswer).toHaveBeenCalledWith("q1", "a custom reply", "text")
   })
 
   it("4. a multiSelect question answers with a LIST of option strings; a single-select question stays a string (REQ-5 AC3)", () => {
@@ -132,15 +139,15 @@ describe("QuestionCard — REQ-5 question set model (T10)", () => {
 
     // Single-select: one click resolves immediately with a plain string.
     fireEvent.click(screen.getByRole("button", { name: "TypeScript" }))
-    expect(onAnswer).toHaveBeenCalledWith("q1", "TypeScript")
+    expect(onAnswer).toHaveBeenCalledWith("q1", "TypeScript", "click")
 
     // Multi-select: clicking options only toggles a selection; the answer is
     // committed on the explicit Submit control, as a list.
     fireEvent.click(screen.getByRole("button", { name: "git" }))
     fireEvent.click(screen.getByRole("button", { name: "docker" }))
-    expect(onAnswer).not.toHaveBeenCalledWith("q2", expect.anything())
+    expect(onAnswer).not.toHaveBeenCalledWith("q2", expect.anything(), expect.anything())
     fireEvent.click(screen.getByRole("button", { name: /submit/i }))
-    expect(onAnswer).toHaveBeenCalledWith("q2", ["git", "docker"])
+    expect(onAnswer).toHaveBeenCalledWith("q2", ["git", "docker"], "click")
   })
 
   it("5. one question answered, others pending — the answered question locks and shows its answer; the pending one stays live (REQ-5 edge case)", () => {
@@ -196,6 +203,6 @@ describe("QuestionCard — REQ-5 question set model (T10)", () => {
     const input = screen.getByPlaceholderText("Type your answer…")
     fireEvent.change(input, { target: { value: "extra context" } })
     fireEvent.click(screen.getByRole("button", { name: /send/i }))
-    expect(onAnswer).toHaveBeenCalledWith("q1", "extra context")
+    expect(onAnswer).toHaveBeenCalledWith("q1", "extra context", "text")
   })
 })

@@ -59,10 +59,22 @@ class TestTaskStartRevisionOrigin:
         # pin the SAME producer from two different specs. T1 adds three identity
         # keys (card_id / card_relation / conversation_id) to every task:start
         # payload, so the exact-equality literal here moves from 7 keys to 10.
+        # RE-UPDATED 2026-08-21 by cli-workspace-unification T9a (REQ-5 AC1):
+        # agent_id / project_id join additively (backend-emitted Kanban tags),
+        # moving the literal from 10 keys to 12; direct calls default both to
+        # None because the kernel-resolved values arrive via _multiagent_tags()
+        # at the real emit sites.
+        # RE-UPDATED 2026-08-21, session 244 (card↔response inline join):
+        # turn_id joins additively — the kernel's current response turn id
+        # (self._current_turn_id), the SAME id space as the assistant message
+        # id on the frontend, so a card can render inline with its response
+        # (the join documents already use). Literal moves from 12 keys to 13;
+        # direct calls default it to None because the live value arrives from
+        # kernel state at the real emit sites.
         # WHAT THIS TEST ASSERTS IS UNCHANGED: one construction point, no drift
         # between emit sites, and the origin vocabulary passing through. The
         # assertion is still EXACT equality — that strictness is the whole point,
-        # because it is what proves T1 was additive rather than a rewrite.
+        # because it is what proves each addition was additive, not a rewrite.
         payload = AgentKernel._task_start_payload(
             task_id="t1", description="d", plan_title="p", mode="full",
             steps=[{"id": "s1"}], total_steps=1, origin="initial",
@@ -79,6 +91,9 @@ class TestTaskStartRevisionOrigin:
             "card_id": "card_t1",
             "card_relation": "new",
             "conversation_id": "conv_1",
+            "agent_id": None,
+            "project_id": None,
+            "turn_id": None,
         }
         # NOTE: a fourth origin, "amendment", exists in agent_kernel.py and is not
         # in this docstring's vocabulary. Left as found — correcting that belongs

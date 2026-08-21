@@ -9,6 +9,21 @@ set-equality assertion is what keeps the addition provably additive rather
 than a silent rename or drop elsewhere.
 
 Inverted by: T1 (landed)
+
+RE-INVERTED 2026-08-21 by cli-workspace-unification T9a (REQ-5 AC1 / CT-1),
+CALLED OUT DELIBERATELY: `agent_id` (kernel session identity) and
+`project_id` (active project folder scope) join the SAME single construction
+point, additive only — the multi-agent Kanban tags are backend-emitted and
+the frontend never fabricates them. WHAT THIS TEST ASSERTS IS UNCHANGED:
+exact set equality, which is what proves T9a was additive rather than a
+rewrite. Ten keys -> twelve.
+
+RE-INVERTED 2026-08-21, session 244 (card↔response inline join), CALLED OUT
+DELIBERATELY: `turn_id` (the kernel's current response turn id,
+`self._current_turn_id`) joins additively — the SAME id space as the
+assistant message id on the frontend, so a card can render INLINE with its
+response (the join documents already use). WHAT THIS TEST ASSERTS IS
+UNCHANGED: exact set equality. Twelve keys -> thirteen.
 """
 
 import pytest
@@ -26,6 +41,9 @@ EXPECTED_KEYS = {
     "card_id",
     "card_relation",
     "conversation_id",
+    "agent_id",
+    "project_id",
+    "turn_id",
 }
 
 
@@ -48,11 +66,27 @@ def _call(**overrides):
 
 class TestExactKeySet:
     def test_exact_key_set(self):
-        """CT-1 (post-T1): the payload's key set is now exactly these TEN
+        """CT-1 (post-T9a): the payload's key set is now exactly these TWELVE
         keys — the original seven, unchanged, plus card_id / card_relation /
-        conversation_id. No more, no less."""
+        conversation_id (T1) plus agent_id / project_id (cli-workspace-
+        unification T9a). No more, no less."""
         payload = _call()
         assert set(payload.keys()) == EXPECTED_KEYS
+
+
+class TestMultiAgentTagsPresent:
+    """cli-workspace-unification T9a: the Kanban tags are part of the
+    payload contract. Direct calls default them to None (the caller —
+    `_multiagent_tags()` — supplies the kernel-resolved values); consumers
+    fall back to conversationId-only keying when project_id is None."""
+
+    def test_agent_id_defaults_to_none_and_passes_through(self):
+        assert _call()["agent_id"] is None
+        assert _call(agent_id="sess_abc")["agent_id"] == "sess_abc"
+
+    def test_project_id_defaults_to_none_and_passes_through(self):
+        assert _call()["project_id"] is None
+        assert _call(project_id="proj_1")["project_id"] == "proj_1"
 
 
 class TestNewKeysPresent:

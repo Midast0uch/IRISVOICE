@@ -27,10 +27,10 @@ describe("memoryRegistry — CT-7", () => {
     expect(MEMORY_EVENT_REGISTRY.learning.fields).toEqual(["signal", "verified_label"])
   })
 
-  it("registers recall / compress / episodic as NOT emitting yet (T8c adds the emits)", () => {
-    expect(MEMORY_EVENT_REGISTRY.recall.emitting).toBe(false)
-    expect(MEMORY_EVENT_REGISTRY.compress.emitting).toBe(false)
-    expect(MEMORY_EVENT_REGISTRY.episodic.emitting).toBe(false)
+  it("registers recall / compress / episodic as emitting (T8c wired the real emit sites)", () => {
+    expect(MEMORY_EVENT_REGISTRY.recall.emitting).toBe(true)
+    expect(MEMORY_EVENT_REGISTRY.compress.emitting).toBe(true)
+    expect(MEMORY_EVENT_REGISTRY.episodic.emitting).toBe(true)
   })
 
   it("fields render in the DECLARED order for the same kind every time", () => {
@@ -84,7 +84,8 @@ describe("memoryRegistry — CT-7", () => {
     for (const field of RESERVED_WORMHOLE_FIELDS) {
       expect(MEMORY_EVENT_REGISTRY.recall.fields).toContain(field)
     }
-    // ...but `recall` does not emit yet, so nothing renders these as live data.
-    expect(MEMORY_EVENT_REGISTRY.recall.emitting).toBe(false)
+    // ...and `recall` now emits (T8c), so its reserved Wormhole fields CAN
+    // render as live data in the card's memory slot.
+    expect(MEMORY_EVENT_REGISTRY.recall.emitting).toBe(true)
   })
 })
