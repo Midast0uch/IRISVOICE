@@ -4,7 +4,6 @@ import React, { useState, useEffect, useMemo } from "react"
 import { AnimatePresence, motion } from "framer-motion"
 import { Search, ChevronDown } from "lucide-react"
 import { useBrandColor } from "@/contexts/BrandColorContext"
-import { Xur } from "@/components/Xur"
 import { deriveCurrentStep } from "@/hooks/useTaskProgress"
 import type { TaskStep, TaskStepStatus, MemoryEvent } from "@/hooks/useTaskProgress"
 import { toolLabel, MODE_NON_TOOLS } from "@/hooks/useTaskProgress"
@@ -13,6 +12,7 @@ import {
   CardChassis,
   ChassisBadge,
   ChassisBranchBadge,
+  ChassisStepNode,
   VEIN_COLOR_BY_STATE,
   type ChassisVeinState,
 } from "@/components/chat/CardChassis"
@@ -98,7 +98,7 @@ export default function TaskListCard({
   // doneCount, because a step in flight is not finished work.
   const displayStep = deriveCurrentStep(steps)
   // Action-only header, derived from the agent's live tool (never "Plan").
-  const headerTitle = planTitle || mode?.toUpperCase() || "TASK"
+  const headerTitle = planTitle || steps[0]?.description || mode?.toUpperCase() || "TASK"
 
   // REQ-1 AC2/AC3: the chassis vein is driven by real execution state, not by
   // the user's brand color â€” `glowColor` above stays reserved for identity
@@ -416,7 +416,7 @@ export default function TaskListCard({
           <div className="relative pl-2">
             {/* pl-1: keeps the node/verb column off the accent vein's glow
                 halo â€” content starts 4px further in; the detail-row indent
-                (pl-[84px]) is row-relative so alignment is unchanged. */}
+                (pl-[88px]) is row-relative so alignment is unchanged. */}
             {/* Continuous vertical hairline through all step nodes â€” centered at 6px
                 (matches the 12px step-icon wrapper and header core center), fades at
                 top/bottom */}
@@ -424,7 +424,7 @@ export default function TaskListCard({
               <div
                 style={{
                   position: "absolute",
-                  left: 5.5,
+                  left: 7.5,
                   top: 10,
                   bottom: 10,
                   width: 1,
@@ -447,74 +447,19 @@ export default function TaskListCard({
                       className="flex flex-col gap-0.5 w-full text-left py-0.5 hover:brightness-125"
                     >
                       <span className="flex items-start gap-3 min-w-0">
-                      {/* One identical 12x12 wrapper for BOTH states so the
-                          node centre always lands at x=6 â€” matching the
-                          hairline at left:5.5 and the 12px header core. Without
-                          this, a 12px working node and a 9px-occupied dot made
-                          the step text shift horizontally when a step became
-                          active. */}
-                      <span
-                        className="shrink-0 flex items-center justify-center"
-                        style={{
-                          width: 12,
-                          height: 12,
-                          minWidth: 12,
-                          marginTop: 3,
-                          marginLeft: 0,
-                          zIndex: 1,
-                          position: "relative",
-                        }}
-                      >
-                        {step.status === "working" ? (
-                          <>
-                            {/* Design token table â€” node Â· running: animate-ping
-                                ring + inner ring + Xur. The ping announces "this
-                                step is in flight" without a spinner. */}
-                            <span
-                              aria-hidden
-                              className="absolute inset-0 rounded-full animate-ping"
-                              style={{ border: `1.5px solid ${meta.color}80`, background: `${meta.color}14` }}
-                            />
-                            {/* Opaque backdrop disc masks the vertical hairline
-                                exactly as the inactive dots mask it with
-                                background:"#05060c" â€” without it the hairline
-                                draws straight through the Xur. A soft ring
-                                (glow + border) gives the node presence at 12px,
-                                where the Xur's 9-lobe epitrochoid curve is
-                                otherwise a faint sub-pixel smudge. */}
-                            <span
-                              aria-hidden
-                              style={{
-                                position: "absolute",
-                                inset: 0,
-                                borderRadius: "50%",
-                                background: "#05060c",
-                                border: `1px solid ${meta.color}40`,
-                                boxShadow: `0 0 8px ${meta.color}`,
-                              }}
-                            />
-                            {/* The active step animates. Xur reuses the same
-                                curve / particle language as the orb, so "the
-                                agent is on this one" reads at a glance without
-                                a second colour system. Rendered above the
-                                backdrop disc. Size 7 per the design tokens. */}
-                            <span className="relative" style={{ color: meta.color }}>
-                              <Xur size={7} color={meta.color} speed={1.4} />
-                            </span>
-                          </>
-                        ) : (
-                          <span
-                            style={{
-                              width: 6,
-                              height: 6,
-                              borderRadius: "50%",
-                              background: "#05060c",
-                              border: `1.5px solid ${meta.color}`,
-                              boxShadow: `0 0 8px ${meta.color}`,
-                            }}
-                          />
-                        )}
-                      </span>
+                      {/* T9 (REQ-1): the node states are the CHASSIS's —
+                          ChassisStepNode reproduces the Liquid Ink variant
+                          verbatim (running ping-ring + Xur, done glow dot,
+                          pending white/20). One node implementation for every
+                          card; this file no longer owns node markup. */}
+                      <ChassisStepNode
+                        status={
+                          step.status === "working" ? "running"
+                          : step.status === "done" || step.status === "fail" || step.status === "error" || step.status === "vetoed" ? "done"
+                          : "pending"
+                        }
+                        color={meta.color}
+                      />
                       {/* REQ-14 verb column â€” ONE registry source shared with the
                           CLI renderer (lib/cards/verbRegistry.resolveVerb).
                           w-12 fixed so targets align; vein-coloured per the
@@ -539,7 +484,7 @@ export default function TaskListCard({
                       </span>
                       {step.activeDetail || step.url || step.resultPreview ? (
                         <span
-                          className="flex flex-col gap-[3px] pl-[84px] min-w-0"
+                          className="flex flex-col gap-[3px] pl-[88px] min-w-0"
                           style={{ color: glowColor }}
                           title={
                             step.activeDetail

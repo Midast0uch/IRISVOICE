@@ -2216,7 +2216,7 @@ class AgentToolBridge:
                 query, mode="agent", session_id=session_id, on_progress=_on_progress,
             )
         except Exception as exc:
-            logger.error("[crawler_query] research failed: %s", exc)
+            logger.exception("[crawler_query] research failed: %s", exc)
             if _registry is not None:
                 await _registry.fail(job_id, f"research failed: {exc}")
             try:

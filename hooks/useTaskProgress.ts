@@ -515,7 +515,14 @@ function handleTaskStart(prev: CardsState, d: TaskUpdateDetail): CardsState {
  * created by task:start. */
 function resolveTargetCardId(conv: ConversationCardState, d: TaskUpdateDetail): string | undefined {
   if (d.card_id) return conv.byId[d.card_id] ? d.card_id : undefined
-  return conv.legacyCardId
+  if (conv.legacyCardId && conv.byId[conv.legacyCardId]) return conv.legacyCardId
+  // Session 244: card-less progress (e.g. the `search` tool's phase/page
+  // frames carry no card_id) belongs to the NEWEST WORKING card — progress
+  // describes whatever the agent is doing right now. Without this the frames
+  // resolved to undefined and were dropped, so the card sat frozen on its
+  // initial step for the whole run.
+  const working = [...conv.order].reverse().find((id) => conv.byId[id]?.isWorking)
+  return working
 }
 
 function blankCard(cardId: string, conversationId: string | null): TaskCard {
