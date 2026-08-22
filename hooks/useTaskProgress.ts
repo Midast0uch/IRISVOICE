@@ -641,7 +641,12 @@ function mergeHydratedCards(prev: CardsState, cards: PersistedCard[]): CardsStat
     const steps: TaskStep[] = (p.steps || []).slice(0, MAX_STEPS).map((s) => ({
       id: s.id,
       description: s.description,
-      status: (s.status as TaskStepStatus) ?? "unknown",
+      // Session 246: backend snapshots can carry native statuses ("running")
+      // that STATUS_META does not know — normalize to frontend vocabulary.
+      status: (
+        s.status === "running" ? "working"
+        : (s.status as TaskStepStatus) ?? "unknown"
+      ),
       toolName: s.tool_name ?? undefined,
     }))
     const hydrated: TaskCard = {

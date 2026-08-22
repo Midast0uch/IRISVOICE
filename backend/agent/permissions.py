@@ -115,6 +115,12 @@ _READ_ONLY_TOOLS: set = {
     "get_tool_info",
     "list_resources",
     "read_resource",
+    # Session 246 (user decision C): cross-thread DISCOVERY tools — purely
+    # informational, no state change. list_conversations was defaulting to
+    # SIDE_EFFECT (unknown-tool fallback) and its 30s permission timeout
+    # killed the @taskcard follow-up run (conv-40). get_rendered_documents
+    # stays gated: it returns thread CONTENT, not just an index.
+    "list_conversations",
 }
 
 # Tools that modify local state — side effects but reversible

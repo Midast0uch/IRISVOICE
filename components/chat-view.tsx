@@ -3157,6 +3157,7 @@ ${message.text}`;
                       ) : (
                         <TaskListCard
                           key={card.cardId}
+                          cardId={card.cardId}
                           steps={card.steps}
                           turnId={card.turnId}
                           mode={card.mode}

@@ -1,8 +1,8 @@
 ﻿"use client"
 
-import React, { useState, useEffect, useMemo, useRef } from "react"
+import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import { AnimatePresence, motion } from "framer-motion"
-import { ChevronDown, Sparkles } from "lucide-react"
+import { ChevronDown, Copy, Check, Sparkles } from "lucide-react"
 import { Xur } from "@/components/Xur"
 import { useBrandColor } from "@/contexts/BrandColorContext"
 import { deriveCurrentStep } from "@/hooks/useTaskProgress"
@@ -48,6 +48,10 @@ export interface TaskListCardProps {
    * tail, where no tool:call ever marks the final step). Drives the
    * glowing node + timer so the card never looks frozen mid-run. */
   cardActive?: boolean
+  /** Session 246 (@taskcard): the card's stable id — rendered in the footer
+   * chrome (`<id>/memory.db`) with a one-click copy, so users can reference
+   * it via @taskcard:<id> from ANY conversation thread. */
+  cardId?: string
 }
 
 const STATUS_META: Record<TaskStepStatus, { color: string; label: string }> = {
@@ -157,6 +161,7 @@ export default function TaskListCard({
   thoughtStream,
   durationSec,
   cardActive,
+  cardId,
 }: TaskListCardProps) {
   const { getThemeConfig } = useBrandColor()
   const theme = getThemeConfig()
@@ -165,6 +170,18 @@ export default function TaskListCard({
   const [collapsed, setCollapsed] = useState(defaultCollapsed && steps.length > 4)
   const [expandedStep, setExpandedStep] = useState<string | null>(null)
   const [thkOpen, setThkOpen] = useState(false)
+  // Session 246 (@taskcard): copy-feedback for the footer ID chrome.
+  const [idCopied, setIdCopied] = useState(false)
+  const copyCardId = useCallback(() => {
+    if (!cardId) return
+    navigator.clipboard?.writeText(cardId).then(
+      () => {
+        setIdCopied(true)
+        setTimeout(() => setIdCopied(false), 1400)
+      },
+      () => {},
+    )
+  }, [cardId])
 
   const doneCount = steps.filter((s) => s.status === "done").length
   const failCount = steps.filter((s) => s.status === "fail").length
@@ -436,7 +453,29 @@ export default function TaskListCard({
                   : `${Math.floor(durationSec / 60)}:${String(durationSec % 60).padStart(2, "0")}`}
               </span>
             )}
-            <ChassisChromeLabel>data/memory.db</ChassisChromeLabel>
+            {/* Session 246 (@taskcard): the card's ID lives in the footer
+                chrome — `<short-id>/memory.db` — with a one-click copy to its
+                left, so it can be referenced as @taskcard:<id> from ANY
+                conversation thread. */}
+            {/* Copy + ID hug each other (gap-1); the timer stays a full
+                gap-2 away so the pairs read as separate clusters. */}
+            <span className="flex items-center gap-1 shrink-0">
+              {cardId && (
+                <button
+                  type="button"
+                  onClick={copyCardId}
+                  className="flex items-center justify-center rounded transition-all duration-150 hover:brightness-150"
+                  style={{ color: idCopied ? "#34d399" : "rgba(255,255,255,0.4)", padding: 1, lineHeight: 0 }}
+                  title={`Copy task-card ID: ${cardId}`}
+                  aria-label="Copy task-card ID"
+                >
+                  {idCopied ? <Check size={9} /> : <Copy size={9} />}
+                </button>
+              )}
+              <ChassisChromeLabel>
+                {cardId ? `${cardId.replace(/^card_/, "")}/memory.db` : "taskcard/memory.db"}
+              </ChassisChromeLabel>
+            </span>
           </span>
         </span>
       }
@@ -562,7 +601,9 @@ export default function TaskListCard({
             )}
             <div className="flex flex-col gap-1">
               {displaySteps.map((step, i) => {
-                const meta = STATUS_META[step.status]
+                // Session 246: guard against backend-native statuses that
+                // slip through hydration ("running") — never crash the card.
+                const meta = STATUS_META[step.status] ?? STATUS_META.unknown
                 const isOpen = expandedStep === step.id
                 const branchLabel = (step as StepWithBranch).branchLabel
                 return (
