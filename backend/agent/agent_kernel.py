@@ -786,9 +786,11 @@ class AgentKernel:
                 IRISStreamEvent.MEMORY_EVENT,
                 data={
                     "kind": "episodic",
-                    "task_summary": (task or "")[:120],
-                    "outcome_type": "recall",
-                    "duration_ms": 0,
+                    "data": {
+                        "task_summary": (task or "")[:120],
+                        "outcome_type": "recall",
+                        "duration_ms": 0,
+                    },
                 },
                 session_id=self.session_id,
                 # Session 245 (card-sync fix): without this the gateway stamps

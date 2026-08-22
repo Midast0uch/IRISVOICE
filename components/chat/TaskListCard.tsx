@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useMemo, useRef } from "react"
 import { AnimatePresence, motion } from "framer-motion"
-import { ChevronDown } from "lucide-react"
+import { ChevronDown, Sparkles } from "lucide-react"
 import { Xur } from "@/components/Xur"
 import { useBrandColor } from "@/contexts/BrandColorContext"
 import { deriveCurrentStep } from "@/hooks/useTaskProgress"
@@ -154,6 +154,12 @@ export default function TaskListCard({
 
   // REQ-1 AC2/AC3: the chassis vein is driven by real execution state.
   const isWorking = steps.some((s) => s.status === "working")
+  // Session 245: run-complete state — every step reached a terminal status
+  // and nothing is in flight. Drives the variant's "done" header badge.
+  const runComplete =
+    !isWorking &&
+    steps.length > 0 &&
+    steps.every((s) => s.status === "done" || s.status === "skipped")
   const veinState: ChassisVeinState = learningSignal === "crystallized" ? "crystallized" : isWorking ? "thinking" : "idle"
   const veinColor = VEIN_COLOR_BY_STATE[veinState]
 
@@ -220,6 +226,10 @@ export default function TaskListCard({
     episodic: "#fbbf24",
   }
   const memoryBadges = useMemo(() => {
+    // Session 245: ONLY learning/crystallized signals render as header
+    // badges — episodic activity (store / document_store / retrieve /
+    // recall) belongs in the FOOTER line; badge-per-event near the step
+    // counter crowded the header (user-flagged).
     const out: { key: string; glyph: string; text: string; color: string; title: string }[] = []
     if (memoryKind && memoryEntry) {
       out.push({
@@ -231,6 +241,7 @@ export default function TaskListCard({
       })
     }
     for (const ev of memoryEvents || []) {
+      if (ev.kind !== "learning" && ev.kind !== "crystallized") continue
       const fe = formatMemoryEntry(ev.kind, ev.data)
       if (!fe) continue
       const text =
@@ -386,6 +397,14 @@ export default function TaskListCard({
             </span>
           ) : (
             mode && <ChassisBadge color={glowColor}>{mode.toUpperCase()}</ChassisBadge>
+          )}
+          {/* Variant anatomy: the crystallized/done badge beside the
+              objective — a run that finished clean shows it, not just
+              learning-signal runs. */}
+          {runComplete && (
+            <ChassisBadge color="#34d399" icon={<Sparkles size={8} />}>
+              done
+            </ChassisBadge>
           )}
 
           {/* Progress rail — failures take their share in red. */}
