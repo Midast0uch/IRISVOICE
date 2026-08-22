@@ -161,11 +161,20 @@ html.in-browser body {
   height: 100vh;
 }
 
-/* Prevent default margins that show window frame */
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
+/* Prevent default margins that show window frame.
+ * CAUTION — session 246: this MUST live inside @layer base. Un-layered, it
+ * beats EVERY Tailwind utility in @layer utilities (cascade-layer rule:
+ * un-layered styles win), which silently killed all margin/padding
+ * utilities app-wide — dead ml-auto footers, cramped badges, lost indents
+ * (measured live: ml-auto/pl-2/px-1.5 all computed 0). Layered, the reset
+ * still normalizes UA defaults but utilities can override it.
+ * After editing this file: npx @tailwindcss/cli -i css-src/globals.css -o public/globals.css */
+@layer base {
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
 }
 
 /* Prevent transform animations from triggering scroll-into-view in Tauri webview.
@@ -176,6 +185,25 @@ html.in-browser body {
 }
 
 /* Custom animations for the control center */
+
+/* Session 246: task-card footer dot flash — fires once per memory-event
+ * arrival (re-triggered by React key remount in TaskListCard). Subtle
+ * scale + brightness pulse; the dot's colour/glow stay inline-styled. */
+@keyframes memoryDotFlash {
+  0% {
+    transform: scale(1);
+    filter: brightness(1);
+  }
+  30% {
+    transform: scale(2.2);
+    filter: brightness(2.4);
+  }
+  100% {
+    transform: scale(1);
+    filter: brightness(1);
+  }
+}
+
 @keyframes breathe {
   0%, 100% {
     transform: scale(1);

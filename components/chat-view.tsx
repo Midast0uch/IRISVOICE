@@ -301,12 +301,17 @@ export function ChatWing({
     [],
   )
 
-  // Load conversations from backend SQLite store on mount (replaces localStorage).
-  // Fetches full conversation data including messages. On failure or empty response,
-  // defaults to an empty list (no stored conversations).
-  useEffect(() => {
-    let cancelled = false
-    callConversationApi(
+  // Load conversations from backend SQLite store. Fetches full conversation
+  // data including messages.
+  //
+  // Session 246 (live finding): this ran ONCE on mount, so threads created
+  // after the page loaded — in another window/client, or while the panel was
+  // closed — never appeared until a full reload (Chrome showed 441 threads
+  // while the backend store already had 442: the live superconductor thread
+  // was invisible). The fetch is now a reusable callback; openHistory()
+  // re-runs it every time the panel opens.
+  const fetchConversations = React.useCallback(async (): Promise<Conversation[]> => {
+    return callConversationApi(
       "GET /api/conversations",
       async () => {
         const res = await fetch("/api/conversations")
@@ -315,7 +320,6 @@ export function ChatWing({
       },
       { conversations: [] },
     ).then((data) => {
-        if (cancelled) return
         const convs: Conversation[] = (data.conversations || []).map((c: any) => {
           const firstUserMsg = (c.messages || []).find((m: any) => m.role === "user" || m.sender === "user")
           return {
@@ -341,16 +345,22 @@ export function ChatWing({
           lastMessagePreview: c.messages?.[c.messages.length - 1]?.text?.substring(0, 60) || "",
         }
         })
-        setConversations(convs)
-        // Set active conversation to most recent non-pinned conversation
-        if (!cancelled) {
-          const sorted = [...convs].sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
-          const lastNonPinned = sorted.find((c) => !c.isPinned) || sorted[0] || null
-          setActiveConversationId(lastNonPinned?.id || null)
-        }
+        return convs
       })
-    return () => { cancelled = true }
   }, [callConversationApi])
+
+  // Mount: initial load + auto-select the most recent non-pinned thread.
+  useEffect(() => {
+    let cancelled = false
+    fetchConversations().then((convs) => {
+      if (cancelled) return
+      setConversations(convs)
+      const sorted = [...convs].sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
+      const lastNonPinned = sorted.find((c) => !c.isPinned) || sorted[0] || null
+      setActiveConversationId(lastNonPinned?.id || null)
+    })
+    return () => { cancelled = true }
+  }, [fetchConversations])
 
   // Rich documents are stored per-conversation (Conversation.documents).
   // Each document:render WS event appends or updates a DocRender within the
@@ -550,6 +560,18 @@ export function ChatWing({
       window.dispatchEvent(new CustomEvent('iris:new_conversation'))
     }
   }, [activeConversationId])
+
+  // Session 246 (live finding): card rehydration was DEAD CODE end-to-end —
+  // the backend handler (_handle_get_cards), the wire type registration and
+  // the frontend iris:cards merge all existed, but NO component ever SENT a
+  // `get_cards` request. Cards lived only in this tab's reducer memory, so a
+  // reload (or any second client) showed the thread with NO task card even
+  // mid-run (conv-40 evidence). Request the persisted cards every time the
+  // viewed conversation changes; the response merges idempotently.
+  useEffect(() => {
+    if (!activeConversationId) return
+    sendMessage?.('get_cards', { conversation_id: activeConversationId })
+  }, [activeConversationId, sendMessage])
   // Is the TaskListCard still driving its own progress indicator? Only while at
   // least one step is unresolved. Once every step is done/skipped/failed the
   // card is static, so the chat's own thinking indicator must take over for the
@@ -601,16 +623,70 @@ export function ChatWing({
   const activeConversation = conversations.find(c => c.id === activeConversationId);
   const messages = activeConversation?.messages || [];
 
-  // Conversation chips — derived from user messages, front-end only, no LLM
-  const conversationChips: ConversationChip[] = useMemo(() => (
-    messages
+  // Conversation chips — derived from user messages, front-end only, no LLM.
+  // Session 246 (user directive): TASK CARDS register here too — each card
+  // contributes a chip labelled with its objective (planTitle); clicking
+  // scrolls to the joined response message. Cards without a joinable turn
+  // are skipped (a chip that cannot navigate is noise).
+  const conversationChips: ConversationChip[] = useMemo(() => {
+    const msgChips: ConversationChip[] = messages
       .filter(m => m.sender === 'user')
       .map((m, index) => ({
         messageId: m.id,
         label: m.text.length > 24 ? m.text.slice(0, 24) + '\u2026' : m.text,
         index,
       }))
-  ), [messages])
+    const joinableTurns = new Set(messages.map(m => m.id))
+    const cardChips: ConversationChip[] = taskProgress.cards
+      .filter(c => c.planTitle && c.responseTurnId && joinableTurns.has(c.responseTurnId))
+      .map(c => ({
+        messageId: c.responseTurnId!,
+        label: `\u25b8 ${c.planTitle!.length > 26 ? c.planTitle!.slice(0, 26) + '\u2026' : c.planTitle!}`,
+        index: msgChips.length,
+      }))
+    return [...msgChips, ...cardChips]
+  }, [messages, taskProgress.cards])
+
+  // Session 246 (@-card-mentions): parse @taskcard:<id> tokens out of the
+  // composer text and resolve them to {card_id, conversation_id} pairs from
+  // the live card collection — the gateway loads the persisted snapshots.
+  const extractReferencedCards = useCallback((text: string) => {
+    const ids = [...new Set([...text.matchAll(/@taskcard:([\w-]+)/g)].map(m => m[1]))]
+    return ids
+      .map(cardId => taskProgress.cards.find(c => c.cardId === cardId))
+      .filter((c): c is TaskCard => !!c)
+      .map(c => ({ card_id: c.cardId, conversation_id: c.conversationId }))
+  }, [taskProgress.cards])
+
+  // @-mention picker state: opens when the composer text ends with a bare '@'.
+  // Session 246: on a NEW thread the hook holds no cards (get_cards is
+  // per-conversation), so opening the picker requests a cross-thread scan
+  // (payload.all) and keeps the candidates in local state.
+  const [cardMentionOpen, setCardMentionOpen] = useState(false)
+  const [mentionCards, setMentionCards] = useState<TaskCard[]>([])
+  const openCardMentionPicker = useCallback(() => {
+    setCardMentionOpen(true)
+    const onCards = (e: Event) => {
+      const wire = (e as CustomEvent).detail?.cards || []
+      const mapped: TaskCard[] = wire.map((p: any) => ({
+        cardId: p.card_id,
+        conversationId: p.conversation_id,
+        isWorking: false,
+        currentStep: p.current_step ?? 0,
+        totalSteps: p.total_steps ?? 0,
+        steps: [],
+        planTitle: p.plan_title ?? undefined,
+        terminalState: p.terminal_state,
+      }))
+      setMentionCards(mapped)
+      window.removeEventListener('iris:cards', onCards)
+    }
+    window.addEventListener('iris:cards', onCards)
+    sendMessage?.('get_cards', { all: true })
+    // safety: close the listener if no response arrives
+    setTimeout(() => window.removeEventListener('iris:cards', onCards), 4000)
+  }, [sendMessage])
+  const mentionCandidates = taskProgress.cards.length > 0 ? taskProgress.cards : mentionCards
 
   // ── cli-workspace-unification T1/T4 (REQ-1/REQ-3): unified timeline ──────
   // Developer mode renders ONE chronological stream: chat messages and shell
@@ -655,22 +731,34 @@ export function ChatWing({
           message,
           index,
         }))
+    // Session 246 (user directive): ONE card per response — never stack.
+    // Later cards for the same turn supersede earlier ones ('continues'
+    // double-emits, re-plans); unmatched orphans collapse to the single
+    // newest so dead cards cannot pile up at the bottom of the thread.
+    const latestPerTurn = new Map<string, TaskCard>()
+    for (const card of taskProgress.cards) {
+      if (isConversationReplyCard(card)) continue
+      latestPerTurn.set(card.responseTurnId || `__orphan__:${card.cardId}`, card)
+    }
     const out: Entry[] = []
-    const matched = new Set<string>()
+    const rendered = new Set<string>()
     for (const entry of base) {
       out.push(entry)
       if (entry.kind !== "message") continue
-      for (const card of taskProgress.cards) {
-        if (!card.responseTurnId || card.responseTurnId !== entry.message.id) continue
-        if (isConversationReplyCard(card)) continue
-        matched.add(card.cardId)
-        out.push({ kind: "card", ts: entry.ts, card })
-      }
+      const card = latestPerTurn.get(entry.message.id)
+      if (!card || rendered.has(card.cardId)) continue
+      rendered.add(card.cardId)
+      out.push({ kind: "card", ts: entry.ts, card })
     }
-    // Unmatched cards: bottom fallback, creation order (suppressed ones too).
-    for (const card of taskProgress.cards) {
-      if (matched.has(card.cardId) || isConversationReplyCard(card)) continue
-      out.push({ kind: "card", ts: Number.MAX_SAFE_INTEGER, card })
+    // Not-yet-rendered cards (orphans without a turn id, plus cards whose
+    // response message is absent from this thread): bottom fallback — the
+    // single NEWEST one only, per the no-stacking directive.
+    const unrendered = [...latestPerTurn.entries()]
+      .filter(([k]) => !rendered.has(latestPerTurn.get(k)!.cardId))
+      .map(([, c]) => c)
+    if (unrendered.length > 0) {
+      const newest = unrendered[unrendered.length - 1]
+      out.push({ kind: "card", ts: Number.MAX_SAFE_INTEGER, card: newest })
     }
     return out
   }, [unifiedTimeline, messages, taskProgress.cards])
@@ -1720,7 +1808,14 @@ export function ChatWing({
       // which is the "past prompts accumulating into one thread" symptom.
       // threadId is resolved locally above and is definitive in BOTH branches
       // (for an existing conversation it IS activeConversationId).
-      sendMessage("text_message", { text: userMessage.text, conversation_id: threadId })
+      sendMessage("text_message", {
+        text: userMessage.text,
+        conversation_id: threadId,
+        // Session 246 (@-card-mentions): @taskcard:<id> tokens in the text are
+        // resolved to persisted card snapshots so the agent can reason over
+        // a PREVIOUS conversation's task results.
+        referenced_cards: extractReferencedCards(userMessage.text),
+      })
     } else {
       // Fallback: REST /api/chat (reliable when WS unavailable)
       const controller = new AbortController()
@@ -1728,7 +1823,11 @@ export function ChatWing({
       fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: userMessage.text, thread_id: threadId }),
+        body: JSON.stringify({
+          text: userMessage.text,
+          thread_id: threadId,
+          referenced_cards: extractReferencedCards(userMessage.text),
+        }),
         signal: controller.signal,
       })
         .then(async (res) => {
@@ -2294,6 +2393,11 @@ ${message.text}`;
   const openHistory = () => {
     setShowHistory(true);
     setShowNotifications(false);
+    // Session 246: the thread list used to be mount-only — threads created
+    // after load (other window/client) never appeared. Re-fetch on every
+    // panel open; do NOT touch activeConversationId here (never yank the
+    // thread the user is reading just because they opened the list).
+    fetchConversations().then((convs) => setConversations(convs)).catch(() => {})
   };
 
   const closeDropdowns = () => {
@@ -2974,7 +3078,11 @@ ${message.text}`;
               data-dbg-statuses={taskProgress.steps.map((s) => s.status).join(",")}
               data-dbg-working={String(taskProgress.isWorking)}
             >
-              {(unifiedTimeline ? unifiedTimeline.length === 0 : messages.length === 0) && !isTyping ? (
+              {/* Session 246: the empty-state placeholder must NOT hide task
+                  cards. A thread can hold a card with no rendered messages —
+                  a simulation, or a rehydrated card whose messages are still
+                  loading (conv-40 evidence). Cards count as content. */}
+              {(unifiedTimeline ? unifiedTimeline.length === 0 : (messages.length === 0 && renderTimeline.length === 0)) && !isTyping ? (
                 <div 
                   className="flex-1 flex items-center justify-center h-full"
                   style={{ color: `${fontColor}50` }}
@@ -3057,16 +3165,19 @@ ${message.text}`;
                           memoryEvents={card.memoryEvents}
                           currentAction={card.currentAction}
                           /* Session 245 (pin_07b780e7ce21): structured crawl
-                             phase rotates the working step's verb; the
-                             joined message's streamed reasoning feeds the
-                             THK thinking stream. Both degrade to nothing
-                             when absent — never fabricated. */
+                             phase rotates the working step's verb.
+                           * Session 246: the THK stream comes from the card's
+                             own bounded action history (real progress frames,
+                             REQ-10 AC4). NOTE: the previous expression read
+                             `entry.message?.thinking` here, but `entry` is
+                             narrowed to the card kind in this branch — a
+                             latent TS error from session 245's parse-check-
+                             only pass. Streamed reasoning stays visible on
+                             the assistant message itself. */
                           phase={card.phase}
-                          thoughtStream={
-                            card.isWorking && entry.message?.thinking
-                              ? entry.message.thinking.split("\n").map((s) => s.trim()).filter(Boolean)
-                              : undefined
-                          }
+                          durationSec={card.durationSec}
+                          cardActive={card.isWorking}
+                          thoughtStream={card.isWorking ? (card.actionStream ?? undefined) : undefined}
                         />
                       )
                     }
@@ -4160,11 +4271,53 @@ ${message.text}`;
                     REQ-1). PERSONAL: flex-1 between the Web toggle and the pill
                     cluster, per the original layout. */}
                 <div className={isDeveloper ? "relative" : "flex-1 relative"}>
+                  {/* Session 246 (@-card-mentions): typing a bare '@' opens a
+                      picker of this session's task cards; selecting one
+                      inserts an @taskcard:<id> token the backend resolves into
+                      per-turn context. */}
+                  {cardMentionOpen && mentionCandidates.length > 0 && (
+                    <div
+                      className="absolute bottom-full left-0 right-0 mb-1 z-50 rounded-md overflow-hidden"
+                      style={{
+                        background: 'linear-gradient(160deg, rgba(14,14,24,0.97), rgba(8,8,16,0.96))',
+                        border: `1px solid ${glowColor}35`,
+                        boxShadow: '0 -4px 20px rgba(0,0,0,0.6)',
+                        maxHeight: 180,
+                        overflowY: 'auto',
+                      }}
+                    >
+                      <div className="px-2 py-1 text-[9px] font-mono uppercase tracking-wider text-white/40">
+                        Reference a task card
+                      </div>
+                      {mentionCandidates.map(c => (
+                        <button
+                          key={c.cardId}
+                          className="w-full text-left px-2.5 py-1.5 text-[11px] truncate hover:bg-white/[0.06] transition-colors"
+                          style={{ color: 'rgba(255,255,255,0.8)' }}
+                          onMouseDown={(e) => {
+                            e.preventDefault(); // keep textarea focus
+                            setInputText(t => t.replace(/@$/, `@taskcard:${c.cardId} `));
+                            setCardMentionOpen(false);
+                          }}
+                        >
+                          <span style={{ color: glowColor }}>@</span>{' '}
+                          {c.planTitle || c.cardId}
+                          <span className="text-white/35 ml-1.5">
+                            {c.isWorking ? '· running' : c.terminalState ? `· ${c.terminalState}` : ''}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   <textarea
                     ref={inputRef as any}
                     value={inputText}
                     onChange={(e) => {
-                      setInputText(e.target.value);
+                      const v = e.target.value;
+                      setInputText(v);
+                      const opening = /(^|\s)@$/.test(v);
+                      if (opening && !cardMentionOpen) openCardMentionPicker();
+                      setCardMentionOpen(opening);
                       // Auto-expand height
                       e.target.style.height = 'auto';
                       e.target.style.height = `${e.target.scrollHeight}px`;

@@ -4965,6 +4965,51 @@ class IRISGateway:
                 )
                 return
 
+            # Session 246 (@-card-mentions): the frontend may reference task
+            # cards by id (typed as @card:<id> in the composer). Resolve each
+            # reference to its persisted snapshot and build a bounded context
+            # block so the agent can reason over a PREVIOUS conversation's
+            # task results. Bounded to 4 references — this is context, not a
+            # dump. Failures degrade to no-context, never block the message.
+            card_context_block = None
+            _refs = payload.get("referenced_cards") or []
+            if isinstance(_refs, list) and _refs:
+                try:
+                    from backend.agent.conversation_context_store import (
+                        get_context_store,
+                    )
+
+                    _cstore = get_context_store()
+                    _lines: list = []
+                    for _ref in _refs[:4]:
+                        _cid = (_ref or {}).get("card_id")
+                        _cvid = (_ref or {}).get("conversation_id")
+                        if not _cid or not _cvid:
+                            continue
+                        for _cs in _cstore.get_cards_for_conversation(_cvid):
+                            if _cs.card_id != _cid:
+                                continue
+                            _lines.append(
+                                f'@{_cid} "{_cs.plan_title or "untitled"}" '
+                                f"[{_cs.terminal_state}]"
+                            )
+                            for _st in _cs.steps[:8]:
+                                _line = f"  - [{_st.status}] {_st.description}"
+                                if _st.result_summary:
+                                    _line += f" → {_st.result_summary}"
+                                _lines.append(_line)
+                            break
+                    if _lines:
+                        card_context_block = (
+                            "[Referenced task cards]\n" + "\n".join(_lines)
+                        )
+                        self._logger.info(
+                            f"[Chat] @-card context built: {len(_lines)} lines "
+                            f"for conv {conversation_id}"
+                        )
+                except Exception as exc:
+                    self._logger.warning(f"[Chat] @-card context failed: {exc}")
+
             # Get AgentKernel for this session
             try:
                 import time as _time
@@ -5081,6 +5126,7 @@ class IRISGateway:
                             chunk_callback=_chunk_cb,
                             reasoning_callback=_reasoning_cb,
                             turn_id=turn_id,
+                            card_context=card_context_block,
                         )
                     except Exception as e:
                         self._logger.error(f"[Chat] Agent processing error: {e}")
@@ -9200,7 +9246,29 @@ class IRISGateway:
         conversation_id = payload.get("conversation_id") or session_id
         cards: list = []
         try:
-            if conversation_id:
+            # Session 246 (@-card-mentions): payload.all=True asks for cards
+            # across the most recently active conversations — the composer's
+            # @-picker needs candidates from OTHER threads, which the
+            # per-conversation read cannot see.
+            if payload.get("all"):
+                from backend.agent.conversation_context_store import get_context_store
+
+                _cstore = get_context_store()
+                _recent = _cstore.recent_conversations(limit=8)
+                for _cid in _recent:
+                    try:
+                        cards.extend(
+                            c.to_dict()
+                            for c in _cstore.get_cards_for_conversation(_cid)
+                        )
+                    except Exception:
+                        continue
+                self._logger.info(
+                    "[iris_gateway] GET CARDS all=1 convs=%d returned=%d",
+                    len(_recent),
+                    len(cards),
+                )
+            elif conversation_id:
                 from backend.agent.conversation_context_store import get_context_store
 
                 store = get_context_store()

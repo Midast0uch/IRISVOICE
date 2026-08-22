@@ -168,7 +168,7 @@ export function CardChassis({
             slots inside this element and have no way to render a sibling
             that sits outside it, so padding cannot be accidentally skipped. */}
         <div
-          className={`relative p-4 pl-5 ${
+          className={`relative p-2 pl-[5px] ${
             fill ? "flex-1 flex flex-col min-h-0" : ""
           }`}
           data-testid="chassis-padding"
@@ -211,7 +211,7 @@ export function CardChassis({
           </div>
 
           {/* Secondary header row (e.g. THK whisper) */}
-          {subheader && <div className="mt-2.5 pt-2 border-t border-white/5">{subheader}</div>}
+          {subheader && <div className="mt-2 pt-1.5 border-t border-white/5">{subheader}</div>}
 
           {/* Collapsible body */}
           <AnimatePresence initial={false}>
@@ -220,7 +220,7 @@ export function CardChassis({
                  initial={{ height: 0, opacity: 0 }}
                  animate={{ height: "auto", opacity: 1 }}
                  exit={{ height: 0, opacity: 0 }}
-                 className={`mt-2.5 ${fill ? "flex-1 overflow-y-auto min-h-0" : ""}`}
+                 className={`mt-2 ${fill ? "flex-1 overflow-y-auto min-h-0" : ""}`}
                >
                 {children}
               </motion.div>
@@ -228,7 +228,7 @@ export function CardChassis({
           </AnimatePresence>
 
           {/* Footer row (e.g. memory slot + timer) */}
-          {footer && <div className="mt-2.5 pt-1.5 border-t border-white/5">{footer}</div>}
+          {footer && <div className="mt-2 pt-1 border-t border-white/5">{footer}</div>}
         </div>
       </div>
     </motion.div>

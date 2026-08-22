@@ -67,6 +67,11 @@ class CardStepSnapshot:
     description: str
     status: str
     tool_name: Optional[str] = None
+    # Session 246 (@-card-mentions): the step's distilled outcome. Without it
+    # a referenced card gives the agent only plan skeletons — it then goes
+    # tool-hunting (list_conversations permission loop, conv-40) for content
+    # that should have traveled with the snapshot.
+    result_summary: Optional[str] = None
 
 
 # Terminal states a persisted card can settle into. "running" is the only
@@ -350,8 +355,8 @@ class ConversationContextStore:
         """
         try:
             rows = self._fetch_all(
-                "SELECT data_json FROM conversation_cards WHERE conversation_id = ? "
-                "ORDER BY created_at ASC",
+                "SELECT data_json, updated_at FROM conversation_cards "
+                "WHERE conversation_id = ? ORDER BY created_at ASC",
                 (conversation_id,),
             )
         except Exception as exc:
@@ -376,6 +381,17 @@ class ConversationContextStore:
                 # AC3: never let a scope mismatch (corrupt row, bad write)
                 # leak a card into a conversation it wasn't created in.
                 continue
+            # Session 246: the ROW column is the true last-write time —
+            # save_card() bumps it on EVERY upsert — while the dataclass
+            # field serialized inside data_json lags behind (it was frozen
+            # at whatever the in-memory object held at first save). Stamp
+            # the row value so rehydrated duration (updated_at - created_at)
+            # reflects the real run length.
+            try:
+                if row[1] is not None:
+                    card.updated_at = float(row[1])
+            except (TypeError, ValueError):
+                pass
             if card.terminal_state == CARD_STATE_RUNNING:
                 card.terminal_state = "terminated_unknown"
             cards.append(card)
@@ -435,6 +451,23 @@ class ConversationContextStore:
             return [r[0] for r in rows]
         except Exception as exc:
             logger.warning(f"[ConversationContextStore] list_active failed: {exc}")
+            return []
+
+    def recent_conversations(self, limit: int = 8) -> List[str]:
+        """Session 246 (@-card-mentions): the most recently active
+        conversation ids, newest first — the @-picker's cross-thread card
+        scan walks these. Bounded by ``limit``; never raises."""
+        try:
+            rows = self._fetch_all(
+                "SELECT conversation_id FROM conversation_contexts "
+                "ORDER BY updated_at DESC LIMIT ?",
+                (int(limit),),
+            )
+            return [r[0] for r in rows]
+        except Exception as exc:
+            logger.warning(
+                f"[ConversationContextStore] recent_conversations failed: {exc}"
+            )
             return []
 
     # ── Internal ────────────────────────────────────────────────────────

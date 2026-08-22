@@ -5212,6 +5212,7 @@ class AgentKernel:
         reasoning_callback: Optional[Callable[[str], None]] = None,
         from_voice: bool = False,
         turn_id: Optional[str] = None,
+        card_context: Optional[str] = None,
     ) -> str:
         """
         Main entry point for text messages.
@@ -5326,6 +5327,18 @@ class AgentKernel:
 
             # Get conversation context
             context = self._conversation_memory.get_context()
+            # Session 246 (@-card-mentions): referenced task-card snapshots
+            # arrive as a per-turn system block — visible to planning and
+            # synthesis for THIS turn only. Appended to the LOCAL context list,
+            # never add_message()'d, so conversation memory stays clean.
+            if card_context:
+                context = list(context) + [
+                    {"role": "system", "content": card_context}
+                ]
+                logger.info(
+                    f"[AgentKernel] @-card context injected "
+                    f"({len(card_context)} chars) conv={conversation_id}"
+                )
         except Exception as e:
             # Handle conversation memory errors gracefully
             logger.warning(f"[AgentKernel] Conversation memory error: {e}")
@@ -7991,6 +8004,13 @@ Respond with a JSON object:
                     description=str(s.get("description", "")),
                     status=str(s.get("status", "pending")),
                     tool_name=s.get("toolName") or s.get("tool_name"),
+                    # Session 246 (@-card-mentions): persist the distilled
+                    # outcome so a referenced card carries its findings.
+                    result_summary=(
+                        s.get("resultPreview")
+                        or s.get("result_summary")
+                        or s.get("summary")
+                    ),
                 )
                 for s in (steps or [])
             ]

@@ -166,12 +166,14 @@ describe("TaskListCard â€” honest display (REQ-8 / T17a)", () => {
     const { container } = render(
       <TaskListCard steps={steps} learningSignal={"retried" as any} />,
     );
-    // The learning signal renders TWICE by design (session 245): the header
-    // badge AND the live memory footer's special-effect entry. Assert both.
-    expect(screen.getAllByText(/Retried/i)).toHaveLength(2);
-    // The badge carries a title exposing the real signal state.
+    // RE-INVERTED 2026-08-22, session 246, CALLED OUT — USER-DIRECTED DESIGN
+    // CHANGE: memory/learning badges were REMOVED from the header (memory
+    // activity is footer content, not a header chip). The signal now renders
+    // ONCE, in the live memory footer's special-effect entry. The border
+    // particle contract is unchanged.
+    expect(screen.getAllByText(/Retried/i)).toHaveLength(1);
     const badges = screen.getAllByTitle(/Learning signal: Retried/i);
-    expect(badges.length).toBeGreaterThanOrEqual(2); // header badge + footer entry
+    expect(badges.length).toBe(1); // footer entry only
     const badge = badges[0];
     expect(badge).toBeInTheDocument();
     // The card carries a subtle border particle span (aria-hidden) whose
@@ -186,11 +188,11 @@ describe("TaskListCard â€” honest display (REQ-8 / T17a)", () => {
     const { container } = render(
       <TaskListCard steps={steps} learningSignal={"crystallized" as any} />,
     );
-    // Same dual-render contract as the Retried variant (header badge +
-    // footer special-effect entry).
-    expect(screen.getAllByText(/Crystallized/i)).toHaveLength(2);
+    // Same single-render contract as the Retried variant (footer only,
+    // session 246 user-directed change — see above).
+    expect(screen.getAllByText(/Crystallized/i)).toHaveLength(1);
     const badges = screen.getAllByTitle(/Learning signal: Crystallized/i);
-    expect(badges.length).toBeGreaterThanOrEqual(2); // header badge + footer entry
+    expect(badges.length).toBe(1); // footer entry only
     const badge = badges[0];
     expect(badge).toBeInTheDocument();
     const particle = container.querySelector('span[aria-hidden="true"]');

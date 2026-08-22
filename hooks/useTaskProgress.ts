@@ -113,6 +113,12 @@ export interface TaskCard {
   turnId?: string
   planTitle?: string
   currentAction?: string
+  /** Session 246 (live feedback): bounded history of recent live actions
+   * (task:progress / tool:call descriptions). Feeds the THK expandable
+   * thinking panel when no streamed reasoning exists, so the row is
+   * actually clickable with REAL data (REQ-10 AC4 — never fabricated).
+   * Bounded to the last 12 entries (quality check: footprint bounded). */
+  actionStream?: string[]
   phase?: string
   phaseSequence?: number
   learningSignal?: "avoided" | "retried" | "crystallized" | null
@@ -135,6 +141,9 @@ export interface TaskCard {
    * transported here verbatim rather than re-derived on the frontend.
    */
   terminalState?: string
+  /** Session 246: total wall-clock seconds the run took (rehydrated cards
+   * only — derived from the persisted created_at/updated_at pair). */
+  durationSec?: number
 }
 
 export interface TaskProgress {
@@ -147,6 +156,9 @@ export interface TaskProgress {
   planTitle?: string
   /** Live action text from `task:progress` (e.g. "Reading example.com (2/5)"). */
   currentAction?: string
+  /** Session 246: bounded recent-action history — the THK panel's expandable
+   * trace when no streamed reasoning arrived (see TaskCard.actionStream). */
+  actionStream?: string[]
   /**
    * REQ-4: structured phase label from the crawl pipeline (searching / fetching /
    * extracting / citing). Consumed by ContextPill to show the user what stage
@@ -595,6 +607,10 @@ interface PersistedCard {
   current_step?: number
   total_steps?: number
   terminal_state?: string
+  /** Session 246: persisted timing (epoch seconds, backend time.time()).
+   * duration = updated_at - created_at — how long the task took. */
+  created_at?: number
+  updated_at?: number
 }
 
 /** Idempotent merge of a `get_cards` response into the card-collection state,
@@ -641,10 +657,30 @@ function mergeHydratedCards(prev: CardsState, cards: PersistedCard[]): CardsStat
       mode: p.mode ?? undefined,
       planTitle: p.plan_title ?? undefined,
       terminalState: p.terminal_state,
+      // Session 246 (user ask): the completed run's duration survives
+      // rehydration — created_at -> updated_at on the backend record.
+      durationSec:
+        typeof p.created_at === "number" && typeof p.updated_at === "number" && p.updated_at > p.created_at
+          ? Math.round(p.updated_at - p.created_at)
+          : undefined,
     }
     byConversation = { ...byConversation, [convId]: upsertCard(conv, p.card_id, hydrated) }
   }
   return { ...prev, byConversation, convTouchOrder }
+}
+
+/**
+ * Session 246: bounded append for the THK action history. Dedupes
+ * consecutive repeats (the crawler re-emits the same action every page
+ * batch) and caps the trail so a 50-minute research run cannot grow it
+ * unboundedly (quality check: memory footprint bounded).
+ */
+const ACTION_STREAM_CAP = 12
+function appendAction(stream: string[] | undefined, action: string | undefined): string[] | undefined {
+  if (!action) return stream
+  const last = stream?.[stream.length - 1]
+  if (last === action) return stream
+  return [...(stream ?? []), action].slice(-ACTION_STREAM_CAP)
 }
 
 function reduceTaskUpdate(prev: CardsState, d: TaskUpdateDetail): CardsState {
@@ -676,6 +712,7 @@ function reduceTaskUpdate(prev: CardsState, d: TaskUpdateDetail): CardsState {
           currentStep,
           isWorking: true,
           currentAction: d.description || card.currentAction,
+          actionStream: appendAction(card.actionStream, d.description || undefined),
           // Session 245 (pin_07b780e7ce21): the objective title comes from the
           // backend's plan_title — tool:call must NOT clobber it with a
           // generic tool label ("WebSearch"), which is what erased the real
@@ -794,7 +831,12 @@ function reduceTaskUpdate(prev: CardsState, d: TaskUpdateDetail): CardsState {
             steps = s
           }
         }
-        const next: Partial<TaskCard> = { steps, currentAction: action, isWorking: true }
+        const next: Partial<TaskCard> = {
+          steps,
+          currentAction: action,
+          actionStream: appendAction(card.actionStream, action),
+          isWorking: true,
+        }
         // REQ-4 AC2: capture structured phase label from the crawl pipeline.
         if (d.phase) {
           next.phase = d.phase
@@ -869,8 +911,19 @@ function reduceTaskUpdate(prev: CardsState, d: TaskUpdateDetail): CardsState {
       // card's memory slot. Session-level event (no card_id), so target the
       // active conversation's active card; drop if none exists yet. Bounded to
       // the 6 most recent entries (quality check: memory footprint bounded).
-      const convId = d.conversation_id || prev.activeConversationId
-      const conv = prev.byConversation[convId]
+      //
+      // Session 246 (live finding, conv-40): sub-kernels (source_registry /
+      // data_extractor) emit memory events carrying THEIR conversation id,
+      // which has no card bucket — the event was silently dropped and the
+      // footer stayed on "Active Execution" for a whole 50-minute run. When
+      // the addressed bucket has no card, fall back to the conversation the
+      // user is actually viewing before giving up.
+      let convId = d.conversation_id || prev.activeConversationId
+      let conv = prev.byConversation[convId]
+      if ((!conv || conv.order.length === 0) && prev.activeConversationId && prev.byConversation[prev.activeConversationId]) {
+        convId = prev.activeConversationId
+        conv = prev.byConversation[convId]
+      }
       if (!conv) return prev
       const active = deriveActiveCard(conv)
       const targetId = active?.cardId ?? Object.keys(conv.byId).slice(-1)[0]
@@ -920,6 +973,7 @@ function toPublicProgress(state: CardsState): TaskProgress {
     turnId: active.turnId,
     planTitle: active.planTitle,
     currentAction: active.currentAction,
+    actionStream: active.actionStream,
     phase: active.phase,
     phaseSequence: active.phaseSequence,
     learningSignal: active.learningSignal,

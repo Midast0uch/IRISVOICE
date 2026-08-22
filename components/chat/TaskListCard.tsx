@@ -40,6 +40,14 @@ export interface TaskListCardProps {
   /** Live agent thinking stream (newest last) — the THK section's expandable
    * trace. Rendered ONLY when real reasoning arrived; never fabricated. */
   thoughtStream?: string[]
+  /** Session 246: total wall-clock seconds the completed run took
+   * (rehydrated cards). Renders a frozen duration pill in the footer. */
+  durationSec?: number
+  /** Session 246: card-level liveness from the hook (task frames keep the
+   * run "working" even when no individual step is — e.g. the synthesis
+   * tail, where no tool:call ever marks the final step). Drives the
+   * glowing node + timer so the card never looks frozen mid-run. */
+  cardActive?: boolean
 }
 
 const STATUS_META: Record<TaskStepStatus, { color: string; label: string }> = {
@@ -79,12 +87,35 @@ const PHASE_VERB: Record<string, string> = {
 // reasoning step. These keyword intents are derived from the step's OWN
 // description — the plan's stated purpose, not a fabrication — so every row
 // shows what that node is for, and the working step's live phase still wins.
+//
+// Session 246 audit (user finding: "Run the test suite…" rendered an em-dash):
+// coverage extended to the exec/io/web/dialog families so common planner
+// phrasings resolve. Order matters — FIRST match wins, so specific families
+// sit above generic ones.
 const INTENT_VERBS: Array<[RegExp, string]> = [
   [/summari|explain|synthes|conclude|final/i, "SYNTH"],
   [/analyz|identif|compare|evaluat|extract/i, "ANALYZE"],
   [/search|find|look up|research|gather/i, "SEARCH"],
+  // exec before read/write: "run a review of…" is execution, not reading.
+  [/run|test|execute|launch|restart|deploy/i, "EXEC"],
+  [/delete|remove|clean|erase|uninstall/i, "ERASE"],
+  [/commit\b/i, "COMMIT"],
+  [/push\b/i, "PUSH"],
+  [/branch|checkout/i, "BRANCH"],
+  [/git diff|git status|diff\b/i, "DIFF"],
+  [/git log|changelog|history\b/i, "LOG"],
+  [/github|issue|pull request|\bPR\b/i, "FORGE"],
+  [/fetch|download|crawl/i, "FETCH"],
+  [/click/i, "CLICK"],
+  [/type\b|keyboard|press key/i, "TYPE"],
+  [/screenshot|screen|vision|look at/i, "SEE"],
+  [/record|transcribe|clip|merge.*audio|merge.*video/i, "SCRIBE"],
+  [/ask|clarif|question the user/i, "ASK"],
+  [/speak|narrate|say\b/i, "SPEAK"],
+  [/recall|remember|memory\b/i, "RECALL"],
+  [/list|enumerate|catalog|inventory|scan directory/i, "LIST"],
   [/read|review|open|inspect/i, "READ"],
-  [/write|draft|compose|generate|create/i, "WRITE"],
+  [/write|draft|compose|generate|create|save/i, "WRITE"],
 ]
 
 function intentVerb(description: string): string | null {
@@ -124,6 +155,8 @@ export default function TaskListCard({
   currentAction,
   phase,
   thoughtStream,
+  durationSec,
+  cardActive,
 }: TaskListCardProps) {
   const { getThemeConfig } = useBrandColor()
   const theme = getThemeConfig()
@@ -153,7 +186,26 @@ export default function TaskListCard({
   const objective = planTitle || null
 
   // REQ-1 AC2/AC3: the chassis vein is driven by real execution state.
-  const isWorking = steps.some((s) => s.status === "working")
+  // Session 246: cardActive ORs in the hook-level run liveness — during the
+  // synthesis tail no STEP is 'working' (no tool:call fires), but the run
+  // is still going; without this the glowing node vanished and the timer
+  // froze mid-run.
+  const isWorking = Boolean(cardActive) || steps.some((s) => s.status === "working")
+  // Session 246 (user finding): while the LAST step processes (the synthesis
+  // tail), the backend never emits a tool:call for it — so no row ever showed
+  // the glowing running node and the card looked frozen. When the run is
+  // live but NO step is explicitly working, light up the next pending step
+  // as running (display-only: statuses/counts below stay real).
+  const anyWorking = isWorking
+  const displaySteps = useMemo(() => {
+    if (!anyWorking) return steps
+    if (steps.some((s) => s.status === "working")) return steps
+    const idx = steps.findIndex((s) => s.status === "pending" || s.status === "unknown")
+    if (idx < 0) return steps
+    const out = steps.slice()
+    out[idx] = { ...out[idx], status: "working" as TaskStepStatus }
+    return out
+  }, [steps, anyWorking])
   // Session 245: run-complete state — every step reached a terminal status
   // and nothing is in flight. Drives the variant's "done" header badge.
   const runComplete =
@@ -225,39 +277,21 @@ export default function TaskListCard({
     compress: "#38bdf8",
     episodic: "#fbbf24",
   }
-  const memoryBadges = useMemo(() => {
-    // Session 245: ONLY learning/crystallized signals render as header
-    // badges — episodic activity (store / document_store / retrieve /
-    // recall) belongs in the FOOTER line; badge-per-event near the step
-    // counter crowded the header (user-flagged).
-    const out: { key: string; glyph: string; text: string; color: string; title: string }[] = []
-    if (memoryKind && memoryEntry) {
-      out.push({
-        key: `learning-${learningSignal}`,
-        glyph: memoryEntry.glyph,
-        text: memoryEntry.summary,
-        color: signalTint[learningSignal!],
-        title: `Learning signal: ${memoryEntry.summary}`,
-      })
-    }
-    for (const ev of memoryEvents || []) {
-      if (ev.kind !== "learning" && ev.kind !== "crystallized") continue
-      const fe = formatMemoryEntry(ev.kind, ev.data)
-      if (!fe) continue
-      const text =
-        ev.kind === "learning" || ev.kind === "crystallized"
-          ? fe.summary
-          : fe.label
-      out.push({
-        key: `mem-${ev.at}-${ev.kind}`,
-        glyph: fe.glyph,
-        text,
-        color: MEMORY_TINT[ev.kind] ?? glowColor,
-        title: fe.summary,
-      })
-    }
-    return out
-  }, [memoryKind, memoryEntry, memoryEvents, learningSignal, glowColor])
+  // Session 246 (user-directed): memory events are FOOTER content, not
+  // header badges. Learning/crystallized signals style the footer line
+  // (glyph + signal tint, below); episodic activity feeds footnoteText.
+  // The header keeps ONLY the objective, the done badge and the rail.
+
+  // Session 246: the footer dot FLASHES when a memory event lands — a subtle
+  // scale+brightness pulse (memoryDotFlash, css-src/globals.css). Re-mounting
+  // via key restarts the animation cleanly per event.
+  const memCount = memoryEvents?.length ?? 0
+  const [dotFlashKey, setDotFlashKey] = useState(0)
+  const prevMemCount = useRef(memCount)
+  useEffect(() => {
+    if (memCount > prevMemCount.current) setDotFlashKey((k) => k + 1)
+    prevMemCount.current = memCount
+  }, [memCount])
 
   // Design token table — footnote text: latest REAL memory event
   // (recall/compress/episodic), falling back to "Active Execution".
@@ -265,6 +299,13 @@ export default function TaskListCard({
     const last = memoryEvents?.[memoryEvents.length - 1]
     if (!last) return "Active Execution"
     return formatMemoryEntry(last.kind, last.data)?.summary ?? last.kind
+  }, [memoryEvents])
+
+  // Session 246: the footer memory line takes the KIND's tint so episodic
+  // activity is visibly alive (amber) vs recall (violet) vs compress (cyan).
+  const lastMemoryTint = useMemo(() => {
+    const last = memoryEvents?.[memoryEvents.length - 1]
+    return last ? MEMORY_TINT[last.kind] ?? null : null
   }, [memoryEvents])
 
   return (
@@ -317,17 +358,28 @@ export default function TaskListCard({
       }
       footer={
         /* Footer (variant anatomy): memory dot + status on the left;
-           TIMER + data/memory.db chrome label on the right. */
-        <span className="flex items-center gap-1.5 min-w-0 w-full">
+           TIMER + data/memory.db chrome label on the right.
+         * Session 246: this app has an UN-LAYERED global margin/padding
+           reset that overrides Tailwind v4's layered utilities — synthetic
+           probes show ml-auto/mr-auto/pl-* all compute 0. So the two sides
+           are separated with justify-between (verified working), NOT
+           margin-auto, and each side is its own flex group. */
+        <span className="flex items-center justify-between gap-2 min-w-0 w-full">
+          <span className="flex items-center gap-1.5 min-w-0">
           <span
             aria-hidden
+            key={dotFlashKey}
             style={{
+              /* Session 246: margin puts the dot's centre on the shared left
+                 rail (34px axis: pl-3 + body pl-2 + row px-1.5 + half node). */
+              marginLeft: 19.5,
               width: 5,
               height: 5,
               borderRadius: "50%",
               background: veinColor,
               boxShadow: `0 0 6px ${veinColor}`,
               flexShrink: 0,
+              animation: dotFlashKey > 0 ? "memoryDotFlash 0.8s ease-out" : undefined,
             }}
           />
           {/* Session 245: the memory footer goes LIVE — learning signals get
@@ -346,11 +398,21 @@ export default function TaskListCard({
               {memoryEntry.glyph} {memoryEntry.summary}
             </span>
           ) : (
-            <span className="truncate text-[9px] font-mono" style={{ color: "rgba(255,255,255,0.35)" }}>
+            <span
+              className="truncate text-[9px] font-mono"
+              style={{
+                color: lastMemoryTint ?? "rgba(255,255,255,0.35)",
+                textShadow: lastMemoryTint ? `0 0 8px ${lastMemoryTint}44` : undefined,
+              }}
+              title={footnoteText}
+            >
               {footnoteText}
             </span>
           )}
-          <span className="ml-auto flex items-center gap-2 shrink-0">
+          </span>
+          {/* Right group — justify-between on the parent pins this to the
+              FAR RIGHT edge of the footer. */}
+          <span className="flex items-center gap-2 shrink-0">
             {(isWorking || elapsedSec > 0) && (
               <span
                 className="px-1.5 py-0.5 rounded text-[9px] font-mono tabular-nums"
@@ -358,6 +420,20 @@ export default function TaskListCard({
                 title="Elapsed execution time"
               >
                 ⏱ {timerLabel}
+              </span>
+            )}
+            {/* Session 246 (user ask): a REHYDRATED card shows how long the
+                task took — frozen duration from the persisted record, instead
+                of no timer at all. */}
+            {!isWorking && elapsedSec === 0 && typeof durationSec === "number" && durationSec > 0 && (
+              <span
+                className="px-1.5 py-0.5 rounded text-[9px] font-mono tabular-nums"
+                style={{ color: "rgba(255,255,255,0.45)", border: "1px solid rgba(255,255,255,0.10)", background: "rgba(255,255,255,0.04)" }}
+                title="Total task duration"
+              >
+                ⏱ {durationSec >= 3600
+                  ? `${Math.floor(durationSec / 3600)}:${String(Math.floor((durationSec % 3600) / 60)).padStart(2, "0")}:${String(durationSec % 60).padStart(2, "0")}`
+                  : `${Math.floor(durationSec / 60)}:${String(durationSec % 60).padStart(2, "0")}`}
               </span>
             )}
             <ChassisChromeLabel>data/memory.db</ChassisChromeLabel>
@@ -381,8 +457,15 @@ export default function TaskListCard({
           )}
           {/* Animated identity marker — variant tokens verbatim: Xur 14,
               vein-coloured, faster while working. The websearch Search icon
-              is gone: the objective itself carries the context now. */}
-          <Xur size={14} color={veinColor} speed={isWorking ? 1.8 : 0.6} />
+              is gone: the objective itself carries the context now.
+           * Session 246: marginLeft keeps the marker's centre on the SAME
+              vertical axis as the body step nodes and the footer dot — one
+              continuous left rail (user-requested symmetry). Axis math:
+              pl-3(12) + body pl-2(8) + row px-1.5(6) + half node box(8) = 34;
+              34 - 12 - 7 = 15. */}
+          <span style={{ display: "flex", marginLeft: 15 }}>
+            <Xur size={14} color={veinColor} speed={isWorking ? 1.8 : 0.6} />
+          </span>
           {/* OBJECTIVE leads the header (12px mono semibold white/95
               tracking-tight truncate, full text on tooltip). No badge in
               front of it. Legacy payloads without planTitle fall back to a
@@ -440,22 +523,9 @@ export default function TaskListCard({
             </span>
           )}
 
-          {/* Honest memory-activity badges (registry-driven, never
-              fabricated) — kept beside the objective. */}
-          {memoryBadges.map((b) => (
-            <span
-              key={b.key}
-              className="ml-1.5 px-1.5 py-0.5 rounded text-[9px] font-semibold tracking-wide uppercase"
-              style={{
-                color: b.color,
-                backgroundColor: `${b.color}1a`,
-                border: `1px solid ${b.color}40`,
-              }}
-              title={b.title}
-            >
-              {b.glyph} {b.text}
-            </span>
-          ))}
+          {/* Session 246: memory badges REMOVED from the header — memory
+              activity is footer content (learning signal styles the footer
+              line; episodic events feed footnoteText). */}
 
           <button
             type="button"
@@ -491,7 +561,7 @@ export default function TaskListCard({
               />
             )}
             <div className="flex flex-col gap-1">
-              {steps.map((step, i) => {
+              {displaySteps.map((step, i) => {
                 const meta = STATUS_META[step.status]
                 const isOpen = expandedStep === step.id
                 const branchLabel = (step as StepWithBranch).branchLabel
@@ -504,7 +574,7 @@ export default function TaskListCard({
                       onClick={() =>
                         step.resultPreview ? setExpandedStep(isOpen ? null : step.id) : undefined
                       }
-                      className={`flex items-center gap-2 w-full text-left px-1.5 py-1.5 rounded-md transition-colors ${
+                      className={`flex items-center gap-2 w-full text-left px-1.5 py-1 rounded-md transition-colors ${
                         step.resultPreview ? "cursor-pointer hover:bg-white/[0.03]" : ""
                       }`}
                     >
@@ -528,12 +598,15 @@ export default function TaskListCard({
                       </span>
                       {branchLabel && <ChassisBranchBadge branchLabel={branchLabel} />}
                       {/* Target — variant tokens: 10.5px mono, white/85,
-                          ONE truncated line. */}
+                          ONE truncated line. Session 246: max-w caps long-
+                          winded planner descriptions even when the row has
+                          room — the full text stays on hover (title). */}
                       <span
-                        className="text-[10.5px] font-mono text-white/85 truncate leading-tight flex-1 min-w-0"
+                        className="text-[10.5px] font-mono text-white/85 truncate leading-tight flex-1 min-w-0 max-w-[52ch]"
                         style={{
                           color: step.status === "pending" ? "rgba(255,255,255,0.45)" : undefined,
                         }}
+                        title={step.description}
                       >
                         {step.description}
                       </span>

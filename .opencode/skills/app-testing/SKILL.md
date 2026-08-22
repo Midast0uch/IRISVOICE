@@ -211,6 +211,15 @@ bug-vs-feature calls, launch quirks.
 
 ## Known issues (expected — not regressions)
 
+- **CSS is PRE-COMPILED — recompile after adding utility classes**: the app
+  serves `public/globals.css` (built from `css-src/globals.css` via
+  `npx @tailwindcss/cli -i css-src/globals.css -o public/globals.css`). A new
+  Tailwind class in a component (e.g. `pl-[5px]`) silently does not exist
+  until you rerun the CLI. The `app/globals.css` and `styles/globals.css`
+  copies are NOT the served source. Also: the global `* {margin:0;padding:0}`
+  reset MUST stay inside `@layer base` — un-layered it beats every Tailwind
+  utility (cascade-layer rule) and kills all margin/padding spacing app-wide
+  (session 246: dead ml-auto footers, cramped badges, lost indents).
 - **Web mode desync**: after reload/reconnect the toggle may show ON while the backend
   thinks OFF. Toggle off→on to re-sync `set_web_mode`.
 - **Stale localStorage** persists conversations across loads. `localStorage.clear()` for

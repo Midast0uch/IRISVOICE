@@ -174,10 +174,32 @@ export const FAMILY_PREFIX_RULES: ReadonlyArray<{ prefix: string; family: Family
  * Resolve a tool name to its display verb. Resolution order (AC5):
  *   1. registry  — exact match in TOOL_VERB
  *   2. family    — prefix match in FAMILY_PREFIX_RULES -> FAMILY_FALLBACK_VERB
- *   3. raw name  — the tool name itself, uppercased, never blank
+ *   3. compact   — the raw name, abbreviated to FIT THE VERB COLUMN
+ *                  (session 246, user-directed amendment to AC2: unregistered
+ *                  MCP/custom tools used to render their full uppercased name
+ *                  and overflow the fixed-width column; they now compact to
+ *                  <=6 chars via first-segment / acronym / hard-slice)
  *
  * Both the GUI card and the CLI renderer call this ONE function.
  */
+export const VERB_MAX_CHARS = 6
+
+function compactVerb(raw: string): string {
+  const up = raw.toUpperCase().trim()
+  if (up.length <= VERB_MAX_CHARS) return up
+  // Multi-part names (notion_search, fetch.crawl, github_list_orgs):
+  // prefer the FIRST SEGMENT when it already fits ("notion_search" ->
+  // "NOTION"), else the acronym of all segments ("database_query_page" ->
+  // "DQP"), else a hard slice.
+  const parts = up.split(/[_\-.:]+/).filter(Boolean)
+  if (parts.length > 1) {
+    if (parts[0].length <= VERB_MAX_CHARS && parts[0].length >= 3) return parts[0]
+    const acro = parts.map((p) => p[0]).join("")
+    if (acro.length >= 2 && acro.length <= VERB_MAX_CHARS) return acro
+  }
+  return up.slice(0, VERB_MAX_CHARS)
+}
+
 export function resolveVerb(toolName: string | null | undefined): string {
   if (!toolName) return "TOOL"
 
@@ -187,5 +209,5 @@ export function resolveVerb(toolName: string | null | undefined): string {
   const rule = FAMILY_PREFIX_RULES.find((r) => toolName.startsWith(r.prefix))
   if (rule) return FAMILY_FALLBACK_VERB[rule.family]
 
-  return toolName.toUpperCase()
+  return compactVerb(toolName)
 }

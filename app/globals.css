@@ -161,11 +161,19 @@ html.in-browser body {
   height: 100vh;
 }
 
-/* Prevent default margins that show window frame */
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
+/* Prevent default margins that show window frame.
+ * CAUTION — session 246: this MUST live inside @layer base. Un-layered,
+ * it beats EVERY Tailwind utility in @layer utilities (cascade-layer rule:
+ * un-layered styles win), which silently killed all margin/padding
+ * utilities app-wide — dead ml-auto footers, cramped badges, lost indents
+ * (measured live: ml-auto/pl-2/px-1.5 all computed 0). Layered, the reset
+ * still normalizes UA defaults but utilities can override it. */
+@layer base {
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
 }
 
 /* Prevent transform animations from triggering scroll-into-view in Tauri webview.

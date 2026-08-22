@@ -88,11 +88,27 @@ export const MEMORY_EVENT_REGISTRY: Record<MemoryEventKind, MemoryEntry> = {
   // `resonance` (amplitude, Section 5) and landmark `elevation` (Section 7)
   // are additionally reserved per REQ-15 AC6, appended after the doc's core
   // three so the seam accepts them without reordering the header trio.
+  //
+  // Session 246 (live finding, conv-40): today's recall emits carry only
+  // { query } — the reserved fields are all empty, and the raw fallback
+  // rendered "hex_bin_id: , tier: , …" as the footer line. The formatter
+  // shows the query while the Wormhole fields are absent; once those land,
+  // this same function renders them in the fixed order.
   recall: {
     kind: "recall",
     label: "Recall",
     glyph: "↻", // ↻
     fields: [...RESERVED_WORMHOLE_FIELDS],
+    format: (data) => {
+      const filled = RESERVED_WORMHOLE_FIELDS.filter(
+        (f) => data[f] !== undefined && data[f] !== null && String(data[f]) !== "",
+      )
+      if (filled.length > 0) {
+        return filled.map((f) => `${f}: ${String(data[f])}`).join(", ")
+      }
+      const query = String(data.query ?? "").trim()
+      return query ? `↻ ${query}` : "memory recalled"
+    },
     emitting: true,
   },
 
@@ -112,11 +128,21 @@ export const MEMORY_EVENT_REGISTRY: Record<MemoryEventKind, MemoryEntry> = {
   // Fields grounded in `backend/memory/episodic.py`'s Episode dataclass
   // (task_summary, outcome_type, duration_ms are the fields meaningful to a
   // user-facing footer; tool_sequence / full_content are not).
+  //
+  // Session 246: formatter instead of the raw "field: value" join — the
+  // footer reads "STORE working memory stored (step 1 evidence)" not
+  // "task_summary: …, outcome_type: …, duration_ms: ".
   episodic: {
     kind: "episodic",
     label: "Episodic",
     glyph: "☷", // ☷
     fields: ["task_summary", "outcome_type", "duration_ms"],
+    format: (data) => {
+      const summary = String(data.task_summary ?? "").trim()
+      const outcome = String(data.outcome_type ?? "").trim()
+      if (!summary && !outcome) return "memory activity"
+      return outcome ? `${outcome.toUpperCase()} ${summary}` : summary
+    },
     emitting: true,
   },
 }
