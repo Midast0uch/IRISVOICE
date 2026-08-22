@@ -77,7 +77,11 @@ def _build_kernel():
     kernel._reviewer.review.return_value = (SimpleNamespace(), None)
     # Deterministic task-level outcome band: 0.9 -> "success".
     kernel._verified_fraction = lambda *a, **k: 0.9
-    kernel._der_run_step_execution = lambda item, ctx, session, turn, plan: (
+    # Session 245: signature sync ONLY — production `_der_run_step_execution`
+    # gained `queue=` (synthesis starvation fix: prior step results now reach
+    # the tool-decision evidence). Same maintenance `_fake_finalize` below
+    # already carries. No assertion here changes.
+    kernel._der_run_step_execution = lambda item, ctx, session, turn, plan, queue=None: (
         "RESULT_EVIDENCE_OK",
         True,
     )

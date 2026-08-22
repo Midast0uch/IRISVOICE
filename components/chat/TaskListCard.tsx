@@ -1,8 +1,9 @@
 ﻿"use client"
 
-import React, { useState, useEffect, useMemo } from "react"
+import React, { useState, useEffect, useMemo, useRef } from "react"
 import { AnimatePresence, motion } from "framer-motion"
-import { Search, ChevronDown } from "lucide-react"
+import { ChevronDown } from "lucide-react"
+import { Xur } from "@/components/Xur"
 import { useBrandColor } from "@/contexts/BrandColorContext"
 import { deriveCurrentStep } from "@/hooks/useTaskProgress"
 import type { TaskStep, TaskStepStatus, MemoryEvent } from "@/hooks/useTaskProgress"
@@ -12,6 +13,7 @@ import {
   CardChassis,
   ChassisBadge,
   ChassisBranchBadge,
+  ChassisChromeLabel,
   ChassisStepNode,
   VEIN_COLOR_BY_STATE,
   type ChassisVeinState,
@@ -29,10 +31,15 @@ export interface TaskListCardProps {
   /** T8c (REQ-10 AC5): real memory-activity events (recall / compress /
    * episodic) surfaced in the card's memory slot. */
   memoryEvents?: MemoryEvent[]
-  /** Live agent thought/action â€” drives the THK row (design token table:
-   * badge #fbbf24 on amber, thought italic truncate). Rendered ONLY when
-   * real data arrived; never fabricated (REQ-10 AC4). */
+  /** Live agent action — drives the THK row when no stream entries exist.
+   * Rendered ONLY when real data arrived; never fabricated (REQ-10 AC4). */
   currentAction?: string
+  /** REQ-4: structured crawl pipeline phase (searching / fetching /
+   * extracting / citing …) — rotates the working step's verb. */
+  phase?: string
+  /** Live agent thinking stream (newest last) — the THK section's expandable
+   * trace. Rendered ONLY when real reasoning arrived; never fabricated. */
+  thoughtStream?: string[]
 }
 
 const STATUS_META: Record<TaskStepStatus, { color: string; label: string }> = {
@@ -47,19 +54,64 @@ const STATUS_META: Record<TaskStepStatus, { color: string; label: string }> = {
 }
 
 // A step carries `branchLabel` once the backend emits it on sub-loop-split
-// children (T2b, agent_kernel.py ~11570-11612). Not on `TaskStep` yet â€” this
+// children (T2b, agent_kernel.py ~11570-11612). Not on `TaskStep` yet — this
 // card renders it when present and nothing when absent, exactly like every
 // other optional field here, without inventing a second step type.
 type StepWithBranch = TaskStep & { branchLabel?: string }
 
+// Session 245 (pin_07b780e7ce21): verb ROTATION for websearch. The crawler's
+// structured pipeline phase (card.phase, already flowing over task:progress)
+// drives the working step's verb so the column says what the agent is doing
+// RIGHT NOW instead of one static SEARCH for the whole run. When no phase is
+// present the registry verb for the real tool renders, exactly as before.
+const PHASE_VERB: Record<string, string> = {
+  planning: "PLAN",
+  searching: "SEARCH",
+  fetching: "READ",
+  reading: "READ",
+  extracting: "EXTRACT",
+  citing: "CITE",
+  synthesizing: "SYNTH",
+}
+
+// Session 245 (universal verb progression): planner steps carry NO tool
+// (D1.3 — goals only), which used to render a blank em-dash column for every
+// reasoning step. These keyword intents are derived from the step's OWN
+// description — the plan's stated purpose, not a fabrication — so every row
+// shows what that node is for, and the working step's live phase still wins.
+const INTENT_VERBS: Array<[RegExp, string]> = [
+  [/summari|explain|synthes|conclude|final/i, "SYNTH"],
+  [/analyz|identif|compare|evaluat|extract/i, "ANALYZE"],
+  [/search|find|look up|research|gather/i, "SEARCH"],
+  [/read|review|open|inspect/i, "READ"],
+  [/write|draft|compose|generate|create/i, "WRITE"],
+]
+
+function intentVerb(description: string): string | null {
+  const d = (description || "").toLowerCase()
+  for (const [re, verb] of INTENT_VERBS) {
+    if (re.test(d)) return verb
+  }
+  return null
+}
+
 /**
- * TaskListCard â€” inline agent plan/progress in the chat stream.
- * T9 (REQ-1, REQ-10): renders through the shared `CardChassis` (T8) rather
- * than its own bespoke surface â€” the ink background, accent vein, header row,
- * bracketed `[done/total]` counter and REQ-1 AC5 padding are ALL the
- * chassis's now; this file supplies only its own header content and the step
- * list body. Presentational: receives `steps` from chat-view (which uses
- * useTaskProgress).
+ * TaskListCard — inline agent plan/progress in the chat stream.
+ * Renders through the shared `CardChassis` (T8) — the ink background, accent
+ * vein, header row, bracketed `[done/total]` counter and REQ-1 AC5 padding
+ * are ALL the chassis's; this file supplies its own header content, the THK
+ * thinking section, the step list body and the footer. Presentational:
+ * receives `steps` from chat-view (which uses useTaskProgress).
+ *
+ * Session 245 Liquid Ink fidelity pass (pin_07b780e7ce21, user-approved):
+ *   - animated Xur header marker (variant tokens: size 14, vein colour,
+ *     speed 1.8 working / 0.6 idle); the OBJECTIVE leads the header — no
+ *     mode badge in front of it.
+ *   - THK gets its OWN section: clickable row that expands the agent's
+ *     thinking stream; italic "Reflecting..." fallback while thinking.
+ *   - steps: 10.5px mono truncated targets, `· summary` back on the row
+ *     tail, branch rows indented pl-4, boxed expanded summaries.
+ *   - footer: timer pill + data/memory.db chrome label (moved from header).
  */
 export default function TaskListCard({
   steps,
@@ -70,6 +122,8 @@ export default function TaskListCard({
   learningSignal,
   memoryEvents,
   currentAction,
+  phase,
+  thoughtStream,
 }: TaskListCardProps) {
   const { getThemeConfig } = useBrandColor()
   const theme = getThemeConfig()
@@ -77,42 +131,35 @@ export default function TaskListCard({
 
   const [collapsed, setCollapsed] = useState(defaultCollapsed && steps.length > 4)
   const [expandedStep, setExpandedStep] = useState<string | null>(null)
+  const [thkOpen, setThkOpen] = useState(false)
 
   const doneCount = steps.filter((s) => s.status === "done").length
   const failCount = steps.filter((s) => s.status === "fail").length
   // The COUNTER shows the step being worked on; the BAR shows real completion.
-  //
-  // This card was computing its own number from `doneCount`, ignoring the
-  // shared currentStep the orb uses â€” so while step 3 of 4 ran, the orb read 3
-  // and the card read "2/4". Same rule for both now (deriveCurrentStep: a
-  // running step is the step you are on). The progress BAR deliberately stays
-  // on doneCount, because a step in flight is not finished work.
-  //
-  // THERE IS EXACTLY ONE NUMERIC COUNTER ON THIS CARD, and it is the chassis's
-  // bracketed one. An earlier pass rendered BOTH a chassis `[done/total]` and
-  // an inline `current/total` in the SAME header row â€” so a card in flight read
-  // "[1/3]  2/3", two 9px mono fractions side by side, disagreeing, with nothing
-  // saying what either meant. Two honest numbers presented as one thing is not
-  // honest; it is just unreadable. The counter answers "which step am I on" and
-  // agrees with the orb; the BAR answers "how much is done" and stays on
-  // doneCount, because a step in flight is not finished work.
+  // One numeric counter on this card — the chassis's bracketed one — agreeing
+  // with the orb via deriveCurrentStep (a running step is the step you are
+  // on). The progress BAR deliberately stays on doneCount, because a step in
+  // flight is not finished work.
   const displayStep = deriveCurrentStep(steps)
-  // Action-only header, derived from the agent's live tool (never "Plan").
-  const headerTitle = planTitle || steps[0]?.description || mode?.toUpperCase() || "TASK"
+  // Objective-first header (pin_07b780e7ce21): the OBJECTIVE TITLE is the
+  // dominant header element — VariantLiquidInk renders it at text-[12px]
+  // font-mono font-semibold white/95 tracking-tight truncate, immediately
+  // after the marker, with NO badge in front. It renders ONLY from a real
+  // planTitle: falling back to steps[0].description duplicated that text
+  // with the step row below (caught by TaskListCard.test.tsx). The backend
+  // derives plan_title from original_task whenever the planner omits it
+  // (AgentKernel._effective_plan_title), so every live card carries one;
+  // legacy payloads without plan_title keep the short mode badge.
+  const objective = planTitle || null
 
-  // REQ-1 AC2/AC3: the chassis vein is driven by real execution state, not by
-  // the user's brand color â€” `glowColor` above stays reserved for identity
-  // badges so a user-set brand color never overrides what the vein is saying
-  // (REQ-2 edge case). A step actually running is "thinking"; a crystallized
-  // learning signal wins over that; otherwise idle.
+  // REQ-1 AC2/AC3: the chassis vein is driven by real execution state.
   const isWorking = steps.some((s) => s.status === "working")
   const veinState: ChassisVeinState = learningSignal === "crystallized" ? "crystallized" : isWorking ? "thinking" : "idle"
   const veinColor = VEIN_COLOR_BY_STATE[veinState]
 
-  // REQ-3 AC2 (design token table): elapsed running timer â€” `â± m:ss`,
-  // tabular-nums, vein-tinted pill. Ticks ONLY while a step is working and
-  // freezes when the run settles (converge / fail) â€” never fabricated while
-  // idle. Interval cleaned up on every effect pass (no leaked timers).
+  // Elapsed running timer — ticks ONLY while a step is working and freezes
+  // when the run settles. Rendered in the FOOTER (variant anatomy), never
+  // fabricated while idle. Interval cleaned up on every effect pass.
   const [elapsedSec, setElapsedSec] = useState(0)
   useEffect(() => {
     if (!isWorking) return
@@ -121,38 +168,52 @@ export default function TaskListCard({
   }, [isWorking])
   const timerLabel = `${Math.floor(elapsedSec / 60)}:${String(elapsedSec % 60).padStart(2, "0")}`
 
-  // REQ-14 verb column â€” ONE registry source shared with the CLI renderer.
-  // A verb renders ONLY for a real tool: steps with no toolName (pure plan
-  // lines) and mode-names masquerading as tools (MODE_NON_TOOLS, shared with
-  // chat-view's suppression filter) get a quiet em-dash, NEVER the registry's
-  // "TOOL" fallback or a mode uppercased into verb position. Blank-honest
-  // beats label-noise.
+  // REQ-14 verb column — ONE registry source shared with the CLI renderer,
+  // extended with phase rotation for the working step (see PHASE_VERB).
+  // Session 245 (universal progression): the working step's live phase wins
+  // FIRST — even for tool-less steps — so synthesis shows SYNTH instead of
+  // reverting to SEARCH; then the registry verb for a real tool; then the
+  // description-derived intent verb; only a step with neither renders the
+  // quiet em-dash.
   const stepVerb = (s: TaskStep): string | null => {
-    if (!s.toolName || MODE_NON_TOOLS.has(s.toolName.toLowerCase())) return null
-    return resolveVerb(s.toolName)
+    if (s.status === "working" && phase) {
+      const pv = PHASE_VERB[phase.toLowerCase()]
+      if (pv) return pv
+    }
+    if (s.toolName && !MODE_NON_TOOLS.has(s.toolName.toLowerCase())) {
+      return resolveVerb(s.toolName)
+    }
+    return intentVerb(s.description)
   }
 
+  // ── THK thinking section (session 245) ──────────────────────────────
+  // The agent's live thought trace gets its own section under a hairline
+  // divider: clickable row -> expandable stream panel. Everything renders
+  // ONLY from real data (REQ-10 AC4): the row appears while the agent is
+  // working or a real action/thought arrived; the stream panel only when
+  // real reasoning entries exist; "Reflecting..." fills the gap while
+  // thinking with nothing said yet (variant behavior).
+  const hasThoughts = (thoughtStream?.length ?? 0) > 0
+  const showThk = Boolean(currentAction || isWorking || hasThoughts)
+  const latestThought = hasThoughts ? thoughtStream![thoughtStream!.length - 1] : currentAction
+  const streamRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (thkOpen && streamRef.current) {
+      streamRef.current.scrollTop = streamRef.current.scrollHeight
+    }
+  }, [thkOpen, thoughtStream?.length])
+
   // REQ-10: memory activity slot, rendered EXCLUSIVELY from the shared
-  // registry (AC2) and ONLY when a real event has been received (AC4) â€” never
-  // fabricated, never padded. `learning`/`crystallized` come from the
-  // task:learning signal; `recall`/`compress`/`episodic` arrive as real
-  // memory:event emits (T8c) and are rendered through the same registry.
+  // registry (AC2) and ONLY when a real event has been received (AC4).
   const memoryKind = learningSignal === "crystallized" ? "crystallized" : learningSignal ? "learning" : null
   const memoryEntry = memoryKind ? formatMemoryEntry(memoryKind, { signal: learningSignal }) : null
 
-  // REQ-8: honest learning signal -> subtle Pacman OrbCanvas-style border
-  // particles on the card. The signal is real state (avoided / retried /
-  // crystallized), never narration. Tint follows the signal kind. Kept local
-  // â€” the memory registry defines label/glyph/fields, not color.
   const signalTint: Record<string, string> = {
-    avoided: "#f59e0b", // amber â€” a step was avoided (AVOID)
-    retried: "#3b82f6", // blue â€” split into Sub-Loops
-    crystallized: "#22c55e", // green â€” skill captured
+    avoided: "#f59e0b", // amber — a step was avoided (AVOID)
+    retried: "#3b82f6", // blue — split into Sub-Loops
+    crystallized: "#22c55e", // green — skill captured
   }
 
-  // T8c (REQ-10 AC5): combine the learning signal with the real memory events
-  // into one registry-driven badge list. Each entry is formatted by the
-  // shared registry (AC2) and only rendered when real (AC4).
   const MEMORY_TINT: Record<string, string> = {
     recall: "#a78bfa",
     compress: "#38bdf8",
@@ -172,9 +233,6 @@ export default function TaskListCard({
     for (const ev of memoryEvents || []) {
       const fe = formatMemoryEntry(ev.kind, ev.data)
       if (!fe) continue
-      // Learning/crystallized carry a signal-specific summary (e.g. "Retried");
-      // recall/compress/episodic use reserved Wormhole fields (not yet
-      // populated), so fall back to the stable label for an honest badge.
       const text =
         ev.kind === "learning" || ev.kind === "crystallized"
           ? fe.summary
@@ -190,11 +248,8 @@ export default function TaskListCard({
     return out
   }, [memoryKind, memoryEntry, memoryEvents, learningSignal, glowColor])
 
-  // Design token table â€” footnote text: latest REAL memory event
-  // (recall/compress/episodic), falling back to "Active Execution". The
-  // learning signal deliberately does NOT feed the footnote â€” it already
-  // renders as a header badge, and repeating it duplicated the word twice
-  // on the card (caught by TaskListCard.display.test.tsx).
+  // Design token table — footnote text: latest REAL memory event
+  // (recall/compress/episodic), falling back to "Active Execution".
   const footnoteText = useMemo(() => {
     const last = memoryEvents?.[memoryEvents.length - 1]
     if (!last) return "Active Execution"
@@ -209,22 +264,50 @@ export default function TaskListCard({
       counter={{ done: displayStep, total: steps.length }}
       aria-label="Task progress"
       subheader={
-        /* Design token table â€” THK row: badge #fbbf24 on amber, thought
-           italic truncate. Only when real thought/action data arrived. */
-        currentAction ? (
-          <span className="flex items-center gap-1.5 min-w-0">
-            <ChassisBadge color="#fbbf24">THK</ChassisBadge>
-            <span className="italic truncate text-[10px]" style={{ color: "rgba(251,191,36,0.7)" }}>
-              {currentAction}
-            </span>
-          </span>
+        showThk ? (
+          /* THK section — own divided strip (variant anatomy). Clickable
+             when a real stream exists; italic whisper otherwise. */
+          <div className="flex flex-col min-w-0">
+            <button
+              type="button"
+              onClick={() => hasThoughts && setThkOpen((o) => !o)}
+              className="flex items-center gap-1.5 min-w-0 text-left"
+              aria-expanded={thkOpen}
+              aria-label={hasThoughts ? "Toggle thinking stream" : undefined}
+            >
+              <ChassisBadge color="#fbbf24">THK</ChassisBadge>
+              <span className="italic truncate text-[10px]" style={{ color: "rgba(251,191,36,0.7)" }}>
+                {latestThought ?? (isWorking ? "Reflecting..." : "")}
+              </span>
+              {hasThoughts && (
+                <ChevronDown
+                  size={10}
+                  className="shrink-0 opacity-50"
+                  style={{ transform: thkOpen ? "rotate(180deg)" : "none", transition: "transform 0.2s" }}
+                />
+              )}
+            </button>
+            {thkOpen && hasThoughts && (
+              <div
+                ref={streamRef}
+                className="mt-1.5 max-h-[120px] overflow-y-auto rounded-md bg-black/40 border border-white/6 p-2 font-mono text-[9px] leading-relaxed"
+                style={{ color: "rgba(251,191,36,0.55)" }}
+                data-testid="thk-stream"
+              >
+                {thoughtStream!.map((line, i) => (
+                  <div key={i} className="whitespace-pre-wrap break-words">
+                    {line}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         ) : undefined
       }
       footer={
-        /* Design token table â€” footnote: memory dot in vein colour +
-           latest memory detail; falls back to "Active Execution". Driven by
-           the registry-formatted badges (never fabricated). */
-        <span className="flex items-center gap-1.5 min-w-0">
+        /* Footer (variant anatomy): memory dot + status on the left;
+           TIMER + data/memory.db chrome label on the right. */
+        <span className="flex items-center gap-1.5 min-w-0 w-full">
           <span
             aria-hidden
             style={{
@@ -236,18 +319,44 @@ export default function TaskListCard({
               flexShrink: 0,
             }}
           />
-          <span className="truncate text-[9px] font-mono" style={{ color: "rgba(255,255,255,0.35)" }}>
-            {footnoteText}
+          {/* Session 245: the memory footer goes LIVE — learning signals get
+              their own glyph + signal-tinted font effect; regular memory
+              events render their registry summary; only a run with zero
+              memory activity keeps the quiet "Active Execution". */}
+          {learningSignal && memoryEntry ? (
+            <span
+              className="truncate text-[9px] font-mono font-bold uppercase tracking-wider"
+              style={{
+                color: signalTint[learningSignal] ?? veinColor,
+                textShadow: `0 0 8px ${signalTint[learningSignal] ?? veinColor}55`,
+              }}
+              title={`Learning signal: ${memoryEntry.summary}`}
+            >
+              {memoryEntry.glyph} {memoryEntry.summary}
+            </span>
+          ) : (
+            <span className="truncate text-[9px] font-mono" style={{ color: "rgba(255,255,255,0.35)" }}>
+              {footnoteText}
+            </span>
+          )}
+          <span className="ml-auto flex items-center gap-2 shrink-0">
+            {(isWorking || elapsedSec > 0) && (
+              <span
+                className="px-1.5 py-0.5 rounded text-[9px] font-mono tabular-nums"
+                style={{ color: `${veinColor}cc`, border: `1px solid ${veinColor}20`, background: `${veinColor}10` }}
+                title="Elapsed execution time"
+              >
+                ⏱ {timerLabel}
+              </span>
+            )}
+            <ChassisChromeLabel>data/memory.db</ChassisChromeLabel>
           </span>
         </span>
       }
       header={
         <>
           {/* REQ-8: subtle Pacman OrbCanvas-style border particles on live
-              learning signal. `chassis-surface` (the nearest `relative`
-              ancestor) is what `inset-0` resolves against here, so this ring
-              still wraps the WHOLE card even though it's mounted inside the
-              header slot. */}
+              learning signal. */}
           {learningSignal && (
             <span
               aria-hidden
@@ -255,80 +364,31 @@ export default function TaskListCard({
               style={{
                 border: `1px solid ${signalTint[learningSignal]}55`,
                 boxShadow: `0 0 14px ${signalTint[learningSignal]}33, inset 0 0 6px ${signalTint[learningSignal]}22`,
-                // slow breathing pulse â€” quiet, not a spinner
                 animation: "irisSignalPulse 2.4s ease-in-out infinite",
               }}
             />
           )}
-          {/* W4 (T24): websearch gets a magnifying glass icon; other actions get
-              the gradient core. Keyed on mode AND title â€” with objective-first
-              titles ("Search the latest llama.cpp release notesâ€¦") the word
-              websearch may only appear in `mode`. */}
-          {`${headerTitle} ${mode ?? ""}`.toLowerCase().includes("websearch") ? (
-            <span className="relative shrink-0 flex items-center justify-center" style={{ width: 12, height: 12 }}>
-              <Search size={10} style={{ color: glowColor }} />
+          {/* Animated identity marker — variant tokens verbatim: Xur 14,
+              vein-coloured, faster while working. The websearch Search icon
+              is gone: the objective itself carries the context now. */}
+          <Xur size={14} color={veinColor} speed={isWorking ? 1.8 : 0.6} />
+          {/* OBJECTIVE leads the header (12px mono semibold white/95
+              tracking-tight truncate, full text on tooltip). No badge in
+              front of it. Legacy payloads without planTitle fall back to a
+              short mode badge. */}
+          {objective ? (
+            <span
+              className="min-w-0 flex-1 truncate text-[12px] font-mono font-semibold tracking-tight"
+              style={{ color: "rgba(255,255,255,0.95)" }}
+              title={objective}
+            >
+              {objective}
             </span>
           ) : (
-            <span
-              className="relative shrink-0"
-              style={{
-                width: 12,
-                height: 12,
-                borderRadius: "50%",
-                background: `radial-gradient(circle at 35% 30%, #aef3ff, ${glowColor} 60%, #006b8a)`,
-                boxShadow: `0 0 12px ${glowColor}, inset 0 0 4px rgba(255,255,255,0.6)`,
-              }}
-            >
-              {/* Connector from core to step list â€” only when steps visible */}
-              {!collapsed && steps.length > 0 && (
-                <span
-                  style={{
-                    position: "absolute",
-                    left: "50%",
-                    top: "100%",
-                    width: 1,
-                    height: 32,
-                    transform: "translateX(-50%)",
-                    background: `linear-gradient(${glowColor}, ${glowColor}20)`,
-                  }}
-                />
-              )}
-            </span>
-          )}
-          {/* Mode/action badge stays SHORT â€” ChassisBadge is shrink-0, so a
-              long title inside it could never shrink and would be clipped
-              mid-glyph by the chassis's overflow-hidden once the timer, rail,
-              memory badges and toggle share the row. The OBJECTIVE renders
-              beside it as min-w-0 truncate text: it clips gracefully at the
-              boundary and keeps its full text on the title tooltip. */}
-          <ChassisBadge color={glowColor}>{(mode ?? headerTitle).toUpperCase()}</ChassisBadge>
-          {planTitle && (
-            <span
-              className="min-w-0 flex-1 truncate text-[11px] font-mono font-semibold"
-              style={{ color: "rgba(255,255,255,0.9)" }}
-              title={planTitle}
-            >
-              {planTitle}
-            </span>
+            mode && <ChassisBadge color={glowColor}>{mode.toUpperCase()}</ChassisBadge>
           )}
 
-          {/* REQ-3 AC2: elapsed running timer â€” vein-tinted pill, freezes when
-              the run settles. Hidden entirely until the first working tick so
-              an idle card never shows a fabricated 0:00. */}
-          {(isWorking || elapsedSec > 0) && (
-            <span
-              className="shrink-0 px-1.5 py-0.5 rounded text-[9px] font-mono tabular-nums"
-              style={{ color: veinColor, border: `1px solid ${veinColor}40`, background: `${veinColor}0d` }}
-              title="Elapsed execution time"
-            >
-              â± {timerLabel}
-            </span>
-          )}
-
-          {/* Progress rail. A bare "2/5" made the reader do the arithmetic to
-              find out how far along a run was; the bar states it directly, and
-              failures take their share of it in red instead of hiding behind a
-              "Â·2âœ•" suffix. */}
+          {/* Progress rail — failures take their share in red. */}
           {steps.length > 0 && (
             <span
               className="ml-auto h-[3px] rounded-full overflow-hidden flex shrink-0"
@@ -351,26 +411,18 @@ export default function TaskListCard({
               />
             </span>
           )}
-          {/* Failures get their OWN element, never a "Â· 2âœ•" suffix welded onto
-              the counter. The rail above already gives failures their share in
-              red; this states the count. Keeping it separate is what lets the
-              card carry exactly one fraction. */}
           {failCount > 0 && (
             <span
               className={`text-[10px] font-mono tabular-nums shrink-0${steps.length > 0 ? "" : " ml-auto"}`}
               style={{ color: "#f87171" }}
               title={`${failCount} step${failCount === 1 ? "" : "s"} failed`}
             >
-              {failCount}âœ•
+              {failCount}✕
             </span>
           )}
 
-          {/* REQ-8/REQ-10: honest memory-activity badges. Every badge's
-              label/glyph comes from the shared memory registry's formatted
-              summary â€” never a second hardcoded copy â€” while color stays
-              local (the registry defines label/glyph/fields, not color). The
-              list combines the learning signal with the real recall/compress/
-              episodic events (T8c). */}
+          {/* Honest memory-activity badges (registry-driven, never
+              fabricated) — kept beside the objective. */}
           {memoryBadges.map((b) => (
             <span
               key={b.key}
@@ -393,8 +445,6 @@ export default function TaskListCard({
             style={{ color: glowColor, border: `1px solid ${glowColor}30` }}
             aria-label={collapsed ? "Expand plan" : "Collapse plan"}
           >
-            {/* The â–¸/â–¾ glyphs render at different heights across fonts, so the
-                header shifted by a pixel on every toggle. One icon, rotated. */}
             <ChevronDown
               size={10}
               style={{
@@ -405,21 +455,10 @@ export default function TaskListCard({
           </button>
         </>
       }
-      // The chassis owns collapse geometry, but not THIS card's own toggle â€”
-      // `collapsible={false}` above keeps the chassis's own chevron out of
-      // the way (avoiding a second, differently-labeled affordance) while
-      // this card keeps driving visibility itself: only pass `children` when
-      // expanded, so the chassis's AnimatePresence gate still mounts/unmounts
-      // the step list exactly as it did before the migration (REQ-1 AC4).
       children={
         !collapsed ? (
           <div className="relative pl-2">
-            {/* pl-1: keeps the node/verb column off the accent vein's glow
-                halo â€” content starts 4px further in; the detail-row indent
-                (pl-[88px]) is row-relative so alignment is unchanged. */}
-            {/* Continuous vertical hairline through all step nodes â€” centered at 6px
-                (matches the 12px step-icon wrapper and header core center), fades at
-                top/bottom */}
+            {/* Continuous vertical hairline through all step nodes. */}
             {steps.length > 1 && (
               <div
                 style={{
@@ -432,26 +471,24 @@ export default function TaskListCard({
                 }}
               />
             )}
-            <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-1">
               {steps.map((step, i) => {
                 const meta = STATUS_META[step.status]
                 const isOpen = expandedStep === step.id
                 const branchLabel = (step as StepWithBranch).branchLabel
                 return (
-                  <div key={step.id ?? i} className="flex flex-col">
+                  /* Variant anatomy: branch rows indent pl-4 as a WHOLE —
+                     the hierarchy shift the preview shows. */
+                  <div key={step.id ?? i} className={`flex flex-col ${branchLabel ? "pl-4" : ""}`}>
                     <button
                       type="button"
                       onClick={() =>
                         step.resultPreview ? setExpandedStep(isOpen ? null : step.id) : undefined
                       }
-                      className="flex flex-col gap-0.5 w-full text-left py-0.5 hover:brightness-125"
+                      className={`flex items-center gap-2 w-full text-left px-1.5 py-1.5 rounded-md transition-colors ${
+                        step.resultPreview ? "cursor-pointer hover:bg-white/[0.03]" : ""
+                      }`}
                     >
-                      <span className="flex items-start gap-3 min-w-0">
-                      {/* T9 (REQ-1): the node states are the CHASSIS's —
-                          ChassisStepNode reproduces the Liquid Ink variant
-                          verbatim (running ping-ring + Xur, done glow dot,
-                          pending white/20). One node implementation for every
-                          card; this file no longer owns node markup. */}
                       <ChassisStepNode
                         status={
                           step.status === "working" ? "running"
@@ -460,98 +497,89 @@ export default function TaskListCard({
                         }
                         color={meta.color}
                       />
-                      {/* REQ-14 verb column â€” ONE registry source shared with the
-                          CLI renderer (lib/cards/verbRegistry.resolveVerb).
-                          w-12 fixed so targets align; vein-coloured per the
-                          design token table. Steps with no real tool render a
-                          quiet em-dash â€” never "TOOL", never a mode name. */}
+                      {/* Verb column — fixed width so targets align;
+                          phase-driven while working (PHASE_VERB), registry
+                          verb otherwise, em-dash when no real tool. */}
                       <span
-                        className="w-12 shrink-0 font-mono font-bold uppercase tracking-wider text-[10px] leading-snug"
-                        style={{ color: stepVerb(step) ? veinColor : "rgba(255,255,255,0.2)", marginTop: 3 }}
+                        className="w-12 shrink-0 text-left font-mono font-bold uppercase tracking-wider text-[10px] leading-snug"
+                        style={{ color: stepVerb(step) ? veinColor : "rgba(255,255,255,0.2)" }}
                         title={step.toolName || undefined}
                       >
-                        {stepVerb(step) ?? "â€”"}
+                        {stepVerb(step) ?? "—"}
                       </span>
+                      {branchLabel && <ChassisBranchBadge branchLabel={branchLabel} />}
+                      {/* Target — variant tokens: 10.5px mono, white/85,
+                          ONE truncated line. */}
                       <span
-                        className="text-[11px] leading-snug flex-1 min-w-0 break-words"
+                        className="text-[10.5px] font-mono text-white/85 truncate leading-tight flex-1 min-w-0"
                         style={{
-                          color: step.status === "pending" ? "rgba(255,255,255,0.45)" : "rgba(255,255,255,0.9)",
+                          color: step.status === "pending" ? "rgba(255,255,255,0.45)" : undefined,
                         }}
                       >
                         {step.description}
                       </span>
-                      {branchLabel && <ChassisBranchBadge branchLabel={branchLabel} />}
-                      </span>
-                      {step.activeDetail || step.url || step.resultPreview ? (
+                      {/* Inline summary back on the ROW TAIL (variant
+                          anatomy): 9px mono white/25, max-w-[170px],
+                          prefixed ·. Click opens the boxed view below. */}
+                      {step.resultPreview && !isOpen ? (
                         <span
-                          className="flex flex-col gap-[3px] pl-[88px] min-w-0"
-                          style={{ color: glowColor }}
-                          title={
-                            step.activeDetail
-                              ? `${toolLabel(step)} â€” ${step.activeDetail}${
-                                  step.activeProgress ? ` (${step.activeProgress})` : ""
-                                }${step.url ? ` â€” ${step.url}` : ""}`
-                              : toolLabel(step)
-                          }
+                          className="text-[9px] font-mono text-white/25 truncate max-w-[170px] shrink-0"
+                          title={step.resultPreview}
                         >
-                          <span className="flex items-baseline gap-1.5 min-w-0 text-[10px] leading-snug">
-                            {/* Live source, beside the plan text. The verb column
-                                is the SINGLE tool representation â€” the human tool
-                                label is deliberately NOT repeated here (it read
-                                "SEARCH â€¦ WebSearch", saying the same thing twice).
-                                The label survives in the row's title tooltip and
-                                the verb's own title={toolName}. */}
-                            {/* Live source, beside the tool rather than replacing
-                                the plan text. Keyed on the detail so each new host
-                                re-mounts and fades in â€” the "rotation". */}
-                            {step.activeDetail ? (
-                              <AnimatePresence mode="wait" initial={false}>
-                                <motion.span
-                                  key={step.activeDetail}
-                                  initial={{ opacity: 0, y: -3 }}
-                                  animate={{ opacity: 1, y: 0 }}
-                                  exit={{ opacity: 0, y: 3 }}
-                                  transition={{ duration: 0.18 }}
-                                  className="truncate normal-case"
-                                  style={{ color: "rgba(255,255,255,0.55)" }}
-                                >
-                                  {step.activeDetail}
-                                  {step.activeProgress ? (
-                                    <span style={{ color: "rgba(255,255,255,0.35)" }}> {step.activeProgress}</span>
-                                  ) : null}
-                                </motion.span>
-                              </AnimatePresence>
-                            ) : null}
-                          </span>
-                          {/* pin_517dfcbda150 (F1): the live source URL streamed
-                              by the crawler on every page event â€” visible under
-                              the detail, truncated to the card width. */}
-                          {step.url ? (
-                            <span
-                              className="block max-w-full truncate normal-case text-[9px] leading-snug"
-                              style={{ color: "rgba(255,255,255,0.38)" }}
-                            >
-                              {step.url}
-                            </span>
-                          ) : null}
-                          {/* Design token table â€” inline summary: 9px mono,
-                              white/25, max-w-[170px], prefixed `Â·`. Shown while
-                              collapsed; click still opens the full pre-wrap view. */}
-                          {step.resultPreview && !isOpen ? (
-                            <span
-                              className="truncate text-[9px] font-mono max-w-[170px]"
-                              style={{ color: "rgba(255,255,255,0.25)" }}
-                            >
-                              Â· {step.resultPreview}
-                            </span>
-                          ) : null}
+                          · {step.resultPreview}
                         </span>
                       ) : null}
                     </button>
+                    {/* Live-crawl under-row: ONLY while this step is
+                        working — rotating host detail + source URL stream
+                        beside the plan text. Once done, the summary lives
+                        on the row tail above. */}
+                    {step.status === "working" && (step.activeDetail || step.url) ? (
+                      <span
+                        className="flex flex-col gap-[3px] pl-[88px] min-w-0 pb-1"
+                        style={{ color: glowColor }}
+                        title={
+                          step.activeDetail
+                            ? `${toolLabel(step)} — ${step.activeDetail}${
+                                step.activeProgress ? ` (${step.activeProgress})` : ""
+                              }${step.url ? ` — ${step.url}` : ""}`
+                            : toolLabel(step)
+                        }
+                      >
+                        {step.activeDetail ? (
+                          <AnimatePresence mode="wait" initial={false}>
+                            <motion.span
+                              key={step.activeDetail}
+                              initial={{ opacity: 0, y: -3 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              exit={{ opacity: 0, y: 3 }}
+                              transition={{ duration: 0.18 }}
+                              className="truncate normal-case text-[10px] leading-snug"
+                              style={{ color: "rgba(255,255,255,0.55)" }}
+                            >
+                              {step.activeDetail}
+                              {step.activeProgress ? (
+                                <span style={{ color: "rgba(255,255,255,0.35)" }}> {step.activeProgress}</span>
+                              ) : null}
+                            </motion.span>
+                          </AnimatePresence>
+                        ) : null}
+                        {step.url ? (
+                          <span
+                            className="block max-w-full truncate normal-case text-[9px] leading-snug"
+                            style={{ color: "rgba(255,255,255,0.38)" }}
+                          >
+                            {step.url}
+                          </span>
+                        ) : null}
+                      </span>
+                    ) : null}
+                    {/* Expanded summary — boxed panel (variant tokens):
+                        black/50 surface, hairline border, padded. */}
                     {isOpen && step.resultPreview ? (
                       <div
-                        className="ml-7 mb-1 text-[9px] font-mono leading-relaxed"
-                        style={{ color: "rgba(255,255,255,0.55)", whiteSpace: "pre-wrap" }}
+                        className="ml-6 mt-1 mb-1 p-2 rounded-md bg-black/50 border border-white/6 text-[9px] font-mono text-white/50 leading-relaxed break-words"
+                        style={{ borderColor: "rgba(255,255,255,0.06)" }}
                       >
                         {step.resultPreview}
                       </div>

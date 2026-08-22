@@ -36,6 +36,11 @@ _BRIDGED_EVENTS: Tuple[IRISStreamEvent, ...] = (
     IRISStreamEvent.TASK_MILESTONE,
     IRISStreamEvent.TASK_DONE,
     IRISStreamEvent.TASK_FAIL,
+    # Session 245 (live memory footer): memory activity + learning signals
+    # must reach the card footer — previously they died at this bridge and
+    # the footer sat on "Active Execution" for whole runs.
+    IRISStreamEvent.MEMORY_EVENT,
+    IRISStreamEvent.TASK_LEARNING,
     IRISStreamEvent.TOOL_CALL,
     IRISStreamEvent.TOOL_RESULT,
     IRISStreamEvent.TOOL_ERROR,

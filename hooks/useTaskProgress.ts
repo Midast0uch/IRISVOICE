@@ -676,9 +676,12 @@ function reduceTaskUpdate(prev: CardsState, d: TaskUpdateDetail): CardsState {
           currentStep,
           isWorking: true,
           currentAction: d.description || card.currentAction,
-          // Dynamic action title: reflect what the agent is actually doing
-          // (WebSearch / Drafting / Creating Agent) instead of a static "Plan".
-          planTitle: d.tool_name ? TOOL_TITLES[d.tool_name] || titleCaseTool(d.tool_name) : card.planTitle,
+          // Session 245 (pin_07b780e7ce21): the objective title comes from the
+          // backend's plan_title — tool:call must NOT clobber it with a
+          // generic tool label ("WebSearch"), which is what erased the real
+          // objective on every run. The live action already renders in the
+          // THK row / currentAction; the header stays the objective.
+          planTitle: card.planTitle,
         }
       })
     }

@@ -458,7 +458,13 @@ class CrawlOrchestrator:
         _parks = self._parks_by_job.get(job_id) or []
         if _parks:
             from collections import Counter
-            _by = Counter(f"{d}:{k}" for d, k in _parks)
+            # Session 245 FIX (unpack bug, pin_69bb11e9b513): the Counter was
+            # built over STRINGS f"{d}:{k}", but the summary below unpacks each
+            # key as a (d, k) tuple — iterating a longer string as the key
+            # raised "too many values to unpack (expected 2)" and failed every
+            # crawl that had parked sources. Tuple keys make the unpacking
+            # below valid.
+            _by = Counter((d, k) for d, k in _parks)
             _domains = sorted({d for d, _ in _parks})
             fetched.park_summary = (
                 f"{len(_parks)}/{len(plan.urls)} sources parked "

@@ -77,7 +77,15 @@ class TestCT1MultiAgentTags:
 
     def test_additive_only_base_keys_unchanged(self):
         """Additivity guard: the pre-T9a ten keys keep their names and
-        meanings; exactly two keys were added."""
+        meanings; exactly two keys were added.
+
+        RE-INVERTED 2026-08-21, session 245, CALLED OUT DELIBERATELY: the
+        session-244 card↔response inline join added ``turn_id`` to the SAME
+        single construction point (additive only — see
+        test_task_start_payload_baseline.py, which got this re-inversion
+        first and documents the join). This older guard was missed and sat
+        red against committed code. WHAT THIS ASSERTION IS UNCHANGED:
+        exact set equality on the delta — ten keys -> thirteen."""
         payload = AgentKernel._task_start_payload(
             task_id="t", description="d", plan_title="p", mode="m",
             steps=[], total_steps=0, origin="initial",
@@ -87,7 +95,7 @@ class TestCT1MultiAgentTags:
                 "total_steps", "origin", "card_id", "card_relation",
                 "conversation_id"}
         assert base <= set(payload.keys())
-        assert set(payload.keys()) - base == {"agent_id", "project_id"}
+        assert set(payload.keys()) - base == {"agent_id", "project_id", "turn_id"}
 
     def test_missing_tags_fall_back_to_conversation_keying(self):
         """Older emitters may omit the tags — the payload tolerates None so

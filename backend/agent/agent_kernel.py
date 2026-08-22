@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Agent Kernel
 
@@ -791,6 +791,10 @@ class AgentKernel:
                     "duration_ms": 0,
                 },
                 session_id=self.session_id,
+                # Session 245 (card-sync fix): without this the gateway stamps
+                # "default" and the frontend files the event under a
+                # conversation bucket the visible card is not in.
+                conversation_id=self.conversation_id,
             )
         except Exception:
             pass
@@ -4051,6 +4055,28 @@ class AgentKernel:
         except Exception as exc:
             logger.warning("[AgentKernel] document_data store failed: %s", exc)
 
+        # Session 245 (live memory footer): surface the DOCUMENT STORE on the
+        # card's footer — a websearch's crawled content landing in
+        # document_data + episodic chunks is exactly the memory activity the
+        # user wants to see while execution happens. outcome_type distinguishes
+        # it from step stores / recall.
+        try:
+            from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+
+            get_event_bus().emit(
+                IRISStreamEvent.MEMORY_EVENT,
+                data={
+                    "kind": "episodic",
+                    "task_summary": f"Document stored: {str(document_id)[:40]} ({len(canonical_text)} chars)",
+                    "outcome_type": "document_store",
+                    "duration_ms": 0,
+                },
+                session_id=self.session_id,
+                conversation_id=conversation_id,
+            )
+        except Exception:
+            pass  # never block the document store on an emit failure
+
         # â”€â”€ Mycelium: semantic/episodic store â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # OFF THE CRITICAL PATH (2026-08-17, same rule as the pacman_fragment
         # mediator). Storing means embedding, and the CPU-only encoder costs
@@ -5632,9 +5658,7 @@ class AgentKernel:
                             data=self._task_start_payload(
                                 task_id=_card_task_id,
                                 description=_plan.original_task[:200],
-                                plan_title=(
-                                    _plan.plan_title[:80] if _plan.plan_title else ""
-                                ),
+                                plan_title=self._effective_plan_title(_plan),
                                 mode=_mode_name,
                                 steps=_steps,
                                 total_steps=len(_plan.steps),
@@ -5658,7 +5682,7 @@ class AgentKernel:
                             card_id=_card_id,
                             conversation_id=self.conversation_id,
                             card_relation=_card_relation,
-                            plan_title=(_plan.plan_title[:80] if _plan.plan_title else ""),
+                            plan_title=self._effective_plan_title(_plan),
                             mode=_mode_name,
                             steps=_steps,
                             total_steps=len(_plan.steps),
@@ -6672,9 +6696,7 @@ Respond with a JSON object:
                 data=self._task_start_payload(
                     task_id=_card_task_id,
                     description=plan.original_task[:200],
-                    plan_title=(
-                        plan.plan_title[:80] if plan.plan_title else ""
-                    ),
+                    plan_title=self._effective_plan_title(plan),
                     mode=initial_mode.value,
                     steps=_start_steps,
                     total_steps=len(items),
@@ -6697,7 +6719,7 @@ Respond with a JSON object:
                 card_id=_card_id,
                 conversation_id=self.conversation_id,
                 card_relation=_card_relation,
-                plan_title=(plan.plan_title[:80] if plan.plan_title else ""),
+                plan_title=self._effective_plan_title(plan),
                 mode=initial_mode.value,
                 steps=_start_steps,
                 total_steps=len(items),
@@ -7212,7 +7234,7 @@ Respond with a JSON object:
 
             def _run_step():
                 _res, _ok = self._der_run_step_execution(
-                    item, context_package, _session, _turn_id, plan
+                    item, context_package, _session, _turn_id, plan, queue=queue
                 )
                 if _ok:
                     return _res, _ok
@@ -7350,7 +7372,7 @@ Respond with a JSON object:
                     )
                     _extra_results = {
                         i.step_id: self._der_run_step_execution(
-                            i, context_package, _session, _turn_id, plan
+                            i, context_package, _session, _turn_id, plan, queue=queue
                         )
                         for i in _extra_ready
                     }
@@ -7497,7 +7519,7 @@ Respond with a JSON object:
                 card_id=_envelope.get("card_id"),
                 conversation_id=self.conversation_id,
                 card_relation="continues",
-                plan_title=(plan.plan_title[:80] if getattr(plan, "plan_title", None) else ""),
+                plan_title=self._effective_plan_title(plan),
                 mode=queue.mode.value if getattr(queue, "mode", None) else None,
                 steps=self._queue_steps_snapshot(queue),
                 total_steps=len(queue.items),
@@ -7762,6 +7784,20 @@ Respond with a JSON object:
             "project_id": project_id,
             "turn_id": turn_id,
         }
+
+    @staticmethod
+    def _effective_plan_title(plan: Any) -> str:
+        """pin_07b780e7ce21: the objective title must arrive RELIABLY on every
+        ``task:start`` / card snapshot — the LLM planner sometimes omits
+        ``plan_title`` from its JSON, which left search cards with no dominant
+        header (the frontend fell back to steps[0].description). When the
+        planner title is empty, derive one from the original task so the
+        frontend always has a real objective to render; the 80-char wire
+        budget every call site already used is unchanged."""
+        title = str(getattr(plan, "plan_title", "") or "").strip()
+        if title:
+            return title[:80]
+        return str(getattr(plan, "original_task", "") or "")[:80]
 
     def _multiagent_tags(self) -> dict:
         """T9a (REQ-5 AC1): the ``(agent_id, project_id)`` Kanban tags,
@@ -8142,10 +8178,7 @@ Respond with a JSON object:
                 data=self._task_start_payload(
                     task_id=_card_task_id,
                     description=text,
-                    plan_title=(
-                        (getattr(plan, "plan_title", "") or "")[:80]
-                        if plan else ""
-                    ),
+                    plan_title=self._effective_plan_title(plan),
                     mode=_mode,
                     steps=[
                         {
@@ -8178,7 +8211,7 @@ Respond with a JSON object:
                 card_id=_card_id,
                 conversation_id=self.conversation_id,
                 card_relation=_card_relation,
-                plan_title=((getattr(plan, "plan_title", "") or "")[:80] if plan else ""),
+                plan_title=self._effective_plan_title(plan),
                 mode=_mode,
                 steps=self._queue_steps_snapshot(queue),
                 total_steps=len(queue.items),
@@ -8334,10 +8367,7 @@ Respond with a JSON object:
                         description=(
                             getattr(plan, "original_task", "") or ""
                         )[:120],
-                        plan_title=(
-                            (getattr(plan, "plan_title", "") or "")[:80]
-                            if plan else ""
-                        ),
+                        plan_title=self._effective_plan_title(plan),
                         mode=_mode,
                         steps=[
                             {
@@ -8369,7 +8399,7 @@ Respond with a JSON object:
                     card_id=_card_id,
                     conversation_id=self.conversation_id,
                     card_relation=_card_relation,
-                    plan_title=((getattr(plan, "plan_title", "") or "")[:80] if plan else ""),
+                    plan_title=self._effective_plan_title(plan),
                     mode=_mode,
                     steps=self._queue_steps_snapshot(queue),
                     total_steps=len(queue.items),
@@ -9881,19 +9911,54 @@ Respond with a JSON object:
         except Exception:
             pass
 
+    # Session 245 (synthesis starvation fix, conv-36 live finding): gather
+    # tools whose ENTIRE purpose is delivering content (crawl / search /
+    # read) need far larger evidence windows than generic tools. A 3-page
+    # crawl compressed to 300-400 chars starves every downstream consumer —
+    # the tool-decision model then honestly reports "unable to access the
+    # search results" because no fragment it sees can answer the goal.
+    _DER_GATHER_TOOLS = {
+        "crawler_query", "web_search", "search", "fetch_url",
+        "read_file", "browser_read",
+    }
+
+    @staticmethod
+    def _der_evidence_cap(tool: Optional[str]) -> int:
+        """Evidence window for a step result, by tool kind."""
+        return 8000 if (tool or "").lower() in AgentKernel._DER_GATHER_TOOLS else 400
+
+    @staticmethod
+    def _smart_excerpt(text: str, cap: int) -> str:
+        """Head+tail excerpt with an explicit truncation marker — never a
+        silent amputation, never an unbounded dump."""
+        t = (text or "").strip()
+        if len(t) <= cap:
+            return t
+        _head = t[: int(cap * 0.7)]
+        _tail = t[-int(cap * 0.3):]
+        return f"{_head}\n[...excerpt: {len(t) - cap} chars truncated...]\n{_tail}"
+
     @staticmethod
     def _der_node_record_evidence(item) -> str:
         """REQ-8 AC1 (T26): compressed synthesis evidence from a node record.
 
-        Returns the node's COMPRESSED memory record (REQ-3) â€” the bounded
-        content summary, what "done" means, what remains, what was ruled
-        out â€” instead of the raw step output, so the final synthesis is
-        built from the node records, not the full step history. When the
+        Session 245 ADDITION: GATHER-tool steps bypass the compression —
+        their raw output IS the payload the synthesis must read, so a
+        content_summary[:300] of a 3-page crawl guarantees the final answer
+        starves. They get a bounded-but-generous raw window instead; every
+        other tool keeps the compressed-record behavior unchanged. When the
         item carries no node_record (empty memory edge case, REQ-8), falls
         back to the raw result truncated to a bounded window so a step is
         never silent.
         """
         try:
+            # Gather tools: raw payload window (head+tail), compression OFF.
+            if (getattr(item, "tool", None) or "").lower() in AgentKernel._DER_GATHER_TOOLS:
+                _raw_gather = getattr(item, "result", "") or ""
+                if _raw_gather:
+                    return AgentKernel._smart_excerpt(
+                        _raw_gather, AgentKernel._der_evidence_cap(item.tool)
+                    )
             _rec = getattr(item, "node_record", None) or getattr(
                 item, "footprint", None
             )
@@ -9988,6 +10053,28 @@ Respond with a JSON object:
         synthesis is unavailable so the caller falls back to the deterministic
         success summary (AC4). Mirrors ``_der_synthesize_outcome``'s "" contract.
         """
+        # Session 245 (verb progression): announce the SYNTH phase so the
+        # working step's verb leaves SEARCH and shows SYNTH while the answer
+        # is being composed — previously synthesis was invisible on the card.
+        try:
+            from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+
+            get_event_bus().emit(
+                IRISStreamEvent.TASK_PROGRESS,
+                data={
+                    "description": "Synthesizing answer",
+                    "action": "Synthesizing",
+                    "update_step": True,
+                    "detail": "Synthesizing answer",
+                    "detail_progress": "",
+                    "phase": "synthesizing",
+                    "phase_sequence": 90,
+                },
+                session_id=_session,
+                conversation_id=self.conversation_id,
+            )
+        except Exception:
+            pass  # never block synthesis on an emit failure
         try:
             _step_results = [
                 {
@@ -10554,11 +10641,19 @@ Respond with a JSON object:
         _session: str,
         _turn_id: Optional[str],
         plan,
+        queue=None,
     ) -> tuple:
         """
         Phase 4: execute a single DER step's tool/direct action.
         Returns (step_result: str, step_success: bool).
         Faithful extraction of the inline execution block from _execute_plan_der.
+
+        Session 245 (synthesis starvation fix): ``queue`` joins the signature
+        so the tool-decision evidence for tool-less steps can carry PRIOR
+        completed step results — previously the evidence was metadata-only
+        (session/turn/task_class), so a synthesis step after a successful
+        crawl was decided by a model that had never seen a byte of the crawl
+        output ("I am unable to access the search results", conv-36).
         """
         # REQ-7 AC1 (T25): a batched sub-loop child already carries its answer
         # (pre-seeded by _der_dispatch_batch_group via dispatch_batch). Skip
@@ -10569,20 +10664,48 @@ Respond with a JSON object:
         step_result = ""
         step_success = True
         try:
-            # â”€â”€ Phase 1 (D1.6): resolve via ToolDecisionBox â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── Session 245: prior completed step results for the decision
+            # evidence (Seam A of the synthesis starvation fix). Bounded per
+            # result by tool-aware caps; steps without results are skipped.
+            _prior_results: list = []
+            if queue is not None:
+                try:
+                    for _pit in queue.items:
+                        if _pit is item:
+                            continue
+                        _pr = getattr(_pit, "result", None)
+                        if not _pr:
+                            continue
+                        _prior_results.append(
+                            {
+                                "step": getattr(_pit, "step_number", None),
+                                "description": (getattr(_pit, "description", "") or "")[:120],
+                                "result": self._smart_excerpt(
+                                    _pr,
+                                    self._der_evidence_cap(getattr(_pit, "tool", None)),
+                                ),
+                            }
+                        )
+                except Exception as _prio_err:
+                    logger.debug("[DER] prior-result gather failed: %s", _prio_err)
+
+            # ── Phase 1 (D1.6): resolve via ToolDecisionBox ─────────────
             if not item.tool:
                 try:
                     _box = self._get_tool_box()
+                    _evidence = {
+                        "session_id": _session,
+                        "turn_id": _turn_id,
+                        "task_class": getattr(self, "_der_task_class", "full"),
+                    }
+                    if _prior_results:
+                        _evidence["prior_step_results"] = _prior_results
                     _decision = _box.resolve(
                         step={
                             "description": item.description or item.objective_anchor or "",
                             "step_number": item.step_number,
                         },
-                        evidence={
-                            "session_id": _session,
-                            "turn_id": _turn_id,
-                            "task_class": getattr(self, "_der_task_class", "full"),
-                        },
+                        evidence=_evidence,
                         session_id=_session,
                         conversation_id=self.conversation_id,
                     )
@@ -11475,13 +11598,37 @@ Respond with a JSON object:
         # Skips error outputs to avoid poisoning context with noise.
         try:
             if self._memory_interface and step_result and step_success:
+                # Session 245: content-aware window — a gather-tool crawl
+                # truncated to 400 chars starves every later step.
                 _wm_note = (
                     f"[Step {item.step_number}: {item.description[:80]}]"
-                    f" â†’ {step_result[:400]}"
+                    f" {self._smart_excerpt(step_result, self._der_evidence_cap(item.tool))}"
                 )
                 self._memory_interface.append_to_session(
                     _session, _wm_note, zone="working_history"
                 )
+                # Session 245 (live memory footer): surface the memory WRITE
+                # on the card's footer while execution happens — previously
+                # memory:event only fired once at recall time (before the
+                # card existed), so the footer sat on "Active Execution" for
+                # whole runs. Same registry kind ("episodic"), outcome_type
+                # distinguishes store from recall.
+                try:
+                    from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+
+                    get_event_bus().emit(
+                        IRISStreamEvent.MEMORY_EVENT,
+                        data={
+                            "kind": "episodic",
+                            "task_summary": f"[Step {item.step_number}] {item.description[:80]}",
+                            "outcome_type": "store",
+                            "duration_ms": 0,
+                        },
+                        session_id=_session,
+                        conversation_id=self.conversation_id,
+                    )
+                except Exception:
+                    pass  # never block the DER loop on an emit failure
         except Exception as _wm2_exc:
             loud_error(_wm2_exc, "append_working_history")
 
@@ -11701,9 +11848,7 @@ Respond with a JSON object:
                                     description=getattr(
                                         plan, "original_task", ""
                                     )[:200],
-                                    plan_title=(
-                                        (getattr(plan, "plan_title", "") or "")[:80]
-                                    ),
+                                    plan_title=self._effective_plan_title(plan),
                                     mode=_rev_mode,
                                     steps=[
                                         {
@@ -11741,7 +11886,7 @@ Respond with a JSON object:
                                 card_id=_card_id,
                                 conversation_id=self.conversation_id,
                                 card_relation=_card_relation,
-                                plan_title=((getattr(plan, "plan_title", "") or "")[:80]),
+                                plan_title=self._effective_plan_title(plan),
                                 mode=_rev_mode,
                                 steps=self._queue_steps_snapshot(queue),
                                 total_steps=len(queue.items),
@@ -12345,7 +12490,7 @@ Respond with a JSON object:
                             # save_card upserts the WHOLE row â€” plan_title/mode
                             # must be re-sent every write or a step-transition
                             # snapshot would null out what task:start set.
-                            plan_title=((getattr(plan, "plan_title", "") or "")[:80]),
+                            plan_title=self._effective_plan_title(plan),
                             mode=queue.mode.value if getattr(queue, "mode", None) else None,
                             steps=self._queue_steps_snapshot(queue),
                             total_steps=len(queue.items),
@@ -12418,7 +12563,7 @@ Respond with a JSON object:
                 card_id=_step_done_envelope.get("card_id"),
                 conversation_id=self.conversation_id,
                 card_relation="continues",
-                plan_title=((getattr(plan, "plan_title", "") or "")[:80] if plan else ""),
+                plan_title=self._effective_plan_title(plan),
                 mode=queue.mode.value if getattr(queue, "mode", None) else None,
                 steps=self._queue_steps_snapshot(queue),
                 total_steps=len(queue.items),

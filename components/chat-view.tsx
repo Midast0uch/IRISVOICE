@@ -3056,6 +3056,17 @@ ${message.text}`;
                           learningSignal={card.learningSignal}
                           memoryEvents={card.memoryEvents}
                           currentAction={card.currentAction}
+                          /* Session 245 (pin_07b780e7ce21): structured crawl
+                             phase rotates the working step's verb; the
+                             joined message's streamed reasoning feeds the
+                             THK thinking stream. Both degrade to nothing
+                             when absent — never fabricated. */
+                          phase={card.phase}
+                          thoughtStream={
+                            card.isWorking && entry.message?.thinking
+                              ? entry.message.thinking.split("\n").map((s) => s.trim()).filter(Boolean)
+                              : undefined
+                          }
                         />
                       )
                     }

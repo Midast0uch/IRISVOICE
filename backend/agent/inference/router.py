@@ -886,6 +886,29 @@ class InferenceRouter:
         # hardcoding.  Idempotent: already-normalized tools pass through.
         normalized_tools = self._normalize_tools(tools)
 
+        # Session 245 (Cohere 400 fix, pin_69bb11e9b513 item 3): providers
+        # like Cohere reject tool names outside [A-Za-z0-9_] or beginning
+        # with a digit — e.g. the capability registry's dotted "fetch.crawl"
+        # ("invalid request: tool names can only contain certain characters").
+        # The converter lives HERE at the single normalization point: names
+        # are sanitized for the wire and a sanitized->original map is kept so
+        # tool_calls the model returns are remapped back to the ORIGINAL
+        # registry names before any caller sees them. Callers unchanged.
+        self._tool_name_remap: Dict[str, str] = {}
+        if normalized_tools:
+            for _t in normalized_tools:
+                _fn = _t.get("function") or {}
+                _orig = _fn.get("name") or ""
+                _sane = self._sanitize_tool_name(_orig)
+                if _sane != _orig:
+                    if _sane in self._tool_name_remap and self._tool_name_remap[_sane] != _orig:
+                        logger.warning(
+                            "[InferenceRouter] tool-name sanitize collision: %r -> %r (already %r)",
+                            _orig, _sane, self._tool_name_remap[_sane],
+                        )
+                    self._tool_name_remap[_sane] = _orig
+                    _fn["name"] = _sane
+
         # Phase gate: block until this oscillator is past its firing point
         # (T3.6 / REQ-13).  Fail-open: returns 0.0 if disabled or errored.
         # F9+F15: pass oscillator_id and quota_id explicitly.
@@ -903,6 +926,14 @@ class InferenceRouter:
             chunk_callback=chunk_callback,
             reasoning_callback=reasoning_callback,
         )
+
+        # Remap sanitized tool names back to the originals (see above) so
+        # dispatchers match against the registry exactly as before.
+        if self._tool_name_remap and isinstance(result, tuple) and len(result) == 3:
+            for _tc in result[2] or []:
+                _fn = (_tc or {}).get("function") if isinstance(_tc, dict) else None
+                if isinstance(_fn, dict) and _fn.get("name") in self._tool_name_remap:
+                    _fn["name"] = self._tool_name_remap[_fn["name"]]
 
         # D1: surface the transport's real usage (if any) for THIS call.
         # Deliberately does NOT change the return signature (8+ call sites
@@ -926,6 +957,19 @@ class InferenceRouter:
             )
 
         return result
+
+    @staticmethod
+    def _sanitize_tool_name(name: str) -> str:
+        """Cohere/OpenAI-compatible wire constraint: [A-Za-z0-9_] only, and
+        the name must not begin with a digit. Anything else becomes '_' ;
+        a leading digit gains the 'tool_' prefix. Already-clean names pass
+        through unchanged (idempotent)."""
+        import re as _re
+
+        sane = _re.sub(r"[^A-Za-z0-9_]", "_", name or "")
+        if sane and sane[0].isdigit():
+            sane = f"tool_{sane}"
+        return sane
 
     @staticmethod
     def _normalize_tools(tools: Optional[List[Dict[str, Any]]]) -> Optional[List[Dict[str, Any]]]:

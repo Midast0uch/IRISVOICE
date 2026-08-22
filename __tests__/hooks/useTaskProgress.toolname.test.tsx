@@ -66,7 +66,7 @@ describe("useTaskProgress — tool name resolution (REQ-3 AC1)", () => {
     expect(result.current.steps[0].toolName).toBe("crawler_query")
   })
 
-  it("tool:call marks the step as working and sets planTitle", () => {
+  it("tool:call marks the step as working and NEVER clobbers planTitle", () => {
     const { result } = renderHook(() => useTaskProgress())
 
     dispatch({
@@ -76,6 +76,9 @@ describe("useTaskProgress — tool name resolution (REQ-3 AC1)", () => {
         { id: "s1", description: "Research topic", status: "pending" },
       ],
       total_steps: 1,
+      // A real backend plan_title (AgentKernel._effective_plan_title now
+      // guarantees one) must survive every tool:call.
+      plan_title: "Research the topic deeply",
     })
 
     dispatch({
@@ -85,7 +88,12 @@ describe("useTaskProgress — tool name resolution (REQ-3 AC1)", () => {
     })
 
     expect(result.current.steps[0].status).toBe("working")
-    // planTitle is set from the TOOL_TITLES map.
-    expect(result.current.planTitle).toBe("WebCrawl")
+    // RE-INVERTED 2026-08-22, session 245, CALLED OUT DELIBERATELY: the old
+    // behavior overwrote planTitle with a generic TOOL_TITLES label
+    // ("WebCrawl") on every tool call — that is what erased the real
+    // objective header mid-run (user-flagged: vague labels like "Direct"/
+    // "WebSearch"). The objective now comes ONLY from the backend
+    // plan_title; live action renders in currentAction/THK instead.
+    expect(result.current.planTitle).toBe("Research the topic deeply")
   })
 })

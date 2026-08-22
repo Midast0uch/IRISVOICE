@@ -1309,6 +1309,10 @@ class AgentToolBridge:
                     IRISStreamEvent.TASK_PROGRESS,
                     data={"description": _label, "action": _label, "plan_title": plan_title},
                     session_id=session_id,
+                    # Session 245 (card-sync fix): same routing bug as the
+                    # crawl emitters — without this the frame lands in the
+                    # "default" conversation bucket and the card ignores it.
+                    conversation_id=self._active_conversation_id.get(session_id, ""),
                 )
             except Exception:
                 pass  # never block tool execution on an event emit failure
@@ -1982,6 +1986,15 @@ class AgentToolBridge:
         if not query:
             return {"success": False, "error": "crawler_query requires a 'query'"}
 
+        # Session 245 (card-sync fix): TASK_PROGRESS frames emitted below MUST
+        # carry the conversation_id — without it the gateway stamps
+        # "default" and the frontend files every live phase/page frame under a
+        # conversation bucket the working card is not in, so the card sits
+        # frozen for the whole crawl (conv-37 event-tap evidence).
+        _conversation_id = (
+            getattr(self, "_active_conversation_id", {}).get(session_id, "")
+        )
+
         # REQ-29 + pin_517dfcbda150: same (session, query) = same job_id.
         # A COMPLETED job for an identical query is REUSED (cached result) —
         # re-gather must come from a REFINED query (new hash = new job), never
@@ -2116,6 +2129,7 @@ class AgentToolBridge:
                     IRISStreamEvent.TASK_PROGRESS,
                     data=task_progress_data,
                     session_id=session_id,
+                    conversation_id=_conversation_id,
                 )
             except Exception as _phase_exc:
                 logger.warning(
@@ -2164,6 +2178,7 @@ class AgentToolBridge:
                     IRISStreamEvent.TASK_PROGRESS,
                     data=task_progress_data,
                     session_id=session_id,
+                    conversation_id=_conversation_id,
                 )
             except Exception:
                 pass  # never block the crawl on an event emit failure
@@ -2398,6 +2413,26 @@ class AgentToolBridge:
                 conversation_id,
                 len(documents),
             )
+            # Session 245 (live memory footer): surface the RETRIEVAL — the
+            # agent reading back stored websearch documents is memory
+            # activity just as much as storing them.
+            if documents:
+                try:
+                    from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+
+                    get_event_bus().emit(
+                        IRISStreamEvent.MEMORY_EVENT,
+                        data={
+                            "kind": "episodic",
+                            "task_summary": f"{len(documents)} document(s) retrieved",
+                            "outcome_type": "document_retrieve",
+                            "duration_ms": 0,
+                        },
+                        session_id=session_id,
+                        conversation_id=conversation_id,
+                    )
+                except Exception:
+                    pass
             return {
                 "success": True,
                 "conversation_id": conversation_id,
@@ -2511,6 +2546,14 @@ class AgentToolBridge:
         if not query:
             return {"success": False, "error": "search requires a 'query'"}
 
+        # Session 245 (card-sync fix): same as _execute_crawler_query — the
+        # live phase/page TASK_PROGRESS frames below must carry the
+        # conversation_id or the frontend files them under "default" and the
+        # working card never updates.
+        _conversation_id = (
+            getattr(self, "_active_conversation_id", {}).get(session_id, "")
+        )
+
         try:
             from backend.crawler.orchestrator import CrawlOrchestrator
         except Exception as exc:
@@ -2565,6 +2608,7 @@ class AgentToolBridge:
                             "phase_sequence": seq,
                         },
                         session_id=session_id,
+                        conversation_id=_conversation_id,
                     )
                 except Exception:
                     pass  # never block the crawl on an event emit failure
@@ -2583,6 +2627,7 @@ class AgentToolBridge:
                             "detail_progress": f"{page_number}/{total}",
                         },
                         session_id=session_id,
+                        conversation_id=_conversation_id,
                     )
                 except Exception:
                     pass

@@ -106,11 +106,18 @@ describe("TaskListCard", () => {
 
     it("working step renders Xur (animated orb) instead of a plain dot", () => {
       const { container } = render(<TaskListCard steps={t15Steps} />)
-      // Should have exactly 1 Xur — not 4, not 0.
+      // RE-INVERTED 2026-08-21, session 245, CALLED OUT DELIBERATELY: the
+      // Liquid Ink fidelity pass added the variant's animated HEADER marker
+      // (Xur 14, vein-coloured) alongside the working step's node Xur — so
+      // an in-flight card renders exactly TWO: header + working node.
+      // WHAT THIS ASSERTION STILL PINS: not zero (a working step always
+      // animates), not N (nodes only exist for real states), and every Xur
+      // carries the amber working colour.
       const xurs = container.querySelectorAll('[data-testid="xur"]')
-      expect(xurs.length).toBe(1)
-      // Confirm it's the working step (color matches amber).
-      expect(xurs[0].getAttribute("data-color")).toBe("#fbbf24")
+      expect(xurs.length).toBe(2)
+      for (const x of xurs) {
+        expect(x.getAttribute("data-color")).toBe("#fbbf24")
+      }
     })
 
     it("failed step renders with red (#f87171) styling", () => {

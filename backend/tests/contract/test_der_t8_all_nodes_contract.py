@@ -56,7 +56,9 @@ def test_plan_steps_carry_node_record():
     k._reviewer = MagicMock()
     k._reviewer.review.return_value = (SimpleNamespace(), None)
     k._verified_fraction = lambda *a, **k: 0.9
-    k._der_run_step_execution = lambda item, ctx, session, turn, plan: (
+    # Session 245: signature sync ONLY (production gained `queue=`); this
+    # suite has a separate pre-existing failure unrelated to the signature.
+    k._der_run_step_execution = lambda item, ctx, session, turn, plan, queue=None: (
         "RESULT_EVIDENCE_OK",
         True,
     )
