@@ -10,6 +10,7 @@ import {
   TOOL_VERB,
   VERBS_BY_FAMILY,
   resolveVerb,
+  VERB_MAX_CHARS,
 } from "@/lib/cards/verbRegistry"
 import toolRegistrySnapshot from "./__fixtures__/tool_registry_snapshot.json"
 
@@ -89,10 +90,22 @@ describe("verbRegistry — CT-6", () => {
     }
   })
 
-  it("a completely unknown tool falls back to its raw name, never blank", () => {
+  it("a completely unknown tool compacts to fit the verb column, never blank", () => {
+    // UPDATED 2026-08-23 (GROUND TRUTH): this asserted the PRE-AMENDMENT
+    // behaviour (the full uppercased raw name). lib/cards/verbRegistry.ts:175-181
+    // records a session-246 USER-DIRECTED amendment to AC2 - unregistered
+    // MCP/custom tools overflowed the fixed-width column, so they now compact
+    // to <=6 chars via first-segment / acronym / hard-slice. The test name and
+    // the assertion now both describe what is actually required.
     const verb = resolveVerb("frobnicate_widget_xyz")
     expect(verb).toBeTruthy()
-    expect(verb).toBe("FROBNICATE_WIDGET_XYZ")
+    // three segments, first is 10 chars (too long) -> acronym
+    expect(verb).toBe("FWX")
+    expect(verb.length).toBeLessThanOrEqual(VERB_MAX_CHARS)
+    // first segment wins when it already fits
+    expect(resolveVerb("notion_search_pages")).toBe("NOTION")
+    // single long word has no segments to acronymize -> hard slice, still bounded
+    expect(resolveVerb("supercalifragilistic").length).toBeLessThanOrEqual(VERB_MAX_CHARS)
     // Never a blank cell (AC5), and never crashes on null/undefined input.
     expect(resolveVerb(null)).toBeTruthy()
     expect(resolveVerb(undefined)).toBeTruthy()

@@ -346,6 +346,13 @@ class ConversationMemory:
                     route_score=float(getattr(self, "route_score", 0.0) or 0.0),
                     drift=float(getattr(self, "drift", 0.0) or 0.0),
                     tokens_total=_tokens_total,
+                    # GROUND TRUTH Finding 10: exits carried only the kernel's
+                    # process-level session_id, so 431 rows spanned two ids while
+                    # episodes spanned 47 - the ledger joined to nothing, and the
+                    # outer loop's natural_exit_rate was computed over a
+                    # placeholder. This is the per-conversation identity the rest
+                    # of the store actually uses.
+                    conversation_id=self.conversation_id,
                 )
                 # REQ-18 AC1c (T19): at the SAME session boundary, run the
                 # topic_domain coverage check — the falsifiable measurement

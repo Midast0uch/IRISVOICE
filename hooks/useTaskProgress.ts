@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useMemo, useRef, useState } from "react"
+import { sortRows, deriveProgress } from "@/lib/cards/rowOrder"
 
 export type TaskStepStatus =
   /** Step has no event record at all - semantically absent but visually pending. */
@@ -21,6 +22,23 @@ export interface TaskStep {
    * by insertion accident (live conv-46: a resolve child rendered FIRST).
    */
   stepNumber?: number
+  /**
+   * GROUND TRUTH REQ-17: the BACKEND-OWNED ordering key. This — not
+   * `stepNumber` — is the render-order authority.
+   *
+   * `stepNumber` came from four disagreeing sources (the planner LLM's own
+   * plan JSON, a graft's `len(completed_items)` which could collide, and
+   * nothing at all for phase nodes), so unkeyed rows collapsed to
+   * MAX_SAFE_INTEGER and every progressive phase node sorted to the end of
+   * the card forever. T27 measured 18 emitter violations across all three
+   * captured traces.
+   *
+   * `seq` is allocated per row identity and memoized, so allocation order is
+   * emit order (chronological interleaving) while a revision re-emitting an
+   * existing row returns that row's original key. `stepNumber` survives as a
+   * display concern only (REQ-17 AC5).
+   */
+  seq?: number
   /**
    * The PLAN text - what the agent set out to do. Stable for the life of the
    * step. Live progress never overwrites this; it goes to `activeDetail` so the
@@ -44,6 +62,15 @@ export interface TaskStep {
    */
   url?: string
   resultPreview?: string
+  /**
+   * Session 248 (pin_587a3e612558 item #4): the structured crawl phase this
+   * node represents ("searching" / "fetching" / "extracting" / "citing" /
+   * "synthesizing"). Set ONLY on progressive phase nodes. The verb column
+   * derives from PHASE_VERB[phase] DIRECTLY instead of keyword-matching the
+   * description — a fetching-phase node whose description happened to contain
+   * "search" rendered SEARCH for its whole life.
+   */
+  phase?: string
 }
 
 /**
@@ -107,6 +134,14 @@ export interface MemoryEvent {
 
 export interface TaskCard {
   cardId: string
+  /**
+   * Session 248: epoch ms when this card was FIRST seen (live) or created
+   * (rehydrated — from the backend's persisted created_at). Drives
+   * chat-view's chronological inline placement: a card with no
+   * responseTurnId match still lands next to the messages that were on
+   * screen when the task started, instead of piling up at the bottom.
+   */
+  createdAt?: number
   /** Which conversation this card belongs to (REQ-4 AC3: a card must never
    * appear in a conversation it was not created in). `null` for cards seen
    * before any conversation id was known. */
@@ -224,6 +259,9 @@ interface TaskUpdateDetail {
   steps?: TaskStep[]
   total_steps?: number
   tool_name?: string
+  /** GROUND TRUTH REQ-17: backend ordering key on a row-opening frame
+   *  (a phase transition). Planner rows carry theirs inside `steps`. */
+  seq?: number
   step_number?: number
   /** pin_517dfcbda150: unique backend step id for add_step / step_done - plan
    * steps carry planner ids (r1, step_1), split children carry parent_s{i}. */
@@ -427,12 +465,23 @@ function touchConversation(
 // Live-discovered grafts and task:start merges used to land in insertion
 // order, which could put a late resolver child FIRST (live conv-46 report).
 // Steps without a number keep stable insertion order after numbered ones.
+// GROUND TRUTH REQ-20 AC4: ONE derivation, shared with the CLI — the same
+// discipline `verbRegistry` already applies to verbs. Two implementations of
+// one mapping drift, and order/progress drifted for exactly that reason.
+/**
+ * GROUND TRUTH REQ-21 AC4: retained per-row summary, bounded so a long run
+ * cannot grow the card without limit. Truncation is MARKED, never silent — a
+ * silent cap reads as complete when it is not.
+ */
+const RETAINED_SUMMARY_MAX = 160
+export function boundedSummary(text?: string): string | undefined {
+  if (!text) return undefined
+  const t = String(text)
+  return t.length <= RETAINED_SUMMARY_MAX ? t : t.slice(0, RETAINED_SUMMARY_MAX - 1) + "…"
+}
+
 function sortSteps(steps: TaskStep[]): TaskStep[] {
-  return [...steps].sort((a, b) => {
-    const an = a.stepNumber ?? Number.MAX_SAFE_INTEGER
-    const bn = b.stepNumber ?? Number.MAX_SAFE_INTEGER
-    return an - bn
-  })
+  return sortRows(steps)
 }
 
 function freshStart(
@@ -444,6 +493,8 @@ function freshStart(
   return {
     cardId,
     conversationId,
+    // Session 248: first-seen time drives chronological inline placement.
+    createdAt: Date.now(),
     isWorking: true,
     currentStep: 0,
     totalSteps: d.total_steps ?? incoming.length,
@@ -506,6 +557,8 @@ function handleTaskStart(prev: CardsState, d: TaskUpdateDetail): CardsState {
       status: (s.status as TaskStepStatus) ?? ("unknown" as TaskStepStatus),
       // Session 247: semantic order from the backend snapshot.
       stepNumber: s.stepNumber,
+      // GROUND TRUTH REQ-17: the render-order authority.
+      seq: s.seq,
     }))
 
   const convId = d.conversation_id || prev.activeConversationId
@@ -633,6 +686,9 @@ interface PersistedCardStep {
   description: string
   status: string
   stepNumber?: number
+  /** GROUND TRUTH REQ-17 edge case: the ordering key is persisted so a
+   *  rehydrated card reproduces its original order exactly. */
+  seq?: number
   tool_name?: string | null
 }
 
@@ -687,13 +743,24 @@ function mergeHydratedCards(prev: CardsState, cards: PersistedCard[]): CardsStat
         : (s.status as TaskStepStatus) ?? "unknown"
       ),
       stepNumber: s.stepNumber,
+      // GROUND TRUTH REQ-17 edge case: keys are persisted and restored, so a
+      // rehydrated card reproduces its original order exactly.
+      seq: s.seq,
       toolName: s.tool_name ?? undefined,
     }))
-    // Session 247: semantic row order survives rehydration too.
-    steps.sort((a, b) => (a.stepNumber ?? Number.MAX_SAFE_INTEGER) - (b.stepNumber ?? Number.MAX_SAFE_INTEGER))
+    // Session 247 + GROUND TRUTH REQ-17: semantic row order survives rehydration.
+    steps.sort(
+      (a, b) =>
+        (a.seq ?? a.stepNumber ?? Number.MAX_SAFE_INTEGER) -
+        (b.seq ?? b.stepNumber ?? Number.MAX_SAFE_INTEGER),
+    )
     const hydrated: TaskCard = {
       cardId: p.card_id,
       conversationId: convId,
+      // Session 248: persisted creation time (epoch SECONDS on the backend)
+      // drives chronological inline placement after reload.
+      createdAt:
+        typeof p.created_at === "number" ? Math.round(p.created_at * 1000) : undefined,
       // AC5: a persisted card is, by definition, no longer live — the store
       // has already turned any orphaned "running" row into a terminal state
       // before this ever reaches the wire (see terminal_state below).
@@ -836,15 +903,22 @@ function reduceTaskUpdate(prev: CardsState, d: TaskUpdateDetail): CardsState {
         if (d.add_step) {
           const id = d.step_id || `der-${d.step_number ?? card.steps.length + 1}`
           if (card.steps.find((s) => s.id === id)) return card
-          const steps = [
+          // GROUND TRUTH REQ-17: a discovered step is a row like any other —
+          // it carries the backend key and the list is RE-SORTED after the
+          // append. Appending without sorting was a second, independent
+          // mechanism behind the same out-of-order symptom: even a correctly
+          // keyed row stayed wherever it was pushed, because sortSteps ran
+          // only on the two task:start paths.
+          const steps = sortSteps([
             ...card.steps,
             {
               id,
               description: d.description || "Working...",
               status: "working" as TaskStepStatus,
               toolName: d.tool_name,
+              seq: d.seq,
             },
-          ]
+          ])
           // Keep the orb badge denominator in sync: DER discovers live steps
           // (e.g. per-page web research) after task:start, so totalSteps must
           // grow with the list or the badge reads 3/1 instead of 3/3.
@@ -877,20 +951,43 @@ function reduceTaskUpdate(prev: CardsState, d: TaskUpdateDetail): CardsState {
           d.phase_sequence !== card.phaseSequence
         if (isNewPhase) {
           const phaseId = `phase-${d.phase}`
+          // GROUND TRUTH REQ-21 AC1/AC3: a finishing row RETAINS what it did
+          // as a summary instead of going blank. The live fields still clear —
+          // a finished card must never advertise a page it is no longer
+          // reading — but the record of the work survives. Previously every
+          // completed phase went blank, which is why only the newest one or
+          // two rows ever showed anything (pin_587a3e612558 item 5).
           steps = steps.map((s) =>
             s.id.startsWith("phase-") && s.status === "working"
-              ? { ...s, status: "done" as TaskStepStatus, activeDetail: undefined, url: undefined }
+              ? {
+                  ...s,
+                  status: "done" as TaskStepStatus,
+                  resultPreview: s.resultPreview ?? boundedSummary(s.activeDetail),
+                  activeDetail: undefined,
+                  activeProgress: undefined,
+                  url: undefined,
+                }
               : s,
           )
           if (!steps.find((s) => s.id === phaseId)) {
-            steps = [
+            steps = sortSteps([
               ...steps,
               {
                 id: phaseId,
                 description: action,
                 status: "working" as TaskStepStatus,
+                // pin_587a3e612558 item #4: carry the phase so the verb
+                // column renders PHASE_VERB[phase] for this node's WHOLE
+                // life, not keyword guesses over its description.
+                phase: d.phase,
+                // GROUND TRUTH REQ-17 AC4: the backend's ordering key, so this
+                // node sorts CHRONOLOGICALLY among the planner rows instead of
+                // being pinned to the end of the card forever. This literal
+                // carrying no key at all was the mechanism behind
+                // pin_587a3e612558 item 3 (T27 rule E5).
+                seq: d.seq,
               },
-            ]
+            ])
           } else {
             // Phase revisited (e.g. re-query): flip it back to working.
             steps = steps.map((s) =>
@@ -900,9 +997,16 @@ function reduceTaskUpdate(prev: CardsState, d: TaskUpdateDetail): CardsState {
         }
 
         if (d.update_step) {
-          // Per-page/detail updates target the NEWEST working phase node when
-          // one exists, else the original working step.
+          // GROUND TRUTH REQ-21 AC2: attribute detail to the row it BELONGS
+          // to. The frame names its own phase, so a per-page update lands on
+          // THAT phase's row — not on whichever row happens to be
+          // newest-and-working. The old "newest working" rule is why detail
+          // piled onto one or two rows and left the rest blank.
           const workingIdx = (() => {
+            if (d.phase) {
+              const owned = steps.findIndex((s) => s.id === `phase-${d.phase}`)
+              if (owned >= 0) return owned
+            }
             const lastPhase = [...steps.keys()].reverse().find((i) => steps[i].id.startsWith("phase-") && steps[i].status === "working")
             if (lastPhase != null) return lastPhase
             return steps.findIndex((s) => s.status === "working")
@@ -922,13 +1026,21 @@ function reduceTaskUpdate(prev: CardsState, d: TaskUpdateDetail): CardsState {
             steps = s
           }
         }
+        // GROUND TRUTH REQ-18: numerator and denominator come from the SAME
+        // row collection, recomputed TOGETHER. Previously this branch advanced
+        // `totalSteps` and never touched `currentStep`, so the denominator grew
+        // alone — and because the same value feeds the orb badge denominator,
+        // the ring inherited the identical desync. The counter, the list order
+        // and the ring were three symptoms of one cause.
+        // REQ-18 AC1/AC2/AC6: one derivation, both halves together, denominator
+        // floored at what the card already showed so it can never shrink.
+        const progress = deriveProgress(steps, card.totalSteps)
         const next: Partial<TaskCard> = {
           steps,
           currentAction: action,
           actionStream: appendAction(card.actionStream, action),
           isWorking: true,
-          // Keep the orb badge denominator in sync with appended phase nodes.
-          totalSteps: Math.max(card.totalSteps, steps.length),
+          ...progress,
         }
         // REQ-4 AC2: capture structured phase label from the crawl pipeline.
         if (d.phase) {
@@ -1056,6 +1168,27 @@ function toPublicProgress(state: CardsState): TaskProgress {
   const conv = state.byConversation[state.activeConversationId]
   const cards = conv ? conv.order.map((id) => conv.byId[id]) : []
   const active = deriveActiveCard(conv)
+  // Session 248 DEBUG (temporary): live card-state introspection for the
+  // multi-card hydration investigation (pin_587a3e612558). Remove once the
+  // previous-card-disappears defect is root-caused and fixed.
+  if (typeof window !== "undefined") {
+    ;(window as unknown as Record<string, unknown>).__irisCardDebug = {
+      activeConversationId: state.activeConversationId,
+      conversations: Object.fromEntries(
+        Object.entries(state.byConversation).map(([k, c]) => [
+          k,
+          c.order.map((id) => ({
+            cardId: id,
+            isWorking: c.byId[id]?.isWorking,
+            responseTurnId: c.byId[id]?.responseTurnId,
+            turnId: c.byId[id]?.turnId,
+            steps: c.byId[id]?.steps.length,
+            toolless: c.byId[id]?.steps.every((s) => !s.toolName),
+          })),
+        ]),
+      ),
+    }
+  }
   if (!active) return { ...EMPTY_PROGRESS, cards }
   return {
     isWorking: active.isWorking,

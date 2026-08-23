@@ -62,6 +62,16 @@ export interface MemoryEvent {
 export interface TaskStepItem {
   id: string
   /**
+   * GROUND TRUTH REQ-20 AC1: the backend-owned ordering key, carried through
+   * from the GUI card so the CLI renders the SAME sequence rather than
+   * inheriting whatever array order it was handed.
+   *
+   * Without it the CLI could not detect a bad order, let alone correct one —
+   * it had no key at all, so `taskCardToMatrixProps` silently dropped the
+   * only thing that encodes when the work happened.
+   */
+  seq?: number
+  /**
    * Backend tool name (or a short verb already in that vocabulary, e.g.
    * "read", "exec") passed to `resolveVerb()` from `lib/cards/verbRegistry`
    * to get the displayed verb. Never re-mapped locally — T8a exists so the
@@ -79,6 +89,14 @@ export interface TaskStepItem {
 export interface TaskCardProps {
   objective: string
   steps: TaskStepItem[]
+  /**
+   * GROUND TRUTH REQ-20 AC3: the progress pair, from the SAME single
+   * derivation the GUI counter and the XurOrb ring read (REQ-18 AC1/AC3).
+   * Optional so existing callers and the width/Unicode baseline tests are
+   * untouched.
+   */
+  currentStep?: number
+  totalSteps?: number
   isThinking?: boolean
   currentThought?: string
   thoughtHistory?: string

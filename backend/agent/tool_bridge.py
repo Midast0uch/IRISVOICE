@@ -47,6 +47,11 @@ from urllib.parse import urlparse  # _on_page_done:1833, also never imported
 
 logger = logging.getLogger(__name__)
 
+# GROUND TRUTH REQ-17 / REQ-13: backend-owned row ordering key + swallowed-
+# write counters. Pure in-process modules (threading only).
+from backend.agent import row_sequence as _row_sequence
+from backend.agent import write_counters as _write_counters
+
 # Vision server auto-starts on first use (boots the llama-server vision model).
 # take_screenshot must ensure it is running before capturing the screen.
 try:
@@ -2115,6 +2120,20 @@ class AgentToolBridge:
                 return
             _last_phase_emit_time[0] = now
             _label = _PHASE_LABELS.get(phase, phase.replace("_", " ").capitalize())
+            # GROUND TRUTH T29 (REQ-17 AC4): a phase transition OPENS A ROW,
+            # so it needs the same backend-owned ordering key planner rows
+            # get - phase_sequence orders phases among THEMSELVES only and
+            # can never interleave them with planner steps. Without this the
+            # row sorts to the end of the card forever, whenever it actually
+            # happened (T27 rule E5: 7 of 18 measured violations).
+            #
+            # Row id matches the frontend node id ("phase-<phase>") so a
+            # REVISITED phase resolves to the key it already owns, exactly as
+            # the reducer flips that existing node back to working rather
+            # than appending a second one.
+            _row_seq = _row_sequence.seq_for(_conversation_id, "phase-%s" % phase)
+            if not _row_seq:
+                _write_counters.bump("row_seq.missing_on_phase_row")
             task_progress_data = {
                 "description": _label,
                 "action": _label,
@@ -2123,6 +2142,7 @@ class AgentToolBridge:
                 "detail_progress": "",
                 "phase": phase,
                 "phase_sequence": phase_sequence,
+                "seq": _row_seq,
             }
             try:
                 _bus.emit(

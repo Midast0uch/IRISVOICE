@@ -216,6 +216,25 @@ class CaduceanTrajectoryRecorder:
             "ALTER TABLE caducean_session_exits ADD COLUMN tokens_total REAL",
             "ALTER TABLE caducean_session_exits ADD COLUMN verified_count INTEGER",
             "ALTER TABLE caducean_session_exits ADD COLUMN executed_steps INTEGER",
+            # GROUND TRUTH T19 (REQ-9 AC2/AC3): WHY the run stopped, plus the
+            # bound's configured and measured values so "how close was it" is
+            # answerable without a reproduction. Additive, idempotent, and it
+            # adds NO new bound (REQ-9 AC5) - it records the eight-plus that
+            # already exist across four modules.
+            "ALTER TABLE caducean_session_exits ADD COLUMN termination_cause TEXT",
+            "ALTER TABLE caducean_session_exits ADD COLUMN bound_configured REAL",
+            "ALTER TABLE caducean_session_exits ADD COLUMN bound_measured REAL",
+            "ALTER TABLE caducean_session_exits ADD COLUMN co_occurring_cause TEXT",
+            "ALTER TABLE caducean_session_exits ADD COLUMN bound_disabled INTEGER",
+            # GROUND TRUTH Finding 10: exits were attributable to NOTHING. The
+            # ledger held 431 rows over TWO session ids while `episodes` spanned
+            # 47, overlapping on one - because exits carry the kernel's
+            # process-level session_id while episodes carry a per-conversation
+            # id. The outer loop's held-out metric (natural_exit_rate) is
+            # computed over this ledger, so it was measuring a placeholder.
+            # ADDITIVE: session_id is untouched, so the 431 existing rows and
+            # every existing query keep working; joins move to conversation_id.
+            "ALTER TABLE caducean_session_exits ADD COLUMN conversation_id TEXT",
         ):
             try:
                 self._conn.execute(_alter)
@@ -525,6 +544,8 @@ class CaduceanTrajectoryRecorder:
         tokens_total: float = 0.0,
         verified_count: int = 0,
         executed_steps: int = 0,
+        termination: Optional[Any] = None,
+        conversation_id: Optional[str] = None,
     ) -> None:
         """DER Phase4 (D4.0): write a session-exit ledger entry.
 
@@ -538,6 +559,12 @@ class CaduceanTrajectoryRecorder:
         REQ-2 AC5: executed_steps is the denominator for verified_fraction — the
         total step count (any label) for this session, from the SAME honest
         der_commits ledger verified_count is derived from.
+
+        GROUND TRUTH T19 (REQ-9): ``termination`` is an optional
+        ``TerminationRecord`` naming WHICH bound ended the run, with that bound's
+        configured and measured values. Optional so every existing caller keeps
+        working unchanged; when absent the cause columns stay NULL and the REQ-6
+        invariant reports that honestly rather than inventing one.
         """
         try:
             # REQ-2: derive verified_count / executed_steps from the honest commit
@@ -562,17 +589,35 @@ class CaduceanTrajectoryRecorder:
                     executed_steps = int(_es[0]) if _es else 0
                 except Exception:
                     executed_steps = 0
+            # GROUND TRUTH T19 (REQ-9): unpack the termination record when the
+            # caller supplied one. Never raises on a malformed record - a bad
+            # cause is worth less than the exit row it would take down with it.
+            _tc = _bc = _bm = _cc = None
+            _bd = 0
+            if termination is not None:
+                try:
+                    _d = termination.to_dict()
+                    _tc = _d.get("termination_cause")
+                    _bc = _d.get("bound_configured")
+                    _bm = _d.get("bound_measured")
+                    _cc = _d.get("co_occurring_cause")
+                    _bd = int(_d.get("bound_disabled") or 0)
+                except Exception:
+                    _tc = "unexpected"
             with self._write_lock:
                 self._conn.execute(
                     """
                     INSERT INTO caducean_session_exits
                         (ts, session_id, domain, natural_exit, route_score, drift,
-                         tokens_total, verified_count, executed_steps)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                         tokens_total, verified_count, executed_steps,
+                         termination_cause, bound_configured, bound_measured,
+                         co_occurring_cause, bound_disabled, conversation_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (time.time(), session_id, domain,
                      int(bool(natural_exit)), float(route_score), float(drift),
-                     float(tokens_total), int(verified_count), int(executed_steps)),
+                     float(tokens_total), int(verified_count), int(executed_steps),
+                     _tc, _bc, _bm, _cc, _bd, conversation_id),
                 )
                 self._conn.commit()
         except Exception as exc:

@@ -63,16 +63,36 @@ describe("memoryRegistry — CT-7", () => {
   })
 
   it("a missing formatter falls back to the raw value without throwing", () => {
-    // `recall` has no `format` function declared.
-    expect(MEMORY_EVENT_REGISTRY.recall.format).toBeUndefined()
-    const data = { hex_bin_id: "0xAB12", tier: "hash", hyperedge_posterior: 0.87 }
+    // UPDATED 2026-08-23 (GROUND TRUTH): this test used `recall` as its
+    // example of a kind with no formatter. `recall` has since GAINED one —
+    // it renders the reserved Wormhole vocabulary in the fixed order
+    // docs/Wormhole-resonant-recall-.md Section 9 requires. The CONTRACT under
+    // test is unchanged ("a missing formatter falls back without throwing");
+    // only the example moved to `compress`, which is now the kind that
+    // genuinely declares none. Same assertions, same load.
+    expect(MEMORY_EVENT_REGISTRY.compress.format).toBeUndefined()
+    const data = { active_task: "card ordering", active_files: "3 files" }
     let result: ReturnType<typeof formatMemoryEntry> = null
     expect(() => {
-      result = formatMemoryEntry("recall", data)
+      result = formatMemoryEntry("compress", data)
     }).not.toThrow()
     expect(result).not.toBeNull()
-    expect(result!.fields.find((f) => f.field === "hex_bin_id")?.value).toBe("0xAB12")
-    expect(result!.fields.find((f) => f.field === "tier")?.value).toBe("hash")
+    expect(result!.fields.find((f) => f.field === "active_task")?.value).toBe("card ordering")
+  })
+
+  it("the recall formatter renders the reserved Wormhole fields in fixed order", () => {
+    // The other half of the change above: `recall` now HAS a formatter, and
+    // what it produces is a contract in its own right (Section 9: a recall
+    // surface rendered as variable prose "gets pattern-matched as noise").
+    const fmt = MEMORY_EVENT_REGISTRY.recall.format
+    expect(fmt).toBeDefined()
+    const out = fmt!({ hex_bin_id: "0xAB12", tier: "hash", hyperedge_posterior: 0.87 })
+    // fixed ORDER, not Object.keys order
+    expect(out.indexOf("tier")).toBeLessThan(out.indexOf("hyperedge_posterior"))
+    expect(out).toContain("0xAB12")
+    // and it degrades to something readable when no reserved field is filled
+    expect(fmt!({ query: "quantum" })).toContain("quantum")
+    expect(fmt!({})).toBe("memory recalled")
   })
 
   it("the reserved Wormhole field names are present as reserved and are NOT rendered as live data yet", () => {

@@ -1,0 +1,56 @@
+{
+  "_schema_version": 1,
+  "_session_id": "wsdrive245",
+  "_gaps": [
+    "no der_fan_traces rows for this session - the execution history was not recorded (pre-T4 store)",
+    "no session exit recorded - this run has NO terminal frame"
+  ],
+  "_redacted": true,
+  "frames": [
+    {
+      "event": "task:start",
+      "task_id": "wsdrive245",
+      "card_id": "card_wsdrive245",
+      "card_relation": "new",
+      "conversation_id": "wsdrive245",
+      "agent_id": "wsdrive245",
+      "project_id": null,
+      "origin": "initial",
+      "steps": [
+        {
+          "id": "s1_s0",
+          "status": "pending",
+          "seq": 1
+        },
+        {
+          "id": "amend-2_s0",
+          "status": "pending",
+          "seq": 2
+        }
+      ],
+      "total_steps": 2
+    },
+    {
+      "event": "task:progress",
+      "task_id": "wsdrive245",
+      "card_id": "card_wsdrive245",
+      "conversation_id": "wsdrive245",
+      "step_id": "s1_s0",
+      "step_done": true,
+      "seq": 1,
+      "tool": null,
+      "outcome": "VERIFIED"
+    },
+    {
+      "event": "task:progress",
+      "task_id": "wsdrive245",
+      "card_id": "card_wsdrive245",
+      "conversation_id": "wsdrive245",
+      "step_id": "amend-2_s0",
+      "step_done": true,
+      "seq": 2,
+      "tool": null,
+      "outcome": "VERIFIED"
+    }
+  ]
+}

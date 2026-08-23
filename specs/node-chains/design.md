@@ -1,3 +1,10 @@
+> **SUPERSEDED (2026-08-23).** This spec is merged into
+> [`specs/wormhole-aperture/`](../wormhole-aperture/) as **Stage C — Node Chains**.
+> Node Chains is no longer a peer feature: it is the CONSUMER that proves a delivered
+> recall was worth delivering. Its REQ IDs are preserved via the mapping table in
+> `specs/wormhole-aperture/requirements.md` (NC REQ-1..15 -> REQ-18..31).
+> Do not implement from this file. Kept for provenance only.
+
 # Design: Node Chains — Emergent, Composable Skills
 
 ## Context

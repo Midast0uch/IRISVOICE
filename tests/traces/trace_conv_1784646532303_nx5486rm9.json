@@ -1,0 +1,23 @@
+{
+  "_schema_version": 1,
+  "_session_id": "conv_1784646532303_nx5486rm9",
+  "_gaps": [
+    "no der_fan_traces rows for this session - the execution history was not recorded (pre-T4 store)",
+    "no session exit recorded - this run has NO terminal frame"
+  ],
+  "_redacted": true,
+  "frames": [
+    {
+      "event": "task:start",
+      "task_id": "conv_1784646532303_nx5486rm9",
+      "card_id": "card_conv_1784646532303_nx5486rm9",
+      "card_relation": "new",
+      "conversation_id": "conv_1784646532303_nx5486rm9",
+      "agent_id": "conv_1784646532303_nx5486rm9",
+      "project_id": null,
+      "origin": "initial",
+      "steps": [],
+      "total_steps": 0
+    }
+  ]
+}

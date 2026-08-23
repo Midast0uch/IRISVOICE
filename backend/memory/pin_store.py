@@ -15,7 +15,7 @@ mid-write checkpoint. Pins act as both:
      when context pressure rises, so the agent can reconstruct its work on a
      subsequent turn even after the original context is pruned.
 
-The store reads/writes the mycelium_pins and mycelium_pin_links tables that
+The store reads/writes the pins and mycelium_pin_links tables that
 already exist in coordinates.db (defined in backend/memory/db.py:308).
 """
 from __future__ import annotations
@@ -123,7 +123,7 @@ class Pin:
 
 
 def _row_to_pin(row: Sequence[Any]) -> Pin:
-    """Convert a SELECT * row from mycelium_pins into a Pin dataclass."""
+    """Convert a SELECT * row from the pin table into a Pin dataclass."""
     return Pin(
         pin_id=row[0], title=row[1], pin_type=row[2] or "note",
         content=row[3] or "",
@@ -137,6 +137,27 @@ def _row_to_pin(row: Sequence[Any]) -> Pin:
     )
 
 
+# GROUND TRUTH T7 (REQ-4 AC2/AC5): the AUTHORITATIVE pin table, named ONCE.
+#
+# DETERMINED 2026-08-23, after first getting it wrong. `data/memory.db` holds
+# BOTH `mycelium_pins` (0 rows) and `pins` (4 rows), and the row counts alone
+# suggested this store was writing to the dead one. It is not:
+#
+#   * `mycelium_pins` IS the application schema - created by
+#     backend/memory/db.py:344, indexed at :467-469.
+#   * `pins` is NOT created anywhere in backend/. Its 18 columns match the MCM
+#     BUILD store's `pins` table exactly (.mcm/coordinates.db, 554 rows). It is
+#     build-store contamination resident in the app DB, the same way
+#     `file_nodes`, `code_events` and `graph_edges` (997k rows) are.
+#
+# So `mycelium_pins` is correct and this store was always right. The real REQ-4
+# finding is narrower than the audit first read it: the app pin path simply has
+# not been exercised in production yet, which is why it is empty.
+#
+# Kept a named constant so a future edit cannot silently re-split the two stores
+# and so this determination has somewhere to live; CT-GT-2 asserts on the name.
+_PIN_TABLE = "mycelium_pins"
+
 _PIN_COLS = (
     "pin_id, title, pin_type, content, tags, file_refs, image_refs, url_refs, "
     "project_id, origin_id, created_at, updated_at, is_permanent"
@@ -145,7 +166,7 @@ _PIN_COLS = (
 
 class PinStore:
     """
-    CRUD operations on the mycelium_pins table.
+    CRUD operations on the authoritative pin table (_PIN_TABLE).
 
     Args:
         conn:          sqlite3 connection (or sqlcipher3) — usually shared with
@@ -190,7 +211,7 @@ class PinStore:
         pin_id = str(uuid.uuid4())
         now = time.time()
         self._conn.execute(
-            f"INSERT INTO mycelium_pins ({_PIN_COLS}) "
+            f"INSERT INTO {_PIN_TABLE} ({_PIN_COLS}) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 pin_id, title, pin_type, content,
@@ -235,7 +256,7 @@ class PinStore:
         vals.append(pin_id)
 
         cur = self._conn.execute(
-            f"UPDATE mycelium_pins SET {', '.join(sets)} WHERE pin_id = ?", vals,
+            f"UPDATE {_PIN_TABLE} SET {', '.join(sets)} WHERE pin_id = ?", vals,
         )
         self._conn.commit()
         if cur.rowcount > 0:
@@ -245,7 +266,7 @@ class PinStore:
 
     def delete(self, pin_id: str) -> bool:
         """Delete a pin and all of its links. Returns True if a row was removed."""
-        cur = self._conn.execute("DELETE FROM mycelium_pins WHERE pin_id = ?", (pin_id,))
+        cur = self._conn.execute(f"DELETE FROM {_PIN_TABLE} WHERE pin_id = ?", (pin_id,))
         self._conn.execute(
             "DELETE FROM mycelium_pin_links "
             "WHERE (source_type='pin' AND source_id=?) "
@@ -338,14 +359,14 @@ class PinStore:
 
     def get(self, pin_id: str) -> Optional[Pin]:
         row = self._conn.execute(
-            f"SELECT {_PIN_COLS} FROM mycelium_pins WHERE pin_id = ?", (pin_id,),
+            f"SELECT {_PIN_COLS} FROM {_PIN_TABLE} WHERE pin_id = ?", (pin_id,),
         ).fetchone()
         return _row_to_pin(row) if row else None
 
     def get_by_title(self, title: str) -> Optional[Pin]:
         """Exact-title lookup — used by <recall pin='Title'/> form."""
         row = self._conn.execute(
-            f"SELECT {_PIN_COLS} FROM mycelium_pins WHERE title = ? "
+            f"SELECT {_PIN_COLS} FROM {_PIN_TABLE} WHERE title = ? "
             "ORDER BY updated_at DESC LIMIT 1",
             (title,),
         ).fetchone()
@@ -367,7 +388,7 @@ class PinStore:
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         vals.append(limit)
         rows = self._conn.execute(
-            f"SELECT {_PIN_COLS} FROM mycelium_pins{where} "
+            f"SELECT {_PIN_COLS} FROM {_PIN_TABLE}{where} "
             "ORDER BY updated_at DESC LIMIT ?",
             vals,
         ).fetchall()
@@ -376,7 +397,7 @@ class PinStore:
     def list_checkpoints_for_file(self, file_path: str, limit: int = 20) -> List[Pin]:
         """Return all checkpoint pins for a given file path in chronological order."""
         rows = self._conn.execute(
-            f"SELECT {_PIN_COLS} FROM mycelium_pins "
+            f"SELECT {_PIN_COLS} FROM {_PIN_TABLE} "
             "WHERE pin_type = 'checkpoint' "
             "AND file_refs LIKE ? "
             "ORDER BY created_at ASC LIMIT ?",
@@ -418,7 +439,7 @@ class PinStore:
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
 
         rows = self._conn.execute(
-            f"SELECT {_PIN_COLS} FROM mycelium_pins{where}", vals,
+            f"SELECT {_PIN_COLS} FROM {_PIN_TABLE}{where}", vals,
         ).fetchall()
 
         scored: List[Tuple[Pin, float]] = []

@@ -335,8 +335,23 @@ class ExecutionLedger:
         return self._storage_path / "der_execution_ledger.json"
 
     def persist(self) -> bool:
-        """Write the ledger atomically. Returns False (no raise) on failure."""
+        """Write the ledger atomically. Returns False (no raise) on failure.
+
+        GROUND TRUTH T9 (REQ-14 AC2): a persist that CANNOT persist is a counted
+        condition, not a silent success. Both production call sites constructed
+        this ledger without a storage path, so every `persist()` returned True
+        having written nothing — the sharpest instance of the pattern this spec
+        exists to remove: code that appears to write, calls a function named
+        `persist`, and writes nothing, with no error because the no-op is by
+        design. `scripts/validate_der_integrity.py` has been asserting on a
+        ledger that evaporates at process exit.
+        """
         if self._storage_path is None:
+            try:
+                from backend.agent import write_counters as _wc
+                _wc.bump("ledger.persist_without_storage_path")
+            except Exception:
+                pass
             return True  # in-memory only — nothing to persist
         try:
             payload = {

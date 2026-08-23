@@ -37,6 +37,55 @@ from backend.agent.call_context import (
     restores_call_class,
 )
 from backend.agent.batch_dispatch import get_batcher
+# GROUND TRUTH REQ-13: named counters for swallowed write-path failures.
+# Pure in-process tally (threading only) - safe at module scope.
+from backend.agent import write_counters as _write_counters
+from backend.agent import row_sequence as _row_sequence
+
+
+def _der_ledger_storage_path() -> str:
+    """GROUND TRUTH T9 (REQ-14 AC1): where the DER execution ledger lives.
+
+    Env-overridable, mirroring the existing IRIS_DER_* convention. Kept a
+    function rather than a constant so tests can point it elsewhere without
+    touching module state.
+    """
+    return os.environ.get("IRIS_DER_LEDGER_DIR", os.path.join("data", "der_ledger"))
+
+
+def _stamp_row_seq(steps: list, conversation_id: Optional[str]) -> list:
+    """GROUND TRUTH T29 (REQ-17 AC1/AC6): give every planner row its stable,
+    backend-owned ordering key.
+
+    Row identity is the step id, so re-emitting a row (revision, graft, split)
+    returns the key it already has and the card never renumbers. A row whose id
+    cannot be determined gets seq 0 and is COUNTED - per REQ-17 AC6 a missing
+    key is a recorded contract violation, never a silent sort-to-the-end.
+
+    Never raises: an ordering key that could break a task:start emit would be
+    worse than the disorder it fixes.
+    """
+    try:
+        if not isinstance(steps, list):
+            return steps
+        out = []
+        for s in steps:
+            if not isinstance(s, dict):
+                out.append(s)
+                continue
+            rid = s.get("id") or s.get("step_id")
+            seq = _row_sequence.seq_for(conversation_id, rid)
+            if not seq:
+                _write_counters.bump("row_seq.missing_on_planner_row")
+            # Copy rather than mutate: callers reuse their step dicts, and a
+            # payload builder that mutates its input is its own defect class.
+            out.append({**s, "seq": seq})
+        return out
+    except Exception:
+        _write_counters.bump("row_seq.stamp_failed")
+        return steps
+
+
 from backend.agent.tool_decision import ToolDecisionBox, Decision, DecisionKind, DispatchResult
 from backend.iris_config import load_config
 from typing import Any, Dict, Optional, List, Callable, Tuple, Sequence
@@ -5526,12 +5575,30 @@ class AgentKernel:
         _der_response: Optional[str] = None
         self._der_active = True
         _der_lock_cleanup = True  # cleared in finally
+        # Session 248: stage timing for the pre-plan pipeline — live runs show
+        # a ~20s silent stall between message receipt and TaskClassifier on
+        # the FIRST DER-path message of a process (chitchat bypasses via
+        # _respond_direct, so it never pays this). These logs make the lazy
+        # init cost visible instead of silent.
+        import time as _der_t
+        _t_stage = _der_t.monotonic()
+
+        def _log_stage(label: str) -> None:
+            nonlocal _t_stage
+            logger.info(
+                "[Timing] DER stage %s: %.0f ms", label,
+                (_der_t.monotonic() - _t_stage) * 1000,
+            )
+            _t_stage = _der_t.monotonic()
+
         try:
             _task_clean = self._sanitize_task(text)
+            _log_stage("sanitize_task")
             _task_class = "full"
             if self._task_classifier is not None:
                 try:
                     _task_class, _ = self._task_classifier.classify(_task_clean)
+                    _log_stage("task_classifier.classify")
                 except Exception as _tc_exc:
                     loud_error(_tc_exc, "task_classifier.classify")
 
@@ -5548,6 +5615,7 @@ class AgentKernel:
                         _context_package, _is_mature = _ctx_result
                     elif _ctx_result is not None:
                         _context_package = _ctx_result
+                    _log_stage("get_task_context_package")
                 except Exception as _ctx_exc:
                     loud_error(_ctx_exc, "memory_interface.get_task_context_package")
 
@@ -6545,6 +6613,70 @@ Respond with a JSON object:
                 return None
 
     @restores_call_class
+    def _save_card_footprint(self, plan, completed_items, outcome: str) -> None:
+        """GROUND TRUTH T6 (REQ-3): one footprint per terminal card.
+
+        REQ-3 AC2 keeps the module's never-raise guarantee AND counts failures,
+        so a persistent silent failure becomes a number rather than an absence -
+        the exact ambiguity that let this store sit empty unnoticed.
+        """
+        try:
+            if not self._memory_interface:
+                _write_counters.bump("footprint.no_memory_interface")
+                return
+            _card_id = getattr(self, "_active_card_id", None)
+            if not _card_id:
+                _write_counters.bump("footprint.no_card_id")
+                return
+
+            from backend.memory.card_footprint import save_card_footprint
+
+            _steps, _tools, _files = [], [], []
+            for _ci in (completed_items or []):
+                _tool = str(getattr(_ci, "tool", "") or "")
+                _steps.append({
+                    "step_id": str(getattr(_ci, "step_id", "") or ""),
+                    "description": str(getattr(_ci, "description", "") or "")[:200],
+                    "tool": _tool,
+                })
+                if _tool and _tool not in _tools:
+                    _tools.append(_tool)
+                _param = getattr(_ci, "params", None) or {}
+                if isinstance(_param, dict):
+                    for _k in ("path", "file_path", "file"):
+                        _v = _param.get(_k)
+                        if isinstance(_v, str) and _v and _v not in _files:
+                            _files.append(_v)
+
+            # REQ-3 edge case / card_footprint.py:48-52: the TERMINAL state
+            # actually reached, never a fabricated success. "partial" has no slot
+            # in the module's converged|failed|abandoned|unknown vocabulary, and
+            # calling it converged would be a lie - so it maps to "unknown",
+            # which also keeps it out of chain extraction (wormhole REQ-34 AC4
+            # extracts only from converged).
+            _outcome = {
+                "success": "converged",
+                "failure": "failed",
+                "cancelled": "abandoned",
+            }.get(str(outcome), "unknown")
+
+            _ok = save_card_footprint(
+                memory=self._memory_interface,
+                card_id=str(_card_id),
+                conversation_id=str(self.conversation_id or ""),
+                objective=self._effective_plan_title(plan),
+                steps=_steps,
+                tools_used=_tools,
+                files_touched=_files,
+                outcome=_outcome,
+            )
+            _write_counters.bump(
+                "footprint.written" if _ok else "footprint.write_failed"
+            )
+        except Exception as _fp_exc:
+            _write_counters.bump("footprint.write_failed")
+            logger.warning("[DER] card footprint write FAILED: %s", _fp_exc)
+
     def _execute_plan_der(
         self,
         plan,
@@ -7534,7 +7666,8 @@ Respond with a JSON object:
             _ledger = getattr(self, "_der_ledger", None)
             if _ledger is None:
                 _ledger = ExecutionLedger(
-                    conversation_id=self.conversation_id or self.session_id or ""
+                    conversation_id=self.conversation_id or self.session_id or "",
+                    storage_path=_der_ledger_storage_path(),  # GROUND TRUTH T9 (REQ-14 AC1)
                 )
                 self._der_ledger = _ledger
             _task_id = self.conversation_id or self.session_id or "unknown"
@@ -7551,7 +7684,21 @@ Respond with a JSON object:
                     _term,
                 )
         except Exception as _lc_exc:  # noqa: BLE001 â€” lifecycle must never block the user response
-            logger.debug("[DER] task lifecycle write failed: %s", _lc_exc)
+            _write_counters.bump("ledger.lifecycle_write_failed")
+            logger.warning("[DER] task lifecycle write FAILED: %s", _lc_exc)
+
+        # GROUND TRUTH T6 (REQ-3): persist the CARD FOOTPRINT here, at the same
+        # honest terminal state the ledger just recorded.
+        #
+        # backend/memory/card_footprint.py was implemented for
+        # specs/task-card-v2-liquid-ink REQ-11 and then never called: the module
+        # has ZERO production importers, and save_card_footprint /
+        # get_card_footprint appear in exactly one file - their own. So
+        # semantic_entries holds 0 rows and no card has ever been addressable
+        # by id across conversations. This is the call site it was waiting for,
+        # and it unblocks specs/wormhole-aperture REQ-34, which reads footprints
+        # as a chain-extraction source.
+        self._save_card_footprint(plan, completed_items, outcome)
 
         # â”€â”€ EventBus: emit task:done / task:fail â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # T11 (REQ-12): record the completed-step count on the kernel so the
@@ -7869,6 +8016,17 @@ Respond with a JSON object:
         the same join documents already use (message.id === turn_id).
         Absent on legacy replays; consumers fall back to bottom-stacking.
         """
+        # GROUND TRUTH T28/T29 (REQ-17): stamp the backend-owned ordering
+        # key on every row, HERE, at the one construction point every
+        # task:start emit already funnels through. ADDITIVE ONLY - no
+        # existing key changes, and the planner's own step_number is left
+        # untouched as a display concern (REQ-17 AC5).
+        #
+        # Memoized per row id, so a revision / graft / split re-emitting an
+        # existing row returns that row's ORIGINAL key and cannot renumber
+        # the card (REQ-17 AC4). T27 measured the alternative: the captured
+        # graft trace collided r1 and r1_s1 on key 1.
+        steps = _stamp_row_seq(steps, conversation_id)
         return {
             "task_id": task_id,
             "description": description,
@@ -8578,7 +8736,10 @@ Respond with a JSON object:
         try:
             _ledger = getattr(self, "_der_ledger", None)
             if _ledger is None:
-                _ledger = ExecutionLedger(conversation_id=_task_id)
+                _ledger = ExecutionLedger(
+                    conversation_id=_task_id,
+                    storage_path=_der_ledger_storage_path(),  # T9 (REQ-14 AC1)
+                )
                 self._der_ledger = _ledger
             _ledger.transition(_task_id, "paused")
             _ledger.persist()
@@ -8897,7 +9058,8 @@ Respond with a JSON object:
                         _ledger = getattr(self, "_der_ledger", None)
                         if _ledger is None:
                             _ledger = ExecutionLedger(
-                                conversation_id=self.conversation_id or ""
+                                conversation_id=self.conversation_id or "",
+                                storage_path=_der_ledger_storage_path(),  # GROUND TRUTH T9 (REQ-14 AC1)
                             )
                             self._der_ledger = _ledger
                         _ledger.record_failure(
@@ -8932,8 +9094,17 @@ Respond with a JSON object:
             # preserving the pre-existing behavior exactly.
             if (getattr(item, "tool", None) or "").lower() in self._DER_GATHER_TOOLS:
                 try:
+                    # Session 248 FIX (live conv-53): the gate digested only
+                    # COMPLETED steps - but the failed step ITSELF may carry
+                    # the findings (a crawler_query that fetched 3 usable
+                    # pages yet failed verification). Excluding it made the
+                    # gate judge an empty evidence set, graft a full re-crawl
+                    # of the SAME query, and double the search time. The
+                    # failing step's own result is appended to the digest so
+                    # the gate sees everything the loop has actually seen.
+                    _gate_items = list(completed_items) + [item]
                     _suff, _missing = self._der_findings_sufficient(
-                        plan.original_task or "", completed_items
+                        plan.original_task or "", _gate_items
                     )
                 except Exception:
                     _suff, _missing = False, ""
@@ -10269,6 +10440,13 @@ Respond with a JSON object:
                     "detail_progress": "",
                     "phase": "synthesizing",
                     "phase_sequence": 90,
+                    # GROUND TRUTH T29 (REQ-17 AC4): the synthesis row is a
+                    # row like any other and needs the ordering key. T27
+                    # flagged this one in EVERY captured trace, including the
+                    # non-crawl code task - the defect was never crawl-specific.
+                    "seq": _row_sequence.seq_for(
+                        self.conversation_id, "phase-synthesizing"
+                    ),
                 },
                 session_id=_session,
                 conversation_id=self.conversation_id,
@@ -11313,25 +11491,27 @@ Respond with a JSON object:
         if tool and tool in self._WEB_CONTENT_TOOLS:
             _low = _without_marker.lower()
             # pin_42ddd255162d: CONTENT SUFFICIENCY must not scan real page
-            # text for failure words â€” web pages legitimately contain "failed
+            # text for failure words — web pages legitimately contain "failed
             # to"/"no usable" mid-text, and the crawl fallback result may
             # carry an informational worker-timeout note alongside real pages.
-            # The tool contract already guarantees the error case (zero usable
-            # pages -> tool returns an error payload), so the verdict rests on
-            # SUBSTANCE: long non-error content VERIFIEDs; only explicit
-            # error-prefixed payloads and short error stubs FAIL.
-            # pin_42ddd255162d: a successfully dispatched crawl (success=True)
-            # VERIFIEDs regardless of volume â€” the observed failure mode was a
-            # 2-page plain-HTTP fallback result (~60 chars) that failed the old
-            # 80-char threshold â†’ verify FAILED â†’ split â†’ children re-gathered
-            # the SAME urls, each costing a 30s LLM resolution + 429 retries.
-            if success and not _low.startswith("error"):
-                return "VERIFIED"
-            if len(_without_marker) >= 80 and not _low.startswith("error"):
-                return "VERIFIED"
-            if _low.startswith("error") or "no usable" in _low or "failed to" in _low:
+            # Session 248 FIX (live conv-53): the failure-word scan below ran
+            # on the FULL combined article text (12k chars), so any news page
+            # containing "failed to" anywhere FAILED the step -> split ->
+            # children re-crawled the SAME query. The tool contract already
+            # guarantees the error case (zero usable pages -> error payload),
+            # so: error PREFIX always fails; long content always verifies;
+            # only SHORT (<80 chars) non-error text may be scanned for
+            # failure phrases, and even then it commits as UNVERIFIED rather
+            # than triggering a re-gather split.
+            if _low.startswith("error"):
                 return "FAILED"
-            # Short, non-error text: weak but honest â€” commits as UNVERIFIED,
+            if success:
+                return "VERIFIED"
+            if len(_without_marker) >= 80:
+                return "VERIFIED"
+            if "no usable" in _low or "failed to" in _low:
+                return "FAILED"
+            # Short, non-error text: weak but honest — commits as UNVERIFIED,
             # never triggers a re-gather split.
             return "UNVERIFIED"
         if tool in self._TRUSTED_RESULT_TOOLS:
@@ -11388,6 +11568,69 @@ Respond with a JSON object:
         except Exception:
             _args_hash = "unhashable"
         return f"{tool}:{_args_hash}", "explicit"
+
+    def _der_emit_fan_trace(
+        self, item: "QueueItem", verified_label: str, session_id: str
+    ) -> None:
+        """GROUND TRUTH T4 (REQ-1): one der_fan_traces row per executed node.
+
+        Same writer, same row shape, same table as the DCP path - only the CALL
+        SITE moves (REQ-1 AC3). Idempotent per (session_id, step_id) so a DCP
+        run cannot double-write (AC5).
+
+        REQ-1 AC6: the node's terminal outcome is recorded FAITHFULLY. A FAILED
+        node writes a failed row - a missing row and a failed row must never be
+        indistinguishable, which is the whole ambiguity this spec exists to
+        remove.
+
+        Never blocks and never raises (AC4): a swallowed failure is COUNTED so
+        persistent silence becomes a number rather than an absence.
+        """
+        try:
+            _sid = session_id or "unknown"
+            _step = str(getattr(item, "step_id", "") or "unknown")
+            _guard = (_sid, _step)
+            _seen = getattr(self, "_fan_trace_emitted", None)
+            if _seen is None:
+                _seen = set()
+                self._fan_trace_emitted = _seen
+            if _guard in _seen:
+                return
+            # Bounded: a very long run must not grow this without limit.
+            if len(_seen) > 4096:
+                _seen.clear()
+            _seen.add(_guard)
+
+            from backend.agent.caducean_trajectory import get_trajectory_recorder
+
+            _rec = get_trajectory_recorder(self._memory_interface)
+            if _rec is None:
+                _write_counters.bump("fan_trace.no_recorder")
+                return
+
+            try:
+                _mediator, _ = self._der_mediator_for(item)
+            except Exception:
+                _mediator = str(getattr(item, "tool", "") or "unknown")
+            _tool = (_mediator or "unknown").split(":", 1)[0]
+
+            _cad = self._der_live_cad_state(_sid) or {}
+            _rec.record_fan_trace(
+                session_id=_sid,
+                step_id=_step,
+                tool=_tool,
+                args_hash=str(getattr(item, "args_hash", "") or "")[:12],
+                outcome=str(verified_label or "UNKNOWN"),
+                u=_cad.get("u"),
+                xi=_cad.get("xi"),
+            )
+            _write_counters.bump("fan_trace.written")
+        except Exception as _ft_exc:
+            _write_counters.bump("fan_trace.write_failed")
+            logger.warning(
+                "[DER] fan trace write FAILED (session=%s step=%s): %s",
+                session_id, getattr(item, "step_id", "?"), _ft_exc,
+            )
 
     def _der_score_step_outcome(
         self,
@@ -11462,6 +11705,18 @@ Respond with a JSON object:
                 return
             self._der_unverified_credit_counts[item.step_id] = _count + 1
 
+        # GROUND TRUTH T4 (REQ-1): write the per-node EXECUTION TRACE here, at
+        # the node's terminal outcome - NOT as a side effect of context
+        # pruning. record_fan_trace had exactly one production caller,
+        # DCP._emit_fan_traces, and DCP is never constructed by the DER loop
+        # (zero importers among agent_kernel / der_loop / iris_gateway). So
+        # der_fan_traces held 0 rows in production no matter how much work
+        # the agent did, while caducean_trajectories accumulated 201 through
+        # the SAME recorder - the connection worked, only this path was
+        # orphaned. Emitted BEFORE the mycelium block on purpose: the trace
+        # must not inherit the edge-scoring guard's fragility (REQ-1 AC2).
+        self._der_emit_fan_trace(item, verified_label, session_id)
+
         myc = getattr(self._memory_interface, "_mycelium", None) if self._memory_interface else None
         if myc is not None:
             try:
@@ -11491,12 +11746,30 @@ Respond with a JSON object:
                         _v = _cad_vec[: len(_c)]
                         return sum((a - b) ** 2 for a, b in zip(_c, _v)) ** 0.5
 
+                    # GROUND TRUTH T1 (REQ-5 AC1): distinguish "no active
+                    # nodes registered at all" from "nodes exist but none
+                    # resolved". Different root causes; only one is a bug
+                    # in THIS block.
+                    if not node_ids:
+                        _write_counters.bump("edge_scoring.no_active_nodes")
                     _region_node = min(node_ids, key=_dist) if node_ids else None
                 except Exception:
+                    _write_counters.bump("edge_scoring.region_resolve_degraded")
                     _region_node = node_ids[0] if node_ids else None
             except Exception:
+                _write_counters.bump("edge_scoring.region_resolve_failed")
                 _region_node = None
                 _mediator_tool = ""
+            # GROUND TRUTH T1 (REQ-5 AC1, REQ-13 AC2): this guard used to
+            # skip SILENTLY. mycelium_edges holds 0 rows in production
+            # while this very call site exists, so the open question is
+            # whether the guard never passes, the write raises, or edge
+            # state lives elsewhere. A skip and a failure are DIFFERENT
+            # causes and get different names.
+            if not _region_node:
+                _write_counters.bump("edge_scoring.skipped_no_region")
+            if not _mediator_tool:
+                _write_counters.bump("edge_scoring.skipped_no_mediator")
             if _region_node and _mediator_tool:
                 try:
                     from backend.memory.mycelium.scorer import EdgeScorer
@@ -11508,8 +11781,20 @@ Respond with a JSON object:
                         mediator=_mediator_tool,
                         outcome=outcome,
                     )
+                    # The POSITIVE makes the negatives interpretable:
+                    # without it, zero writes and zero attempts look
+                    # identical.
+                    _write_counters.bump("edge_scoring.written")
                 except Exception as _edge_exc:
-                    logger.debug("[DER] region-scoped edge scoring failed: %s", _edge_exc)
+                    # GROUND TRUTH T1: promoted from logger.debug. A
+                    # swallowed WRITE failure that nothing counts is why
+                    # this table could sit empty for months unnoticed.
+                    _write_counters.bump("edge_scoring.write_failed")
+                    logger.warning(
+                        "[DER] region-scoped edge scoring FAILED "
+                        "(session=%s region=%s mediator=%s): %s",
+                        session_id, _region_node, _mediator_tool, _edge_exc,
+                    )
 
         if verified_label == "FAILED":
             try:
@@ -11948,7 +12233,10 @@ Respond with a JSON object:
                         try:
                             _ledger = getattr(self, "_der_ledger", None)
                             if _ledger is None:
-                                _ledger = ExecutionLedger(conversation_id=self.conversation_id or "")
+                                _ledger = ExecutionLedger(
+                                    conversation_id=self.conversation_id or "",
+                                    storage_path=_der_ledger_storage_path(),  # GROUND TRUTH T9 (REQ-14 AC1)
+                                )
                                 self._der_ledger = _ledger
                             _ledger.record_failure(
                                 task_id=self.conversation_id or self.session_id or "unknown",
@@ -12140,8 +12428,22 @@ Respond with a JSON object:
                 xi=_cad.get("xi"),
                 verified_label=_verified,
             )
+            # GROUND TRUTH T5 (REQ-2 AC1/AC4): count commits BY LABEL at the
+            # write. The live store holds 194 VERIFIED against 2 UNVERIFIED
+            # and 2 FAILED, while the episode layer holds 55 failures - so
+            # either failures never reach this path or the write is failing
+            # quietly. These two counters tell those apart without a repro.
+            _write_counters.bump("commit.written")
+            _write_counters.bump("commit.label.%s" % str(_verified or "UNKNOWN").lower())
         except Exception as _commit_exc:
-            logger.debug("[DER] record_commit failed: %s", _commit_exc)
+            # GROUND TRUTH T5/T10: promoted from logger.debug. A swallowed
+            # commit write is indistinguishable from a commit that never
+            # happened, and that ambiguity IS the measurement problem.
+            _write_counters.bump("commit.write_failed")
+            logger.warning(
+                "[DER] record_commit FAILED (session=%s step=%s label=%s): %s",
+                _session, getattr(item, "step_id", "?"), _verified, _commit_exc,
+            )
 
         # â”€â”€ REQ-1 AC2/AC3/AC4: per-step edge-score consequence of verified_label.
         # VERIFIED hit-scores (+0.05), UNVERIFIED partial-credits (+0.02, capped â€”
@@ -12150,7 +12452,11 @@ Respond with a JSON object:
         try:
             self._der_score_step_outcome(item, _verified, _session, step_result)
         except Exception as _score_exc:
-            logger.debug("[DER] per-step edge scoring failed: %s", _score_exc)
+            _write_counters.bump("step_outcome.scoring_failed")
+            logger.warning(
+                "[DER] per-step edge scoring FAILED (step=%s): %s",
+                getattr(item, "step_id", "?"), _score_exc,
+            )
 
         queue.mark_complete(item.step_id)
 
@@ -12166,7 +12472,8 @@ Respond with a JSON object:
             _ledger = getattr(self, "_der_ledger", None)
             if _ledger is None:
                 _ledger = ExecutionLedger(
-                    conversation_id=self.conversation_id or self.session_id or ""
+                    conversation_id=self.conversation_id or self.session_id or "",
+                    storage_path=_der_ledger_storage_path(),  # GROUND TRUTH T9 (REQ-14 AC1)
                 )
                 self._der_ledger = _ledger
             _att = _ledger.open_attempt(

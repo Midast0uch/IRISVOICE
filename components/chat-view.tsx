@@ -1,6 +1,7 @@
 "use client"
 
 import React, { useState, useEffect, useRef, useCallback, useMemo, useSyncExternalStore } from "react"
+import { sortRows, deriveProgress } from "@/lib/cards/rowOrder";
 import { motion, AnimatePresence } from "framer-motion"
 import { Send, X, BarChart3, Plus, Trash2, AlertCircle, Bell, AlertTriangle, Shield, Loader, CheckCircle, Info, History, Pin, Copy, ThumbsUp, ThumbsDown, Volume2, ChevronDown, ChevronUp, Download, Share, FileText, Mail, Video, Image, File, Smile, ExternalLink, RefreshCw, Pencil, Archive } from 'lucide-react';
 import { Icon } from '@iconify/react';
@@ -183,8 +184,14 @@ function taskStepStatusToMatrix(status: TaskCard["steps"][number]["status"]): Ta
 function taskCardToMatrixProps(card: TaskCard): TaskCardProps {
   return {
     objective: card.planTitle || card.currentAction || "Task",
-    steps: card.steps.map((s): TaskStepItem => ({
+    // GROUND TRUTH REQ-20 AC2: render in the AUTHORITATIVE order, derived from
+    // the shared key — not inherited from whatever array position the GUI card
+    // happened to hand over.
+    steps: sortRows(card.steps).map((s): TaskStepItem => ({
       id: s.id,
+      // REQ-20 AC1: carry the key through. Dropping it here is what left the
+      // CLI unable to even detect a bad order.
+      seq: s.seq,
       verb: s.toolName || "exec",
       target: s.activeDetail
         ? `${s.description} — ${s.activeDetail}${s.activeProgress ? ` (${s.activeProgress})` : ""}`
@@ -195,6 +202,9 @@ function taskCardToMatrixProps(card: TaskCard): TaskCardProps {
       // never the literal "Sub-Loop" (task-card-v2 CT-9).
       branchLabel: undefined,
     })),
+    // REQ-20 AC3: the progress pair, from the SAME derivation the GUI counter
+    // and the XurOrb ring read.
+    ...deriveProgress(card.steps, card.totalSteps),
     isThinking: card.isWorking && !card.currentAction,
     currentThought: card.currentAction,
     isCrystallized: card.learningSignal === "crystallized" || card.terminalState === "done",
@@ -750,15 +760,33 @@ export function ChatWing({
       rendered.add(card.cardId)
       out.push({ kind: "card", ts: entry.ts, card })
     }
-    // Not-yet-rendered cards (orphans without a turn id, plus cards whose
-    // response message is absent from this thread): bottom fallback — the
-    // single NEWEST one only, per the no-stacking directive.
+    // Not-yet-rendered cards (orphans without a turn-id match): insert
+    // CHRONOLOGICALLY using the card's creation time — after the last
+    // message that was already on screen when the task started. This keeps
+    // each task card in line with its own prompt/reply instead of piling
+    // every card at the bottom of the thread (user-reported disjointed
+    // scroll, session 248). Cards whose createdAt is unknown fall back to
+    // the bottom, oldest first.
     const unrendered = [...latestPerTurn.entries()]
       .filter(([k]) => !rendered.has(latestPerTurn.get(k)!.cardId))
       .map(([, c]) => c)
-    if (unrendered.length > 0) {
-      const newest = unrendered[unrendered.length - 1]
-      out.push({ kind: "card", ts: Number.MAX_SAFE_INTEGER, card: newest })
+      .sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0))
+    for (const c of unrendered) {
+      const cardTs = c.createdAt ?? Number.MAX_SAFE_INTEGER
+      let insertAt = -1
+      for (let i = out.length - 1; i >= 0; i--) {
+        const e = out[i]
+        if (e.kind === "message" && e.ts <= cardTs) {
+          insertAt = i + 1
+          break
+        }
+      }
+      const entry: Entry = { kind: "card", ts: cardTs, card: c }
+      if (insertAt >= 0) {
+        out.splice(insertAt, 0, entry)
+      } else {
+        out.push(entry)
+      }
     }
     return out
   }, [unifiedTimeline, messages, taskProgress.cards])
@@ -3817,6 +3845,11 @@ ${message.text}`;
                                 status: s.status,
                                 discovered: s.discovered,
                                 reason: s.reason,
+                                // REQ-15: capture provenance so each source row
+                                // can pin the Live Reading surface to the
+                                // exact bytes the agent read.
+                                jobId: s.jobId ?? undefined,
+                                capturePage: s.capturePage ?? undefined,
                               }))
                             : isMarkdown
                               ? _turnSources.get(doc.turnId || '') || doc.sources

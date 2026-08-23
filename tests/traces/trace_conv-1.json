@@ -1,0 +1,104 @@
+{
+  "_schema_version": 1,
+  "_session_id": "conv-1",
+  "_gaps": [
+    "no der_fan_traces rows for this session - the execution history was not recorded (pre-T4 store)",
+    "no session exit recorded - this run has NO terminal frame"
+  ],
+  "_redacted": true,
+  "frames": [
+    {
+      "event": "task:start",
+      "task_id": "conv-1",
+      "card_id": "card_conv-1",
+      "card_relation": "new",
+      "conversation_id": "conv-1",
+      "agent_id": "conv-1",
+      "project_id": null,
+      "origin": "initial",
+      "steps": [
+        {
+          "id": "s1",
+          "status": "pending",
+          "seq": 1
+        },
+        {
+          "id": "s2",
+          "status": "pending",
+          "seq": 2
+        },
+        {
+          "id": "gap-s2-0",
+          "status": "pending",
+          "seq": 3
+        },
+        {
+          "id": "gap-s2-1",
+          "status": "pending",
+          "seq": 4
+        },
+        {
+          "id": "gap-gap-s2-0-0",
+          "status": "pending",
+          "seq": 5
+        }
+      ],
+      "total_steps": 5
+    },
+    {
+      "event": "task:progress",
+      "task_id": "conv-1",
+      "card_id": "card_conv-1",
+      "conversation_id": "conv-1",
+      "step_id": "s1",
+      "step_done": true,
+      "seq": 1,
+      "tool": null,
+      "outcome": "VERIFIED"
+    },
+    {
+      "event": "task:progress",
+      "task_id": "conv-1",
+      "card_id": "card_conv-1",
+      "conversation_id": "conv-1",
+      "step_id": "s2",
+      "step_done": true,
+      "seq": 2,
+      "tool": null,
+      "outcome": "VERIFIED"
+    },
+    {
+      "event": "task:progress",
+      "task_id": "conv-1",
+      "card_id": "card_conv-1",
+      "conversation_id": "conv-1",
+      "step_id": "gap-s2-0",
+      "step_done": true,
+      "seq": 3,
+      "tool": null,
+      "outcome": "VERIFIED"
+    },
+    {
+      "event": "task:progress",
+      "task_id": "conv-1",
+      "card_id": "card_conv-1",
+      "conversation_id": "conv-1",
+      "step_id": "gap-s2-1",
+      "step_done": true,
+      "seq": 4,
+      "tool": null,
+      "outcome": "VERIFIED"
+    },
+    {
+      "event": "task:progress",
+      "task_id": "conv-1",
+      "card_id": "card_conv-1",
+      "conversation_id": "conv-1",
+      "step_id": "gap-gap-s2-0-0",
+      "step_done": true,
+      "seq": 5,
+      "tool": null,
+      "outcome": "VERIFIED"
+    }
+  ]
+}
