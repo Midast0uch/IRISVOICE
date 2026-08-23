@@ -16,6 +16,12 @@ export type TaskStepStatus =
 export interface TaskStep {
   id: string
   /**
+   * Session 247: the backend's semantic step number. Rows sort by this so
+   * live-discovered grafts and task:start merges can never reorder the list
+   * by insertion accident (live conv-46: a resolve child rendered FIRST).
+   */
+  stepNumber?: number
+  /**
    * The PLAN text - what the agent set out to do. Stable for the life of the
    * step. Live progress never overwrites this; it goes to `activeDetail` so the
    * dropdown keeps showing the plan while the card header shows the activity.
@@ -417,6 +423,18 @@ function touchConversation(
   return { byConversation, convTouchOrder }
 }
 
+// Session 247: rows render in the backend's SEMANTIC step_number order.
+// Live-discovered grafts and task:start merges used to land in insertion
+// order, which could put a late resolver child FIRST (live conv-46 report).
+// Steps without a number keep stable insertion order after numbered ones.
+function sortSteps(steps: TaskStep[]): TaskStep[] {
+  return [...steps].sort((a, b) => {
+    const an = a.stepNumber ?? Number.MAX_SAFE_INTEGER
+    const bn = b.stepNumber ?? Number.MAX_SAFE_INTEGER
+    return an - bn
+  })
+}
+
 function freshStart(
   cardId: string,
   conversationId: string | null,
@@ -429,7 +447,7 @@ function freshStart(
     isWorking: true,
     currentStep: 0,
     totalSteps: d.total_steps ?? incoming.length,
-    steps: incoming,
+    steps: sortSteps(incoming),
     mode: d.mode,
     turnId: d.task_id,
     planTitle: d.plan_title,
@@ -449,7 +467,14 @@ function mergeStart(existing: TaskCard, incoming: TaskStep[], d: TaskUpdateDetai
   const merged: TaskStep[] = []
   for (const step of incoming) {
     const ex = existingById.get(step.id)
-    merged.push(ex ? { ...ex, description: step.description, toolName: step.toolName } : step)
+    merged.push(
+      ex
+        ? // Session 247: reconcile the semantic order too — dropping the
+          // incoming stepNumber left the anchor unnumbered and sortSteps
+          // demoted it behind numbered grafts.
+          { ...ex, description: step.description, toolName: step.toolName, stepNumber: step.stepNumber ?? ex.stepNumber }
+        : step,
+    )
   }
   // Preserve any steps discovered live (add_step) that aren't in the
   // incoming plan snapshot.
@@ -459,7 +484,7 @@ function mergeStart(existing: TaskCard, incoming: TaskStep[], d: TaskUpdateDetai
   return {
     ...existing,
     isWorking: true,
-    steps: merged,
+    steps: sortSteps(merged),
     totalSteps: Math.max(merged.length, existing.currentStep),
     mode: d.mode ?? existing.mode,
     turnId: d.task_id,
@@ -476,7 +501,12 @@ function handleTaskStart(prev: CardsState, d: TaskUpdateDetail): CardsState {
     // REQ-1 AC5: honor the backend-provided status; default to "unknown" for
     // steps without a record. "unknown" renders identically to "pending" but
     // is semantically distinct - it means no tool:call event was ever received.
-    .map((s) => ({ ...s, status: (s.status as TaskStepStatus) ?? ("unknown" as TaskStepStatus) }))
+    .map((s) => ({
+      ...s,
+      status: (s.status as TaskStepStatus) ?? ("unknown" as TaskStepStatus),
+      // Session 247: semantic order from the backend snapshot.
+      stepNumber: s.stepNumber,
+    }))
 
   const convId = d.conversation_id || prev.activeConversationId
   const { byConversation, convTouchOrder } = touchConversation(prev, convId)
@@ -534,7 +564,15 @@ function resolveTargetCardId(conv: ConversationCardState, d: TaskUpdateDetail): 
   // resolved to undefined and were dropped, so the card sat frozen on its
   // initial step for the whole run.
   const working = [...conv.order].reverse().find((id) => conv.byId[id]?.isWorking)
-  return working
+  if (working) return working
+  // Session 247 (live conv-44): LATE progress after the terminal event —
+  // "Synthesizing answer" is emitted AFTER task:done, when no card is
+  // working anymore. The old fallback here fabricated a `legacy_unknown`
+  // card, which rendered as a SECOND card (THK + running timer + no id)
+  // next to the finished one. Progress describes work on a card that EXISTS:
+  // attach to the newest card in the conversation instead of inventing one.
+  const newest = [...conv.order].reverse().find((id) => conv.byId[id])
+  return newest
 }
 
 function blankCard(cardId: string, conversationId: string | null): TaskCard {
@@ -594,6 +632,7 @@ interface PersistedCardStep {
   id: string
   description: string
   status: string
+  stepNumber?: number
   tool_name?: string | null
 }
 
@@ -647,8 +686,11 @@ function mergeHydratedCards(prev: CardsState, cards: PersistedCard[]): CardsStat
         s.status === "running" ? "working"
         : (s.status as TaskStepStatus) ?? "unknown"
       ),
+      stepNumber: s.stepNumber,
       toolName: s.tool_name ?? undefined,
     }))
+    // Session 247: semantic row order survives rehydration too.
+    steps.sort((a, b) => (a.stepNumber ?? Number.MAX_SAFE_INTEGER) - (b.stepNumber ?? Number.MAX_SAFE_INTEGER))
     const hydrated: TaskCard = {
       cardId: p.card_id,
       conversationId: convId,
@@ -818,9 +860,53 @@ function reduceTaskUpdate(prev: CardsState, d: TaskUpdateDetail): CardsState {
         // dropdown could never show what the agent set out to do.
         const action = d.description || d.action
         if (!action) return card
+
+        // ── Session 247: PROGRESSIVE PHASE NODES ────────────────────────
+        // A structured phase TRANSITION (new phase_sequence) appends its own
+        // step node — SEARCH → READ → EXTRACT → CITE render as a progressive
+        // list of what the agent is doing, instead of one node whose verb
+        // silently swaps in place (live conv-50 report: "extract only
+        // replaces the search verb, no progressive listing").
+        // The ORIGINAL plan step stays as the anchor row; each phase node is
+        // marked done when the next phase arrives; per-page detail still
+        // flows to the newest phase node via update_step below.
         let steps = card.steps
+        const isNewPhase =
+          d.phase != null &&
+          d.phase_sequence != null &&
+          d.phase_sequence !== card.phaseSequence
+        if (isNewPhase) {
+          const phaseId = `phase-${d.phase}`
+          steps = steps.map((s) =>
+            s.id.startsWith("phase-") && s.status === "working"
+              ? { ...s, status: "done" as TaskStepStatus, activeDetail: undefined, url: undefined }
+              : s,
+          )
+          if (!steps.find((s) => s.id === phaseId)) {
+            steps = [
+              ...steps,
+              {
+                id: phaseId,
+                description: action,
+                status: "working" as TaskStepStatus,
+              },
+            ]
+          } else {
+            // Phase revisited (e.g. re-query): flip it back to working.
+            steps = steps.map((s) =>
+              s.id === phaseId ? { ...s, status: "working" as TaskStepStatus } : s,
+            )
+          }
+        }
+
         if (d.update_step) {
-          const workingIdx = steps.findIndex((s) => s.status === "working")
+          // Per-page/detail updates target the NEWEST working phase node when
+          // one exists, else the original working step.
+          const workingIdx = (() => {
+            const lastPhase = [...steps.keys()].reverse().find((i) => steps[i].id.startsWith("phase-") && steps[i].status === "working")
+            if (lastPhase != null) return lastPhase
+            return steps.findIndex((s) => s.status === "working")
+          })()
           if (workingIdx >= 0) {
             const s = steps.slice()
             s[workingIdx] = {
@@ -841,6 +927,8 @@ function reduceTaskUpdate(prev: CardsState, d: TaskUpdateDetail): CardsState {
           currentAction: action,
           actionStream: appendAction(card.actionStream, action),
           isWorking: true,
+          // Keep the orb badge denominator in sync with appended phase nodes.
+          totalSteps: Math.max(card.totalSteps, steps.length),
         }
         // REQ-4 AC2: capture structured phase label from the crawl pipeline.
         if (d.phase) {

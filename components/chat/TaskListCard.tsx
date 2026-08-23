@@ -98,7 +98,13 @@ const PHASE_VERB: Record<string, string> = {
 // sit above generic ones.
 const INTENT_VERBS: Array<[RegExp, string]> = [
   [/summari|explain|synthes|conclude|final/i, "SYNTH"],
-  [/analyz|identif|compare|evaluat|extract/i, "ANALYZE"],
+  // Session 247: crawler phase-node labels ("Extracting content",
+  // "Citing sources", "Reading X") must map to their OWN verbs — "extract"
+  // previously fell into ANALYZE and "citing" matched nothing (blank/DONE).
+  // These sit ABOVE the generic families; first match wins.
+  [/extract/i, "EXTRACT"],
+  [/cit(e|ing|ation)/i, "CITE"],
+  [/analyz|identif|compare|evaluat/i, "ANALYZE"],
   [/search|find|look up|research|gather/i, "SEARCH"],
   // exec before read/write: "run a review of…" is execution, not reading.
   [/run|test|execute|launch|restart|deploy/i, "EXEC"],
@@ -258,7 +264,18 @@ export default function TaskListCard({
     if (s.toolName && !MODE_NON_TOOLS.has(s.toolName.toLowerCase())) {
       return resolveVerb(s.toolName)
     }
-    return intentVerb(s.description)
+    const intent = intentVerb(s.description)
+    if (intent) return intent
+    // Session 247 (user finding): NO step may render a blank/em-dash verb.
+    // When neither the tool registry nor the description keywords resolve,
+    // the step's STATUS is honest, informative, and always available.
+    switch (s.status) {
+      case "working": return "WORK"
+      case "done": return "DONE"
+      case "error":
+      case "fail": return "FAILED"
+      default: return "QUEUED"
+    }
   }
 
   // ── THK thinking section (session 245) ──────────────────────────────

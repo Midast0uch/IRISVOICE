@@ -45,8 +45,14 @@ def _cm(pages):
 
 @pytest.fixture(autouse=True)
 def _no_embedding(monkeypatch):
-    """BM25-only scoring — no embedding service load in these tests."""
-    monkeypatch.setattr("crawler.rerank._embed", lambda texts: None)
+    """BM25-only scoring — no embedding service load in these tests.
+
+    The stub signature tracks production ``_embed(texts, deadline=None)``
+    (session 244 added the deadline kwarg; this stub predated it and every
+    test here failed on TypeError until the stub caught up). Still returns
+    None -> BM25-only, which is all these tests ever needed.
+    """
+    monkeypatch.setattr("crawler.rerank._embed", lambda texts, deadline=None: None)
 
 
 # ── AC1: distinguishable states ─────────────────────────────────────────

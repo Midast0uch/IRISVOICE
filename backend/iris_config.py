@@ -530,6 +530,18 @@ class IRISConfig:
     tts: TTSConfig = field(default_factory=TTSConfig)
     ports: PortConfig = field(default_factory=PortConfig)
     field_values: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    # Session 247: unknown top-level keys (e.g. "approved_tools", "mode" —
+    # written by the permission system and the launcher) are captured here on
+    # load and re-emitted on save. Without this, EVERY save_config call
+    # (including routine save_field_values from the frontend) silently DROPPED
+    # foreign keys — which is why standing tool approvals vanished minutes
+    # after being written and the agent re-asked permission forever.
+    extra: Dict[str, Any] = field(default_factory=dict)
+
+    _KNOWN_KEYS = frozenset({
+        "routing", "inference", "swarm_roles", "system",
+        "tts", "ports", "field_values",
+    })
 
     def to_dict(self) -> Dict[str, Any]:
         d = {
@@ -542,10 +554,17 @@ class IRISConfig:
         }
         if self.field_values:
             d["field_values"] = self.field_values
+        # Session 247: re-emit foreign keys (approved_tools, mode, …) so
+        # save_config can never silently drop them again.
+        if self.extra:
+            for k, v in self.extra.items():
+                d.setdefault(k, v)
         return d
 
     @classmethod
     def from_dict(cls, raw: Dict[str, Any]) -> "IRISConfig":
+        known = cls._KNOWN_KEYS
+        extra = {k: v for k, v in raw.items() if k not in known}
         return cls(
             routing=RoutingConfig.from_dict(raw.get("routing", {})),
             inference=InferenceConfig.from_dict(raw.get("inference", raw)),
@@ -554,6 +573,7 @@ class IRISConfig:
             tts=TTSConfig.from_dict(raw.get("tts", {})),
             ports=PortConfig.from_dict(raw.get("ports", {})),
             field_values=raw.get("field_values", {}),
+            extra=extra,
         )
 
 

@@ -38,6 +38,7 @@ details["raw"]. FAULTLINE adds structure on top; it never replaces truth.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from collections import Counter
@@ -150,6 +151,68 @@ def resolve_label(label: str) -> Optional[LabelSpec]:
     """Layer 2 lookup. Returns None for unregistered labels (Layer 3 path)."""
     with _LABELS_LOCK:
         return ERROR_LABELS.get(label)
+
+
+# ── The wall ledger (FAULTLINE read-side, session 247) ──────────────────────
+#
+# FAULTLINE shipped as a write-only ledger: tool_bridge stamped every failure
+# with typed dimensions, but NO dispatch path ever read them back. The live
+# proof (session 247, conv-41): spacedaily.com parked with reason=challenge at
+# 14:56 — a `walled` label, retryable:no by definition — and was RE-DISPATCHED
+# anyway at 15:13, because the parked-source registry is keyed
+# run_id|domain and each crawl round mints a NEW run_id. Classification
+# without enforcement.
+#
+# The wall ledger is the missing read side: a small domain-keyed TTL map that
+# records non-retryable walls (challenge / bot-protection) as they happen and
+# answers ONE question at dispatch time — "did this domain recently prove
+# itself walled?" — so the orchestrator can skip instead of re-lose the
+# round-trip. TTL-bounded so a wall that later clears (site fixes bot config,
+# different egress) resumes normal service without a restart.
+
+_WALL_LEDGER_TTL_S = float(os.environ.get("IRIS_WALL_LEDGER_TTL_S", "900"))
+_wall_ledger: Dict[str, float] = {}   # domain -> monotonic timestamp of last walled outcome
+_wall_lock = threading.Lock()
+
+
+def record_wall(domain: str) -> None:
+    """Record that `domain` produced a retryable:no wall outcome. Never raises."""
+    d = (domain or "").strip().lower()
+    if not d:
+        return
+    try:
+        with _wall_lock:
+            _wall_ledger[d] = time.monotonic()
+    except Exception:
+        pass
+
+
+def is_walled(domain: str) -> bool:
+    """True when `domain` has a live (non-expired) wall record — i.e. FAULTLINE
+    says retryable:no for it right now. Dispatch sites consult this BEFORE
+    spending a crawl round on the domain."""
+    d = (domain or "").strip().lower()
+    if not d:
+        return False
+    try:
+        now = time.monotonic()
+        with _wall_lock:
+            ts = _wall_ledger.get(d)
+            if ts is None:
+                return False
+            if now - ts > _WALL_LEDGER_TTL_S:
+                # Expired — lazy eviction keeps the map bounded without a sweeper.
+                _wall_ledger.pop(d, None)
+                return False
+            return True
+    except Exception:
+        return False
+
+
+def reset_wall_ledger_for_testing() -> None:
+    global _wall_ledger
+    with _wall_lock:
+        _wall_ledger = {}
 
 
 # ── Layer 3: the unclassified bucket ────────────────────────────────────────

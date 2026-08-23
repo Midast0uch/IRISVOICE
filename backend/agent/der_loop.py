@@ -384,13 +384,25 @@ class DirectorQueue:
             return ExecutionMode.FULL
 
         # ── Step 5: task_class with low/medium confidence ──────────────
-        if task_class in ("research", "explore", "investigate", "complex"):
+        # Session 247 FIX: the TaskClassifier emits SUFFIXED labels
+        # ("research_task", "code_task", "planning_task" — see
+        # TASK_CLASS_SPACE_MAP in kyudo.py), but this matcher compared bare
+        # "research"/"explore"/… — labels the classifier NEVER emits. Every
+        # classified task therefore fell through to the AGENTIC default
+        # (legacy card-less execution: no card_id on events, no terminal
+        # task:done, frozen verbs). Normalize the suffix before matching.
+        _tc = (
+            task_class[:-5]
+            if isinstance(task_class, str) and task_class.endswith("_task")
+            else task_class
+        )
+        if _tc in ("research", "explore", "investigate", "complex"):
             return ExecutionMode.FULL if confidence > 0.5 else ExecutionMode.AGENTIC
 
-        if task_class in ("tool_request", "multi_step", "complex_command"):
+        if _tc in ("tool_request", "multi_step", "complex_command"):
             return ExecutionMode.AGENTIC
 
-        if task_class == "voice_first":
+        if _tc == "voice_first":
             # Voice with auto preference — decide by content, not by mode
             return ExecutionMode.AGENTIC if msg_len > MESSAGE_LENGTH_SHORT else ExecutionMode.QUICK
 

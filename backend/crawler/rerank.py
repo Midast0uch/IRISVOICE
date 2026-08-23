@@ -27,6 +27,13 @@ from .orchestrator import Passage
 # every search behind a cold local embedding model.
 _EMBED_BUDGET_S = float(os.environ.get("IRIS_RERANK_EMBED_BUDGET_S", "20"))
 
+# Session 247: circuit-breaker cooldown. After one embed pass exceeds its
+# budget, embedding is skipped entirely for this many seconds — later reranks
+# in the same search run degrade to BM25 instantly instead of re-burning the
+# full budget each time. Tunable; 300s covers a typical multi-round search.
+_EMBED_BREAKER_COOLDOWN_S = float(os.environ.get("IRIS_RERANK_EMBED_BREAKER_COOLDOWN_S", "300"))
+_embed_disabled_until = 0.0
+
 logger = logging.getLogger(__name__)
 
 RERANK_THRESHOLD = float(__import__("os").environ.get("CRAWL_RERANK_THRESHOLD", "0.3"))
@@ -138,15 +145,35 @@ def _embed(texts: list[str], deadline: Optional[float] = None) -> Optional[list[
     embedding pass: on exceed we return None and the caller degrades to
     BM25-only, which is instant and already the designed fallback. Speed is
     guaranteed by bounded work, not by hope.
+
+    Session 247 (live websearch, conv-41): the budget alone was not enough —
+    a single search run calls rerank MULTIPLE times (once per crawl round),
+    and when the embedding backend is slow/cold every call burned its FULL
+    20s budget before degrading (observed twice in one run = 40s of pure
+    stall, log lines "[rerank] embed budget 20s exceeded"). A module-level
+    circuit breaker now remembers the exceed and skips embedding entirely
+    for a cooldown window: the first rerank pays at most the budget, every
+    later rerank in that window degrades to BM25 instantly. The breaker is
+    time-based, so a warm embedding backend resumes normal service without
+    a restart.
     """
     budget_note = f"embed budget {_EMBED_BUDGET_S:.0f}s exceeded"
+    global _embed_disabled_until
+    if deadline is not None and time.monotonic() < _embed_disabled_until:
+        logger.debug("[rerank] embed breaker open — skipping straight to BM25-only")
+        return None
     try:
         from backend.memory.embedding import get_embedding_service
         svc = get_embedding_service()
         out = []
         for t in texts:
             if deadline is not None and time.monotonic() > deadline:
-                logger.warning("[rerank] %s — falling back to BM25-only", budget_note)
+                _embed_disabled_until = time.monotonic() + _EMBED_BREAKER_COOLDOWN_S
+                logger.warning(
+                    "[rerank] %s — falling back to BM25-only; embedding skipped "
+                    "for the next %.0fs",
+                    budget_note, _EMBED_BREAKER_COOLDOWN_S,
+                )
                 return None
             out.append(svc.encode(t))
         return out

@@ -221,3 +221,32 @@ and unrelated (stash-control verified, session 244).
 - `pin_4979f57589c6` — run-budget root cause (88.6s GitHub page vs 90s budget)
 - `pin_5c3c379e2505` — bidirectional fetch optimization handoff
 - Session 244 · live-test campaign per `pin_4c8330dffa72` / `pin_5d9ec24c241e`
+
+---
+
+## 11. Session 247 — the read side ships (wall ledger + loop bounds)
+
+FAULTLINE launched write-only: every failure was *classified*, but no dispatch
+path ever consulted the classification. The live proof arrived in conv-41:
+spacedaily.com parked with `reason=challenge` (a `walled` label,
+`retryable:no` by definition) at 14:56 and was **re-dispatched anyway at
+15:13** — the parked-source registry is keyed `run_id|domain`, and each crawl
+round mints a new run_id, so the lesson evaporated between rounds. 18 dispatch
+rounds / 30+ minutes of churn followed.
+
+Three layers closed the gap. FAULTLINE now has a read side, and the DER loop
+gained the positive-space counterpart (sufficiency) it never had:
+
+| Layer | Mechanism | Where | Cuts |
+|---|---|---|---|
+| Read side | **Wall ledger** — domain-keyed TTL map (`record_wall` / `is_walled`), written by `_park_source` on non-retryable walls, consulted by `dispatch_urls` BEFORE spending a round-trip | `tool_errors.py` + `orchestrator.py` | re-fetching domains that already proved walled |
+| Sufficiency gate | Before grafting gather children on verify_failed, one cheap reasoning call judges accumulated findings vs the objective: sufficient → skip the graft, finalize over what exists. Advisory on failure (gate errors fall through to the old behavior) | `agent_kernel._der_findings_sufficient` at the split site | mindless broadened re-search rounds after enough is already known |
+| Backstops | Zero-yield cutoff (2 consecutive jobs with 0 usable pages in a 10-min window → next research fails fast + honestly; fast-fails don't refresh the window) and a turn wall-clock (`IRIS_DER_TURN_BUDGET_S`, default 600 s) as pure last-resort | `orchestrator.research()` + DER main loop | any residual pathology |
+
+**Design rule going forward:** a taxonomy without a consumer is decoration.
+Every FAULTLINE dimension added from here on must name the dispatch/planning
+site that reads it.
+
+Tests: `backend/tests/unit/test_search_loop_bounds.py` (15) — ledger TTL +
+normalization, gate parse/fallback semantics, zero-yield trip/reset/isolation/
+aging.

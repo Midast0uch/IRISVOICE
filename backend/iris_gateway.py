@@ -312,6 +312,23 @@ class IRISGateway:
         except Exception as e:  # never block startup on this
             self._logger.warning(f"[IRISGateway] embedding pre-warm schedule failed: {e}")
 
+        # Session 247: pre-warm the CRAWL WORKER path at boot. crawl_runner
+        # spawns a fresh worker subprocess per crawl (crash isolation by
+        # design), so every search pays the Playwright/Chromium cold-start —
+        # historically ~17s warm-cache, measured 65s live (conv-42) when the
+        # OS file cache was cold. That 65s came straight out of the job's 90s
+        # run budget and parked ALL five sources as run_budget before real
+        # fetching began. One throwaway crawl against THIS backend's own
+        # /health endpoint (no external network, always up) warms the Python
+        # imports, the Chromium binaries in the file cache, and the browser
+        # launch path — the same OS-cache effect that took a measured launch
+        # from 16.76s (cold) to 2.25s (warm). Failure is non-fatal and logged.
+        try:
+            loop.create_task(self._prewarm_crawl_worker())
+            self._logger.info("[IRISGateway] Crawl worker pre-warm scheduled.")
+        except Exception as e:  # never block startup on this
+            self._logger.warning(f"[IRISGateway] crawl pre-warm schedule failed: {e}")
+
     async def _prewarm_embedding_encoder(self) -> None:
         """Load the shared EmbeddingService encoder in a background thread at boot.
 
@@ -333,7 +350,15 @@ class IRISGateway:
             t0 = time.monotonic()
             # encode_with_meta("") triggers _load_active_backend (lazy, latched,
             # bounded) without doing real inference work.
-            await asyncio.to_thread(svc.encode_with_meta, "")
+            #
+            # Session 247 FIX: "" was NOT enough once the sidecar landed — the
+            # empty-text short-circuit returns a zero vector without touching
+            # the model, so llama-server's FIRST REAL inference (graph compile
+            # / CPU warmup) fired inside the user's first search instead:
+            # measured 51-52s stall at the TaskClassifier/episodic-recall step
+            # (conv-47/conv-49). Encode a real probe string so the warmup cost
+            # is paid here, at boot.
+            await asyncio.to_thread(svc.encode_with_meta, "embedding pre-warm probe")
             self._logger.info(
                 "[IRISGateway] embedding encoder pre-warmed in %.1fs (backend=%s)",
                 time.monotonic() - t0,
@@ -341,6 +366,44 @@ class IRISGateway:
             )
         except Exception as exc:
             self._logger.warning(f"[IRISGateway] embedding encoder pre-warm failed: {exc}")
+
+    async def _prewarm_crawl_worker(self) -> None:
+        """Session 247: warm the crawl worker's cold-start path at boot.
+
+        Runs ONE throwaway subprocess crawl against this backend's own
+        /health endpoint. The point is not the result — it is paying the
+        crawl4ai/playwright import cost and the Chromium binary file-cache
+        miss NOW, off the critical path, instead of inside the first real
+        search's 90s run budget (live conv-42: a 65s cold INIT parked all
+        five sources as run_budget before any page was fetched). Delayed
+        briefly so backend startup (port bind) completes first. Never raises.
+        """
+        try:
+            await asyncio.sleep(20)  # let the HTTP server finish binding first
+            from backend.crawler.crawl_runner import run_crawl_subprocess
+
+            t0 = time.monotonic()
+            # run_crawl_subprocess is async — await it directly. (A previous
+            # revision wrapped it in asyncio.to_thread, which merely created
+            # a coroutine object and never ran it: "'coroutine' object has
+            # no attribute 'pages'".)
+            result = await run_crawl_subprocess(
+                "prewarm",
+                ["http://127.0.0.1:8090/health"],
+                "Warm the crawler; output unused.",
+                max_pages=1,
+                timeout_s=120,
+                job_id="prewarm-boot",
+            )
+            self._logger.info(
+                "[IRISGateway] crawl worker pre-warm done in %.1fs "
+                "(pages=%d error=%s) — Chromium path now file-cache warm",
+                time.monotonic() - t0,
+                len(result.pages or []),
+                getattr(result, "error", None),
+            )
+        except Exception as exc:
+            self._logger.warning(f"[IRISGateway] crawl worker pre-warm failed: {exc}")
 
     async def _broadcast_inference_snapshot(
         self, session_id: Optional[str], router: Any = None

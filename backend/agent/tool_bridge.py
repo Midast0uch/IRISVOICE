@@ -2172,6 +2172,13 @@ class AgentToolBridge:
                 "detail": _label,
                 "detail_url": url or "",
                 "detail_progress": f"{page_number}/{total}",
+                # Session 247: carry the structured phase so page reads create
+                # their own progressive step node (READ) instead of only
+                # feeding the THK stream. Same sequence value for every page
+                # of this phase — the first frame creates the node, the rest
+                # update its detail.
+                "phase": "fetching",
+                "phase_sequence": 2,
             }
             try:
                 _bus.emit(

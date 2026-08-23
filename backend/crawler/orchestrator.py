@@ -71,7 +71,14 @@ _DEFAULT_CONCURRENCY = int(os.environ.get("CRAWL_CONCURRENCY", "3"))
 # The number of sources must NOT change how long a search takes — a run gathers
 # what it can inside the ceiling and reports honestly on the rest, rather than
 # growing without limit as the planner returns more candidates.
-_RUN_BUDGET_MS = int(os.environ.get("IRIS_WEBSEARCH_MAX_WALL_MS", "90000"))
+# Session 247: raised 90s -> 150s. Live evidence (conv-42/conv-46): with the
+# boot pre-warm the worker INIT is fast, but heavy real-world pages (press
+# sites, electrive) legitimately need 60-120s — at 90s they were parked as
+# run_budget mid-fetch even though nothing was wrong, which both lost sources
+# and spammed REQ-13 question cards for pseudo-walls. 150s still bounds the
+# worst case (a hung page cannot eat more than its share) while letting real
+# pages finish.
+_RUN_BUDGET_MS = int(os.environ.get("IRIS_WEBSEARCH_MAX_WALL_MS", "150000"))
 
 # Problem-1 fix (REQ-10 escalation tier, REQ-6 AC1 edge): fresh-failure
 # reasons where an interactive vision session plausibly recovers content
@@ -340,6 +347,51 @@ class CrawlOrchestrator:
         # (the structured outcome DER's reviewer reads instead of a content-free
         # "empty_result") and to skip the provably-futile broadened retry.
         self._parks_by_job: dict[str, list[tuple[str, str]]] = {}
+        # Session 247: zero-yield cutoff — per-session rolling record of recent
+        # job outcomes. Two consecutive jobs with ZERO usable pages inside the
+        # window means the environment is not yielding content right now (walls,
+        # dead sources, offline); further full-funnel runs would each burn their
+        # whole budget to learn the same thing. The next research() for that
+        # session fails fast and honestly instead. Keyed by session so one
+        # busy session can never suppress another's searches.
+        self._zero_yield_window_s = float(
+            os.environ.get("IRIS_ZERO_YIELD_WINDOW_S", "600")
+        )
+        self._zero_yield_limit = int(os.environ.get("IRIS_ZERO_YIELD_LIMIT", "2"))
+        self._recent_yields: dict[str, list[tuple[float, int]]] = {}
+
+    def _record_yield(self, session_id: str, usable: int) -> None:
+        """Append a job outcome to the session's zero-yield window. Never raises."""
+        try:
+            now = time.monotonic()
+            buf = self._recent_yields.setdefault(session_id or "", [])
+            buf.append((now, usable))
+            cutoff = now - self._zero_yield_window_s
+            while buf and buf[0][0] < cutoff:
+                buf.pop(0)
+            # Bound memory: the window only ever needs the last few outcomes.
+            while len(buf) > 8:
+                buf.pop(0)
+        except Exception:
+            pass
+
+    def _zero_yield_tripped(self, session_id: str) -> bool:
+        """True when the last N (limit) jobs in this session's window ALL had
+        zero usable pages — the stop-throwing-good-budget-after-bad signal."""
+        try:
+            now = time.monotonic()
+            cutoff = now - self._zero_yield_window_s
+            buf = self._recent_yields.get(session_id or "") or []
+            # Prune expired entries on read too: a quiet period must clear the
+            # streak even if no new job ran to trigger _record_yield's prune.
+            buf = [e for e in buf if e[0] >= cutoff]
+            if session_id:
+                self._recent_yields[session_id] = buf
+            if len(buf) < self._zero_yield_limit:
+                return False
+            return all(u == 0 for _, u in buf[-self._zero_yield_limit:])
+        except Exception:
+            return False
 
     async def research(
         self,
@@ -358,6 +410,25 @@ class CrawlOrchestrator:
         if not job_id:
             job_id = uuid.uuid4().hex
         _emit = self._make_emitter(on_progress, session_id)
+
+        # Session 247: zero-yield cutoff. When this session's last N jobs ALL
+        # returned zero usable pages inside the window, the environment is not
+        # yielding content — run the full funnel again and it will burn its
+        # whole budget (planner + dispatch + rerank + extract) to relearn that.
+        # Fail fast and honestly instead; DER synthesizes from what it has.
+        # Fast-fail outcomes are deliberately NOT recorded, so the window
+        # ages out and a real attempt happens again after the quiet period.
+        if self._zero_yield_tripped(session_id):
+            logger.warning(
+                "[CrawlOrchestrator] zero_yield_cutoff session=%s query=%s — "
+                "last %d jobs yielded 0 usable pages within %.0fs; failing fast "
+                "(honest REQ-15 outcome)",
+                session_id or "unknown", query[:60],
+                self._zero_yield_limit, self._zero_yield_window_s,
+            )
+            _emit("CRAWLER_ERROR", {"message": "recent crawls yielded no usable content"})
+            await self._drain_log_tasks()
+            return self._empty(query, t_start, "recent crawls yielded no usable content")
 
         # 1) PLAN (REQ-2)
         plan: CrawlPlan = await self._plan(query)
@@ -568,6 +639,10 @@ class CrawlOrchestrator:
             return self._finalize(fetched, query, t_start, error=fetched.error)
 
         ok_pages = [p for p in fetched.pages if page_is_usable(p).usable]
+        # Session 247: record this job's yield for the zero-yield cutoff.
+        # Placed AFTER the broadened-retry branch so the record reflects the
+        # job's final fetch outcome, not a zero the retry was about to rescue.
+        self._record_yield(session_id, len(ok_pages))
         if not ok_pages:
             _emit("CRAWLER_ERROR", {"message": "all pages failed to fetch"})
             await self._drain_log_tasks()
@@ -938,6 +1013,28 @@ class CrawlOrchestrator:
 
         async def _dispatch_with_defer_log(idx: int, url: str) -> None:
             nonlocal queued_count
+            # Session 247 (FAULTLINE read-side): consult the wall ledger BEFORE
+            # spending a round-trip. A domain that recently proved itself
+            # walled (challenge/bot-block — retryable:no by label definition)
+            # is skipped, not re-fetched. Recorded as parked so the park
+            # summary stays honest about what was NOT read; no user question
+            # is raised (one was already raised when the wall was first hit).
+            try:
+                from urllib.parse import urlparse as _up3
+
+                _dom = _up3(url).netloc or url
+                from backend.agent.tool_errors import is_walled
+
+                if is_walled(_dom):
+                    logger.info(
+                        "[CrawlOrchestrator] FAULTLINE skip job_id=%s url=%s "
+                        "domain=%s reason=walled_recent (retryable:no, ledger TTL)",
+                        job_id, url[:100], _dom,
+                    )
+                    self._parks_by_job.setdefault(job_id, []).append((_dom, "walled_recent"))
+                    return
+            except Exception:
+                pass  # ledger read must never break dispatch (REQ-10 AC4)
             if sem.locked():
                 queued_count += 1
                 logger.info(
@@ -1056,6 +1153,19 @@ class CrawlOrchestrator:
         """T14 (REQ-13): park a walled source in the shared registry and emit
         CRAWLER_SOURCE_PARKED so the frontend lists it (AC4) and the agent can
         raise one non-blocking question per domain (AC6). Never raises."""
+        # Session 247 (FAULTLINE read-side): a non-retryable wall is a typed
+        # lesson, not just a per-run note. Record it domain-keyed so LATER
+        # jobs (new run_ids every round) skip instead of re-losing the
+        # round-trip — this is what stopped spacedaily.com being re-fetched
+        # 17 minutes after it proved itself walled.
+        try:
+            if wall_kind in ("challenge", "walled", "bot_block"):
+                from urllib.parse import urlparse as _up2
+                from backend.agent.tool_errors import record_wall
+
+                record_wall(_up2(url).netloc or url)
+        except Exception:
+            pass
         # Session 244: ledger the park for this run so research() can attach a
         # structured park_summary to the CrawlResult (DAG awareness).
         try:

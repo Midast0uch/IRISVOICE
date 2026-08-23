@@ -522,6 +522,16 @@ class ToolDecisionBox:
                                                    goal=goal)
 
             # ── 5. Model failure → consult memory (REQ-4 AC3) ──────────
+            # Session 247: log the raw response when parsing produced nothing
+            # — "Model unavailable" was misleading (the model DID answer; its
+            # output just didn't parse into a tool decision). Bounded excerpt
+            # keeps this debug-only and safe.
+            if text:
+                logger.debug(
+                    "[TOOL_DECISION] unparseable resolver response conv=%s "
+                    "raw[:600]=%r",
+                    conversation_id, text[:600],
+                )
             memory_result = self._memory_lookup(goal) if callable(self._memory_lookup) else None
             if memory_result and isinstance(memory_result, dict):
                 mtool = memory_result.get("tool")

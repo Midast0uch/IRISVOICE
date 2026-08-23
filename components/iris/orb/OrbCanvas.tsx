@@ -450,9 +450,18 @@ export const OrbCanvas = React.memo(function OrbCanvas({
       // it; accumulating `dt / duration` changes only the RATE. dt is clamped
       // so a backgrounded tab resuming after seconds cannot fling the shells
       // through several revolutions in one frame.
+      //
+      // Session 247: the clamp MUST match BrowserNavigationOverlay's ring
+      // loop (64 ms there). Both engines are pure integrators — neither ever
+      // re-syncs to absolute time — so on a long frame (crawl rendering,
+      // GC) each previously lost a DIFFERENT amount of advance (36 ms vs
+      // 0 ms past its clamp) and the orb's cadence drifted against the
+      // border comet it is supposed to keep time with. Equal clamps mean
+      // equal lost time, which keeps the RATE locked even when individual
+      // frames are dropped.
       const frameNow = Date.now()
       const dt = lastFrameRef.current
-        ? Math.min(frameNow - lastFrameRef.current, 100)
+        ? Math.min(frameNow - lastFrameRef.current, 64)
         : 16
       lastFrameRef.current = frameNow
       const period = orbitPeriodRef.current

@@ -1501,26 +1501,26 @@ export function useIRISWebSocket(
 
       // ── Permission events ──────────────────────────────────────────────────
       // Forwarded from ToolPermissionSystem to frontend PermissionCard.
+      //
+      // Session 247 (CRITICAL FIX): the event name is NORMALIZED to
+      // underscores. The WS message types carry colons ("permission:request"),
+      // and the naive interpolation produced "iris:permission:request" — but
+      // EVERY listener (chat-view's PermissionCard host, useAgentQuestion)
+      // subscribes to the underscore form ("iris:permission_request",
+      // "iris:question_ask"). Two different strings meant neither card EVER
+      // rendered: permission requests always timed out after 30s (fetch.vision
+      // never approved — live conv-41), and AskUser challenge-wall questions
+      // silently expired. One character class, three dead features.
       case "permission:request":
       case "permission:granted":
-      case "permission:denied": {
-        if (typeof window !== 'undefined') {
-          window.dispatchEvent(new CustomEvent(
-            `iris:${(message as Record<string, unknown>).type}`,
-            { detail: payload }
-          ))
-        }
-        break
-      }
-
-      // ── Agent question events ──────────────────────────────────────────────
-      // Forwarded from AskUserTool to frontend QuestionCard.
+      case "permission:denied":
       case "question:ask":
       case "question:answered":
       case "question:timeout": {
         if (typeof window !== 'undefined') {
+          const rawType = String((message as Record<string, unknown>).type)
           window.dispatchEvent(new CustomEvent(
-            `iris:${(message as Record<string, unknown>).type}`,
+            `iris:${rawType.replace(/:/g, "_")}`,
             { detail: payload }
           ))
         }

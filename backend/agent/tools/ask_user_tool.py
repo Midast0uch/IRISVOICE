@@ -113,10 +113,19 @@ class AskUserTool:
         allow_other: bool = False,
         timeout_seconds: int = ASK_USER_QUESTION_TIMEOUT,
         turn_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        context: Optional[dict] = None,
     ) -> Question:
         """Ask a question and return immediately (non-blocking).
 
         The caller must use wait_for_answer() to block.
+
+        Session 247: ``conversation_id`` and ``context`` are additive —
+        callers (e.g. the web format escalation) pass them so the question
+        card can associate with its conversation and carry structured
+        provenance. They ride the QUESTION_ASK payload; unknown-kwarg
+        TypeErrors here silently killed whole escalations (live: "web format
+        escalation failed").
         """
         question = Question(
             text=text,
@@ -125,6 +134,10 @@ class AskUserTool:
             timeout_seconds=timeout_seconds,
             turn_id=turn_id,
         )
+        if conversation_id:
+            question.conversation_id = conversation_id
+        if context:
+            question.context = context
         self._pending[question.question_id] = question
 
         self._bus.emit(
@@ -135,8 +148,11 @@ class AskUserTool:
                 "options": options or [],
                 "allow_other": allow_other,
                 "timeout_seconds": timeout_seconds,
+                **({"conversation_id": conversation_id} if conversation_id else {}),
+                **({"context": context} if context else {}),
             },
             turn_id=turn_id,
+            conversation_id=conversation_id,
         )
         logger.info(
             "[AskUser] Asked: %s (options=%d, timeout=%ds)",

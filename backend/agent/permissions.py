@@ -22,6 +22,7 @@ from __future__ import annotations
 import enum
 import json
 import logging
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -34,8 +35,14 @@ logger = logging.getLogger(__name__)
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
-PERMISSION_TIMEOUT_SIDE_EFFECT = 30   # seconds
-PERMISSION_TIMEOUT_DESTRUCTIVE = 60   # seconds
+# Session 247: raised 30s -> 120s (matching AskUserTool's question timeout).
+# Live evidence: a permission card surfaced mid-crawl, the user read it and
+# clicked Allow — but the request had already expired silently at 30s, so the
+# click did nothing (the card is not told about expiry; it stays rendered and
+# clickable against a dead request). 120s gives a human time to notice, read,
+# and act. Destructive keeps a tighter window but also gets headroom.
+PERMISSION_TIMEOUT_SIDE_EFFECT = int(os.environ.get("IRIS_PERMISSION_TIMEOUT_SIDE_EFFECT_S", "120"))
+PERMISSION_TIMEOUT_DESTRUCTIVE = int(os.environ.get("IRIS_PERMISSION_TIMEOUT_DESTRUCTIVE_S", "180"))
 
 
 # ── Enums ──────────────────────────────────────────────────────────────────
@@ -115,6 +122,22 @@ _READ_ONLY_TOOLS: set = {
     "get_tool_info",
     "list_resources",
     "read_resource",
+    # Session 247: fetch.vision — the LFM-VL-driven headless-browser read of
+    # walled/challenge pages. Same risk profile as crawler_query/web_search
+    # (reads PUBLIC pages in a disposable browser session; touches no user
+    # state), but it was missing from every tier list, so classify_tool's
+    # unknown-default made it SIDE_EFFECT -> require_approval -> 30s timeout
+    # -> node failed whenever no human was watching (live conv-41 15:37:
+    # router selected fetch.vision, permission timed out, VLM never launched,
+    # zero vision actions all day). Reclassified per the session-246
+    # decision-C precedent. If you consider browser automation side-effectful,
+    # veto this and it goes back to requiring approval.
+    "fetch.vision",
+    # Session 247: get_rendered_documents — pure READ of documents the agent
+    # itself stored earlier in the same conversation. Was unknown-default
+    # SIDE_EFFECT: live conv-46 showed "Execute get_rendered_documents"
+    # permission cards THREE times (each 30s timeout -> DER retry -> re-ask).
+    "get_rendered_documents",
     # Session 246 (user decision C): cross-thread DISCOVERY tools — purely
     # informational, no state change. list_conversations was defaulting to
     # SIDE_EFFECT (unknown-tool fallback) and its 30s permission timeout
@@ -286,6 +309,30 @@ def classify_tool(tool_name: str, params: Optional[Dict[str, Any]] = None) -> Pe
     elif name_lower in _READ_ONLY_TOOLS:
         base_tier = PermissionTier.READ_ONLY
     else:
+        # Session 247: consult the TOOL REGISTRY before falling back to the
+        # unknown-default. tool_registry.py is the declared single source of
+        # truth ("lets Phase 2's classify_tool read the tier directly" — its
+        # own header comment), and every ToolSpec carries permission_tier.
+        # That wiring never happened, so any registered tool missing from
+        # these hardcoded lists silently became SIDE_EFFECT: live conv-46
+        # showed get_rendered_documents (registry tier read_only!) demanding
+        # approval three times. Lazy import — tool_registry imports
+        # PermissionTier from this module, so a top-level import would cycle;
+        # by call time both modules are loaded.
+        try:
+            from backend.agent.tool_registry import resolve_tool
+
+            _spec = resolve_tool(tool_name)
+            if _spec is not None:
+                _tier = str(getattr(_spec, "permission_tier", "") or "").lower()
+                if _tier == "read_only":
+                    return PermissionTier.READ_ONLY
+                if _tier == "destructive":
+                    return PermissionTier.DESTRUCTIVE
+                if _tier == "side_effect":
+                    return PermissionTier.SIDE_EFFECT
+        except Exception:
+            pass  # registry read must never break classification
         base_tier = PermissionTier.SIDE_EFFECT  # unknown default
 
     # Check params for destructive patterns — escalates any tier to DESTRUCTIVE
@@ -503,6 +550,30 @@ class ToolPermissionSystem:
             logger.warning("[Permissions] respond_to_permission failed: %s", exc)
             return None
 
+    def _broadcast_timeout(self, request: ToolPermissionRequest) -> None:
+        """Session 247: tell the frontend a request expired.
+
+        get_response/get_response_async used to pop the request SILENTLY —
+        the PermissionCard stayed rendered and clickable against a dead
+        request, so Allow clicks did nothing (live report: "couldn't pick
+        the allow option"). Reuses the existing permission:denied wire so
+        chat-view removes the card; the log records the true reason.
+        Never raises.
+        """
+        try:
+            self._bus.emit(
+                self._IRISStreamEvent.PERMISSION_DENIED,
+                data={
+                    "request_id": request.request_id,
+                    "tool_name": request.tool_name,
+                    "reason": "timeout",
+                    "timeout_seconds": request.timeout_seconds,
+                },
+                turn_id=request.turn_id,
+            )
+        except Exception:
+            pass
+
     def get_response(self, request: ToolPermissionRequest, poll_interval: float = 0.1) -> ToolPermissionRequest:
         """Block until the permission request is resolved (approved/denied/timed_out).
 
@@ -523,6 +594,7 @@ class ToolPermissionSystem:
             self._pending.pop(request.request_id, None)
             request.status = "timed_out"
             logger.info("[Permissions] Request %s timed out (%ds)", request.request_id, request.timeout_seconds)
+            self._broadcast_timeout(request)
 
         return request
 
@@ -541,6 +613,8 @@ class ToolPermissionSystem:
         if request.request_id in self._pending:
             self._pending.pop(request.request_id, None)
             request.status = "timed_out"
+            logger.info("[Permissions] Request %s timed out (%ds)", request.request_id, request.timeout_seconds)
+            self._broadcast_timeout(request)
 
         return request
 

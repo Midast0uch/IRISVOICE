@@ -156,6 +156,17 @@ class Embedding:
     truncated: bool       # AC3 bound dropped a tail
 
 
+def _sidecar_enabled() -> bool:
+    """Module-level shim so _load_gguf can consult the sidecar kill-switch
+    without a top-level import (embedding_sidecar imports nothing from this
+    module at load time, but keep the dependency direction one-way anyway)."""
+    try:
+        from backend.memory.embedding_sidecar import enabled
+        return enabled()
+    except Exception:
+        return False
+
+
 def _hash_embed(text: str, dim: int = 384) -> List[float]:
     """
     Lightweight hash-projection embedding — no external dependencies.
@@ -537,6 +548,36 @@ class EmbeddingService:
         )
 
     def _load_gguf(self):
+        # Session 247: SIDECAR FIRST. The in-process llama_cpp load re-parses
+        # and dequantizes all 723 tensors on every backend restart (~3.5 min
+        # CPU-bound; OS file cache does not help). The sidecar is a separate
+        # CPU llama-server (spec-pinned CPU-only per REQ-1 AC6 — unchanged)
+        # that survives backend restarts and idle-stops after 30 min. It
+        # exposes .embed(text) matching the Llama interface, so chunking,
+        # max-pool, caching and provenance are untouched. Any sidecar failure
+        # falls through to the original in-process load below.
+        if _sidecar_enabled():
+            try:
+                from backend.memory.embedding_sidecar import SidecarLlama
+
+                client = SidecarLlama()
+                if client.dim != self.EMBEDDING_DIM:
+                    logger.warning(
+                        "[EmbeddingService] sidecar embedding dim %d != %d; rejecting",
+                        client.dim, self.EMBEDDING_DIM,
+                    )
+                    return None
+                logger.info(
+                    "[EmbeddingService] GGUF backend served by EMBEDDING SIDECAR "
+                    "(persistent CPU llama-server; survives backend restarts)"
+                )
+                return client
+            except Exception as exc:
+                logger.info(
+                    "[EmbeddingService] sidecar unavailable (%s); "
+                    "falling back to in-process GGUF load",
+                    exc,
+                )
         path = self._resolve_gguf_path()
         if not path:
             return None

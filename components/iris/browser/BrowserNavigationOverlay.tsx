@@ -543,6 +543,10 @@ export const BrowserNavigationOverlay = React.memo(function BrowserNavigationOve
       const now = Date.now()
       const elapsed = now - t0
       // Clamp dt so a backgrounded tab resuming does not fling the ring.
+      // Session 247: this clamp MUST stay equal to OrbCanvas's (64 ms) —
+      // both engines integrate phase per frame and never re-sync to absolute
+      // time, so unequal clamps make the orb drift against this ring on any
+      // dropped frame. See the note in OrbCanvas.tsx.
       const dt = Math.min(64, now - (lastFrameRef.current || now))
       lastFrameRef.current = now
       const st = stateRef.current

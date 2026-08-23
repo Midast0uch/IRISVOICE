@@ -118,6 +118,12 @@ except Exception:
             return False
         return depth_layer <= 1 and result_tokens < 400
 
+# Session 247: turn wall-clock safety net (seconds). Defined UNCONDITIONALLY
+# (outside the der_constants import guard) so it exists on both import paths.
+# See the DER main loop — last-resort bound only; the sufficiency gate and
+# zero-yield cutoff are the rational stops, this catches everything else.
+_DER_TURN_BUDGET_S = float(os.environ.get("IRIS_DER_TURN_BUDGET_S", "600"))
+
 # REQ-1 AC8 (T2b, Decision 13 â€” revised 2026-08-19): the user-facing copy for
 # the child steps of a sub-loop split. `branchLabel` is free text on the
 # wire â€” CardChassis's ChassisBranchBadge renders whatever string arrives
@@ -163,10 +169,30 @@ class TaskContext:
                     action = result.get("action", "")
                     result_text = result.get("result", result.get("response", ""))
                     summary_parts.append(
-                        f"Step {i}: {tool_name} ({action}): {result_text[:200]}"
+                        f"Step {i}: {tool_name} ({action}): "
+                        f"{self._bounded_excerpt(result_text)}"
                     )
 
         return "\n".join(summary_parts) if summary_parts else "No tool results."
+
+    @staticmethod
+    @staticmethod
+    def _bounded_excerpt(text: str, cap: int = 6000) -> str:
+        """Session 247 (synthesis starvation, conv-44): the old
+        ``result_text[:200]`` here chopped the brain's evidence to a URL —
+        live: 3 usable pages crawled, browser tabs full of content, and the
+        synthesis still said "the tool did not retrieve the paper's content"
+        because its entire view of the crawl was 200 characters. This is NOT
+        pacman (pacman_store/recall were 0 that run) — it was a prompt-size
+        guard left far too tight. Head+tail excerpt keeps the prompt bounded
+        while the brain actually sees the crawl: intro sentences AND the
+        closing citation block."""
+        t = (text or "").strip()
+        if len(t) <= cap:
+            return t
+        _head = t[: int(cap * 0.7)]
+        _tail = t[-int(cap * 0.3):]
+        return f"{_head}\n[...{len(t) - cap} chars truncated...]\n{_tail}"
 
 
 def _resolve_effective_key(
@@ -667,10 +693,15 @@ class AgentKernel:
                 if ctx.messages and self._conversation_memory is not None:
                     self._conversation_memory.clear()
                     for _m in ctx.messages:
+                        # NOTE: ConversationMemory.add_message has no turn_id
+                        # parameter (session 247) — passing one raised
+                        # TypeError and made EVERY restore fail silently
+                        # (best-effort except), so resumed threads came up
+                        # with empty history. turn_id is store-side
+                        # provenance only; the rolling window does not use it.
                         self._conversation_memory.add_message(
                             _m.role,
                             _m.content,
-                            turn_id=getattr(_m, "turn_id", None),
                         )
                 logger.info(
                     f"[AgentKernel] Restored context for conv={self.conversation_id} "
@@ -4381,6 +4412,13 @@ class AgentKernel:
         if getattr(self, "_last_render_emitted", False):
             # Agent already chose a format and rendered the document. No escalation.
             return
+        # Session 247: this escalation is LEGITIMATE — but it never worked as
+        # a question. Two upstream bugs conspired: (a) ask() TypeErrored on
+        # the conversation_id kwarg, and (b) the QuestionCard never rendered
+        # (iris:question:ask vs iris:question_ask name mismatch), so what the
+        # user actually saw was the get_rendered_documents PERMISSION card
+        # (Allow/Deny) timing out three times. With both fixed, the question
+        # renders properly with its format options.
         try:
             from backend.agent.tools.ask_user_tool import get_ask_user_tool
 
@@ -5706,9 +5744,20 @@ class AgentKernel:
                     except Exception:
                         pass  # never block execution on an event emission failure
 
-                    # Use mode name as task_class so DER_TOKEN_BUDGETS[mode] applies.
-                    # Falls back to _task_class if mode not in budget table.
-                    _der_task_class = (
+                    # Session 247 FIX (recurring — see pin_5b79ddf5f112,
+                    # pin_9e97e21340e7): the planner MODE name ("implement",
+                    # "debug", …) must size the TOKEN BUDGET only. It used to
+                    # REPLACE task_class outright, which (a) sent
+                    # _decide_mode down its unrecognized-class AGENTIC
+                    # default — the legacy card-less path with no card_id on
+                    # events, no terminal task:done, frozen verbs (live
+                    # conv-42) — and (b) made explorer.propose withhold web
+                    # tools, since propose assigns them only for research
+                    # classes. The classifier's label stays authoritative for
+                    # every DECISION; the mode name rides along as
+                    # _der_budget_class purely for DER_TOKEN_BUDGETS lookup.
+                    _der_task_class = _task_class
+                    _der_budget_class = (
                         _mode_name if _mode_name in DER_TOKEN_BUDGETS else _task_class
                     )
                     _der_response = self._der_execute_with_recovery(
@@ -5716,6 +5765,7 @@ class AgentKernel:
                         _context_package=_context_package,
                         _is_mature=_is_mature,
                         _der_task_class=_der_task_class,
+                        _der_budget_class=_der_budget_class,
                         _session=session_id or self.session_id,
                         from_voice=from_voice,
                         _confidence=_confidence,
@@ -6386,6 +6436,7 @@ Respond with a JSON object:
         from_voice: bool,
         _confidence,
         task_id,
+        _der_budget_class: Optional[str] = None,
     ):
         """
         Run the DER plan, catching TopologyViolationException (N.4 + O.6 + RC11)
@@ -6443,6 +6494,7 @@ Respond with a JSON object:
                 from_voice=from_voice,
                 confidence=_confidence,
                 turn_id=task_id,
+                budget_class=_der_budget_class,
             )
         except TopologyViolationException:
             logger.warning(
@@ -6503,6 +6555,7 @@ Respond with a JSON object:
         from_voice: bool = False,
         confidence: float = 0.50,
         turn_id: Optional[str] = None,
+        budget_class: Optional[str] = None,
     ) -> str:
         """
         DER execution cycle: Director â†’ Reviewer â†’ Explorer â†’ repeat until complete.
@@ -6569,7 +6622,12 @@ Respond with a JSON object:
         # Using the reasoning window alone budgeted ~230k for a turn whose tool
         # steps ran on an 8k model (2026-08-16).
         _model_window = self.resolve_turn_context_window()
-        _token_budget: int = resolve_der_token_budget(_model_window, task_class)
+        # Session 247: budget sizing uses budget_class (the planner MODE name,
+        # e.g. "implement") while task_class stays the classifier's label for
+        # every decision. See the call site in the DER entry path.
+        _token_budget: int = resolve_der_token_budget(
+            _model_window, budget_class or task_class
+        )
         _tokens_used: int = 0
         logger.info(
             "[DER] budget=%d from window=%d class=%s (work_units=%d)",
@@ -6702,6 +6760,8 @@ Respond with a JSON object:
                     "id": it.step_id,
                     "description": it.description,
                     "status": "pending",
+                    # Session 247: semantic order for the frontend row sort.
+                    "stepNumber": it.step_number,
                     "toolName": it.tool,
                 }
                 for it in items
@@ -6810,6 +6870,15 @@ Respond with a JSON object:
             not queue.is_complete()
             and not queue.hit_cycle_limit()
             and _tokens_used < _token_budget
+            # Session 247: TURN WALL-CLOCK — the last-resort safety net. The
+            # sufficiency gate and zero-yield cutoff stop the *rational*
+            # churn; this bounds the total so no future bug can ever again
+            # hold a turn open for 30+ minutes (conv-41 ran 18 dispatch
+            # rounds unbounded). Generous by design: 10 min of wall time is
+            # far beyond any healthy websearch turn, so this only fires on
+            # genuine pathology. When it trips, the loop exits to synthesis
+            # over completed steps — partial results reach the user.
+            and (time.perf_counter() - _der_start_time) < _DER_TURN_BUDGET_S
             # REQ-15 AC3: an explicit stop aborts at the next step boundary.
             and not self._der_stop_requested
         ):
@@ -7490,58 +7559,69 @@ Respond with a JSON object:
         # len(completed_items) is authoritative here â€” it is appended only in
         # _der_finalize_step, one per actually-completed step.
         self._der_step_count = len(completed_items)
-        try:
-            from backend.agent.event_bus import get_event_bus, IRISStreamEvent
-            _lifecycle_task_id = _turn_id or plan.original_task[:40]
-            get_event_bus().emit(
-                IRISStreamEvent.TASK_DONE if outcome == "success" else IRISStreamEvent.TASK_FAIL,
-                data={
-                    "task_id": _lifecycle_task_id,
-                    "outcome": outcome,
-                    # REQ-15 AC3 (T25): a stop is explicit â€” the user sees it.
-                    "cancelled": outcome == "cancelled",
-                    "steps_completed": len(completed_items),
-                    "total_steps": len(plan.steps),
-                    "failed_steps": [
-                        {
-                            "step_id": _fi,
-                            "description": next(
-                                (_it.description for _it in queue.items
-                                 if _it.step_id == _fi),
-                                _fi,
-                            ),
-                            "reason": next(
-                                (_it.result for _it in queue.items
-                                 if _it.step_id == _fi),
-                                "",
-                            ) or "",
-                        }
-                        for _fi in queue.failed_ids
-                    ],
-                    # REQ-3 AC6 (T2): card_id stays stable across every
-                    # event of a card's lifetime, not just task:start.
-                    **self._card_envelope(_lifecycle_task_id),
-                },
-                turn_id=_turn_id,
-                conversation_id=self.conversation_id,
-                session_id=_session,
-            )
-            # T4a (REQ-4 AC1): persist the terminal state. Mirrors the same
-            # outcome == "success" condition used to pick TASK_DONE vs
-            # TASK_FAIL above â€” no separate terminal-state taxonomy invented.
-            _envelope = self._card_envelope(_lifecycle_task_id)
-            self._persist_card_snapshot(
-                card_id=_envelope.get("card_id"),
-                conversation_id=self.conversation_id,
-                card_relation="continues",
-                plan_title=self._effective_plan_title(plan),
-                mode=queue.mode.value if getattr(queue, "mode", None) else None,
-                steps=self._queue_steps_snapshot(queue),
-                total_steps=len(queue.items),
-                terminal_state="done" if outcome == "success" else "fail",
-            )
-        except Exception:
-            pass  # EventBus is optional â€” no crash if it fails
+        #
+        # Session 247 (live conv-44): this emit used to run HERE, BEFORE
+        # synthesis. The card flipped to done while the answer did not exist
+        # yet, and the "Synthesizing answer" progress frame arrived ~43s
+        # AFTER task:done with no working card to attach to - the frontend
+        # fabricated a phantom second card (LEGACY_UNKNOWN, THK, timer
+        # running). Done must mean "the answer was delivered": the emit is
+        # now a closure fired by every outcome branch BELOW, right before
+        # it returns its synthesized response.
+        def _emit_terminal_event() -> None:
+            # Never raises; EventBus failures must not block the user response.
+            try:
+                from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+                _lifecycle_task_id = _turn_id or plan.original_task[:40]
+                get_event_bus().emit(
+                    IRISStreamEvent.TASK_DONE if outcome == "success" else IRISStreamEvent.TASK_FAIL,
+                    data={
+                        "task_id": _lifecycle_task_id,
+                        "outcome": outcome,
+                        # REQ-15 AC3 (T25): a stop is explicit â€” the user sees it.
+                        "cancelled": outcome == "cancelled",
+                        "steps_completed": len(completed_items),
+                        "total_steps": len(plan.steps),
+                        "failed_steps": [
+                            {
+                                "step_id": _fi,
+                                "description": next(
+                                    (_it.description for _it in queue.items
+                                     if _it.step_id == _fi),
+                                    _fi,
+                                ),
+                                "reason": next(
+                                    (_it.result for _it in queue.items
+                                     if _it.step_id == _fi),
+                                    "",
+                                ) or "",
+                            }
+                            for _fi in queue.failed_ids
+                        ],
+                        # REQ-3 AC6 (T2): card_id stays stable across every
+                        # event of a card's lifetime, not just task:start.
+                        **self._card_envelope(_lifecycle_task_id),
+                    },
+                    turn_id=_turn_id,
+                    conversation_id=self.conversation_id,
+                    session_id=_session,
+                )
+                # T4a (REQ-4 AC1): persist the terminal state. Mirrors the same
+                # outcome == "success" condition used to pick TASK_DONE vs
+                # TASK_FAIL above â€” no separate terminal-state taxonomy invented.
+                _envelope = self._card_envelope(_lifecycle_task_id)
+                self._persist_card_snapshot(
+                    card_id=_envelope.get("card_id"),
+                    conversation_id=self.conversation_id,
+                    card_relation="continues",
+                    plan_title=self._effective_plan_title(plan),
+                    mode=queue.mode.value if getattr(queue, "mode", None) else None,
+                    steps=self._queue_steps_snapshot(queue),
+                    total_steps=len(queue.items),
+                    terminal_state="done" if outcome == "success" else "fail",
+                )
+            except Exception:
+                pass  # EventBus is optional â€” no crash if it fails
 
         try:
             if self._memory_interface:
@@ -7678,10 +7758,12 @@ Respond with a JSON object:
             except Exception:
                 pass
             if _synthesis:
+                _emit_terminal_event()
                 return _synthesis
             # LLM synthesis unavailable (e.g. model rate-limited â€” the very
             # failure that broke the step) -> deterministic fallback so the user
             # is NEVER left with silence (Part B).
+            _emit_terminal_event()
             return AgentKernel._der_deterministic_failure_summary(
                 plan, completed_items, queue
             )
@@ -7710,11 +7792,13 @@ Respond with a JSON object:
             except Exception:
                 pass
             if _synthesis:
+                _emit_terminal_event()
                 return _synthesis
             # REQ-12 (AC4): synthesis unavailable (e.g. reasoning provider
             # down) -> deterministic success summary mirroring
             # _der_deterministic_failure_summary so the user is never left
             # with raw concatenation (Part B symmetry).
+            _emit_terminal_event()
             return AgentKernel._der_deterministic_success_summary(
                 plan, completed_items, queue
             )
@@ -7725,6 +7809,7 @@ Respond with a JSON object:
         # an actionable explanation instead of the generic "couldn't generate".
         # REQ-16 AC2 (T32): zero usable steps is NOT a natural exit.
         self._der_stamp_session_exit(False)
+        _emit_terminal_event()
         return (
             f"[DER] {plan.strategy} â€” "
             f"{len(completed_items)}/{len(plan.steps)} steps completed.  "
@@ -7941,6 +8026,12 @@ Respond with a JSON object:
                 {
                     "id": it.step_id,
                     "description": it.description,
+                    # Session 247: step_number rides the snapshot so the
+                    # frontend can render rows in SEMANTIC order. Live-discovered
+                    # children (grafts) used to land out of order after a
+                    # task:start merge because insertion order != execution
+                    # order.
+                    "stepNumber": it.step_number,
                     "status": (
                         "done" if it.step_id in queue.completed_ids
                         else "failed" if it.step_id in queue.failed_ids
@@ -8825,6 +8916,38 @@ Respond with a JSON object:
         except Exception:  # noqa: BLE001 â€” classification must never break recovery
             _split_ok = True
         if _split_ok and item.critical and queue.graft_attempts < DER_MAX_GRAFTS:
+            # ── Session 247: GOAL-SUFFICIENCY GATE ──────────────────────────
+            # Before grafting another round of gather children, ask the one
+            # question the loop never asked: do the findings ALREADY collected
+            # satisfy the objective? Live evidence (conv-41, session 247): a
+            # websearch task ran 18 dispatch rounds over 30+ minutes because
+            # every verify_failed grafted more search steps even after the
+            # crawls had returned plenty of usable content — per-step
+            # verification could see each step in isolation, but nothing ever
+            # assessed goal-level sufficiency of the accumulated whole. When
+            # the gate says sufficient, skip the graft: the loop proceeds to
+            # synthesis over what it has (the failed step stays recorded as a
+            # failure — failure recorded AND shown, never hidden).
+            # Advisory on failure: any gate error falls through to the graft,
+            # preserving the pre-existing behavior exactly.
+            if (getattr(item, "tool", None) or "").lower() in self._DER_GATHER_TOOLS:
+                try:
+                    _suff, _missing = self._der_findings_sufficient(
+                        plan.original_task or "", completed_items
+                    )
+                except Exception:
+                    _suff, _missing = False, ""
+                if _suff:
+                    logger.info(
+                        "[DER] sufficiency gate TRIPPED for %s — accumulated "
+                        "findings satisfy the objective; graft skipped "
+                        "(missing: %s)", item.step_id, (_missing or "none")[:120],
+                    )
+                    return aborted
+                logger.debug(
+                    "[DER] sufficiency gate open for %s (missing: %s)",
+                    item.step_id, (_missing or "unassessed")[:120],
+                )
             try:
                 _cad = self._der_live_cad_state(_session)
                 _wu = getattr(self, "_der_work_units", 0)
@@ -9948,6 +10071,61 @@ Respond with a JSON object:
     def _der_evidence_cap(tool: Optional[str]) -> int:
         """Evidence window for a step result, by tool kind."""
         return 8000 if (tool or "").lower() in AgentKernel._DER_GATHER_TOOLS else 400
+
+    def _der_findings_sufficient(
+        self, objective: str, completed_items: List[Any]
+    ) -> tuple:
+        """
+        Session 247: goal-level sufficiency check — the mindful-search gate.
+
+        DER's per-step verifier grades each step in isolation; nothing ever
+        asked whether the ACCUMULATED findings already answer the user's
+        question. This method does exactly that, once, at the graft decision:
+        a bounded digest of completed step results plus the objective goes to
+        one cheap reasoning call, which answers
+              {"sufficient": bool, "missing": "..."}
+        True  -> the caller skips grafting more gather rounds and lets the
+                 loop finalize over what it has.
+        False -> graft proceeds (missing aspects are logged for targeting).
+
+        NEVER raises. On any inference/parse failure returns (False, "") so
+        the gate is advisory and pre-existing behavior is preserved — a broken
+        gate must not change loop semantics, only a working one may.
+        """
+        import re as _re2
+
+        if not completed_items:
+            return False, ""
+        # Bounded digest: head+tail excerpt per result, newest last, capped so
+        # the prompt stays small regardless of how many steps completed.
+        _parts: List[str] = []
+        for _idx, _it in enumerate(completed_items[-6:]):
+            _txt = (getattr(_it, "result", "") or "")[:1200]
+            if not _txt:
+                continue
+            _parts.append(f"[{_idx + 1}] {self._smart_excerpt(_txt, 600)}")
+        if not _parts:
+            return False, ""
+        _digest = "\n".join(_parts)
+        _prompt = (
+            f"OBJECTIVE: {objective[:500]}\n\n"
+            f"FINDINGS COLLECTED SO FAR:\n{_digest}\n\n"
+            "Do the findings above contain enough information to satisfy the "
+            "objective on their own? Judge as a strict editor: sufficient means "
+            "the objective could be answered NOW without any further searching.\n"
+            'Reply with JSON only: {"sufficient": true or false, "missing": '
+            '"what is still missing, or empty string"}'
+        )
+        try:
+            _raw = self.infer(_prompt, role="reasoning", max_tokens=100, temperature=0.0)
+            _m = _re2.search(r"\{[\s\S]+\}", _raw.raw_text or "")
+            if not _m:
+                return False, ""
+            _data = json.loads(_m.group())
+            return bool(_data.get("sufficient")), str(_data.get("missing", ""))[:300]
+        except Exception as _gate_exc:
+            logger.debug("[DER] sufficiency gate inference failed: %s", _gate_exc)
+            return False, ""
 
     @staticmethod
     def _smart_excerpt(text: str, cap: int) -> str:
@@ -13191,13 +13369,16 @@ If any tools failed, address those issues in your response.
 
         return status
 
-    def clear_conversation(self) -> None:
-        """Clear conversation history for the current session."""
-        if self._conversation_memory:
-            self._conversation_memory.clear()
-            logger.info(
-                f"[AgentKernel] Conversation cleared for session {self.session_id}"
-            )
+    # NOTE (session 247): a second, arg-less `clear_conversation` used to be
+    # defined HERE and silently SHADOWED the real one near the top of this
+    # class (line ~590). Python class bodies keep the LAST def, so every
+    # `clear_conversation(conversation_id)` call from iris_gateway raised
+    # "takes 1 positional argument but 2 were given" — logged as
+    # "[Chat] Failed to clear previous conversation ..." on every new-thread
+    # switch, meaning the previous thread's kernel context was never cleared
+    # and could leak into the new thread. The duplicate is removed; the real
+    # definition handles both call shapes (conversation_id optional, defaulting
+    # to the kernel's current thread).
 
     def get_conversation_context(
         self, max_messages: Optional[int] = None
