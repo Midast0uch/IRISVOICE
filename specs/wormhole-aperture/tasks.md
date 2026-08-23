@@ -2,6 +2,13 @@
 
 **Supersedes:** `specs/node-chains/tasks.md` (merged in as Stage C)
 **Requirements:** `requirements.md` · **Design:** `design.md`
+**START HERE:** read pin `pin_090347eb440f` before Stage 0 — the implementing-agent
+brief, covering the objective, the UNSETTLED substrate decision, the 14 gaps found by
+re-reading the three source docs, what is already built and waiting, and the five wrong
+claims made while writing this spec so they are not repeated.
+**Card work:** `docs/architecture/TASK_CARD.md` §7 is the checklist for anything you add
+to the card surface.
+
 **BLOCKED on:** `specs/der-ground-truth/` — see gate G-DEP below. Do not start Wave 0 here
 until that spec's GT-G4 has passed.
 
