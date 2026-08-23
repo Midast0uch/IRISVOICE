@@ -469,6 +469,25 @@ until that spec's GT-G4 has passed.
   promotion/refusal, graft accept/reject logged and session-scoped; rate-limited rollups;
   bounded retention; nothing inline. — RIPPLE: T4's emitter.
 
+- [ ] **T68** (REQ-46): Cause-based retrieval keyed on the FAULTLINE dimension triple
+  `(retryable, blame, info_state)`, with nearest-neighbour lookup inside that 3x3x3
+  lattice, and the triple folded into hyperedge region scoping. - RIPPLE:
+  **FAULTLINE section 5 names THIS SPEC as the consumer** ("the fixed-field recall shape
+  Wormhole/memoryRegistry expect") and the spec had no cause axis at all. Layer 1 is a
+  declared INVARIANT - address by dimensions, never re-model them. **At current corpus
+  size a closed 27-cell lattice is a far better exact-match key than the continuous 4D
+  state** (which is why REQ-2 AC6 defers hex querying); record which axis produced each
+  candidate so their relative value is measurable.
+
+- [ ] **T69** (REQ-47): Wire a delivered recall into the reviewer's branch decision
+  (retry / diversify / ask / report) and record which branch was taken. - RIPPLE:
+  **this is what the whole thing is FOR.** FAULTLINE section 1: an uninformed reviewer
+  "does the only thing it can: re-plan. Same query -> same results -> same wall" - the
+  14-minute blind-retry loop. A delivery that never changes a branch is decoration,
+  however good its posterior. Add NO recall-specific branches (CT-1). Treat FAULTLINE as
+  GROWING: never block on its open roadmap, and raise improvements there rather than
+  building a parallel classifier here.
+
 - [ ] **T65** (REQ-13 AC1/AC5b): BC backing-store arm family - BC-A (WAL + single-flight,
   default) and BC-B (Tier-2 reads an in-memory topology SNAPSHOT refreshed at safe
   boundaries). Snapshot age recorded on every candidate served from it. - RIPPLE: the

@@ -1360,6 +1360,121 @@ that legitimate pipelines are not silently blocked while security is preserved.
   executed at the higher tier.
 - Entirely read_only chain -> no approval needed.
 
+### REQ-46: Recall by CAUSE — the FAULTLINE dimensions are a retrieval axis
+
+**User Story:** As the agent I want to ask "what happened last time a tool failed
+THIS WAY", not only "what happened last time the physics looked like this", so
+that a failure I have seen before does not have to be re-learned.
+
+**Verified:** GAP IN THIS SPEC, and the parent doc names this spec as the
+consumer. `docs/architecture/FAULTLINE.md` §5 states that the enriched
+`_record_tool_event` payload makes **"episodes recallable by CAUSE ('last 3
+searches hit walled github') — the fixed-field recall shape Wormhole/
+memoryRegistry expect."** FAULTLINE was built partly to feed this, and this spec
+provided no cause-based retrieval at all: every retrieval path here keys on the
+4D confounder hash (REQ-1), the hex neighbourhood (REQ-2), or a weighted walk
+(REQ-3). None of them can answer "have I hit this WALL before".
+
+**Verified further — the dimensions are already a similarity space.**
+FAULTLINE §2 explains that the system stores records of `(dimensions, context,
+outcome)` rather than `if walled then X` rules, so "the reviewer generalizes by
+**similarity across dimensions** ('retryable:no + blame:world — same shape as
+last time, don't retry'). A failure mode nobody has named yet still lands near
+its neighbors on the dimension space, so the system behaves sensibly toward it on
+day one." That is structurally the SAME move as REQ-2's hex binning: a coarse
+categorical address that supports nearest-neighbour reasoning over a space too
+sparse for exact matching. `(retryable × blame × info_state)` is a 3×3×3 lattice —
+tiny, closed, and hashable — which makes it a far better exact-match key at
+current corpus size than the continuous 4D state ever will be (REQ-2 AC6 defers
+hex querying for exactly that reason).
+
+**Acceptance Criteria:**
+- AC1: THE SYSTEM SHALL support retrieval keyed on the FAULTLINE dimension triple
+  `(retryable, blame, info_state)`, in addition to the confounder hash.
+- AC2: THE SYSTEM SHALL treat the dimension triple as a CLOSED categorical
+  address and SHALL NOT re-derive or re-model it — Layer 1 is declared an
+  INVARIANT by FAULTLINE §2 and is deliberately hardcoded there.
+- AC3: THE SYSTEM SHALL support nearest-neighbour retrieval within the dimension
+  space, so an unnamed failure mode retrieves what its neighbours learned
+  (FAULTLINE §2's "sensibly on day one" property).
+- AC4: THE SYSTEM SHALL include the dimension triple in the hyperedge's region
+  scoping (REQ-4), so "this shortcut works except when the world is blocked" is
+  representable — a single global posterior cannot express that.
+- AC5: THE SYSTEM SHALL NOT let cause-retrieval bypass the aperture; it is
+  another candidate source, delivered under the same boundary and deadline rules
+  (REQ-11, REQ-12).
+- AC6: THE SYSTEM SHALL record which axis produced each delivered candidate
+  (confounder hash / hex / walk / cause), so their relative value is measurable
+  (REQ-35). **At current corpus size the cause axis may well outperform the
+  physics axis, and the telemetry must be able to say so.**
+
+**Edge Cases:**
+- A failure has no typed label yet (Layer 3) -> it still HAS dimensions once
+  classified, and retrieves by them; an unclassified raw failure retrieves by its
+  neighbours, never not at all.
+- The dimension triple is too coarse to discriminate -> that is a finding to
+  report, and the confounder axis remains available; the two are complementary,
+  never a replacement for one another.
+- A label is later promoted (`promote_unknown`) -> its dimensions do not change,
+  so previously-retrieved history stays valid. Promotion adds a name, not a
+  meaning.
+
+### REQ-47: Recall must inform the reviewer's BRANCH, and FAULTLINE must stay growable
+
+**User Story:** As the user I want a recalled memory to change what the agent
+DECIDES to do next, because otherwise the agent still retries blindly and the
+recall was decoration.
+
+**Verified:** GAP IN THIS SPEC. `docs/architecture/FAULTLINE.md` §5 names the
+decision the typed outcome feeds: the DER reviewer branches
+**retry / diversify / ask / report**. That branch IS the "informed decision" the
+whole taxonomy exists to enable — §1 describes the alternative precisely: "An
+uninformed reviewer does the only thing it can: re-plan. Same query -> same
+results -> same wall," which produced a 14-minute blind-retry loop. This spec
+delivers recall to a boundary (REQ-11) but never says what the recall is FOR at
+that boundary, and never names the branch vocabulary.
+
+**Also verified — FAULTLINE is explicitly unfinished.** §1 records the user's
+verbatim design constraint: the foundation "is acknowledged to be
+**surface-level** — a scaffold expected to be improved in future iterations. It
+is built to be grown, not to be final." §8 lists the roadmap still open:
+per-tool precise labels (most tools are still auto-classified from message
+heuristics), card rendering of new labels (designed but never exercised), and
+SourceRegistry domain down-weighting from the park ledger. A dependency that is
+meant to grow must not be frozen by this spec.
+
+**Acceptance Criteria:**
+- AC1: THE SYSTEM SHALL make a delivered recall available to the reviewer's
+  branch decision, and SHALL name that branch vocabulary (retry / diversify /
+  ask / report) as the recall's consumer — satisfying G2 for the whole delivery
+  path, which currently names only ranking.
+- AC2: THE SYSTEM SHALL record, per delivery, which branch was taken, so
+  "did the recall change the decision" is answerable rather than assumed.
+  **A delivery that never changes a branch is decoration, however good its
+  posterior.**
+- AC3: THE SYSTEM SHALL NOT add recall-specific branches — the vocabulary is the
+  reviewer's, and REQ-31/CT-1 already forbid extending the closed outcome enums.
+- AC4: THE SYSTEM SHALL treat FAULTLINE as a GROWING dependency: adding a label
+  stays a data edit (REQ-32 AC1), Layer 3 keeps absorbing unknowns, and nothing
+  in this spec may require the taxonomy to be complete before it is useful.
+- AC5: THE SYSTEM SHALL NOT block on FAULTLINE's open roadmap items. WHERE a
+  tool is still auto-classified from message heuristics, its dimensions are
+  lower-confidence but still usable, and that lower confidence SHALL be recorded
+  rather than assumed away.
+- AC6: WHERE this spec's needs would be served by a FAULTLINE improvement
+  (a precise label for a high-value tool, park-derived source down-weighting)
+  THE SYSTEM SHALL raise it as a FAULTLINE change, not implement a parallel
+  classifier here.
+
+**Edge Cases:**
+- The reviewer is unavailable or the branch is forced -> the delivery is recorded
+  with the branch it could not influence, which is the honest reading.
+- A recall arrives after the branch is chosen -> it is `expired_unclaimed`
+  (REQ-11 AC5); late information does not retroactively justify a decision.
+- FAULTLINE gains a dimension later -> REQ-46 AC2's triple becomes a quadruple;
+  the retrieval axis widens rather than breaking, because it addresses by
+  dimensions rather than by label.
+
 ### REQ-44: A brand-new candidate must earn its way into a high-risk context
 
 **User Story:** As the user I want a shortcut with no track record to stay out of
