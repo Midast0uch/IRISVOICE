@@ -116,9 +116,12 @@ Resolved with the user on 2026-08-23. Do not re-litigate.
       **CORRECTED 2026-08-23 — this is better news than first reported.** An
       earlier note here claimed no edge is scored anywhere. Wrong: it was scoped
       to `mycelium_*`. The PHEROMONE layer (`graph_edges`) is alive and learning
-      in BOTH instances — MCM 7,638 edges and APP 997,262, every one weighted,
-      ~10-15% carrying `last_scored`, weights reinforced from a 0.95 baseline up
-      to 3.14. And per `CLAUDE.md` the MCM build store is INHERITED by the
+      in BOTH instances — MCM 7,638 edges and APP 997,262, **every one weighted**
+      (full scan, not sampled). MCM spans 0.95–3.14 (mean 0.992): mostly
+      reinforcement above birth weight. APP spans **0.10–2.14 (mean 0.947)**: a
+      floor well below the 0.95 birth weight, so decay is demonstrably running
+      too — a full reinforce-and-forget cycle, which is stronger evidence of a
+      live system than reinforcement alone. Per `CLAUDE.md` the MCM build store is INHERITED by the
       application at hand-off (same schema, no migration), so the app does not
       start from nothing.
       **So the substrate choice is: pheromone/graph layer (populated, scored,

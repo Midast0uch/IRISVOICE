@@ -171,7 +171,7 @@ Measured across both:
 
 | layer | store | state |
 |---|---|---|
-| **Pheromone / graph** (`graph_edges`, `file_nodes`, `code_events`, `landmarks`, `memory_chain`) | MCM: 7,638 edges · APP: 997,262 | **ALIVE.** Every edge weighted, ~10-15% carry `last_scored`, weights reinforced above the 0.95 baseline to 3.14. `co_edit` and `tests` relationships both accumulating. |
+| **Pheromone / graph** (`graph_edges`, `file_nodes`, `code_events`, `landmarks`, `memory_chain`) | MCM: 7,638 edges · APP: 997,262 | **ALIVE, and the two instances show DIFFERENT life-stages.** Full scan: every edge in both is weighted. MCM spans 0.95–3.14 (mean 0.992) — birth weight up, i.e. mostly reinforcement. APP spans **0.10–2.14 (mean 0.947)** — a minimum well BELOW the 0.95 birth weight and a mean slightly below it, so the app instance is demonstrably running **decay as well as reinforcement**. `co_edit` and `tests` relationships both accumulating. |
 | **Application coordinate** (`mycelium_nodes`, `mycelium_edges`, `mycelium_landmarks`) | APP: 37 nodes, **0 edges** | **STARVED.** The layer this spec's REQ-5 and the wormhole's Decisions Locked 2 both target. |
 
 **So the corrected statement is:** the pheromone layer has been learning the whole
