@@ -469,6 +469,43 @@ until that spec's GT-G4 has passed.
   promotion/refusal, graft accept/reject logged and session-scoped; rate-limited rollups;
   bounded retention; nothing inline. — RIPPLE: T4's emitter.
 
+- [ ] **T62** (REQ-41): Model RECALL as a node STATE parallel to SPLIT, entered from
+  RUNNING on the SAME trigger SPLIT already uses (no confident prior on the
+  Treatment->Mediator edge), reusing `U_SPLIT` (`der_constants.py:233`) rather than a
+  second threshold. Posterior + resonance update happens on EXIT, then RUNNING resumes
+  with the updated 4D state. - RIPPLE: **this is parent doc section 1 and the spec had
+  captured NONE of it** - every "split" here meant the tier hit-rate. A new threshold
+  would be the "new subsystem in disguise" section 0 forbids. Still bounded and off the
+  critical path (REQ-12): a node state is not synchronous work.
+
+- [ ] **T63** (REQ-42): `activation_log` per node (timestamped list or decayed count),
+  bounded, truncation logged. **NO `window_size`, no configured lookback, anywhere.**
+  Recency derives from the `last_accessed` - `created_at` gap on the existing
+  `mycelium_nodes` columns. - RIPPLE: DEPENDS on GROUND TRUTH Finding 11 - nothing
+  currently writes `access_count`/`last_accessed`, so the recency term is meaningless
+  until that is fixed and must report un-computable rather than be silently used.
+
+- [ ] **T64** (REQ-43): Vocabulary lock - the scoring act is POLLING/VOTING in code,
+  comments and telemetry; Treatment/Mediator/Outcome/Confounder stay causal. - RIPPLE:
+  parent doc Q2a; cheap now, expensive to unpick once the terms are in code.
+
+- [ ] **T60** (REQ-39): Name and wire the Level 3 adjustment path for every value this
+  spec declines to hardcode - match threshold, coupling blend, elevation, quantization,
+  arm weights - through the EXISTING `backend/agent/outer_loop.py`, never a second
+  self-tuning mechanism. Subject each to that loop's compound gate INCLUDING the
+  `live` vs `passed` distinction. - RIPPLE: **`outer_loop.py` currently accepts any
+  proposal that raises natural-exit rate (`bootstrap/GOALS.md`); pointing it at wormhole
+  values without fixing that would propagate the reward-hack into the memory topology.**
+  Fix the single-metric gate FIRST or do not wire it.
+
+- [ ] **T61** (REQ-40): Prove the existing pheromone layer still works as the fallback
+  after every stage - measure its write/score rate before and after, and treat a drop as
+  a regression in THIS spec. Keep its writes off every new component (AC3) so a defect
+  here cannot take the old path down. Verify the MCM inheritance path stays readable. -
+  RIPPLE: `graph_edges` is alive (MCM 7,638 / APP 997,262, weighted, ~10-15% scored);
+  `mycelium_*` is starved. "Fall back to today" means falling back to the pheromone
+  layer, so its health is a PRECONDITION, not an afterthought.
+
 - [ ] **T59** (REQ-14 AC5/AC6/AC7, G6): Produce the per-arm multi-metric report — **with
   the sample size stated beside every rate**, so an underpowered comparison is visibly
   underpowered — and review it WITH the user before any arm becomes a default.

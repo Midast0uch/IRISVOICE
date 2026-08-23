@@ -112,8 +112,18 @@ Resolved with the user on 2026-08-23. Do not re-litigate.
       layer holds a single scored edge. The option that DOES carry evidence is
       **landmarks + traversals** — `mycelium_traversals` (355 rows with real
       `path_score`/`outcome`) and `mycelium_landmarks` (285 rows, 30 with a live
-      `activation_count`). Evaluate that substrate FIRST; it is the only one with
-      data the Beta-Bernoulli could actually learn from.
+      `activation_count`).
+      **CORRECTED 2026-08-23 — this is better news than first reported.** An
+      earlier note here claimed no edge is scored anywhere. Wrong: it was scoped
+      to `mycelium_*`. The PHEROMONE layer (`graph_edges`) is alive and learning
+      in BOTH instances — MCM 7,638 edges and APP 997,262, every one weighted,
+      ~10-15% carrying `last_scored`, weights reinforced from a 0.95 baseline up
+      to 3.14. And per `CLAUDE.md` the MCM build store is INHERITED by the
+      application at hand-off (same schema, no migration), so the app does not
+      start from nothing.
+      **So the substrate choice is: pheromone/graph layer (populated, scored,
+      decaying, inherited) versus `mycelium_edges` (starved).** Decide it before
+      Stage A. Decisions Locked 2 currently names the starved one.
 
 12. **Recorder integrity is `specs/der-ground-truth/`'s job, not this spec's.** A full
     execution/memory audit on 2026-08-23 found that five of the six substrates this spec
@@ -1338,6 +1348,214 @@ that legitimate pipelines are not silently blocked while security is preserved.
   executed at the higher tier.
 - Entirely read_only chain -> no approval needed.
 
+### REQ-41: RECALL is a node state, structurally parallel to SPLIT
+
+**User Story:** As the agent I want recall to be a state my execution enters and
+leaves, not a step run before I start, so that the recall becomes part of the
+thought instead of a preamble to it.
+
+**Verified:** GAP IN THIS SPEC, found on a re-read of the parent doc 2026-08-23.
+`docs/Wormhole-resonant-recall-.md` §1 is unambiguous and this spec had captured
+none of it — every occurrence of "split" here referred to the Tier-1a/1b/2 hit-rate
+split, never to the DAG's SPLIT state. The doc specifies:
+
+```
+RUNNING (streaming tokens)
+  -> variance spike (|u| crosses threshold mid-thought - a confounder surfaces)
+  -> RECALL (bounded query against Mycelium)
+  -> posterior + resonance update on touched edges
+  -> RUNNING resumes with updated 4D state
+```
+
+and states the trigger explicitly: the agent "asks when the current
+Treatment->Mediator edge it is reasoning about has no confident prior — **exactly
+the same trigger condition already defined for SPLIT**." `U_SPLIT = 0.5`
+(`backend/agent/der_constants.py:233`) is that threshold, with bands documented at
+`:403-406`.
+
+**Acceptance Criteria:**
+- AC1: THE SYSTEM SHALL model RECALL as a node STATE in the existing DAG,
+  structurally parallel to SPLIT — entered from RUNNING, exited back to RUNNING.
+- AC2: THE SYSTEM SHALL trigger RECALL from the SAME condition SPLIT already uses
+  — no confident prior on the Treatment->Mediator edge under consideration — and
+  SHALL reuse `U_SPLIT` rather than introducing a second threshold. A new
+  threshold here would be the "new subsystem in disguise" the parent doc's §0
+  scoping constraint forbids.
+- AC3: WHEN RECALL exits THEN THE SYSTEM SHALL apply the posterior and resonance
+  update to the edges the query touched, and RUNNING SHALL resume with the
+  updated 4D state — the update is part of leaving the state, not a later pass.
+- AC4: THE SYSTEM SHALL NOT front-load recall. The agent SHALL NOT decide upfront
+  what history it might need (this is what makes REQ-0's replacement of the
+  two-phase protocol a design consequence rather than a preference).
+- AC5: THE SYSTEM SHALL keep RECALL bounded and off the critical path per REQ-12;
+  being a node state does NOT make it synchronous work on the stream.
+- AC6: THE SYSTEM SHALL record RECALL state entries and exits like any other node
+  state, so the recall's own frequency and cost are visible (REQ-35).
+
+**Edge Cases:**
+- The spike condition fires but the aperture has nothing -> RECALL is entered and
+  exits immediately with no update; the empty visit is still recorded, because
+  "how often do we look and find nothing" is a tuning signal.
+- SPLIT and RECALL both qualify on the same spike -> the existing DAG decides;
+  this spec adds a state, it does not re-order the state machine.
+- Caducean state unavailable -> no spike can be computed, so RECALL never
+  triggers; recorded as a degradation, never as "no recall needed".
+
+### REQ-42: Per-node state completeness and the no-window rule
+
+**User Story:** As the maintainer I want recency derived from timestamps rather
+than a configured lookback, so that nobody has to guess a window size.
+
+**Verified:** GAP IN THIS SPEC. `docs/Wormhole-resonant-recall-.md` §4 specifies
+`activation_log` — "timestamped list or decayed count, **NOT a fixed window**" —
+and closes with: "**No `window_size` field.** Recency is read directly off
+`last_activated_ts` vs `created_ts` — the oscillator math uses the gap, not a
+configured lookback range." This spec's data model carried neither the field nor
+the prohibition. `mycelium_nodes` already has `created_at` and `last_accessed`
+(`backend/memory/db.py:195-204`), so the timestamps exist; the activation history
+does not.
+
+**Acceptance Criteria:**
+- AC1: THE SYSTEM SHALL carry an `activation_log` per wormhole node — a
+  timestamped list or a decayed count.
+- AC2: THE SYSTEM SHALL NOT introduce a `window_size` field, a configured
+  lookback, or any fixed-N recency window anywhere in the wormhole layer.
+- AC3: THE SYSTEM SHALL derive recency from the gap between `last_activated` and
+  `created`, which is what the oscillator math (REQ-5) consumes.
+- AC4: THE SYSTEM SHALL bound `activation_log` so a long-lived node cannot grow
+  it without limit, and SHALL prefer a decayed count over truncating history
+  silently — if it does truncate, it SHALL record that it did.
+- AC5: THE SYSTEM SHALL reuse `mycelium_nodes.created_at` / `last_accessed` for
+  the timestamps rather than adding parallel columns.
+- AC6 **[REQ-9 interaction]**: THE SYSTEM SHALL treat `activation_log` as the
+  BUSYNESS reading's source, keeping it separate from the posterior that carries
+  usefulness — the two are never averaged.
+
+**Edge Cases:**
+- A node is activated many times in one run -> recorded per activation; burst
+  behaviour is signal, not noise to be collapsed.
+- `last_accessed` is never written (the `access_count` defect, GROUND TRUTH
+  Finding 11) -> this requirement DEPENDS on that being fixed; if the timestamp
+  is stale the recency term is meaningless and SHALL be reported as un-computable
+  rather than silently used.
+
+### REQ-43: Vocabulary lock — the scoring act is POLLING, never "treatment"
+
+**User Story:** As a future agent reading this system I want its terms to mean one
+thing each, so that the causal vocabulary does not collide with the scoring
+vocabulary.
+
+**Verified:** GAP IN THIS SPEC. `docs/Wormhole-resonant-recall-.md` Q2a states it
+directly: "call this act POLLING or VOTING — never 'treatment'. Treatment is
+already taken in the causal vocabulary (the objective handed to a node, per the
+original blueprint §2). Reusing it for the act of scoring would collide with the
+DAG's own terms, the same class of drift as `related_to` vs `relevant_to`."
+
+**Acceptance Criteria:**
+- AC1: THE SYSTEM SHALL name the act of accumulating votes and deriving a
+  measurement from the tally POLLING or VOTING, in code, comments, and telemetry.
+- AC2: THE SYSTEM SHALL reserve Treatment, Mediator, Outcome and Confounder for
+  their causal meanings from the original blueprint, and SHALL NOT reuse any of
+  them for a scoring mechanism.
+- AC3: THE SYSTEM SHALL preserve the established vocabulary generally — DAG,
+  fan_trace, Hex/Hash/Hyperedge, wormhole, landmark, resonance/amplitude,
+  coupling-derived damping — since the parent doc's §10 note to future agents
+  asks for continuity of terms, and this spec is what those agents will read.
+
+**Edge Cases:**
+- A new mechanism genuinely needs a name -> it takes a new one; it does not borrow
+  a causal term.
+- Existing code already misuses a term -> recorded as a finding; renaming live
+  code is out of scope here unless it is the wormhole's own.
+
+### REQ-39: Level 3 meta-learning is named, not assumed
+
+**User Story:** As the architect I want the loop that DOES the scoring to be a
+named, existing mechanism, because the parent doc's governing principle is
+"refuse to hardcode, score it instead" — and a scoring principle with no scorer
+is a hardcoded value wearing a different label.
+
+**Verified:** GAP IN THIS SPEC, raised by the user 2026-08-23. The parent doc
+(`docs/Wormhole-resonant-recall-.md` §6) is explicit that the wormhole-match
+threshold uses "the existing Level 3 Meta-Learning loop from the original
+blueprint (Section 4) pointed at this specific threshold — **not a new
+mechanism**." §5a says the same for coupling divergence; Q4 says it for hex
+quantization; Q2a generalises it into the governing principle. This spec applied
+that principle in five places (threshold, coupling, elevation, quantization,
+arms) but never named the loop that actually adjusts them — it only referenced
+`backend/agent/outer_loop.py` as a CAUTIONARY example, and put the meta-learner
+in Non-Requirements. That leaves the values scored but never re-tuned.
+
+**Acceptance Criteria:**
+- AC1: THE SYSTEM SHALL name, for every value this spec declines to hardcode, the
+  existing loop that adjusts it — wormhole-match threshold (REQ-4 AC6), coupling
+  seed/observed blend (REQ-6), elevation thresholds (REQ-7), hex quantization
+  (REQ-10 AC5), and aperture arm weights (REQ-14).
+- AC2: THE SYSTEM SHALL route those adjustments through the EXISTING Level 3
+  loop (`backend/agent/outer_loop.py`) rather than adding a second self-tuning
+  mechanism — the parent doc's "not a new mechanism" constraint.
+- AC3: THE SYSTEM SHALL subject every wormhole value it feeds to that loop to the
+  loop's existing compound gate, including the `live` vs `passed` distinction
+  (`outer_loop.py:27-37`), so a value whose evidence cannot be computed is not
+  adjusted on a dead signal.
+- AC4: THE SYSTEM SHALL NOT let the outer loop tune a wormhole value on a single
+  metric. `bootstrap/GOALS.md` records that this loop already "accepts ANY
+  proposal that raises natural-exit rate" — pointing it at wormhole values
+  without fixing that would propagate the reward-hack into the memory topology.
+- AC5: IF the outer loop is unavailable or disabled THEN THE SYSTEM SHALL hold
+  every scored value at its last known-good setting and SHALL record that it is
+  no longer adapting — never silently revert to a compiled-in default.
+- AC6: THE SYSTEM SHALL record each adjustment with the evidence that justified
+  it, so a drifting threshold is auditable after the fact.
+
+**Edge Cases:**
+- The loop proposes an adjustment the compound gate rejects -> recorded as a
+  refused promotion with cause (REQ-35 AC6), not discarded.
+- Two wormhole values are coupled (threshold and quantization) -> adjusted one at
+  a time, per the loop's existing one-change-per-run discipline.
+- No evidence has accumulated yet -> the value holds at its seed and is reported
+  as un-tuned, which is honest; an un-tuned value is not a failure.
+
+### REQ-40: The existing learning layer must keep working as the fallback
+
+**User Story:** As the user I want the memory that works today to still work after
+this ships, so that an error in node chains or wormhole degrades the system to
+"as good as before" rather than to "no learning at all".
+
+**Verified:** GAP IN THIS SPEC, raised by the user 2026-08-23. REQ-37 provides
+kill switches that return to "today's behavior" — but that phrase was never
+audited. What today's behavior actually is, measured: the PHEROMONE layer
+(`graph_edges`) is alive and learning in both store instances; the application
+`mycelium_*` coordinate layer is starved (37 nodes, 0 edges). So "fall back to
+today" means falling back to the pheromone layer, and that layer's health is a
+PRECONDITION of this spec, not an afterthought.
+
+**Acceptance Criteria:**
+- AC1: THE SYSTEM SHALL treat the existing pheromone/graph learning layer as a
+  first-class fallback, and SHALL verify it still functions after every stage of
+  this spec — not only that the new layer works.
+- AC2: WHEN wormhole retrieval, aperture delivery, or chain-guided execution is
+  disabled or failing THEN THE SYSTEM SHALL continue recording and scoring
+  through the existing layer, at no less than its pre-spec rate.
+- AC3: THE SYSTEM SHALL NOT route the existing layer's writes through any new
+  component this spec adds, so a defect in the new path cannot take the old one
+  down with it.
+- AC4: THE SYSTEM SHALL measure the existing layer's write and score rates before
+  and after each stage, and SHALL treat a drop as a regression in this spec.
+- AC5: THE SYSTEM SHALL preserve the MCM build-store inheritance path
+  (`CLAUDE.md`: same schema, no migration) — nothing added here may make the
+  inherited graph unreadable by the application.
+- AC6: THE SYSTEM SHALL make the fallback exercisable on demand, so "it would
+  still work" is demonstrated rather than assumed.
+
+**Edge Cases:**
+- The new layer and the fallback disagree about a value -> the fallback is
+  authoritative while the new layer is disabled; the disagreement is recorded.
+- The fallback itself is found to be degraded -> that is a `specs/der-ground-truth/`
+  finding and BLOCKS this spec, because a fallback that does not work is not one.
+- Inheritance lands mid-flight -> the new layer treats inherited rows as ordinary
+  evidence; it may not require them to carry fields this spec introduced.
+
 ### REQ-38: Chain specificity — a chain must constrain more than free planning would
 
 **User Story:** As the user I want to know whether a chain is actually telling the agent
@@ -1634,8 +1852,17 @@ back, because an experimental memory layer must never be able to hold my assista
   script nodes (REQ-27).
 - **Decomposing `agent_kernel.py`.** Tracked separately.
 - **A full multi-armed bandit / Thompson sampling meta-learner.** REQ-14 delivers the
-  per-arm evidence; automatic selection is deliberately deferred until the evidence exists
-  and REQ-36 AC7 is satisfiable.
+  per-arm evidence; automatic ARM selection is deferred until the evidence exists and
+  REQ-36 AC7 is satisfiable. **This exclusion covers the bandit only — it does NOT
+  exclude Level 3 meta-learning, which REQ-39 requires and routes through the existing
+  `outer_loop.py` rather than a new mechanism.** An earlier draft of this list read as
+  if it excluded meta-learning entirely; that was wrong, and it would have left every
+  value in this spec scored but never re-tuned.
+- **A second self-tuning mechanism.** REQ-39 AC2 forbids one; adjustments go through the
+  loop that already exists.
+- **Repairing the existing pheromone learning layer.** REQ-40 requires it to keep
+  WORKING and measures that it does, but defects found in it belong to
+  `specs/der-ground-truth/`, not here.
 
 ## Open Questions
 

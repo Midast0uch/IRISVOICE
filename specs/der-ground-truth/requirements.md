@@ -155,29 +155,35 @@ does not represent reality.** Pinned by the `exits_attributable_to_runs`
 invariant. The fix belongs to whoever owns the exit call site and needs one
 decision — which identity is canonical — so it is reported, not guessed.
 
-### Finding 12 (2026-08-23) — NO edge anywhere has ever been scored
+### Finding 12 — CORRECTED (2026-08-23): the pheromone layer IS learning
 
-Raised while evaluating whether the wormhole spec could simply retarget from
-`mycelium_edges` to `mycelium_landmark_edges`. It cannot, and the reason is
-larger than the table choice:
+**The first version of this finding said "no edge anywhere has ever been
+scored." That was WRONG — it was scoped to the `mycelium_*` tables and stated as
+if it covered the whole system.** Corrected here rather than edited away.
 
-| table | rows | traversal_count > 0 | hit_count > 0 |
-|---|---|---|---|
-| `mycelium_edges` | 0 | — | — |
-| `mycelium_landmark_edges` | 6,201 | **0** | **0** |
+The two stores are the SAME memory system at two instances, not two systems.
+`.mcm/coordinates.db` is the lightweight build-time instance that oversees
+development; `data/memory.db` is the application instance, and per `CLAUDE.md`
+the build store is INHERITED by the app at hand-off ("same schema, no
+migration"). So the app's memory is not meant to start from nothing.
 
-The 6,201 landmark edges are pure structure, auto-created by `_auto_connect` at
-landmark birth. Neither layer holds a single scored edge, so **both are
-evidentially empty; they merely fail differently.** `mycelium_landmark_edges`
-also lacks `observation_count` and `decay_rate` — the two columns the
-diminishing-alpha posterior (`EdgeScorer.record_outcome`) actually runs on.
+Measured across both:
 
-What IS populated and scored: `mycelium_traversals` (355 rows carrying real
-`path_score` and `outcome`) and `mycelium_landmarks` (285 rows, 30 with
-`activation_count` > 0 — that counter, unlike `access_count`, is genuinely
-written). So the substrate question for `specs/wormhole-aperture/` is not
-"which edge table" but **"landmarks + traversals, which carry evidence, versus
-edges, which carry none at either level."**
+| layer | store | state |
+|---|---|---|
+| **Pheromone / graph** (`graph_edges`, `file_nodes`, `code_events`, `landmarks`, `memory_chain`) | MCM: 7,638 edges · APP: 997,262 | **ALIVE.** Every edge weighted, ~10-15% carry `last_scored`, weights reinforced above the 0.95 baseline to 3.14. `co_edit` and `tests` relationships both accumulating. |
+| **Application coordinate** (`mycelium_nodes`, `mycelium_edges`, `mycelium_landmarks`) | APP: 37 nodes, **0 edges** | **STARVED.** The layer this spec's REQ-5 and the wormhole's Decisions Locked 2 both target. |
+
+**So the corrected statement is:** the pheromone layer has been learning the whole
+time; the application's *coordinate* layer has not. The app store also looks thin
+because it has recorded mostly development-testing activity so far — real
+operating history arrives with the MCM inheritance.
+
+**What this changes for `specs/wormhole-aperture/`:** the substrate question is now
+clean and decidable, and the news is better than first reported. Riding on the
+pheromone/graph layer means building on a populated, scored, decaying graph that
+already works. Riding on `mycelium_edges` means building on the starved one. That
+is a design choice, not a blocker.
 
 ### Finding 11 (2026-08-23) — landmark clustering sorts by a constant
 
