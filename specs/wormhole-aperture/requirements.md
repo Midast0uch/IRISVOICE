@@ -757,9 +757,15 @@ implemented as swappable arms, so that evidence rather than a guess selects them
 arm matrix. Nothing in the codebase implements any of it.
 
 **Acceptance Criteria:**
-- AC1: THE SYSTEM SHALL implement the aperture's decision points as named ARMS in five
-  families: overwrite (OV), staleness (ST), late Tier-2 arrival (T2), cadence (CD), and
-  semantic collision (SC).
+- AC1: THE SYSTEM SHALL implement the aperture's decision points as named ARMS in SIX
+  families: overwrite (OV), staleness (ST), late Tier-2 arrival (T2), cadence (CD),
+  semantic collision (SC), and **backing store (BC)**. The BC family was omitted from
+  the first draft: `docs/Wormhole-NodeChain-Mailbox.md` §3.6 defines **BC-A**
+  (WAL + single-flight — minimal change, still risks write contention) and **BC-B**
+  (Tier-2 reads from an in-memory topology SNAPSHOT refreshed at safe boundaries —
+  complete isolation, memory overhead). This spec had hard-coded BC-A's single-flight
+  rule (REQ-3 AC5) as if it were settled, which is exactly the "refuse to fix the
+  value, score it instead" violation the governing principle warns about.
 - AC2: THE SYSTEM SHALL make the active arm per family selectable by configuration
   without a code change.
 - AC3: THE SYSTEM SHALL record the arm used per family on every `aperture_decision`
@@ -768,7 +774,10 @@ arm matrix. Nothing in the codebase implements any of it.
   there is no alternative to not hanging.
 - AC5: THE SYSTEM SHALL ship these defaults for the first live stage: OV-A
   (replace-if-better with a deadband), ST-A (hard TTL), T2-A (mint-only), CD-A
-  (bounded-linear), SC-A (physics-only).
+  (bounded-linear), SC-A (physics-only), **BC-A (WAL + single-flight)**.
+- AC5b: WHERE BC-B is selected THE SYSTEM SHALL refresh the topology snapshot only at
+  safe boundaries, and SHALL record the snapshot's age on every candidate served from
+  it — a candidate drawn from a stale snapshot is a different fact from a fresh one.
 - AC6: THE SYSTEM SHALL apply hysteresis to any cadence arm so a variance spike cannot
   produce a polling storm against the store.
 
@@ -1351,6 +1360,75 @@ that legitimate pipelines are not silently blocked while security is preserved.
   executed at the higher tier.
 - Entirely read_only chain -> no approval needed.
 
+### REQ-44: A brand-new candidate must earn its way into a high-risk context
+
+**User Story:** As the user I want a shortcut with no track record to stay out of
+the places where being wrong is expensive, until it has earned a track record.
+
+**Verified:** GAP IN THIS SPEC, found re-reading the Mailbox doc 2026-08-23.
+`docs/Wormhole-NodeChain-Mailbox.md` §6 specifies it directly — brand-new
+candidate with no evidence: "Use Beta prior seed + posterior lower bound. **Do
+not inject in high-risk contexts until minimum evidence gate is passed.**"
+Telemetry: `new_candidate_trial`. This spec had the lower bound (REQ-4 AC4) and
+the Beta prior (REQ-6 AC1) but **no evidence gate and no notion of a high-risk
+context at all** — so a zero-evidence hyperedge could have been delivered into a
+destructive-tier step on its first ever appearance.
+
+**Acceptance Criteria:**
+- AC1: THE SYSTEM SHALL define a minimum-evidence gate for delivery, expressed as
+  observation count on the candidate's hyperedge.
+- AC2: THE SYSTEM SHALL define what makes a context HIGH-RISK, and SHALL derive it
+  from signals that already exist rather than inventing a risk model —
+  `permission_tier` above `read_only` (`tool_registry.py:56`) and any step whose
+  failure is terminal (`nodes/outcome.py` TERMINAL_REASONS) are the obvious ones.
+- AC3: WHILE a candidate is below the evidence gate THE SYSTEM SHALL NOT inject it
+  into a high-risk context; it MAY inject into ordinary contexts, which is how it
+  accumulates the evidence.
+- AC4: THE SYSTEM SHALL emit `new_candidate_trial` for every such delivery, so the
+  gate's cost (recalls withheld) is measurable against its benefit.
+- AC5: THE SYSTEM SHALL score the gate's threshold rather than fixing it
+  (REQ-39 AC1) — a gate that is too strict starves learning and one too loose
+  defeats the purpose, and only evidence can say which.
+- AC6: THE SYSTEM SHALL NOT let the gate silently drop a candidate — a withheld
+  delivery is recorded as withheld, not as absent.
+
+**Edge Cases:**
+- Every candidate for a region is below the gate -> the region gets no delivery and
+  that is REPORTED, so a permanently-starved region is visible rather than quiet.
+- A candidate crosses the gate mid-run -> it becomes eligible at the next boundary;
+  nothing is retroactively re-injected.
+- The permission tier is unknown -> treated as high-risk. Unknown is not safe.
+
+### REQ-45: Stage separation — scoring lives in Stage A, never in delivery
+
+**User Story:** As the maintainer I want the boundary between the physics and the
+valve to be structural, so that a scoring change cannot drift into the delivery
+component.
+
+**Verified:** GAP IN THIS SPEC. `docs/Wormhole-NodeChain-Mailbox.md` §7 lock 5
+("Parent Spec Supremacy") states that any change to Hyperedge scoring, landmark
+elevation, coupling math, or resonance drive belongs in the parent physics doc,
+"not here". Merging the two documents into one spec **dissolved the boundary that
+lock was protecting** — with both stages in one file, nothing now prevents a
+Stage B change from editing Stage A's math. The lock has to be restated
+structurally rather than by document separation.
+
+**Acceptance Criteria:**
+- AC1: THE SYSTEM SHALL keep hyperedge scoring, landmark elevation, coupling math,
+  and resonance drive entirely within Stage A (REQ-4 through REQ-9).
+- AC2: THE SYSTEM SHALL NOT allow Stage B (aperture) to compute, adjust, or cache
+  any scored quantity — it reads posteriors and never writes them (REQ-11 AC2 is
+  the behaviour; this is the structural rule behind it).
+- AC3: WHERE a delivery-time need appears to require a new scored quantity THE
+  SYSTEM SHALL add it to Stage A and have Stage B read it, never compute it locally.
+- AC4: THE SYSTEM SHALL pin this with a contract test asserting the aperture module
+  imports no scorer and writes no score column.
+
+**Edge Cases:**
+- A ranking tweak looks like delivery logic -> ranking BY a posterior is delivery;
+  changing what the posterior MEANS is Stage A.
+- Stage C (chains) needs a score -> same rule; chains consume, Stage A produces.
+
 ### REQ-41: RECALL is a node state, structurally parallel to SPLIT
 
 **User Story:** As the agent I want recall to be a state my execution enters and
@@ -1491,9 +1569,21 @@ in Non-Requirements. That leaves the values scored but never re-tuned.
 
 **Acceptance Criteria:**
 - AC1: THE SYSTEM SHALL name, for every value this spec declines to hardcode, the
-  existing loop that adjusts it — wormhole-match threshold (REQ-4 AC6), coupling
-  seed/observed blend (REQ-6), elevation thresholds (REQ-7), hex quantization
-  (REQ-10 AC5), and aperture arm weights (REQ-14).
+  existing loop that adjusts it. **Stage A/B:** wormhole-match threshold
+  (REQ-4 AC6), coupling seed/observed blend (REQ-6), elevation thresholds
+  (REQ-7), hex quantization (REQ-10 AC5), aperture arm weights (REQ-14).
+  **Stage C — the node-chain values, which the first draft omitted entirely:**
+  pivot-promotion N (REQ-22 AC1, default 2), variants-per-fork bound
+  (REQ-22 AC5, default 3), chain and chain.md bounds (REQ-25 AC1/AC2), and the
+  specificity archive threshold (REQ-38 AC4). Every one of those is a value the
+  governing principle says to score rather than fix, and leaving them out would
+  have left Node Chains hardcoded while everything around it adapted.
+- AC1b: THE SYSTEM SHALL answer the three questions
+  `docs/Wormhole-NodeChain-Mailbox.md` §4.2 names, from telemetry: which
+  overwrite arm yields the highest `chain_genesis_contrib` rate; which staleness
+  arm minimises `agent_used: false`; and which cadence arm keeps **`db_latency`**
+  low while maintaining a high `candidates_found` rate. `db_latency` and
+  `candidates_found` SHALL therefore be recorded (REQ-35).
 - AC2: THE SYSTEM SHALL route those adjustments through the EXISTING Level 3
   loop (`backend/agent/outer_loop.py`) rather than adding a second self-tuning
   mechanism — the parent doc's "not a new mechanism" constraint.

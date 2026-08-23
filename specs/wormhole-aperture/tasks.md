@@ -469,6 +469,25 @@ until that spec's GT-G4 has passed.
   promotion/refusal, graft accept/reject logged and session-scoped; rate-limited rollups;
   bounded retention; nothing inline. — RIPPLE: T4's emitter.
 
+- [ ] **T65** (REQ-13 AC1/AC5b): BC backing-store arm family - BC-A (WAL + single-flight,
+  default) and BC-B (Tier-2 reads an in-memory topology SNAPSHOT refreshed at safe
+  boundaries). Snapshot age recorded on every candidate served from it. - RIPPLE: the
+  spec had HARD-CODED BC-A's single-flight rule (REQ-3 AC5) as settled, which is the
+  "refuse to fix the value, score it instead" violation the governing principle warns
+  about. Six arm families now, not five.
+
+- [ ] **T66** (REQ-44): Minimum-evidence gate + high-risk context definition. A
+  zero-evidence hyperedge must not reach a `permission_tier` above `read_only` or a step
+  with a TERMINAL failure reason on its first appearance. Emit `new_candidate_trial`;
+  record withheld deliveries as withheld, never as absent. - RIPPLE: **today nothing
+  stops a brand-new candidate being delivered into a destructive-tier step.** Unknown
+  tier counts as high-risk.
+
+- [ ] **T67** (REQ-45): Contract-test the stage boundary - the aperture module imports no
+  scorer and writes no score column. - RIPPLE: **merging the two docs dissolved the
+  boundary that Mailbox section 7 lock 5 was protecting.** With both stages in one file
+  nothing structural stops a delivery change editing Stage A's math.
+
 - [ ] **T62** (REQ-41): Model RECALL as a node STATE parallel to SPLIT, entered from
   RUNNING on the SAME trigger SPLIT already uses (no confident prior on the
   Treatment->Mediator edge), reusing `U_SPLIT` (`der_constants.py:233`) rather than a
