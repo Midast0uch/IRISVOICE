@@ -47,15 +47,21 @@ class _FakeProc:
 
 def _patch_common(monkeypatch):
     """Everything _ensure_vision_server_running touches besides argv build."""
-    monkeypatch.setattr(vl, "_find_vision_model", lambda: (FAKE_MODEL_PATH, FAKE_MMPROJ_PATH))
+    monkeypatch.setattr(vl, "_find_vision_model", lambda *a, **k: (FAKE_MODEL_PATH, FAKE_MMPROJ_PATH))
     monkeypatch.setattr(vl, "_find_llama_server_binary", lambda: FAKE_BINARY)
     # AC2 requires --n-gpu-layers come from the EXISTING _compute_vision_gpu_
     # layers — stub IT (not a second computation) so the test controls the
     # value and proves the spawn path calls through to it.
-    monkeypatch.setattr(vl, "_compute_vision_gpu_layers", lambda model, mmproj: FAKE_NGL)
-    monkeypatch.setattr(vl, "_resolve_listener_pid", lambda port: None)
+    monkeypatch.setattr(vl, "_compute_vision_gpu_layers", lambda *a, **k: FAKE_NGL)
+    # T3 (specs/vision-browser-stage): netstat PID adoption is GONE —
+    # `_resolve_listener_pid` was deleted with it, so its patch line is too.
     monkeypatch.setattr(vl, "_kill_pid", lambda pid: None)
+    monkeypatch.setattr(vl, "_kill_process_tree", lambda pid: None)
+    monkeypatch.setattr(vl, "_read_free_vram_gb", lambda: (7.4, True, True))
     monkeypatch.setattr(vl.time, "sleep", lambda seconds: None)
+    # Progress-aware readiness: shrink the no-progress window so failure
+    # paths resolve instantly instead of spinning the real 120s.
+    monkeypatch.setenv("IRIS_VISION_READY_WINDOW_S", "1")
     # _ensure_vision_server_running does `import httpx` locally on every
     # call, so patching the real httpx module (not a `vl.httpx` attribute,
     # which does not exist at module scope) is what takes effect.
@@ -112,7 +118,7 @@ def test_spawn_cmd_ngl_comes_from_existing_estimator_not_recomputed(monkeypatch)
     monkeypatch.setattr(
         vl,
         "_compute_vision_gpu_layers",
-        lambda model, mmproj: calls.append((model, mmproj)) or 77,
+        lambda *a, **k: calls.append(a) or 77,
     )
 
     captured = {}
@@ -151,3 +157,7 @@ def test_process_exit_during_start_surfaces_stderr_not_generic_timeout(monkeypat
     assert "exited_during_start" in warning_text or "exited during start" in warning_text
     assert "FATAL: bad --mmproj path" in warning_text
     assert "did not become ready" not in warning_text
+
+
+
+

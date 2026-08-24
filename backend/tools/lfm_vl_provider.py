@@ -53,13 +53,40 @@ _VISION_BATCH_SIZE = 2048
 # the same port is left alone.
 _VISION_SERVER_PID: Optional[int] = None
 
+# Reusable probe buffer for _probe_av_latency. Module-level and small:
+# that function reads ONE chunk per file (a full read was measured harmful —
+# see its docstring), so this never grows the backend's footprint. The spawn
+# path is single-flighted, so there is exactly one user at a time.
+_AV_PROBE_BUF = bytearray(8 << 20)  # 8 MiB
+# Reading 8 MiB off an SSD is milliseconds. Anything past this means something
+# sat in the middle of the open — in practice, on-access AV scanning.
+_AV_WARM_SLOW_S: float = float(os.environ.get("IRIS_VISION_AV_WARN_S", "3"))
+
 
 # ── Idle lifecycle ────────────────────────────────────────────────────────────
-# When vision is enabled, the llama-server is spawned eagerly so it is ready
-# immediately. To avoid holding memory when vision is not actively used, the
-# server auto-stops after IDLE_TIMEOUT seconds of no vision activity, and lazily
-# restarts on the next vision call (small model → fast start/stop).
-_IDLE_TIMEOUT: float = float(os.environ.get("IRIS_VISION_IDLE_TIMEOUT", "120"))
+# Vision loads on FIRST USE and then STAYS WARM for the life of the process.
+#
+# It used to auto-stop after 120s idle on the premise that a small model is
+# cheap to restart. Measured 2026-08-24, that premise is false on this class of
+# machine: the identical spawn took 3.87s / 3.95s / 4.90s / 11.04s / >100s
+# within one 20-minute window, depending on what else held memory. So the
+# 120s auto-stop did not save a cheap restart — it guaranteed that every use
+# re-paid a load of unpredictable duration, and it routinely tore the server
+# down in the gap between a websearch prewarm and the vision call that
+# followed. That is the mechanism behind "vision is randomly unavailable".
+#
+# Set IRIS_VISION_IDLE_TIMEOUT=<seconds> to re-enable auto-stop (e.g. to hand
+# the ~2GB back to a local brain model or LM Studio on a small card).
+#
+# NOTE: expressed as a very large finite timeout rather than a disabled flag
+# on purpose — should_idle_stop() keeps its exact "idle past the timeout"
+# semantics, so the lease/idle contracts stay meaningful and their tests keep
+# testing the real predicate. A finite value (not inf) avoids inf-inf NaN in
+# any caller doing timeout arithmetic.
+_STAY_WARM_S: float = 315_360_000.0  # 10 years == "not while this process lives"
+_IDLE_TIMEOUT: float = float(
+    os.environ.get("IRIS_VISION_IDLE_TIMEOUT", _STAY_WARM_S)
+)
 
 _last_vision_use: float = 0.0
 _idle_timer: Optional[threading.Timer] = None
@@ -71,6 +98,21 @@ def set_vision_idle_callback(cb) -> None:
     """Register a callback invoked when the idle watchdog stops the server."""
     global _vision_idle_callback
     _vision_idle_callback = cb
+
+
+def _idle_timer_interval() -> float:
+    """How long the next idle-watchdog tick should wait.
+
+    NOT simply ``_IDLE_TIMEOUT``: threading.Timer ultimately calls
+    ``waiter.acquire(True, interval)``, which raises ``OverflowError: timeout
+    value is too large`` well below the stay-warm sentinel — the timer thread
+    then dies with an unhandled exception on every vision use. So the wait is
+    capped and the watchdog simply re-arms; ``_idle_stop`` re-checks
+    ``should_idle_stop()`` on every tick, so a capped tick can only ever
+    decline to stop early, never stop early.
+    """
+    _cap = min(threading.TIMEOUT_MAX, 3600.0)  # re-arm at most hourly
+    return max(0.0, min(_IDLE_TIMEOUT, _cap))
 
 
 def _touch_vision_use() -> None:
@@ -85,7 +127,7 @@ def _touch_vision_use() -> None:
         if _idle_timer is not None:
             _idle_timer.cancel()
         if _VISION_SERVER_PID is not None:
-            _idle_timer = threading.Timer(_IDLE_TIMEOUT, _idle_stop)
+            _idle_timer = threading.Timer(_idle_timer_interval(), _idle_stop)
             _idle_timer.daemon = True
             _idle_timer.start()
 
@@ -190,46 +232,137 @@ def _prune_expired_leases() -> None:
             _VISION_LEASES.pop(lid, None)
 
 
+# ── Single-flight spawn (specs/vision-browser-stage REQ-1) ───────────────────
+# Concurrent callers of _ensure_vision_server_running (boot prewarm, lazy
+# first call, explicit start(), the tool_bridge vision path, N concurrent
+# escalations) used to EACH run a full spawn attempt during the ~25-90s ready
+# window; losers failed port-bind and their cleanup could kill the winner's
+# healthy server. Now: ONE in-flight attempt; waiters block on its Event.
+#
+# OPT GATE (tasks.md): the health fast path stays OUTSIDE the lock so a warm
+# server never contends; waiters block on an Event (zero polling); the attempt
+# object is allocated once per SPAWN, never per call.
+class _SpawnAttempt:
+    """One coalesced spawn attempt. The leader runs the spawn; waiters share
+    the outcome via `done`. `done` is ALWAYS set — success, failure, or
+    exception — so a waiter can never hang."""
+
+    __slots__ = ("done", "result")
+
+    def __init__(self) -> None:
+        self.done = threading.Event()
+        self.result = False
+
+
+_spawn_lock = threading.Lock()
+_spawn_attempt: Optional[_SpawnAttempt] = None
+
+
+# ── Vision lifecycle broadcast (REQ-5) ──────────────────────────────────────
+# cold -> spawning -> warm | error. Emitted off every inference path via a
+# registered callback (same pattern as set_vision_idle_callback). Duplicate
+# transitions inside the debounce window are dropped so a flapping state
+# cannot spam the WS channel.
+_lifecycle_callback = None
+_lifecycle_lock = threading.Lock()
+_last_lifecycle: tuple = ("", 0.0)  # (state, monotonic)
+_LIFECYCLE_DEBOUNCE_S = 1.0
+
+
+def set_vision_lifecycle_callback(cb) -> None:
+    """Register the callback invoked on vision lifecycle transitions."""
+    global _lifecycle_callback
+    _lifecycle_callback = cb
+
+
+def _notify_lifecycle(state: str, reason: str = "", trigger: str = "") -> None:
+    """Best-effort lifecycle emit — never raises, never blocks inference."""
+    global _last_lifecycle
+    now = time.monotonic()
+    with _lifecycle_lock:
+        last_state, last_t = _last_lifecycle
+        if state == last_state and (now - last_t) < _LIFECYCLE_DEBOUNCE_S:
+            return
+        _last_lifecycle = (state, now)
+    cb = _lifecycle_callback
+    if cb is None:
+        return
+    try:
+        cb(state=state, reason=reason, trigger=trigger)
+    except Exception as exc:  # noqa: BLE001 — broadcast must never fail a call
+        logger.debug("[LFMVLProvider] lifecycle notify failed: %s", exc)
+
+
+# ── Search-scoped warmth (REQ-4) ─────────────────────────────────────────────
+# Boot prewarm evaporates to the idle-stop; request_warm re-warms at
+# crawler_started (sequenced AFTER pool readiness by the gateway caller) so
+# escalation finds a warm endpoint. Idempotent: at most one warm in flight;
+# the actual spawn delegates to _ensure_vision_server_running and therefore
+# inherits single-flight (REQ-4 AC3).
+_warm_guard = threading.Lock()
+_warm_in_flight = False
+_current_trigger = "lazy-call"  # attribution for lifecycle emits
+
+
+def request_warm(trigger: str) -> bool:
+    """Warm the owned vision server, attributed to `trigger`
+    ('boot' | 'search-scoped' | 'lazy-call'). Returns True when reachable.
+
+    Bounded to one in-flight warm (REQ-4 AC5); a warm arriving while another
+    is running is dropped (the in-flight one covers it)."""
+    global _warm_in_flight, _current_trigger
+    with _warm_guard:
+        if _warm_in_flight:
+            logger.info(
+                "[LFMVLProvider] warm already in flight — dropping trigger=%s",
+                trigger,
+            )
+            return False
+        _warm_in_flight = True
+        _current_trigger = trigger or "lazy-call"
+    try:
+        ok = _ensure_vision_server_running()
+        if ok:
+            _touch_vision_use()
+        return ok
+    finally:
+        with _warm_guard:
+            _warm_in_flight = False
+
+
 def _stop_owned_vision_server() -> None:
     """Kill the llama-server subprocess IRIS spawned (tracked PID only)."""
     global _VISION_SERVER_PID
     if _VISION_SERVER_PID is None:
         return
+    _kill_process_tree(_VISION_SERVER_PID)
+    logger.info(f"[LFMVLProvider] Stopped vision server PID {_VISION_SERVER_PID}")
+    _VISION_SERVER_PID = None
+
+
+def _kill_process_tree(pid: Optional[int]) -> None:
+    """Kill a process AND its children (REQ-2 ownership-safe cleanup).
+
+    Only ever called with a PID this module spawned and still holds a Popen
+    handle for — never with a port-scanned stranger. Windows: `taskkill /T`
+    walks the child tree. POSIX: the spawn used start_new_session, so the
+    child is its own process group -> killpg; fall back to a direct kill.
+    Never raises."""
+    if not pid:
+        return
     try:
         if os.name == "nt":
             subprocess.run(
-                ["taskkill", "/F", "/PID", str(_VISION_SERVER_PID)],
-                capture_output=True,
+                ["taskkill", "/T", "/F", "/PID", str(pid)],
+                capture_output=True, timeout=15,
             )
         else:
-            os.kill(_VISION_SERVER_PID, signal.SIGTERM)
-        logger.info(f"[LFMVLProvider] Stopped vision server PID {_VISION_SERVER_PID}")
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                os.kill(pid, signal.SIGTERM)
     except Exception as e:
-        logger.warning(f"[LFMVLProvider] Failed to stop vision server: {e}")
-    finally:
-        _VISION_SERVER_PID = None
-
-
-def _resolve_listener_pid(port: int) -> Optional[int]:
-    """Return the PID currently LISTENING on ``port``, or None.
-
-    Used after a spawn to adopt the REAL llama-server PID (the spawn goes
-    through a launcher, whose pid is not the server's), and to clean up a
-    server that failed to become ready.
-    """
-    try:
-        _out = subprocess.run(
-            ["netstat", "-ano", "-p", "TCP"],
-            capture_output=True, text=True, timeout=10,
-        ).stdout
-        for _line in _out.splitlines():
-            if f":{port}" in _line and "LISTENING" in _line:
-                _parts = _line.split()
-                if _parts:
-                    return int(_parts[-1])
-    except Exception:
-        pass
-    return None
+        logger.warning(f"[LFMVLProvider] Failed to stop vision server tree {pid}: {e}")
 
 
 def _kill_pid(pid: Optional[int]) -> None:
@@ -243,6 +376,106 @@ def _kill_pid(pid: Optional[int]) -> None:
             os.kill(pid, signal.SIGTERM)
     except Exception:
         pass
+
+
+def _probe_av_latency(*paths: str, server_binary: str = "") -> float:
+    """Time a single small read of each model file before spawning
+    llama-server, purely as a DIAGNOSTIC. Returns seconds spent. Never raises.
+
+    WHY (measured live 2026-08-24 — the root cause of "vision is randomly
+    unavailable"): Windows Defender real-time protection scans a GGUF on first
+    open. llama-server blocks inside the AV filter driver for the whole scan
+    with NO cpu, NO io progress and NO log output, so it is indistinguishable
+    from a hung process. Captured trace for the 854MB F16 mmproj:
+    llama-server's read_bytes sat at 11MB for 73 SECONDS while MsMpEng.exe
+    burned CPU linearly, then jumped to 826MB and the server was ready at
+    75.66s. Any readiness heuristic that reads silence as death kills that
+    load and reports vision unavailable.
+
+    This function CANNOT fix that, and does not pretend to. Pre-reading the
+    files in full was tried and measured harmful: 29.7s to pull 2.5GB through
+    the scanner, after which llama-server was STILL blocked 481s, because
+    Defender's verdict cache is scoped to the accessing process. So the files
+    are merely PROBED, and the only product is a log line that names AV
+    instead of leaving a mysterious llama.cpp hang.
+
+    THE ACTUAL FIX is an AV exclusion, which the slow-path warning spells out.
+    """
+    _t0 = time.monotonic()
+    _server_binary = server_binary
+    _model_dir = ""
+    for _p in paths:
+        if _p:
+            _model_dir = str(Path(_p).parent)
+            break
+    for _p in paths:
+        if not _p:
+            continue
+        try:
+            # PROBE ONLY — deliberately NOT a full read.
+            #
+            # A full sequential read was tried first and MEASURED HARMFUL: it
+            # cost 29.7s to pull 2.5GB through the scanner, and llama-server
+            # was STILL blocked for 481s afterwards. Defender's verdict cache
+            # is scoped per accessing process, so warming the file from python
+            # buys llama-server nothing — it just pays the scan twice and
+            # evicts page cache on the way.
+            #
+            # One chunk is enough for the only thing this function can
+            # honestly deliver: a TIMING SIGNAL that names AV as the culprit
+            # in the log, cheaply, before the spawn.
+            with open(_p, "rb", buffering=0) as _fh:
+                _fh.readinto(_AV_PROBE_BUF)
+        except Exception as _exc:  # noqa: BLE001 — probing must never block a spawn
+            logger.debug("[LFMVLProvider] av-probe skipped for %s (%s)", _p, _exc)
+    _elapsed = time.monotonic() - _t0
+    if _elapsed >= _AV_WARM_SLOW_S:
+        logger.warning(
+            "[LFMVLProvider] av_scan_suspected probe_sec=%.1f model_dir=%s — a "
+            "small read of the vision model files took far longer than disk. "
+            "This is on-access antivirus scanning, and it blocks llama-server "
+            "inside the filter driver with no cpu/io/log output for the whole "
+            "scan (measured: 73s on the mmproj). Fix, in an ADMINISTRATOR "
+            "PowerShell: Add-MpPreference -ExclusionPath '%s' ; "
+            "Add-MpPreference -ExclusionProcess '%s'  (the PROCESS exclusion "
+            "is the one that matters — Defender's verdict cache is per "
+            "accessing process, so pre-reading the files elsewhere does not "
+            "help llama-server).",
+            _elapsed,
+            _model_dir,
+            _model_dir,
+            _server_binary or "<path to llama-server.exe>",
+        )
+    else:
+        logger.info("[LFMVLProvider] av_probe_ok sec=%.1f", _elapsed)
+    return _elapsed
+
+
+def _proc_cpu_seconds(pid: Optional[int]) -> Optional[float]:
+    """Total CPU seconds burned by ``pid``, or None if it cannot be read.
+
+    This is the readiness loop's LIVENESS signal and the fix for the bug that
+    made vision "randomly unavailable" (2026-08-24). llama.cpp emits NOTHING
+    between "load_model: loading model '<gguf>'" and "loaded multimodal
+    model" — measured, every stalled log truncates at exactly one of those
+    two points. So the old no-progress test ("has the stderr log grown?")
+    could not tell a healthy slow load from a dead process, and killed
+    healthy loads at 120s.
+
+    A loading llama-server pegs a core; a genuinely wedged one does not. CPU
+    time is therefore the honest discriminator. Never raises — an unreadable
+    value returns None and the caller treats it as "no information", never as
+    "dead".
+    """
+    if not pid:
+        return None
+    try:
+        import psutil  # already a backend dependency
+
+        t = psutil.Process(pid).cpu_times()
+        return float(t.user + t.system)
+    except Exception:
+        return None
 
 
 def _read_log_tail(log_path: str, max_lines: int = 20) -> str:
@@ -271,8 +504,21 @@ def _idle_stop() -> None:
     with _idle_lock:
         _idle_timer = None
     if not should_idle_stop():
-        return  # REQ-9: active lease -> defer; _touch_vision_use reschedules
+        # Not idle yet (or REQ-9: an active lease defers the stop). RE-ARM
+        # rather than returning dead. The old code relied on the next
+        # _touch_vision_use to reschedule, which is exactly backwards: a
+        # server that is never touched again is the one that should idle out,
+        # and it was the only one whose watchdog stayed dead. Re-arming also
+        # makes the capped interval in _idle_timer_interval correct — a tick
+        # that fires early just re-arms until the real deadline passes.
+        with _idle_lock:
+            if _VISION_SERVER_PID is not None and _idle_timer is None:
+                _idle_timer = threading.Timer(_idle_timer_interval(), _idle_stop)
+                _idle_timer.daemon = True
+                _idle_timer.start()
+        return
     _stop_owned_vision_server()
+    _notify_lifecycle("cold", reason="idle timeout")  # REQ-5: truth to the UI
     cb = _vision_idle_callback
     if cb is not None:
         try:
@@ -295,7 +541,7 @@ def get_lfm_vl_provider():
 @dataclass
 class LFMVLConfig:
     """Configuration for LFM2.5-VL vision provider."""
-    base_url: str = f"http://localhost:{_VISION_PORT}/v1"
+    base_url: str = f"http://127.0.0.1:{_VISION_PORT}/v1"
     temperature: float = 0.1
     min_p: float = 0.15
     repetition_penalty: float = 1.05
@@ -589,11 +835,17 @@ def _discover_vision_candidates() -> list:
     return candidates
 
 
-def _find_vision_model() -> Optional[Tuple[str, str]]:
+def _find_vision_model(vram_state=None) -> Optional[Tuple[str, str]]:
     """
     Size-select the VL fallback model from a widest-first ladder walked
     against REAL free VRAM (REQ-3 AC1), taking the first candidate whose
     weights + projector + KV fit — never an unconditional size preference.
+
+    ``vram_state`` (REQ-13 AC1, T4): an optional pre-read
+    ``(free_gb, readable, cuda_available)`` tuple so ONE nvidia-smi probe
+    serves both candidate selection AND the GPU-layer decision within a
+    single spawn. When None the read happens here (back-compat for existing
+    callers/tests).
 
     Returns ``(model_path, mmproj_path)``.
 
@@ -621,7 +873,9 @@ def _find_vision_model() -> Optional[Tuple[str, str]]:
             msg, free_gb=0.0, smallest_requirement_gb=0.0, ladder=[],
         )
 
-    free_gb, vram_readable, _cuda_available = _read_free_vram_gb()
+    if vram_state is None:
+        vram_state = _read_free_vram_gb()
+    free_gb, vram_readable, _cuda_available = vram_state
 
     if not vram_readable:
         # REQ-3 edge case: free VRAM unreadable -> most conservative
@@ -713,8 +967,14 @@ def _find_llama_server_binary() -> Optional[str]:
     return None
 
 
-def _compute_vision_gpu_layers(model_path: str, mmproj_path: str) -> int:
+def _compute_vision_gpu_layers(model_path: str, mmproj_path: str, vram_state=None) -> int:
     """Decide how many GPU layers the vision llama-server should offload.
+
+    ``vram_state`` (REQ-13 AC1, T4): optional pre-read
+    ``(free_gb, readable, cuda_available)`` shared with ``_find_vision_model``
+    so one nvidia-smi probe serves the whole spawn decision — and so selection
+    and this decision can never disagree about what "free" means (the TOCTOU
+    two-read race is structurally gone).
 
     The vision model runs on the GPU when VRAM allows (2026-08-12: this used
     to default to CPU-only — the spawn command passed NO -ngl flag, so
@@ -756,7 +1016,9 @@ def _compute_vision_gpu_layers(model_path: str, mmproj_path: str) -> int:
     if not model_path or not mmproj_path:
         return 0
     try:
-        free_gb, vram_readable, cuda_available = _read_free_vram_gb()
+        if vram_state is None:
+            vram_state = _read_free_vram_gb()
+        free_gb, vram_readable, cuda_available = vram_state
 
         if not cuda_available:
             logger.info(
@@ -806,33 +1068,109 @@ def _compute_vision_gpu_layers(model_path: str, mmproj_path: str) -> int:
 
 
 def _ensure_vision_server_running(base_url: str = "") -> bool:
-    """
-    Check if llama-server is running. If not, try to spawn it.
-    Returns True if server is reachable (either already running or successfully started).
+    """Ensure the vision llama-server is reachable, spawning it if needed.
+
+    SINGLE-FLIGHT (specs/vision-browser-stage REQ-1): concurrent callers from
+    ANY entry point (boot prewarm, lazy _call, start(), tool_bridge, N
+    escalations) coalesce onto ONE in-flight attempt — waiters block on its
+    Event and share the outcome; exactly one llama-server is ever spawned.
+
+    Structure:
+      1. Health fast path OUTSIDE the lock (REQ-1 AC5) — a warm server never
+         contends.
+      2. Under `_spawn_lock`: join the in-flight attempt or become its leader.
+      3. Leader runs ONE spawn attempt; `attempt.done` is ALWAYS set in a
+         finally, so a waiter can never hang.
+
+    Returns True when the server is reachable after this call.
     """
     requested_port = _VISION_PORT
 
+    # ── 1. fast path, no lock ──
+    # base_url ALREADY ENDS IN /v1 (LFMVLConfig.base_url), so the endpoint is
+    # "/models" — NOT "/v1/models". Appending /v1 again produced .../v1/v1/models,
+    # which 404s forever (live proof 2026-08-10). Keep hitting /models.
     try:
         import httpx
-        # base_url ALREADY ENDS IN /v1 (LFMVLConfig.base_url is
-        # "http://localhost:<port>/v1"), so the endpoint is "/models" — NOT
-        # "/v1/models". Appending /v1 again produced .../v1/v1/models, which
-        # 404s forever: the health check therefore reported "not running" for a
-        # server that was up, then the readiness loop below made the SAME
-        # mistake and timed out after 30s. Live proof 2026-08-10:
-        # GET /v1/models -> 200, GET /v1/v1/models -> 404, while the server
-        # logged "server is listening on http://127.0.0.1:18181" in under 2s.
-        # `_call()` at the bottom of this file always got this right
-        # (f"{base_url}/models") — only these two probes were wrong.
-        check_url = base_url or f"http://localhost:{requested_port}/v1"
+        check_url = base_url or f"http://127.0.0.1:{requested_port}/v1"
         r = httpx.get(f"{check_url}/models", timeout=2.0)
         if r.status_code == 200:
             return True
     except Exception:
         pass
 
+    # ── 2. coalesce under the lock ──
+    global _spawn_attempt
+    with _spawn_lock:
+        current = _spawn_attempt
+        if current is not None and not current.done.is_set():
+            attempt = current
+            leader = False
+        else:
+            attempt = _SpawnAttempt()
+            _spawn_attempt = attempt
+            leader = True
+
+    if not leader:
+        logger.info(
+            "[LFMVLProvider] awaiting in-flight vision server spawn "
+            "(coalesced waiter)"
+        )
+        attempt.done.wait()
+        return attempt.result
+
+    # ── 3. leader runs the one attempt ──
+    logger.info(
+        f"[LFMVLProvider] Vision server not running on port {requested_port}. "
+        "Attempting auto-start..."
+    )
+    try:
+        attempt.result = bool(_spawn_vision_server_now(base_url))
+        return attempt.result
+    finally:
+        # ALWAYS release waiters — success, failure, or exception.
+        attempt.done.set()
+        with _spawn_lock:
+            if _spawn_attempt is attempt:
+                _spawn_attempt = None
+
+
+def _spawn_vision_server_now(base_url: str = "") -> bool:
+    """Leader path: run ONE spawn attempt. Single-flight is the CALLER's job
+    (_ensure_vision_server_running); calling this directly bypasses the lock.
+
+    Ownership rule (REQ-2): this function kills ONLY processes it spawned
+    itself — the Popen handle it owns pins the real PID (no netstat adoption,
+    no port-scan kill). On Windows an open process handle prevents PID reuse;
+    on POSIX the kill happens within the same-second reap window, and the
+    /proc exe check below guards even that.
+    """
+    requested_port = _VISION_PORT
+
+    # PREFLIGHT (2026-08-24): reap a server we previously spawned that is no
+    # longer answering. The caller only reaches this function after the health
+    # probe failed, so if _VISION_SERVER_PID is still set the process it names
+    # is either dead (kill is a no-op) or wedged mid-load holding ~2GB of RAM
+    # and its share of VRAM. Leaving it resident makes the NEXT spawn slower
+    # and more likely to stall, which leaves another one behind — the
+    # degrade-with-every-retry spiral behind "it only works after a reboot".
+    # Ownership is unchanged: this only ever kills a pid THIS module spawned.
+    global _VISION_SERVER_PID
+    _stale_pid = _VISION_SERVER_PID
+    if _stale_pid:
+        logger.info(
+            "[LFMVLProvider] reaping unresponsive owned vision server pid=%s "
+            "before respawn", _stale_pid,
+        )
+        _kill_process_tree(_stale_pid)
+        _VISION_SERVER_PID = None
+
     # Not running — try to auto-start
-    logger.info(f"[LFMVLProvider] Vision server not running on port {requested_port}. Attempting auto-start...")
+
+    # REQ-13 AC1 (T4): ONE free-VRAM probe serves the whole spawn decision —
+    # candidate selection and the GPU-layer computation share this tuple, so
+    # they can never disagree about what "free" means.
+    _vram_state = _read_free_vram_gb()
 
     # REQ-3 AC4/AC6: _find_vision_model FAILS LOUDLY (raises + emits
     # VISION_UNAVAILABLE) when no VL model exists or none fits free VRAM,
@@ -840,7 +1178,7 @@ def _ensure_vision_server_running(base_url: str = "") -> bool:
     # reported "vision unavailable" rather than an exception escaping into
     # the agent loop — the caller of start()/_call() only ever sees False.
     try:
-        model_files = _find_vision_model()
+        model_files = _find_vision_model(vram_state=_vram_state)
     except VisionModelUnavailable as exc:
         logger.warning(f"[LFMVLProvider] vision unavailable: {exc}")
         return False
@@ -860,7 +1198,7 @@ def _ensure_vision_server_running(base_url: str = "") -> bool:
     # before/after a vision model load). 999 = "all layers". Same FAIL
     # LOUDLY contract as _find_vision_model above (REQ-3 AC4/AC6).
     try:
-        ngl = _compute_vision_gpu_layers(model_path, mmproj_path)
+        ngl = _compute_vision_gpu_layers(model_path, mmproj_path, vram_state=_vram_state)
     except VisionModelUnavailable as exc:
         logger.warning(f"[LFMVLProvider] vision unavailable: {exc}")
         return False
@@ -889,123 +1227,296 @@ def _ensure_vision_server_running(base_url: str = "") -> bool:
     env = os.environ.copy()
     binary_path = Path(binary)
     if "llama.cpp-upstream" in str(binary_path):
-        env["LD_LIBRARY_PATH"] = str(binary_path.parent) + ":" + env.get("LD_LIBRARY_PATH", "")
-
-    logger.info(f"[LFMVLProvider] Spawning vision server: {' '.join(cmd)}")
-    _spawn_start = time.monotonic()  # REQ-6 AC3: time-to-ready measurement
-    try:
-        # Capture llama-server stderr to a file so future load failures are
-        # diagnosable (previously DEVNULL hid failures entirely — the 2026-08-12
-        # -fit hang produced zero evidence in the backend log).
-        log_dir = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs"
+        # os.pathsep, not ":": this code also runs on Windows where the
+        # separator is ";" (REQ-3 — the POSIX literal was a latent bug).
+        env["LD_LIBRARY_PATH"] = (
+            str(binary_path.parent) + os.pathsep + env.get("LD_LIBRARY_PATH", "")
         )
-        os.makedirs(log_dir, exist_ok=True)
-        log_path = os.path.join(
-            log_dir, f"vision-llama-server-{time.strftime('%Y%m%d-%H%M%S')}.log"
-        )
-        vision_stderr = open(log_path, "wb")
 
-        # Windows CUDA parent quirk (verified live 2026-08-12): a llama-server
-        # child spawned DIRECTLY from a parent that has loaded torch/transformers
-        # with CUDA (the backend's LFM encoder does this on first use) hangs
-        # forever inside llama.cpp's `-fit` device probe — "fitting params to
-        # device memory" — and never serves /v1/models (503 for 6+ min at ~640MB
-        # RSS). Spawning through a tiny launcher python (imports only
-        # subprocess/sys, so NO torch/CUDA state) gives llama-server a clean
-        # parent: load completes in ~25-40s. Direct spawn = hang, launcher spawn
-        # = READY (reproduced back-to-back with a vision model at -ngl 999).
-        _LAUNCHER = "import subprocess,sys; sys.exit(subprocess.run(sys.argv[1:]).returncode)"
-        proc = subprocess.Popen(
-            [sys.executable, "-c", _LAUNCHER] + cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=vision_stderr,
-            start_new_session=True,  # Detach from parent
-            env=env,
-        )
-    except Exception as e:
-        logger.warning(f"[LFMVLProvider] Failed to spawn vision server: {e}")
-        return False
-
-    global _VISION_SERVER_PID
-    _VISION_SERVER_PID = proc.pid  # launcher pid; refined to the real server pid below
-    # Wait for the server to become ready. The probe hits the SAME url the
-    # health check uses — `base_url` may be empty (the parameter defaults
-    # to "") in which case f"{base_url}/..." is not even a valid URL, so
-    # every iteration raised and the loop always fell through to the
-    # timeout warning.
+    # 2026-08-23 THEORY, FALSIFIED 2026-08-24 — env sanitizing is GONE.
     #
-    # 2026-08-12: a fixed 30s window reported "not ready" for a server that
-    # was still loading a larger model, so the first vision call failed and
-    # the UI showed vision as down. Scale the window by the model's MEASURED
-    # footprint (REQ-10 AC7 — no hardcoded model-name substring to key off
-    # of; any vision model the user picked can be small or large) rather
-    # than a name heuristic: ~90s above a ~1.5GB footprint, ~30s at/under it.
-    ready_url = base_url or f"http://localhost:{requested_port}/v1"
-    try:
-        _footprint_gb = _estimate_vision_footprint_gb(model_path, mmproj_path)
-    except Exception:
-        _footprint_gb = 0.0
-    _ready_attempts = 180 if _footprint_gb >= 1.5 else 60  # 0.5s each → 90s / 30s
-    _exited_early = False
-    for _ in range(_ready_attempts):
-        time.sleep(0.5)
-        # Edge case (REQ-6): if the launcher process has already exited, the
-        # llama-server it wrapped exited too (the launcher runs it
-        # synchronously via subprocess.run and only exits after it returns) —
-        # stop polling immediately instead of waiting out the full timeout
-        # window for a process that is not coming back.
-        if proc.poll() is not None:
-            _exited_early = True
-            break
-        try:
-            r = httpx.get(f"{ready_url}/models", timeout=1.0)
-            if r.status_code == 200:
-                _elapsed = time.monotonic() - _spawn_start
-                logger.info(
-                    "[LFMVLProvider] vision_server_ready port=%s ttr_sec=%.2f "
-                    "ctx=%s ngl=%s batch=%s",
-                    requested_port, _elapsed, _VISION_CTX_SIZE, ngl, _VISION_BATCH_SIZE,
-                )
-                # Adopt the REAL llama-server pid (the launcher pid is not the
-                # server's), so _stop_owned_vision_server kills the server, not
-                # the launcher wrapper.
-                _real = _resolve_listener_pid(requested_port)
-                if _real is not None:
-                    _VISION_SERVER_PID = _real
-                vision_stderr.close()
-                return True
-        except Exception:
-            pass
+    # The previous theory was that the backend's imported-at-module-time env
+    # (porcupine DLL dir on PATH, CUDA/torch vars) poisoned the child, so the
+    # child's env was stripped of CUDA_/TORCH_/GGML_/LLAMA_/PERF_ and the
+    # pvporcupine PATH segment was surgically removed. Measured refutation:
+    #   - the identical stall reproduces from a parent that NEVER imports
+    #     torch/CUDA, with a fully inherited env (877-byte truncated log,
+    #     byte-identical to the backend's);
+    #   - it also reproduces from a plain shell with a plain Popen, no env
+    #     mutation at all.
+    # Env is NOT the variable. Stripping it only risked breaking a child that
+    # legitimately needs one of those vars, so the child now inherits the
+    # parent env verbatim (plus LD_LIBRARY_PATH above, which IS load-bearing
+    # for the upstream build).
 
-    _elapsed = time.monotonic() - _spawn_start
-    vision_stderr.close()
-    if _exited_early:
-        # Edge case (REQ-6): surface the server's own last stderr lines
-        # instead of a generic timeout — the process exited, it did not
-        # merely take too long, and the log usually names the real cause
-        # (bad flag, missing file, OOM).
-        _exit_code = proc.poll()
-        logger.warning(
-            "[LFMVLProvider] vision_server_exited_during_start port=%s "
-            "exit_code=%s ttr_sec=%.2f last_stderr=\n%s",
-            requested_port, _exit_code, _elapsed, _read_log_tail(log_path),
-        )
-    else:
-        logger.warning(
-            "[LFMVLProvider] vision_server_not_ready port=%s timeout_sec=%.0f "
-            "ttr_sec=%.2f",
-            requested_port, _ready_attempts * 0.5, _elapsed,
-        )
-    # Failed: clean up what we spawned. Nothing was listening on the port
-    # before we spawned (the health check above only auto-starts when the
-    # server is down), so any listener on the port now is OURS — kill it
-    # precisely, plus the launcher tree, then clear the tracked pid.
-    _stray = _resolve_listener_pid(requested_port)
-    if _stray is not None:
-        _kill_pid(_stray)
-    _kill_pid(proc.pid)
-    _VISION_SERVER_PID = None
+    # Diagnostic only — see _probe_av_latency. A first-open Defender scan of
+    # the mmproj was measured blocking llama-server for 73s with no cpu, no io
+    # and no log output: indistinguishable from a hang, and the direct cause
+    # of vision being reported unavailable. This cheap probe cannot prevent
+    # that (the verdict cache is per-process), but it puts a log line naming
+    # AV in front of the spawn instead of leaving a silent mystery.
+    _probe_av_latency(model_path, mmproj_path, server_binary=binary)
+
+    # RETRY IS OFF BY DEFAULT — deliberately. This is the second-order lesson
+    # from the 2026-08-24 investigation.
+    #
+    # Retrying LOOKS right for a "wedged" spawn and is actively HARMFUL here:
+    # the wedge is Windows Defender scanning the 854MB mmproj on open, so
+    # killing the child and respawning throws away a scan that was most of the
+    # way done and starts a fresh one. Measured: 3 attempts x a 60s window ->
+    # all three "wedged", call failed after 296s. A single PATIENT attempt on
+    # the same machine minutes later completed at 75.66s.
+    #
+    # Kept as a knob (IRIS_VISION_SPAWN_ATTEMPTS=N) because a genuinely
+    # crash-looping binary is a different failure, but the default must be 1:
+    # patience beats churn when the blocker is a filesystem filter driver.
+    _MAX_SPAWN_ATTEMPTS = max(1, int(os.environ.get("IRIS_VISION_SPAWN_ATTEMPTS", "1")))
+    for _attempt in range(1, _MAX_SPAWN_ATTEMPTS + 1):
+        if _attempt > 1:
+            logger.warning(
+                "[LFMVLProvider] vision spawn attempt %d/%d (previous attempt "
+                "wedged with no CPU progress)", _attempt, _MAX_SPAWN_ATTEMPTS,
+            )
+        logger.info(f"[LFMVLProvider] Spawning vision server: {' '.join(cmd)}")
+        _spawn_start = time.monotonic()  # REQ-6 AC3: time-to-ready measurement
+        _notify_lifecycle("spawning", trigger=_current_trigger)  # REQ-5
+        try:
+            # Capture llama-server stderr to a file so future load failures are
+            # diagnosable (previously DEVNULL hid failures entirely — the 2026-08-12
+            # -fit hang produced zero evidence in the backend log).
+            log_dir = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs"
+            )
+            os.makedirs(log_dir, exist_ok=True)
+            log_path = os.path.join(
+                log_dir, f"vision-llama-server-{time.strftime('%Y%m%d-%H%M%S')}.log"
+            )
+            vision_stderr = open(log_path, "wb")
+
+            # SPAWN MECHANISM — REWRITTEN 2026-08-24 after the "parent process
+            # context" theory was falsified by measurement.
+            #
+            # The 2026-08-23 matrix concluded the decisive variable was the
+            # PARENT'S CUDA/TORCH STATE and shipped a python launcher wrapper to
+            # give llama-server a "clean parent". Re-measured 2026-08-24:
+            #   - the stall reproduces from a console-less parent that never
+            #     imports torch (GetConsoleWindow()==0, CREATE_NO_WINDOW);
+            #   - it reproduces from a plain shell with a plain Popen;
+            #   - the embedding-sidecar spawn shape stalls too;
+            #   - `-ngl 0` (pure CPU, zero GPU allocation) stalls too;
+            #   - the SAME argv measured 3.87s / 3.95s / 4.90s / 11.04s / >100s
+            #     within one 20-minute window.
+            # It is a variable-duration load, not a spawn-context hang. The
+            # wrapper bought nothing and cost plenty: its stdout was a PIPE that
+            # nothing drained until after readiness, so a chatty child could wedge
+            # on a full pipe buffer, and it inserted a second process between us
+            # and the server for no reason.
+            #
+            # This is now the shape both spawn paths that demonstrably work in
+            # this repo already use:
+            #   - stdout=DEVNULL, stderr=<log file>  (diagnosable, no pipe to fill)
+            #   - stdin=DEVNULL                      (never block on a console read)
+            #   - cwd=<binary dir>                   (Windows DLL loader resolves
+            #     the CUDA runtime DLLs shipped beside llama-server — this is
+            #     deliberate in local_model_manager._build_server_cmd and was the
+            #     one thing the vision path genuinely lacked)
+            #   - inherited env, own process group   (embedding_sidecar's shape)
+            # Ownership is unchanged and simpler: proc.pid IS the server pid, so
+            # there is no launcher-stdout adoption protocol and still no netstat.
+            _spawn_argv = cmd
+            _popen_kwargs = {}
+            if os.name == "nt":
+                _popen_kwargs["creationflags"] = getattr(
+                    subprocess, "CREATE_NEW_PROCESS_GROUP", 0
+                )
+            else:
+                _popen_kwargs["start_new_session"] = True
+            proc = subprocess.Popen(
+                _spawn_argv,
+                stdout=subprocess.DEVNULL,
+                stderr=vision_stderr,
+                stdin=subprocess.DEVNULL,
+                cwd=str(Path(binary).parent),
+                env=env,
+                **_popen_kwargs,
+            )
+        except Exception as e:
+            logger.warning(f"[LFMVLProvider] Failed to spawn vision server: {e}")
+            return False
+
+        # (_VISION_SERVER_PID is already declared global at the top of this
+        # function, for the preflight reap.)
+        # proc.pid IS the llama-server pid (the launcher wrapper is gone), so
+        # ownership is pinned directly by the Popen handle — no netstat, no
+        # adoption protocol, no possibility of killing a stranger on the port.
+        _VISION_SERVER_PID = proc.pid
+        # Wait for the server to become ready. The probe hits the SAME url the
+        # health check uses — `base_url` may be empty (the parameter defaults
+        # to "") in which case f"{base_url}/..." is not even a valid URL, so
+        # every iteration raised and the loop always fell through to the
+        # timeout warning.
+        #
+        # 2026-08-12: a fixed 30s window reported "not ready" for a server that
+        # was still loading a larger model, so the first vision call failed and
+        # the UI showed vision as down. Scale the window by the model's MEASURED
+        # footprint (REQ-10 AC7 — no hardcoded model-name substring to key off
+        # of; any vision model the user picked can be small or large) rather
+        # than a name heuristic: ~90s above a ~1.5GB footprint, ~30s at/under it.
+        ready_url = base_url or f"http://127.0.0.1:{requested_port}/v1"
+        try:
+            _footprint_gb = _estimate_vision_footprint_gb(model_path, mmproj_path)
+        except Exception:
+            _footprint_gb = 0.0
+        # Readiness wait: PROGRESS-AWARE (live finding 2026-08-23 x2: BOTH the
+        # old 90s two-tier cap AND a footprint-scaled 88s window expired while a
+        # model was mid-load — cold disk reads dominate, not size; the 3B showed
+        # "37% | ETA 2:44" at the old cutoff). The signal that a spawn deserves
+        # more time is its stderr LOG GROWING. So:
+        #   - no-progress window: ~2min without a growing log = hung -> give up
+        #   - hard ceiling: 10min absolute (a genuinely stuck spawn cannot hold
+        #     a caller longer than that)
+        #   - process exit cuts the wait immediately (checked every poll)
+        # 120s -> 300s (2026-08-24), and this number is now EVIDENCE-BACKED.
+        #
+        # ROOT CAUSE of "vision randomly unavailable", measured live: Windows
+        # Defender real-time scanning. llama-server opens the 854MB F16 mmproj,
+        # the AV filter driver intercepts the open and scans the whole file,
+        # and llama-server blocks in the kernel with NO cpu, NO io, NO log
+        # output. One captured trace: read_bytes flat at 11MB for 73 seconds
+        # while MsMpEng.exe burned CPU linearly (0.2s -> 5.92s), then
+        # read_bytes jumped to 826MB and the server was ready at 75.66s.
+        #
+        # So EVERY in-process progress signal — log growth, cpu time, io
+        # counters — is legitimately flat while the load is healthy and
+        # progressing. There is no signal that distinguishes "AV is scanning"
+        # from "dead" without reaching outside the process. The only honest
+        # policy is PATIENCE: a live process gets the benefit of the doubt up
+        # to the hard deadline. Killing early is what turned a slow load into
+        # a reported failure.
+        #
+        # The real fix is an AV exclusion for the models directory (see the
+        # preflight warning emitted by _probe_av_latency). This window
+        # is the safety net for machines that do not have one.
+        _NO_PROGRESS_WINDOW_S = float(os.environ.get("IRIS_VISION_READY_WINDOW_S", "300"))
+        _HARD_DEADLINE_S = float(os.environ.get("IRIS_VISION_READY_MAX_S", "600"))
+        _hard_deadline = time.monotonic() + _HARD_DEADLINE_S
+        _last_progress = time.monotonic()
+        try:
+            _last_log_size = os.path.getsize(log_path)
+        except OSError:
+            _last_log_size = 0
+        # THIRD progress signal (2026-08-24 fix): the child's CPU time. See
+        # _proc_cpu_seconds — llama.cpp is SILENT for the whole model+mmproj load,
+        # so "log stopped growing" and "server is dead" were indistinguishable and
+        # healthy loads were being killed at the 120s window. Sampled on a slow
+        # cadence (CPU-time reads are a syscall per poll, and the window they feed
+        # is 120s wide — 0.5s resolution buys nothing).
+        _CPU_SAMPLE_EVERY_S = 5.0
+        _last_cpu_sample_at = time.monotonic()
+        _last_cpu_seconds = _proc_cpu_seconds(proc.pid)
+        _exited_early = False
+        while time.monotonic() < _hard_deadline:
+            time.sleep(0.5)
+            # Progress check 1 / edge case (REQ-6): the server process itself has
+            # exited — stop polling immediately instead of waiting out the full
+            # window for a process that is not coming back. This is checked FIRST
+            # every iteration so a crash is always reported as a crash (with its
+            # stderr tail) rather than as a timeout.
+            if proc.poll() is not None:
+                _exited_early = True
+                break
+            try:
+                r = httpx.get(f"{ready_url}/models", timeout=1.0)
+                # ANY HTTP response — including llama.cpp's 503 "still loading" —
+                # proves the server's HTTP layer is ALIVE. That is the true
+                # progress signal: llama.cpp binds its port BEFORE loading the
+                # model, and its stderr progress bar uses \r overwrites that
+                # barely grow the file (the naive size check killed healthy
+                # loads mid-bar). Silence now means: no bind AND no stderr.
+                _last_progress = time.monotonic()
+                if r.status_code == 200:
+                    _elapsed = time.monotonic() - _spawn_start
+                    logger.info(
+                        "[LFMVLProvider] vision_server_ready port=%s ttr_sec=%.2f "
+                        "ctx=%s ngl=%s batch=%s",
+                        requested_port, _elapsed, _VISION_CTX_SIZE, ngl, _VISION_BATCH_SIZE,
+                    )
+                    # No pid adoption step: the launcher wrapper is gone, so
+                    # proc.pid IS the llama-server pid and _VISION_SERVER_PID was
+                    # already set to it above.
+                    vision_stderr.close()
+                    _notify_lifecycle("warm", trigger=_current_trigger)  # REQ-5
+                    return True
+            except Exception:
+                pass
+            # Progress check 2: llama.cpp writes load progress to stderr. A
+            # growing log means the loader is WORKING — keep waiting.
+            try:
+                _size = os.path.getsize(log_path)
+                if _size > _last_log_size:
+                    _last_log_size = _size
+                    _last_progress = time.monotonic()
+            except OSError:
+                pass
+            # Progress check 3 (2026-08-24): CPU time advancing means the loader
+            # is WORKING even though it is writing nothing. This is the signal
+            # that covers the silent model/mmproj load — the exact span where
+            # every measured stall log truncates, and where the old two-signal
+            # loop used to kill healthy work.
+            _now = time.monotonic()
+            if _now - _last_cpu_sample_at >= _CPU_SAMPLE_EVERY_S:
+                _last_cpu_sample_at = _now
+                _cpu = _proc_cpu_seconds(proc.pid)
+                if _cpu is not None:
+                    if _last_cpu_seconds is None or _cpu > _last_cpu_seconds:
+                        _last_progress = _now
+                    _last_cpu_seconds = _cpu
+            if time.monotonic() - _last_progress > _NO_PROGRESS_WINDOW_S:
+                break
+
+        _elapsed = time.monotonic() - _spawn_start
+        vision_stderr.close()
+        if _exited_early:
+            # Edge case (REQ-6): surface the server's own last stderr lines
+            # instead of a generic timeout — the process exited, it did not
+            # merely take too long, and the log usually names the real cause
+            # (bad flag, missing file, OOM).
+            _exit_code = proc.poll()
+            logger.warning(
+                "[LFMVLProvider] vision_server_exited_during_start port=%s "
+                "exit_code=%s ttr_sec=%.2f last_stderr=\n%s",
+                requested_port, _exit_code, _elapsed, _read_log_tail(log_path),
+            )
+        else:
+            logger.warning(
+                "[LFMVLProvider] vision_server_not_ready port=%s "
+                "no_progress_for_sec=%.0f ttr_sec=%.2f (hard deadline %.0fs)",
+                requested_port,
+                time.monotonic() - _last_progress,
+                _elapsed,
+                _HARD_DEADLINE_S,
+            )
+        # Failed: clean up ONLY what this attempt spawned (REQ-2). The Popen
+        # handle pins the PID — there is no port scan and no possibility of
+        # killing another attempt's healthy server. Tree kill so the wrapper
+        # fallback's child dies with it.
+        _kill_process_tree(proc.pid)
+        _VISION_SERVER_PID = None
+        # NO lifecycle "error" here: a retry that is about to succeed must not
+        # flash "vision failed" at the UI first. The single terminal
+        # _notify_lifecycle("error") after the loop is the only one the
+        # frontend sees, and it fires only once every attempt is spent.
+        #
+        # Wedged (not a clean exit): kill and try again if attempts remain.
+        # The kill above already released this attempt's memory, so the next
+        # attempt starts from the same clean state a manual respawn would.
+        if _exited_early:
+            break  # real error — do not burn attempts on it
+    _notify_lifecycle(
+        "error",
+        reason="exited during start" if _exited_early else "not ready before timeout",
+        trigger=_current_trigger,
+    )
     return False
 
 
@@ -1064,8 +1575,14 @@ class LFMVLProvider:
         Auto-starts the vision server if not already running.
         Returns model response text, or error string on any failure.
         """
-        # Ensure server is running before first call
-        _ensure_vision_server_running(self.config.base_url)
+        # REQ-13 AC2 (T4): while a vision LEASE is active, skip the per-call
+        # health probe — the lease is the liveness contract and the probe was
+        # pure serial latency (up to its 2s timeout) before every inference.
+        # If the server died mid-lease anyway, the POST below fails with a
+        # connect error and we force ONE single-flight respawn + retry, so
+        # nothing silently degrades (REQ-13 AC4).
+        if not has_active_lease():
+            _ensure_vision_server_running(self.config.base_url)
         # Record use so the idle watchdog resets its auto-stop timer
         _touch_vision_use()
 
@@ -1102,12 +1619,31 @@ class LFMVLProvider:
                 "max_tokens": tokens,
             }
 
-            response = httpx.post(
-                f"{self.config.base_url}/chat/completions",
-                json=payload,
-                timeout=self.config.timeout
-            )
-            response.raise_for_status()
+            try:
+                response = httpx.post(
+                    f"{self.config.base_url}/chat/completions",
+                    json=payload,
+                    timeout=self.config.timeout
+                )
+                response.raise_for_status()
+            except Exception as exc:
+                # Connect-class failure under an active lease = the server died
+                # mid-lease. Force the ensure (bypassing the lease skip — it
+                # coalesces through the single-flight lock) and retry ONCE.
+                if has_active_lease() and "connect" in str(exc).lower():
+                    logger.warning(
+                        "[LFMVLProvider] vision server unreachable under active "
+                        "lease — forcing respawn: %s", exc,
+                    )
+                    _ensure_vision_server_running(self.config.base_url)
+                    response = httpx.post(
+                        f"{self.config.base_url}/chat/completions",
+                        json=payload,
+                        timeout=self.config.timeout
+                    )
+                    response.raise_for_status()
+                else:
+                    raise
             data = response.json()
             return data["choices"][0]["message"]["content"].strip()
 
@@ -1271,3 +1807,4 @@ class LFMVLProvider:
         """
         prompt = "In one sentence, what is happening on this screen right now?"
         return self._call(img_bytes, prompt, max_tokens=64)
+
