@@ -610,7 +610,11 @@ export function AmbientCrawlTier({
       data-testid="ambient-crawl-tier"
       style={{
         position: "relative",
-        overflow: "hidden",
+        // NOTE: no overflow:hidden here. It was clipping the dismiss control,
+        // because on a fully-rounded pill the top-right "corner" is a curve
+        // that has already fallen away by the time you reach it. The clip
+        // belongs to the particle field, which is the only thing that needs
+        // it — moved to that layer instead.
         transition: reducedMotion
           ? "opacity 200ms linear"
           : "transform 450ms cubic-bezier(0.4, 0, 0.2, 1), opacity 450ms ease-in-out",
@@ -671,10 +675,13 @@ export function AmbientCrawlTier({
             // fallback for a failed `absolute` is normal flex flow. Inline
             // positioning cannot silently degrade that way.
             position: "absolute",
-            top: 2,
-            right: 2,
-            width: 14,
-            height: 14,
+            // Clear of the rounded edge: on a pill the corner is a curve, so a
+            // control at (2,2) sits outside the shape entirely. Pulled inward
+            // and sized up so it is reachable as well as visible.
+            top: 4,
+            right: 10,
+            width: 16,
+            height: 16,
             pointerEvents: "auto",
             zIndex: 2,
             color: "rgba(255,255,255,0.35)",
@@ -709,7 +716,13 @@ export function AmbientCrawlTier({
       {!swallowed && !reducedMotion && pillW > 0 && (
         <div
           className="absolute inset-0"
-          style={{ pointerEvents: "none", opacity: 0.5 }}
+          style={{
+            pointerEvents: "none",
+            opacity: 0.5,
+            // The clip that used to live on the pill. Only the field needs it.
+            overflow: "hidden",
+            borderRadius: 9999,
+          }}
           aria-hidden="true"
           data-testid="tier-particle-field"
         >

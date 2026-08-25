@@ -4396,7 +4396,7 @@ ${message.text}`;
                     (balanced ≈16px distribution margin). The ⏎ enter icon stays
                     removed (AC4); its width is allocated to ContextPill (174px). */}
                 {isDeveloper ? (
-                <div className="flex items-center justify-center gap-2.5 mt-2 h-[32px] flex-shrink-0">
+                <div className="flex items-center justify-between w-full px-1 gap-2 mt-2 h-[32px] flex-shrink-0">
 
                   {/* Web toggle — internet-access capability gate (plan Issue E).
                       OFF by default: agent has no web tools. ON: agent is granted

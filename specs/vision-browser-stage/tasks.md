@@ -669,7 +669,15 @@ Anything in the tens of seconds means a host condition, not a code regression.
   If no active thread exists, route through ChatView's thread-creation path.
   GUARD: contract test asserting the submitted payload carries the id of the
   thread active at submit time (not localStorage-stale).
-- [x] **T21 — simulator RESTORED 2026-08-25** (it was committed before removal, so recovery was a `git checkout`; the MOUNT in app/page.tsx was never tracked and had to be rewritten). Scenario coverage for the counter form / swallow / release still needs your ACK before the frozen a–m table is touched.
+- [x] **T21 — simulator restored, used for Wave 6, then REMOVED AGAIN
+  2026-08-25.** Restored so the swallow/release transitions (sub-second
+  animations, impractical to judge on a live run) could be judged; Wave 6 is
+  now complete and the harness is out of the shipping tree again.
+  Recoverable this time — the files are in git history (commits 1bad87a5 /
+  54d1296d), unlike the first removal where they were untracked. The MOUNT in
+  app/page.tsx has never been tracked and must be rewritten from
+  ARCHITECTURE.md section 7 if the harness is ever needed again.
+  ORIGINAL NOTE: simulator RESTORED 2026-08-25 (it was committed before removal, so recovery was a `git checkout`; the MOUNT in app/page.tsx was never tracked and had to be rewritten). Scenario coverage for the counter form / swallow / release still needs your ACK before the frozen a–m table is touched.
   ORIGINAL: Simulator coverage — extend the Vision Stage Simulator with
   scenarios for: counter form (no wings), swallow transition (wing opens
   mid-crawl), release transition (task completes). NOTE: the sign-off

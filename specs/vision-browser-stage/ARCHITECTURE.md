@@ -320,13 +320,19 @@ backend run against the working tree.
 
 ---
 
-## 7. PRESERVED: the Vision Stage Simulator (removed after sign-off)
+## 7. PRESERVED: the Vision Stage Simulator (removed, restored, removed)
 
 Dev-only surface at `/?mode=developer&dev=vision-stage`, gated on
 `useLauncherMode().isDeveloper`, blocked while a real crawl was active. It
 dispatched **real** `iris:*` CustomEvents through the production listeners —
 there was no mock renderer anywhere, which is precisely why sign-off on it meant
 something.
+
+It was cut after the a-m sign-off, restored for Wave 6 (the swallow and
+release are sub-second animations that cannot be judged on a live run), and
+cut again once Wave 6 closed. The files are in git history now; the MOUNT in
+`app/page.tsx` has never been tracked and must be rebuilt from the runner
+contract below.
 
 Files removed: `app/dev/vision-stage/page.tsx`,
 `components/iris/simulator/VisionStagePanel.tsx`, `simulator/scenarios.ts`,
