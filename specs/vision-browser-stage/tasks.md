@@ -24,8 +24,26 @@
 > user returns for this), T14 non-interference guards, T15 full-suite re-run,
 > T16 LIVE gates (user-in-the-loop), T17 shared-Chromium spike decision.
 
-> **STATUS 2026-08-24 — T3 RE-LANDED; T14 IS DONE (the line above is stale).**
-> Actually remaining: **T13, T15, T16, T17.**
+> **STATUS 2026-08-24 (LATEST — supersedes both blocks above).**
+> T13 DONE (all 13 scenarios signed off live). T14 DONE. **T17 CLOSED —
+> shared-Chromium REJECTED with measurements.** T15 backend suite RUN for the
+> first time (4480 passed; 22 failures fixed, all edits itemised under T15;
+> the residual red verified pre-existing against a clean HEAD worktree and
+> owned by other domains).
+>
+> **ONLY T16.1 / T16.2 REMAIN — both are user-in-the-loop LIVE measurements
+> on a real GPU.** T16.3 (user sign-off) is already complete. Read "Host
+> prerequisites" below BEFORE either: a `ttr_sec` without host context is not
+> a result.
+>
+> **REQ-17 MESH FILM added and signed off 2026-08-24** (T22) — the surface
+> reading grammar, now STANDARD browser behavior rather than an experiment.
+> T23 (checklist row, needs user ACK) and T24 (guard tests) are open follow-ups.
+>
+> Also landed 2026-08-24 under T15: the vision scroll path now costs ONE CDP
+> round trip instead of two (design.md §5), and the IPv4 readiness probe —
+> the bug that reported healthy vision servers as dead and killed them — is
+> under test for the first time.
 >
 > A full prior session was spent chasing a VLM "spawn hang" that does not
 > exist. The theory it was built on (a torch-CUDA parent hanging llama.cpp's
@@ -228,7 +246,13 @@
 
 ## Wave 4 — Simulator (needs T8–T12 landed to be meaningful; runner can start earlier)
 
-- [ ] **T13 (REQ-12)**: Vision Stage Simulator — `/dev/vision-stage` dev route
+> **T13 IS DONE AND THE SIMULATOR HAS SINCE BEEN REMOVED (2026-08-24).** It was
+> built, it did its job (all 13 scenarios signed off live), and it was deleted
+> from the shipping tree once sign-off closed. The task text below is kept
+> as-built for the record. See the Sign-off checklist note at the bottom of this
+> file for what was removed and how to recover it.
+
+- [x] **T13 (REQ-12)**: Vision Stage Simulator — `/dev/vision-stage` dev route
   + scenario runner dispatching real `iris:*` CustomEvents; scenarios a–m per
   REQ-12 AC1; localStorage-persisted sign-off checklist; reset-to-idle;
   live-crawl guard; wide-page fixture for scenario k — NEW
@@ -291,9 +315,96 @@ Anything in the tens of seconds means a host condition, not a code regression.
 
 ## Wave 5 — Verification
 
-- [ ] **T15**: Full suite green: backend pytest + frontend jest + tsc --noEmit
-  + lint. Existing suites pass UNCHANGED except the two called-out baseline
-  edits (T0c->T7). Any other test edit is a REPORTABLE DEVIATION.
+- [~] **T15**: Full suite. **BACKEND RUN COMPLETED 2026-08-24** (the previous
+  attempt died silently; see method note). Frontend was already green:
+  391/399 jest, the only 8 failures the documented pre-existing
+  `tests/bugfix` exploration suites; `tsc --noEmit` clean (re-confirmed).
+
+  **METHOD — how to run this suite at all.** A single hanging test aborts the
+  WHOLE pytest session via the pytest-timeout dump, so a per-directory run
+  yields zero summary and looks like a silent death. Run per directory with
+  `-v` so the hanging nodeid is written live, then `--deselect` it and re-run;
+  repeat. Script kept at `scratchpad/run_dir.sh`. Suites must run
+  SEQUENTIALLY — a concurrent jest run makes pytest look pathologically slow.
+
+  **BACKEND RESULT: 4480 passed, 214 failed, 33 errors, 31 hangs quarantined**
+  across unit / contract / behavioral / integration / backend-root / root
+  tests.
+
+  **Pre-existence verified without disturbing the working tree**: the failing
+  node ids were re-run against a clean `HEAD` in a separate `git worktree`
+  (NOT `git stash` — the dev server and backend are live against this tree).
+  The residual failures are the repo's standing red — voice/audio, telegram,
+  parakeet, porcupine, `iris_core` DLL, lmstudio — all environment-dependent
+  and untouched by this spec.
+
+  **22 FAILURES FIXED. Every test edit is a REPORTABLE DEVIATION, listed:**
+
+  1. `test_browser_session_contract.py:225` — exact-string assertion re-pinned
+     after the scroll and the REQ-16 AC7 mirror read were FUSED into one
+     `evaluate` (see the REQ-13 note below). Still exact equality against a
+     literal spelled out in the test; no loosening. Its sibling at `:247`
+     (evaluate count == 2) then passed UNCHANGED — the fusion RESTORED that
+     guard, which had been red since `d537ffb6` added the second evaluate.
+  2. `test_document_rehydration_wave0.py` — the fake `penalize_url` took two
+     args; the real one grew `last_error` with REQ-10/T12 and the orchestrator
+     passes it, so the call raised TypeError, was swallowed by
+     `_apply_har_penalties`, and the assertion saw an empty list. Stub
+     signature corrected in BOTH tests in the file (the sibling was a latent
+     false-green). Assertions untouched.
+  3. `test_document_rehydration_wave0_prov.py` — fixture drove
+     `markdown="m"`, one char, below `MIN_CONTENT_CHARS=20`, so
+     `_learn_from_crawl`'s REQ-1 usability filter returned before the registry
+     and the input never reached the assertion. The fixture encoded the
+     PRE-REQ-1 behavior that filter exists to kill. Content raised above the
+     floor; assertion and load unchanged (still exactly one page).
+  4. `test_vlm_spawn_baseline.py` — HALF-APPLIED T3 EDIT, not a regression.
+     The test NAME and its assertion still pinned the launcher wrapper while
+     the same file's module docstring, its section header, REQ-3 "Verified
+     (CORRECTED)" and tasks.md all state the spawn is DIRECT. Flipped to guard
+     direct spawn and renamed `test_spawn_is_direct_and_probe_is_ipv4`.
+     STRENGTHENED: the IPv4 probe half of the name was never asserted at all —
+     the health-probe double now records URLs and the test asserts every probe
+     targets `127.0.0.1`. That probe bug is what reported healthy vision
+     servers as dead and killed them; it was untested until now.
+  5. `tests/contract/test_proxy_contract.py` (8),
+     `tests/contract/test_capture_replay_contract.py` (4),
+     `tests/behavioral/test_in_app_browser_acceptance.py` (5) — ONE root
+     cause. These build a bare app and called the endpoints with NO surface
+     credentials. Since the browser surface grew its two gates
+     (`browser_auth.py:130`, wired at `browser_surface.py:132/:231`) an
+     unauthenticated request is refused 404 BEFORE the handler runs, so every
+     assertion measured the auth refusal instead of its subject — silently
+     including the REQ-5 egress guard cases (loopback / private /
+     redirect-to-loopback) and the REQ-6 gate-closed 403. The clients now
+     present a loopback peer and a valid token, matching the PASSING suite
+     `backend/tests/contract/test_browser_surface_auth.py`. No assertion
+     touched by the fixture change.
+
+     Three assertions inside those files then reached real behavior and were
+     found to be PINNING SHIPPED BUGS, each contradicted by the newer, passing
+     `test_browser_surface_headers.py`. All three were corrected to the fixed
+     contract and made STRICTER, not weaker:
+       - `script-src 'none'` -> must exist, must NOT be 'none', must be
+         nonce-scoped. `'none'` stops the injected view-agent running (REQ-4
+         dead) — `browser_surface.py:44-59`.
+       - `frame-ancestors 'none'` -> must exist, must NOT be 'none', must
+         carry `'self'`, never a wildcard. `'none'` is `X-Frame-Options: DENY`
+         by another name and makes every served page unframeable — the exact
+         failure this feature fixes; pinned by
+         `test_browser_surface_headers.py:45`.
+       - `Access-Control-Allow-Origin == "null"` -> NO `access-control-*`
+         header of any kind. `"null"` IS the opaque origin a sandboxed document
+         presents, so sending it grants read access to precisely the reader the
+         sandbox excludes (`browser_surface.py:108-111`); pinned by
+         `test_no_cors_header_at_all`. The behavioral file accepted
+         `(None, "null")` and was tightened to reject `"null"`.
+
+  ESLint still cannot run in this environment (pre-existing config module
+  resolution failure); `tsc --noEmit` remains the standing gate.
+
+  REMAINS OPEN: the standing red above is not this spec's to fix, but it means
+  "full suite green" is not literally true and T15 stays partially checked.
 
 - [ ] **T16 (LV-1..LV-3) — LIVE GATES, user-in-the-loop**:
    1. Measure `ttr_sec` direct-spawn on real GPU. **REWRITTEN 2026-08-24** —
@@ -318,10 +429,62 @@ Anything in the tens of seconds means a host condition, not a code regression.
       all 13 rows in the Sign-off checklist below).
       This is the feature's completion gate — no crystallization before it.
 
-- [ ] **T17 (REQ-13 AC3)**: Shared-Chromium spike + recorded decision
-  (implement only if crash isolation preserved via isolated contexts AND
-  vision-crash cannot poison pool workers; otherwise record rejection with
-  measurements). Must close before spec close; may conclude "rejected".
+- [x] **T17 (REQ-13 AC3)**: Shared-Chromium spike + recorded decision —
+  **REJECTED, 2026-08-24.** Both gate conditions fail, and the benefit the
+  flag was meant to buy has already been banked by other means.
+
+  **(a) Crash blast radius — measured, and it disqualifies the design.**
+  AC3 permits sharing only if "crash isolation semantics MUST be preserved"
+  and "a vision crash must not take down crawl workers". Spike: launch one
+  Chromium, open two contexts (one standing for a crawl, one for a vision
+  session), kill the BROWSER process, observe both.
+
+      both_alive_before        [true, true]
+      killed_pid               22532          (browser process)
+      crawl_ctx                DIED: TargetClosedError
+      vision_ctx               DIED: TargetClosedError
+      browser_connected        false
+
+  Contexts are COOKIE/STORAGE domains, not CRASH domains. A browser-process
+  crash takes every context with it, so one consumer's crash necessarily
+  destroys the other's work. The design.md:390 condition "isolation preserved
+  via separate CONTEXTS" is not achievable — the premise is false.
+
+  METHOD NOTE, because the first run said the opposite: matching the debug
+  port anywhere in the cmdline also matches Chromium's renderer/GPU/utility
+  CHILDREN, which inherit the flag. Killing one of those is survivable by
+  design and produced a bogus "SURVIVED". The browser process is the match
+  carrying NO `--type=` switch (3 matched, 2 were children). The corrected
+  run is the one recorded above.
+
+  **(b) Cold-start savings — measured, and already captured elsewhere.**
+
+      launch_cold_s   3.052     launch_warm_s   0.145
+      cdp_attach_s    1.701     new_context_s   0.033
+
+  Sharing would replace a 0.145s warm launch with a 1.701s CDP attach — it is
+  ~11x SLOWER at steady state, which is the state that matters. Both sides are
+  already warm-pooled and pay no per-use launch:
+    - vision: `browser_pool.py` holds one Chromium, per-session
+      `new_context()` at 0.033s (was 4 cold launches per 4-URL escalation).
+    - crawl: `_WarmCrawlPool` (`crawl_runner.py:111`) keeps resident `--serve`
+      workers, so Crawl4AI/Chromium INIT is paid once per pool lifetime at
+      boot, never mid-search (was ~19s per worker; ~72s for 5 URLs).
+  The residual saving is one resident Chromium's memory, against merging two
+  crash domains.
+
+  **Feasibility was never the blocker.** crawl4ai 0.8.6's `BrowserConfig` does
+  accept `cdp_url` / `use_managed_browser`, so this is implementable. It is
+  rejected on isolation and on steady-state latency, not on effort.
+
+  Secondary hazard, recorded so it is not rediscovered: the pool's idle
+  watchdog stops the shared browser after `IRIS_BROWSER_IDLE_TIMEOUT` (180s)
+  based on ITS OWN lease accounting. A CDP-attached crawl worker is not a
+  lease holder, so the browser could be stopped under a live crawl — a new
+  race with no counterpart today.
+
+  Flag-off environments (`IRIS_CRAWL_POOL=0`) keep today's isolated stacks
+  either way, per REQ-13's edge case.
 
 ## Dependency notes
 - Wave 0 gates everything.
@@ -331,22 +494,130 @@ Anything in the tens of seconds means a host condition, not a code regression.
   land after T6 alone, scenarios fill in per-wave.
 - T16.3 (user sign-off) is the LAST gate; everything else serves it.
 
-## Sign-off checklist (rendered by the simulator; mirrored here)
+## Mesh film (REQ-17) — LANDED + SIGNED OFF 2026-08-24
+
+- [x] **T22 (REQ-17 AC1-AC8)**: Surface mesh film in
+  `BrowserNavigationOverlay.tsx` — shared-wall honeycomb across the panel,
+  traced edge-by-edge, driven by waves launched from the kick-pulse shutter.
+  User signed off live after seven iterations. **STANDARD BEHAVIOR** (default
+  ON; `MESH_PREF_KEY` exists only as an opt-out).
+
+  Seven iterations, each rejected for a reason worth keeping — every one was a
+  mechanism error, not a taste disagreement:
+  1. Gated on `visionActionRef` only -> never ran during a CRAWL (which emits
+     `crawler_page_fetched`, not `crawler_vision_action`). Also rode
+     `hexPulseRef`, which only advances inside `drawHexScan` and therefore
+     never ticks without a vision action. Now gates on crawl states and
+     schedules its own clock off the same shutter edge.
+  2. Depth-scaled cell taper read as a perspective tunnel -> uniform size.
+  3. Per-cell random ignition read as a dither screen -> clustered.
+  4. Clusters averaged 2.2 cells (bucket smaller than the grid pitch) and read
+     as disconnected specks -> bucket widened to hold ~13 adjacent cells.
+  5. Shared cluster phase forced every cell in a comb to appear on the same
+     frame ("stuck together") -> per-ring stagger from the patch seed. The
+     stagger SIGN was also inverted, so outer rings led and combs collapsed
+     inward ("disappearing inward").
+  6. Whole hexes stroked at 0.94x the tiling radius: vertices never coincided,
+     so 0% of walls were shared and growth could not cross between cells.
+     Radius must EQUAL the pitch radius exactly.
+  7. Band twice the launch spacing -> 100% lit within 4s, wave read gone.
+     Fixed by throttling the LAUNCH RATE, never by evicting live waves.
+  Final: contour noise to break the rectangular iso-contours (the "square
+  funnel"), every third wave outward, depth softening at the centre.
+
+- [ ] **T23 (REQ-17)**: Sign-off scenario row for the film. The a–m checklist
+  below is FROZEN and signed; adding a row needs the user's explicit ACK
+  first (same rule as T21). The film was signed off live during development,
+  so this is bookkeeping — the checklist should carry it so a future re-run
+  covers it. DO NOT edit the table without asking.
+
+- [ ] **T24 (REQ-17 AC7)**: Guard tests. None exist yet — the film shipped on
+  numeric verification (geometry counts, wall-sharing ratio, front spread,
+  lit-fraction over time) plus live user sign-off, NOT on automated tests.
+  Worth pinning, because three of the seven failures above are cheap to assert
+  and expensive to re-discover:
+    - wall dedup ratio > 0 (catches the radius/pitch mismatch that made every
+      cell private);
+    - `MESH_WAVE_LIFE` >= max arrival (catches waves retiring mid-fade);
+    - the film renders nothing under prefers-reduced-motion (AC6);
+    - the enable switch is a preference, not an event (AC8 grep guard).
+
+## Wave 6 — AmbientCrawlTier repurposed (REQ-16; user-directed 2026-08-24)
+
+> NOT STARTED — user is still signing off Waves 0–5 simulations; implementation
+> begins only after their go-ahead. Spec'd so the design survives the gap.
+
+- [ ] **T18 (REQ-16 AC1/AC5)**: Counter form — new tier body reusing the
+  CardChassis counter grammar (`[done/total]` bubble) + a radial progress ring
+  + the existing OrbCanvas particles; unified done/total read across task
+  steps AND crawl pages (useTaskProgress + CrawlProvider). Retire OrbBadge
+  from the orb-only view (XurOrb.tsx) — keep the component file until the "?"
+  question-variant fate is decided (Open Question below).
+  OPT GATE: tier stays null when idle; no polling — counts arrive via the
+  existing WS dispatch path.
+- [ ] **T19 (REQ-16 AC2/AC3/AC7)**: Swallow/release transitions — when any
+  wing opens during an active task/crawl, the XurOrb animates into the tier
+  (FLIP-style: measure orb centre vs tier position, animate transform), tier
+  becomes the sole working indicator; on completion the reverse plays.
+  Reduced-motion: opacity fades only. Mutual exclusivity of orb and tier while
+  a wing is open is a HARD contract (grep guard candidate like CT-6).
+- [ ] **T20 (REQ-16 AC4)**: Inline ask — click on the counter form opens an
+  input anchored at the tier; submit sends `text_message` with the CURRENT
+  active conversation_id per socket LEARN/SUPPLY rules; no thread invention.
+  If no active thread exists, route through ChatView's thread-creation path.
+  GUARD: contract test asserting the submitted payload carries the id of the
+  thread active at submit time (not localStorage-stale).
+- [ ] **T21**: Simulator coverage — extend the Vision Stage Simulator with
+  scenarios for: counter form (no wings), swallow transition (wing opens
+  mid-crawl), release transition (task completes). NOTE: the sign-off
+  checklist was frozen at a–m; adding rows n–o/p REQUIRES user ack before the
+  checklist table is edited.
+
+## Sign-off checklist (WAS rendered by the simulator; mirrored here)
+
+> **THE SIMULATOR WAS REMOVED 2026-08-24**, after this checklist was completed.
+> It is no longer rendered anywhere; this table and
+> `ARCHITECTURE.md` section 7 are the record. The source is recoverable via
+> `git show` on the commit immediately preceding the removal — that commit
+> exists solely so the per-step `atMs` timings and full detail payloads, which
+> the architecture doc does NOT reproduce, are not lost.
+>
+> Removed: `app/dev/vision-stage/page.tsx`,
+> `components/iris/simulator/VisionStagePanel.tsx`, `simulator/scenarios.ts`,
+> `simulator/runner.ts`, `__tests__/BT-1.simulator-traces.test.ts`, and the
+> slide-over mount in `app/page.tsx`.
+>
+> COVERAGE LOST, stated plainly: BT-1 pinned trace sequences for scenarios
+> a/b/c/e/f and went with it. Nothing else asserted those sequences.
+
+> ✅ SIGNED OFF IN FULL — 2026-08-24, all 13 scenarios approved by the user
+> live at /?mode=developer&dev=vision-stage (localStorage
+> iris-vision-stage-signoff-v1). This closes T16.3, the feature's completion
+> gate. Design iterations applied during sign-off are recorded in
+> BrowserNavigationOverlay.tsx comments (hex kick-pulse, single-ring aperture,
+> border flash, B&W escalation) and pin_655f5497e798 / pin_7c62601fde5f.
+
 | Scenario | Expected beats | Signed |
 |---|---|---|
-| a crawl-full | dim stream → bloom → shutter cadence w/ page kicks → settle ring fade | ☐ |
-| b crawl-error | amber settle | ☐ |
-| c cursor-click | orb travels (620ms ease), tightens, trail decays | ☐ |
-| d cursor-type | same grammar at type point | ☐ |
-| e scroll | iframe content scrolls smoothly; cursor holds position | ☐ |
-| f escalation | eye NOTICE: aperture holds open, violet shift, scan brightens x2 ≤1.6s, throttled | ☐ |
-| g rapid pages | lapMs re-times from median gap; no particle jumps | ☐ |
-| h lifecycle chip | cold→spawning(amber pulse)→warm(emerald)→error(red+reason) | ☐ |
-| i ambient tier | panel CLOSED: ring+counter visible near orb; panel open: dot only | ☐ |
-| j mid-run mount | overlay opens already crawling at correct page count | ☐ |
-| k fit-to-width | wide fixture fully visible in width; scroll mirror still works | ☐ |
-| l hex-scan | during sustained scroll: hex cells ignite in traveling front, biased to cursor side, fades when actions stop | ☐ |
-| m live reading | 5-page scripted run: ONE tab, surface follows latest page; click a source -> pins; LIVE pill resumes | ☐ |
+| a crawl-full | dim stream → bloom → shutter cadence w/ page kicks → settle ring fade | ☑ |
+| b crawl-error | amber settle | ☑ |
+| c cursor-click | orb travels (620ms ease), tightens, trail decays | ☑ |
+| d cursor-type | same grammar at type point | ☑ |
+| e scroll | iframe content scrolls smoothly; cursor holds position | ☑ |
+| f escalation | eye NOTICE: aperture holds open, violet shift, scan brightens x2 ≤1.6s, throttled | ☑ |
+| g rapid pages | lapMs re-times from median gap; no particle jumps | ☑ |
+| h lifecycle chip | cold→spawning(amber pulse)→warm(emerald)→error(red+reason) | ☑ |
+| i ambient tier | panel CLOSED: ring+counter visible near orb; panel open: dot only | ☑ |
+| j mid-run mount | overlay opens already crawling at correct page count | ☑ |
+| k fit-to-width | wide fixture fully visible in width; scroll mirror still works | ☑ |
+| l hex-scan | during sustained scroll: hex cells ignite in traveling front, biased to cursor side, fades when actions stop | ☑ |
+| m live reading | 5-page scripted run: ONE tab, surface follows latest page; click a source -> pins; LIVE pill resumes | ☑ |
+
+> NOTE (f): the escalation grammar was REDESIGNED during sign-off per user
+> feedback — violet shift replaced by black↔white treatment (white ring,
+> scattered black hex spots, darkness border pulse), notice held to 2600ms.
+> The row above preserves the ORIGINAL expected-beats text for the record;
+> the as-signed behavior supersedes it.
 
 
 

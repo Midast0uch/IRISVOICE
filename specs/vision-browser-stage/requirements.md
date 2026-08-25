@@ -444,7 +444,15 @@ disproportionate at every spotlight width.
   via ResizeObserver — verify, do not assume).
 - AC4: NO OTHER SUB-APP'S LAYOUT SHALL CHANGE as a side effect.
 
-### REQ-12: Vision Stage Simulator (sign-off harness)
+### REQ-12: Vision Stage Simulator (sign-off harness) — SATISFIED, THEN REMOVED
+
+> **Built, used, and deleted 2026-08-24.** The harness existed to get every
+> animation signed off without running real searches; all 13 scenarios were
+> approved live, and it was then removed from the shipping tree. This
+> requirement is HISTORICAL — do not treat the simulator as present. The runner
+> contract and scenario list live in `ARCHITECTURE.md` section 7; the source is
+> recoverable via `git show` on the commit before the removal.
+
 **User Story:** As the user I want to trigger every animation and effect on
 demand from scripted agent-action scenarios, so I can visually sign off each
 one during implementation without running real searches.
@@ -576,6 +584,112 @@ summary tab (`open_tab`, dashboard type) is a separate, legitimate artifact.
 - Session restore / snapshot replay -> the reading surface ends on the last
   captured page; no duplicate navigation churn during replay.
 
+### REQ-16: AmbientCrawlTier repurposed — the orb's working presence
+**User Story:** As a user I want ONE working indicator instead of two competing
+ones, so the ambient tier I like visually replaces the orb badge and never
+overlaps the XurOrb.
+
+**Verified:** USER-DIRECTED (2026-08-24, sign-off iteration round 3). Today the
+XurOrb's OrbBadge (`OrbBadge.tsx` — top-right `done/total` step counter / "?"
+glyph) and the AmbientCrawlTier (`AmbientCrawlTier.tsx`) duplicate the same
+job, and when a wing is open BOTH the tier and the XurOrb are visible at once.
+The user prefers the tier's design ("same thing but better") and wants it
+repurposed as the orb's working presence in all states.
+
+**Acceptance Criteria:**
+- AC1 (counter form, no wings): WHEN no wing is open AND a task or crawl is
+  active THEN THE TIER SHALL render as the progress-counter form — the
+  TaskCard counter grammar (the `[done/total]` bubble, CardChassis
+  `chassis-counter`) combined with a radial progress ring and the tier's
+  moving particles — REPLACING OrbBadge in the orb-only view. OrbBadge SHALL
+  be retired there; the tier SHALL be positioned at the counter location, not
+  overlapping the XurOrb.
+- AC2 (swallow transition): WHEN any wing (chat or dashboard) opens while a
+  task/crawl is active THEN THE SYSTEM SHALL play a swallow transition: the
+  XurOrb animates from its centre position INTO the ambient tier, which
+  becomes the sole working indicator. The orb and the tier SHALL NOT be
+  visible simultaneously while a wing is open.
+- AC3 (release transition): WHEN the active task/crawl completes THEN THE
+  SYSTEM SHALL reverse the transition — the orb returns to its resting
+  position and the tier dismisses — regardless of wing state.
+- AC4 (inline ask, no wings): WHEN no wing is open THE COUNTER FORM SHALL
+  accept a click that opens an inline text input anchored at the tier;
+  submitting SHALL send `text_message` carrying the CURRENT active
+  conversation_id under the socket-owned identity rules (LEARN/SUPPLY,
+  useIRISWebSocket) UNCHANGED. It SHALL NOT invent, merge, or silently switch
+  threads: if no active thread exists, the input SHALL create one through the
+  same path ChatView uses.
+- AC5 (websearch accounting): THE COUNTER SHALL account websearch/crawl page
+  progress on the same footing as task steps (one unified done/total read).
+- AC6 (idle null): WHEN no task/crawl is active THE TIER SHALL render nothing
+  (existing OPT gate preserved — no rAF, no timers).
+- AC7 (reduced motion): ALL transitions SHALL degrade to simple opacity fades
+  under prefers-reduced-motion.
+
+**Edge Cases:**
+- A wing opens mid-swallow -> the transition completes to the swallowed state;
+  no half-states.
+- Task completes while a wing is open -> the release transition runs anyway;
+  the orb returns even though the wing stays open.
+- Inline input submitted while the thread switches elsewhere (voice turn) ->
+  the socket's LEARN rule makes the submitted id authoritative for THAT
+  message only; no stale-id merge.
+- Crawl active but zero steps planned -> counter shows crawl pages only
+  (AC5), never `[0/0]`.
+
+### REQ-17: Mesh film — the surface reading grammar
+**User Story:** As the user I want the reading animation to live on the whole
+panel, not just its border, so a crawl reads as something growing across the
+page rather than a lit edge.
+
+**Verified:** REQ-8's hex lattice hugs the PERIMETER only
+(`BrowserNavigationOverlay.tsx`, two rows on the rounded path). The surface
+inside it carried no reading grammar at all.
+
+**SIGNED OFF 2026-08-24** by the user after seven design iterations, live at
+`/?mode=developer&dev=vision-stage`. STANDARD BEHAVIOR, not opt-in.
+
+**Acceptance Criteria:**
+- AC1: THE FILM SHALL render a honeycomb lattice across the panel surface,
+  sharing the REQ-8 grammar (same cell geometry, same kick-pulse clock) — an
+  EXTENSION of the border band, never a second animation system.
+- AC2: WHILE the agent is reading (loading / dispersing / crawling, or any
+  vision action) THE FILM SHALL animate; otherwise it SHALL render nothing.
+  A crawl emits `crawler_page_fetched`, NOT `crawler_vision_action`, so the
+  gate MUST accept crawl states — gating on vision actions alone silently
+  disables the film during the exact case it exists for.
+- AC3: EACH kick-pulse shutter SHALL launch ONE wave travelling from the
+  boundary inward; several waves SHALL coexist so they visibly follow one
+  another and fill the surface.
+- AC4: WALLS SHALL be SHARED between adjacent cells (one edge object per wall,
+  not six per cell) and SHALL trace themselves in via dash animation, so growth
+  crosses from cell to cell. The cell radius MUST equal the lattice pitch
+  radius exactly — at anything less the vertices do not coincide, no wall is
+  shared, and growth cannot propagate.
+- AC5: THE WAVE FRONT SHALL NOT present as a rectangle. `depth` is distance to
+  the nearest edge and its iso-contours ARE concentric rectangles, so the
+  arrival MUST carry a contour-warping term; without it the film collapses into
+  a square funnel at the centre.
+- AC6 (reduced motion): THE FILM SHALL render nothing under
+  prefers-reduced-motion (it is entirely travelling motion).
+- AC7 (cost): GEOMETRY, adjacency and growth order SHALL be resolved ONCE per
+  resize. The draw loop SHALL be a pure read with no allocation and no
+  adjacency search; completed walls SHALL batch by alpha bucket so only walls
+  mid-trace pay per-edge state changes.
+- AC8 (parity): THE FILM'S enable switch SHALL be a persisted PREFERENCE read
+  identically by the app and the simulator — never a simulator-only event — so
+  what is signed off in the simulator is what ships. Default is ON; only an
+  explicit opt-out disables it.
+
+**Edge Cases:**
+- Band total (`DRAW+HOLD+FADE`) vs wave spacing governs the look and is a
+  HARD relationship, not taste: a band narrower than the spacing leaves dark
+  gaps and reads as distinct marching rings; wider merges into continuous comb.
+  Wave count is controlled by throttling the LAUNCH RATE, never by evicting a
+  live wave — eviction blanks every wall that wave still lit.
+- Wave lifetime MUST cover the deepest arrival including the noise, jitter and
+  spread terms stacked on depth, or waves retire mid-fade and blank their walls.
+
 ## Non-Requirements (Out of Scope)
 - Changing vision routing hierarchy (unified-vision-routing spec owns it).
 - Changing the VISION_UNAVAILABLE fail-loudly contract.
@@ -589,3 +703,10 @@ summary tab (`open_tab`, dashboard type) is a separate, legitimate artifact.
   Default posture: evaluate first, implement only if crash isolation can be
   preserved cheaply.
 - REQ-10 AC5: zoom control in v1 or defer? Suggested: defer unless trivial.
+- REQ-16: does the "?" question variant of OrbBadge also move into the tier,
+  or does the badge survive for questions only? Suggested: move it — one
+  working indicator, one grammar — but the question glyph's placement in the
+  counter form needs a design pass.
+- REQ-16 AC2: swallow transition duration/easing. Suggested: ~450ms
+  ease-in-out, matching CardChassis entrance timing; confirm by eye at
+  simulator sign-off (T21 scenarios).

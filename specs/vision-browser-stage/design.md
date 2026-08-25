@@ -387,11 +387,29 @@ for scenario k.
   cheap supervision tick — the lease holder (fetch.vision loop) wraps each
   action call; a connection error triggers single-flight respawn (AC4).
   Net effect per 8-step session: up to 8 probes removed.
-- Shared-Chromium evaluation (AC3): spike task measures (a) crash blast radius
-  of sharing, (b) cold-start savings. Decision recorded in tasks.md before
-  spec close; implement only if isolation preserved via separate CONTEXTS
-  (Playwright browser + isolated contexts) AND a vision crash cannot poison
-  pool workers. Default posture: record rejection unless both hold.
+- Scroll round-trip fusion (landed 2026-08-24, T15): `BrowserSession._execute`
+  issued TWO `page.evaluate` calls per scroll — the `scrollBy`, then a second
+  read of `{y, h}` for the REQ-16 AC7 absolute-position mirror. A vision
+  session is scroll-dominated, so that doubled the CDP traffic of its hottest
+  action for a value available on the same tick: `window.scrollBy` with the
+  default (instant) behavior applies synchronously, so reading
+  `pageYOffset`/`scrollHeight` in the SAME script already observes the
+  post-scroll document. Now one round trip. The mirror read sits in a JS
+  try/catch so a failed read still cannot cost the scroll; the evaluate itself
+  is deliberately NOT wrapped in Python try/except, because it now performs the
+  scroll and a failure must surface as `last_error` (REQ-7 AC6) rather than be
+  swallowed as a missing mirror reading.
+
+- Shared-Chromium evaluation (AC3): **REJECTED 2026-08-24 — see tasks.md T17
+  for the measurements.** The gate condition "isolation preserved via separate
+  CONTEXTS" turns out to rest on a false premise: contexts are cookie/storage
+  domains, not crash domains. Killing the browser process killed BOTH contexts
+  (`TargetClosedError` on each) and disconnected the browser, so one consumer's
+  crash necessarily destroys the other's. Separately, sharing would trade a
+  0.145s warm launch for a 1.701s CDP attach — ~11x slower at steady state —
+  and both sides already avoid per-use launches entirely (`browser_pool.py` for
+  vision, `_WarmCrawlPool` for crawl), so there was no cold-start saving left
+  to capture.
 
 ## 6. Error handling summary
 
@@ -473,7 +491,164 @@ Frontend:
 - `hooks/useIRISWebSocket.ts` (vision_status detail extension)
 - `hooks/useViewProtocol.ts` / view-agent script (scale-aware scrollTo)
 
+## 9. REQ-16 design notes (AmbientCrawlTier repurposed — Wave 6, not started)
+
+User-directed 2026-08-24 across multiple feedback rounds. THE VERBATIM INTENT:
+the user loves the tier's design/style and wants it PROMOTED to be the orb's
+working presence everywhere, replacing OrbBadge entirely. Detailed below so an
+implementing agent needs nothing else.
+
+### 9.1 The two forms of the tier
+
+**FORM A — COUNTER FORM (no wings open, task/crawl active):**
+
+- The tier renders AS a radial progress counter. There is **NO mini orb
+  thumbnail positioned to its left** — the user explicitly rejected that
+  layout ("without orb positioned to the left"). The tier's own identity
+  (ring + moving particles) IS re-expressed as the counter:
+  - a RADIAL PROGRESS RING (SVG stroke-dasharray or conic-gradient, glowColor)
+    whose fill = unified done/total (see 9.4);
+  - the `[done/total]` text bubble INSIDE/beside the ring, styled exactly like
+    CardChassis `chassis-counter` (9.5px mono bold, vein tint bg/border);
+  - the existing OrbCanvas particle field drifting BEHIND the counter (same
+    engine, same breath grammar — T11 OPT gate preserved);
+  - the one-line status (query · pages · vision action) retained beneath.
+- Position: anchored at the counter location near the orb (where OrbBadge used
+  to sit relative to the XurOrb) — NEVER overlapping the XurOrb, never with a
+  duplicate mini-orb beside it.
+- INTERACTIVE: clicking the counter opens a small inline text input anchored
+  to the tier (glass style matching the tier). Enter submits;
+  Esc/blur dismisses. This is how the user asks/types WITHOUT opening wings.
+
+**FORM B — SWALLOWED FORM (any wing open, task/crawl active):**
+
+- Trigger: any wing (ChatWing OR DashboardWing) opens while a run is active.
+- The XurOrb appears to be SWALLOWED by the tier: FLIP-style transition —
+  measure the orb's centre rect and the tier's anchor rect, animate the orb's
+  scale+translate into the tier over ~450ms ease-in-out while the tier fades/
+  expands around it. After the swallow, the tier displays WITH the orb inside
+  it (the OrbCanvas in the tier represents the absorbed orb).
+- HARD EXCLUSIVITY: while a wing is open during an active run, the XurOrb and
+  the tier are never both visible. The orb is hidden (opacity 0,
+  pointer-events none) for the whole swallowed period.
+- Supersedes T11's old "minimal dot when panel visible" mode — any wing open
+  means Form B, not the dot.
+
+### 9.2 Release transition
+
+- Trigger: the active task/crawl COMPLETES (crawl terminal state AND task
+  progress no longer running). Fires regardless of wing state.
+- Reverse FLIP: the tier contracts toward the orb's resting centre, the orb
+  fades back in at centre, the tier unmounts (idle null-gate takes over).
+- If completion lands MID-swallow: finish the swallow, then immediately play
+  the release. No half-states, no skipped frames.
+
+### 9.3 OrbBadge retirement
+
+- Remove the OrbBadge mount from `XurOrb.tsx` (:487) and its visibility
+  computation (:136-141). The tier inherits the working-indicator job in FULL.
+- Keep `OrbBadge.tsx` on disk until the "?" question-variant fate is decided
+  (Open Question in requirements.md).
+
+### 9.4 Unified counting (AC5)
+
+- done/total merges useTaskProgress steps AND CrawlProvider pages: steps-only
+  runs show steps; crawl-only runs show pages; mixed runs sum both. NEVER
+  render `[0/0]` — hide the bubble until at least one unit of progress exists
+  (mirrors the overlay counter rule).
+- Data arrives via the existing WS dispatch path (no polling, no new
+  listeners beyond what T11/T10 already installed).
+
+### 9.5 Thread-safe inline ask (AC4)
+
+- Submit sends `sendMessage("text_message", { message, conversation_id })`
+  where conversation_id is sourced EXACTLY as ChatView sources it. The socket
+  owns identity (LEARN/SUPPLY, useIRISWebSocket :1741-1804) — the tier must
+  NOT read localStorage directly and must NOT invent an id. If no active
+  thread exists, route through ChatView's thread-creation path first.
+- Contract test required: submitted payload carries the id of the thread
+  active AT SUBMIT TIME (guards against stale-localStorage merge — the
+  conv-merge incident).
+
+### 9.6 Reduced motion (AC7)
+
+- Swallow/release become simple opacity crossfades (~200ms). Counter form
+  identical minus particle drift (static ring + bubble).
+
+### 9.7 Locked decisions (user-directed)
+
+1. OrbBadge retires; the tier inherits its job ("same thing but better").
+2. NO left-side mini orb in Form A — the tier IS the counter.
+3. The tier's design/style is loved — do NOT restyle it while repurposing;
+   extend, don't replace.
+4. Simulator checklist frozen at a–m; T21's new scenarios need explicit user
+   ack before the checklist table gains rows.
+
+Ripple additions for REQ-16: `components/iris/XurOrb.tsx` (badge retirement +
+swallow hooks), `components/chat-view.tsx` / wing visibility source (any-wing
+signal), `components/iris/AmbientCrawlTier.tsx` (both forms + transitions),
+and a contract test pinning the inline-ask conversation_id behavior.
+
 Tests: `backend/tests/contract/`, `backend/tests/unit/`,
 `__tests__/components/`, `__tests__/simulator/`.
 
 Anything outside this list requires justification in the task report.
+
+## 10. Mesh film design notes (REQ-17 — signed off 2026-08-24)
+
+Lives entirely in `BrowserNavigationOverlay.tsx`, beside `drawHexScan` and
+sharing its clock. Drawn BEFORE the band each frame so the signed-off border
+lattice keeps its visual weight on top.
+
+**Geometry (once per resize).** Its own honeycomb, pitch derived from
+`meshR = hexR * MESH_CELL_SCALE` — NOT from `hexR`. A lattice is only
+self-consistent, and its walls only shared, when spacing matches the radius it
+is drawn at; scaling the radius while leaving the pitch behind silently breaks
+the dedup and every cell goes private again. Starts at `rows[1] + hexR + meshR`
+so the first course abuts the band rather than floating inside it.
+
+**Walls, not cells.** The lattice is decomposed into unique undirected EDGES,
+keyed on quantised endpoints so the two cells meeting at a wall agree on its
+identity. Measured 35-42% of emitted walls collapse. This dedup IS the
+mechanism: a wall is one object two cells share, which is what lets growth
+cross between them. Stroking whole hexes can only ever read as cells blinking.
+
+**Arrival.** Each wall stores its position on the 0..1 scale a wave sweeps:
+
+    arrival = depth + contourNoise + patchJitter + ringSpread
+
+- `depth` — dominant; boundary first, centre last. Makes waves travel inward.
+- `contourNoise` — REQUIRED (REQ-17 AC5). `depth` is distance to the nearest
+  edge, whose iso-contours are concentric RECTANGLES, so a front sweeping it
+  collapses as a square. The warp uses two different-frequency trig terms on x
+  and y MULTIPLIED — a `sin(x)+sin(y)` leaves visible axis grain, the same
+  failure in another costume. Measured: front depth-spread 0.008-0.018 without
+  it (a clean rectangle), 0.043-0.046 with.
+- `patchJitter` — so neighbouring patches do not ignite on one contour line.
+- `ringSpread` — within a patch the seed is reached before the rim, so a comb
+  ASSEMBLES from its middle as the wave crosses rather than snapping on.
+
+**Waves.** One launched per kick-pulse shutter, several alive at once. Every
+third runs centre-outward: a purely inward cadence trains the eye to expect the
+collapse and makes it more legible each repetition, and an outward wave sweeps
+the contours in the opposite order so the two never superimpose. Behind each
+front a wall traces in (dash animation), holds, then fades — that fade is the
+trail. Deep walls are softened so the centre reads as growth petering out.
+
+**Two relationships that are arithmetic, not taste:**
+1. `DRAW+HOLD+FADE` vs launch spacing. Narrower leaves dark gaps and distinct
+   marching rings; wider merges into continuous comb. Measured: band 0.49 at a
+   620ms launch rate saturated to 100% lit within 4s.
+2. `MESH_WAVE_LIFE` must cover the deepest arrival INCLUDING noise/jitter/
+   spread. It is derived from those constants, not hand-set, so it cannot drift
+   out of step when they are tuned.
+
+**Cost (AC7).** Geometry, adjacency and growth order resolved at resize.
+Completed walls batch into one path per alpha bucket; only walls mid-trace pay
+a `setLineDash` + individual stroke — ~160-200 strokes/frame instead of ~1200
+state changes.
+
+**Parity (AC8).** The enable switch is a localStorage PREFERENCE
+(`MESH_PREF_KEY`) read identically by the overlay and the simulator, never a
+simulator-only event — so no dev-only render path exists and what is signed off
+is what ships. Default ON; only an explicit "0" disables.

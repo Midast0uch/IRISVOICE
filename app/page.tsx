@@ -5,6 +5,7 @@ import { motion } from "framer-motion"
 import { useNavigation } from "@/contexts/NavigationContext"
 import { useBrandColor } from "@/contexts/BrandColorContext"
 import { IrisOrb } from "@/components/iris/IrisOrb"
+import { AmbientCrawlTier } from "@/components/iris/AmbientCrawlTier"
 import { WheelView } from "@/components/wheel-view/WheelView"
 import { WheelViewErrorBoundary } from "@/components/wheel-view/WheelViewErrorBoundary"
 import { useUILayoutState, UILayoutState, SpotlightState } from "@/hooks/useUILayoutState"
@@ -466,6 +467,24 @@ export default function Home() {
           orbDiameter={orbDiameter}
         />
       </Suspense>
+
+      {/* REQ-6 (specs/vision-browser-stage, T11): the ambient crawl tier —
+          the agent's browsing made visible OUTSIDE the dashboard wing, so a
+          voice-driven search is not invisible just because the wing is shut.
+          Minimal dot when the panel is actually visible; full status ring
+          otherwise. Renders null when no crawl is active. */}
+      <Suspense fallback={null}>
+        <AmbientCrawlTier
+          glowColor={glowColor}
+          panelVisible={isDashboardOpen && !isChatSpotlight}
+        />
+      </Suspense>
+
+      {/* The Vision Stage Simulator slide-over (REQ-12/T13) mounted here behind
+          ?dev=vision-stage. Removed 2026-08-24 after the user signed off all 13
+          scenarios; see specs/vision-browser-stage/ARCHITECTURE.md section 7 for
+          the runner contract and scenario list, and `git show` on the commit
+          before this one for the source. */}
     </main>
   )
 }
