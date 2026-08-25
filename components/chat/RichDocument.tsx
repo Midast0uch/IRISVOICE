@@ -39,6 +39,11 @@ interface RichDocumentProps {
     status?: "planned" | "reading" | "read" | "blocked" | "parked"
     discovered?: boolean
     reason?: string
+    /** REQ-15 (specs/vision-browser-stage): capture provenance — when present
+     * the row offers an in-app "view" that pins the Live Reading surface to
+     * the exact bytes the agent read (iris:view_source). */
+    jobId?: string
+    capturePage?: number
   }[]
   harPath?: string | null
 }
@@ -419,6 +424,33 @@ export function RichDocument({
                           own, and "blocked" is exactly the fact a user must not
                           have to infer. Omitted for `read`, where the default
                           reading is already correct. */}
+                      {/* REQ-15: in-app view — pin the Live Reading surface
+                          to the exact captured bytes (never a second live
+                          fetch). Only rendered when provenance exists. */}
+                      {s.jobId && s.capturePage != null && (
+                        <button
+                          onClick={() =>
+                            window.dispatchEvent(
+                              new CustomEvent("iris:view_source", {
+                                detail: {
+                                  job_id: s.jobId,
+                                  capture_page: s.capturePage,
+                                  url: s.url,
+                                  title: s.title,
+                                },
+                              }),
+                            )
+                          }
+                          className="shrink-0 text-[8px] px-1 rounded transition-colors hover:brightness-125"
+                          style={{
+                            color: glowColor,
+                            border: `1px solid ${glowColor}33`,
+                          }}
+                          title="View the captured page in the browser panel"
+                        >
+                          view
+                        </button>
+                      )}
                       {mark && s.status !== "read" && (
                         <span
                           className="shrink-0 text-[8px] italic"

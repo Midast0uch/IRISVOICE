@@ -30,7 +30,8 @@ const DeveloperWorkspace = lazy(() => import('@/components/workspace/DeveloperWo
 import { DCPStatsPanel } from '@/components/dev/DCPStatsPanel';
 import { MonitorTabContainer } from '@/components/dashboard/MonitorTabContainer';
 import { BrowserNavigationOverlay } from '@/components/iris/browser/BrowserNavigationOverlay';
-import { useBrowserNavOverlay } from '@/hooks/useBrowserNavOverlay';
+import { VisionLifecycleChip } from '@/components/iris/browser/VisionLifecycleChip';
+import { useBrowserNavOverlay, type NavOverlaySeed } from '@/hooks/useBrowserNavOverlay';
 import { useViewProtocol } from '@/hooks/useViewProtocol';
 import { useActiveFrameSrc, useBrowserSurfaceSession } from '@/hooks/useActiveFrameSrc';
 import { IrisApertureIcon } from '@/components/ui/IrisApertureIcon';
@@ -59,6 +60,13 @@ interface DarkGlassDashboardProps {
 }
 
 const ACCENT_COLOR = '#00d4aa';
+
+// REQ-11 (specs/vision-browser-stage, T12): ONE source of truth for the
+// browser panel's chrome heights. browserChromeInset and the rendered rows
+// both read these — a mismatch drifts the overlay's orb centring and top-wash
+// depth (the inset feeds BrowserNavigationOverlay).
+const BROWSER_TAB_STRIP_H = 36;
+const BROWSER_ADDRESS_BAR_H = 36;
 
 const MAIN_NODES_DATA = [
   { id: 'voice', label: 'Voice', icon: Mic },
@@ -540,7 +548,17 @@ export function DarkGlassDashboard({
   //    NOTE: the hook emits the trace itself on every transition — do NOT also
   //    wire emitTrace into the overlay's onStateChange or each transition is
   //    recorded twice.
-  const { status: navOverlay } = useBrowserNavOverlay()
+  //    REQ-7 (specs/vision-browser-stage): seeded from CrawlProvider so a
+  //    panel mounted MID-RUN shows the current state immediately. The seed is
+  //    memoized on run identity only (OPT GATE: derivation never re-runs per
+  //    render beyond these four values changing).
+  const navSeed = useMemo<NavOverlaySeed>(() => ({
+    active: crawlState.active,
+    pagesDone: crawlState.pages.length,
+    pagesTotal: crawlState.total,
+    subGoal: crawlState.query,
+  }), [crawlState.active, crawlState.pages.length, crawlState.total, crawlState.query]);
+  const { status: navOverlay } = useBrowserNavOverlay(navSeed)
 
   // ── REQ-4 (T9): view protocol — parent side. The sandboxed content frame
   //    speaks OUT via postMessage; BOTH checks (event.source === frame AND
@@ -637,10 +655,10 @@ export function DarkGlassDashboard({
   // enough that the chrome is lit as part of the same surface.
   const browserChromeInset = useMemo(() => {
     const active = tabs.find(t => t.id === activeTabId)
-    const tabBar = tabs.length > 0 ? 36 : 0
+    const tabBar = tabs.length > 0 ? BROWSER_TAB_STRIP_H : 0
     // The address bar renders only on the default web-tab branch.
     const chromeless = active?.type === 'dashboard' || active?.type === 'code' || active?.type === 'html'
-    return tabBar + (chromeless ? 0 : 40)
+    return tabBar + (chromeless ? 0 : BROWSER_ADDRESS_BAR_H)
   }, [tabs, activeTabId]);
 
   const openTab = useCallback((msg: OpenTabMsg) => {
@@ -669,62 +687,89 @@ export function DarkGlassDashboard({
     if (!isContentless) setActiveTabId(msg.id)
   }, [])
 
-  // ── REQ-1 AC1/AC2: navigate the panel to each page the agent reads ───────
-  // Tab already declared captureJobId/capturePageNumber ("Set from
-  // crawler_page_fetched") but NOTHING ever set them, and the crawl's only
-  // open_tab is a `dashboard` summary tab with no url — so useActiveFrameSrc
-  // saw no web tab, never changed the iframe src, and the panel sat on its
-  // start page for the whole crawl while the overlay animated over it.
+  // ── REQ-15 (specs/vision-browser-stage, T12b): ONE Live Reading surface ──
+  // The old behavior opened a NEW TAB per fetched page AND auto-activated it —
+  // the viewport already jumped page-to-page while the strip accumulated
+  // history duplicating the PlanCard's source list. Now: one stable tab whose
+  // CAPTURE PROVENANCE is rewritten per page event (useActiveFrameSrc resolves
+  // the frame src from provenance, so a src swap is the only navigation
+  // primitive). Replay contract unchanged: same capture bytes, same badge,
+  // proxy routing for non-stored pages.
   //
-  // Each fetched page becomes a WEB tab carrying its capture provenance, so
-  // the frame loads /api/browser/capture/{job_id}/{page_number} — the exact
-  // bytes the agent read, not a second live fetch.
-  //
-  // REQ-12 (T17): crawl state now lives in CrawlProvider. Instead of a raw
-  // iris:crawler_page_fetched listener (deleted), derive the tabs from the
-  // provider's pages array. Only pages with a job_id have capture bytes to
-  // show. A seen-set keeps this idempotent across re-renders; a remount
-  // (fresh ref) re-derives the tabs from restored provider state (AC3).
-  // The frame src is built from the CAPTURE ADDRESS (p.capturePage), never from
-  // the progress counter (p.pageNumber). They are different numbers: per-URL
-  // dispatch fetches each URL on its own, so every fetch numbers its only page
-  // 1, and pointing the iframe at the counter requested /capture/<job>/3 when
-  // only /1 existed — every replay 404'd (live 2026-08-11 16:11).
-  //
-  // A page whose bytes were deliberately NOT stored (bot-challenge interstitial,
-  // REQ-4 AC2) gets a tab WITHOUT capture provenance, so useActiveFrameSrc
-  // routes it through the proxy instead of at a replay URL that can only 404.
-  const processedCrawlTabsRef = useRef<Set<string>>(new Set());
+  // OPT GATE: ONE ref-held coalesce timer (300ms latest-wins so concurrent
+  // dispatch cannot flicker through intermediate arrivals), cleared on unmount;
+  // the processed-set keeps snapshot replays idempotent.
+  const LIVE_READING_TAB_ID = 'live-reading';
+  const processedCrawlNavRef = useRef<Set<string>>(new Set());
+  const navCoalesceRef = useRef<{
+    timer: ReturnType<typeof setTimeout> | null;
+    latest: null | { jobId: string; addr: number; url: string; title: string; replayable: boolean };
+  }>({ timer: null, latest: null });
+  // Pin mode: selecting a source pauses following; the LIVE pill resumes.
+  const [pinnedSource, setPinnedSource] = useState<{ jobId: string; addr: number } | null>(null);
+
   useEffect(() => {
     for (const p of crawlState.pages) {
       if (!p.jobId) continue
       const addr = p.capturePage ?? p.pageNumber
       if (addr == null) continue  // no capture to show
-      const replayable = p.captureAvailable !== false
       const key = `${p.jobId}:${addr}`
-      if (processedCrawlTabsRef.current.has(key)) continue
-      processedCrawlTabsRef.current.add(key)
-      const tabId = `crawl-${p.jobId}-${addr}`
-      openTab({
-        id: tabId,
-        tab_type: 'web',
-        title: p.title || p.url,
+      if (processedCrawlNavRef.current.has(key)) continue
+      processedCrawlNavRef.current.add(key)
+      if (pinnedSource) continue // pinned: keep showing the user's selection
+      navCoalesceRef.current.latest = {
+        jobId: p.jobId,
+        addr,
         url: p.url,
-      } as OpenTabMsg)
-      if (!replayable) continue
-      const provenance = {
-        captureJobId: p.jobId,
-        capturePageNumber: addr,
-        captureFetchedAt: new Date().toISOString(),
+        title: p.title || p.url,
+        replayable: p.captureAvailable !== false,
       }
-      setTabs(prev => prev.map(t => (t.id === tabId ? { ...t, ...provenance } : t)))
-      // Also attach provenance to any existing web tab for the same URL — an
-      // open_tab may have created it before the page event arrived.
+      if (navCoalesceRef.current.timer) clearTimeout(navCoalesceRef.current.timer)
+      navCoalesceRef.current.timer = setTimeout(() => {
+        const l = navCoalesceRef.current.latest
+        if (!l) return
+        navCoalesceRef.current.latest = null
+        openTab({
+          id: LIVE_READING_TAB_ID,
+          tab_type: 'web',
+          title: l.title,
+          url: l.url,
+        } as OpenTabMsg)
+        const provenance = l.replayable
+          ? { captureJobId: l.jobId, capturePageNumber: l.addr, captureFetchedAt: new Date().toISOString() }
+          : {}
+        setTabs(prev => prev.map(t => (t.id === LIVE_READING_TAB_ID ? { ...t, ...provenance } : t)))
+      }, 300)
+    }
+  }, [crawlState.pages, openTab, pinnedSource]);
+
+  // Unmount hygiene: never leave the coalesce timer behind (OPT GATE).
+  useEffect(() => () => {
+    if (navCoalesceRef.current.timer) clearTimeout(navCoalesceRef.current.timer)
+  }, [])
+
+  // REQ-15 AC3: sources are browsable from the source list — RichDocument's
+  // source rows dispatch this; it PINS the reading surface to that capture.
+  useEffect(() => {
+    const onViewSource = (e: Event) => {
+      const d = (e as CustomEvent<{ job_id?: string; capture_page?: number; url?: string; title?: string }>).detail
+      if (!d?.job_id || d.capture_page == null) return
+      setPinnedSource({ jobId: d.job_id, addr: d.capture_page })
+      openTab({
+        id: LIVE_READING_TAB_ID,
+        tab_type: 'web',
+        title: d.title || d.url || 'Pinned source',
+        url: d.url || '',
+      } as OpenTabMsg)
       setTabs(prev => prev.map(t =>
-        t.type === 'web' && t.url === p.url ? { ...t, ...provenance } : t,
+        t.id === LIVE_READING_TAB_ID
+          ? { ...t, captureJobId: d.job_id, capturePageNumber: d.capture_page!, captureFetchedAt: new Date().toISOString() }
+          : t,
       ))
     }
-  }, [crawlState.pages, openTab])
+    window.addEventListener('iris:view_source', onViewSource as EventListener)
+    return () => window.removeEventListener('iris:view_source', onViewSource as EventListener)
+  }, [openTab])
 
   const closeTab = useCallback((tabId: string) => {
     setTabs(prev => {
@@ -908,6 +953,9 @@ export function DarkGlassDashboard({
     // nothing is actually listening naturally reconciles to UNLOADED even if
     // the config still claims "loaded".
     if (sendMessage) sendMessage('get_local_model_status', {});
+    // REQ-5 (specs/vision-browser-stage): seed the vision lifecycle chip on
+    // mount/reconnect — transitions alone miss a page reload.
+    if (sendMessage) sendMessage('get_vision_status', {});
 
     const handleInitialState = (event: CustomEvent) => {
       const state = event.detail?.state || {};
@@ -1830,8 +1878,13 @@ export function DarkGlassDashboard({
             })
             )}
            </div>
-         ) : activeSubApp === 'browser' ? (
-         <div className="w-full h-full p-4 md:px-10">
+        ) : activeSubApp === 'browser' ? (
+          <div className="w-full h-full p-1.5">
+          {/* REQ-11 (specs/vision-browser-stage, T12): p-4/md:px-10 -> p-1.5.
+              The browser viewport is the star of this surface — inherited
+              padding wasted ~15% of the wing's width on margins at every
+              spotlight size. Scoped to THIS branch only; no other sub-app's
+              layout changes. */}
            {/* `relative` is LOAD-BEARING: the nav overlay below is
                `absolute inset-0` and must resolve against THIS card. Without
                it the overlay escaped to the content column (which includes the
@@ -1856,11 +1909,16 @@ export function DarkGlassDashboard({
                // REQ-11 AC4: the centre orb becomes the vision cursor. Passed
                // straight through — the overlay owns the motion, this site only
                // supplies the live action.
-               visionAction={navOverlay.visionAction}
-               visionX={navOverlay.visionX}
-               visionY={navOverlay.visionY}
-               visionStep={navOverlay.visionStep}
-             />
+                visionAction={navOverlay.visionAction}
+                visionX={navOverlay.visionX}
+                visionY={navOverlay.visionY}
+                visionStep={navOverlay.visionStep}
+                // REQ-9: source viewport dims for aspect-correct cursor mapping.
+                visionViewportW={navOverlay.visionViewportW}
+                visionViewportH={navOverlay.visionViewportH}
+                // REQ-8: escalation provenance drives the "notice" beat.
+                visionEscalated={navOverlay.visionEscalated}
+              />
 
              {/* ── Tab bar ─────────────────────────────────────────────────── */}
              {tabs.length > 0 && (
@@ -1979,7 +2037,10 @@ export function DarkGlassDashboard({
                // Default — web tab or no active tab: show address bar + iframe
                return (
                  <>
-                   <div className="flex items-center gap-2 px-3 h-10 border-b border-white/5 bg-black/20">
+                    <div
+                      className="flex items-center gap-2 px-3 border-b border-white/5 bg-black/20"
+                      style={{ height: BROWSER_ADDRESS_BAR_H }}
+                    >
                       <button
                         onClick={handleBrowserBack}
                         disabled={browserHistory.length === 0}
@@ -1998,15 +2059,32 @@ export function DarkGlassDashboard({
                          active tab replays captured bytes (not a live fetch),
                          show the evidence: the original URL the agent read and
                          the capture time. */}
-                     {activeTab?.type === 'web' && activeTab.captureJobId && (
-                       <span
-                         title={`Replaying captured page (job ${activeTab.captureJobId.slice(0, 8)}) — captured ${activeTab.captureFetchedAt ?? 'during crawl'}`}
-                         className="shrink-0 flex items-center gap-1 px-2 h-5 rounded text-[10px] font-mono bg-emerald-500/10 text-emerald-300/80 border border-emerald-500/20"
-                       >
-                         <span className="w-1 h-1 rounded-full bg-emerald-400" />
-                         capture
-                       </span>
-                     )}
+                      {activeTab?.type === 'web' && activeTab.captureJobId && (
+                        <span
+                          title={`Replaying captured page (job ${activeTab.captureJobId.slice(0, 8)}) — captured ${activeTab.captureFetchedAt ?? 'during crawl'}`}
+                          className="shrink-0 flex items-center gap-1 px-2 h-5 rounded text-[10px] font-mono bg-emerald-500/10 text-emerald-300/80 border border-emerald-500/20"
+                        >
+                          <span className="w-1 h-1 rounded-full bg-emerald-400" />
+                          capture
+                        </span>
+                      )}
+                      {/* REQ-15 AC3: when a source pin pauses live-following,
+                          the LIVE pill resumes it. */}
+                      {pinnedSource && (
+                        <button
+                          onClick={() => setPinnedSource(null)}
+                          title="Resume following the agent's live reading"
+                          className="shrink-0 flex items-center gap-1 px-2 h-5 rounded text-[10px] font-mono transition-colors hover:brightness-125"
+                          style={{
+                            background: `${glowColor}18`,
+                            border: `1px solid ${glowColor}44`,
+                            color: glowColor,
+                          }}
+                        >
+                          <span className="w-1 h-1 rounded-full" style={{ background: glowColor }} />
+                          LIVE
+                        </button>
+                      )}
                      <button
                        onClick={handleBrowserReload}
                        title="Reload"
@@ -2014,12 +2092,17 @@ export function DarkGlassDashboard({
                      >
                        <RotateCcw size={14} />
                      </button>
-                     <button
-                       onClick={() => window.open(activeTab?.url ?? browserUrl, '_blank')}
-                       className="p-1.5"
-                     >
-                       <ExternalLink size={14} className="text-white/50" />
-                     </button>
+                      <button
+                        onClick={() => window.open(activeTab?.url ?? browserUrl, '_blank')}
+                        className="p-1.5"
+                      >
+                        <ExternalLink size={14} className="text-white/50" />
+                      </button>
+                      {/* REQ-5 (specs/vision-browser-stage, T10): lifecycle
+                          chip lives INSIDE the address bar, flush right —
+                          user-resolved placement (it previously floated over
+                          the card corner and overlapped the buttons). */}
+                      <VisionLifecycleChip glowColor={glowColor} />
                    </div>
                    {browserIssue ? (
                      /* Say WHAT is wrong instead of letting a refused fetch

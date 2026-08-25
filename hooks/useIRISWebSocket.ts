@@ -1074,6 +1074,12 @@ export function useIRISWebSocket(
         if (process.env.NODE_ENV !== 'production') {
           console.log("[IRIS WebSocket] Vision status:", payload)
         }
+        // REQ-5 (specs/vision-browser-stage): forward for surface consumers
+        // (VisionLifecycleChip) that live outside this hook's React tree.
+        // Covers BOTH lifecycle transitions AND the get_vision_status seed.
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:vision_status', { detail: payload }))
+        }
         if (payload.status) {
           setVisionStatus((prev) => ({
             ...prev,

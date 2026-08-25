@@ -257,6 +257,14 @@ export default function TaskListCard({
   // description-derived intent verb; only a step with neither renders the
   // quiet em-dash.
   const stepVerb = (s: TaskStep): string | null => {
+    // Session 248 (pin_587a3e612558 item #4): a progressive phase node
+    // declares its phase — derive the verb from PHASE_VERB[phase] DIRECTLY,
+    // for the node's whole life (not just while working). Keyword-matching
+    // the description is what rendered a fetching-phase node as SEARCH.
+    if (s.phase) {
+      const pv = PHASE_VERB[s.phase.toLowerCase()]
+      if (pv) return pv
+    }
     if (s.status === "working" && phase) {
       const pv = PHASE_VERB[phase.toLowerCase()]
       if (pv) return pv

@@ -32,7 +32,7 @@
  * particle engine; the ring is one SVG circle, not a per-frame canvas.
  */
 
-import React from "react"
+import React, { useState } from "react"
 import { useCrawlContext } from "@/hooks/CrawlProvider"
 import { useReducedMotion } from "@/hooks/useReducedMotion"
 import { useTaskProgress } from "@/hooks/useTaskProgress"
@@ -43,6 +43,16 @@ export interface AmbientCrawlTierProps {
   glowColor: string
   /** True when the browser panel is actually on screen and unobscured. */
   panelVisible: boolean
+  /**
+   * True when ChatView is on screen. A pending question is answerable INLINE
+   * here only when it is NOT — otherwise QuestionCard already owns it and two
+   * answer surfaces for one question is how double-submits happen.
+   */
+  chatVisible?: boolean
+  /** Live orb diameter in px, so the tier can sit beside it without overlap. */
+  orbDiameter?: number
+  /** Same signature ChatView uses: sendMessage("question_response", {...}). */
+  sendMessage?: (type: string, payload: Record<string, unknown>) => void
 }
 
 const RING = 46 // px — outer diameter of the counter form's ring
@@ -74,11 +84,19 @@ export function unifiedProgress(
   return { done: Math.min(done, total), total }
 }
 
-export function AmbientCrawlTier({ glowColor, panelVisible }: AmbientCrawlTierProps) {
+export function AmbientCrawlTier({
+  glowColor,
+  panelVisible,
+  chatVisible = false,
+  orbDiameter = 175,
+  sendMessage,
+}: AmbientCrawlTierProps) {
   const { state: crawl } = useCrawlContext()
   const taskProgress = useTaskProgress()
   const agentQuestion = useAgentQuestion()
   const reducedMotion = useReducedMotion()
+  const [draft, setDraft] = useState("")
+  const [answered, setAnswered] = useState<string | null>(null)
 
   const pendingQuestion = agentQuestion.hasPendingQuestion
   // REQ-16: the tier now answers for background TASKS too, not just crawls —
@@ -98,6 +116,33 @@ export function AmbientCrawlTier({ glowColor, panelVisible }: AmbientCrawlTierPr
   )
   const hasCounter = total > 0
   const pct = hasCounter ? done / total : 0
+
+  // ── Answerable question (REQ-16, user-directed 2026-08-25) ──────────────
+  // A "?" glyph only told the user a question existed SOMEWHERE. When
+  // ChatView is not on screen there is nowhere to go and answer it, so the
+  // tier carries the question itself plus its options or a free-text input.
+  //
+  // Gated on !chatVisible deliberately: when ChatView IS up, QuestionCard
+  // owns the question. Two live answer surfaces for one question_id is how
+  // double-submits happen.
+  const askInline =
+    pendingQuestion &&
+    !chatVisible &&
+    !!agentQuestion.questionId &&
+    !!agentQuestion.text &&
+    answered === null
+
+  function submitAnswer(answer: string, source: "click" | "text") {
+    const id = agentQuestion.questionId
+    const value = answer.trim()
+    if (!id || !value) return
+    // Same call ChatView's QuestionCard makes — NOT a new message shape.
+    sendMessage?.("question_response", { question_id: id, answer: value, source })
+    // Latch locally so the surface closes immediately; the authoritative
+    // clear still arrives via iris:question_answered.
+    setAnswered(id)
+    setDraft("")
+  }
 
   const statusLine = [
     crawl.query,
@@ -124,13 +169,28 @@ export function AmbientCrawlTier({ glowColor, panelVisible }: AmbientCrawlTierPr
   }
 
   // ── COUNTER FORM (REQ-16 AC1) ────────────────────────────────────────────
+  //
+  // ANCHORED BESIDE THE ORB, not parked at the bottom of the screen. The orb
+  // is the thing the user is looking at, so the working indicator belongs next
+  // to it. Offset is computed from the LIVE orb diameter (it ranges 60-400px
+  // with wing state), so the gap is constant and overlap is impossible by
+  // construction rather than by a hardcoded guess that only holds at one size.
+  //
+  // Right side specifically: the orb's own labels occupy bottom (Chat), top
+  // (Menu) and left (Voice) — right is the only free edge, which is also why
+  // the retired badge lived at top-right.
+  const anchorOffset = orbDiameter / 2 + 18
   return (
     <div
-      className="fixed bottom-5 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 pl-1 pr-4 py-1 rounded-full pointer-events-none"
+      className="fixed top-1/2 left-1/2 z-40 flex items-center gap-3 pl-1 pr-4 py-1 rounded-full"
       style={{
+        transform: `translate(${anchorOffset}px, -50%)`,
         background: "rgba(4,8,12,0.72)",
         border: `1px solid ${glowColor}33`,
         boxShadow: `0 0 18px ${glowColor}22`,
+        // The counter itself never intercepts the orb's drag/click; only the
+        // question surface below opts back in.
+        pointerEvents: "none",
       }}
       role="status"
       aria-live="polite"
@@ -221,10 +281,58 @@ export function AmbientCrawlTier({ glowColor, panelVisible }: AmbientCrawlTierPr
         </div>
       </div>
 
-      {statusLine ? (
+      {askInline ? (
+        <div
+          className="flex flex-col gap-1.5 py-1"
+          style={{ pointerEvents: "auto", maxWidth: "min(52vw, 420px)" }}
+          data-testid="tier-question"
+        >
+          <span
+            className="text-[11px] font-mono leading-snug"
+            style={{ color: "rgba(255,255,255,0.92)" }}
+          >
+            {agentQuestion.text}
+          </span>
+          {agentQuestion.options && agentQuestion.options.length > 0 ? (
+            <div className="flex flex-wrap gap-1.5">
+              {agentQuestion.options.map((opt) => (
+                <button
+                  key={opt}
+                  type="button"
+                  onClick={() => submitAnswer(opt, "click")}
+                  className="text-[10px] font-mono px-2 py-1 rounded-md transition-colors"
+                  style={{
+                    color: glowColor,
+                    background: `${glowColor}12`,
+                    border: `1px solid ${glowColor}35`,
+                  }}
+                >
+                  {opt}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {/* Free text when the asker allows it, or when there are no options
+              at all — otherwise an open question with no options would be
+              unanswerable from here. */}
+          {agentQuestion.allowOther || !agentQuestion.options?.length ? (
+            <input
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") submitAnswer(draft, "text")
+              }}
+              placeholder="Answer…"
+              aria-label="Answer the agent's question"
+              className="text-[10px] font-mono px-2 py-1 rounded-md bg-transparent outline-none"
+              style={{ color: "rgba(255,255,255,0.92)", border: `1px solid ${glowColor}35` }}
+            />
+          ) : null}
+        </div>
+      ) : statusLine ? (
         <span
           className="text-[10px] font-mono tracking-wide whitespace-nowrap truncate"
-          style={{ color: "rgba(255,255,255,0.82)", maxWidth: "70vw" }}
+          style={{ color: "rgba(255,255,255,0.82)", maxWidth: "40vw" }}
         >
           {statusLine}
         </span>

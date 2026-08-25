@@ -96,6 +96,9 @@ export interface CrawlSource {
   discovered?: boolean
   /** Capture address, once the bytes exist — lets the card link to the replay. */
   capturePage?: number
+  /** REQ-15: the job whose capture store holds this source's bytes — pairs
+   * with capturePage to address /api/browser/capture/{job}/{page}. */
+  jobId?: string
   /** Why it is blocked/parked (challenge, captcha, login, paywall). */
   reason?: string
 }
@@ -249,6 +252,7 @@ export function useCrawl(wsConnected: boolean = true) {
                 status: msg.capture_available === false ? "blocked" : "read",
                 title: src.title || msg.title,
                 capturePage: msg.capture_page ?? msg.page_number,
+                jobId: msg.job_id ?? src.jobId,
                 reason: msg.capture_available === false ? "blocked by the site" : src.reason,
               }
             : src,

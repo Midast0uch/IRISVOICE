@@ -477,6 +477,14 @@ export default function Home() {
         <AmbientCrawlTier
           glowColor={glowColor}
           panelVisible={isDashboardOpen && !isChatSpotlight}
+          // REQ-16: a pending question is answerable INLINE in the tier only
+          // when ChatView is not on screen. When it IS, QuestionCard owns the
+          // question — two live answer surfaces for one question_id would race.
+          chatVisible={isChatOpen || isBothOpen}
+          // Live diameter so the tier anchors beside the orb at any wing state
+          // (it ranges 60-400px) instead of guessing one offset.
+          orbDiameter={orbDiameter}
+          sendMessage={sendMessage}
         />
       </Suspense>
 

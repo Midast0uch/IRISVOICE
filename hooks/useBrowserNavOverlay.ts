@@ -70,6 +70,29 @@ export interface NavOverlayStatus {
    * the SAME offset still registers as a new instruction to mirror. Without it
    * a value-equality effect would skip it. */
   visionScrollSeq: number
+  /**
+   * REQ-9 (specs/vision-browser-stage): the headless viewport's pixel size
+   * for the CURRENT action — lets consumers aspect-correct the fractional
+   * coordinates instead of naively stretching them onto the frame box.
+   * Undefined when the action carried no viewport info.
+   */
+  visionViewportW?: number
+  visionViewportH?: number
+  /**
+   * REQ-8 (specs/vision-browser-stage): true when the CURRENT action belongs
+   * to a session that took over from a FAILED crawl — drives the one-shot
+   * "notice" beat. False for raced sessions.
+   */
+  visionEscalated: boolean
+}
+
+export interface NavOverlaySeed {
+  /** Derived from CrawlProvider state so a panel mounted MID-RUN shows the
+   * current state immediately (REQ-7) instead of idling until the next event. */
+  active: boolean
+  pagesDone: number
+  pagesTotal: number
+  subGoal?: string
 }
 
 const IDLE: NavOverlayStatus = {
@@ -77,9 +100,11 @@ const IDLE: NavOverlayStatus = {
   visionAction: "", visionStep: 0, visionTotal: 0,
   visionX: undefined, visionY: undefined,
   visionScrollY: undefined, visionScrollHeight: undefined, visionScrollSeq: 0,
+  visionViewportW: undefined, visionViewportH: undefined,
+  visionEscalated: false,
 }
 
-export function useBrowserNavOverlay() {
+export function useBrowserNavOverlay(seed?: NavOverlaySeed) {
   const [status, setStatus] = useState<NavOverlayStatus>(IDLE)
 
   const emitTrace = useCallback((st: NavOverlayState, detail: Record<string, unknown>) => {
@@ -128,6 +153,9 @@ export function useBrowserNavOverlay() {
         visionScrollY: undefined,
         visionScrollHeight: undefined,
         visionScrollSeq: 0,
+        visionViewportW: undefined,
+        visionViewportH: undefined,
+        visionEscalated: false,
       }))
     }
     const onPageFetched = (e: Event) => {
@@ -160,6 +188,8 @@ export function useBrowserNavOverlay() {
         kind?: string; action_index?: number; total?: number
         x?: number; y?: number
         scroll_y?: number; scroll_height?: number
+        viewport_w?: number; viewport_h?: number
+        escalated?: boolean
       }>).detail ?? {}
       setStatus(p => {
         // Never revive a finished run: a late action arriving after complete
@@ -177,6 +207,11 @@ export function useBrowserNavOverlay() {
           // KEEP the previous point rather than dropping the cursor to (0,0).
           visionX: d.x ?? p.visionX,
           visionY: d.y ?? p.visionY,
+          // REQ-9: source viewport dims ride along for aspect correction.
+          visionViewportW: typeof d.viewport_w === "number" ? d.viewport_w : p.visionViewportW,
+          visionViewportH: typeof d.viewport_h === "number" ? d.viewport_h : p.visionViewportH,
+          // REQ-8: escalation provenance of THIS session.
+          visionEscalated: d.escalated ?? p.visionEscalated,
           visionScrollY: d.scroll_y ?? p.visionScrollY,
           visionScrollHeight: d.scroll_height ?? p.visionScrollHeight,
           visionScrollSeq:
@@ -201,6 +236,29 @@ export function useBrowserNavOverlay() {
       window.removeEventListener("iris:crawler_vision_action", onVisionAction)
     }
   }, [])
+
+  // ── REQ-7 (specs/vision-browser-stage): mid-run mount backfill ──────────
+  // A panel mounted after crawler_started used to idle at IDLE until the next
+  // event arrived. The CrawlProvider already retains the run's state, so seed
+  // from it ONCE per run — only while IDLE, so real events keep ownership the
+  // moment they flow, and SSE snapshot replays cannot double-seed.
+  const seededRunRef = useRef<string>("")
+  useEffect(() => {
+    if (!seed?.active) return
+    const runKey = `${seed.subGoal ?? ""}|${seed.pagesTotal ?? 0}`
+    if (seededRunRef.current === runKey) return
+    seededRunRef.current = runKey
+    setStatus(p => {
+      if (p.state !== "idle") return p // live events own the surface already
+      return {
+        ...p,
+        state: "loading",
+        subGoal: seed.subGoal ?? p.subGoal,
+        pagesDone: seed.pagesDone,
+        pagesTotal: seed.pagesTotal || p.pagesTotal,
+      }
+    })
+  }, [seed?.active, seed?.pagesDone, seed?.pagesTotal, seed?.subGoal])
 
   // Auto-dismiss: a terminal state holds briefly, then returns to idle.
   //

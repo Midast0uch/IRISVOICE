@@ -89,32 +89,56 @@ export function PermissionCard({
 
   const [timeLeft, setTimeLeft] = useState(timeoutSeconds)
   const [showConfirm, setShowConfirm] = useState(false)
+  // Session 248: optimistic local resolution. The backend round-trip
+  // (grant -> broadcast -> iris:permission_granted) removes this card, but
+  // the user must SEE the click land immediately — during a running DER
+  // turn that round-trip can take seconds. Also swallows the rapid
+  // re-clicks observed live (7 duplicate grants for one request).
+  const [localAction, setLocalAction] = useState<"granted" | "denied" | null>(
+    null
+  )
 
   useEffect(() => {
-    if (timeLeft <= 0) return
+    if (timeLeft <= 0 || localAction) return
     const timer = setInterval(() => {
       setTimeLeft((t) => Math.max(0, t - 1))
     }, 1000)
     return () => clearInterval(timer)
-  }, [timeLeft])
+  }, [timeLeft, localAction])
 
   const handleApprove = useCallback(() => {
+    if (localAction) return
     if (requiresConfirmation && !showConfirm) {
       setShowConfirm(true)
       return
     }
+    setLocalAction("granted")
     onApprove(requestId)
-  }, [requiresConfirmation, showConfirm, onApprove, requestId])
+  }, [localAction, requiresConfirmation, showConfirm, onApprove, requestId])
 
   const handleConfirm = useCallback(() => {
+    if (localAction) return
+    setLocalAction("granted")
     onConfirm(requestId)
-  }, [onConfirm, requestId])
+  }, [localAction, onConfirm, requestId])
 
   const handleDeny = useCallback(() => {
+    if (localAction) return
+    setLocalAction("denied")
     onDeny(requestId)
-  }, [onDeny, requestId])
+  }, [localAction, onDeny, requestId])
 
   const tierCfg = TIER_CONFIG[tier] || TIER_CONFIG.side_effect
+  const resolved =
+    localAction === "granted" ? (
+      <span className="flex items-center gap-1 text-[10px] font-mono text-emerald-400">
+        <CheckCircle size={11} /> {localAction === "granted" ? "ALLOWED" : ""}
+      </span>
+    ) : localAction === "denied" ? (
+      <span className="flex items-center gap-1 text-[10px] font-mono text-red-400">
+        <X size={11} /> DENIED
+      </span>
+    ) : null
   const minutes = Math.floor(timeLeft / 60)
   const seconds = timeLeft % 60
   const paramEntries = Object.entries(params || {}).filter(
