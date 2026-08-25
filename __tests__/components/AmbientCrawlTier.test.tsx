@@ -12,7 +12,7 @@
  *     question_id race each other and can double-submit.
  */
 import React from "react"
-import { render, screen, fireEvent } from "@testing-library/react"
+import { render, screen, fireEvent, act } from "@testing-library/react"
 import { unifiedProgress, AmbientCrawlTier } from "@/components/iris/AmbientCrawlTier"
 
 // ── stubs ─────────────────────────────────────────────────────────────────
@@ -412,5 +412,54 @@ describe("the two forms (mini orb / branding)", () => {
     )
     expect(screen.getByTestId("tier-mini-orb")).toBeTruthy()
     expect(screen.queryByTestId("tier-counter")).toBeNull()
+  })
+})
+
+// ── Rules of Hooks: the idle -> active transition ─────────────────────────
+//
+// Caught at runtime, NOT by this suite, and the gap is instructive: every
+// other test here renders the tier once in a single state. The tier has three
+// early returns, so declaring a hook below them makes the hook COUNT depend on
+// whether there is anything to show — 5 idle, 7 active — and React throws
+// "Rendered more hooks than during the previous render" the moment work starts.
+// A component that renders in one state forever never performs that
+// transition, so a mount-only test cannot see it. This one rerenders.
+describe("hook order across the idle -> active transition", () => {
+  test("going from nothing-to-show to working does not change hook count", () => {
+    mockTaskState = { isWorking: false, currentStep: 0, totalSteps: 0, steps: [] }
+    const { rerender, container } = render(
+      <AmbientCrawlTier
+        glowColor="#0ff" panelVisible={false} chatVisible={false}
+        sendMessage={jest.fn()} conversationId="conv_1"
+      />,
+    )
+    expect(container.innerHTML).toBe("") // idle: the tier returns null
+
+    // Work starts — the same instance now renders its full body.
+    mockTaskState = { isWorking: true, currentStep: 1, totalSteps: 4, steps: [] }
+    expect(() =>
+      act(() => {
+        rerender(
+          <AmbientCrawlTier
+            glowColor="#0ff" panelVisible={false} chatVisible={false}
+            sendMessage={jest.fn()} conversationId="conv_1"
+          />,
+        )
+      }),
+    ).not.toThrow()
+    expect(screen.getByTestId("tier-counter").textContent).toBe("[1/4]")
+
+    // ...and back to idle, which is the reverse transition.
+    mockTaskState = { isWorking: false, currentStep: 0, totalSteps: 0, steps: [] }
+    expect(() =>
+      act(() => {
+        rerender(
+          <AmbientCrawlTier
+            glowColor="#0ff" panelVisible={false} chatVisible={false}
+            sendMessage={jest.fn()} conversationId="conv_1"
+          />,
+        )
+      }),
+    ).not.toThrow()
   })
 })

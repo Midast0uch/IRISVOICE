@@ -118,6 +118,16 @@ export function AmbientCrawlTier({
   const [answered, setAnswered] = useState<Record<string, true>>({})
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [picks, setPicks] = useState<Record<string, string[]>>({})
+  // T20's inline-ask state. MUST live here with the other hooks, not down
+  // beside submitAsk where it reads more naturally: three early returns sit
+  // between there and here, so declaring it below them made the hook COUNT
+  // depend on whether the tier had anything to show — 5 hooks idle, 7 active.
+  // React crashes on that transition ("Rendered more hooks than during the
+  // previous render"), and it only fires when the tier goes idle -> active,
+  // which is exactly the transition a component test that always renders one
+  // state never performs.
+  const [asking, setAsking] = useState(false)
+  const [askDraft, setAskDraft] = useState("")
   // Swallow travel (T19): false for one frame after a wing opens so the tier
   // starts AT the orb's centre and transitions out to its anchor. Without the
   // frame gap the browser coalesces both positions into one style and there is
@@ -225,8 +235,6 @@ export function AmbientCrawlTier({
   // there is none it refuses to send at all. A missing id is a visible
   // failure; a wrong-but-plausible one silently corrupts thread history.
   const canAsk = !!sendMessage && !!conversationId
-  const [asking, setAsking] = useState(false)
-  const [askDraft, setAskDraft] = useState("")
 
   function submitAsk() {
     const text = askDraft.trim()
