@@ -63,6 +63,31 @@ interpreter, and `IRIS_VISION_SPAWN_WRAPPER` is DELETED, not flag-disabled.
 > llama-server inside the kernel with flat CPU, flat IO and no log output. Read
 > "Host prerequisites" in tasks.md before treating any slow load as a bug.
 
+> **THE READINESS PROBE HAD NEVER RUN (found 2026-08-25, T16.1).** httpx is
+> imported inside `_ensure_vision_server_running`, which binds it as a LOCAL to
+> that function. The readiness poll lives in `_spawn_vision_server_now`, where
+> it was never in scope and there is no module-level import — so every poll
+> raised `NameError` and `except Exception: pass` swallowed it. A server
+> listening in ~3s was reported `not_ready` 300s later and killed under REQ-2
+> cleanup. `ttr_sec` 305.61/FAIL -> 4.01/PASS.
+>
+> Two lessons worth more than the fix. (1) A bare `except Exception: pass`
+> around a network probe will hide a programming error indefinitely, and the
+> symptom it produces — flat log, flat CPU, live process — is IDENTICAL to the
+> AV-contention failure this codebase already knew about, so it misdirected the
+> investigation twice. `NameError`/`AttributeError`/`TypeError` now re-raise
+> ahead of the catch-all. (2) Confirming the host prerequisites is what SOLVED
+> this, by eliminating the explanation everyone reached for first.
+
+**Lifecycle is announced at the point of COMMITMENT, not at the Popen.**
+Everything between the decision and the spawn is real work — nvidia-smi, the
+candidate ladder, GGUF metadata reads, the AV probe — measured at 12.96s from
+cold. Emitting `spawning` at the Popen left the chip on `cold` for that whole
+span, which is the dead air REQ-5 exists to narrate. The fast-path health
+check also aligned 2.0s -> 1.0s to match the readiness poll (same request,
+same server); it matters because a closed port on this host silently DROPS
+rather than refuses, so it cost its full budget on every cold start.
+
 **Readiness is patient by design.** A live process is never killed for silence:
 llama.cpp emits nothing for the whole model+mmproj load. `_proc_cpu_seconds()`
 is an additional progress signal, never a liveness veto.

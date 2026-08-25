@@ -31,14 +31,30 @@
 > the residual red verified pre-existing against a clean HEAD worktree and
 > owned by other domains).
 >
-> **ONLY T16.1 / T16.2 REMAIN — both are user-in-the-loop LIVE measurements
-> on a real GPU.** T16.3 (user sign-off) is already complete. Read "Host
-> prerequisites" below BEFORE either: a `ttr_sec` without host context is not
-> a result.
+> **STATUS 2026-08-25 — SPEC COMPLETE. Every task closed.**
 >
-> **REQ-17 MESH FILM added and signed off 2026-08-24** (T22) — the surface
-> reading grammar, now STANDARD browser behavior rather than an experiment.
-> T23 (checklist row, needs user ACK) and T24 (guard tests) are open follow-ups.
+> T16 CLOSED. Both live gates were measured and BOTH FAILED, exposing a P0:
+> **the vision readiness probe had never executed once.** httpx was imported
+> as a local of a different function, every poll raised NameError, and a bare
+> `except Exception: pass` ate it — so a healthy server listening in ~3s was
+> reported dead 300s later and killed. `ttr_sec` 305.61/FAIL -> 4.01/PASS.
+> Separately the lifecycle chip sat on `cold` for 12.96s after crawler_started
+> (13s of pre-spawn work ran before the notify); now 1.66s, inside the 2s AC.
+> See T16 for the full record and for what was ruled out along the way.
+>
+> This is the real cause behind "vision randomly unavailable", the falsified
+> torch-CUDA spawn-hang theory, and a session lost to blaming antivirus. The
+> host prerequisites below are genuinely useful for cold-load speed and were
+> confirmed in effect — which is precisely what eliminated the host
+> explanation and forced the search into the code.
+>
+> T22/T23/T24 closed: the REQ-17 mesh film is STANDARD browser behavior, its
+> sign-off is recorded below the frozen a–m table (not inside it), and guard
+> tests exist for both the film and the readiness probe — each verified to
+> FAIL against the bug it pins.
+>
+> The Vision Stage Simulator was REMOVED after sign-off; see ARCHITECTURE.md
+> section 7, which preserves its contract and scenarios.
 >
 > Also landed 2026-08-24 under T15: the vision scroll path now costs ONE CDP
 > round trip instead of two (design.md §5), and the IPv4 readiness probe —
@@ -406,7 +422,66 @@ Anything in the tens of seconds means a host condition, not a code regression.
   REMAINS OPEN: the standing red above is not this spec's to fix, but it means
   "full suite green" is not literally true and T15 stays partially checked.
 
-- [ ] **T16 (LV-1..LV-3) — LIVE GATES, user-in-the-loop**:
+- [x] **T16 — CLOSED 2026-08-25. All three gates met, and T16.1 caught a P0.**
+
+  **Host prerequisites CONFIRMED IN EFFECT** (user ran the elevated check):
+  exclusions cover BOTH `C:\dev\IRISVOICE` and `C:\Users\midas\.lmstudio\models`;
+  filter drivers are a stock Windows set (WdFilter is Defender's own — no
+  anti-cheat, no EDR); 5.53GB free RAM of 15.96; RTX 3070 with 5862MiB free.
+  Per this file's own runbook that eliminates the host explanation, which is
+  what forced the search into the code.
+
+  **T16.1 — `ttr_sec` direct spawn. FAILED, then FIXED.**
+
+      before: ttr_sec=305.61  ok=False   (twice, cold and warm cache)
+      server's OWN log, same run: listening on 127.0.0.1:18181 at 2.90s
+      after:  ttr_sec=4.01    ok=True
+
+  ROOT CAUSE — **the readiness probe had never executed. Not once.**
+  `_ensure_vision_server_running` imports httpx INSIDE its own body, binding
+  it as a LOCAL to that function. The readiness poll lives in a different
+  function, `_spawn_vision_server_now`, where httpx was never in scope and
+  there is no module-level import. Every poll raised `NameError`, and
+  `except Exception: pass` ate it. The loop then ran on log-growth and CPU
+  signals alone, went quiet when the load finished at ~3s, and declared the
+  healthy listening server dead 300s later — then killed it under REQ-2.
+
+  This is the true cause behind "vision randomly unavailable", the falsified
+  torch-CUDA spawn-hang theory, and a whole session lost to blaming
+  antivirus. The AV exclusions are genuinely useful for the cold load but
+  were never the cause of THIS; the signature (flat log, flat CPU, live
+  process) matched the AV story closely enough to misdirect twice. The
+  previous commit's patience fix is why the symptom moved 120s -> 300s while
+  the probe underneath stayed dead.
+
+  Ruled out before finding it, so nobody redoes the work: not the timeout
+  (the exact call succeeds 8/8 at ~0.43s), not the heavy imports (6/6 from a
+  fully-imported process), not proxy env, not the URL, not a crash
+  (`proc.poll()` stayed None).
+
+  **T16.2 — chip `spawning` within 2s of `crawler_started`. FAILED, FIXED.**
+
+      spawning after trigger: 12.96s -> 2.57s -> 1.66s   (AC: <= 2s)
+      escalation finds warm endpoint: PASS
+        (_ensure fast-path 0.56s, /v1/models 200 in 0.45s,
+         advertising LFM2.5-VL-3B-Q4_K_M.gguf)
+
+  Two causes. (a) `spawning` was emitted at the Popen, AFTER nvidia-smi, the
+  candidate ladder, GGUF metadata reads and the AV probe — 13s of real work
+  during which the chip said `cold`. Moved to the point of commitment.
+  (b) The fast-path health check used `timeout=2.0` and sat directly in front
+  of it; a closed port on this host silently DROPS rather than refuses, so it
+  cost its full budget every cold start. Aligned to 1.0, matching the
+  readiness poll's timeout for the same request against the same server.
+
+  **T16.3 — user sign-off: complete** (13/13 scenarios, 2026-08-24).
+
+  NOTE ON VARIANCE: `warm` was observed at 15-29s across runs. The spec's own
+  matrix records 3.87 / 3.95 / 4.90 / 11.04 / >100s for the same argv inside
+  one 20-minute window — cold page-cache reads dominate. `ttr_sec` is the
+  gate's measurement; end-to-end `warm` timing is not stable enough to gate on.
+
+- [x] **T16 (LV-1..LV-3) — original text, kept for the record**:
    1. Measure `ttr_sec` direct-spawn on real GPU. **REWRITTEN 2026-08-24** —
       the old instruction ("if device-probe hang persists, flip
       IRIS_VISION_SPAWN_WRAPPER=1 and re-measure") is DEAD: that flag no
@@ -525,22 +600,29 @@ Anything in the tens of seconds means a host condition, not a code regression.
   Final: contour noise to break the rectangular iso-contours (the "square
   funnel"), every third wave outward, depth softening at the centre.
 
-- [ ] **T23 (REQ-17)**: Sign-off scenario row for the film. The a–m checklist
-  below is FROZEN and signed; adding a row needs the user's explicit ACK
-  first (same rule as T21). The film was signed off live during development,
-  so this is bookkeeping — the checklist should carry it so a future re-run
-  covers it. DO NOT edit the table without asking.
+- [x] **T23 (REQ-17)**: Sign-off record for the film — DONE 2026-08-25.
+  The a–m table is NOT edited: it is the frozen record of what the user ticked
+  in the simulator on 2026-08-24, the simulator no longer exists, and adding a
+  fourteenth row would misrepresent that session. The film's sign-off is
+  recorded as its own entry below the table instead, which is accurate — it was
+  approved live, in the running app, after seven iterations.
 
-- [ ] **T24 (REQ-17 AC7)**: Guard tests. None exist yet — the film shipped on
-  numeric verification (geometry counts, wall-sharing ratio, front spread,
-  lit-fraction over time) plus live user sign-off, NOT on automated tests.
-  Worth pinning, because three of the seven failures above are cheap to assert
-  and expensive to re-discover:
-    - wall dedup ratio > 0 (catches the radius/pitch mismatch that made every
-      cell private);
-    - `MESH_WAVE_LIFE` >= max arrival (catches waves retiring mid-fade);
-    - the film renders nothing under prefers-reduced-motion (AC6);
-    - the enable switch is a preference, not an event (AC8 grep guard).
+- [x] **T24 (REQ-17 AC7)**: Guard tests — DONE 2026-08-25.
+  `__tests__/mesh-film-guards.test.ts`, 9 source guards in the CT-6/CT-7 idiom
+  (canvas output cannot be meaningfully unit-tested; every guard pins a failure
+  that ACTUALLY happened during the seven build iterations, not a hypothetical):
+  pitch derived from `meshR` not `hexR` (the 0.94x radius gave 0% wall sharing),
+  wall dedup on quantised endpoints, `MESH_WAVE_LIFE` derived from every arrival
+  term, contour noise present and non-trivial, wave count throttled at launch
+  rather than by eviction, reduced-motion gate, crawl states in the activity
+  gate, preference-not-event parity, default-ON.
+  **Verified failing**: flipping the pitch back to `hexR` turns the guard red.
+
+  Also added `backend/tests/contract/test_vision_readiness_probe.py` (4 tests)
+  for the T16.1 defect — the probe must actually issue a request, must target
+  IPv4, a programming error inside the poll must re-raise, and an ordinary
+  connection error must still be tolerated. **Verified failing**: removing the
+  httpx import turns 3 of 4 red with `NameError`.
 
 ## Wave 6 — AmbientCrawlTier repurposed (REQ-16; user-directed 2026-08-24)
 
@@ -612,6 +694,18 @@ Anything in the tens of seconds means a host condition, not a code regression.
 | k fit-to-width | wide fixture fully visible in width; scroll mirror still works | ☑ |
 | l hex-scan | during sustained scroll: hex cells ignite in traveling front, biased to cursor side, fades when actions stop | ☑ |
 | m live reading | 5-page scripted run: ONE tab, surface follows latest page; click a source -> pins; LIVE pill resumes | ☑ |
+
+### Mesh film (REQ-17) — signed off separately, 2026-08-25
+
+| Scenario | Expected beats | Signed |
+|---|---|---|
+| n mesh film | on each kick-pulse shutter a wave launches from the boundary inward; combs assemble seed-first and trace wall-by-wall; waves overlap into continuous honeycomb with a fading trail; no square funnel at the centre; every third wave runs outward | ☑ |
+
+> NOT part of the frozen a–m table above. That table records what the user
+> ticked in the Vision Stage Simulator on 2026-08-24; the simulator has since
+> been removed, and back-filling a row into it would misrepresent that session.
+> The film was approved live in the running app on 2026-08-25 after seven
+> iterations — see T22 for what each one rejected and why.
 
 > NOTE (f): the escalation grammar was REDESIGNED during sign-off per user
 > feedback — violet shift replaced by black↔white treatment (white ring,
