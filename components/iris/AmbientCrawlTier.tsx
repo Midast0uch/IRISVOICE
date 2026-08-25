@@ -68,6 +68,7 @@ export interface AmbientCrawlTierProps {
 }
 
 const RING = 44 // px — matches the tier's original w-11/h-11 orb footprint
+const MINI_ORB = 40 // px — the logo mark carried when the tier stands in for XurOrb
 const R = 19 // ring radius inside the 44x44 viewBox
 const CIRC = 2 * Math.PI * R
 
@@ -250,11 +251,30 @@ export function AmbientCrawlTier({
     .filter(Boolean)
     .join(" · ")
 
-  // Minimal tier: every reading the tier could contribute is already on screen
-  // somewhere else, so it degrades to a presence dot rather than repeating it.
-  // Still shown (not nulled) because "the agent is working" is itself
-  // information the other surfaces do not carry once they go static.
-  if (panelVisible && !hasCounter && !askInline) {
+  // ── THE TWO FORMS ────────────────────────────────────────────────────────
+  //
+  // Which form shows is decided by ONE fact: is XurOrb on screen?
+  //
+  // SWALLOWED (a wing is open) — XurOrb is hidden and the tier stands in for
+  // it. It therefore CARRIES THE MINI ORB: the orb is the application's logo,
+  // and with the real one gone the tier is the only place that identity lives.
+  // Dropping it here (an earlier build did) leaves the app with no brand mark
+  // at all for the whole time a wing is open.
+  //
+  // BESIDE (no wings) — XurOrb is right there, so a second orb would be
+  // redundant. The tier takes the retired badge's position at the orb's
+  // top-right and shows the counter alone, with the particles as the BACKGROUND
+  // of its surface rather than as a separate thumbnail.
+  //
+  // This is also the only state where orb and tier are both visible, and that
+  // is deliberate: XurOrb is a movable desktop widget, so the pair has to let
+  // the user see progress and speak or type to the agent WITHOUT opening the
+  // full interface. That is the whole point of the widget.
+  const swallowed = wingOpen
+
+  // Minimal presence dot — only when NOT standing in for the orb. Swallowed,
+  // the tier must still render as the orb even with nothing to count.
+  if (!swallowed && panelVisible && !hasCounter && !askInline) {
     return (
       <div
         className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 flex items-center gap-1.5 px-2 h-5 rounded-full pointer-events-none"
@@ -273,44 +293,34 @@ export function AmbientCrawlTier({
   // Nothing left to say and no panel dot to fall back on — render nothing
   // rather than an empty pill beside the orb. Reachable when ChatView owns the
   // steps and there is no crawl, which is the common case for a plain chat turn.
-  if (!hasCounter && !askInline && !statusLine) return null
+  if (!swallowed && !hasCounter && !askInline && !statusLine) return null
 
-  // ── COUNTER FORM (REQ-16 AC1) ────────────────────────────────────────────
+  // ── POSITION ─────────────────────────────────────────────────────────────
   //
-  // ANCHORED BESIDE THE ORB, not parked at the bottom of the screen. The orb
-  // is the thing the user is looking at, so the working indicator belongs next
-  // to it. Offset is computed from the LIVE orb diameter (it ranges 60-400px
-  // with wing state), so the gap is constant and overlap is impossible by
-  // construction rather than by a hardcoded guess that only holds at one size.
+  // BESIDE: the retired badge's spot — the orb's top-right, on the 45 degree
+  // diagonal just clear of its edge. Top-right specifically because the orb's
+  // own labels occupy bottom (Chat), top (Menu) and left (Voice); it is the
+  // only free corner, which is why the badge lived there too. Derived from the
+  // LIVE diameter (60-400px with wing state) so it cannot overlap at any size.
   //
-  // Right side specifically: the orb's own labels occupy bottom (Chat), top
-  // (Menu) and left (Voice) — right is the only free edge, which is also why
-  // the retired badge lived at top-right.
-  const anchorOffset = orbDiameter / 2 + 18
-
-  // ── SWALLOW / RELEASE (REQ-16 AC2/AC3, T19) ─────────────────────────────
-  //
-  // While a wing is open during an active run the orb is hidden and the tier
-  // is the sole working indicator (`swallowed`). The tier slides from the
-  // orb's centre out to its anchor, so the orb reads as having been ABSORBED
-  // rather than simply vanishing while a separate pill appears.
-  //
-  // The mutual exclusivity is a HARD contract and is enforced at the ORB, not
-  // here — a component cannot guarantee something about a sibling it does not
-  // render. XurOrb hides itself on the same predicate; this only animates.
-  //
-  // Reduced motion (AC7): opacity only, no travel.
-  const swallowed = wingOpen
-  // Mid-swallow the tier sits on the orb's centre; settled, it rests at the
-  // anchor. Reduced motion skips the travel entirely (AC7).
-  const x = swallowed && !settled && !reducedMotion ? 0 : anchorOffset
+  // SWALLOWED: centred on the orb's old position, because the tier IS the orb
+  // now. The travel between the two is the swallow (T19).
+  const r = orbDiameter / 2
+  const besideX = r * 0.75 + 22
+  const besideY = -(r * 0.75) - 4
+  // Mid-swallow the tier sits where the orb was; settled, it rests centred.
+  // Reduced motion skips the travel entirely (AC7).
+  const tx = swallowed ? (settled || reducedMotion ? 0 : besideX) : besideX
+  const ty = swallowed ? (settled || reducedMotion ? 0 : besideY) : besideY
   return (
     <div
-      className="fixed top-1/2 left-1/2 z-40 flex items-center gap-3 pl-1 pr-4 py-1 rounded-full"
+      className={`fixed top-1/2 left-1/2 z-40 flex items-center rounded-full ${
+        swallowed ? "gap-3 pl-1 pr-4 py-1" : "gap-2 pl-1 pr-2 py-1"
+      }`}
       data-swallowed={swallowed ? "true" : "false"}
+      data-testid="ambient-crawl-tier"
       style={{
-        transform: `translate(${x}px, -50%)`,
-        opacity: swallowed && !settled && !reducedMotion ? 0.4 : 1,
+        transform: `translate(calc(-50% + ${tx}px), calc(-50% + ${ty}px))`,
         transition: reducedMotion
           ? "opacity 200ms linear"
           : "transform 450ms cubic-bezier(0.4, 0, 0.2, 1), opacity 450ms ease-in-out",
@@ -323,8 +333,48 @@ export function AmbientCrawlTier({
       }}
       role="status"
       aria-live="polite"
-      data-testid="ambient-crawl-tier"
     >
+      {/* MINI ORB — the application's logo, and ONLY when swallowed.
+          A wing is open, so XurOrb is hidden; without this the app shows no
+          brand mark at all for the duration. Beside the real orb it would be a
+          second copy of the same thing, so it is omitted there and the
+          particles move behind the counter instead. */}
+      {swallowed && (
+        <div
+          className="relative shrink-0"
+          style={{ width: MINI_ORB, height: MINI_ORB }}
+          data-testid="tier-mini-orb"
+          aria-hidden="true"
+        >
+          {reducedMotion ? (
+            /* Reduced motion suppresses MOVEMENT, not identity. Gating the
+               whole mark on it (an earlier build did) left reduced-motion
+               users with no logo at all for as long as a wing was open. Static
+               mark, same glow grammar. */
+            <div
+              style={{
+                width: MINI_ORB,
+                height: MINI_ORB,
+                borderRadius: "50%",
+                background: `radial-gradient(circle at 38% 34%, ${glowColor}26 0%, ${glowColor}0f 60%, transparent 100%)`,
+                border: `1px solid ${glowColor}3a`,
+              }}
+            />
+          ) : (
+            <OrbCanvas
+              glowColor={glowColor}
+              breathMode={lastAction ? "D" : "A"}
+              breathLevel={0.5}
+              isBreathing
+              glowActive
+              animationMode={null}
+              animActive={false}
+              size={MINI_ORB}
+            />
+          )}
+        </div>
+      )}
+
       <div
         className="relative shrink-0"
         style={{ width: RING, height: RING, pointerEvents: canAsk ? "auto" : "none" }}
@@ -334,8 +384,11 @@ export function AmbientCrawlTier({
         aria-label={canAsk ? "Ask the agent" : undefined}
         data-testid="tier-counter-form"
       >
-        {/* Particles BEHIND the counter, not beside it. */}
-        {!reducedMotion && (
+        {/* Particles as the BACKGROUND of the counter's surface — the beside
+            form's share of the orb identity, since it has no mini orb. When
+            swallowed the mini orb above already carries the particles, and a
+            second canvas here would just be a smaller duplicate of it. */}
+        {!swallowed && !reducedMotion && (
           <div className="absolute inset-0">
             <OrbCanvas
               glowColor={glowColor}

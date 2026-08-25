@@ -324,3 +324,58 @@ describe("inline ask (REQ-16 AC4 / T20)", () => {
     expect(send).not.toHaveBeenCalled()
   })
 })
+
+// ── the two forms: which one shows depends on whether XurOrb is on screen ──
+//
+// User-directed 2026-08-25. The mini orb is the APPLICATION'S LOGO, so the
+// question is not decoration — it is whether the app has a brand mark on
+// screen at all.
+//
+//   wing open  -> XurOrb hidden, tier stands in for it -> MINI ORB REQUIRED
+//   no wings   -> XurOrb visible, tier sits at the old badge spot -> omitted
+//
+// The no-wings case is also the ONLY state where orb and tier are both
+// visible, and that is the point: XurOrb is a movable desktop widget, so the
+// pair must let the user watch progress and talk to the agent without opening
+// the full interface.
+describe("the two forms (mini orb / branding)", () => {
+  beforeEach(() => {
+    mockTaskState = { isWorking: true, currentStep: 2, totalSteps: 6, steps: [] }
+  })
+
+  test("wing open: the tier carries the mini orb, because XurOrb is hidden", () => {
+    render(
+      <AmbientCrawlTier
+        glowColor="#0ff" panelVisible={false} chatVisible={false} wingOpen={true}
+      />,
+    )
+    expect(screen.getByTestId("tier-mini-orb")).toBeTruthy()
+  })
+
+  test("no wings: no mini orb — the real orb is right there", () => {
+    render(
+      <AmbientCrawlTier
+        glowColor="#0ff" panelVisible={false} chatVisible={false} wingOpen={false}
+      />,
+    )
+    expect(screen.queryByTestId("tier-mini-orb")).toBeNull()
+    // ...but the counter is still shown, at the retired badge's position.
+    expect(screen.getByTestId("tier-counter").textContent).toBe("[2/6]")
+  })
+
+  test("swallowed with nothing to count STILL renders — the logo must persist", () => {
+    // Everything owned elsewhere. The beside form would render nothing here;
+    // the swallowed form must not, or the app loses its brand mark entirely
+    // for as long as the wing is open.
+    mockTaskState = {
+      isWorking: true, currentStep: 3, totalSteps: 7, steps: [{ status: "working" }],
+    }
+    render(
+      <AmbientCrawlTier
+        glowColor="#0ff" panelVisible={true} chatVisible={true} wingOpen={true}
+      />,
+    )
+    expect(screen.getByTestId("tier-mini-orb")).toBeTruthy()
+    expect(screen.queryByTestId("tier-counter")).toBeNull()
+  })
+})
