@@ -1,6 +1,6 @@
 # Vision Browser Stage — Architecture
 
-> **Status: as-built, 2026-08-24.** This is the durable reference for the
+> **Status: as-built, 2026-08-25. Spec COMPLETE — every task closed.** This is the durable reference for the
 > feature. requirements.md says what was asked for and design.md says how it was
 > planned; THIS says what actually exists, why, and what will break if you
 > change it.
@@ -58,10 +58,12 @@ interpreter, and `IRIS_VISION_SPAWN_WRAPPER` is DELETED, not flag-disabled.
 > launcher produced 0KB stderr logs and zero successful loads; direct mode loads
 > and listens in ~3s. `DETACHED_PROCESS` specifically made the stall WORSE.
 
-> **The real failure was HOST I/O CONTENTION**, not code: on-access AV scanning
-> plus a kernel anti-cheat filter driver plus RAM starvation, which blocks
-> llama-server inside the kernel with flat CPU, flat IO and no log output. Read
-> "Host prerequisites" in tasks.md before treating any slow load as a bug.
+> **Host I/O contention is real but was NOT the cause of "vision unavailable."**
+> On-access AV scanning of the 854MB mmproj genuinely does block llama-server in
+> the kernel with flat CPU, flat IO and no log output, and the exclusions in
+> "Host prerequisites" (tasks.md) genuinely speed up a cold load. But that story
+> absorbed the blame for a code bug for two sessions — see the probe finding
+> below. Confirm the prerequisites FIRST precisely so you can rule them out.
 
 > **THE READINESS PROBE HAD NEVER RUN (found 2026-08-25, T16.1).** httpx is
 > imported inside `_ensure_vision_server_running`, which binds it as a LOCAL to
@@ -390,3 +392,6 @@ localStorage key `iris-vision-stage-signoff-v1`:
 | send `Access-Control-Allow-Origin: null` | grants read access to the sandboxed reader |
 | call a `/api/browser` endpoint without loopback peer + token | 404 before the handler; tests measure the refusal |
 | share one Chromium between crawl and vision | one crash destroys both; ~11x slower at steady state |
+| swallow NameError/AttributeError in the readiness poll | the probe silently stops running; healthy servers get killed as `not_ready` |
+| emit the `spawning` lifecycle event at the Popen | the chip shows `cold` through ~13s of pre-spawn work |
+| let the fast-path health timeout exceed the readiness poll's | the two disagree about liveness; on a drop-not-refuse host it also delays the first narration |
