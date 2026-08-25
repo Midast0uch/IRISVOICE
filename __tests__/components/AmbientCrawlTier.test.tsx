@@ -24,7 +24,30 @@ const mockCrawlState = {
   visionActions: [] as unknown[],
 }
 let mockTaskState = { isWorking: false, currentStep: 0, totalSteps: 0 }
-let mockQuestionState: Record<string, unknown> = { hasPendingQuestion: false }
+let mockQuestionState: Record<string, unknown> = { hasPendingQuestion: false, questions: [] }
+
+/**
+ * FIXTURE UPDATED 2026-08-25 — called out per the test rule. No assertion in
+ * this file changed; the HOOK's contract did.
+ *
+ * useAgentQuestion now mirrors what the AskUserQuestion tool actually emits: a
+ * question SET (`questions[]`), because the tool only includes the legacy
+ * top-level question_id/text/options keys when the set holds exactly one
+ * question. A mock returning just the flat keys pins a shape the real hook can
+ * no longer produce. This helper builds BOTH representations from one spec so
+ * they cannot drift apart inside the fixtures.
+ */
+function mkQuestion(over: Record<string, unknown> = {}) {
+  const base = {
+    questionId: "q-77",
+    text: "Which branch should I use?",
+    options: ["main", "develop"] as string[] | undefined,
+    allowOther: false,
+    multiSelect: false,
+    ...over,
+  }
+  return { hasPendingQuestion: true, ...base, questions: [base] }
+}
 
 jest.mock("@/hooks/CrawlProvider", () => ({
   useCrawlContext: () => ({ state: mockCrawlState }),
@@ -48,7 +71,7 @@ beforeEach(() => {
     active: false, query: "", pages: [], total: null, visionActions: [],
   })
   mockTaskState = { isWorking: false, currentStep: 0, totalSteps: 0 }
-  mockQuestionState = { hasPendingQuestion: false }
+  mockQuestionState = { hasPendingQuestion: false, questions: [] }
 })
 
 // ── AC5: unified counting ────────────────────────────────────────────────
@@ -103,12 +126,7 @@ describe("AmbientCrawlTier", () => {
 
 // ── the question surface ─────────────────────────────────────────────────
 describe("pending question (REQ-16, user-directed)", () => {
-  const q = {
-    hasPendingQuestion: true,
-    questionId: "q-77",
-    text: "Which branch should I use?",
-    options: ["main", "develop"],
-  }
+  const q = mkQuestion()
 
   test("is answerable in the tier when ChatView is NOT visible", () => {
     mockQuestionState = { ...q }
@@ -138,14 +156,20 @@ describe("pending question (REQ-16, user-directed)", () => {
   })
 
   test("offers free text when the asker allows it", () => {
-    mockQuestionState = { ...q, options: undefined, allowOther: true }
+    mockQuestionState = mkQuestion({ options: undefined, allowOther: true })
     const send = jest.fn()
     render(
       <AmbientCrawlTier
         glowColor="#0ff" panelVisible={false} chatVisible={false} sendMessage={send}
       />,
     )
-    const input = screen.getByLabelText("Answer the agent's question")
+    // SELECTOR UPDATED 2026-08-25 (called out per the test rule; the two
+    // assertions below are unchanged). The input's aria-label was a generic
+    // "Answer the agent's question"; it is now the QUESTION TEXT, because a
+    // question SET renders one input per question and N identical labels are
+    // ambiguous to a screen reader. Labelling each input by its own question
+    // is the correct a11y, so the test queries by that instead.
+    const input = screen.getByLabelText("Which branch should I use?")
     fireEvent.change(input, { target: { value: "  rebase  " } })
     fireEvent.keyDown(input, { key: "Enter" })
     expect(send).toHaveBeenCalledWith("question_response", {
@@ -156,14 +180,20 @@ describe("pending question (REQ-16, user-directed)", () => {
   })
 
   test("an empty answer is never submitted", () => {
-    mockQuestionState = { ...q, options: undefined, allowOther: true }
+    mockQuestionState = mkQuestion({ options: undefined, allowOther: true })
     const send = jest.fn()
     render(
       <AmbientCrawlTier
         glowColor="#0ff" panelVisible={false} chatVisible={false} sendMessage={send}
       />,
     )
-    const input = screen.getByLabelText("Answer the agent's question")
+    // SELECTOR UPDATED 2026-08-25 (called out per the test rule; the two
+    // assertions below are unchanged). The input's aria-label was a generic
+    // "Answer the agent's question"; it is now the QUESTION TEXT, because a
+    // question SET renders one input per question and N identical labels are
+    // ambiguous to a screen reader. Labelling each input by its own question
+    // is the correct a11y, so the test queries by that instead.
+    const input = screen.getByLabelText("Which branch should I use?")
     fireEvent.change(input, { target: { value: "   " } })
     fireEvent.keyDown(input, { key: "Enter" })
     expect(send).not.toHaveBeenCalled()

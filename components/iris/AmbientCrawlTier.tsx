@@ -55,8 +55,8 @@ export interface AmbientCrawlTierProps {
   sendMessage?: (type: string, payload: Record<string, unknown>) => void
 }
 
-const RING = 46 // px — outer diameter of the counter form's ring
-const R = 20 // ring radius in the 46x46 viewBox
+const RING = 44 // px — matches the tier's original w-11/h-11 orb footprint
+const R = 19 // ring radius inside the 44x44 viewBox
 const CIRC = 2 * Math.PI * R
 
 /**
@@ -95,8 +95,12 @@ export function AmbientCrawlTier({
   const taskProgress = useTaskProgress()
   const agentQuestion = useAgentQuestion()
   const reducedMotion = useReducedMotion()
-  const [draft, setDraft] = useState("")
-  const [answered, setAnswered] = useState<string | null>(null)
+  // Per-question, because AskUserQuestion emits a SET: each question resolves
+  // independently through its own question_id (ask_user_tool.py REQ-6), so one
+  // answered question must not close or block the others.
+  const [answered, setAnswered] = useState<Record<string, true>>({})
+  const [drafts, setDrafts] = useState<Record<string, string>>({})
+  const [picks, setPicks] = useState<Record<string, string[]>>({})
 
   const pendingQuestion = agentQuestion.hasPendingQuestion
   // REQ-16: the tier now answers for background TASKS too, not just crawls —
@@ -125,23 +129,32 @@ export function AmbientCrawlTier({
   // Gated on !chatVisible deliberately: when ChatView IS up, QuestionCard
   // owns the question. Two live answer surfaces for one question_id is how
   // double-submits happen.
-  const askInline =
-    pendingQuestion &&
-    !chatVisible &&
-    !!agentQuestion.questionId &&
-    !!agentQuestion.text &&
-    answered === null
+  const openQuestions = agentQuestion.questions.filter((q) => !answered[q.questionId])
+  const askInline = pendingQuestion && !chatVisible && openQuestions.length > 0
 
-  function submitAnswer(answer: string, source: "click" | "text") {
-    const id = agentQuestion.questionId
-    const value = answer.trim()
-    if (!id || !value) return
-    // Same call ChatView's QuestionCard makes — NOT a new message shape.
-    sendMessage?.("question_response", { question_id: id, answer: value, source })
-    // Latch locally so the surface closes immediately; the authoritative
+  function submitAnswer(
+    questionId: string,
+    answer: string | string[],
+    source: "click" | "text",
+  ) {
+    const value = Array.isArray(answer) ? answer.filter(Boolean) : answer.trim()
+    if (!questionId || value.length === 0) return
+    // The SAME call ChatView's QuestionCard makes — not a new message shape.
+    sendMessage?.("question_response", { question_id: questionId, answer: value, source })
+    // Latch locally so this question closes immediately; the authoritative
     // clear still arrives via iris:question_answered.
-    setAnswered(id)
-    setDraft("")
+    setAnswered((prev) => ({ ...prev, [questionId]: true }))
+    setDrafts((prev) => ({ ...prev, [questionId]: "" }))
+  }
+
+  function togglePick(questionId: string, opt: string) {
+    setPicks((prev) => {
+      const cur = prev[questionId] || []
+      return {
+        ...prev,
+        [questionId]: cur.includes(opt) ? cur.filter((o) => o !== opt) : [...cur, opt],
+      }
+    })
   }
 
   const statusLine = [
@@ -283,51 +296,101 @@ export function AmbientCrawlTier({
 
       {askInline ? (
         <div
-          className="flex flex-col gap-1.5 py-1"
+          className="flex flex-col gap-2 py-1"
           style={{ pointerEvents: "auto", maxWidth: "min(52vw, 420px)" }}
           data-testid="tier-question"
         >
-          <span
-            className="text-[11px] font-mono leading-snug"
-            style={{ color: "rgba(255,255,255,0.92)" }}
-          >
-            {agentQuestion.text}
-          </span>
-          {agentQuestion.options && agentQuestion.options.length > 0 ? (
-            <div className="flex flex-wrap gap-1.5">
-              {agentQuestion.options.map((opt) => (
-                <button
-                  key={opt}
-                  type="button"
-                  onClick={() => submitAnswer(opt, "click")}
-                  className="text-[10px] font-mono px-2 py-1 rounded-md transition-colors"
-                  style={{
-                    color: glowColor,
-                    background: `${glowColor}12`,
-                    border: `1px solid ${glowColor}35`,
-                  }}
+          {openQuestions.map((q) => {
+            const sel = picks[q.questionId] || []
+            const hasOptions = !!q.options && q.options.length > 0
+            return (
+              <div key={q.questionId} className="flex flex-col gap-1.5">
+                {q.header ? (
+                  <span
+                    className="text-[8px] font-mono tracking-widest uppercase"
+                    style={{ color: `${glowColor}aa` }}
+                  >
+                    {q.header}
+                  </span>
+                ) : null}
+                <span
+                  className="text-[11px] font-mono leading-snug"
+                  style={{ color: "rgba(255,255,255,0.92)" }}
                 >
-                  {opt}
-                </button>
-              ))}
-            </div>
-          ) : null}
-          {/* Free text when the asker allows it, or when there are no options
-              at all — otherwise an open question with no options would be
-              unanswerable from here. */}
-          {agentQuestion.allowOther || !agentQuestion.options?.length ? (
-            <input
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") submitAnswer(draft, "text")
-              }}
-              placeholder="Answer…"
-              aria-label="Answer the agent's question"
-              className="text-[10px] font-mono px-2 py-1 rounded-md bg-transparent outline-none"
-              style={{ color: "rgba(255,255,255,0.92)", border: `1px solid ${glowColor}35` }}
-            />
-          ) : null}
+                  {q.text}
+                </span>
+
+                {hasOptions ? (
+                  <div className="flex flex-wrap gap-1.5">
+                    {q.options!.map((opt) => {
+                      const picked = sel.includes(opt)
+                      return (
+                        <button
+                          key={opt}
+                          type="button"
+                          aria-pressed={q.multiSelect ? picked : undefined}
+                          onClick={() =>
+                            q.multiSelect
+                              ? togglePick(q.questionId, opt)
+                              : submitAnswer(q.questionId, opt, "click")
+                          }
+                          className="text-[10px] font-mono px-2 py-1 rounded-md transition-colors"
+                          style={{
+                            color: glowColor,
+                            background: picked ? `${glowColor}30` : `${glowColor}12`,
+                            border: `1px solid ${glowColor}${picked ? "70" : "35"}`,
+                          }}
+                        >
+                          {opt}
+                        </button>
+                      )
+                    })}
+                    {/* Multi-select needs an explicit commit — clicking an
+                        option toggles rather than answers. */}
+                    {q.multiSelect ? (
+                      <button
+                        type="button"
+                        disabled={sel.length === 0}
+                        onClick={() => submitAnswer(q.questionId, sel, "click")}
+                        className="text-[10px] font-mono px-2 py-1 rounded-md transition-colors disabled:opacity-40"
+                        style={{
+                          color: glowColor,
+                          background: `${glowColor}20`,
+                          border: `1px solid ${glowColor}55`,
+                        }}
+                      >
+                        SEND
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                {/* Free text when the asker allows it, or when there are no
+                    options at all — otherwise an open question would be
+                    unanswerable from here. */}
+                {q.allowOther || !hasOptions ? (
+                  <input
+                    value={drafts[q.questionId] || ""}
+                    onChange={(e) =>
+                      setDrafts((prev) => ({ ...prev, [q.questionId]: e.target.value }))
+                    }
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        submitAnswer(q.questionId, drafts[q.questionId] || "", "text")
+                      }
+                    }}
+                    placeholder="Answer…"
+                    aria-label={q.text}
+                    className="text-[10px] font-mono px-2 py-1 rounded-md bg-transparent outline-none"
+                    style={{
+                      color: "rgba(255,255,255,0.92)",
+                      border: `1px solid ${glowColor}35`,
+                    }}
+                  />
+                ) : null}
+              </div>
+            )
+          })}
         </div>
       ) : statusLine ? (
         <span

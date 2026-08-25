@@ -2,58 +2,101 @@
 
 import { useEffect, useState } from "react"
 
+export interface AgentQuestion {
+  questionId: string
+  text: string
+  options?: string[]
+  allowOther?: boolean
+  multiSelect?: boolean
+  header?: string
+}
+
 export interface AgentQuestionState {
   hasPendingQuestion: boolean
+  /** Id of the question SET, when the tool emitted one. */
+  setId?: string
+  /** Every question in the set, in the order the agent asked them. */
+  questions: AgentQuestion[]
+  /** First question — the single-question convenience the old shape exposed. */
   questionId?: string
-  /** The question itself. Needed to ANSWER it outside ChatView (REQ-16). */
   text?: string
-  /** Multiple-choice options, when the asker supplied them. */
   options?: string[]
-  /** True when a free-text answer is accepted alongside/instead of options. */
   allowOther?: boolean
 }
+
+const EMPTY: AgentQuestionState = { hasPendingQuestion: false, questions: [] }
 
 /**
  * Lifts pending-question state for the surfaces outside ChatView.
  *
+ * SOURCE OF TRUTH: the agent's AskUserQuestion tool
+ * (`backend/agent/tools/ask_user_tool.py`), which emits `question:ask` on the
+ * event bus; `useIRISWebSocket` forwards it verbatim as `iris:question_ask`.
  * chat-view keeps its own `pendingQuestions` map for the inline QuestionCard;
- * this hook is the wing-independent read of the same event stream, so a
- * question can be SEEN AND ANSWERED when ChatView is not on screen (REQ-16).
+ * this hook is the wing-independent read of the SAME event, so a question can
+ * be seen and answered when ChatView is not on screen (REQ-16).
  *
- * It used to expose only `hasPendingQuestion` + `questionId`, which was enough
- * for a "?" badge and nothing else. The text and options were on the event all
- * along — they were simply dropped here, which is why the only thing the orb
- * could ever say was "there is a question somewhere else".
+ * THE PAYLOAD IS A SET, NOT A QUESTION. The tool always sends `set_id` + a
+ * `questions` array, and mirrors the legacy top-level
+ * `question_id`/`text`/`options`/`allow_other` keys ONLY when the set holds
+ * exactly one question (see ask_user_tool.py "WIRE PAYLOAD"). Reading only the
+ * top-level keys — which this hook used to do — therefore drops EVERY
+ * multi-question set on the floor. The array is preferred here and the legacy
+ * keys are the fallback.
  *
  * FIELD-NAME BUG FIXED 2026-08-25: this read `detail?.questionId`, but the
- * payload is snake_case (`question_id`, matching chat-view.tsx's handler and
- * the backend). `questionId` was therefore ALWAYS undefined — harmless while
- * nothing used it, fatal the moment anything tried to answer with it. Both
- * spellings are accepted now so a future rename on either side cannot silently
- * reintroduce it.
+ * payload is snake_case (`question_id`), matching chat-view's handler and the
+ * backend. `questionId` was therefore ALWAYS undefined — harmless while only a
+ * "?" badge consumed it, fatal the moment anything tried to ANSWER with it.
+ * Both spellings are accepted so a rename on either side cannot silently
+ * reintroduce it. (The same class of bug already cost this feature once:
+ * agent_kernel.py:4467 records `iris:question:ask` vs `iris:question_ask`
+ * stopping QuestionCard from ever rendering.)
  */
 export function useAgentQuestion(): AgentQuestionState {
-  const [state, setState] = useState<AgentQuestionState>({
-    hasPendingQuestion: false,
-  })
+  const [state, setState] = useState<AgentQuestionState>(EMPTY)
 
   useEffect(() => {
     const onAsk = (e: Event) => {
-      const detail = (e as CustomEvent).detail || {}
-      const id = detail.question_id ?? detail.questionId
-      const text = detail.text
-      // Without an id there is nothing to answer, and without text there is
-      // nothing to show — ignore the event rather than render a dead prompt.
-      if (!id || !text) return
+      const d = (e as CustomEvent).detail || {}
+
+      const raw: unknown[] = Array.isArray(d.questions) && d.questions.length
+        ? d.questions
+        : [d] // single-question set, or a pre-set-era payload
+
+      const questions: AgentQuestion[] = raw
+        .map((item): AgentQuestion | null => {
+          const q = (item || {}) as Record<string, unknown>
+          const id = q.question_id ?? q.questionId
+          const text = q.text
+          if (!id || !text) return null
+          return {
+            questionId: String(id),
+            text: String(text),
+            options: Array.isArray(q.options) ? q.options.map(String) : undefined,
+            allowOther: Boolean(q.allow_other ?? q.allowOther),
+            multiSelect: Boolean(q.multi_select ?? q.multiSelect),
+            header: q.header ? String(q.header) : undefined,
+          }
+        })
+        .filter((q): q is AgentQuestion => q !== null)
+
+      // Nothing answerable in the payload — ignore rather than render a dead
+      // prompt with no id to respond with.
+      if (questions.length === 0) return
+
+      const first = questions[0]
       setState({
         hasPendingQuestion: true,
-        questionId: String(id),
-        text: String(text),
-        options: Array.isArray(detail.options) ? detail.options.map(String) : undefined,
-        allowOther: detail.allow_other ?? detail.allowOther,
+        setId: d.set_id ? String(d.set_id) : undefined,
+        questions,
+        questionId: first.questionId,
+        text: first.text,
+        options: first.options,
+        allowOther: first.allowOther,
       })
     }
-    const onDone = () => setState({ hasPendingQuestion: false })
+    const onDone = () => setState(EMPTY)
 
     window.addEventListener("iris:question_ask", onAsk)
     window.addEventListener("iris:question_answered", onDone)

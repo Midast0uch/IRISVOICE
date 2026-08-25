@@ -11,6 +11,7 @@ import { WheelViewErrorBoundary } from "@/components/wheel-view/WheelViewErrorBo
 import { useUILayoutState, UILayoutState, SpotlightState } from "@/hooks/useUILayoutState"
 import { useKeyboardNavigation } from "@/hooks/useKeyboardNavigation"
 import { BackdropBlur } from "@/components/backdrop-blur"
+import { VisionStagePanel } from "@/components/iris/simulator/VisionStagePanel"
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const DashboardWing = lazy(() => import("@/components/dashboard-wing") as any)
 import { isTauri } from "@/hooks/useDeepLink"
@@ -53,6 +54,20 @@ export default function Home() {
     browseTo,
     browserUrl,
   } = useUILayoutState()
+
+  // Vision Stage Simulator (REQ-12/T13). Mounts INSIDE the live app as a
+  // slide-over: CustomEvents do not cross pages, so sign-off has to happen
+  // where the overlay actually lives. Gated by ?dev=vision-stage; the
+  // developer-mode check runs inside the panel itself.
+  const [showVisionStage, setShowVisionStage] = useState(false)
+  const [visionStageCollapsed, setVisionStageCollapsed] = useState(false)
+  useEffect(() => {
+    const sync = () =>
+      setShowVisionStage(new URLSearchParams(window.location.search).get("dev") === "vision-stage")
+    sync()
+    window.addEventListener("popstate", sync)
+    return () => window.removeEventListener("popstate", sync)
+  }, [])
 
   // Window width for dynamic orb sizing (Tauri widget resizes to fit content)
   const [windowWidth, setWindowWidth] = useState(1920)
@@ -488,11 +503,36 @@ export default function Home() {
         />
       </Suspense>
 
-      {/* The Vision Stage Simulator slide-over (REQ-12/T13) mounted here behind
-          ?dev=vision-stage. Removed 2026-08-24 after the user signed off all 13
-          scenarios; see specs/vision-browser-stage/ARCHITECTURE.md section 7 for
-          the runner contract and scenario list, and `git show` on the commit
-          before this one for the source. */}
+      {/* Vision Stage Simulator slide-over (REQ-12/T13) — ?dev=vision-stage.
+          RESTORED 2026-08-25 for Wave 6 sign-off: the swallow/release
+          transitions are sub-second animations that are impractical to judge
+          on a live run, which is what the harness exists for. Collapsed state
+          = narrow rail so chat stays interactive and RUN buttons stay
+          clickable. */}
+      {showVisionStage && (
+        <div
+          className={`fixed top-0 left-0 h-full z-[100] overflow-y-auto shadow-2xl transition-all ${
+            visionStageCollapsed ? "w-60" : "w-full max-w-md"
+          }`}
+        >
+          <VisionStagePanel
+            collapsed={visionStageCollapsed}
+            onToggleCollapse={() => setVisionStageCollapsed((v) => !v)}
+          />
+          <button
+            onClick={() => {
+              const url = new URL(window.location.href)
+              url.searchParams.delete("dev")
+              window.history.replaceState(null, "", url.toString())
+              setShowVisionStage(false)
+            }}
+            className="absolute top-3 right-3 z-[101] w-7 h-7 rounded-full bg-white/10 text-white/70 hover:bg-white/20 transition-colors text-xs"
+            aria-label="Close simulator"
+          >
+            ✕
+          </button>
+        </div>
+      )}
     </main>
   )
 }
