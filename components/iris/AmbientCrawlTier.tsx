@@ -312,12 +312,171 @@ export function AmbientCrawlTier({
   const besideY = -(r * 0.75) - 4
   // Mid-swallow the tier sits where the orb was; settled, it rests centred.
   // Reduced motion skips the travel entirely (AC7).
+  // The reading (count, or "?" when a question is pending) and the tail
+  // (question surface / ask input / status line) are hoisted so the swallowed
+  // form can stack them without duplicating either branch.
+  const counterNode =
+    pendingQuestion ? (
+      <span
+        data-testid="tier-question-glyph"
+        className="text-[13px] font-mono font-bold leading-none"
+        style={{
+          color: glowColor,
+          textShadow: `0 0 16px ${glowColor}55, 0 0 4px ${glowColor}88`,
+        }}
+      >
+        ?
+      </span>
+    ) : hasCounter ? (
+      <span
+        data-testid="tier-counter"
+        className="text-[9.5px] font-mono font-bold px-1.5 py-0.5 rounded-md tabular-nums leading-none"
+        style={{
+          color: glowColor,
+          background: `${glowColor}12`,
+          border: `1px solid ${glowColor}25`,
+        }}
+      >
+        [{done}/{total}]
+      </span>
+    ) : null
+
+  const tailNode = askInline ? (
+        <div
+          className="flex flex-col gap-2 py-1"
+          style={{ pointerEvents: "auto", maxWidth: "min(52vw, 420px)" }}
+          data-testid="tier-question"
+        >
+          {openQuestions.map((q) => {
+            const sel = picks[q.questionId] || []
+            const hasOptions = !!q.options && q.options.length > 0
+            return (
+              <div key={q.questionId} className="flex flex-col gap-1.5">
+                {q.header ? (
+                  <span
+                    className="text-[8px] font-mono tracking-widest uppercase"
+                    style={{ color: `${glowColor}aa` }}
+                  >
+                    {q.header}
+                  </span>
+                ) : null}
+                <span
+                  className="text-[11px] font-mono leading-snug"
+                  style={{ color: "rgba(255,255,255,0.92)" }}
+                >
+                  {q.text}
+                </span>
+
+                {hasOptions ? (
+                  <div className="flex flex-wrap gap-1.5">
+                    {q.options!.map((opt) => {
+                      const picked = sel.includes(opt)
+                      return (
+                        <button
+                          key={opt}
+                          type="button"
+                          aria-pressed={q.multiSelect ? picked : undefined}
+                          onClick={() =>
+                            q.multiSelect
+                              ? togglePick(q.questionId, opt)
+                              : submitAnswer(q.questionId, opt, "click")
+                          }
+                          className="text-[10px] font-mono px-2 py-1 rounded-md transition-colors"
+                          style={{
+                            color: glowColor,
+                            background: picked ? `${glowColor}30` : `${glowColor}12`,
+                            border: `1px solid ${glowColor}${picked ? "70" : "35"}`,
+                          }}
+                        >
+                          {opt}
+                        </button>
+                      )
+                    })}
+                    {/* Multi-select needs an explicit commit — clicking an
+                        option toggles rather than answers. */}
+                    {q.multiSelect ? (
+                      <button
+                        type="button"
+                        disabled={sel.length === 0}
+                        onClick={() => submitAnswer(q.questionId, sel, "click")}
+                        className="text-[10px] font-mono px-2 py-1 rounded-md transition-colors disabled:opacity-40"
+                        style={{
+                          color: glowColor,
+                          background: `${glowColor}20`,
+                          border: `1px solid ${glowColor}55`,
+                        }}
+                      >
+                        SEND
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                {/* Free text when the asker allows it, or when there are no
+                    options at all — otherwise an open question would be
+                    unanswerable from here. */}
+                {q.allowOther || !hasOptions ? (
+                  <input
+                    value={drafts[q.questionId] || ""}
+                    onChange={(e) =>
+                      setDrafts((prev) => ({ ...prev, [q.questionId]: e.target.value }))
+                    }
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        submitAnswer(q.questionId, drafts[q.questionId] || "", "text")
+                      }
+                    }}
+                    placeholder="Answer…"
+                    aria-label={q.text}
+                    className="text-[10px] font-mono px-2 py-1 rounded-md bg-transparent outline-none"
+                    style={{
+                      color: "rgba(255,255,255,0.92)",
+                      border: `1px solid ${glowColor}35`,
+                    }}
+                  />
+                ) : null}
+              </div>
+            )
+          })}
+        </div>
+      ) : asking && canAsk ? (
+        <input
+          autoFocus
+          value={askDraft}
+          onChange={(e) => setAskDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") submitAsk()
+            if (e.key === "Escape") setAsking(false)
+          }}
+          placeholder="Ask…"
+          aria-label="Ask the agent"
+          data-testid="tier-ask-input"
+          className="text-[10px] font-mono px-2 py-1 rounded-md bg-transparent outline-none"
+          style={{
+            pointerEvents: "auto",
+            color: "rgba(255,255,255,0.92)",
+            border: `1px solid ${glowColor}35`,
+            minWidth: 180,
+          }}
+        />
+      ) : statusLine ? (
+        <span
+          className="text-[10px] font-mono tracking-wide whitespace-nowrap truncate"
+          style={{ color: "rgba(255,255,255,0.82)", maxWidth: "40vw" }}
+        >
+          {statusLine}
+        </span>
+      ) : null
+
   const tx = swallowed ? (settled || reducedMotion ? 0 : besideX) : besideX
   const ty = swallowed ? (settled || reducedMotion ? 0 : besideY) : besideY
   return (
     <div
-      className={`fixed top-1/2 left-1/2 z-40 flex items-center rounded-full ${
-        swallowed ? "gap-3 pl-1 pr-4 py-1" : "gap-2 pl-1 pr-2 py-1"
+      className={`fixed top-1/2 left-1/2 z-40 flex rounded-full ${
+        // Swallowed: items-center keeps the two-line block optically centred
+        // against the orb, and a tighter gap binds text to mark instead of
+        // letting it drift toward the pill's far edge.
+        swallowed ? "items-center gap-2 pl-1 pr-3.5 py-1" : "items-center gap-2 pl-1 pr-2 py-1"
       }`}
       data-swallowed={swallowed ? "true" : "false"}
       data-testid="ambient-crawl-tier"
@@ -516,160 +675,20 @@ export function AmbientCrawlTier({
         )}
       </div>
 
-      {/* Swallowed: the reading lives on the pill beside the ringed orb. */}
-      {swallowed && (pendingQuestion || hasCounter) ? (
-        pendingQuestion ? (
-          <span
-            data-testid="tier-question-glyph"
-            className="text-[13px] font-mono font-bold leading-none"
-            style={{
-              color: glowColor,
-              textShadow: `0 0 16px ${glowColor}55, 0 0 4px ${glowColor}88`,
-            }}
-          >
-            ?
-          </span>
-        ) : (
-          <span
-            data-testid="tier-counter"
-            className="text-[9.5px] font-mono font-bold px-1.5 py-0.5 rounded-md tabular-nums leading-none"
-            style={{
-              color: glowColor,
-              background: `${glowColor}12`,
-              border: `1px solid ${glowColor}25`,
-            }}
-          >
-            [{done}/{total}]
-          </span>
-        )
-      ) : null}
-
-      {askInline ? (
-        <div
-          className="flex flex-col gap-2 py-1"
-          style={{ pointerEvents: "auto", maxWidth: "min(52vw, 420px)" }}
-          data-testid="tier-question"
-        >
-          {openQuestions.map((q) => {
-            const sel = picks[q.questionId] || []
-            const hasOptions = !!q.options && q.options.length > 0
-            return (
-              <div key={q.questionId} className="flex flex-col gap-1.5">
-                {q.header ? (
-                  <span
-                    className="text-[8px] font-mono tracking-widest uppercase"
-                    style={{ color: `${glowColor}aa` }}
-                  >
-                    {q.header}
-                  </span>
-                ) : null}
-                <span
-                  className="text-[11px] font-mono leading-snug"
-                  style={{ color: "rgba(255,255,255,0.92)" }}
-                >
-                  {q.text}
-                </span>
-
-                {hasOptions ? (
-                  <div className="flex flex-wrap gap-1.5">
-                    {q.options!.map((opt) => {
-                      const picked = sel.includes(opt)
-                      return (
-                        <button
-                          key={opt}
-                          type="button"
-                          aria-pressed={q.multiSelect ? picked : undefined}
-                          onClick={() =>
-                            q.multiSelect
-                              ? togglePick(q.questionId, opt)
-                              : submitAnswer(q.questionId, opt, "click")
-                          }
-                          className="text-[10px] font-mono px-2 py-1 rounded-md transition-colors"
-                          style={{
-                            color: glowColor,
-                            background: picked ? `${glowColor}30` : `${glowColor}12`,
-                            border: `1px solid ${glowColor}${picked ? "70" : "35"}`,
-                          }}
-                        >
-                          {opt}
-                        </button>
-                      )
-                    })}
-                    {/* Multi-select needs an explicit commit — clicking an
-                        option toggles rather than answers. */}
-                    {q.multiSelect ? (
-                      <button
-                        type="button"
-                        disabled={sel.length === 0}
-                        onClick={() => submitAnswer(q.questionId, sel, "click")}
-                        className="text-[10px] font-mono px-2 py-1 rounded-md transition-colors disabled:opacity-40"
-                        style={{
-                          color: glowColor,
-                          background: `${glowColor}20`,
-                          border: `1px solid ${glowColor}55`,
-                        }}
-                      >
-                        SEND
-                      </button>
-                    ) : null}
-                  </div>
-                ) : null}
-
-                {/* Free text when the asker allows it, or when there are no
-                    options at all — otherwise an open question would be
-                    unanswerable from here. */}
-                {q.allowOther || !hasOptions ? (
-                  <input
-                    value={drafts[q.questionId] || ""}
-                    onChange={(e) =>
-                      setDrafts((prev) => ({ ...prev, [q.questionId]: e.target.value }))
-                    }
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        submitAnswer(q.questionId, drafts[q.questionId] || "", "text")
-                      }
-                    }}
-                    placeholder="Answer…"
-                    aria-label={q.text}
-                    className="text-[10px] font-mono px-2 py-1 rounded-md bg-transparent outline-none"
-                    style={{
-                      color: "rgba(255,255,255,0.92)",
-                      border: `1px solid ${glowColor}35`,
-                    }}
-                  />
-                ) : null}
-              </div>
-            )
-          })}
+      {swallowed ? (
+        /* SWALLOWED LAYOUT — the reading stacks ABOVE the status text and both
+           sit tight against the ringed orb. Laid out as one two-line block
+           rather than three loose items strung across the pill: a counter
+           floating between the orb and the text had nothing to align to and
+           read as debris. Top-aligned so the count sits at the container's
+           upper edge, mirroring where the retired badge used to sit. */
+        <div className="flex flex-col items-start justify-center gap-1 min-w-0">
+          {counterNode}
+          {tailNode}
         </div>
-      ) : asking && canAsk ? (
-        <input
-          autoFocus
-          value={askDraft}
-          onChange={(e) => setAskDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") submitAsk()
-            if (e.key === "Escape") setAsking(false)
-          }}
-          placeholder="Ask…"
-          aria-label="Ask the agent"
-          data-testid="tier-ask-input"
-          className="text-[10px] font-mono px-2 py-1 rounded-md bg-transparent outline-none"
-          style={{
-            pointerEvents: "auto",
-            color: "rgba(255,255,255,0.92)",
-            border: `1px solid ${glowColor}35`,
-            minWidth: 180,
-          }}
-        />
-      ) : statusLine ? (
-        <span
-          className="text-[10px] font-mono tracking-wide whitespace-nowrap truncate"
-          style={{ color: "rgba(255,255,255,0.82)", maxWidth: "40vw" }}
-        >
-          {statusLine}
-        </span>
-      ) : null}
+      ) : (
+        tailNode
+      )}
     </div>
   )
 }

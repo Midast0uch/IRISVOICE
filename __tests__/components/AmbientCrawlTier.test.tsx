@@ -361,6 +361,23 @@ describe("the two forms (mini orb / branding)", () => {
     expect(orb.contains(counter)).toBe(false)
   })
 
+  test("swallowed: counter and status are ONE stacked block, not loose items", () => {
+    // User feedback 2026-08-25: a counter floating between the orb and the
+    // status text had nothing to align to. They now share a parent so the
+    // count sits directly above the text and both stay tight to the mark.
+    Object.assign(mockCrawlState, { active: true, query: "mechanical keyboards", pages: [], total: 4 })
+    render(
+      <AmbientCrawlTier
+        glowColor="#0ff" panelVisible={false} chatVisible={false} wingOpen={true}
+      />,
+    )
+    const counter = screen.getByTestId("tier-counter")
+    const status = screen.getByText(/mechanical keyboards/)
+    expect(counter.parentElement).toBe(status.parentElement)
+    // Stacked, not inline — the block is a column.
+    expect(counter.parentElement?.className).toContain("flex-col")
+  })
+
   test("wing open: the tier carries the mini orb, because XurOrb is hidden", () => {
     render(
       <AmbientCrawlTier
