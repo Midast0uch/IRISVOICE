@@ -1093,7 +1093,16 @@ def _ensure_vision_server_running(base_url: str = "") -> bool:
     try:
         import httpx
         check_url = base_url or f"http://127.0.0.1:{requested_port}/v1"
-        r = httpx.get(f"{check_url}/models", timeout=2.0)
+        # 2.0 -> 1.0 (T16.2, 2026-08-25). This is the SAME request against the
+        # SAME server as the readiness poll below, which uses 1.0 — so the two
+        # timeouts must agree: a server that cannot answer within 1.0s here
+        # would be judged not-ready there anyway.
+        #
+        # It matters because a closed port on this host does not REFUSE, it
+        # silently drops, so this probe costs its full timeout on every cold
+        # start before anything is announced. That 2s sat directly in front of
+        # the lifecycle "spawning" emit and pushed it past T16.2's 2s budget.
+        r = httpx.get(f"{check_url}/models", timeout=1.0)
         if r.status_code == 200:
             return True
     except Exception:
@@ -1166,6 +1175,23 @@ def _spawn_vision_server_now(base_url: str = "") -> bool:
         _VISION_SERVER_PID = None
 
     # Not running — try to auto-start
+
+    # REQ-5 / T16.2: ANNOUNCE "spawning" HERE, not at the Popen.
+    #
+    # Everything between this point and the actual spawn is real work — a
+    # free-VRAM probe (nvidia-smi), the candidate ladder, GGUF metadata reads
+    # for the footprint estimate, and the AV latency probe. Measured 2026-08-25
+    # from cold: 12.96s elapsed before the old notify site was reached, so the
+    # lifecycle chip sat on `cold` for thirteen seconds while the backend was
+    # visibly busy. That is exactly the dead air REQ-5 exists to narrate, and
+    # it failed T16.2's "spawning within 2s of crawler_started".
+    #
+    # The chip should say "spawning" the moment we COMMIT to spawning. The
+    # notify at the Popen below is left in place: it is idempotent for the UI
+    # (same state) and still marks the transition for the retry loop, and
+    # `_spawn_start` stays there because it measures spawn->ready, not
+    # decision->ready.
+    _notify_lifecycle("spawning", trigger=_current_trigger)
 
     # REQ-13 AC1 (T4): ONE free-VRAM probe serves the whole spawn decision —
     # candidate selection and the GPU-layer computation share this tuple, so
