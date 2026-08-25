@@ -343,6 +343,24 @@ describe("the two forms (mini orb / branding)", () => {
     mockTaskState = { isWorking: true, currentStep: 2, totalSteps: 6, steps: [] }
   })
 
+  test("swallowed: ONE ring, orb inside it, counter out on the pill", () => {
+    // The redundancy this replaced: a 40px logo parked next to a 44px ring —
+    // the same shape twice, neither belonging to the other. The ring is now
+    // the orb's own halo, so the reading has to move out of its centre.
+    // Exactly one counter node must exist; getByTestId throws on duplicates,
+    // which is the assertion that catches a stale centred copy left behind.
+    render(
+      <AmbientCrawlTier
+        glowColor="#0ff" panelVisible={false} chatVisible={false} wingOpen={true}
+      />,
+    )
+    const orb = screen.getByTestId("tier-mini-orb")
+    const counter = screen.getByTestId("tier-counter")
+    expect(counter.textContent).toBe("[2/6]")
+    // The counter is a SIBLING on the pill, not stacked over the logo.
+    expect(orb.contains(counter)).toBe(false)
+  })
+
   test("wing open: the tier carries the mini orb, because XurOrb is hidden", () => {
     render(
       <AmbientCrawlTier

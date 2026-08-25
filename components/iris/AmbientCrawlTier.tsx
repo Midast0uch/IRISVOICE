@@ -68,7 +68,9 @@ export interface AmbientCrawlTierProps {
 }
 
 const RING = 44 // px — matches the tier's original w-11/h-11 orb footprint
-const MINI_ORB = 40 // px — the logo mark carried when the tier stands in for XurOrb
+// The logo mark sits INSIDE the ring, so it must clear the stroke: the ring's
+// usable inner diameter is 2R - strokeWidth = 36px.
+const MINI_ORB = 32
 const R = 19 // ring radius inside the 44x44 viewBox
 const CIRC = 2 * Math.PI * R
 
@@ -334,47 +336,6 @@ export function AmbientCrawlTier({
       role="status"
       aria-live="polite"
     >
-      {/* MINI ORB — the application's logo, and ONLY when swallowed.
-          A wing is open, so XurOrb is hidden; without this the app shows no
-          brand mark at all for the duration. Beside the real orb it would be a
-          second copy of the same thing, so it is omitted there and the
-          particles move behind the counter instead. */}
-      {swallowed && (
-        <div
-          className="relative shrink-0"
-          style={{ width: MINI_ORB, height: MINI_ORB }}
-          data-testid="tier-mini-orb"
-          aria-hidden="true"
-        >
-          {reducedMotion ? (
-            /* Reduced motion suppresses MOVEMENT, not identity. Gating the
-               whole mark on it (an earlier build did) left reduced-motion
-               users with no logo at all for as long as a wing was open. Static
-               mark, same glow grammar. */
-            <div
-              style={{
-                width: MINI_ORB,
-                height: MINI_ORB,
-                borderRadius: "50%",
-                background: `radial-gradient(circle at 38% 34%, ${glowColor}26 0%, ${glowColor}0f 60%, transparent 100%)`,
-                border: `1px solid ${glowColor}3a`,
-              }}
-            />
-          ) : (
-            <OrbCanvas
-              glowColor={glowColor}
-              breathMode={lastAction ? "D" : "A"}
-              breathLevel={0.5}
-              isBreathing
-              glowActive
-              animationMode={null}
-              animActive={false}
-              size={MINI_ORB}
-            />
-          )}
-        </div>
-      )}
-
       <div
         className="relative shrink-0"
         style={{ width: RING, height: RING, pointerEvents: canAsk ? "auto" : "none" }}
@@ -384,23 +345,69 @@ export function AmbientCrawlTier({
         aria-label={canAsk ? "Ask the agent" : undefined}
         data-testid="tier-counter-form"
       >
-        {/* Particles as the BACKGROUND of the counter's surface — the beside
-            form's share of the orb identity, since it has no mini orb. When
-            swallowed the mini orb above already carries the particles, and a
-            second canvas here would just be a smaller duplicate of it. */}
-        {!swallowed && !reducedMotion && (
-          <div className="absolute inset-0">
-            <OrbCanvas
-              glowColor={glowColor}
-              breathMode={lastAction ? "D" : "A"}
-              breathLevel={0.45}
-              isBreathing
-              glowActive
-              animationMode={null}
-              animActive={false}
-              size={RING}
-            />
+        {/* ── ONE CIRCULAR INSTRUMENT, TWO FILLINGS ──────────────────────
+            The ring is the ORB'S OWN HALO, not a second dial parked beside it.
+            An earlier build set a 40px logo next to a 44px ring: the same
+            shape twice, neither reading as belonging to the other, and the
+            ring meaning nothing in particular.
+            Wrapping the orb makes the ring's meaning literal — it is the
+            orb's progress — and keeps the instrument IDENTICAL across both
+            forms. The only thing that changes is what sits inside it. */}
+        {swallowed ? (
+          <div
+            className="absolute"
+            style={{
+              top: (RING - MINI_ORB) / 2,
+              left: (RING - MINI_ORB) / 2,
+              width: MINI_ORB,
+              height: MINI_ORB,
+            }}
+            data-testid="tier-mini-orb"
+            aria-hidden="true"
+          >
+            {reducedMotion ? (
+              /* Reduced motion suppresses MOVEMENT, not identity. Gating the
+                 mark on it left reduced-motion users with no logo at all for
+                 as long as a wing was open. Static mark, same glow grammar. */
+              <div
+                style={{
+                  width: MINI_ORB,
+                  height: MINI_ORB,
+                  borderRadius: "50%",
+                  background: `radial-gradient(circle at 38% 34%, ${glowColor}26 0%, ${glowColor}0f 60%, transparent 100%)`,
+                  border: `1px solid ${glowColor}3a`,
+                }}
+              />
+            ) : (
+              <OrbCanvas
+                glowColor={glowColor}
+                breathMode={lastAction ? "D" : "A"}
+                breathLevel={0.5}
+                isBreathing
+                glowActive
+                animationMode={null}
+                animActive={false}
+                size={MINI_ORB}
+              />
+            )}
           </div>
+        ) : (
+          /* No orb to carry identity here, so the particles are the surface
+             the counter sits on. */
+          !reducedMotion && (
+            <div className="absolute inset-0">
+              <OrbCanvas
+                glowColor={glowColor}
+                breathMode={lastAction ? "D" : "A"}
+                breathLevel={0.45}
+                isBreathing
+                glowActive
+                animationMode={null}
+                animActive={false}
+                size={RING}
+              />
+            </div>
+          )
         )}
 
         {/* Radial progress ring. One SVG, no per-frame work: the dash offset
@@ -475,9 +482,11 @@ export function AmbientCrawlTier({
           )}
         </svg>
 
-        {/* CardChassis counter grammar, centred in the ring. A pending
-            question outranks the count: it is the one state that needs the
-            user, so it takes the glyph. */}
+        {/* The counter is centred in the ring ONLY when the ring is empty.
+            Swallowed, the orb occupies that centre and the reading moves out
+            onto the pill (rendered just below) — stacking text over the logo
+            would obscure the mark and make both harder to read. */}
+        {!swallowed && (
         <div className="absolute inset-0 flex items-center justify-center">
           {pendingQuestion ? (
             <span
@@ -504,7 +513,36 @@ export function AmbientCrawlTier({
             </span>
           ) : null}
         </div>
+        )}
       </div>
+
+      {/* Swallowed: the reading lives on the pill beside the ringed orb. */}
+      {swallowed && (pendingQuestion || hasCounter) ? (
+        pendingQuestion ? (
+          <span
+            data-testid="tier-question-glyph"
+            className="text-[13px] font-mono font-bold leading-none"
+            style={{
+              color: glowColor,
+              textShadow: `0 0 16px ${glowColor}55, 0 0 4px ${glowColor}88`,
+            }}
+          >
+            ?
+          </span>
+        ) : (
+          <span
+            data-testid="tier-counter"
+            className="text-[9.5px] font-mono font-bold px-1.5 py-0.5 rounded-md tabular-nums leading-none"
+            style={{
+              color: glowColor,
+              background: `${glowColor}12`,
+              border: `1px solid ${glowColor}25`,
+            }}
+          >
+            [{done}/{total}]
+          </span>
+        )
+      ) : null}
 
       {askInline ? (
         <div
