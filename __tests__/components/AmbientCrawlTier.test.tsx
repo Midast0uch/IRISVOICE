@@ -378,6 +378,45 @@ describe("the two forms (mini orb / branding)", () => {
     expect(counter.parentElement?.className).toContain("flex-col")
   })
 
+  test("the mini orb and the particle field are ALTERNATIVES, never both", () => {
+    // User-directed 2026-08-25. Each form carries the orb identity exactly
+    // once: swallowed it is the mark inside the ring, beside it is the field
+    // across the card. Running both would double the canvases and clutter the
+    // very mark the field is standing in for.
+    // (Reduced motion is ON in this suite, so the field is asserted through
+    // the swallowed branch only — see the reduced-motion test below.)
+    render(
+      <AmbientCrawlTier
+        glowColor="#0ff" panelVisible={false} chatVisible={false} wingOpen={true}
+      />,
+    )
+    expect(screen.getByTestId("tier-mini-orb")).toBeTruthy()
+    expect(screen.queryByTestId("tier-particle-field")).toBeNull()
+  })
+
+  test("swallowed: no progress ring — it drowns out the logo", () => {
+    // A 2px arc at 44px sits right on the mark's edge and competes with it for
+    // the same silhouette. The reading is stacked on the pill instead, so the
+    // arc has nothing left to say there.
+    render(
+      <AmbientCrawlTier
+        glowColor="#0ff" panelVisible={false} chatVisible={false} wingOpen={true}
+      />,
+    )
+    const svg = screen.getByTestId("ambient-crawl-tier").querySelector("svg")
+    expect(svg?.querySelectorAll("circle").length ?? 0).toBe(0)
+  })
+
+  test("beside: the ring IS drawn — it circles the counter, not the logo", () => {
+    render(
+      <AmbientCrawlTier
+        glowColor="#0ff" panelVisible={false} chatVisible={false} wingOpen={false}
+      />,
+    )
+    const svg = screen.getByTestId("ambient-crawl-tier").querySelector("svg")
+    expect((svg?.querySelectorAll("circle").length ?? 0)).toBeGreaterThan(0)
+  })
+
   test("wing open: the tier carries the mini orb, because XurOrb is hidden", () => {
     render(
       <AmbientCrawlTier

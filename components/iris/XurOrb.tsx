@@ -19,6 +19,7 @@ import { RadialArcNodes } from "./radial/RadialArcNodes"
 import { OrbWorkingIndicator } from "./OrbWorkingIndicator"
 import { useTaskProgress } from "@/hooks/useTaskProgress"
 import { useAgentQuestion } from "@/hooks/useAgentQuestion"
+import { useCrawlContext } from "@/hooks/CrawlProvider"
 
 // ── Label configuration (matches PrototypeOrbShellsRotating winner) ────
 // Positions are relative to orb center in a 120px container.
@@ -79,6 +80,12 @@ export function XurOrb({
   const cadence = useCadenceDetection()
   const taskProgress = useTaskProgress()
   const agentQuestion = useAgentQuestion()
+  // REQ-16: a CRAWL is the agent working too. Without this the orb's idea of
+  // "working" disagreed with the tier's, and the swallow never fired for the
+  // case it was built for — crawler_* events drive CrawlProvider, NOT
+  // useTaskProgress, so a research run left taskProgress.isWorking false.
+  // Provider is mounted at app/layout.tsx, above every orb instance.
+  const { state: crawl } = useCrawlContext()
 
   // ── State ────────────────────────────────────────────────────────
   const [animationMode, setAnimationMode] = useState<AnimationMode>('C')
@@ -143,7 +150,10 @@ export function XurOrb({
   // Explicit "agent is thinking / working" flag that drives a visible orb
   // state during processing — independent of wing open/closed.
   const isAgentWorking =
-    isProcessing || taskProgress.isWorking || agentQuestion.hasPendingQuestion
+    isProcessing ||
+    taskProgress.isWorking ||
+    agentQuestion.hasPendingQuestion ||
+    crawl.active
 
   // ── SWALLOWED (REQ-16 AC2/AC3, T19) ──────────────────────────────────────
   // While a wing is open during an active run the orb is ABSORBED into

@@ -126,6 +126,26 @@ export function AmbientCrawlTier({
   // previous render"), and it only fires when the tier goes idle -> active,
   // which is exactly the transition a component test that always renders one
   // state never performs.
+  // The particle field spans the WHOLE card, so it needs the card's live width.
+  // A callback ref rather than useRef: the tier returns null while idle, so a
+  // ref captured on mount would be null forever and the observer would never
+  // attach. This re-runs whenever the node actually appears.
+  const [pillEl, setPillEl] = useState<HTMLDivElement | null>(null)
+  const [pillW, setPillW] = useState(0)
+  useEffect(() => {
+    if (!pillEl) return
+    const measure = () => setPillW(pillEl.getBoundingClientRect().width)
+    measure()
+    // ResizeObserver is not universal (absent in jsdom, and in older
+    // WebViews). The measurement above already covers the common case — the
+    // card's width is stable for a given state — so a missing observer costs
+    // live re-measurement, not the particle field.
+    if (typeof ResizeObserver === "undefined") return
+    const ro = new ResizeObserver(measure)
+    ro.observe(pillEl)
+    return () => ro.disconnect()
+  }, [pillEl])
+
   const [asking, setAsking] = useState(false)
   const [askDraft, setAskDraft] = useState("")
   // Swallow travel (T19): false for one frame after a wing opens so the tier
@@ -341,8 +361,9 @@ export function AmbientCrawlTier({
         className="text-[9.5px] font-mono font-bold px-1.5 py-0.5 rounded-md tabular-nums leading-none"
         style={{
           color: glowColor,
-          background: `${glowColor}12`,
-          border: `1px solid ${glowColor}25`,
+          background: `${glowColor}1f`,
+          border: `1px solid ${glowColor}45`,
+          textShadow: `0 0 10px ${glowColor}66`,
         }}
       >
         [{done}/{total}]
@@ -470,7 +491,11 @@ export function AmbientCrawlTier({
       ) : statusLine ? (
         <span
           className="text-[10px] font-mono tracking-wide whitespace-nowrap truncate"
-          style={{ color: "rgba(255,255,255,0.82)", maxWidth: "40vw" }}
+          style={{
+            color: "rgba(255,255,255,0.95)",
+            textShadow: "0 1px 3px rgba(0,0,0,0.6)",
+            maxWidth: "40vw",
+          }}
         >
           {statusLine}
         </span>
@@ -486,16 +511,27 @@ export function AmbientCrawlTier({
         // letting it drift toward the pill's far edge.
         swallowed ? "items-center gap-2 pl-1 pr-3.5 py-1" : "items-center gap-2 pl-1 pr-2 py-1"
       }`}
+      ref={setPillEl}
       data-swallowed={swallowed ? "true" : "false"}
       data-testid="ambient-crawl-tier"
       style={{
+        position: "fixed",
+        overflow: "hidden",
         transform: `translate(calc(-50% + ${tx}px), calc(-50% + ${ty}px))`,
         transition: reducedMotion
           ? "opacity 200ms linear"
           : "transform 450ms cubic-bezier(0.4, 0, 0.2, 1), opacity 450ms ease-in-out",
-        background: "rgba(4,8,12,0.72)",
-        border: `1px solid ${glowColor}33`,
-        boxShadow: `0 0 18px ${glowColor}22`,
+        // GLASS, not a flat scrim. The previous fill was an opaque slab that
+        // sat the text on dead ground: nothing behind it showed through, so
+        // the pill read as a grey rectangle with the glow only on its rim.
+        // Blur + saturate lifts whatever is behind it, the gradient gives the
+        // surface a direction, and the inset top highlight is the lit edge
+        // that makes it read as glass rather than paint.
+        background: `linear-gradient(180deg, ${glowColor}14 0%, rgba(6,11,16,0.82) 46%, rgba(3,6,10,0.88) 100%)`,
+        backdropFilter: "blur(14px) saturate(1.6)",
+        WebkitBackdropFilter: "blur(14px) saturate(1.6)",
+        border: `1px solid ${glowColor}4d`,
+        boxShadow: `0 0 26px ${glowColor}33, 0 6px 20px rgba(0,0,0,0.45), inset 0 1px 0 ${glowColor}3a`,
         // The counter itself never intercepts the orb's drag/click; only the
         // question surface below opts back in.
         pointerEvents: "none",
@@ -503,6 +539,48 @@ export function AmbientCrawlTier({
       role="status"
       aria-live="polite"
     >
+      {/* AMBIENT PARTICLE FIELD — BESIDE FORM ONLY.
+          This is the beside form's share of the orb identity, standing in for
+          the mini orb rather than accompanying it: swallowed, the logo inside
+          the ring already carries the particles, and running a second field
+          behind it would both double the canvases and clutter the mark it is
+          meant to showcase.
+          Spanning the whole card matters — confined to the 44px ring the
+          shells were a dense speck; at card scale they drift the full width
+          and the pill reads as a lit surface with something alive behind the
+          glass. Sized from the measured card, clipped by the pill's own
+          overflow, never interactive. */}
+      {!swallowed && !reducedMotion && pillW > 0 && (
+        <div
+          className="absolute inset-0"
+          style={{ pointerEvents: "none", opacity: 0.5 }}
+          aria-hidden="true"
+          data-testid="tier-particle-field"
+        >
+          <div
+            style={{
+              position: "absolute",
+              left: "50%",
+              top: "50%",
+              transform: "translate(-50%, -50%)",
+              width: Math.max(pillW, RING),
+              height: Math.max(pillW, RING),
+            }}
+          >
+            <OrbCanvas
+              glowColor={glowColor}
+              breathMode={lastAction ? "D" : "A"}
+              breathLevel={0.4}
+              isBreathing
+              glowActive={false}
+              animationMode={null}
+              animActive={false}
+              size={Math.max(pillW, RING)}
+            />
+          </div>
+        </div>
+      )}
+
       <div
         className="relative shrink-0"
         style={{ width: RING, height: RING, pointerEvents: canAsk ? "auto" : "none" }}
@@ -559,22 +637,10 @@ export function AmbientCrawlTier({
             )}
           </div>
         ) : (
-          /* No orb to carry identity here, so the particles are the surface
-             the counter sits on. */
-          !reducedMotion && (
-            <div className="absolute inset-0">
-              <OrbCanvas
-                glowColor={glowColor}
-                breathMode={lastAction ? "D" : "A"}
-                breathLevel={0.45}
-                isBreathing
-                glowActive
-                animationMode={null}
-                animActive={false}
-                size={RING}
-              />
-            </div>
-          )
+          /* Nothing ring-local here any more: the card-wide field above is
+             the surface the counter sits on. A second canvas confined to the
+             ring would just be a denser copy of it in the same place. */
+          null
         )}
 
         {/* Radial progress ring. One SVG, no per-frame work: the dash offset
@@ -592,6 +658,12 @@ export function AmbientCrawlTier({
           viewBox={`0 0 ${RING} ${RING}`}
           aria-hidden="true"
         >
+          {/* Track and progress arc are BESIDE-ONLY. Ringing the logo drowned
+              it out — a 2px stroke at 44px sits right on the mark's edge and
+              competes with it for the same silhouette. The reading is already
+              stacked on the pill when swallowed, so the arc has nothing left
+              to say there. */}
+          {!swallowed && (
           <circle
             cx={RING / 2}
             cy={RING / 2}
@@ -600,7 +672,8 @@ export function AmbientCrawlTier({
             stroke={`${glowColor}22`}
             strokeWidth={2}
           />
-          {hasCounter ? (
+          )}
+          {swallowed ? null : hasCounter ? (
             /* DETERMINATE. Eased on the SAME curve and duration as the swallow
                (450ms cubic-bezier) so a wing opening mid-run does not produce
                two competing tempos on one element — the ring settling and the
