@@ -19,7 +19,7 @@ import { RadialArcNodes } from "./radial/RadialArcNodes"
 import { useTaskProgress } from "@/hooks/useTaskProgress"
 import { useAgentQuestion } from "@/hooks/useAgentQuestion"
 import { useCrawlContext } from "@/hooks/CrawlProvider"
-import { useSwallowTarget } from "./swallowTarget"
+import { useSwallowTarget, useTierDismissed } from "./swallowTarget"
 
 // ── Label configuration (matches PrototypeOrbShellsRotating winner) ────
 // Positions are relative to orb center in a 120px container.
@@ -166,7 +166,10 @@ export function XurOrb({
   // is hidden. A component cannot make a promise about a sibling it does not
   // render, and splitting the rule across both is how "both visible" slips
   // back in when one side changes.
-  const isSwallowed = isWingsOpen && isAgentWorking
+  // Dismissing the card is an explicit "give me the orb back" — it must
+  // un-swallow here too, or the dismissal would leave neither on screen.
+  const tierDismissed = useTierDismissed()
+  const isSwallowed = isWingsOpen && isAgentWorking && !tierDismissed
 
   // ── THE TRAVEL (T19) ─────────────────────────────────────────────────────
   // The orb flies to the tier's LOGO SLOT, measured and published by the tier.

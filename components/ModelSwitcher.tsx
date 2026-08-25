@@ -32,8 +32,12 @@ const ROLE_LABELS: Record<string, string> = {
 }
 
 /** Long provider · model labels truncate in the trigger, following
- * ContextPill's own ACTION_CAP precedent — full name stays in `title`. */
-const TRIGGER_LABEL_CAP = 18
+ * ContextPill's own ACTION_CAP precedent — full name stays in `title`.
+ * 18 -> 9: the trigger showed "coh · command-a-p…", which ate the input row
+ * for a string the user already knows. The icon says "model", the acronym says
+ * WHICH — anything past that is reference material, and the full label is one
+ * hover away in `title` and spelled out in the dropdown. */
+const TRIGGER_LABEL_CAP = 9
 
 /** Abbreviate provider/model names for the compact trigger so the visible
  * switcher stays legible (e.g. "cerebras · gemma-4-31b" → "cer · gem-4-31b").
@@ -57,10 +61,18 @@ function abbreviateLabel(label: string | null): string | null {
   const model = idx >= 0 ? label.slice(idx + 3) : ""
   const abbrProv = PROVIDER_ABBR[prov.toLowerCase()] || (prov ? prov.slice(0, 3) : prov)
   if (!model) return abbrProv
+  // ACRONYM, not a shortened sentence. The trigger has room for a token, so
+  // reduce the model to its family + size (the two things that distinguish one
+  // binding from another) and drop dates, revisions and vendor prefixes.
   const abbrModel = model
-    .replace(/^gemma-(\d+)-(\d+b)$/i, "gem-$1-$2")
-    .replace(/^command-a-(\d+)-(\d+)$/i, "cmd-a")
-  return `${abbrProv} · ${abbrModel}`
+    .replace(/^gemma-(\d+)-(\d+b).*$/i, "gem$1-$2")
+    .replace(/^command-a.*$/i, "cmd-a")
+    .replace(/^gpt-oss[:-]?(\d+b).*$/i, "oss-$1")
+    .replace(/^llama-?(\d+).*?(\d+b).*$/i, "lla$1-$2")
+    .replace(/^qwen-?(\d+).*?(\d+b).*$/i, "qwn$1-$2")
+    .replace(/^nemotron.*$/i, "nemo")
+    .replace(/^lfm2?\.?5?-?vl-?(\d+\.?\d*b).*$/i, "lfm-$1")
+  return abbrModel || abbrProv
 }
 
 function isApiKind(kind: string | undefined): boolean {
@@ -209,7 +221,7 @@ export default function ModelSwitcher({
           setTriggerRect(tr || null)
           setOpen((o) => !o)
         }}
-        className="flex items-center gap-1 h-[32px] px-2 rounded-full transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0 max-w-[140px]"
+        className="flex items-center gap-1 h-[32px] px-1.5 rounded-full transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0 max-w-[86px]"
         style={{
           color: brainAvailable || !brainBinding ? glowColor : "#f87171",
           background:
@@ -223,7 +235,7 @@ export default function ModelSwitcher({
             loses information — the text label is the part that goes at a
             narrow width, never the pill. */}
         {truncatedActive && (
-          <span className="hidden sm:inline text-[9px] font-mono uppercase tracking-wide truncate">
+          <span className="hidden sm:inline text-[9px] font-mono uppercase tracking-tight truncate">
             {truncatedActive}
           </span>
         )}

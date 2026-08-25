@@ -109,11 +109,19 @@ describe("unifiedProgress (REQ-16 AC5)", () => {
 
 // ── rendering ────────────────────────────────────────────────────────────
 describe("AmbientCrawlTier", () => {
-  test("renders nothing when nothing is working (OPT GATE)", () => {
+  test("renders no card when nothing is working (OPT GATE)", () => {
+    // ASSERTION UPDATED 2026-08-25 (called out per the test rule). It was
+    // `container.firstChild === null`. The tier now keeps a 0x0 EMPTY anchor
+    // mounted so AnimatePresence can play the release — the card receding
+    // toward the orb as the orb returns, which previously just popped out of
+    // existence. The anchor carries no canvas, no rAF and no timers, so the
+    // OPT GATE this pins still holds; it is asserted directly now (no card,
+    // childless anchor) instead of via total DOM emptiness.
     const { container } = render(
       <AmbientCrawlTier glowColor="#0ff" panelVisible={false} />,
     )
-    expect(container.firstChild).toBeNull()
+    expect(screen.queryByTestId("ambient-crawl-tier")).toBeNull()
+    expect(container.firstElementChild?.childElementCount ?? 0).toBe(0)
   })
 
   test("shows the unified counter for a task with no crawl", () => {
@@ -182,7 +190,15 @@ describe("progress ownership", () => {
     const { container } = render(
       <AmbientCrawlTier glowColor="#0ff" panelVisible={false} chatVisible={true} />,
     )
-    expect(container.innerHTML).toBe("")
+    // ASSERTION UPDATED 2026-08-25 (called out per the test rule). It was
+    // `innerHTML === ""`. The tier now keeps a 0x0 EMPTY anchor mounted so
+    // AnimatePresence can play the release — the card receding toward the orb
+    // as the orb returns, which previously just popped out of existence.
+    // The anchor carries no canvas, no rAF and no timers, so the OPT GATE it
+    // was written for still holds; these now assert that directly (no card,
+    // and the anchor is childless) rather than via total DOM emptiness.
+    expect(screen.queryByTestId("ambient-crawl-tier")).toBeNull()
+    expect(container.firstElementChild?.childElementCount ?? 0).toBe(0)
   })
 })
 
@@ -472,7 +488,8 @@ describe("hook order across the idle -> active transition", () => {
         sendMessage={jest.fn()} conversationId="conv_1"
       />,
     )
-    expect(container.innerHTML).toBe("") // idle: the tier returns null
+    // idle: anchor only, no card (see the note above on this assertion)
+    expect(screen.queryByTestId("ambient-crawl-tier")).toBeNull()
 
     // Work starts — the same instance now renders its full body.
     mockTaskState = { isWorking: true, currentStep: 1, totalSteps: 4, steps: [] }
@@ -548,5 +565,67 @@ describe("swallow target publication", () => {
       </>,
     )
     expect(screen.getByTestId("probe").textContent).toBe("none")
+  })
+})
+
+// ── manual release (user-directed 2026-08-25) ─────────────────────────────
+describe("dismiss control", () => {
+  const { setTierDismissed } = jest.requireActual("@/components/iris/swallowTarget")
+  beforeEach(() => {
+    setTierDismissed(false)
+    mockTaskState = { isWorking: true, currentStep: 1, totalSteps: 3, steps: [] }
+  })
+  afterEach(() => setTierDismissed(false))
+
+  test("offered only while the card stands in for the orb", () => {
+    // Beside the orb there is nothing to return TO — the orb is already there.
+    render(
+      <AmbientCrawlTier glowColor="#0ff" panelVisible={false} wingOpen={false} />,
+    )
+    expect(screen.queryByTestId("tier-dismiss")).toBeNull()
+  })
+
+  test("dismissing hides the card even though work continues", () => {
+    const { rerender } = render(
+      <AmbientCrawlTier glowColor="#0ff" panelVisible={false} wingOpen={true} />,
+    )
+    expect(screen.getByTestId("ambient-crawl-tier")).toBeTruthy()
+    fireEvent.click(screen.getByTestId("tier-dismiss"))
+    rerender(
+      <AmbientCrawlTier glowColor="#0ff" panelVisible={false} wingOpen={true} />,
+    )
+    // The card RECEDES rather than disappearing: AnimatePresence keeps it
+    // mounted while the exit plays (that is the release, and the whole reason
+    // the anchor stays mounted). jsdom does not tick framer to completion, so
+    // asserting removal here would be asserting a jsdom behaviour, not ours.
+    // Exit state — opacity driven to 0 — is the real, observable outcome.
+    const card = screen.getByTestId("ambient-crawl-tier")
+    expect(card.style.opacity).toBe("0")
+  })
+
+  test("a dismissal does not silence the NEXT run", () => {
+    // It applies to the run the user dismissed, not to every run after it.
+    setTierDismissed(true)
+    const { rerender } = render(
+      <AmbientCrawlTier glowColor="#0ff" panelVisible={false} wingOpen={true} />,
+    )
+    // Dismissed BEFORE the first render, so the card never mounted at all —
+    // absent, not exiting. (The mid-run dismissal above is the exiting case.)
+    expect(screen.queryByTestId("ambient-crawl-tier")).toBeNull()
+
+    // work finishes -> idle clears the dismissal
+    mockTaskState = { isWorking: false, currentStep: 0, totalSteps: 0, steps: [] }
+    rerender(
+      <AmbientCrawlTier glowColor="#0ff" panelVisible={false} wingOpen={true} />,
+    )
+    // a new run starts
+    mockTaskState = { isWorking: true, currentStep: 1, totalSteps: 5, steps: [] }
+    rerender(
+      <AmbientCrawlTier glowColor="#0ff" panelVisible={false} wingOpen={true} />,
+    )
+    // AnimatePresence can hold the previous card mid-exit while the new one
+    // enters, so query across both rather than assuming a single node.
+    const counters = screen.getAllByTestId("tier-counter").map((n) => n.textContent)
+    expect(counters).toContain("[1/5]")
   })
 })

@@ -33,13 +33,17 @@
  */
 
 import React, { useEffect, useState } from "react"
-import { motion } from "framer-motion"
+import { AnimatePresence, motion } from "framer-motion"
 import { useCrawlContext } from "@/hooks/CrawlProvider"
 import { useReducedMotion } from "@/hooks/useReducedMotion"
 import { useTaskProgress } from "@/hooks/useTaskProgress"
 import { useAgentQuestion } from "@/hooks/useAgentQuestion"
 import { OrbCanvas } from "@/components/iris/orb/OrbCanvas"
-import { setSwallowTarget } from "@/components/iris/swallowTarget"
+import {
+  setSwallowTarget,
+  setTierDismissed,
+  useTierDismissed,
+} from "@/components/iris/swallowTarget"
 
 export interface AmbientCrawlTierProps {
   glowColor: string
@@ -59,6 +63,12 @@ export interface AmbientCrawlTierProps {
    * orb and tier are never both visible while a wing is open.
    */
   wingOpen?: boolean
+  /**
+   * Horizontal offset from the viewport centre for the SWALLOWED card. The
+   * orb's spot is not free when one wing is open and maximised — the wing is
+   * on it — so the card is placed in the centre of the remaining band instead.
+   */
+  centerOffsetX?: number
   /** Same signature ChatView uses: sendMessage("question_response", {...}). */
   sendMessage?: (type: string, payload: Record<string, unknown>) => void
   /**
@@ -107,6 +117,7 @@ export function AmbientCrawlTier({
   chatVisible = false,
   orbDiameter = 175,
   wingOpen = false,
+  centerOffsetX = 0,
   sendMessage,
   conversationId,
 }: AmbientCrawlTierProps) {
@@ -174,6 +185,7 @@ export function AmbientCrawlTier({
     return () => setSwallowTarget(null)
   }, [slotEl])
 
+  const dismissed = useTierDismissed()
   const [asking, setAsking] = useState(false)
   const [askDraft, setAskDraft] = useState("")
   // Swallow travel (T19): false for one frame after a wing opens so the tier
@@ -194,7 +206,15 @@ export function AmbientCrawlTier({
   // REQ-16: the tier now answers for background TASKS too, not just crawls —
   // that is what lets OrbBadge be retired rather than merely duplicated.
   const active = crawl.active || taskProgress.isWorking || pendingQuestion
-  if (!active) return null
+
+  // A dismissal applies to the run the user dismissed, not to every run after
+  // it. Clearing on the idle -> active edge means the next task gets its card
+  // back without the user having to undo anything.
+  useEffect(() => {
+    if (active) return
+    setTierDismissed(false)
+  }, [active])
+
 
   const lastAction =
     crawl.visionActions.length > 0
@@ -332,7 +352,8 @@ export function AmbientCrawlTier({
 
   // Minimal presence dot — only when NOT standing in for the orb. Swallowed,
   // the tier must still render as the orb even with nothing to count.
-  if (!swallowed && panelVisible && !hasCounter && !askInline) {
+  const minimalDot = !swallowed && panelVisible && !hasCounter && !askInline
+  if (active && minimalDot) {
     return (
       <div
         className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 flex items-center gap-1.5 px-2 h-5 rounded-full pointer-events-none"
@@ -351,7 +372,12 @@ export function AmbientCrawlTier({
   // Nothing left to say and no panel dot to fall back on — render nothing
   // rather than an empty pill beside the orb. Reachable when ChatView owns the
   // steps and there is no crawl, which is the common case for a plain chat turn.
-  if (!swallowed && !hasCounter && !askInline && !statusLine) return null
+  // RELEASE (REQ-16 AC3). The card used to vanish the instant work finished
+  // while the orb animated back — half a gesture. `show` gates the CONTENT, and
+  // AnimatePresence plays it out, so the card recedes toward the orb as the orb
+  // returns. Both halves on the same 450ms curve, mirroring the swallow.
+  const show =
+    active && !dismissed && (swallowed || hasCounter || askInline || !!statusLine)
 
   // ── POSITION ─────────────────────────────────────────────────────────────
   //
@@ -539,7 +565,7 @@ export function AmbientCrawlTier({
         </span>
       ) : null
 
-  const tx = swallowed ? (settled || reducedMotion ? 0 : besideX) : besideX
+  const tx = swallowed ? (settled || reducedMotion ? centerOffsetX : besideX) : besideX
   const ty = swallowed ? (settled || reducedMotion ? 0 : besideY) : besideY
   return (
     // ZERO-SIZE ANCHOR. The card used to centre itself with
@@ -555,10 +581,19 @@ export function AmbientCrawlTier({
       className="fixed top-1/2 left-1/2 z-40"
       style={{ width: 0, height: 0, display: "grid", placeItems: "center" }}
     >
+    <AnimatePresence>
+    {show && (
     <motion.div
       layout
-      initial={false}
-      animate={{ x: tx, y: ty }}
+      initial={{ x: tx, y: ty, opacity: 0, scale: 0.86 }}
+      animate={{ x: tx, y: ty, opacity: 1, scale: 1 }}
+      exit={{
+        // Recede toward the orb's resting point rather than fading in place.
+        x: besideX,
+        y: besideY,
+        opacity: 0,
+        scale: 0.86,
+      }}
       transition={
         reducedMotion
           ? { duration: 0 }
@@ -574,6 +609,7 @@ export function AmbientCrawlTier({
       data-swallowed={swallowed ? "true" : "false"}
       data-testid="ambient-crawl-tier"
       style={{
+        position: "relative",
         overflow: "hidden",
         transition: reducedMotion
           ? "opacity 200ms linear"
@@ -611,6 +647,54 @@ export function AmbientCrawlTier({
       role="status"
       aria-live="polite"
     >
+      {/* MANUAL RELEASE. The widget is draggable and the card can simply be in
+          the way, so the user gets an explicit way back to the orb without
+          waiting for work to finish. Small and quiet until hovered — this is an
+          escape hatch, not a primary action, and it must not compete with the
+          reading. Only offered while the card is standing in for the orb;
+          beside it the orb is already right there. */}
+      {swallowed && (
+        <button
+          type="button"
+          data-testid="tier-dismiss"
+          aria-label="Return to the orb"
+          title="Return to the orb"
+          onClick={(e) => {
+            e.stopPropagation()
+            setTierDismissed(true)
+          }}
+          className="flex items-center justify-center rounded-full transition-colors"
+          style={{
+            // INLINE, not Tailwind classes. As `absolute top-0.5 right-0.5`
+            // this landed at the START of the flex row — next to the logo —
+            // whenever the utility classes were not applied, because the
+            // fallback for a failed `absolute` is normal flex flow. Inline
+            // positioning cannot silently degrade that way.
+            position: "absolute",
+            top: 2,
+            right: 2,
+            width: 14,
+            height: 14,
+            pointerEvents: "auto",
+            zIndex: 2,
+            color: "rgba(255,255,255,0.35)",
+            background: "rgba(0,0,0,0.35)",
+            fontSize: 9,
+            lineHeight: 1,
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.color = "rgba(255,255,255,0.95)"
+            e.currentTarget.style.background = `${glowColor}33`
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.color = "rgba(255,255,255,0.35)"
+            e.currentTarget.style.background = "rgba(0,0,0,0.35)"
+          }}
+        >
+          ✕
+        </button>
+      )}
+
       {/* AMBIENT PARTICLE FIELD — BESIDE FORM ONLY.
           This is the beside form's share of the orb identity, standing in for
           the mini orb rather than accompanying it: swallowed, the logo inside
@@ -850,6 +934,8 @@ export function AmbientCrawlTier({
         tailNode
       )}
     </motion.div>
+    )}
+    </AnimatePresence>
     </div>
   )
 }

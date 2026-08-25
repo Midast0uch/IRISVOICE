@@ -4396,7 +4396,7 @@ ${message.text}`;
                     (balanced ≈16px distribution margin). The ⏎ enter icon stays
                     removed (AC4); its width is allocated to ContextPill (174px). */}
                 {isDeveloper ? (
-                <div className="flex items-center justify-center mt-2 h-[32px] flex-shrink-0">
+                <div className="flex items-center justify-center gap-2.5 mt-2 h-[32px] flex-shrink-0">
 
                   {/* Web toggle — internet-access capability gate (plan Issue E).
                       OFF by default: agent has no web tools. ON: agent is granted
@@ -4442,7 +4442,7 @@ ${message.text}`;
                     onMouseEnter={() => setUploadHovered(true)}
                     onMouseLeave={() => setUploadHovered(false)}
                     disabled={voiceState === 'listening'}
-                    className="flex items-center justify-center w-[32px] h-[32px] ml-[8px] transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
+                    className="flex items-center justify-center w-[32px] h-[32px] transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
                     style={{
                       color: uploadHovered ? glowColor : 'rgba(255,255,255,0.7)',
                       background: 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
@@ -4458,13 +4458,13 @@ ${message.text}`;
                   </motion.button>
 
                   {/* Divider 1 */}
-                  <div className="flex-shrink-0 rounded-full ml-[12px]" style={{ width: '1px', height: '20px', background: glowColor, opacity: 0.3 }} />
+                  <div className="flex-shrink-0 rounded-full" style={{ width: '1px', height: '20px', background: glowColor, opacity: 0.3 }} />
 
                   {/* Model switcher — Phase 5 REQ-2. Sibling of ContextPill
                       (D-2), never a new ContextPill prop (CT-S1). Reads
                       useInferenceState and writes through its existing
                       sendRoleBinding — no new backend surface (D-3). */}
-                  <div className="ml-[12px] flex-shrink-0">
+                  <div className="flex-shrink-0">
                     <ModelSwitcher glowColor={glowColor} fontColor={fontColor} />
                   </div>
 
@@ -4473,7 +4473,7 @@ ${message.text}`;
                       per the REQ-2 sequence. Opens its popover drawer to the
                       LEFT of ContextPill (REQ-2 AC5). */}
                   <div
-                    className="flex items-center justify-center w-[32px] h-[32px] flex-shrink-0 ml-[12px]"
+                    className="flex items-center justify-center w-[32px] h-[32px] flex-shrink-0"
                     style={{
                       background: 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
                       border: `1px solid ${fontColor}80`,
@@ -4494,7 +4494,13 @@ ${message.text}`;
                       allocation. Rendered LAST in the sequence (far right).
                       Internal order is phase label then token numbers
                       (e.g. "IDLE  0 / 128.0k"). */}
-                  <div className="ml-[10px] flex-shrink-0">
+                  {/* ContextPill takes the row's slack. Its own ml-[10px] is
+                      dropped so the container's gap spaces it like every other
+                      child, and min-w-0 lets it shrink before anything else
+                      does — REQ-3's rule that the pill keeps its information
+                      longest applies to the SWITCHER collapsing first, not to
+                      the pill overflowing the row. */}
+                  <div className="flex-shrink min-w-0">
                     <ContextPill
                       usedTokens={contextUsage.used}
                       maxTokens={contextUsage.max}

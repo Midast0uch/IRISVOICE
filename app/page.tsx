@@ -123,6 +123,19 @@ export default function Home() {
     return Math.max(MIN_ORB, Math.min(MAX_ORB, available))
   }
 
+  // Where the swallowed card should sit. It stands in for the orb, but the
+  // orb's spot is NOT free when a single wing is open and maximised — the wing
+  // is sitting on it, and the card overlapped into its content.
+  // The free band runs from the chat wing's right edge to the dashboard wing's
+  // left edge; its centre, expressed as an offset from the viewport centre, is
+  // (chatW - dashW)/2. Both open and balanced -> ~0, i.e. between them. One
+  // open -> pushed fully into the empty half.
+  const swallowCenterOffsetX = (() => {
+    const chatW = isChatOpen || isBothOpen ? getChatWidth() : 0
+    const dashW = isDashboardOpen || isBothOpen ? getDashboardWidth() : 0
+    return (chatW - dashW) / 2
+  })()
+
   const orbDiameter = getOrbDiameter()
   const ORB_RADIUS = orbDiameter / 2
 
@@ -502,6 +515,7 @@ export default function Home() {
           // REQ-16 AC2/AC3: any open wing during an active run swallows the
           // orb into the tier; the tier then travels out from the orb's centre.
           wingOpen={isChatOpen || isDashboardOpen || isBothOpen}
+          centerOffsetX={swallowCenterOffsetX}
           sendMessage={sendMessage}
           // The socket's authoritative thread id. The tier refuses to send an
           // inline ask without it rather than guessing — see submitAsk.

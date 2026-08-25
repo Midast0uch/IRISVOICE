@@ -54,3 +54,38 @@ const getServerSnapshot = (): SwallowPoint | null => null
 export function useSwallowTarget(): SwallowPoint | null {
   return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot)
 }
+
+/**
+ * MANUAL RELEASE (user-directed 2026-08-25). The card carries a dismiss
+ * control so the user can send the orb back without waiting for work to
+ * finish — the widget is draggable and the card can simply be in the way.
+ *
+ * Lives here rather than in the tier's own state because BOTH sides need it:
+ * the tier hides its card, and XurOrb must un-swallow, or dismissing would
+ * leave neither on screen.
+ *
+ * Auto-clears when work restarts (see the tier), so a dismissal never silences
+ * the next task.
+ */
+let _dismissed = false
+const _dsubs = new Set<() => void>()
+
+export function setTierDismissed(v: boolean): void {
+  if (_dismissed === v) return
+  _dismissed = v
+  for (const fn of _dsubs) fn()
+}
+
+function subscribeDismissed(fn: () => void): () => void {
+  _dsubs.add(fn)
+  return () => {
+    _dsubs.delete(fn)
+  }
+}
+
+const getDismissed = (): boolean => _dismissed
+const getDismissedServer = (): boolean => false
+
+export function useTierDismissed(): boolean {
+  return useSyncExternalStore(subscribeDismissed, getDismissed, getDismissedServer)
+}
