@@ -386,15 +386,25 @@ export function AmbientCrawlTier({
     ) : hasCounter ? (
       <span
         data-testid="tier-counter"
-        className="text-[9.5px] font-mono font-bold px-1.5 py-0.5 rounded-md tabular-nums leading-none"
+        className="text-[10px] font-mono font-bold tabular-nums leading-none"
         style={{
-          color: glowColor,
-          background: `${glowColor}1f`,
-          border: `1px solid ${glowColor}45`,
-          textShadow: `0 0 10px ${glowColor}66`,
+          // NO CHIP. A tinted pill with its own border sat a second bordered
+          // shape inside an already-bordered card and muddied both. On the dark
+          // ground the numerals can simply BE the reading.
+          // Brackets in the accent, numbers in near-white: the accent is the
+          // card's rim colour, so using it for everything flattened the reading
+          // into the chrome. Splitting them gives the count its own weight and
+          // lets the accent do what it is good at — framing.
+          color: "rgba(255,255,255,0.97)",
+          textShadow: "0 1px 4px rgba(0,0,0,0.85)",
+          letterSpacing: "0.02em",
         }}
       >
-        [{done}/{total}]
+        <span style={{ color: `${glowColor}cc` }}>[</span>
+        {done}
+        <span style={{ color: "rgba(255,255,255,0.45)" }}>/</span>
+        {total}
+        <span style={{ color: `${glowColor}cc` }}>]</span>
       </span>
     ) : null
 
@@ -714,16 +724,22 @@ export function AmbientCrawlTier({
                 }}
               />
             ) : (
-              <OrbCanvas
-                glowColor={glowColor}
-                breathMode={lastAction ? "D" : "A"}
-                breathLevel={0.5}
-                isBreathing
-                glowActive
-                animationMode={null}
-                animActive={false}
-                size={MINI_ORB}
-              />
+              /* Brightened deliberately. At 32px the shells render far fewer
+                 pixels per particle than they do at the orb's 90px, so the same
+                 alpha reads much fainter — the mark needs lifting to match its
+                 own full-size appearance, not to exceed it. */
+              <div style={{ filter: `brightness(1.55) saturate(1.25) drop-shadow(0 0 6px ${glowColor}77)` }}>
+                <OrbCanvas
+                  glowColor={glowColor}
+                  breathMode={lastAction ? "D" : "A"}
+                  breathLevel={0.72}
+                  isBreathing
+                  glowActive
+                  animationMode={null}
+                  animActive={false}
+                  size={MINI_ORB}
+                />
+              </div>
             )}
             </div>
           </div>
@@ -736,12 +752,6 @@ export function AmbientCrawlTier({
 
         {/* Radial progress ring. One SVG, no per-frame work: the dash offset
             is derived from the counter the WS path already delivers. */}
-        <style>{`
-          @keyframes iris-tier-sweep {
-            from { transform: rotate(0deg); }
-            to   { transform: rotate(360deg); }
-          }
-        `}</style>
         <svg
           className="absolute inset-0 -rotate-90"
           width={RING}
@@ -785,32 +795,7 @@ export function AmbientCrawlTier({
                   : { transition: "stroke-dashoffset 450ms cubic-bezier(0.4, 0, 0.2, 1)" }
               }
             />
-          ) : (
-            /* INDETERMINATE. Work is happening but nothing is countable yet —
-               a crawl before its total arrives, or a task with no plan. An
-               empty ring here reads as "0% done", which is wrong and worrying;
-               a slow sweep reads as "working, extent unknown". Same stroke and
-               colour, so it is the same instrument in a different mode rather
-               than a second spinner idiom. */
-            !reducedMotion && (
-              <circle
-                data-testid="tier-ring-indeterminate"
-                cx={RING / 2}
-                cy={RING / 2}
-                r={R}
-                fill="none"
-                stroke={glowColor}
-                strokeWidth={2}
-                strokeLinecap="round"
-                strokeDasharray={`${CIRC * 0.22} ${CIRC}`}
-                style={{
-                  transformOrigin: "50% 50%",
-                  animation: "iris-tier-sweep 1.6s linear infinite",
-                  opacity: 0.75,
-                }}
-              />
-            )
-          )}
+          ) : null}
         </svg>
 
         {/* The counter is centred in the ring ONLY when the ring is empty.
@@ -833,14 +818,17 @@ export function AmbientCrawlTier({
           ) : hasCounter ? (
             <span
               data-testid="tier-counter"
-              className="text-[9.5px] font-mono font-bold px-1 py-0.5 rounded-md tabular-nums leading-none"
+              className="text-[9.5px] font-mono font-bold tabular-nums leading-none"
               style={{
-                color: glowColor,
-                background: `${glowColor}12`,
-                border: `1px solid ${glowColor}25`,
+                color: "rgba(255,255,255,0.97)",
+                textShadow: "0 1px 4px rgba(0,0,0,0.9)",
               }}
             >
-              [{done}/{total}]
+              <span style={{ color: `${glowColor}cc` }}>[</span>
+              {done}
+              <span style={{ color: "rgba(255,255,255,0.45)" }}>/</span>
+              {total}
+              <span style={{ color: `${glowColor}cc` }}>]</span>
             </span>
           ) : null}
         </div>
