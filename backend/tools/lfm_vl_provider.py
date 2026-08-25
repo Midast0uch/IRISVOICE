@@ -1397,6 +1397,14 @@ def _spawn_vision_server_now(base_url: str = "") -> bool:
         # The real fix is an AV exclusion for the models directory (see the
         # preflight warning emitted by _probe_av_latency). This window
         # is the safety net for machines that do not have one.
+        # MUST be imported HERE. `_ensure_vision_server_running` imports httpx
+        # inside its own body, which binds it as a LOCAL there — it was never
+        # visible in this function. Every readiness poll below therefore raised
+        # NameError, the bare `except Exception: pass` swallowed it, and the
+        # probe never ran once: a healthy server listening in ~3s was reported
+        # `not_ready` 300s later and killed. Measured 2026-08-25 (T16.1).
+        import httpx
+
         _NO_PROGRESS_WINDOW_S = float(os.environ.get("IRIS_VISION_READY_WINDOW_S", "300"))
         _HARD_DEADLINE_S = float(os.environ.get("IRIS_VISION_READY_MAX_S", "600"))
         _hard_deadline = time.monotonic() + _HARD_DEADLINE_S
@@ -1447,6 +1455,14 @@ def _spawn_vision_server_now(base_url: str = "") -> bool:
                     vision_stderr.close()
                     _notify_lifecycle("warm", trigger=_current_trigger)  # REQ-5
                     return True
+            except (NameError, AttributeError, TypeError):
+                # A PROGRAMMING error must never masquerade as "the server is
+                # not responding yet". Swallowing these is exactly how the
+                # missing httpx import above stayed invisible while it disabled
+                # the entire readiness probe. Connection failures are expected
+                # here and still fall through to the pass below; a broken call
+                # is not, and must be loud.
+                raise
             except Exception:
                 pass
             # Progress check 2: llama.cpp writes load progress to stderr. A
