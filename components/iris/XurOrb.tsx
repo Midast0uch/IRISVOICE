@@ -16,7 +16,6 @@ import {
   ANIM_DURATION_MS,
 } from "./orb/animationModes"
 import { RadialArcNodes } from "./radial/RadialArcNodes"
-import OrbBadge from "./OrbBadge"
 import { OrbWorkingIndicator } from "./OrbWorkingIndicator"
 import { useTaskProgress } from "@/hooks/useTaskProgress"
 import { useAgentQuestion } from "@/hooks/useAgentQuestion"
@@ -133,14 +132,13 @@ export function XurOrb({
     uiState === UILayoutState.UI_STATE_BOTH_OPEN ||
     uiState === UILayoutState.UI_STATE_DASHBOARD_OPEN
 
-  // OrbBadge visibility: show whenever a background task is working or a
-  // question is pending — INCLUDING during an open wing (chat turn).
-  // Previously gated on uiState===IDLE, which hid the working indicator
-  // for the entire duration of a voice/chat turn (wing open) — leaving the
-  // user with dead air and no "agent is working" feedback.
-  const showOrbBadge =
-    taskProgress.isWorking || agentQuestion.hasPendingQuestion
-  const badgeVariant = agentQuestion.hasPendingQuestion ? "question" : "working"
+  // OrbBadge visibility computation REMOVED (REQ-16/T18, 2026-08-25).
+  // AmbientCrawlTier owns this decision now and makes it from the same two
+  // sources (useTaskProgress + useAgentQuestion) plus crawl state, so the
+  // "working" judgement lives in ONE place instead of being computed here and
+  // again in the tier. The lesson the old comment recorded is preserved in the
+  // tier: do NOT gate the working indicator on wings being closed — doing so
+  // hid it for the whole duration of a voice/chat turn.
 
   // Explicit "agent is thinking / working" flag that drives a visible orb
   // state during processing — independent of wing open/closed.
@@ -475,7 +473,8 @@ export function XurOrb({
         {/* Agent-working indicator: orbiting particles while the agent is
             thinking/executing tools — regardless of wing open/closed. Replaces
             the old flat CSS border ring (clashed with the orb's particle
-            aesthetic). OrbBadge (top-right) shows the step counter / "?" glyph. */}
+            aesthetic). The step counter / "?" glyph now lives in
+            AmbientCrawlTier, not on the orb (REQ-16/T18). */}
         <OrbWorkingIndicator
           isActive={isAgentWorking}
           variant={agentQuestion.hasPendingQuestion ? "question" : "working"}
@@ -483,14 +482,14 @@ export function XurOrb({
           shimmerPrimary={theme.shimmer.primary}
         />
 
-        {/* OrbBadge — background-task / question indicator (orb-only view) */}
-        <OrbBadge
-          isVisible={showOrbBadge}
-          variant={badgeVariant}
-          currentStep={taskProgress.currentStep}
-          totalSteps={taskProgress.totalSteps}
-          glowColor={glowColor}
-        />
+        {/* OrbBadge RETIRED here — REQ-16/T18, 2026-08-25.
+            AmbientCrawlTier is now the single working indicator: it shows task
+            steps AND crawl pages on one unified counter (AC5), where the badge
+            could only ever show steps. Two indicators with different grammars
+            for the same question ("is it working, how far along") is the debt
+            this removes. The component file survives for now — see the REQ-16
+            open question about the "?" variant, which the tier currently takes
+            over. */}
 
         {/* Inner 3D layer — canvas + labels */}
         <div

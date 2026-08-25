@@ -31,7 +31,12 @@
 > the residual red verified pre-existing against a clean HEAD worktree and
 > owned by other domains).
 >
-> **STATUS 2026-08-25 — SPEC COMPLETE. Every task closed.**
+> **STATUS 2026-08-25 — WAVES 0–5 COMPLETE + REQ-17. WAVE 6 NOT STARTED.**
+>
+> CORRECTION: an earlier version of this header claimed "SPEC COMPLETE, every
+> task closed". That was wrong — it counted only the tasks worked that session.
+> **T18–T21 (Wave 6 / REQ-16, the orb-badge retirement) have never been
+> started.** They are the last open work in this spec.
 >
 > T16 CLOSED. Both live gates were measured and BOTH FAILED, exposing a P0:
 > **the vision readiness probe had never executed once.** httpx was imported
