@@ -145,6 +145,17 @@ export function XurOrb({
   const isAgentWorking =
     isProcessing || taskProgress.isWorking || agentQuestion.hasPendingQuestion
 
+  // ── SWALLOWED (REQ-16 AC2/AC3, T19) ──────────────────────────────────────
+  // While a wing is open during an active run the orb is ABSORBED into
+  // AmbientCrawlTier, which becomes the sole working indicator. Orb and tier
+  // are never both visible in that state — a HARD contract.
+  //
+  // Enforced HERE rather than in the tier: only the orb can guarantee the orb
+  // is hidden. A component cannot make a promise about a sibling it does not
+  // render, and splitting the rule across both is how "both visible" slips
+  // back in when one side changes.
+  const isSwallowed = isWingsOpen && isAgentWorking
+
   // Sync menuOpen with navigation level — menu is only open at level 2.
   // When navigating forward to level 3 (WheelView), menu closes.
   // Don't close when navLevel is 1 — that's the idle state before the
@@ -429,10 +440,14 @@ export function XurOrb({
           messages and killing the just-started recording. */}
       <motion.div
         ref={orbRef}
+        data-swallowed={isSwallowed ? "true" : "false"}
         className="relative flex items-center justify-center cursor-pointer pointer-events-auto"
         style={{
           width: size,
           height: size,
+          // Swallowed: hidden AND non-interactive, so a fully transparent orb
+          // cannot still swallow the user's clicks.
+          pointerEvents: isSwallowed ? 'none' : undefined,
           perspective: '900px',
           transformStyle: 'preserve-3d',
           overflow: 'visible',
@@ -442,15 +457,26 @@ export function XurOrb({
         }}
         onMouseDown={handleMouseDown}
         animate={{
-          scale: finalScale,
+          // REQ-16 AC2: swallowed -> shrink toward the tier and fade out. Folded
+          // into the EXISTING animate rather than added as a second animate
+          // prop, so the swallow and the orb's own scale/blur/error states stay
+          // one animation instead of two fighting for the same transform.
+          scale: isSwallowed && !prefersReducedMotion ? finalScale * 0.72 : finalScale,
           filter: `blur(${orbBlur}px)`,
-          opacity: orbOpacity,
+          opacity: isSwallowed ? 0 : orbOpacity,
           x: isError ? [0, -10, 10, -10, 10, 0] : 0,
         }}
         transition={{
-          scale: { type: "spring", stiffness: 300, damping: 25 },
+          // Swallow uses the tier's 450ms curve so the orb shrinking and the
+          // tier travelling out from its centre read as ONE gesture.
+          scale: isSwallowed
+            ? { duration: prefersReducedMotion ? 0 : 0.45, ease: [0.4, 0, 0.2, 1] }
+            : { type: "spring", stiffness: 300, damping: 25 },
           filter: { duration: 0.3, ease: "easeOut" },
-          opacity: { duration: 0.3, ease: "easeOut" },
+          opacity: {
+            duration: isSwallowed ? (prefersReducedMotion ? 0.2 : 0.45) : 0.3,
+            ease: "easeOut",
+          },
           x: isError ? { duration: 0.5, repeat: Infinity, repeatDelay: 2 } : { duration: 0 },
         }}
       >

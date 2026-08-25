@@ -32,7 +32,7 @@
  * particle engine; the ring is one SVG circle, not a per-frame canvas.
  */
 
-import React, { useState } from "react"
+import React, { useEffect, useState } from "react"
 import { useCrawlContext } from "@/hooks/CrawlProvider"
 import { useReducedMotion } from "@/hooks/useReducedMotion"
 import { useTaskProgress } from "@/hooks/useTaskProgress"
@@ -51,8 +51,20 @@ export interface AmbientCrawlTierProps {
   chatVisible?: boolean
   /** Live orb diameter in px, so the tier can sit beside it without overlap. */
   orbDiameter?: number
+  /**
+   * True when ANY wing is open. During an active run the orb is swallowed into
+   * the tier (REQ-16 AC2) and the tier becomes the sole working indicator —
+   * orb and tier are never both visible while a wing is open.
+   */
+  wingOpen?: boolean
   /** Same signature ChatView uses: sendMessage("question_response", {...}). */
   sendMessage?: (type: string, payload: Record<string, unknown>) => void
+  /**
+   * THE SOCKET'S authoritative thread id (NavigationContext.currentConversationId,
+   * which is localStorage-backed and re-synced on reconnect). REQ-16 AC4's
+   * inline ask must send this and nothing else — see the note at submitAsk.
+   */
+  conversationId?: string
 }
 
 const RING = 44 // px — matches the tier's original w-11/h-11 orb footprint
@@ -89,7 +101,9 @@ export function AmbientCrawlTier({
   panelVisible,
   chatVisible = false,
   orbDiameter = 175,
+  wingOpen = false,
   sendMessage,
+  conversationId,
 }: AmbientCrawlTierProps) {
   const { state: crawl } = useCrawlContext()
   const taskProgress = useTaskProgress()
@@ -101,6 +115,19 @@ export function AmbientCrawlTier({
   const [answered, setAnswered] = useState<Record<string, true>>({})
   const [drafts, setDrafts] = useState<Record<string, string>>({})
   const [picks, setPicks] = useState<Record<string, string[]>>({})
+  // Swallow travel (T19): false for one frame after a wing opens so the tier
+  // starts AT the orb's centre and transitions out to its anchor. Without the
+  // frame gap the browser coalesces both positions into one style and there is
+  // no animation to see.
+  const [settled, setSettled] = useState(false)
+  useEffect(() => {
+    if (!wingOpen) {
+      setSettled(false)
+      return
+    }
+    const id = requestAnimationFrame(() => setSettled(true))
+    return () => cancelAnimationFrame(id)
+  }, [wingOpen])
 
   const pendingQuestion = agentQuestion.hasPendingQuestion
   // REQ-16: the tier now answers for background TASKS too, not just crawls —
@@ -114,9 +141,40 @@ export function AmbientCrawlTier({
       : null
   const actionWord = lastAction?.kind ? `${lastAction.kind}ing` : ""
 
+  // ── WHO OWNS THE PROGRESS DISPLAY RIGHT NOW ─────────────────────────────
+  //
+  // One rule: THE TIER SHOWS ONLY WHAT NO VISIBLE SURFACE IS ALREADY SHOWING.
+  //
+  // Retiring OrbBadge removed one duplicate indicator; naively always showing
+  // the unified counter here would immediately introduce another. With ChatView
+  // open on a live TaskListCard reading [3/7], a tier beside the orb also
+  // reading [3/7] is the same debt in a new place.
+  //
+  //   browser panel visible  -> the shutter shows the crawl -> tier drops pages
+  //   ChatView + live card   -> the card shows the steps    -> tier drops steps
+  //   both                   -> nothing left to add         -> minimal dot
+  //   neither                -> the tier is the ONLY indicator -> show both
+  //
+  // "Live card" reuses chat-view's own predicate (chat-view.tsx:590,
+  // `taskProgressStillRunning`): the card drives its indicator only while a
+  // step is still unresolved. Once every step is done the card goes static and
+  // the tier legitimately speaks again for the synthesis phase — the same gap
+  // that measured 79s of silent UI in chat-view's note.
+  const cardLive =
+    taskProgress.steps.length > 0 &&
+    taskProgress.steps.some(
+      (st) => st.status === "working" || st.status === "pending" || st.status === "unknown",
+    )
+  const cardOwnsSteps = chatVisible && cardLive
+  const panelOwnsPages = panelVisible
+
   const { done, total } = unifiedProgress(
-    { current: taskProgress.currentStep, total: taskProgress.totalSteps },
-    { done: crawl.pages.length, total: crawl.total ?? null },
+    cardOwnsSteps
+      ? { current: 0, total: 0 }
+      : { current: taskProgress.currentStep, total: taskProgress.totalSteps },
+    panelOwnsPages
+      ? { done: 0, total: null }
+      : { done: crawl.pages.length, total: crawl.total ?? null },
   )
   const hasCounter = total > 0
   const pct = hasCounter ? done / total : 0
@@ -147,6 +205,34 @@ export function AmbientCrawlTier({
     setDrafts((prev) => ({ ...prev, [questionId]: "" }))
   }
 
+  // ── INLINE ASK (REQ-16 AC4, T20) ────────────────────────────────────────
+  //
+  // THREAD IDENTITY IS THE WHOLE RISK HERE, not the input box.
+  //
+  // `text_message` is deliberately EXCLUDED from the socket's SUPPLY_IF_MISSING
+  // set (useIRISWebSocket.ts:1754): sending it without a conversation_id lets
+  // the backend fall back to session_id, and sending it with a STALE one files
+  // the message into the wrong thread. Both have already happened here — the
+  // hook's own comment records four kernels constructed for a single question,
+  // and chat-view.tsx:1828 records every new conversation collapsing into one
+  // session-keyed thread.
+  //
+  // So this does NOT re-derive an id, and does NOT fall back to a stored one.
+  // It sends ONLY the socket's authoritative `currentConversationId`, and when
+  // there is none it refuses to send at all. A missing id is a visible
+  // failure; a wrong-but-plausible one silently corrupts thread history.
+  const canAsk = !!sendMessage && !!conversationId
+  const [asking, setAsking] = useState(false)
+  const [askDraft, setAskDraft] = useState("")
+
+  function submitAsk() {
+    const text = askDraft.trim()
+    if (!text || !conversationId) return
+    sendMessage?.("text_message", { text, conversation_id: conversationId })
+    setAskDraft("")
+    setAsking(false)
+  }
+
   function togglePick(questionId: string, opt: string) {
     setPicks((prev) => {
       const cur = prev[questionId] || []
@@ -164,8 +250,11 @@ export function AmbientCrawlTier({
     .filter(Boolean)
     .join(" · ")
 
-  // Minimal tier: the panel is the primary surface — just a presence dot.
-  if (panelVisible) {
+  // Minimal tier: every reading the tier could contribute is already on screen
+  // somewhere else, so it degrades to a presence dot rather than repeating it.
+  // Still shown (not nulled) because "the agent is working" is itself
+  // information the other surfaces do not carry once they go static.
+  if (panelVisible && !hasCounter && !askInline) {
     return (
       <div
         className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 flex items-center gap-1.5 px-2 h-5 rounded-full pointer-events-none"
@@ -181,6 +270,11 @@ export function AmbientCrawlTier({
     )
   }
 
+  // Nothing left to say and no panel dot to fall back on — render nothing
+  // rather than an empty pill beside the orb. Reachable when ChatView owns the
+  // steps and there is no crawl, which is the common case for a plain chat turn.
+  if (!hasCounter && !askInline && !statusLine) return null
+
   // ── COUNTER FORM (REQ-16 AC1) ────────────────────────────────────────────
   //
   // ANCHORED BESIDE THE ORB, not parked at the bottom of the screen. The orb
@@ -193,11 +287,33 @@ export function AmbientCrawlTier({
   // (Menu) and left (Voice) — right is the only free edge, which is also why
   // the retired badge lived at top-right.
   const anchorOffset = orbDiameter / 2 + 18
+
+  // ── SWALLOW / RELEASE (REQ-16 AC2/AC3, T19) ─────────────────────────────
+  //
+  // While a wing is open during an active run the orb is hidden and the tier
+  // is the sole working indicator (`swallowed`). The tier slides from the
+  // orb's centre out to its anchor, so the orb reads as having been ABSORBED
+  // rather than simply vanishing while a separate pill appears.
+  //
+  // The mutual exclusivity is a HARD contract and is enforced at the ORB, not
+  // here — a component cannot guarantee something about a sibling it does not
+  // render. XurOrb hides itself on the same predicate; this only animates.
+  //
+  // Reduced motion (AC7): opacity only, no travel.
+  const swallowed = wingOpen
+  // Mid-swallow the tier sits on the orb's centre; settled, it rests at the
+  // anchor. Reduced motion skips the travel entirely (AC7).
+  const x = swallowed && !settled && !reducedMotion ? 0 : anchorOffset
   return (
     <div
       className="fixed top-1/2 left-1/2 z-40 flex items-center gap-3 pl-1 pr-4 py-1 rounded-full"
+      data-swallowed={swallowed ? "true" : "false"}
       style={{
-        transform: `translate(${anchorOffset}px, -50%)`,
+        transform: `translate(${x}px, -50%)`,
+        opacity: swallowed && !settled && !reducedMotion ? 0.4 : 1,
+        transition: reducedMotion
+          ? "opacity 200ms linear"
+          : "transform 450ms cubic-bezier(0.4, 0, 0.2, 1), opacity 450ms ease-in-out",
         background: "rgba(4,8,12,0.72)",
         border: `1px solid ${glowColor}33`,
         boxShadow: `0 0 18px ${glowColor}22`,
@@ -209,7 +325,15 @@ export function AmbientCrawlTier({
       aria-live="polite"
       data-testid="ambient-crawl-tier"
     >
-      <div className="relative shrink-0" style={{ width: RING, height: RING }}>
+      <div
+        className="relative shrink-0"
+        style={{ width: RING, height: RING, pointerEvents: canAsk ? "auto" : "none" }}
+        onClick={canAsk ? () => setAsking((v) => !v) : undefined}
+        role={canAsk ? "button" : undefined}
+        tabIndex={canAsk ? 0 : undefined}
+        aria-label={canAsk ? "Ask the agent" : undefined}
+        data-testid="tier-counter-form"
+      >
         {/* Particles BEHIND the counter, not beside it. */}
         {!reducedMotion && (
           <div className="absolute inset-0">
@@ -228,6 +352,12 @@ export function AmbientCrawlTier({
 
         {/* Radial progress ring. One SVG, no per-frame work: the dash offset
             is derived from the counter the WS path already delivers. */}
+        <style>{`
+          @keyframes iris-tier-sweep {
+            from { transform: rotate(0deg); }
+            to   { transform: rotate(360deg); }
+          }
+        `}</style>
         <svg
           className="absolute inset-0 -rotate-90"
           width={RING}
@@ -243,7 +373,11 @@ export function AmbientCrawlTier({
             stroke={`${glowColor}22`}
             strokeWidth={2}
           />
-          {hasCounter && (
+          {hasCounter ? (
+            /* DETERMINATE. Eased on the SAME curve and duration as the swallow
+               (450ms cubic-bezier) so a wing opening mid-run does not produce
+               two competing tempos on one element — the ring settling and the
+               tier travelling read as one gesture. */
             <circle
               cx={RING / 2}
               cy={RING / 2}
@@ -257,9 +391,34 @@ export function AmbientCrawlTier({
               style={
                 reducedMotion
                   ? undefined
-                  : { transition: "stroke-dashoffset 400ms ease-out" }
+                  : { transition: "stroke-dashoffset 450ms cubic-bezier(0.4, 0, 0.2, 1)" }
               }
             />
+          ) : (
+            /* INDETERMINATE. Work is happening but nothing is countable yet —
+               a crawl before its total arrives, or a task with no plan. An
+               empty ring here reads as "0% done", which is wrong and worrying;
+               a slow sweep reads as "working, extent unknown". Same stroke and
+               colour, so it is the same instrument in a different mode rather
+               than a second spinner idiom. */
+            !reducedMotion && (
+              <circle
+                data-testid="tier-ring-indeterminate"
+                cx={RING / 2}
+                cy={RING / 2}
+                r={R}
+                fill="none"
+                stroke={glowColor}
+                strokeWidth={2}
+                strokeLinecap="round"
+                strokeDasharray={`${CIRC * 0.22} ${CIRC}`}
+                style={{
+                  transformOrigin: "50% 50%",
+                  animation: "iris-tier-sweep 1.6s linear infinite",
+                  opacity: 0.75,
+                }}
+              />
+            )
           )}
         </svg>
 
@@ -392,6 +551,26 @@ export function AmbientCrawlTier({
             )
           })}
         </div>
+      ) : asking && canAsk ? (
+        <input
+          autoFocus
+          value={askDraft}
+          onChange={(e) => setAskDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") submitAsk()
+            if (e.key === "Escape") setAsking(false)
+          }}
+          placeholder="Ask…"
+          aria-label="Ask the agent"
+          data-testid="tier-ask-input"
+          className="text-[10px] font-mono px-2 py-1 rounded-md bg-transparent outline-none"
+          style={{
+            pointerEvents: "auto",
+            color: "rgba(255,255,255,0.92)",
+            border: `1px solid ${glowColor}35`,
+            minWidth: 180,
+          }}
+        />
       ) : statusLine ? (
         <span
           className="text-[10px] font-mono tracking-wide whitespace-nowrap truncate"

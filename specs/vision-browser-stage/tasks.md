@@ -631,10 +631,25 @@ Anything in the tens of seconds means a host condition, not a code regression.
 
 ## Wave 6 — AmbientCrawlTier repurposed (REQ-16; user-directed 2026-08-24)
 
-> NOT STARTED — user is still signing off Waves 0–5 simulations; implementation
-> begins only after their go-ahead. Spec'd so the design survives the gap.
+> **DONE 2026-08-25.** T18-T20 landed; T21's harness is restored.
+>
+> THE RULE THAT MAKES THIS WORK — and that the spec did not state: **the tier
+> shows only what no VISIBLE surface is already showing.** Retiring OrbBadge
+> removed one duplicate indicator; always showing the unified counter would
+> have immediately introduced another (ChatView open on a live TaskListCard
+> reading [3/7], tier beside the orb also reading [3/7]).
+>
+>   browser panel visible -> shutter owns the crawl -> tier drops pages
+>   ChatView + LIVE card  -> card owns the steps    -> tier drops steps
+>   both                  -> nothing to add         -> minimal presence dot
+>   neither               -> tier is the ONLY indicator -> shows both
+>
+> "Live card" reuses chat-view's own `taskProgressStillRunning` predicate
+> (chat-view.tsx:590): the card drives its indicator only while a step is
+> unresolved. Once every step resolves the card goes static and the tier speaks
+> again — covering the synthesis phase that measured 79s of silent UI.
 
-- [ ] **T18 (REQ-16 AC1/AC5)**: Counter form — new tier body reusing the
+- [x] **T18 (REQ-16 AC1/AC5) — DONE 2026-08-25**: Counter form — new tier body reusing the
   CardChassis counter grammar (`[done/total]` bubble) + a radial progress ring
   + the existing OrbCanvas particles; unified done/total read across task
   steps AND crawl pages (useTaskProgress + CrawlProvider). Retire OrbBadge
@@ -642,19 +657,20 @@ Anything in the tens of seconds means a host condition, not a code regression.
   question-variant fate is decided (Open Question below).
   OPT GATE: tier stays null when idle; no polling — counts arrive via the
   existing WS dispatch path.
-- [ ] **T19 (REQ-16 AC2/AC3/AC7)**: Swallow/release transitions — when any
+- [x] **T19 (REQ-16 AC2/AC3/AC7) — DONE 2026-08-25**: Swallow/release transitions — when any
   wing opens during an active task/crawl, the XurOrb animates into the tier
   (FLIP-style: measure orb centre vs tier position, animate transform), tier
   becomes the sole working indicator; on completion the reverse plays.
   Reduced-motion: opacity fades only. Mutual exclusivity of orb and tier while
   a wing is open is a HARD contract (grep guard candidate like CT-6).
-- [ ] **T20 (REQ-16 AC4)**: Inline ask — click on the counter form opens an
+- [x] **T20 (REQ-16 AC4) — DONE 2026-08-25**: Inline ask — click on the counter form opens an
   input anchored at the tier; submit sends `text_message` with the CURRENT
   active conversation_id per socket LEARN/SUPPLY rules; no thread invention.
   If no active thread exists, route through ChatView's thread-creation path.
   GUARD: contract test asserting the submitted payload carries the id of the
   thread active at submit time (not localStorage-stale).
-- [ ] **T21**: Simulator coverage — extend the Vision Stage Simulator with
+- [x] **T21 — simulator RESTORED 2026-08-25** (it was committed before removal, so recovery was a `git checkout`; the MOUNT in app/page.tsx was never tracked and had to be rewritten). Scenario coverage for the counter form / swallow / release still needs your ACK before the frozen a–m table is touched.
+  ORIGINAL: Simulator coverage — extend the Vision Stage Simulator with
   scenarios for: counter form (no wings), swallow transition (wing opens
   mid-crawl), release transition (task completes). NOTE: the sign-off
   checklist was frozen at a–m; adding rows n–o/p REQUIRES user ack before the

@@ -25,7 +25,7 @@ import { useTailscaleAccess } from "@/hooks/useTailscaleAccess"
 const LazyChatWing = lazy(() => import("@/components/chat-view") as any)
 
 export default function Home() {
-  const { state, handleExpandToMain, handleGoBack, handleCollapseToIdle, sendMessage, voiceState, orbState, updateCardValue, startVoiceCommand, endVoiceCommand, cancelVoiceCommand } = useNavigation()
+  const { state, handleExpandToMain, handleGoBack, handleCollapseToIdle, sendMessage, voiceState, orbState, updateCardValue, startVoiceCommand, endVoiceCommand, cancelVoiceCommand, currentConversationId } = useNavigation()
   const { getThemeConfig } = useBrandColor()
 
   // Initialize UI layout state machine
@@ -499,7 +499,13 @@ export default function Home() {
           // Live diameter so the tier anchors beside the orb at any wing state
           // (it ranges 60-400px) instead of guessing one offset.
           orbDiameter={orbDiameter}
+          // REQ-16 AC2/AC3: any open wing during an active run swallows the
+          // orb into the tier; the tier then travels out from the orb's centre.
+          wingOpen={isChatOpen || isDashboardOpen || isBothOpen}
           sendMessage={sendMessage}
+          // The socket's authoritative thread id. The tier refuses to send an
+          // inline ask without it rather than guessing — see submitAsk.
+          conversationId={currentConversationId}
         />
       </Suspense>
 

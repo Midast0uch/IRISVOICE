@@ -23,7 +23,12 @@ const mockCrawlState = {
   total: null as number | null,
   visionActions: [] as unknown[],
 }
-let mockTaskState = { isWorking: false, currentStep: 0, totalSteps: 0 }
+// `steps` is required by the real TaskProgress interface and the tier now
+// reads it to decide whether a LIVE TaskListCard already owns the step
+// display. Fixture updated 2026-08-25 (called out per the test rule); no
+// assertion changed. Default [] = "no card is driving progress".
+let mockTaskState: Record<string, unknown> =
+  { isWorking: false, currentStep: 0, totalSteps: 0, steps: [] as unknown[] }
 let mockQuestionState: Record<string, unknown> = { hasPendingQuestion: false, questions: [] }
 
 /**
@@ -70,7 +75,7 @@ beforeEach(() => {
   Object.assign(mockCrawlState, {
     active: false, query: "", pages: [], total: null, visionActions: [],
   })
-  mockTaskState = { isWorking: false, currentStep: 0, totalSteps: 0 }
+  mockTaskState = { isWorking: false, currentStep: 0, totalSteps: 0, steps: [] }
   mockQuestionState = { hasPendingQuestion: false, questions: [] }
 })
 
@@ -112,15 +117,72 @@ describe("AmbientCrawlTier", () => {
   })
 
   test("shows the unified counter for a task with no crawl", () => {
-    mockTaskState = { isWorking: true, currentStep: 1, totalSteps: 4 }
+    mockTaskState = { isWorking: true, currentStep: 1, totalSteps: 4 , steps: [] }
     render(<AmbientCrawlTier glowColor="#0ff" panelVisible={false} />)
     expect(screen.getByTestId("tier-counter").textContent).toBe("[1/4]")
   })
 
   test("a working task with zero steps renders no counter, not [0/0]", () => {
-    mockTaskState = { isWorking: true, currentStep: 0, totalSteps: 0 }
+    mockTaskState = { isWorking: true, currentStep: 0, totalSteps: 0 , steps: [] }
     render(<AmbientCrawlTier glowColor="#0ff" panelVisible={false} />)
     expect(screen.queryByTestId("tier-counter")).toBeNull()
+  })
+})
+
+// ── who owns the progress display (REQ-16, the anti-duplication rule) ────
+//
+// Retiring OrbBadge removed one duplicate indicator. These pin that the tier
+// does not quietly introduce another: it shows only what no VISIBLE surface is
+// already showing. Every case below was reachable before the rule existed.
+describe("progress ownership", () => {
+  const workingStep = [{ status: "working" }]
+
+  test("ChatView with a LIVE task card owns the steps — tier does not repeat them", () => {
+    mockTaskState = { isWorking: true, currentStep: 3, totalSteps: 7, steps: workingStep }
+    render(<AmbientCrawlTier glowColor="#0ff" panelVisible={false} chatVisible={true} />)
+    // The card is showing [3/7]; a second [3/7] beside the orb is the debt.
+    expect(screen.queryByTestId("tier-counter")).toBeNull()
+  })
+
+  test("ChatView open but the card is STATIC — tier speaks again", () => {
+    // Every step resolved: chat-view's own note records the card going static
+    // and the UI falling silent for the synthesis phase (measured at 79s).
+    mockTaskState = {
+      isWorking: true, currentStep: 7, totalSteps: 7,
+      steps: [{ status: "done" }, { status: "done" }],
+    }
+    render(<AmbientCrawlTier glowColor="#0ff" panelVisible={false} chatVisible={true} />)
+    expect(screen.getByTestId("tier-counter").textContent).toBe("[7/7]")
+  })
+
+  test("ChatView CLOSED — the tier is the only indicator, so it shows the steps", () => {
+    mockTaskState = { isWorking: true, currentStep: 3, totalSteps: 7, steps: workingStep }
+    render(<AmbientCrawlTier glowColor="#0ff" panelVisible={false} chatVisible={false} />)
+    expect(screen.getByTestId("tier-counter").textContent).toBe("[3/7]")
+  })
+
+  test("browser panel owns the crawl pages — tier counts only the steps", () => {
+    Object.assign(mockCrawlState, { active: true, pages: [1, 2, 3], total: 4 })
+    mockTaskState = { isWorking: true, currentStep: 1, totalSteps: 2, steps: workingStep }
+    render(<AmbientCrawlTier glowColor="#0ff" panelVisible={true} chatVisible={false} />)
+    // 1/2 from steps only — NOT 4/6 with the panel's own pages folded in.
+    expect(screen.getByTestId("tier-counter").textContent).toBe("[1/2]")
+  })
+
+  test("both surfaces own their halves — tier degrades to the presence dot", () => {
+    Object.assign(mockCrawlState, { active: true, pages: [1, 2], total: 4 })
+    mockTaskState = { isWorking: true, currentStep: 1, totalSteps: 3, steps: workingStep }
+    render(<AmbientCrawlTier glowColor="#0ff" panelVisible={true} chatVisible={true} />)
+    expect(screen.queryByTestId("tier-counter")).toBeNull()
+    expect(screen.getByText("READING")).toBeTruthy()
+  })
+
+  test("nothing to add and no panel dot — renders nothing, not an empty pill", () => {
+    mockTaskState = { isWorking: true, currentStep: 2, totalSteps: 5, steps: workingStep }
+    const { container } = render(
+      <AmbientCrawlTier glowColor="#0ff" panelVisible={false} chatVisible={true} />,
+    )
+    expect(container.innerHTML).toBe("")
   })
 })
 
@@ -194,6 +256,69 @@ describe("pending question (REQ-16, user-directed)", () => {
     // ambiguous to a screen reader. Labelling each input by its own question
     // is the correct a11y, so the test queries by that instead.
     const input = screen.getByLabelText("Which branch should I use?")
+    fireEvent.change(input, { target: { value: "   " } })
+    fireEvent.keyDown(input, { key: "Enter" })
+    expect(send).not.toHaveBeenCalled()
+  })
+})
+
+// ── T20: the inline ask, and the thread-identity landmine it sits on ──────
+//
+// REQ-16 AC4 requires a contract test that the submitted payload carries the
+// id of the thread active AT SUBMIT TIME. The history behind that requirement:
+// useIRISWebSocket.ts:1758 records four kernels constructed for ONE question
+// as the id drifted, and chat-view.tsx:1828 records every new conversation
+// collapsing into a single session-keyed thread. `text_message` is therefore
+// deliberately excluded from the socket's SUPPLY_IF_MISSING set — a missing id
+// is a visible fallback, a wrong one silently corrupts thread history.
+describe("inline ask (REQ-16 AC4 / T20)", () => {
+  beforeEach(() => {
+    mockTaskState = { isWorking: true, currentStep: 1, totalSteps: 3, steps: [] }
+  })
+
+  test("sends text_message with the socket's authoritative conversation_id", () => {
+    const send = jest.fn()
+    render(
+      <AmbientCrawlTier
+        glowColor="#0ff" panelVisible={false} chatVisible={false}
+        sendMessage={send} conversationId="conv_authoritative_1"
+      />,
+    )
+    fireEvent.click(screen.getByTestId("tier-counter-form"))
+    const input = screen.getByTestId("tier-ask-input")
+    fireEvent.change(input, { target: { value: "  what is the status  " } })
+    fireEvent.keyDown(input, { key: "Enter" })
+    expect(send).toHaveBeenCalledWith("text_message", {
+      text: "what is the status",
+      conversation_id: "conv_authoritative_1",
+    })
+  })
+
+  test("REFUSES to send when there is no authoritative id — never guesses", () => {
+    // The dangerous version of this feature falls back to a stored/stale id
+    // here. That is precisely the conv-merge incident. No id -> no ask at all.
+    const send = jest.fn()
+    render(
+      <AmbientCrawlTier
+        glowColor="#0ff" panelVisible={false} chatVisible={false}
+        sendMessage={send} conversationId={undefined}
+      />,
+    )
+    fireEvent.click(screen.getByTestId("tier-counter-form"))
+    expect(screen.queryByTestId("tier-ask-input")).toBeNull()
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  test("an empty ask is never sent", () => {
+    const send = jest.fn()
+    render(
+      <AmbientCrawlTier
+        glowColor="#0ff" panelVisible={false} chatVisible={false}
+        sendMessage={send} conversationId="conv_x"
+      />,
+    )
+    fireEvent.click(screen.getByTestId("tier-counter-form"))
+    const input = screen.getByTestId("tier-ask-input")
     fireEvent.change(input, { target: { value: "   " } })
     fireEvent.keyDown(input, { key: "Enter" })
     expect(send).not.toHaveBeenCalled()
