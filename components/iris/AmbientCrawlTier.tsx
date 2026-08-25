@@ -39,6 +39,7 @@ import { useReducedMotion } from "@/hooks/useReducedMotion"
 import { useTaskProgress } from "@/hooks/useTaskProgress"
 import { useAgentQuestion } from "@/hooks/useAgentQuestion"
 import { OrbCanvas } from "@/components/iris/orb/OrbCanvas"
+import { setSwallowTarget } from "@/components/iris/swallowTarget"
 
 export interface AmbientCrawlTierProps {
   glowColor: string
@@ -146,6 +147,32 @@ export function AmbientCrawlTier({
     ro.observe(pillEl)
     return () => ro.disconnect()
   }, [pillEl])
+
+  // Publish the logo slot so XurOrb can fly INTO it (T19). Measured, not
+  // guessed: the slot's x depends on the card's width, which depends on the
+  // status text. Cleared whenever the tier is not standing in for the orb, so
+  // a stale point can never drag the orb somewhere meaningless.
+  const [slotEl, setSlotEl] = useState<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (!slotEl) {
+      setSwallowTarget(null)
+      return
+    }
+    const publish = () => {
+      const r = slotEl.getBoundingClientRect()
+      setSwallowTarget({ x: r.left + r.width / 2, y: r.top + r.height / 2 })
+    }
+    publish()
+    if (typeof ResizeObserver !== "undefined") {
+      const ro = new ResizeObserver(publish)
+      ro.observe(slotEl)
+      return () => {
+        ro.disconnect()
+        setSwallowTarget(null)
+      }
+    }
+    return () => setSwallowTarget(null)
+  }, [slotEl])
 
   const [asking, setAsking] = useState(false)
   const [askDraft, setAskDraft] = useState("")
@@ -547,19 +574,25 @@ export function AmbientCrawlTier({
         // Blur + saturate lifts whatever is behind it, the gradient gives the
         // surface a direction, and the inset top highlight is the lit edge
         // that makes it read as glass rather than paint.
-        background: `linear-gradient(180deg, ${glowColor}1f 0%, rgba(7,13,19,0.92) 40%, rgba(3,7,11,0.96) 100%)`,
-        backdropFilter: "blur(16px) saturate(1.7)",
-        WebkitBackdropFilter: "blur(16px) saturate(1.7)",
-        // The rim is the outline — it was ~30% alpha over a dark app and simply
-        // disappeared. Doubled, with an outer halo and an inner lit edge so the
-        // card has a readable silhouette against any background.
-        border: `1px solid ${glowColor}99`,
+        // THE WHOLE CARD IS THE WELL. The well drawn behind the logo turned out
+        // to be the right treatment for the entire surface: a deep, nearly
+        // opaque ground is what made the mark legible and the type pop, where
+        // the translucent glass let the background bleed through and washed
+        // both out. Same recipe at card scale — dark radial ground, hard inner
+        // shadow, glow rim.
+        background:
+          "radial-gradient(120% 160% at 50% 0%, rgba(6,12,18,0.97) 0%, rgba(2,5,9,0.985) 70%, rgba(1,3,6,0.99) 100%)",
+        // Blur stays, but it is now a subtle lift under an opaque ground rather
+        // than the thing the card relies on to be visible.
+        backdropFilter: "blur(10px) saturate(1.35)",
+        WebkitBackdropFilter: "blur(10px) saturate(1.35)",
+        border: `1px solid ${glowColor}88`,
         boxShadow: [
-          `0 0 0 1px rgba(0,0,0,0.55)`,
-          `0 0 32px ${glowColor}4a`,
-          `0 8px 28px rgba(0,0,0,0.6)`,
-          `inset 0 1px 0 ${glowColor}66`,
-          `inset 0 -10px 22px rgba(0,0,0,0.35)`,
+          `0 0 0 1px rgba(0,0,0,0.7)`,
+          `0 0 26px ${glowColor}3d`,
+          `0 10px 30px rgba(0,0,0,0.7)`,
+          `inset 0 1px 0 ${glowColor}4a`,
+          `inset 0 0 26px rgba(0,0,0,0.95)`,
         ].join(", "),
         // The counter itself never intercepts the orb's drag/click; only the
         // question surface below opts back in.
@@ -638,6 +671,7 @@ export function AmbientCrawlTier({
             }}
             data-testid="tier-mini-orb"
             aria-hidden="true"
+            ref={setSlotEl}
           >
             {/* A WELL BEHIND THE MARK. The logo was drawn straight onto the
                 glass, so its particles competed with whatever the blur pulled
@@ -645,14 +679,16 @@ export function AmbientCrawlTier({
                 dark recessed disc gives it its own ground, and the outer halo
                 separates that ground from the card — contrast on both sides of
                 the edge, which is what actually makes a small mark legible. */}
+            {/* The card itself is now the dark ground, so the mark needs a LIFT
+                against it rather than another well: a faint glow disc so it
+                reads as raised, not recessed into an already-black surface. */}
             <div
               style={{
                 position: "absolute",
                 inset: -5,
                 borderRadius: "50%",
-                background:
-                  "radial-gradient(circle, rgba(2,5,9,0.96) 0%, rgba(2,5,9,0.88) 62%, rgba(2,5,9,0) 100%)",
-                boxShadow: `0 0 14px ${glowColor}55, inset 0 0 12px rgba(0,0,0,0.9)`,
+                background: `radial-gradient(circle, ${glowColor}1f 0%, ${glowColor}0d 55%, transparent 100%)`,
+                boxShadow: `0 0 16px ${glowColor}44`,
               }}
             />
             <div

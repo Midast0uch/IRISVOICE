@@ -502,3 +502,51 @@ describe("hook order across the idle -> active transition", () => {
     ).not.toThrow()
   })
 })
+
+// ── the swallow target (T19) ──────────────────────────────────────────────
+//
+// The orb and the tier live in different subtrees and neither can know the
+// other's geometry: the logo slot's x depends on the card's width, which
+// depends on the status text. Without a shared measured point the orb can only
+// shrink and fade WHERE IT STANDS, which is what read as snapping out of
+// existence rather than being absorbed.
+describe("swallow target publication", () => {
+  const { setSwallowTarget } = jest.requireActual("@/components/iris/swallowTarget")
+
+  beforeEach(() => {
+    setSwallowTarget(null)
+    mockTaskState = { isWorking: true, currentStep: 2, totalSteps: 6, steps: [] }
+  })
+
+  test("publishes the logo slot while swallowed, and clears it on release", () => {
+    const { useSwallowTarget } = jest.requireActual("@/components/iris/swallowTarget")
+    function Probe() {
+      const t = useSwallowTarget()
+      return <span data-testid="probe">{t ? "has-target" : "none"}</span>
+    }
+
+    const { rerender } = render(
+      <>
+        <AmbientCrawlTier
+          glowColor="#0ff" panelVisible={false} chatVisible={false} wingOpen={true}
+        />
+        <Probe />
+      </>,
+    )
+    // jsdom reports zeros for getBoundingClientRect, but a point IS published —
+    // which is the contract the orb depends on: target present <=> swallowed.
+    expect(screen.getByTestId("probe").textContent).toBe("has-target")
+
+    // Wing closes -> the tier stops standing in for the orb -> target cleared,
+    // so a stale point can never drag the orb somewhere meaningless.
+    rerender(
+      <>
+        <AmbientCrawlTier
+          glowColor="#0ff" panelVisible={false} chatVisible={false} wingOpen={false}
+        />
+        <Probe />
+      </>,
+    )
+    expect(screen.getByTestId("probe").textContent).toBe("none")
+  })
+})

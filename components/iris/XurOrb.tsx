@@ -16,10 +16,10 @@ import {
   ANIM_DURATION_MS,
 } from "./orb/animationModes"
 import { RadialArcNodes } from "./radial/RadialArcNodes"
-import { OrbWorkingIndicator } from "./OrbWorkingIndicator"
 import { useTaskProgress } from "@/hooks/useTaskProgress"
 import { useAgentQuestion } from "@/hooks/useAgentQuestion"
 import { useCrawlContext } from "@/hooks/CrawlProvider"
+import { useSwallowTarget } from "./swallowTarget"
 
 // ── Label configuration (matches PrototypeOrbShellsRotating winner) ────
 // Positions are relative to orb center in a 120px container.
@@ -38,15 +38,7 @@ const LABELS = [
 
 const CANVAS_SIZE = 90
 
-/**
- * Where the orb drifts to as it is swallowed (REQ-16 AC2). The tier settles at
- * the viewport centre, and the orb starts there too, so the drift is small and
- * downward-ish — just enough to read as motion INTO something rather than a
- * fade in place. Kept in px (not derived from the orb size) so a 400px orb and
- * a 60px one are absorbed with the same gesture.
- */
-const SWALLOW_DRIFT_X = 0
-const SWALLOW_DRIFT_Y = 10
+
 const CONTAINER_SIZE = 120
 
 /**
@@ -175,6 +167,28 @@ export function XurOrb({
   // render, and splitting the rule across both is how "both visible" slips
   // back in when one side changes.
   const isSwallowed = isWingsOpen && isAgentWorking
+
+  // ── THE TRAVEL (T19) ─────────────────────────────────────────────────────
+  // The orb flies to the tier's LOGO SLOT, measured and published by the tier.
+  // Shrinking and fading in place is what read as snapping out of existence;
+  // going somewhere specific is what reads as being absorbed.
+  //
+  // Delta is computed from the orb's OWN rect rather than from the viewport
+  // centre, because the orb is not always centred — Tauri offsets it by the
+  // chat panel's width.
+  const swallowTarget = useSwallowTarget()
+  const [drift, setDrift] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
+  useEffect(() => {
+    if (!isSwallowed || !swallowTarget || !orbRef.current || prefersReducedMotion) {
+      setDrift({ x: 0, y: 0 })
+      return
+    }
+    const r = orbRef.current.getBoundingClientRect()
+    setDrift({
+      x: swallowTarget.x - (r.left + r.width / 2),
+      y: swallowTarget.y - (r.top + r.height / 2),
+    })
+  }, [isSwallowed, swallowTarget, prefersReducedMotion])
 
   // Sync menuOpen with navigation level — menu is only open at level 2.
   // When navigating forward to level 3 (WheelView), menu closes.
@@ -490,12 +504,8 @@ export function XurOrb({
           scale: isSwallowed && !prefersReducedMotion ? finalScale * 0.28 : finalScale,
           filter: `blur(${isSwallowed && !prefersReducedMotion ? orbBlur + 3 : orbBlur}px)`,
           opacity: isSwallowed ? 0 : orbOpacity,
-          x: isError
-            ? [0, -10, 10, -10, 10, 0]
-            : isSwallowed && !prefersReducedMotion
-              ? SWALLOW_DRIFT_X
-              : 0,
-          y: isSwallowed && !prefersReducedMotion ? SWALLOW_DRIFT_Y : 0,
+          x: isError ? [0, -10, 10, -10, 10, 0] : drift.x,
+          y: drift.y,
         }}
         transition={{
           // One curve, one duration, shared with the tier — the orb collapsing
@@ -533,17 +543,14 @@ export function XurOrb({
           )}
         </AnimatePresence>
 
-        {/* Agent-working indicator: orbiting particles while the agent is
-            thinking/executing tools — regardless of wing open/closed. Replaces
-            the old flat CSS border ring (clashed with the orb's particle
-            aesthetic). The step counter / "?" glyph now lives in
-            AmbientCrawlTier, not on the orb (REQ-16/T18). */}
-        <OrbWorkingIndicator
-          isActive={isAgentWorking}
-          variant={agentQuestion.hasPendingQuestion ? "question" : "working"}
-          glowColor={glowColor}
-          shimmerPrimary={theme.shimmer.primary}
-        />
+        {/* OrbWorkingIndicator REMOVED (REQ-16, 2026-08-25) — the orbiting
+            particles that ringed the orb while the agent executed. It answered
+            "is the agent working", which AmbientCrawlTier now answers with a
+            count, a status line and, when a wing is open, the orb itself. Two
+            indicators for one question is the debt REQ-16 exists to remove, and
+            this was the last of them.
+            NOTE: RadialArcNodes (the level-2 category menu) is untouched — that
+            is navigation, not an execution indicator. */}
 
         {/* OrbBadge RETIRED here — REQ-16/T18, 2026-08-25.
             AmbientCrawlTier is now the single working indicator: it shows task
