@@ -37,6 +37,16 @@ const LABELS = [
 ]
 
 const CANVAS_SIZE = 90
+
+/**
+ * Where the orb drifts to as it is swallowed (REQ-16 AC2). The tier settles at
+ * the viewport centre, and the orb starts there too, so the drift is small and
+ * downward-ish — just enough to read as motion INTO something rather than a
+ * fade in place. Kept in px (not derived from the orb size) so a 400px orb and
+ * a 60px one are absorbed with the same gesture.
+ */
+const SWALLOW_DRIFT_X = 0
+const SWALLOW_DRIFT_Y = 10
 const CONTAINER_SIZE = 120
 
 /**
@@ -467,27 +477,44 @@ export function XurOrb({
         }}
         onMouseDown={handleMouseDown}
         animate={{
-          // REQ-16 AC2: swallowed -> shrink toward the tier and fade out. Folded
-          // into the EXISTING animate rather than added as a second animate
-          // prop, so the swallow and the orb's own scale/blur/error states stay
-          // one animation instead of two fighting for the same transform.
-          scale: isSwallowed && !prefersReducedMotion ? finalScale * 0.72 : finalScale,
-          filter: `blur(${orbBlur}px)`,
+          // REQ-16 AC2 — SWALLOW. The orb must look ABSORBED, so it collapses
+          // hard (0.28, not a polite 0.72) and drifts toward the tier's resting
+          // point rather than dissolving where it stands. Shrinking in place at
+          // near-full size while fading is what read as "snapping out of
+          // existence"; travel plus a deep collapse is what reads as being
+          // taken in.
+          //
+          // Folded into the EXISTING animate rather than added as a second
+          // animate prop, so the swallow and the orb's own scale/blur/error
+          // states stay one animation instead of two fighting one transform.
+          scale: isSwallowed && !prefersReducedMotion ? finalScale * 0.28 : finalScale,
+          filter: `blur(${isSwallowed && !prefersReducedMotion ? orbBlur + 3 : orbBlur}px)`,
           opacity: isSwallowed ? 0 : orbOpacity,
-          x: isError ? [0, -10, 10, -10, 10, 0] : 0,
+          x: isError
+            ? [0, -10, 10, -10, 10, 0]
+            : isSwallowed && !prefersReducedMotion
+              ? SWALLOW_DRIFT_X
+              : 0,
+          y: isSwallowed && !prefersReducedMotion ? SWALLOW_DRIFT_Y : 0,
         }}
         transition={{
-          // Swallow uses the tier's 450ms curve so the orb shrinking and the
-          // tier travelling out from its centre read as ONE gesture.
+          // One curve, one duration, shared with the tier — the orb collapsing
+          // and the tier arriving are halves of a single gesture, so they must
+          // not run on different timings.
           scale: isSwallowed
             ? { duration: prefersReducedMotion ? 0 : 0.45, ease: [0.4, 0, 0.2, 1] }
             : { type: "spring", stiffness: 300, damping: 25 },
-          filter: { duration: 0.3, ease: "easeOut" },
+          filter: { duration: 0.45, ease: "easeOut" },
           opacity: {
+            // Fade LATE. Fading at the same rate as the collapse made the orb
+            // vanish before it had visibly gone anywhere.
             duration: isSwallowed ? (prefersReducedMotion ? 0.2 : 0.45) : 0.3,
-            ease: "easeOut",
+            ease: isSwallowed ? [0.7, 0, 0.9, 0.4] : "easeOut",
           },
-          x: isError ? { duration: 0.5, repeat: Infinity, repeatDelay: 2 } : { duration: 0 },
+          x: isError
+            ? { duration: 0.5, repeat: Infinity, repeatDelay: 2 }
+            : { duration: prefersReducedMotion ? 0 : 0.45, ease: [0.4, 0, 0.2, 1] },
+          y: { duration: prefersReducedMotion ? 0 : 0.45, ease: [0.4, 0, 0.2, 1] },
         }}
       >
         {/* Voice-active haze */}

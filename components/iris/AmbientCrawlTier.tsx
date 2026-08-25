@@ -33,6 +33,7 @@
  */
 
 import React, { useEffect, useState } from "react"
+import { motion } from "framer-motion"
 import { useCrawlContext } from "@/hooks/CrawlProvider"
 import { useReducedMotion } from "@/hooks/useReducedMotion"
 import { useTaskProgress } from "@/hooks/useTaskProgress"
@@ -504,20 +505,39 @@ export function AmbientCrawlTier({
   const tx = swallowed ? (settled || reducedMotion ? 0 : besideX) : besideX
   const ty = swallowed ? (settled || reducedMotion ? 0 : besideY) : besideY
   return (
+    // ZERO-SIZE ANCHOR. The card used to centre itself with
+    // `translate(-50% + Xpx)`, which made its own WIDTH part of the transform
+    // — and the width changes at the same instant as the swallow (mini orb in,
+    // ring out, layout becomes a column). The percentage therefore resolved to
+    // a different number mid-transition and the card jumped instead of
+    // travelling: the snap.
+    // A 0x0 grid centred on the point holds the card centred at ANY size, so
+    // the animated transform is pure pixels and `layout` can tween the size
+    // change independently.
     <div
-      className={`fixed top-1/2 left-1/2 z-40 flex rounded-full ${
+      className="fixed top-1/2 left-1/2 z-40"
+      style={{ width: 0, height: 0, display: "grid", placeItems: "center" }}
+    >
+    <motion.div
+      layout
+      initial={false}
+      animate={{ x: tx, y: ty }}
+      transition={
+        reducedMotion
+          ? { duration: 0 }
+          : { type: "tween", duration: 0.45, ease: [0.4, 0, 0.2, 1] }
+      }
+      className={`flex rounded-full ${
         // Swallowed: items-center keeps the two-line block optically centred
         // against the orb, and a tighter gap binds text to mark instead of
         // letting it drift toward the pill's far edge.
-        swallowed ? "items-center gap-2 pl-1 pr-3.5 py-1" : "items-center gap-2 pl-1 pr-2 py-1"
+        swallowed ? "items-center gap-2.5 pl-1.5 pr-4 py-1.5" : "items-center gap-2 pl-1 pr-2 py-1"
       }`}
       ref={setPillEl}
       data-swallowed={swallowed ? "true" : "false"}
       data-testid="ambient-crawl-tier"
       style={{
-        position: "fixed",
         overflow: "hidden",
-        transform: `translate(calc(-50% + ${tx}px), calc(-50% + ${ty}px))`,
         transition: reducedMotion
           ? "opacity 200ms linear"
           : "transform 450ms cubic-bezier(0.4, 0, 0.2, 1), opacity 450ms ease-in-out",
@@ -527,11 +547,20 @@ export function AmbientCrawlTier({
         // Blur + saturate lifts whatever is behind it, the gradient gives the
         // surface a direction, and the inset top highlight is the lit edge
         // that makes it read as glass rather than paint.
-        background: `linear-gradient(180deg, ${glowColor}14 0%, rgba(6,11,16,0.82) 46%, rgba(3,6,10,0.88) 100%)`,
-        backdropFilter: "blur(14px) saturate(1.6)",
-        WebkitBackdropFilter: "blur(14px) saturate(1.6)",
-        border: `1px solid ${glowColor}4d`,
-        boxShadow: `0 0 26px ${glowColor}33, 0 6px 20px rgba(0,0,0,0.45), inset 0 1px 0 ${glowColor}3a`,
+        background: `linear-gradient(180deg, ${glowColor}1f 0%, rgba(7,13,19,0.92) 40%, rgba(3,7,11,0.96) 100%)`,
+        backdropFilter: "blur(16px) saturate(1.7)",
+        WebkitBackdropFilter: "blur(16px) saturate(1.7)",
+        // The rim is the outline — it was ~30% alpha over a dark app and simply
+        // disappeared. Doubled, with an outer halo and an inner lit edge so the
+        // card has a readable silhouette against any background.
+        border: `1px solid ${glowColor}99`,
+        boxShadow: [
+          `0 0 0 1px rgba(0,0,0,0.55)`,
+          `0 0 32px ${glowColor}4a`,
+          `0 8px 28px rgba(0,0,0,0.6)`,
+          `inset 0 1px 0 ${glowColor}66`,
+          `inset 0 -10px 22px rgba(0,0,0,0.35)`,
+        ].join(", "),
         // The counter itself never intercepts the orb's drag/click; only the
         // question surface below opts back in.
         pointerEvents: "none",
@@ -610,6 +639,31 @@ export function AmbientCrawlTier({
             data-testid="tier-mini-orb"
             aria-hidden="true"
           >
+            {/* A WELL BEHIND THE MARK. The logo was drawn straight onto the
+                glass, so its particles competed with whatever the blur pulled
+                through and it read as faint smudge rather than an object. A
+                dark recessed disc gives it its own ground, and the outer halo
+                separates that ground from the card — contrast on both sides of
+                the edge, which is what actually makes a small mark legible. */}
+            <div
+              style={{
+                position: "absolute",
+                inset: -5,
+                borderRadius: "50%",
+                background:
+                  "radial-gradient(circle, rgba(2,5,9,0.96) 0%, rgba(2,5,9,0.88) 62%, rgba(2,5,9,0) 100%)",
+                boxShadow: `0 0 14px ${glowColor}55, inset 0 0 12px rgba(0,0,0,0.9)`,
+              }}
+            />
+            <div
+              style={{
+                position: "absolute",
+                inset: -2,
+                borderRadius: "50%",
+                border: `1px solid ${glowColor}55`,
+              }}
+            />
+            <div style={{ position: "relative" }}>
             {reducedMotion ? (
               /* Reduced motion suppresses MOVEMENT, not identity. Gating the
                  mark on it left reduced-motion users with no logo at all for
@@ -635,6 +689,7 @@ export function AmbientCrawlTier({
                 size={MINI_ORB}
               />
             )}
+            </div>
           </div>
         ) : (
           /* Nothing ring-local here any more: the card-wide field above is
@@ -770,6 +825,7 @@ export function AmbientCrawlTier({
       ) : (
         tailNode
       )}
+    </motion.div>
     </div>
   )
 }
