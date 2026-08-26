@@ -327,6 +327,20 @@ class IRISGateway:
             loop.create_task(self._prewarm_crawl_worker())
             self._logger.info("[IRISGateway] Crawl worker pre-warm scheduled.")
         except Exception as e:  # never block startup on this
+            self._logger.warning(f"Crawl worker pre-warm scheduling failed: {e}")
+
+        # Session 248 (user question: "does the VLM pre-warm when a websearch
+        # starts?"): the vision llama-server was 100% lazy, so a challenge-wall
+        # escalation paid the VLM cold spawn MID-SEARCH. A search-start pre-warm
+        # was tried first and REJECTED by live evidence (conv-53 second run):
+        # spawning a 3B model concurrently with the crawl starved the pool
+        # workers (boot timeouts) and blew the run budget. The right home for
+        # it is HERE, at backend boot, off every critical path.
+        try:
+            loop.create_task(self._prewarm_vlm_server())
+            self._logger.info("[IRISGateway] VLM server pre-warm scheduled.")
+        except Exception as e:  # never block startup on this
+            self._logger.warning(f"VLM pre-warm scheduling failed: {e}")
             self._logger.warning(f"[IRISGateway] crawl pre-warm schedule failed: {e}")
 
     async def _prewarm_embedding_encoder(self) -> None:
@@ -367,41 +381,120 @@ class IRISGateway:
         except Exception as exc:
             self._logger.warning(f"[IRISGateway] embedding encoder pre-warm failed: {exc}")
 
+    async def _prewarm_vlm_server(self) -> None:
+        """Session 248: warm the LFM2.5-VL vision server at boot.
+
+        fetch.vision escalation fires only when a crawl URL fails with a
+        vision-recoverable reason — exactly when latency hurts most. Spawning
+        the small VL model here (GPU offload, ~seconds once binaries are
+        cached) means escalation finds a warm endpoint. Runs ~20s after bind,
+        off the critical path; failure is non-fatal (escalation falls back to
+        its own lazy spawn). Never raises."""
+        try:
+            # REQ-5 (specs/vision-browser-stage): register the lifecycle
+            # broadcaster BEFORE any spawn so cold->spawning->warm reaches the
+            # UI from the very first boot prewarm, not just after a manual
+            # enable toggle.
+            if not getattr(self, "_vision_lifecycle_cb_registered", False):
+                from backend.tools.lfm_vl_provider import (
+                    set_vision_lifecycle_callback,
+                )
+
+                set_vision_lifecycle_callback(self._on_vision_lifecycle)
+                self._ensure_vision_loop()
+                self._vision_lifecycle_cb_registered = True
+
+            await asyncio.sleep(25)  # after port bind + crawl pool kick
+            # REQ-4: boot warm goes through request_warm so the lifecycle
+            # emits carry trigger="boot" and the single-flight lock applies.
+            from backend.tools.lfm_vl_provider import request_warm
+
+            t0 = time.monotonic()
+            ok = await asyncio.to_thread(request_warm, "boot")
+            self._logger.info(
+                "[IRISGateway] VLM server pre-warm %s in %.1fs",
+                "warm" if ok else "UNAVAILABLE (no VL model / VRAM)",
+                time.monotonic() - t0,
+            )
+        except Exception as exc:
+            self._logger.warning(f"[IRISGateway] VLM pre-warm failed: {exc}")
+
+    async def _warm_vision_for_search(self) -> None:
+        """REQ-4 (specs/vision-browser-stage): re-warm the VLM when a search
+        starts, SEQUENCED AFTER the crawl pool is live — the Session-248
+        search-start prewarm was rejected for starving pool workers (conv-53);
+        this waits for live workers (bounded 10s) before spawning, so the
+        intent returns without the starvation. One warm per run (request_warm
+        drops concurrent triggers). Off the crawl critical path. Never raises."""
+        try:
+            from backend.crawler.crawl_runner import get_crawl_pool, pool_enabled
+
+            if pool_enabled():
+                pool = get_crawl_pool()
+                deadline = time.monotonic() + 10.0
+                while time.monotonic() < deadline:
+                    workers = getattr(pool, "_workers", []) or []
+                    if any(getattr(w, "alive", False) for w in workers):
+                        break
+                    await asyncio.sleep(0.5)
+            from backend.tools.lfm_vl_provider import request_warm
+
+            await asyncio.to_thread(request_warm, "search-scoped")
+        except Exception as exc:
+            self._logger.warning(
+                f"[IRISGateway] search-scoped vision warm failed: {exc}"
+            )
+
     async def _prewarm_crawl_worker(self) -> None:
         """Session 247: warm the crawl worker's cold-start path at boot.
 
-        Runs ONE throwaway subprocess crawl against this backend's own
-        /health endpoint. The point is not the result — it is paying the
-        crawl4ai/playwright import cost and the Chromium binary file-cache
-        miss NOW, off the critical path, instead of inside the first real
-        search's 90s run budget (live conv-42: a 65s cold INIT parked all
-        five sources as run_budget before any page was fetched). Delayed
-        briefly so backend startup (port bind) completes first. Never raises.
+        Session 248 UPDATE: the warm pool (crawl_runner.prewarm_crawl_pool)
+        starts the RESIDENT --serve workers here, so Chromium INIT is paid
+        exactly once per backend lifetime and NO search ever pays it — not
+        even the first. The old throwaway one-shot crawl is kept as a
+        fallback warm-up for when the pool is disabled (IRIS_CRAWL_POOL=0):
+        it still pays the OS file-cache miss off the critical path.
+        Delayed briefly so backend startup (port bind) completes first.
+        Never raises.
         """
         try:
             await asyncio.sleep(20)  # let the HTTP server finish binding first
-            from backend.crawler.crawl_runner import run_crawl_subprocess
+            from backend.crawler.crawl_runner import (
+                pool_enabled,
+                prewarm_crawl_pool,
+                run_crawl_subprocess,
+            )
 
-            t0 = time.monotonic()
-            # run_crawl_subprocess is async — await it directly. (A previous
-            # revision wrapped it in asyncio.to_thread, which merely created
-            # a coroutine object and never ran it: "'coroutine' object has
-            # no attribute 'pages'".)
-            result = await run_crawl_subprocess(
-                "prewarm",
-                ["http://127.0.0.1:8090/health"],
-                "Warm the crawler; output unused.",
-                max_pages=1,
-                timeout_s=120,
-                job_id="prewarm-boot",
-            )
-            self._logger.info(
-                "[IRISGateway] crawl worker pre-warm done in %.1fs "
-                "(pages=%d error=%s) — Chromium path now file-cache warm",
-                time.monotonic() - t0,
-                len(result.pages or []),
-                getattr(result, "error", None),
-            )
+            if pool_enabled():
+                t0 = time.monotonic()
+                live = await prewarm_crawl_pool()
+                self._logger.info(
+                    "[IRISGateway] crawl POOL pre-warm done in %.1fs "
+                    "(live workers=%d) — searches skip Chromium INIT entirely",
+                    time.monotonic() - t0, live,
+                )
+                return
+            try:
+                t0 = time.monotonic()
+                result = await run_crawl_subprocess(
+                    "prewarm",
+                    ["http://127.0.0.1:8090/health"],
+                    "Warm the crawler; output unused.",
+                    max_pages=1,
+                    timeout_s=120,
+                    job_id="prewarm-boot",
+                )
+                self._logger.info(
+                    "[IRISGateway] crawl worker pre-warm done in %.1fs "
+                    "(pages=%d error=%s) — Chromium path now file-cache warm",
+                    time.monotonic() - t0,
+                    len(result.pages or []),
+                    getattr(result, "error", None),
+                )
+            except Exception as exc:
+                self._logger.warning(
+                    f"[IRISGateway] crawl worker pre-warm failed: {exc}"
+                )
         except Exception as exc:
             self._logger.warning(f"[IRISGateway] crawl worker pre-warm failed: {exc}")
 
@@ -701,7 +794,21 @@ class IRISGateway:
                 else:
                     await self._handle_execute_cleanup(session_id, client_id, message)
 
-            elif msg_type in ["text_message", "clear_chat", "new_conversation", "switch_conversation"]:
+            elif msg_type in [
+                "text_message",
+                "clear_chat",
+                "new_conversation",
+                "switch_conversation",
+                # Session 248: these two handlers LIVE in _handle_chat
+                # (question_response -> AskUserTool.resolve_answer funnel,
+                # notification_response -> permission system) but were never
+                # routed here — every card click died as "Unknown message
+                # type", receive_answer never ran, QUESTION_ANSWERED was
+                # never emitted, and answered QuestionCards stayed on screen
+                # forever (pin_587a3e612558 item #1).
+                "question_response",
+                "notification_response",
+            ]:
                 await self._handle_chat(session_id, client_id, message)
 
             elif msg_type == "sync_state":
@@ -754,6 +861,14 @@ class IRISGateway:
                 await self._handle_get_local_model_status(
                     session_id, client_id, message
                 )
+
+            elif msg_type == "get_vision_status":
+                # REQ-5 (specs/vision-browser-stage): seed the lifecycle chip
+                # on frontend mount/refresh — transitions alone miss a page
+                # reload, so the chip would stay hidden until the NEXT
+                # transition. Truthful snapshot: warm when the endpoint
+                # answers, cold otherwise.
+                await self._handle_get_vision_status(session_id, client_id)
 
             elif msg_type == "get_hardware_info":
                 await self._handle_get_hardware_info(session_id, client_id, message)
@@ -5374,7 +5489,126 @@ class IRISGateway:
                     # `spoken` field: what is heard and what the highlight tracks
                     # must be the SAME string, or the highlight desyncs again.
                     _spoken_text = _spoken_line
-                    if _spoken_text and _spoken_text.strip():
+                    # REQ-28: a long CONVERSATIONAL answer reaches this point
+                    # with no agent-supplied `speak` line, so `_spoken_line` is
+                    # prepare_spoken_text's FIRST SENTENCE -- the listener hears
+                    # the opening and never the conclusion. Generate a real
+                    # brief instead, and feed it to TTS one SENTENCE AT A TIME
+                    # through the queue form of _speak_response, which
+                    # synthesises the first sentence immediately rather than
+                    # waiting for a whole string. Audio therefore starts while
+                    # the brief is still being written, instead of arriving
+                    # noticeably after the text the user is already reading.
+                    _use_brief = False
+                    try:
+                        _use_brief = bool(
+                            _spoken_text
+                            and not (
+                                getattr(agent_kernel, "_last_spoken_text", "") or ""
+                            ).strip()
+                            and agent_kernel.spoken_brief_needed(response)
+                        )
+                    except Exception:  # noqa: BLE001
+                        _use_brief = False
+
+                    if _use_brief:
+                        _brief_q: "queue.Queue" = queue.Queue()
+                        _fallback = _spoken_text
+                        _loop = self._main_loop
+
+                        def _produce_brief() -> None:
+                            _spoke_any = False
+
+                            def _emit(sentence: str) -> None:
+                                nonlocal _spoke_any
+                                if sentence and sentence.strip():
+                                    _spoke_any = True
+                                    _brief_q.put(sentence.strip())
+
+                            _full = ""
+                            try:
+                                _full = agent_kernel.stream_spoken_brief(
+                                    response, _emit
+                                )
+                            except Exception as _bexc:  # noqa: BLE001
+                                self._logger.warning(
+                                    "[D2-TEXT-TTS] brief failed, falling back: %s",
+                                    _bexc,
+                                )
+                            # AC5: a failed or empty brief must never produce a
+                            # silent turn.
+                            #
+                            # Two DISTINCT cases, and conflating them cost a
+                            # live run: the brief can come back complete
+                            # WITHOUT having streamed (the router may return
+                            # the whole string and never invoke the chunk
+                            # callback). Speaking the fallback there throws a
+                            # perfectly good brief away and reads as if the
+                            # feature never ran. Only a genuinely EMPTY brief
+                            # falls back.
+                            if not _spoke_any:
+                                _ready = (_full or "").strip()
+                                if _ready:
+                                    # Still deliver it SENTENCE BY SENTENCE so
+                                    # the queue synthesises the first one
+                                    # immediately instead of batching the lot.
+                                    _parts = [
+                                        _p.strip() for _p in re.split(
+                                            r"(?<=[.!?])\s+", _ready
+                                        ) if _p.strip()
+                                    ] or [_ready]
+                                    for _p in _parts:
+                                        _brief_q.put(_p)
+                                    _full = _ready
+                                else:
+                                    _brief_q.put(_fallback)
+                                    _full = _fallback
+                            _brief_q.put(None)
+                            # The `spoken` field already went out with the body
+                            # carrying the fallback; correct it so the word
+                            # highlight tracks what was actually SPOKEN.
+                            try:
+                                if _full and _loop is not None and _full != _fallback:
+                                    asyncio.run_coroutine_threadsafe(
+                                        self._ws_manager.send_to_client(
+                                            client_id,
+                                            {
+                                                "type": "chat_spoken_update",
+                                                "payload": {
+                                                    "turn_id": turn_id,
+                                                    "spoken": _full,
+                                                },
+                                            },
+                                        ),
+                                        _loop,
+                                    )
+                            except Exception as _uexc:  # noqa: BLE001
+                                self._logger.debug(
+                                    "[D2-TEXT-TTS] spoken update not sent: %s", _uexc
+                                )
+
+                        self._logger.info(
+                            "[D2-TEXT-TTS] streaming spoken brief for a %d-char "
+                            "answer, session=%s",
+                            len(response or ""), session_id,
+                        )
+                        threading.Thread(
+                            target=self._speak_response,
+                            args=(_brief_q,),
+                            kwargs={
+                                "session_id": session_id,
+                                "_client_id": client_id,
+                                "_turn_id": turn_id,
+                            },
+                            daemon=True,
+                            name="text-path-tts-brief",
+                        ).start()
+                        threading.Thread(
+                            target=_produce_brief,
+                            daemon=True,
+                            name="spoken-brief-gen",
+                        ).start()
+                    elif _spoken_text and _spoken_text.strip():
                         self._logger.info(
                             "[D2-TEXT-TTS] speaking final answer (%d chars) for "
                             "session=%s",
@@ -9957,6 +10191,70 @@ class IRISGateway:
         except Exception:
             pass
 
+    async def _handle_get_vision_status(self, session_id: str, client_id: str) -> None:
+        """REQ-5 AC3 (specs/vision-browser-stage): truthful lifecycle snapshot
+        for chip seeding on mount/refresh. warm = endpoint answers; cold =
+        nothing listening. Best-effort, never raises."""
+        state = "cold"
+        try:
+            from backend.tools.lfm_vl_provider import get_lfm_vl_provider
+
+            if get_lfm_vl_provider().health_check():
+                state = "warm"
+        except Exception:
+            pass
+        try:
+            await self._ws_manager.send_to_client(
+                client_id,
+                {
+                    "type": "vision_status",
+                    "payload": {
+                        "status": "lifecycle",
+                        "state": state,
+                        "reason": "",
+                        "trigger": "seed",
+                    },
+                },
+            )
+        except Exception:
+            pass
+
+    def _on_vision_lifecycle(self, state: str = "", reason: str = "", trigger: str = "") -> None:
+        """REQ-5 (specs/vision-browser-stage): provider lifecycle transition
+        (cold|spawning|warm|error) -> vision_status broadcast. Called on
+        provider threads; hops to the event loop. Never raises."""
+        loop = getattr(self, "_vision_loop", None)
+        if loop is None or not state:
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(
+                self._broadcast_vision_lifecycle(state, reason, trigger), loop
+            )
+        except Exception:
+            pass
+
+    async def _broadcast_vision_lifecycle(
+        self, state: str, reason: str, trigger: str
+    ) -> None:
+        """ADDITIVE on the existing vision_status shape: `status` stays a
+        string the current frontend can store harmlessly ("lifecycle" is not
+        "enabled", so is_available semantics are untouched); the new fields
+        (state/reason/trigger) are what T10's chip consumes."""
+        try:
+            await self._ws_manager.broadcast(
+                {
+                    "type": "vision_status",
+                    "payload": {
+                        "status": "lifecycle",
+                        "state": state,
+                        "reason": reason or "",
+                        "trigger": trigger or "",
+                    },
+                }
+            )
+        except Exception:
+            pass
+
     async def _handle_set_vision_enabled(
         self, session_id: str, client_id: str, message: dict
     ) -> None:
@@ -10091,6 +10389,10 @@ class IRISGateway:
                 asyncio.ensure_future(send(
                     {"type": "crawler_started", "query": pl["query"], "url_count": pl["url_count"]}
                 ))
+                # REQ-4 (specs/vision-browser-stage): one staggered VLM warm
+                # per run — waits for live pool workers first, off the crawl
+                # critical path. request_warm drops concurrent triggers.
+                asyncio.create_task(self._warm_vision_for_search())
             elif ev == "CRAWLER_PAGE_FETCHED":
                 asyncio.ensure_future(send(
                     {"type": "crawler_page_fetched", "url": pl["url"],
@@ -10140,6 +10442,11 @@ class IRISGateway:
                     "x", "y", "viewport_w", "viewport_h",
                     "scroll_dx", "scroll_dy", "scroll_y", "scroll_height",
                     "capture_page",
+                    # specs/vision-browser-stage REQ-8: true when this session
+                    # took over from a FAILED crawl — drives the overlay's
+                    # one-shot "notice" beat. Without this entry the field
+                    # dies right here (see the warning above).
+                    "escalated",
                 ):
                     if _coord_key in pl:
                         vision_msg[_coord_key] = pl[_coord_key]
@@ -10247,7 +10554,15 @@ class IRISGateway:
 
         orchestrator = get_dev_orchestrator()
         try:
-            await orchestrator.handle_dev_cli(session_id, payload, _ws_send)
+            # REQ-0 AC1: dispatch with the session's conversation context —
+            # /run joins the caller's active conversation thread, not a
+            # detached one, so memory follows the work (D7 rationale).
+            await orchestrator.handle_dev_cli(
+                session_id,
+                payload,
+                _ws_send,
+                conversation_id=self._active_conversation_id.get(session_id),
+            )
         except Exception as exc:
             self._logger.error("[DevCLI][%s] error: %s", session_id, exc)
             await self._ws_manager.send_to_client(
@@ -10313,7 +10628,10 @@ class IRISGateway:
                 await self._ws_manager.send_to_client(client_id, msg_dict)
 
             handler = get_terminal_handler()
-            await handler.handle_input(session_id, line, _ws_send)
+            # Gate 3 T1/T10: workdir rides on terminal_input {line, workdir?}
+            await handler.handle_input(
+                session_id, line, _ws_send, workdir=payload.get("workdir")
+            )
         except Exception as exc:
             self._logger.exception("[13.4] terminal_input error: %s", exc)
             await self._ws_manager.send_to_client(

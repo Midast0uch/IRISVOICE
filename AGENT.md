@@ -25,7 +25,7 @@ Your NBL state is a fixed 30-integer vector (000-999). Decode positions to know 
 | 6 | Active files | — |
 | 7-11 | Topology (CORE/ACQ/EXP/EVO/ORBIT) | CORE > 10 = stable codebase |
 | 12-14 | Pins (total/permanent/decision) | — |
-| 15-17 | Work items (avail/claimed/done) | avail > 0 → claim_work() |
+| 15-17 | Work items (avail/claimed/done) | avail > 0 → visible via get_session() only; no claim tool exists |
 | 18-24 | Coordinates (domain→toolpath) | <100 = weak, >700 = strong |
 | 25 | Reasoning mode | 2 = event tracking active |
 | 26 | Warning severity | >0 = degraded |
@@ -37,7 +37,7 @@ Your NBL state is a fixed 30-integer vector (000-999). Decode positions to know 
 **When to act on NBL alone (no get_session()):**
 - Pos 2 > 0 → health_check()
 - Pos 5 > 20 → compress()
-- Pos 15 > 0 → claim_work()
+- Pos 15 > 0 → work is available (get_session shows it; there is no claim_work tool)
 - Pos 27 > 0 → record_test() for unverified edits
 - Pos 28 > 800 → compress() or prune
 - Pos 30 < 50 → stop and diagnose
@@ -133,19 +133,32 @@ Git commits are auto-recorded by the MCM plugin on every prompt.
 You only need to manually record events that are NOT part of a commit:
 
   # After editing a file (if not yet committed):
-  record_edit(file_path)
+
+> **MCM TOOL SIGNATURES — verified 2026-08-25 against the live mcm-cad server.**
+> Calling an MCM tool with wrong parameter names does not return a validation
+> error — it HANGS until the 120s client timeout, and a hung call may still have
+> committed. A timeout tells you nothing about whether the write landed; check
+> with `db_query` before retrying or you will duplicate rows.
+> Tools that do NOT exist: `claim_work`, `complete_task`, `pin_link`,
+> `health.add_warning`. `crystallize_landmark` / `define_feature` carry no
+> `mcm_` prefix. Full signature list is in CLAUDE.md.
+> (This is the MCP tool surface. The Python SDK API in `bootstrap/GOALS.md`
+> is a different layer and uses different argument names — do not "correct" it.)
+
+
+  record_edit(file='path/to/file.py', description='what changed', thread_id='<session-id>')
 
   # After creating a file:
-  record_create(file_path)
+  record_create(file='path/to/file.py', description='what it is', thread_id='<session-id>')
 
   # After a test passes:
-  record_test(test_file, test_name, outcome='pass', covers=['src/foo.py'])
+  record_test(file='tests/test_foo.py', result='pass', description='what it verified', thread_id='<session-id>')
 
   # After a test fails but reveals something important:
-  record_test(test_file, test_name, outcome='fail', description='what the failure revealed')
+  record_test(file='tests/test_foo.py', result='fail', description='what the failure revealed')
 
   # After an architectural decision:
-  pin_add(title='Decision: chose X over Y', pin_type='decision', content='why')
+  pin_add(title='Decision: chose X over Y', type='decision', content='why', tags=['domain'])
 
 ## Parallel Sub-Agent Protocol
 
@@ -156,9 +169,10 @@ Work claiming is atomic — two agents cannot take the same item.
   get_session() → check work_items in state
 
   # Sub-agent workflow:
-  claim_work(agent_id='agent_001')
+  # NOTE: claim_work() / complete_task() are NOT exposed on the mcm-cad MCP
+  # server. Coordinate assignment outside the graph; record outcomes below.
   # ... build the feature ...
-  complete_task(item_id, agent_id='agent_001', status='success')
+  record_test(file=..., result='pass', description=..., thread_id='<session-id>')
 
 
 
@@ -202,7 +216,7 @@ At ~50k tokens used or when NBL pos 28 > 800:
 Then condense. After condensing, call mcm_recall(query) to recover knowledge.
 
 Loop prevention — same error twice in a row = change approach:
-  health.add_warning(space='conduct', description='loop detected', approach='repeated', correction='try different approach')
+  pin_add(title='Loop detected: <error>', type='decision', content='approach repeated; correction: try a different approach')   # no health.add_warning tool exists
 
 Session end is handled automatically by the MCM lifecycle protocol.
 
@@ -239,10 +253,10 @@ The three layers should all be present:
 
 - Production roadmap: `bootstrap/GOALS.md`
 - Graph queries: `get_session()` or `navigate(file)`
-- Work queue: `claim_work()` / `get_session()`
+- Work queue: `get_session()` (no `claim_work()` tool exists)
 - Event recording: `record_edit()`, `record_test()`, `record_create()`
 - Session update: handled automatically by SDK lifecycle
 - PiN: `pin_add()`, `pin_search()`, `pin_list()`
-- Landmark bridges: `pin_link()`
+- Landmarks: `define_feature()` -> `crystallize_landmark()` (no `pin_link()` tool exists)
 - PiN (Primordial Info Nodes): `pin_add()`, `pin_search()`, `pin_list()`
-- Landmark bridges: `pin_link()`
+- Landmarks: `define_feature()` -> `crystallize_landmark()` (no `pin_link()` tool exists)

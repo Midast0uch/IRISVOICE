@@ -841,6 +841,24 @@ export function useIRISWebSocket(
         break
       }
 
+      case "chat_spoken_update": {
+        // REQ-28: the body already went out carrying a fallback `spoken` line.
+        // A long answer's real spoken brief is generated AFTER the body (so the
+        // body never waits on it) and streamed to TTS sentence by sentence, so
+        // the final text only exists once speech is already playing. This frame
+        // corrects the string the word-highlight tracks — without it the
+        // highlight would follow the fallback while something else is heard,
+        // the exact desync the `spoken` field was added to fix.
+        const _suTurn = typeof payload.turn_id === 'string' ? payload.turn_id : undefined
+        const _suSpoken = typeof payload.spoken === 'string' ? payload.spoken : undefined
+        if (_suSpoken && typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:spoken_update', {
+            detail: { turn_id: _suTurn, spoken: _suSpoken }
+          }))
+        }
+        break
+      }
+
        case "chat_chunk": {
           // Streaming chunk — dispatch for progressive rendering
           if (typeof window !== 'undefined' && typeof payload.chunk === 'string') {
@@ -1632,6 +1650,15 @@ export function useIRISWebSocket(
       case 'cli_output': {
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('iris:cli_output', { detail: payload }))
+        }
+        break
+      }
+
+      // Gate 3 T1 (REQ-1 AC6): direct shell output — CONTRACT LOCK shape
+      // { line, proc_id } from the persistent session shell.
+      case 'terminal_output': {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:terminal_output', { detail: payload }))
         }
         break
       }

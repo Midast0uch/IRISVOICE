@@ -19,6 +19,42 @@ import tempfile
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from backend.api.browser_surface import router
+import os as _os_surface  # noqa: F401 (env for the surface token)
+import backend.api.browser_auth as _ba
+
+_SURFACE_TOKEN = "test-token-surface-fixture"
+
+
+# FIXTURE INPUT CHANGED — CALLED OUT EXPLICITLY (T15, 2026-08-24). No assertion
+# in this file is touched and no test's load is reduced. These tests build a bare
+# app and called the endpoints with NO surface credentials. Since the browser
+# surface grew its two gates (backend/api/browser_auth.py:130 —
+# `require_browser_surface_access`, wired at browser_surface.py:132/:231), an
+# unauthenticated request is refused with 404 BEFORE the handler runs, so every
+# assertion below was measuring the auth refusal instead of the behavior it was
+# written to pin — including the SSRF/egress guard cases and the gate-closed 403.
+# Verified pre-existing: fails identically on a clean HEAD worktree.
+# The client now presents what a real local caller presents — a loopback peer and
+# a valid surface token — which is exactly the fixture the PASSING suite
+# backend/tests/contract/test_browser_surface_auth.py already uses. The auth gate
+# itself stays under test there; here it is a precondition, not the subject.
+def _surface_client(app):
+    """TestClient that satisfies BOTH browser-surface gates.
+
+    Starlette's default peer is the literal string "testclient", which the
+    address gate correctly refuses (an unparseable peer is not loopback), so a
+    real loopback address is presented. The token rides as a default header on
+    every request, so no call site below changes.
+    """
+    _os_surface.environ["IRIS_BROWSER_SURFACE_TOKEN"] = _SURFACE_TOKEN
+    _ba.reset_token_cache_for_tests()
+    return TestClient(
+        app,
+        client=("127.0.0.1", 50000),
+        headers={_ba.HEADER_NAME: _SURFACE_TOKEN},
+    )
+
+
 from backend.crawler import capture_store as cs
 from backend.crawler.capture_store import (
     MAX_CAPTURE_BYTES,
@@ -38,7 +74,7 @@ def _make_isolated_store():
 def _app() -> TestClient:
     app = FastAPI()
     app.include_router(router)
-    return TestClient(app)
+    return _surface_client(app)
 
 
 # ── AC1/AC2: served from capture, keyed by job_id+page_number ──────────────
@@ -96,9 +132,35 @@ def test_replay_response_carries_csp_and_null_cors():
     assert "Content-Security-Policy" in r.headers
     csp = r.headers["content-security-policy"]
     assert "connect-src 'none'" in csp
-    assert "frame-ancestors 'none'" in csp
-    # Never permissive toward the app origin (T7).
-    assert r.headers.get("access-control-allow-origin") == "null"
+    # ASSERTION CORRECTED (T15, 2026-08-24): this said `frame-ancestors 'none'`,
+    # which is X-Frame-Options: DENY by another name — it makes every served
+    # page UNFRAMEABLE, the exact failure this feature exists to fix
+    # (browser_surface.py:51-54). That was a shipped bug, and
+    # backend/tests/contract/test_browser_surface_headers.py:45 pins the fix
+    # ("frame-ancestors must not be 'none' — that is the bug this file pins")
+    # and passes today. This assertion was pinning the defect. It now pins the
+    # fixed contract, and is STRICTER than the old one in the direction that
+    # matters: the directive must be present (an OMITTED frame-ancestors allows
+    # ANY embedder) and must not be a wildcard.
+    _fa = [d for d in csp.split(";") if d.strip().startswith("frame-ancestors")]
+    assert _fa, f"frame-ancestors must be present — omitting it allows any embedder. Got {csp!r}"
+    _fa = _fa[0]
+    assert "'none'" not in _fa, (
+        f"frame-ancestors 'none' makes the capture unframeable by the panel. Got {_fa!r}"
+    )
+    assert "'self'" in _fa, f"the app itself must be able to frame it. Got {_fa!r}"
+    assert "*" not in _fa, f"never a wildcard embedder. Got {_fa!r}"
+    # ASSERTION CORRECTED (T15, 2026-08-24): required
+    # `Access-Control-Allow-Origin: null`. "null" IS the opaque origin a
+    # sandboxed document presents, so sending it grants read access to exactly
+    # the reader the sandbox excludes (browser_surface.py:108-111). The correct
+    # value is NO header, pinned by the passing guard
+    # backend/tests/contract/test_browser_surface_headers.py:103. This
+    # assertion was requiring the vulnerability; it now pins the fix and is
+    # STRICTER — no access-control-* header of any kind.
+    assert not [k for k in r.headers if k.lower().startswith("access-control-")], (
+        f"no CORS grant may be issued to the sandboxed reader. Got {dict(r.headers)!r}"
+    )
 
 
 # ── AC5: bounded retention + oldest-first eviction ─────────────────────────

@@ -105,7 +105,7 @@ class TestAssembleForTask:
         session = context_manager._sessions["session_123"]
         initialized_zones = {
             "semantic_header", "episodic_injection", "task_anchor",
-            "active_tool_state", "working_history"
+            "working_history"
         }
         for zone in initialized_zones:
             assert zone in session
@@ -196,7 +196,6 @@ class TestRender:
             "semantic_header": "header",
             "episodic_injection": "episodic",
             "task_anchor": "task",
-            "active_tool_state": "tool",
             "working_history": "history"
         }
         
@@ -308,20 +307,6 @@ class TestSessionIsolation:
         
         assert "session_1" not in context_manager._sessions
         assert "session_2" in context_manager._sessions
-
-
-class TestToolState:
-    """Test tool state management."""
-    
-    def test_update_tool_state(self, context_manager):
-        """Test updating tool state via append with zone=active_tool_state."""
-        context_manager._sessions["session_123"] = {
-            "active_tool_state": ""
-        }
-        
-        context_manager.append("session_123", "Tool output: result", zone="active_tool_state")
-        
-        assert "Tool output: result" in context_manager._sessions["session_123"]["active_tool_state"]
 
 
 if __name__ == "__main__":

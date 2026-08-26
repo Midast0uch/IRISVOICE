@@ -17,9 +17,10 @@ export interface CliTool {
  *   - typing `/help` in the composer
  *   - the persistent /help affordance beside the composer
  *
- * Surfaces the EXISTING backend CLI registry (fetched from /api/dev/cli-tools)
- * — never a second hardcoded copy. Prefixes are always shown; the tool list
- * renders whatever the endpoint returned (empty in personal mode is fine).
+ * Surfaces IRIS's own dev command surface (fetched from /api/dev/cli-tools,
+ * REQ-0 AC4) — never a second hardcoded copy. Prefixes are always shown; the
+ * command list renders whatever the endpoint returned (empty in personal mode
+ * is fine).
  */
 export function HelpPanel({ tools, onClose }: { tools: CliTool[]; onClose: () => void }) {
   return (
@@ -53,7 +54,7 @@ export function HelpPanel({ tools, onClose }: { tools: CliTool[]; onClose: () =>
           </div>
           <div>
             <div className="font-mono text-[11px] text-cyan-300">/run &lt;request&gt;</div>
-            <div className="text-white/60">DELEGATE — IRIS picks a CLI tool and drives it for you.</div>
+            <div className="text-white/60">DELEGATE — IRIS's own agent runs the task for you.</div>
           </div>
         </div>
 

@@ -1082,13 +1082,18 @@ async def set_launcher_mode(request: dict):
     cfg = _load_iris_config()
     cfg["mode"] = mode
 
-    # Manage developer worktree isolation
+    # Manage developer worktree isolation.
+    # BUGFIX (session 259, pin_3bf7b4344f56): dev_worktree.setup()/teardown()
+    # run git subprocesses and were called inline on the event loop — a slow
+    # git op (fsmonitor/index rebuild on a large dirty tree) wedged the whole
+    # backend. Off-loop via to_thread; the endpoint stays responsive.
     wt_info = None
     try:
+        import asyncio as _asyncio
         from backend import dev_worktree
 
         if mode == "developer":
-            wt_info = dev_worktree.setup()
+            wt_info = await _asyncio.to_thread(dev_worktree.setup)
             if wt_info.get("status") == "ok":
                 cfg["worktree_path"] = wt_info.get("worktree_path")
                 cfg["worktree_branch"] = wt_info.get("branch")
@@ -1096,7 +1101,7 @@ async def set_launcher_mode(request: dict):
             else:
                 logger.warning(f"[Mode] Worktree setup failed: {wt_info.get('error')}")
         elif mode == "personal":
-            teardown = dev_worktree.teardown(merge=False)
+            teardown = await _asyncio.to_thread(dev_worktree.teardown, merge=False)
             cfg.pop("worktree_path", None)
             cfg.pop("worktree_branch", None)
             logger.info(f"[Mode] Worktree teardown: {teardown.get('status')}")
@@ -1218,36 +1223,69 @@ async def get_worktree_status():
     return dev_worktree.status()
 
 
+# REQ-0 AC4: IRIS's own dev command surface — the single source of truth the
+# slash menu reads (REQ-7 AC1 initial surface). The external CLI registry
+# (cli_tools.yaml) was removed with D7; these commands execute inside IRIS.
+IRIS_DEV_COMMANDS = [
+    {
+        "name": "run",
+        "display_name": "/run",
+        "when_to_use": "Run a task on IRIS's own agent in the active project workdir.",
+        "available": True,
+        "reason": None,
+    },
+    {
+        "name": "help",
+        "display_name": "/help",
+        "when_to_use": "Show the developer-mode command surface and usage hints.",
+        "available": True,
+        "reason": None,
+    },
+    {
+        "name": "review",
+        "display_name": "/review",
+        "when_to_use": "Audit the current diff for over-engineering and return a delete-list.",
+        "available": True,
+        "reason": None,
+    },
+    {
+        "name": "debt",
+        "display_name": "/debt",
+        "when_to_use": "Scan the workdir for deferred-work markers and render them as cards.",
+        "available": True,
+        "reason": None,
+    },
+    {
+        "name": "term",
+        "display_name": "/term",
+        "when_to_use": "Toggle the terminal panel.",
+        "available": True,
+        "reason": None,
+    },
+    {
+        "name": "clear",
+        "display_name": "/clear",
+        "when_to_use": "Clear the terminal scrollback.",
+        "available": True,
+        "reason": None,
+    },
+]
+
+
 @app.get("/api/dev/cli-tools", dependencies=[_require_dev])
 async def get_cli_tools():
     """
-    Expose the CLI tool registry (display_name + when_to_use) to the UI.
+    Expose IRIS's own dev command surface to the UI.
 
-    REQ-20 AC5: surface the EXISTING backend/dev/cli_tools.yaml — never a
-    second hardcoded copy in the frontend. A tool whose command is not on
-    PATH renders as available=false with a reason (REQ-20 edge case), never
-    hidden.
+    REQ-0 AC4: this is the single source of truth the slash menu reads —
+    not a second hardcoded list in the frontend. Built-in commands are always
+    available; the field set matches the historical shape so the frontend
+    contract is unchanged.
     """
     try:
-        try:
-            from backend.dev.cli_registry import get_cli_registry
-        except ImportError:  # pragma: no cover - server runs with backend/ on path
-            from dev.cli_registry import get_cli_registry
-
-        registry = get_cli_registry()
-        tools = []
-        for tool in registry.all_tools():
-            available = tool.is_available()
-            tools.append({
-                "name": tool.name,
-                "display_name": tool.display_name,
-                "when_to_use": tool.when_to_use.strip(),
-                "available": available,
-                "reason": None if available else f"{tool.command} not found on PATH",
-            })
-        return {"tools": tools}
+        return {"tools": [dict(cmd) for cmd in IRIS_DEV_COMMANDS]}
     except Exception as exc:  # pragma: no cover - defensive: help must never break
-        logger.error("[api/dev/cli-tools] failed to load registry: %s", exc)
+        logger.error("[api/dev/cli-tools] failed to load command surface: %s", exc)
         return {"tools": []}
 
 
@@ -2153,6 +2191,55 @@ async def api_swarm_status():
 
 
 # ── Config Save (HTTP fallback for APPLY button when WebSocket unavailable) ─
+# ── Gate 3 T11 (REQ-6): terminal command history persistence ────────────────
+# Per-conversation, backend-backed (NOT localStorage — REQ-6 AC2: the Tauri
+# webview's localStorage is per-webview and cleared on some reinstall paths).
+_TERMINAL_HISTORY_DIR = os.path.join(os.path.dirname(__file__), "data", "terminal_history")
+_TERMINAL_HISTORY_BOUND = 200
+
+
+def _terminal_history_path(conversation_id: str) -> str:
+    safe = "".join(c for c in conversation_id if c.isalnum() or c in "-_")[:80]
+    if not safe:
+        raise HTTPException(status_code=400, detail="bad conversation_id")
+    return os.path.join(_TERMINAL_HISTORY_DIR, f"{safe}.json")
+
+
+@app.get("/api/terminal/history")
+async def api_terminal_history_get(conversation_id: str):
+    path = _terminal_history_path(conversation_id)
+    try:
+        import json as _json
+        with open(path, "r", encoding="utf-8") as fh:
+            return {"history": _json.load(fh)}
+    except FileNotFoundError:
+        return {"history": []}
+    except Exception as exc:
+        logger.warning("[terminal-history] read failed: %s", exc)
+        return {"history": []}
+
+
+@app.post("/api/terminal/history")
+async def api_terminal_history_post(body: dict = {}):
+    conversation_id = str(body.get("conversation_id", ""))
+    history = body.get("history")
+    if not conversation_id or not isinstance(history, list):
+        return {"status": "error", "message": "conversation_id and history[] required"}
+    history = [str(h)[:500] for h in history][-_TERMINAL_HISTORY_BOUND:]
+    try:
+        import json as _json
+
+        os.makedirs(_TERMINAL_HISTORY_DIR, exist_ok=True)
+        tmp = _terminal_history_path(conversation_id) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            _json.dump(history, fh)
+        os.replace(tmp, _terminal_history_path(conversation_id))
+        return {"status": "ok"}
+    except Exception as exc:
+        logger.warning("[terminal-history] write failed: %s", exc)
+        return {"status": "error", "message": str(exc)}
+
+
 @app.post("/api/config/save")
 async def api_config_save(body: dict = {}):
     """Save section card values to config.
@@ -2621,6 +2708,29 @@ _client_tasks: Dict[str, Set[asyncio.Task]] = {}
 # Message types that are handled immediately (lightweight control frames)
 _CONTROL_FRAMES = {"ping", "pong", "request_state"}
 
+# Session 248 FIX (live conv-53): permission/question responses MUST bypass
+# the per-session ordering lock. The lock is held for a turn's WHOLE
+# duration, and the DER turn blocks INSIDE the permission wait — so a grant
+# dispatched through the locked lane sat unread for the full 120s timeout,
+# resolved nothing ("Response for unknown request"), and the card never
+# acknowledged the click. These handlers are tiny and side-effect-light;
+# they are exactly the messages that must arrive WHILE a turn runs.
+_CONTROL_FRAMES |= {"notification_response", "question_response"}
+
+# dev-cli-ide REQ-24: frames that must reach the backend WHILE a turn runs but
+# are too slow to handle inline in the reader loop. They are dispatched as
+# background tasks WITHOUT _session_message_locks.
+#
+# terminal_input is the case that matters: the session lock is held for a
+# turn's WHOLE duration, so a user `>` command typed while the agent worked sat
+# unread until the turn ended. Developer mode advertises a terminal that runs
+# beside the agent; behind the lock it does not. Ordering is NOT lost by
+# leaving the lock: SubprocessManager owns a per-session `_cmd_lock` ("one
+# shell => serialized commands"), so two commands from one session still run in
+# the order they arrived. The lock was ordering the shell against the AGENT's
+# turn, which is exactly the coupling that has to go.
+_UNLOCKED_FRAMES = {"terminal_input"}
+
 # REQ-15 (T25/T26): steer / pause / stop / resume ride a dedicated channel so
 # they reach the RUNNING DER loop at its next step boundary instead of
 # queueing behind a running turn's handle_message (_session_message_locks).
@@ -2726,13 +2836,51 @@ async def websocket_endpoint(
                 # (AC1). AC5: acknowledge the landing immediately ("queued")
                 # and re-send any still-unacknowledged (stale) records.
                 try:
+                    # REQ-25: the WS client wraps every frame as
+                    # {type, payload, seq}, while the original REQ-15 handler
+                    # read `text` from the TOP level only. A steer sent by the
+                    # UI therefore arrived with text="" and revised nothing --
+                    # the channel looked alive (it acked) and did nothing.
+                    # Accept both shapes.
+                    _sp = message.get("payload")
+                    if not isinstance(_sp, dict):
+                        _sp = {}
                     _rec = get_steering_inbox().push(
                         channel=msg_type,
                         session_id=active_session_id,
-                        text=message.get("text", ""),
-                        message_id=message.get("message_id"),
+                        text=message.get("text") or _sp.get("text") or "",
+                        message_id=(message.get("message_id")
+                                    or _sp.get("message_id")),
                     )
                     emit_queued_ack(_rec)
+                    # REQ-26 AC1-AC4: acknowledge RECEIPT out loud. The ack
+                    # frame and the chat line are both VISIBLE signals; a
+                    # voice-first user gets neither. Measured on 2026-08-26:
+                    # a steer sat 136s between arriving and being applied,
+                    # while narration kept describing the work the user had
+                    # just asked to stop. AC2: this says HEARD, not APPLIED --
+                    # the record is consumed at the next step boundary, and
+                    # claiming the plan already changed would be a lie for the
+                    # length of the running step. AC3/AC4: the SpeakTool
+                    # singleton with priority "low" queues behind whatever is
+                    # already speaking on the narration lock; it never
+                    # interrupts and never opens a second audio path.
+                    if msg_type == "steer" and (_rec.text or "").strip():
+                        try:
+                            from backend.agent.tools.speak_tool import get_speak_tool
+                            from backend.agent.narration import may_narrate
+
+                            if may_narrate():
+                                get_speak_tool().speak(
+                                    "Got it. I will switch after this step.",
+                                    priority="low",
+                                    conversation_id=active_session_id,
+                                )
+                        except Exception as _spk_exc:  # noqa: BLE001
+                            logger.debug(
+                                "[WS] steer acknowledgement speak skipped: %s",
+                                _spk_exc,
+                            )
                     # AC5: an unacknowledged steering message SHALL be re-sent.
                     resend_stale_acks(active_session_id)
                     logger.info(
@@ -2746,9 +2894,12 @@ async def websocket_endpoint(
                     )
             else:
                 # Long-running: dispatch to background task, preserving per-session order
-                async def _dispatch(msg: dict, sid: str, cid: str):
+                _unlocked = msg_type in _UNLOCKED_FRAMES
+
+                async def _dispatch(msg: dict, sid: str, cid: str,
+                                    unlocked: bool = _unlocked):
                     try:
-                        lock = _session_message_locks.get(sid)
+                        lock = None if unlocked else _session_message_locks.get(sid)
                         if lock:
                             async with lock:
                                 await handle_message(cid, sid, msg)

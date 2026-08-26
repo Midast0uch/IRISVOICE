@@ -171,3 +171,80 @@ def inject_view_agent(html_str: str, nonce: str | None = None) -> str:
         cut = tail_start + body_idx
         return html_str[:cut] + injected + html_str[cut:]
     return html_str + injected
+
+
+# ── Fit-to-width scaler (specs/vision-browser-stage REQ-10, T7) ─────────────
+# The fit style above CAPS wide content (max-width + overflow-x hidden) — a
+# 1600px fixed table inside a ~500px frame gets CLIPPED, not shrunk, which is
+# exactly "you can never see the whole page in width". This script adds the
+# missing pass: a VISUAL transform scale of the document element to the frame
+# width.
+#
+# COORDINATE CONTRACT (deliberate, differs from an early design sketch):
+# a CSS transform changes NOTHING about layout — scrollWidth, scrollHeight and
+# scroll offsets stay in ORIGINAL page pixels. Therefore the view-agent's
+# scrollTo command and the session's scroll_y reports remain valid AS-IS; no
+# __irisScale multiplication is applied to scroll offsets. Uniform scaling
+# about origin 0 0 also preserves relative positions, so the overlay cursor's
+# viewport-fraction mapping stays correct without compensation.
+#
+# OPT GATE (tasks.md T7): one rAF-throttled fit pass per resize; no MutationObserver,
+# no polling; two property reads per pass.
+_SCALE_MARKER = "__iris_scaler_v1__"
+
+_VIEW_SCALE_SCRIPT = (
+    "<!-- " + _SCALE_MARKER + " -->\n"
+    "(function () {\n"
+    '  "use strict";\n'
+    "  var pending = false;\n"
+    "  function fit() {\n"
+    "    pending = false;\n"
+    "    try {\n"
+    "      var de = document.documentElement;\n"
+    "      var w = Math.max(de.scrollWidth, document.body ? document.body.scrollWidth : 0);\n"
+    "      var target = window.innerWidth || de.clientWidth || 0;\n"
+    "      if (!w || !target) { return; }\n"
+    "      var s = w > target ? target / w : 1;\n"
+    "      de.style.transformOrigin = '0 0';\n"
+    "      de.style.transform = s < 1 ? 'scale(' + s + ')' : '';\n"
+    "      window.__irisScale = s;\n"
+    "    } catch (e) { /* never raise */ }\n"
+    "  }\n"
+    "  function schedule() {\n"
+    "    if (pending) { return; }\n"
+    "    pending = true;\n"
+    "    try { requestAnimationFrame(fit); } catch (e) { fit(); }\n"
+    "  }\n"
+    "  try {\n"
+    '    if (document.readyState === "loading") {\n'
+    '      document.addEventListener("DOMContentLoaded", schedule, { once: true });\n'
+    "    } else {\n"
+    "      schedule();\n"
+    "    }\n"
+    '    window.addEventListener("resize", schedule, { passive: true });\n'
+    '    window.addEventListener("load", schedule, { once: true });\n'
+    "  } catch (e) { /* never raise */ }\n"
+    "})();\n"
+)
+
+
+def inject_view_scaler(html_str: str, nonce: str | None = None) -> str:
+    """Inject the fit-to-width scaler next to the view-agent (REQ-10 AC1-AC3).
+
+    Same mechanism, same rules as ``inject_view_agent``: nonce-tagged (a bare
+    inline script is CSP-dead — see that function), idempotent by marker,
+    single tail-scan insertion sharing the anchor search. Called immediately
+    AFTER ``inject_view_agent`` at BOTH serve sites (capture + proxy).
+    """
+    if not isinstance(html_str, str) or not html_str:
+        return html_str
+    if _SCALE_MARKER in html_str:
+        return html_str
+    attr = f' nonce="{nonce}"' if nonce else ""
+    injected = f"<script{attr}>{_VIEW_SCALE_SCRIPT}</script>"
+    tail_start = max(0, len(html_str) - 8192)
+    body_idx = html_str[tail_start:].lower().rfind("</body>")
+    if body_idx != -1:
+        cut = tail_start + body_idx
+        return html_str[:cut] + injected + html_str[cut:]
+    return html_str + injected

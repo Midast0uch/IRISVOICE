@@ -157,8 +157,21 @@ async def run_with_narration(
     verb = _TOOL_VERB.get(tool_name, "working on that")
     conv_id = conversation_id or "unknown"
     turn_id_ = turn_id or "unknown"
+    # REQ-27 AC2/AC5: the last line actually spoken by THIS heartbeat. A
+    # heartbeat exists to report progress; repeating a line reports none. The
+    # bare verb is the worst offender -- with no status_fn the loop used to say
+    # "reading..." on every tick for an entire crawl, while the tool was
+    # searching, fetching, extracting, ranking and synthesising. Tracking the
+    # last line means the fallback verb is said AT MOST ONCE per run, and a
+    # detail line repeats only when the detail itself has moved on.
+    last_spoken: Optional[str] = None
 
     async def _heartbeat() -> None:
+        # `last_spoken` is ASSIGNED below, which without this makes it local to
+        # _heartbeat and turns the first read into UnboundLocalError -- the
+        # exact failure this function's own history warns about, where the
+        # exception escapes and the heartbeat goes mute with no log line.
+        nonlocal last_spoken
         try:
             while not run_task.done():
                 await asyncio.sleep(interval_s)
@@ -171,7 +184,22 @@ async def run_with_narration(
                     except Exception:  # pragma: no cover - best effort
                         detail = ""
                 # W5 (T37/T38): conversational snippet heartbeat, never "Still researching".
+                # REQ-27 AC1/AC4: the detail is the agent's own description of
+                # the work; the fixed verb is the LAST resort, not the default.
                 msg = detail if detail else f"{verb}…"
+                # REQ-27 AC2/AC5: silence beats repetition. Logged (AC7) so a
+                # quiet heartbeat is still an observable decision, not a gap.
+                if msg == last_spoken:
+                    try:
+                        logger.info("Narration silent", extra={
+                            "context": "narration", "text": "",
+                            "reason": "unchanged_since_last_line",
+                            "tool_name": tool_name, "conversation_id": conv_id,
+                            "turn_id": turn_id_,
+                        })
+                    except Exception:
+                        pass
+                    continue
                 if should_narrate and may_narrate():
                     # REQ-9: structured log for narration heartbeat. Guarded so a
                     # logging fault can never silently cancel the heartbeat loop
@@ -188,6 +216,7 @@ async def run_with_narration(
                         logger.debug("[narration] heartbeat log failed: %s", exc)
                     try:
                         speak(msg, "low")
+                        last_spoken = msg
                     except Exception as exc:  # pragma: no cover - best effort
                         logger.debug("[narration] heartbeat speak failed: %s", exc)
         except asyncio.CancelledError:

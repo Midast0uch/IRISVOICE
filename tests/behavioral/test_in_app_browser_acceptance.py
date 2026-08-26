@@ -35,6 +35,42 @@ from fastapi.testclient import TestClient
 import backend.agent.tool_registry as tr
 import backend.proxy.fetch_client as fc
 from backend.api.browser_surface import router
+import os as _os_surface  # noqa: F401 (env for the surface token)
+import backend.api.browser_auth as _ba
+
+_SURFACE_TOKEN = "test-token-surface-fixture"
+
+
+# FIXTURE INPUT CHANGED — CALLED OUT EXPLICITLY (T15, 2026-08-24). No assertion
+# in this file is touched and no test's load is reduced. These tests build a bare
+# app and called the endpoints with NO surface credentials. Since the browser
+# surface grew its two gates (backend/api/browser_auth.py:130 —
+# `require_browser_surface_access`, wired at browser_surface.py:132/:231), an
+# unauthenticated request is refused with 404 BEFORE the handler runs, so every
+# assertion below was measuring the auth refusal instead of the behavior it was
+# written to pin — including the SSRF/egress guard cases and the gate-closed 403.
+# Verified pre-existing: fails identically on a clean HEAD worktree.
+# The client now presents what a real local caller presents — a loopback peer and
+# a valid surface token — which is exactly the fixture the PASSING suite
+# backend/tests/contract/test_browser_surface_auth.py already uses. The auth gate
+# itself stays under test there; here it is a precondition, not the subject.
+def _surface_client(app):
+    """TestClient that satisfies BOTH browser-surface gates.
+
+    Starlette's default peer is the literal string "testclient", which the
+    address gate correctly refuses (an unparseable peer is not loopback), so a
+    real loopback address is presented. The token rides as a default header on
+    every request, so no call site below changes.
+    """
+    _os_surface.environ["IRIS_BROWSER_SURFACE_TOKEN"] = _SURFACE_TOKEN
+    _ba.reset_token_cache_for_tests()
+    return TestClient(
+        app,
+        client=("127.0.0.1", 50000),
+        headers={_ba.HEADER_NAME: _SURFACE_TOKEN},
+    )
+
+
 from backend.crawler import capture_store as cs
 from backend.crawler.capture_store import CaptureStore
 from backend.proxy.egress_guard import EgressRefused, check_url, MAX_REDIRECT_DEPTH
@@ -54,7 +90,7 @@ def _client(monkeypatch, handler):
     monkeypatch.setattr(fc, "_DEFAULT_TRANSPORT_FACTORY", lambda: httpx.MockTransport(handler))
     app = FastAPI()
     app.include_router(router)
-    return TestClient(app)
+    return _surface_client(app)
 
 
 # ── SC-1 (REQ-2): typed URL renders through the proxy ─────────────────────
@@ -92,7 +128,7 @@ def test_sc2_crawl_captures_render_in_order(isolated_env):
 
     app = FastAPI()
     app.include_router(router)
-    c = TestClient(app)
+    c = _surface_client(app)
 
     for page, expected in ((1, "page one"), (2, "page two"), (3, "page three")):
         r = c.get(f"/api/browser/capture/job_crawl/{page}")
@@ -115,7 +151,7 @@ def test_sc3_served_content_carries_view_agent(isolated_env):
     isolated_env.save("job_view", 1, "https://a.example/p1", "<html><body>v</body></html>")
     app = FastAPI()
     app.include_router(router)
-    c = TestClient(app)
+    c = _surface_client(app)
     r = c.get("/api/browser/capture/job_view/1")
     assert r.status_code == 200
     # Both paths inject the view-agent (REQ-4 AC1). The scroll/report contract
@@ -139,7 +175,14 @@ def test_sc4_served_page_is_isolated(isolated_env, monkeypatch):
     r = c.get("/api/browser/proxy", params={"url": "https://example.com/iso"})
     assert "content-security-policy" in r.headers
     # CORS toward the app origin is either absent or explicitly "null".
-    assert r.headers.get("access-control-allow-origin") in (None, "null")
+    # ASSERTION TIGHTENED (T15, 2026-08-24): accepted either None or "null".
+    # "null" IS the opaque origin of a sandboxed document, so it grants read
+    # access to the very reader the sandbox excludes (browser_surface.py:108-111,
+    # pinned by test_browser_surface_headers.py:103). Only the absent header is
+    # correct, so the "null" alternative is removed rather than tolerated.
+    assert not [k for k in r.headers if k.lower().startswith("access-control-")], (
+        f"no CORS grant may be issued to the sandboxed reader. Got {dict(r.headers)!r}"
+    )
     assert "access-control-allow-credentials" not in r.headers
 
     # 4b: the web content frame is sandboxed WITHOUT allow-same-origin /
@@ -192,7 +235,7 @@ def test_sc6_proxy_gate_closed_does_not_block_crawl(isolated_env):
     tr.set_capability_providers(lambda: False, lambda: False)  # gate CLOSED
     app = FastAPI()
     app.include_router(router)
-    c = TestClient(app)
+    c = _surface_client(app)
     # Proxy refuses (403, names the gate)...
     r = c.get("/api/browser/proxy", params={"url": "https://example.com/x"})
     assert r.status_code == 403

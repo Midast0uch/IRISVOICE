@@ -76,9 +76,21 @@ def test_t0f_learn_from_crawl_registers_urls():
     with mock.patch("backend.crawler.source_registry.get_source_registry",
                     return_value=reg):
         orch = CrawlOrchestrator()
+        # REPORTABLE FIXTURE EDIT (T15, 2026-08-24): markdown was "m" — ONE
+        # character. `_learn_from_crawl` now filters pages through
+        # `page_is_usable` (REQ-1 AC1/AC3), and MIN_CONTENT_CHARS is 20
+        # (usability.py:35), so a 1-char page is TOO_SHORT, `ok_pages` is
+        # empty, and the function returns before reaching the registry — the
+        # input never got to the assertion. The old fixture encoded the
+        # PRE-REQ-1 behavior this very filter was added to kill (a page with
+        # error=None and no content being learned as a good source). Content is
+        # now above the floor so the page is genuinely usable. The assertion is
+        # unchanged, and this test still drives exactly one page.
+        markdown = ("Real extracted article body, comfortably above the "
+                    "minimum content floor for usability.")
         fetched = CrawlResult(
             query="ai hardware", pages=[PageData(url="http://x.com/a", title="A",
-                                                 markdown="m", html=None, metadata={})],
+                                                 markdown=markdown, html=None, metadata={})],
             duration_ms=1, crawled_at="")
         asyncio.run(orch._learn_from_crawl(fetched, "ai hardware"))
     res = asyncio.run(reg.resolve("ai hardware"))

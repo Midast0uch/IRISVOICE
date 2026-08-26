@@ -170,8 +170,8 @@ Rules:
 - Run the project's existing suite (pytest / npm test / tsc) to catch regressions.
 
 ### Phase 4 — Record & crystallize
-- `mcm_define_feature(name='<feature>', seed_files=[...], thread_id='<session>')`.
-- For each verified REQ cluster, `mcm_cad_mcm_crystallize_landmark(feature_id, name, description)`.
+- `define_feature(name='<feature>', seed_files=[...], thread_id='<session>')`  — note: no `mcm_` prefix.
+- For each verified REQ cluster, `crystallize_landmark(feature_id=..., name=..., description=...)`  — note: no `mcm_` prefix.
 - `mcm_compress(active_task='<feature> implementation complete', active_files=[...])`.
 
 ## Hard rules

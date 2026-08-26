@@ -111,3 +111,16 @@ bench_*.bat
 **/__pycache__/
 
 llama.cpp-prismml-src/
+
+# ── Heavy local-only directories (added 2026-08-25, GATE0-FINDINGS G0-10) ──
+# Turbopack honours .gitignore, so these entries are what actually keeps model
+# weights and virtualenvs out of the build scan. The old next.config.mjs
+# webpack `watchOptions.ignored` regex that used to do this never ran under
+# Next 16 — see specs/dev-cli-ide/GATE0-FINDINGS.md.
+#
+# NOTE: models/wake_words/ is deliberately NOT ignored — the Porcupine
+# hey-iris .ppn is tracked and required at runtime. Only the weights go.
+models/gguf/
+venv/
+.venv/
+llama.cpp/

@@ -31,9 +31,9 @@ If you need a fresh read mid-session:
 ---
 
 STEP 1 — CHECK AVAILABLE WORK
-  claim_work()
-or
   get_session() → check pos 15 (work items available)
+NOTE: there is no claim_work() tool on the MCM MCP server. Work items are
+visible through get_session() only; claiming is not exposed.
 Shows what is available to build, what is in progress, and relevant warnings.
 Use this to decide what to work on this session.
 
@@ -67,8 +67,71 @@ The graph is a navigation instrument with three layers:
 
 HOW TO BUILD ANYTHING
 READ spec -> NAVIGATE graph -> READ file -> BUILD -> QUALITY CHECK -> RUN spec test
-  PASS -> record_test(file, 'pass') + pin_add(title, 'decision')
+  PASS -> record_test(file=..., result='pass') + pin_add(title=..., type='decision')
   FAIL -> fix code, return to QUALITY CHECK. The test does not change.
+
+THE SCOPE BOUND — HOW MUCH TO BUILD (read BEFORE writing code)
+Two ladders decide the SHAPE of a change. Two lines decide its EDGES.
+The ladders alone are not enough: they tell you how small each piece should be
+and say nothing about how far the change should reach. An agent obeying only the
+ladders will still write three files when the task needed one, because every
+individual piece passed the "is this minimal?" test.
+
+MINIMALITY LADDER — how small (stop at the first rung that works):
+  1. Does this need to exist at all?
+  2. Is it already in the codebase? (search before writing — duplicates are the
+     most common over-build in this repo)
+  3. Standard library?
+  4. Platform-native (OS, framework, browser API)?
+  5. A dependency already installed?
+  6. Can it be one line?
+  7. The minimum that actually works.
+
+DEPTH LADDER — how sure (all rungs, always, no early exit):
+  a. Read the code the change touches before writing.
+  b. Trace the real flow — not the flow you assume.
+  c. Enumerate the edge cases and say which are handled.
+  d. Verify with the project's own tests.
+  e. Optimize only measured hot paths.
+
+THE RUNGS RUN AFTER UNDERSTANDING, NEVER INSTEAD OF IT.
+Minimalism applies to CODE. It never applies to UNDERSTANDING, VERIFICATION,
+ERROR HANDLING, SECURITY, or ACCESSIBILITY. Those are not rungs to skip.
+
+EVERY TASK CARRIES TWO LINES — they are the contract, not commentary:
+  DONE =     the single observable condition that ends the task. When it is
+             true, STOP. Not "when it feels complete."
+  NOT THIS = the specific over-builds this task invites. Producing any of them
+             is a task FAILURE even if the code works.
+
+You are measured against those two lines, never against your own sense of
+completeness. If a task has no DONE/NOT THIS lines, write them and state them
+back before starting — an unbounded task is an unstarted task.
+
+THE OVER-BUILD LIST — what NOT THIS almost always means here:
+  - An abstraction over a set of size one (a "pluggable backend" for one backend,
+    an interface with one implementer, a registry with one entry).
+  - A framework where a function was asked for — a scheduler, a policy engine, a
+    template system, a plugin layer, a DSL.
+  - Configuration for something nobody asked to configure.
+  - A compatibility shim or deprecation path for code you were told to delete.
+  - Helper/utility modules created to hold code used exactly once.
+  - Defensive handling for states the type system or call site already excludes.
+  - Refactoring adjacent code you were not asked to touch, "while you're in there."
+  - New tests written to describe what you built, instead of running the tests
+    that already define the requirement (see THE TEST RULE — ABSOLUTE).
+
+WHEN THE BOUND AND THE WORK CONFLICT — REPORT, DO NOT WIDEN.
+If DONE = is unreachable without producing something on the NOT THIS = list,
+that is a FINDING. Stop, name the specific conflict, propose the smallest change
+to the bound that resolves it, and wait. Quietly widening the bound destroys the
+evidence that the task was scoped wrong — the same failure mode as quietly
+weakening a test.
+
+FINISHING IS NOT EXPANDING.
+Deliver the whole task. Do not narrow it either — the requested scope IS the
+deliverable. "Minimal" means no code beyond what DONE = requires; it never means
+a partial implementation, a stub, or a TODO left where work belongs.
 
 THE QUALITY CHECK — REQUIRED BEFORE EVERY TEST RUN
 Verify ALL of these before running the spec test:
@@ -128,16 +191,16 @@ for a reviewer to discover in the diff.
   # After a test passes, anchor the outcome (inline recording is already done above):
   pin_add(title='feature_name', type='decision')
   # Stamp the feature onto the event chain BEFORE crystallizing (this produces feature_id):
-  mcm_define_feature(name='feature_name', seed_files=['file1.py', 'file2.py'], thread_id='<session-id>')
+  define_feature(name='feature_name', seed_files=['file1.py', 'file2.py'], thread_id='<session-id>')
   # Crystallize a verified feature into a permanent landmark (>=1 edit + >=1 test pass + >=1 file):
-  mcm_crystallize_landmark(feature_id, name, description)
+  crystallize_landmark(feature_id=..., name=..., description=...)
   # Checkpoint + trigger on-demand pruning:
   mcm_compress(active_task='what was just completed', active_files=['file1.py', 'file2.py'])
 
   # Record a failure that revealed something:
-  record_test(test_file, test_name, outcome='fail', description='what the failure revealed')
-  # Then add warning:
-  health.add_warning(space='domain', description='what failed', approach='tried', correction='what worked')
+  record_test(file=..., result='fail', description='what the failure revealed')
+  # NOTE: there is no health.add_warning() tool. Record the lesson as a PiN instead:
+  pin_add(title='Warning: <what failed>', type='decision', content='approach tried / what worked')
 
 ---
 
@@ -179,19 +242,19 @@ Git commits are auto-recorded by the MCM plugin on every prompt.
 You only need to manually record events that are NOT part of a commit:
 
   # After editing a file (if not yet committed):
-  record_edit(file_path)
+  record_edit(file='path/to/file.py', description='what changed', thread_id='<session-id>')
 
   # After creating a file:
-  record_create(file_path)
+  record_create(file='path/to/file.py', description='what it is', thread_id='<session-id>')
 
   # After a test passes:
-  record_test(test_file, test_name, outcome='pass', covers=['src/foo.py'])
+  record_test(file='tests/test_foo.py', result='pass', description='what it verified', thread_id='<session-id>')
 
   # After a test fails but reveals something important:
-  record_test(test_file, test_name, outcome='fail', description='what the failure revealed')
+  record_test(file='tests/test_foo.py', result='fail', description='what the failure revealed')
 
   # After an architectural decision:
-  pin_add(title='Decision: chose X over Y', pin_type='decision', content='why')
+  pin_add(title='Decision: chose X over Y', type='decision', content='why', tags=['domain'])
   # Notes encode WHY. The semantic layer compresses these over time.
 
 ---
@@ -204,10 +267,12 @@ Work claiming is atomic — two agents cannot take the same item.
   get_session() → check work_items in state
 
   # Sub-agent workflow:
-  claim_work(agent_id='agent_001')
+  # NOTE: claim_work() and complete_task() are NOT exposed on the MCM MCP
+  # server. Atomic claiming is described in the SDK docs but has no tool
+  # binding here. Until one exists, coordinate work assignment OUTSIDE the
+  # graph and record outcomes with record_edit / record_test / pin_add.
   # ... build the feature ...
-  complete_task(item_id, agent_id='agent_001', status='success')
-  # heartbeat is handled automatically by the SDK
+  record_test(file=..., result='pass', description=..., thread_id='<session-id>')
 
 ---
 
@@ -264,7 +329,7 @@ checkpoint + immediate force-prune: `mcm_compress(active_task='...', active_file
 After condensing, call mcm_recall(query) to recover knowledge.
 
 Loop prevention — same error twice in a row = change approach:
-  health.add_warning(space='conduct', description='loop detected', approach='repeated', correction='try different approach')
+  pin_add(title='Loop detected: <error>', type='decision', content='approach repeated; correction: try a different approach')
 
 Session end is handled automatically by the MCM lifecycle protocol.
 You do not need to run session cleanup manually.
@@ -326,6 +391,40 @@ conflict (report it; never reconcile it yourself).
 
 HOW TO REPORT BACK (user preference, 2026-08-16)
 
+WRITE ALL REPLIES TO THE USER IN ASD-STE100 SIMPLIFIED TECHNICAL ENGLISH.
+ASD-STE100 is the Simplified Technical English standard from the AeroSpace and
+Defence Industries Association of Europe. Apply it strictly.
+
+SCOPE — this rule controls ONLY what you say to the user in chat.
+  APPLIES TO:     chat replies, questions to the user, status reports, summaries.
+  DOES NOT APPLY: source code, code comments, commit messages, PR bodies,
+                  spec files, Markdown documents, test names, log strings,
+                  or tool arguments. Those keep the conventions of the file
+                  or system that contains them.
+
+THE RULES YOU MUST FOLLOW:
+  - Use one word for one meaning. Do not use a synonym for a term you used
+    before. If you write "the build", write "the build" every time.
+  - Use each word as one part of speech only.
+  - Write short sentences. A sentence that gives an instruction: 20 words
+    maximum. A sentence that describes something: 25 words maximum.
+  - Give one instruction in one sentence.
+  - Use the active voice. Do not use the passive voice.
+  - Use the simple tenses: present, past, and future.
+  - Keep the articles "a", "an", and "the". Do not remove them.
+  - Do not use more than three nouns together in a noun cluster.
+  - Write a maximum of six sentences in one paragraph.
+  - Do not use slang, idiom, metaphor, or humour.
+  - Do not use "-ing" forms as nouns.
+  - Say what is true in a positive form. Do not use two negatives.
+  - Use a list when you give more than two related items.
+
+NOTE ON THE APPROVED WORD LIST: ASD-STE100 has a dictionary of approved words.
+You do not have that dictionary in this session. Follow the rules above, choose
+the most common and most simple word for each meaning, and do not claim that
+your output passes a formal STE check. Say "I applied the STE rules" and not
+"this is validated STE".
+
 Keep responses SHORT. No paragraphs of explanation.
   - Plain language, not jargon. Say what broke and what you fixed.
   - Do not narrate every check, every log line, or every intermediate step.
@@ -380,11 +479,50 @@ drops the orphan memory_chain_v2. Never run at app start.
 
 ---
 
+---
+
+MCM TOOL SIGNATURES — VERIFIED 2026-08-25 AGAINST THE LIVE SERVER
+Calling an MCM tool with the wrong parameter names does NOT return a validation
+error from the server — it HANGS until the 120s client timeout. A hung call may
+still have committed its write (verified: one pin_add timed out at the client
+and its row was present in the DB afterwards). So a timeout tells you NOTHING
+about whether the write landed. Check with db_query before retrying, or you
+will create duplicates.
+
+Tools that EXIST on the mcm-cad server:
+  get_session, navigate, read_file, mcm_grep, mcm_glob, db_query, query_events,
+  health_check, record_edit, record_create, record_test, pin_add, pin_search,
+  pin_list, define_feature, crystallize_landmark, mcm_compress, mcm_recall,
+  run_command, submit_plan
+
+Tools this document used to reference that DO NOT EXIST:
+  claim_work, complete_task, pin_link, health.add_warning
+  (also: crystallize_landmark and define_feature carry NO 'mcm_' prefix)
+
+Exact signatures (required args in CAPS):
+  record_edit(FILE, description, thread_id)
+  record_create(FILE, description, thread_id)
+  record_test(FILE, RESULT, description, thread_id)      # result: 'pass'|'fail'
+  pin_add(TITLE, content, tags, type)                     # 'type', not 'pin_type'
+  define_feature(NAME, SEED_FILES, THREAD_ID, description, since_turn)
+  crystallize_landmark(FEATURE_ID, NAME, DESCRIPTION, session_number)
+  navigate(FILE)
+  db_query(SQL, params, limit)                            # SELECT only
+  mcm_grep(PATTERN, directory, include)
+  mcm_glob(PATTERN, directory)
+  mcm_compress(active_task, active_files, retention)
+
 SPEC / DOMAIN QUICK REFERENCE
 Production roadmap:     bootstrap/GOALS.md
 Graph queries:          get_session() or navigate(file)
-Work queue:             claim_work() / get_session()
-Event recording:        record_edit(), record_test(), record_create()
+Work queue:             get_session()   (no claim_work tool exists)
+Event recording:        record_edit(file=), record_test(file=,result=), record_create(file=)
 Session update:         handled automatically by SDK lifecycle
-PiN (Primordial Info Nodes): pin_add(), pin_search(), pin_list()
-Landmark bridges:            pin_link()
+PiN (Primordial Info Nodes): pin_add(title=,content=,type=,tags=), pin_search(query=), pin_list()
+Landmarks:                   define_feature() -> crystallize_landmark()
+                             (NOTE: no pin_link() tool exists)
+Search the repo:             mcm_grep(pattern=,directory=), mcm_glob(pattern=)
+                             WARNING: both walk unbounded and have timed out
+                             (>120s) at the repo root. Scope to a subdirectory.
+Inspect the graph:           db_query(sql=) [read-only, fast], query_events(),
+                             health_check(), read_file(file=)

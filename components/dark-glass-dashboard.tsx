@@ -1195,8 +1195,11 @@ export function DarkGlassDashboard({
           typeof values === 'object' &&
           Object.keys(values).length > 0
       );
+      // Sections are independent, so save them CONCURRENTLY. This loop used to
+      // await each POST in turn; measured 2026-08-26, /api/config/save answers
+      // in 3-4ms warm (412ms cold), so serial cost was small but it scaled with
+      // the number of sections for no reason.
       for (const [sectionId, sectionValues] of allSections) {
-        
         // Try WebSocket first (fast path)
         if (sendMessage) {
           sendMessage('confirm_card', {
@@ -1204,25 +1207,29 @@ export function DarkGlassDashboard({
             values: sectionValues,
           });
         }
-        
-        // Also call HTTP API as reliable fallback (works even if WebSocket is down)
-        try {
-          await fetch('/api/config/save', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              section_id: sectionId,
-              card_id: sectionId,
-              values: sectionValues,
-            }),
-          });
-        } catch (fetchErr) {
-          console.warn('[DarkGlassDashboard] HTTP fallback failed:', fetchErr);
-        }
       }
-      // Keep the button disabled for at least 2s so the backend can process
-      // and guard against duplicate subprocess/server launches.
-      await new Promise(r => setTimeout(r, 2000));
+      await Promise.all(allSections.map(([sectionId, sectionValues]) =>
+        fetch('/api/config/save', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            section_id: sectionId,
+            card_id: sectionId,
+            values: sectionValues,
+          }),
+        }).catch((fetchErr) => {
+          console.warn('[DarkGlassDashboard] HTTP fallback failed:', fetchErr);
+        })
+      ));
+      // The 2s guard against duplicate subprocess/server launches is enforced
+      // by `applyCooldownRef`, whose timer is set in the `finally` below and
+      // runs regardless of this function's duration. This used to ALSO
+      // `await new Promise(r => setTimeout(r, 2000))` here, which blocked the
+      // handler itself: every APPLY took at least 2s, and because
+      // handleCloseWithSave awaited this function, so did every close.
+      // Measured: the saves themselves take ~3-4ms each. The sleep WAS the
+      // wait. Removing it does not weaken the guard — it only stops the UI
+      // pretending to work for 2 seconds after the work is done.
       // Record what we just persisted so handleCloseWithSave can detect whether
       // there are further unsaved edits before the next close.
       lastAppliedRef.current = JSON.parse(JSON.stringify(localFieldValues));
@@ -1243,21 +1250,43 @@ export function DarkGlassDashboard({
   // it just calls onClose.
   const handleCloseWithSave = useCallback(async () => {
     try {
+      // DO NOT await the apply here. The unmount cleanup below is documented
+      // as "the single chokepoint that catches EVERY close path (X button via
+      // handleCloseWithSave, Escape via dashboard-wing, backdrop click,
+      // navigation)" and it fires the same POSTs with keepalive:true, which is
+      // precisely designed to outlive unmount. Awaiting handleApplySettings
+      // here therefore bought NOTHING and cost the user the full apply
+      // duration on every close — the symptom being that closing the panel
+      // "seems to trigger apply and takes a considerable long time".
+      //
+      // Closing now returns immediately; the cleanup persists. Dirty-checking
+      // still works because lastAppliedRef is untouched on this path, so the
+      // cleanup sees isDirty === true and saves.
       const current = JSON.stringify(localFieldValues);
       const last = lastAppliedRef.current ? JSON.stringify(lastAppliedRef.current) : null;
-      if (current !== last) {
-        // Bypass the cooldown — closing is a one-shot, and we must not skip the
-        // save just because the user clicked APPLY <2s ago (the backend already
-        // dedupes by section_id).
-        applyCooldownRef.current = false;
-        await handleApplySettings();
+      if (current !== last && sendMessage) {
+        // WebSocket is instant and fire-and-forget; the HTTP keepalive POSTs in
+        // the unmount cleanup are the reliable half of the pair.
+        Object.entries(localFieldValues).forEach(([sectionId, values]) => {
+          if (
+            sectionId !== 'model_inference' &&
+            sectionId !== 'model_selection' &&
+            values && typeof values === 'object' &&
+            Object.keys(values).length > 0
+          ) {
+            sendMessage('confirm_card', { section_id: sectionId, values });
+          }
+        });
       }
     } catch (e) {
       console.warn('[DarkGlassDashboard] save-on-close failed:', e);
     } finally {
       onClose?.();
     }
-  }, [localFieldValues, handleApplySettings, onClose]);
+    // handleApplySettings is deliberately NOT a dependency any more: this path
+    // no longer calls it. sendMessage is, because the fast-path notify above
+    // uses it.
+  }, [localFieldValues, sendMessage, onClose]);
 
   // Ref mirror of localFieldValues so the unmount cleanup (which captures a
   // stale closure) always reads the LATEST values.  Updated every render.

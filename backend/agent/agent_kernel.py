@@ -24,10 +24,16 @@ from .memory import ConversationMemory, TaskRecord
 from .model_router import ModelRouter
 from .tool_bridge import AgentToolBridge
 from .mcm_protocol.actions.pacman_fragment import is_external_tool
-try:
-    from backend.llm_service import llm as _llm
-except ImportError:  # top-level import (tests run with backend/ on sys.path)
-    from llm_service import llm as _llm
+# REMOVED 2026-08-26 (session 260): `from backend.llm_service import llm as _llm`.
+# MEASURED with `python -X importtime`: that import pulled in litellm, which was
+# 6.26s of a 9.63s total -- 65% of the cost of importing this module -- and
+# `_llm` was NEVER USED. Its only remaining mention is the docstring below at
+# _dispatch_api: "Uses httpx directly instead of _llm.complete() to avoid
+# thread-pool hangs." The code was deliberately moved onto httpx and the import
+# was left behind. Nothing imports `_llm` from this module (checked).
+#
+# This is not only a test-suite problem. backend startup imports this module, so
+# the same 6.26s was paid on every launch.
 from . import streaming as _streaming
 from backend.agent.inference.router import InferenceRouter
 from backend.agent.inference.errors import RateLimitedError
@@ -1837,6 +1843,18 @@ class AgentKernel:
                     + worktree_block
                 )
 
+            # Gate 3 T7 (REQ-9): discipline ladder + active task scope bound.
+            # Injected at this single assembly point so DER workers inherit it
+            # (AC4). 'off' injects nothing (AC5); failure degrades silently.
+            try:
+                from backend.dev.ladder import get_ladder_block
+
+                _ladder = get_ladder_block()
+                if _ladder:
+                    base = base + "\n\n" + _ladder
+            except Exception as _ladder_exc:
+                logger.debug("[AgentKernel] ladder injection skipped: %s", _ladder_exc)
+
         # Gap 4: EML cognitive state visible to LLM
         try:
             from backend.gateway.iris_ffi import ffi_calculate_eml
@@ -2040,6 +2058,59 @@ class AgentKernel:
     # ------------------------------------------------------------------
     # Helpers: thinking-token stripping, planning gate, direct response
     # ------------------------------------------------------------------
+
+    # Endpoints observed to reject the thinking hint. Populated at runtime so a
+    # strict provider is asked exactly once and never again this process.
+    _THINKING_HINT_REFUSED: set = set()
+
+    @classmethod
+    def _thinking_body(cls, use_thinking: bool, endpoint: str = "") -> dict:
+        """Provider-agnostic body fields asking a model to skip chain-of-thought.
+
+        WHY THIS IS SHARED (session 260). `_needs_thinking` and the user's
+        `_thinking_style` setting already existed, and were wired to the LM
+        Studio dispatcher ALONE. Every API-backed model -- which is what the
+        product actually runs on -- had no thinking control at all. Measured
+        consequence: command-a-plus-05-2026 streamed everything through
+        `reasoning_content`, the dispatcher's reasoning fallback returned that
+        raw thinking as the answer, and a "~300 word" request came back as
+        13,562 characters opening "Thus we must produce a single paragraph...".
+
+        WHY THE OLD FORM DID NOT WORK EITHER. The LM Studio path set
+        `_body["extra_body"] = {"chat_template_kwargs": ...}` and then POSTed
+        `_body` as raw JSON. `extra_body` is an OpenAI *SDK* concept -- the SDK
+        merges its contents into the top level -- so as a literal JSON key it is
+        not an API field and servers ignore it. Over raw HTTP the hint belongs
+        at the TOP level, which is what this returns.
+
+        Unknown fields make some strict endpoints 400. Callers pass the body
+        through `_thinking_retry_body` on failure, which strips the hint and
+        remembers the endpoint, so a provider that refuses it is asked once.
+        """
+        if use_thinking:
+            return {}
+        if endpoint and endpoint in cls._THINKING_HINT_REFUSED:
+            return {}
+        # vLLM / LM Studio / SGLang / most OSS OpenAI-compatible servers.
+        return {"chat_template_kwargs": {"enable_thinking": False}}
+
+    @classmethod
+    def _thinking_retry_body(cls, body: dict, endpoint: str) -> Optional[dict]:
+        """Strip the thinking hint after a rejection; None if none was set.
+
+        Remembers the endpoint so the hint is not re-sent for the rest of the
+        process -- one wasted request per provider, not one per call.
+        """
+        if "chat_template_kwargs" not in body:
+            return None
+        if endpoint:
+            cls._THINKING_HINT_REFUSED.add(endpoint)
+        _stripped = {k: v for k, v in body.items() if k != "chat_template_kwargs"}
+        logger.info(
+            "[thinking] endpoint rejected the no-thinking hint; retrying "
+            "without it and not re-sending it this process: %s", endpoint,
+        )
+        return _stripped
 
     def _needs_thinking(self, text: str) -> bool:
         """
@@ -2855,6 +2926,22 @@ class AgentKernel:
         if tools:
             _body["tools"] = tools
             _body["tool_choice"] = "auto"
+
+        # Session 260: EVERY model that can be told to skip chain-of-thought
+        # is now told, not just the LM Studio one. This path had NO thinking
+        # control at all, which is why an API-backed reasoning model returned
+        # its deliberation as the answer.
+        try:
+            _body.update(
+                self._thinking_body(
+                    self._needs_thinking(
+                        messages[-1].get("content", "") if messages else ""
+                    ),
+                    endpoint=str(sel or ""),
+                )
+            )
+        except Exception as _think_exc:  # noqa: BLE001 -- never fail on a hint
+            logger.debug("[thinking] hint not applied: %s", _think_exc)
         # â”€â”€ Telemetry: log API request shape (not content) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         try:
             _msg_count = len(messages)
@@ -2909,6 +2996,18 @@ class AgentKernel:
                                     _err_detail = _first[:200].decode("utf-8", errors="replace")
                                 except Exception:
                                     _err_detail = "(could not read error body)"
+                                # Session 260: a provider that refuses the
+                                # no-thinking hint must degrade, not fail. The
+                                # hint is an optimisation; the turn is not.
+                                # Strip it, remember the endpoint so it is
+                                # asked exactly once this process, and retry.
+                                if _resp.status_code in (400, 422):
+                                    _retry_body = self._thinking_retry_body(
+                                        _body, str(sel or "")
+                                    )
+                                    if _retry_body is not None:
+                                        _body = _retry_body
+                                        continue
                                 raise RuntimeError(
                                     f"API returned {_resp.status_code}: {_err_detail}"
                                 )
@@ -3132,10 +3231,12 @@ class AgentKernel:
             _body["tools"] = tools
             _body["tool_choice"] = "auto"
 
-        # LM Studio-specific extra_body for thinking template hints
-        _body["extra_body"] = {
-            "chat_template_kwargs": {"enable_thinking": use_thinking}
-        }
+        # Session 260: was `_body["extra_body"] = {...}` -- an OpenAI SDK
+        # concept, not an API field. Posted as raw JSON it was ignored, so this
+        # path's thinking control never actually did anything. Over raw HTTP the
+        # hint belongs at the TOP level. Same helper as the API dispatcher, so
+        # both obey `_thinking_style` identically.
+        _body.update(self._thinking_body(use_thinking, endpoint=_api_base))
 
         if chunk_callback:
             # Streaming path
@@ -3462,6 +3563,161 @@ class AgentKernel:
         return openai_tools
 
     # â”€â”€ ReAct agentic loop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    # REQ-28: threshold above which the first-sentence rule below stops being
+    # an acceptable spoken form. Same number prepare_spoken_text already uses
+    # for its ">120 words" branch, named once so the two cannot drift.
+    SPOKEN_BRIEF_WORD_THRESHOLD = 120
+
+    def spoken_brief_needed(self, full_response: str) -> bool:
+        """True when an answer is long enough that speaking its FIRST SENTENCE
+        misrepresents it (REQ-28 AC1).
+
+        Counts the same way prepare_spoken_text does -- after code and markdown
+        are stripped -- so the two agree about what "long" means.
+        """
+        if not full_response:
+            return False
+        try:
+            import re as _re
+
+            cleaned = _re.sub(r"```[\s\S]*?```", "", full_response)
+            cleaned = _re.sub(r"`[^`]+`", "", cleaned)
+            return len(cleaned.split()) > self.SPOKEN_BRIEF_WORD_THRESHOLD
+        except Exception:  # noqa: BLE001 -- never fail a turn over TTS shape
+            return False
+
+    def stream_spoken_brief(
+        self,
+        full_response: str,
+        on_sentence: Callable[[str], None],
+        max_words: int = 70,
+    ) -> str:
+        """Generate a spoken brief of `full_response`, one SENTENCE at a time.
+
+        REQ-28 AC1/AC3/AC4. Every complete sentence is handed to `on_sentence`
+        the moment it finishes generating, rather than at the end. The caller
+        feeds those sentences into the TTS queue, so audio starts on sentence
+        one while the rest is still being written -- without that, a brief
+        generated after the body would land noticeably late and out of step
+        with the text the user is already reading.
+
+        Returns the full brief, or "" on any failure. Never raises: the caller
+        falls back to prepare_spoken_text, and a silent turn is worse than a
+        blunt one.
+        """
+        if not full_response or self._router is None:
+            return ""
+
+        _buf: list = []
+        _emitted: list = []
+        _pending = {"text": ""}
+
+        def _on_chunk(chunk: str) -> None:
+            if not chunk:
+                return
+            _buf.append(chunk)
+            _pending["text"] += chunk
+            # Flush on sentence boundaries only. A half sentence spoken aloud
+            # is worse than a slightly later one, and the TTS queue batches by
+            # sentence anyway.
+            while True:
+                _cut = -1
+                for _mark in (". ", "! ", "? ",
+                              "." + '\n', "!" + '\n', "?" + '\n'):
+                    _i = _pending["text"].find(_mark)
+                    if _i != -1 and (_cut == -1 or _i < _cut):
+                        _cut = _i
+                if _cut == -1:
+                    break
+                _sentence = _pending["text"][: _cut + 1].strip()
+                _pending["text"] = _pending["text"][_cut + 2 :]
+                if _sentence:
+                    _emitted.append(_sentence)
+                    try:
+                        on_sentence(_sentence)
+                    except Exception as _cb_exc:  # noqa: BLE001
+                        logger.debug("[brief] sentence callback failed: %s", _cb_exc)
+
+        _messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You write the SPOKEN version of an answer the user is "
+                    "already reading. Give the substance and the CONCLUSION, "
+                    f"not the opening. Under {max_words} words, plain "
+                    "conversational sentences, no markdown, no lists, no code, "
+                    "no preamble such as 'here is a summary'. Speak as the "
+                    "assistant continuing the conversation."
+                ),
+            },
+            {"role": "user", "content": full_response[:8000]},
+        ]
+        try:
+            from backend.voice.tts_normalizer import normalize_text
+
+            # Capture reasoning SEPARATELY. Some models (observed live
+            # 2026-08-26 with command-a-plus-05-2026) stream everything through
+            # `reasoning_content` and leave `content` empty; the dispatcher's
+            # reasoning fallback then returns the RAW THINKING as the answer,
+            # deliberately skipping preamble stripping. A brief built from that
+            # is the model's meta-commentary -- measured: "The user gave a
+            # description of WebSocket handshake. The instruction: 'You write
+            # the SPOKEN version...'" -- i.e. our own prompt read back aloud.
+            _reasoning_seen: list = []
+
+            def _on_reasoning(chunk: str) -> None:
+                if chunk:
+                    _reasoning_seen.append(chunk)
+
+            _text, _thinking, _ = self._router.generate(
+                "reasoning", _messages, tools=None,
+                max_tokens=max(120, max_words * 2), temperature=0.2,
+                chunk_callback=_on_chunk,
+                reasoning_callback=_on_reasoning,
+            )
+            # Whatever the stream did not end on a boundary is still a sentence.
+            _tail = (_pending["text"] or "").strip()
+            if _tail:
+                _emitted.append(_tail)
+                try:
+                    on_sentence(_tail)
+                except Exception:  # noqa: BLE001
+                    pass
+            _full = " ".join(_emitted).strip() or (_text or "").strip()
+            # Reject a "brief" that is really the reasoning fallback. Nothing
+            # arrived on the CONTENT stream and the returned text matches what
+            # came back as reasoning -> this is thinking, not an answer. Speak
+            # the truncation instead; a blunt spoken line beats reading our own
+            # system prompt to the user.
+            _reasoning_text = "".join(_reasoning_seen).strip()
+            if not _emitted and _reasoning_text and _full[:120] == _reasoning_text[:120]:
+                logger.warning(
+                    "[brief] discarded reasoning-fallback output (%d chars); "
+                    "the model answered via reasoning_content, not content",
+                    len(_full),
+                )
+                return ""
+            # Whether the brief actually STREAMED decides whether audio can
+            # start before generation ends. A router that returns the whole
+            # string without invoking the chunk callback still produces a
+            # correct brief, but the early-audio property is lost -- and that
+            # is invisible unless it is stated.
+            logger.info(
+                "[brief] streamed=%s sentences=%d chars=%d",
+                bool(_emitted), len(_emitted), len(_full or ""),
+            )
+            try:
+                self._accrue_tokens(
+                    _full, getattr(self._router, "last_usage", None),
+                    source="stream_spoken_brief",
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            return normalize_text(_full) if _full else ""
+        except Exception as _exc:  # noqa: BLE001
+            logger.warning("[brief] spoken brief generation failed: %s", _exc)
+            return ""
 
     def prepare_spoken_text(self, full_response: str, user_message: str = "") -> str:
         """
@@ -4897,6 +5153,73 @@ class AgentKernel:
             logger.debug("[DER] ontology neighborhood recall failed: %s", exc)
             return []
 
+    @staticmethod
+    def _iter_json_objects(raw: str):
+        r"""Yield each BALANCED top-level {...} span in `raw`, in order.
+
+        The planner used to extract its JSON with a single greedy
+        ``re.search(r"\{[\s\S]+\}")``, which spans from the FIRST brace to the
+        LAST one in the whole reply. That is correct only when the model emits
+        exactly one object and nothing else. When it emits a preamble, a fenced
+        block plus an example, or any prose containing a brace, the captured
+        span is not valid JSON and the whole turn dies with "The planner
+        returned no valid plan" -- measured live on 2026-08-26 as roughly half
+        of all turns.
+
+        This walks the string instead, tracking string literals and escapes so
+        a brace inside a quoted value cannot close an object early.
+        """
+        depth = 0
+        start = -1
+        in_str = False
+        esc = False
+        for i, ch in enumerate(raw or ""):
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+                continue
+            if ch == "{":
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif ch == "}" and depth > 0:
+                depth -= 1
+                if depth == 0 and start != -1:
+                    yield raw[start : i + 1]
+                    start = -1
+
+    @staticmethod
+    def _parse_planner_json(raw: str):
+        """Best parseable planner object in `raw`, or None.
+
+        Prefers a candidate that actually looks like a PLAN (carries `steps` or
+        `plan_title`) over the first one that merely parses -- a model that
+        prefixes its plan with a small example object would otherwise hand back
+        the example.
+        """
+        import json as _json
+
+        _best = None
+        for _cand in AgentKernel._iter_json_objects(raw or ""):
+            try:
+                _obj = _json.loads(_cand)
+            except Exception:
+                continue
+            if not isinstance(_obj, dict):
+                continue
+            if "steps" in _obj or "plan_title" in _obj:
+                return _obj
+            if _best is None:
+                _best = _obj
+        return _best
+
     def _plan_task(
         self,
         text: str,
@@ -4955,12 +5278,22 @@ class AgentKernel:
 
         failures = self._get_failure_warnings(text)
 
-        # Build the AVAILABLE TOOLS block so the Director (LLM planner) can
-        # assign REAL tool names to plan steps.  Without this, the planner
-        # returns tool:null for every step, the DER Explorer falls through to
-        # _run_step_direct (text only), and the agent replies "[step N completed]"
-        # instead of actually executing the tool.  This is the root cause of the
-        # "responds to the prompt as step 1 completed, never searches" bug.
+        # Build the CAPABILITIES block.
+        #
+        # SIZED DOWN 2026-08-26 (session 260), measured: the previous block
+        # listed every tool with its full description -- ~1,131 tokens on EVERY
+        # planner call -- and instructed the planner to "set its `tool` to the
+        # EXACT name below". The parser has not honoured that instruction since
+        # Phase 1 (D1.3): it sets `tool=None` unconditionally, because tool
+        # selection is a runtime, memory-conditioned policy owned by
+        # explorer.propose. So the catalogue bought a field that was thrown
+        # away, and the tool was then re-decided per step at ~4.6k tokens.
+        #
+        # WHAT THE BLOCK IS STILL FOR, and why it is not simply deleted: the
+        # planner has to know the agent CAN do these things, or it plans
+        # capable requests as trivial speak-only steps (2026-08-12: explicit
+        # "use screenshot_page" requests planned as trivial). Names alone carry
+        # that; the descriptions never did any work here. ~187 tokens.
         _tools_block = ""
         try:
             # Ensure the tool bridge exists BEFORE reading the tool list â€” a
@@ -4972,14 +5305,16 @@ class AgentKernel:
             if self._tool_bridge is not None:
                 _avail = self._tool_bridge.get_available_tools()
                 if _avail:
-                    _tlines = [
-                        f'  - "{_t.get("name", "")}" [{_t.get("category", "")}]: '
-                        f'{_t.get("description", "")}'
-                        for _t in _avail
+                    _names = [
+                        str(_t.get("name", "")) for _t in _avail
+                        if _t.get("name")
                     ]
                     _tools_block = (
-                        "AVAILABLE TOOLS â€” when a step needs a capability, set its "
-                        "\"tool\" to the EXACT name below:\n" + "\n".join(_tlines)
+                        "CAPABILITIES the agent can call at execution time. "
+                        "Do NOT name a tool in a step -- the runtime resolver "
+                        "picks it. This list tells you what is POSSIBLE, so "
+                        "plan real steps for it instead of answering directly:"
+                        + chr(10) + "  " + ", ".join(_names)
                     )
         except Exception as _tb_exc:
             logger.debug("[AgentKernel._plan_task] tools block build failed: %s", _tb_exc)
@@ -5022,12 +5357,21 @@ class AgentKernel:
             '{"strategy":"do_it_myself|spawn_children|delegate_external",'
             '"plan_title":"short 2-3 word summary of what the plan does (e.g. \\"Search web for AI news\\")",'
             '"reasoning":"one sentence explaining the approach",'
-            '"steps":[{"step_id":"s1","step_number":1,"description":"Search the web for the user request","tool":"search","params":{"query":"<what to search>"},"depends_on":[],"critical":true}]}'
+            '"steps":[{"step_id":"s1","step_number":1,"description":"Search the web for the user request","depends_on":[],"critical":true}]}'
             "\n\n"
         "RULES:\n"
-        "- If a step requires a capability (web search, open app, screenshot, read file, etc.) set \"tool\" to the EXACT name from AVAILABLE TOOLS. For web searches use \"search\" (or \"web_search\").\n"
-        "- If a step is pure reasoning/synthesis with no tool, set \"tool\":null.\n"
-        "- Always include the needed parameters in \"params\" (web search needs {\"query\":\"...\"}).\n"
+        # SIZED DOWN 2026-08-26 (session 260): the schema used to demand
+        # "tool" and "params" on every step, with three RULES lines telling
+        # the model how to fill them. The parser has discarded BOTH since
+        # Phase 1 (D1.3) -- it hard-sets tool=None, params={} -- because
+        # explorer.propose owns tool selection at execution time. So the
+        # model spent OUTPUT tokens on fields that were thrown away, and
+        # every extra required field was another chance to emit malformed
+        # JSON. A step is a GOAL; the fields kept are the ones the parser
+        # actually reads: step_id, step_number, description, depends_on,
+        # critical.
+        '- Describe each step as a GOAL in "description". Do NOT name a tool; '
+        'the runtime resolver picks it when the step executes.' + chr(10) +
         "- In 'depends_on', provide a list of step_ids that this step depends on. "
         "If there are no dependencies, provide an empty array []. A step will not "
         "start until all steps it depends on have completed.\n"
@@ -5096,9 +5440,8 @@ class AgentKernel:
         # Parse JSON â†’ ExecutionPlan
         try:
             if plan_raw:
-                m = _re.search(r"\{[\s\S]+\}", plan_raw)
-                if m:
-                    data = json.loads(m.group())
+                data = self._parse_planner_json(plan_raw)
+                if data is not None:
                     logger.info(
                         "[AgentKernel._plan_task] parsed plan keys=%s "
                         "raw_steps=%s",
@@ -5135,6 +5478,13 @@ class AgentKernel:
                     )
         except Exception as _parse_err:
             logger.warning(f"[AgentKernel._plan_task] parse failed: {_parse_err}")
+            # Only the LM Studio branch logged `plan_raw`, so on every other
+            # provider a parse failure was unobservable -- the reason this bug
+            # survived. Log what the model actually said, bounded.
+            logger.warning(
+                "[AgentKernel._plan_task] planner raw (first 600): %s",
+                (plan_raw or "")[:600],
+            )
 
         # Fallback: return None to signal plan error (REQ-2 â€” no silent self-do)
         logger.warning(
@@ -5390,10 +5740,39 @@ class AgentKernel:
         # Create TaskContext to carry full context through pipeline (fixes Bug 3, 4, 5, 6)
         _t_start = time.perf_counter()
 
+        # Gate 3 T4 (REQ-2/D1): shell context is EPHEMERAL — it is assembled
+        # into THIS turn's outgoing context list below and never persisted to
+        # conversation memory. Volatile environmental telemetry does not belong
+        # in durable dialogue history: add_message() would re-send the block on
+        # every LLM call of every later turn until FIFO eviction dropped it,
+        # occupy one of ten window slots, and write raw-ish shell bytes into
+        # conversation.json. The drained records stay readable by ref instead
+        # (ShellRecordQueue retention + read_shell_output), so nothing is lost.
+        _shell_block = ""
         try:
             # Add user message to conversation memory
             self._conversation_memory.add_message("user", text)
             logger.info(f"[AgentKernel] Processing text message: {text[:50]}...")
+
+            # Drain queued shell records at turn assembly — the next turn
+            # builds on real shell state, never a guess. Redaction/truncation
+            # happened at record time; the aggregate budget was enforced in
+            # drain(). A failed drain is degraded-but-working (design Error
+            # Handling), never fatal.
+            try:
+                from backend.dev.shell_records import get_shell_record_queue
+
+                _q = get_shell_record_queue()
+                _shell_block, _suppressed = _q.drain(session_id)
+                # Keyed by session_id on BOTH sides -- the terminal handler
+                # records under it and this drains under it. A mismatch is
+                # silent (empty block, no error), so name both sides here.
+                logger.debug(
+                    "[AgentKernel][%s] shell drain -> %d chars (queued sessions: %s)",
+                    session_id, len(_shell_block), list(_q.known_sessions()),
+                )
+            except Exception as _exc:
+                logger.debug("[AgentKernel] shell-context drain skipped: %s", _exc)
 
             # A fresh user turn supersedes any prior soft-cancel (REQ-6
             # client_replace). If the user navigated away mid-task and then
@@ -5425,6 +5804,17 @@ class AgentKernel:
                 logger.info(
                     f"[AgentKernel] @-card context injected "
                     f"({len(card_context)} chars) conv={conversation_id}"
+                )
+            # Gate 3 T4 (REQ-2 AC1): the shell block rides the SAME local
+            # channel as the @-card block — visible to planning and synthesis
+            # for THIS turn only, never add_message()'d.
+            if _shell_block:
+                context = list(context) + [
+                    {"role": "system", "content": _shell_block}
+                ]
+                logger.info(
+                    "[AgentKernel][%s] shell context injected (%d chars, ephemeral)",
+                    session_id, len(_shell_block),
                 )
         except Exception as e:
             # Handle conversation memory errors gracefully
@@ -5744,7 +6134,46 @@ class AgentKernel:
                         _web_on,
                         self._looks_informational(_task_clean),
                     )
-                    _der_response = ""  # forces the direct path below
+                    # REQ-35 AC1/AC4: the planner said this needs no plan.
+                    # That is a TERMINAL ANSWER -- it decides what happens
+                    # NEXT, and it is not a verdict that anything succeeded.
+                    #
+                    # The comment here used to read "forces the direct path
+                    # below" and set "". It did not: the very next guard is
+                    # `if _der_response is not None`, an empty STRING is not
+                    # None, so control reached the empty-DER handler and
+                    # returned the canned apology. Measured live (conv-59):
+                    # the planner answered, the answer was discarded, and the
+                    # user was told "I wasn't able to put together an answer
+                    # for that."
+                    #
+                    # So take the direct path FOR REAL. Deliberately NOT the
+                    # planner's own incidental `answer` field: _respond_direct
+                    # re-asks with the full system prompt, context and tools,
+                    # so the reply is a normal direct answer rather than a
+                    # by-product trusted because the model volunteered it.
+                    # No DER ran, so no task:done and no completion claim
+                    # (AC4) -- this is an ANSWER, at the same standing as any
+                    # other direct reply.
+                    try:
+                        _der_response = self._respond_direct(
+                            text, context,
+                            chunk_callback=chunk_callback,
+                            reasoning_callback=reasoning_callback,
+                        )
+                        logger.info(
+                            "[AgentKernel] trivial plan -> direct answer "
+                            "(%d chars)", len(_der_response or ""),
+                        )
+                    except Exception as _direct_exc:  # noqa: BLE001
+                        # AC7: the canned fallback still exists for a run that
+                        # genuinely produced nothing. Fewer arrivals is the
+                        # goal; removing the path is not.
+                        logger.warning(
+                            "[AgentKernel] trivial-plan direct answer failed: %s",
+                            _direct_exc,
+                        )
+                        _der_response = ""
                 else:
                     try:
                         from backend.agent.event_bus import get_event_bus, IRISStreamEvent
@@ -6997,6 +7426,29 @@ Respond with a JSON object:
         self._der_stop_requested = False
         self._der_pause_requested = False
         self._der_resume_requested = False
+
+        # dev-cli-ide REQ-25 edge case: the inbox outlives the loop that reads
+        # it. Records are drained ONLY inside this loop, so anything queued
+        # while no DER task was running would be applied to the NEXT task --
+        # a steer aimed at one job silently revising another. Nothing sent to
+        # the channel before REQ-25, so this was latent; the UI sender makes it
+        # reachable. Drop pre-task records here and acknowledge them, rather
+        # than letting them leak forward.
+        try:
+            from backend.agent.steering import get_steering_inbox as _gsi
+
+            _stale = _gsi().drain(_session)
+            for _rec in _stale:
+                self._emit_steering_ack(
+                    _rec.channel, _rec.message_id, "considered", _session
+                )
+            if _stale:
+                logger.info(
+                    "[AgentKernel][%s] dropped %d steering record(s) queued "
+                    "before this task started", _session, len(_stale),
+                )
+        except Exception as _st_exc:
+            logger.debug("[AgentKernel] stale-steering sweep skipped: %s", _st_exc)
 
         while (
             not queue.is_complete()
@@ -10238,10 +10690,27 @@ Respond with a JSON object:
         "read_file", "browser_read",
     }
 
+    # REQ-18 added grep_files / glob_files as the codebase-search surface, but
+    # they were never given an evidence window to match. They are not in
+    # _DER_GATHER_TOOLS, so their results fell to the 400-char NON-gather cap
+    # -- and a search tool exists precisely to return a LIST. Measured live
+    # 2026-08-26 (conv-63): "how many backend files mention Porcupine" returned
+    # 18 matches; at ~21 chars per entry that is ~420 chars of paths before the
+    # JSON envelope, so the agent could not physically see them all and
+    # answered "at least six". Truthful, correctly hedged, and wrong.
+    #
+    # Deliberately a SEPARATE set rather than adding them to _DER_GATHER_TOOLS:
+    # that set also drives the sufficiency gate (:9391) and the graft decision
+    # (:10623). This changes the evidence WINDOW only, which is the defect.
+    _DER_SEARCH_TOOLS = {"grep_files", "glob_files"}
+
     @staticmethod
     def _der_evidence_cap(tool: Optional[str]) -> int:
         """Evidence window for a step result, by tool kind."""
-        return 8000 if (tool or "").lower() in AgentKernel._DER_GATHER_TOOLS else 400
+        _t = (tool or "").lower()
+        if _t in AgentKernel._DER_GATHER_TOOLS or _t in AgentKernel._DER_SEARCH_TOOLS:
+            return 8000
+        return 400
 
     def _der_findings_sufficient(
         self, objective: str, completed_items: List[Any]

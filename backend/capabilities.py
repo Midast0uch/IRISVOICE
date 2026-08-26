@@ -55,6 +55,11 @@ class CapabilitySet:
     # Tools that require TERMINAL in developer mode
     _TERMINAL_TOOLS: Set[str] = {
         "run_command",
+        # Gate 3 T4b: reads back retained shell output, so it is gated exactly
+        # like the tool that produced it. Personal mode has no terminal, so the
+        # retention history is empty there anyway — the gate states the rule
+        # rather than relying on the store happening to be empty.
+        "read_shell_output",
         "lock_screen",
         "shutdown",
         "restart",

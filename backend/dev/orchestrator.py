@@ -1,45 +1,45 @@
 """
-Dev Orchestrator — routes dev_cli messages to the correct CLI tool.
+Dev Orchestrator — routes dev_cli messages to IRIS's own AgentKernel (REQ-0).
 
 Responsibilities:
-  1. Receive dev_cli WS message { query, workdir, tool_hint? }
-  2. Ask the agent kernel to select the best tool (or honour tool_hint)
-  3. Spawn the subprocess via SubprocessManager
-  4. Stream stdout → cli_output WS messages
-  5. Emit cli_started, cli_activity, file_activity messages
-  6. Emit a text_response summary when the process exits
+  1. Receive dev_cli WS message { query, workdir? }
+  2. Dispatch the query to the AgentKernel turn path with the session's
+     conversation context (D7 — external CLI registry removed, not demoted).
+  3. Stream the turn's output → cli_output WS messages
+  4. Emit cli_started, cli_activity, file_activity messages
+  5. Emit a text_response summary when the turn completes
+
+The frontend contract is unchanged: cli_activity / cli_started / cli_output
+keep the shapes at types/iris.ts:258-272.
 
 Quality-check gates applied:
   - No model loading at import time — agent_kernel fetched lazily per call.
-  - LLM tool selection runs in executor (sync call, avoids blocking event loop).
-  - Subprocess output callbacks are non-blocking; they post to an asyncio queue.
+  - The kernel turn runs in an executor (sync call, avoids blocking event loop).
+  - Output callbacks are non-blocking; they post to the asyncio loop.
   - File watcher started/stopped per session; not shared between sessions.
   - No unbounded state — active sessions tracked in a plain dict with cleanup.
 """
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
-import threading
+import uuid
 from typing import Any, Callable, Optional
 
-from .cli_registry import CLITool, get_cli_registry
 from .subprocess_manager import get_subprocess_manager
 from .file_watcher import FileEvent, get_file_watcher
 
 logger = logging.getLogger(__name__)
 
-# Soft idle timeout (seconds) — kill process if no output for this long.
-_IDLE_TIMEOUT_S = int(os.environ.get("DEV_CLI_IDLE_TIMEOUT_SECONDS", "300"))
+# Display name surfaced in cli_* events — IRIS's own agent, not an external CLI.
+_AGENT_DISPLAY_NAME = "IRIS Agent"
 
 
 class DevOrchestrator:
-    """Handles one dev_cli message per call; manages active subprocess lifecycle."""
+    """Handles one dev_cli message per call; runs it as an IRIS agent turn."""
 
     def __init__(self) -> None:
-        self._registry = get_cli_registry()
         self._subprocess_mgr = get_subprocess_manager()
         self._file_watcher = get_file_watcher()
         # session_id → asyncio loop reference (so callbacks can post events)
@@ -52,28 +52,88 @@ class DevOrchestrator:
         session_id: str,
         payload: dict[str, Any],
         ws_send: Callable[[dict], Any],  # coroutine that sends a WS message
+        conversation_id: Optional[str] = None,
     ) -> None:
         """
         Main handler for dev_cli messages.
         ws_send must be a coroutine: await ws_send({...})
+        conversation_id: the caller's active conversation thread, so /run joins
+        the user's live context instead of a detached one. Falls back to
+        session_id when unknown.
         """
         query: str = payload.get("query", "").strip()
-        workdir: str = payload.get("workdir", os.getcwd())
-        tool_hint: Optional[str] = payload.get("tool_hint")
+        conv_id = conversation_id or session_id
 
         if not query:
             await ws_send({"type": "text_response", "text": "No query provided.", "sender": "assistant"})
             return
 
-        # Select tool
-        tool = await self._select_tool(query, tool_hint)
-        if tool is None:
+        # T0c: pin this WS loop as the session shells' home loop so agent
+        # tool executions (ephemeral executor loops) hop onto it.
+        self._subprocess_mgr.note_home_loop()
+
+        # T3 (REQ-4 AC3): validate an explicit workdir before anything uses
+        # it; omitted workdir falls back to the backend default.
+        from .terminal_handler import validate_workdir
+
+        workdir = payload.get("workdir") or os.getcwd()
+        workdir_error = validate_workdir(workdir)
+        if workdir_error:
             await ws_send({
                 "type": "text_response",
-                "text": "No CLI tools are available on PATH. Install kilo, claude, or opencode first.",
+                "text": workdir_error,
                 "sender": "assistant",
             })
             return
+
+        # ── T8a (REQ-10): /review — delete-list contract ────────────────
+        if query.startswith("/review"):
+            scope = query[len("/review"):].strip().strip('"') or None
+            from .slash_commands import build_review_prompt, get_diff
+
+            diff = get_diff(workdir, scope)
+            if diff is None:
+                await ws_send({"type": "text_response",
+                               "text": f"No git repository at {workdir}",
+                               "sender": "assistant"})
+                return
+            if not diff.strip():
+                await ws_send({"type": "text_response",
+                               "text": "No changes to review.",
+                               "sender": "assistant"})
+                return
+            query = build_review_prompt(diff)
+
+        # ── T8b (REQ-11): /debt — marker scan into task cards ───────────
+        elif query.startswith("/debt"):
+            from .slash_commands import save_debt_cards, scan_debt_markers
+
+            markers = scan_debt_markers(workdir)
+            new_count, dup_count = save_debt_cards(conv_id, markers)
+            if not markers:
+                text = "Debt ledger clean — no deferred markers found."
+            else:
+                text = (f"Debt ledger: {len(markers)} marker(s) found — "
+                        f"{new_count} new card(s), {dup_count} already tracked.")
+                for m in markers[:20]:
+                    text += f"\n• {m['file']}:{m['line']} — {m['text']}"
+                if len(markers) > 20:
+                    text += f"\n… and {len(markers) - 20} more"
+            await ws_send({"type": "text_response", "text": text,
+                           "sender": "assistant"})
+            return
+
+        # REQ-4 AC5: bind the session workdir so the agent's dev tools
+        # (run_command, git_*) execute in the active tab's directory.
+        try:
+            from backend.agent.tool_bridge import get_agent_tool_bridge
+
+            get_agent_tool_bridge().set_session_workdir(session_id, workdir)
+        except Exception as exc:
+            logger.warning(
+                "[DevOrchestrator][%s] could not bind workdir '%s': %s",
+                session_id, workdir, exc,
+            )
 
         # Store loop reference for thread callbacks
         loop = asyncio.get_event_loop()
@@ -90,52 +150,89 @@ class DevOrchestrator:
 
         self._file_watcher.start(workdir, _on_file_event)
 
-        # Notify frontend: CLI is starting
+        # Notify frontend: the agent turn is starting
         await ws_send({
             "type": "cli_activity",
-            "tool_name": tool.display_name,
+            "tool_name": _AGENT_DISPLAY_NAME,
             "workdir": workdir,
         })
 
-        # Output / done callbacks (called on subprocess thread)
-        def _on_output(line: str, proc_id: str) -> None:
+        proc_id = f"iris-agent-{uuid.uuid4().hex[:8]}"
+        await ws_send({
+            "type": "cli_started",
+            "tool_name": _AGENT_DISPLAY_NAME,
+            "proc_id": proc_id,
+        })
+
+        # Stream the turn: chunk_callback fires on the executor thread, so post
+        # complete lines to the loop fire-and-forget. Chunks are not
+        # line-aligned — buffer until newline, flush the remainder at the end.
+        line_buffer = {"text": ""}
+
+        def _post_line(line: str) -> None:
             msg = {"type": "cli_output", "line": line, "proc_id": proc_id}
             asyncio.run_coroutine_threadsafe(ws_send(msg), loop)
 
-        def _on_done(returncode: int, proc_id: str) -> None:
+        def _chunk_cb(chunk: str) -> None:
+            line_buffer["text"] += chunk
+            while "\n" in line_buffer["text"]:
+                line, _, rest = line_buffer["text"].partition("\n")
+                line_buffer["text"] = rest
+                if line:
+                    _post_line(line)
+
+        def _run_turn() -> str:
+            from backend.agent import get_agent_kernel  # lazy import
+
+            kernel = get_agent_kernel(conv_id, session_id)
+            if getattr(kernel, "_tool_bridge", None) is None:
+                from backend.agent.tool_bridge import get_agent_tool_bridge
+
+                kernel._tool_bridge = get_agent_tool_bridge()
+            return kernel.process_text_message(
+                query,
+                session_id=session_id,
+                conversation_id=conv_id,
+                chunk_callback=_chunk_cb,
+                turn_id=proc_id,
+            )
+
+        try:
+            response = await loop.run_in_executor(None, _run_turn)
+        except Exception as exc:
+            logger.error("[DevOrchestrator][%s] agent turn failed: %s", session_id, exc)
+            response = f"Agent turn failed: {exc}"
+        finally:
+            remainder = line_buffer["text"].strip()
+            if remainder:
+                _post_line(remainder)
             self._file_watcher.stop()
             self._session_loops.pop(session_id, None)
-            summary = (
-                f"CLI process exited (code {returncode})."
-                if returncode not in (0, None)
-                else "Done."
-            )
-            msg = {"type": "text_response", "text": summary, "sender": "assistant"}
-            asyncio.run_coroutine_threadsafe(ws_send(msg), loop)
 
-        # Spawn
-        proc_id = self._subprocess_mgr.spawn(
-            session_id=session_id,
-            tool=tool,
-            query=query,
-            workdir=workdir,
-            on_output=_on_output,
-            on_done=_on_done,
-        )
+        # ── T4b (REQ-15): verification gate on turns that wrote files ───
+        try:
+            from backend.agent.tool_bridge import get_agent_tool_bridge
 
-        if proc_id is None:
-            await ws_send({
-                "type": "text_response",
-                "text": f"Failed to start {tool.display_name}. Check workdir and PATH.",
-                "sender": "assistant",
-            })
-            self._file_watcher.stop()
-            return
+            written = get_agent_tool_bridge().pop_turn_writes(session_id)
+            if written:
+                from .verification import run_verification_async
+
+                async def _gate_exec(cmd: str, timeout: int) -> dict:
+                    return await self._subprocess_mgr.execute(
+                        session_id, cmd, workdir=workdir, timeout=timeout,
+                    )
+
+                verdict = await run_verification_async(workdir, written,
+                                                       execute_fn=_gate_exec)
+                response = (response or "") + "\n\n" + verdict
+        except Exception as exc:  # never let the gate break the turn result
+            logger.warning("[DevOrchestrator][%s] verification gate skipped: %s",
+                           session_id, exc)
 
         await ws_send({
-            "type": "cli_started",
-            "tool_name": tool.display_name,
-            "proc_id": proc_id,
+            "type": "text_response",
+            "text": response or "Done.",
+            "sender": "assistant",
         })
 
     async def abort_session(self, session_id: str) -> None:
@@ -143,53 +240,6 @@ class DevOrchestrator:
         self._subprocess_mgr.abort(session_id)
         self._file_watcher.stop()
         self._session_loops.pop(session_id, None)
-
-    # ── Internal ────────────────────────────────────────────────────────────
-
-    async def _select_tool(
-        self, query: str, tool_hint: Optional[str]
-    ) -> Optional[CLITool]:
-        """Return the best CLI tool for this query via LLM or tool_hint."""
-        # Honour explicit hint from frontend (e.g. user picked from dropdown)
-        if tool_hint:
-            return self._registry.select_tool_for_query(tool_hint)
-
-        # Fast path: only one tool available
-        available = self._registry.available_tools()
-        if len(available) == 1:
-            return available[0]
-        if not available:
-            return None
-
-        # LLM selection: ask agent kernel which tool fits best
-        try:
-            tool_name = await asyncio.get_event_loop().run_in_executor(
-                None, self._llm_select_tool, query
-            )
-            return self._registry.select_tool_for_query(tool_name)
-        except Exception as exc:
-            logger.warning("[DevOrchestrator] LLM tool selection failed: %s — using first", exc)
-            return available[0]
-
-    def _llm_select_tool(self, query: str) -> str:
-        """
-        Synchronous LLM call to pick a tool name.
-        Runs in executor so it doesn't block the event loop.
-        """
-        from backend.agent import get_agent_kernel  # lazy import
-
-        context = self._registry.build_selection_context()
-        prompt = (
-            f"{context}\n\n"
-            f"User request: {query}\n\n"
-            "Reply with ONLY the tool name (e.g. kilo_code). "
-            "No explanation, no punctuation, just the name."
-        )
-        kernel = get_agent_kernel("dev_orchestrator")
-        raw = kernel._respond_direct(text=prompt, context={})
-        # Extract the first word (tool name)
-        name = raw.strip().split()[0].lower() if raw.strip() else ""
-        return name
 
 
 # ── Module-level singleton ──────────────────────────────────────────────────

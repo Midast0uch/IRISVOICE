@@ -668,11 +668,19 @@ def _execute_plan_der(self, msg, plan, context_package,
                 plan_step.result = raw_result
                 queue.mark_complete(item.step_id)
                 completed_items.append(item)
+                # SUPERSEDED 2026-08-26 (dev-cli-ide REQ-23). The
+                # `active_tool_state` zone was never wired and has been
+                # REMOVED from ContextManager. Step results go to
+                # `working_history` instead (agent_kernel.py, "WORKING MEMORY:
+                # accumulate findings for later steps"), which excerpts and
+                # compresses them; `active_tool_state` was an ANCHOR zone
+                # (never compressed) with no writer and no clear_session
+                # caller in the kernel, i.e. a context leak in waiting.
                 self.memory.working.append(
                     session_id,
                     f"Step {plan_step.step_number} completed: "
                     f"{str(raw_result)[:300]}",
-                    zone="active_tool_state"
+                    zone="working_history"
                 )
             else:
                 plan_step.failure_reason = reflection["reason"]

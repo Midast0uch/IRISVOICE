@@ -72,14 +72,49 @@ Rules:
 
 
 def _extract_json(text: str) -> Optional[Dict[str, Any]]:
-    """Find the first JSON object in *text* and return it."""
-    try:
-        m = re.search(r"\{[\s\S]+\}", text)
-        if not m:
-            return None
-        return json.loads(m.group())
-    except Exception:
+    """Find the first JSON object in *text* and return it.
+
+    Session 248 (live conv-52): command-a sometimes appends a SECOND object
+    after the tool decision — ``{"kind":"tool",...},\\n{"kind":"reasoning",...}``.
+    The old greedy regex ``\\{[\\s\\S]+\\}`` matched across BOTH objects,
+    ``json.loads`` failed on the concatenation, and a perfectly valid tool
+    decision was discarded as "unparseable" — the crawl never dispatched and
+    the turn died at box resolution. Now: try whole-text first, then scan
+    for the first BALANCED object (brace counting that respects strings)."""
+    if not text:
         return None
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+    start = text.find("{")
+    while start != -1:
+        depth = 0
+        in_str = False
+        esc = False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(text[start : i + 1])
+                    except Exception:
+                        break  # first balanced blob wasn't JSON; try next {
+        start = text.find("{", start + 1)
+    return None
 
 
 # ── Decision types ──────────────────────────────────────────────────────────
@@ -552,7 +587,51 @@ class ToolDecisionBox:
                         )
 
             # ── 6. Memory also empty → FAIL (REQ-4 AC4) ────────────────
-            err_msg = "Model unavailable and memory yielded no usable tool suggestion."
+            # HONEST ERROR (session 260). This said "Model unavailable" for
+            # every arrival here, including the common case where the model
+            # answered perfectly well and simply did not emit a tool decision.
+            # Session 247 already noticed and added the raw-response debug log
+            # above, but left the message itself lying -- so the log said the
+            # model replied while the error said it was unavailable, and the
+            # step failure reported to the user named the wrong cause.
+            # Measured live 2026-08-26 (conv-64): usage recorded
+            # prompt=6465 completion=500, 429s=0, and the raw reply began
+            # "1. Step 1 already listed all files in the backend directory".
+            # The model was there. It just answered instead of deciding.
+            # REQ-35 AC1/AC3: the model REPLIED and simply did not name a
+            # tool. That is a terminal answer for this step -- "no tool
+            # needed" -- and DecisionKind.REASON is the shape this codebase
+            # already has for it: "model decided no tool needed (valid
+            # reasoning step)". The kernel routes REASON to _run_step_direct
+            # (agent_kernel: "REASON: item.tool stays None -> falls to
+            # _run_step_direct below"), which runs the step as a direct
+            # inference and returns a result through the NORMAL outcome path.
+            #
+            # AC2/AC4 hold BY CONSTRUCTION: nothing here marks the step
+            # successful. The reply changes what happens next -- direct
+            # execution instead of a hard failure -- and the loop still
+            # decides whether the objective was met. Reached only AFTER the
+            # memory lookup above has had its chance to name a real tool.
+            #
+            # A genuinely dead model still FAILS below: no text, no reply, no
+            # terminal answer to honour.
+            if text and text.strip():
+                ms = int((time.perf_counter() - _start) * 1000)
+                logger.info(
+                    "[TOOL_DECISION] kind=REASON source=llm-noparse "
+                    "resolve_ms=%d conv=%s (model replied without naming a "
+                    "tool; running the step directly)",
+                    ms, conversation_id,
+                )
+                return Decision(
+                    kind=DecisionKind.REASON, source="llm-noparse",
+                    rationale=text.strip()[:500],
+                )
+
+            err_msg = (
+                "No response from the model, and memory had no suggestion for "
+                "this step."
+            )
             ms = int((time.perf_counter() - _start) * 1000)
             logger.warning(
                 "[TOOL_DECISION_FAIL] kind=FAIL source=fail "
@@ -761,8 +840,16 @@ class ToolDecisionBox:
 
                 # ── Track consecutive failures (REQ-12 AC1) ────────────────
                 if decision.tool:
+                    _et = result.get("error_type") if isinstance(result, dict) else None
                     if success:
                         self._tool_fails.pop(decision.tool, None)
+                    elif _et == "aborted":
+                        # REQ-19 AC4: a user abort is not tool unreliability —
+                        # it never counts against the failure budget. (The
+                        # tool-decision veto memory is written only from
+                        # web-gather budget policy, so an abort cannot enter
+                        # it through this path either.)
+                        pass
                     else:
                         self._tool_fails[decision.tool] = self._tool_fails.get(decision.tool, 0) + 1
 

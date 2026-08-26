@@ -15,12 +15,19 @@ class ContextManager:
     """
     Zone-based in-process context window manager.
     
-    Manages what goes into each model prompt across 5 zones:
+    Manages what goes into each model prompt across 4 zones:
     1. semantic_header - Distilled user model (never compressed)
     2. episodic_injection - Similar past episodes (never compressed)
     3. task_anchor - Current task description (never compressed)
-    4. active_tool_state - Live tool output (never compressed)
-    5. working_history - Rolling conversation history (compressed at 80%)
+    4. working_history - Rolling conversation history (compressed at 80%)
+
+    There is deliberately NO live-tool-output zone. specs/agent_loop_design.md
+    once prescribed an `active_tool_state` anchor zone for step results; the
+    DER loop writes them to working_history instead (agent_kernel.py, "WORKING
+    MEMORY: accumulate findings for later steps"), which excerpts and compresses
+    them. The anchor zone was never wired and was removed: an uncompressed zone
+    with no writer and no clear_session caller in the kernel is a context leak
+    waiting for its first user, not a spare channel.
     
     Zones are injected in ZONES_ORDER for optimal model attention.
     """
@@ -29,7 +36,6 @@ class ContextManager:
         "semantic_header",
         "episodic_injection",
         "task_anchor",
-        "active_tool_state",
         "external_research",   # Domain 14: crawler results (lower weight, compressible)
         "working_history"
     ]
@@ -40,13 +46,12 @@ class ContextManager:
         "semantic_header":   1.0,
         "episodic_injection": 1.0,
         "task_anchor":        1.0,
-        "active_tool_state":  1.0,
         "external_research":  0.5,
         "working_history":    1.0,
     }
 
     # Zones that should never be compressed
-    ANCHOR_ZONES = {"semantic_header", "task_anchor", "active_tool_state"}
+    ANCHOR_ZONES = {"semantic_header", "task_anchor"}
     
     def __init__(self, adapter: Any, compression_threshold: float = 0.80):
         """
@@ -85,7 +90,6 @@ class ContextManager:
             "semantic_header": semantic_header,
             "episodic_injection": episodic_context,
             "task_anchor": f"CURRENT TASK: {task}",
-            "active_tool_state": "",
             "working_history": ""
         }
         
@@ -117,7 +121,6 @@ class ContextManager:
             "semantic_header": "",
             "episodic_injection": "",
             "task_anchor": "",
-            "active_tool_state": "",
             "working_history": ""
         })
         

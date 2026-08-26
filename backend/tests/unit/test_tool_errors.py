@@ -129,3 +129,150 @@ class TestBoundaryNormalization:
         legacy = {"success": False, "error": "source parked: challenge wall"}
         out = normalize_failure(legacy)
         assert out["error_type"] == "walled"
+
+
+# ── REQ-19: dev/shell surface labels (T0i) ──────────────────────────────────
+
+class TestDevShellLabels:
+    """REQ-19 AC1: the dev/shell labels are registered DATA with exact dims."""
+
+    REQ19_TABLE = [
+        # (label, retryable, blame, info_state) — verbatim from REQ-19 AC1
+        ("workdir_denied", "no", "query", "blocked"),
+        ("cap_reached", "yes", "self", "missing"),
+        ("aborted", "maybe", "self", "unknown"),
+        ("shell_spawn_failed", "maybe", "world", "blocked"),
+        ("output_truncated", "no", "world", "missing"),
+        ("injection_suppressed", "no", "self", "blocked"),
+        ("worktree_unavailable", "maybe", "world", "blocked"),
+    ]
+
+    @pytest.mark.parametrize("label,retryable,blame,info_state", REQ19_TABLE)
+    def test_dev_shell_labels_resolve_per_req19_table(self, label, retryable, blame, info_state):
+        spec = resolve_label(label)
+        assert spec is not None, f"{label} not registered"
+        assert spec.dimensions.retryable == retryable
+        assert spec.dimensions.blame == blame
+        assert spec.dimensions.info_state == info_state
+
+    def test_duplicate_registration_refused_not_overwritten(self):
+        # REQ-19 edge case: the first spec to name a failure mode owns it.
+        before = resolve_label("workdir_denied")
+        ok = register_error_label("workdir_denied", "yes", "self", "unknown", "hijack")
+        assert ok is False
+        after = resolve_label("workdir_denied")
+        assert after == before  # dimensions unchanged
+
+
+class TestDevToolFailureSemantics:
+    """REQ-19 AC2/AC3 through the real AgentToolBridge dev-tool path."""
+
+    def _bridge(self):
+        from backend.agent.tool_bridge import AgentToolBridge
+
+        bridge = AgentToolBridge.__new__(AgentToolBridge)  # no heavy init needed
+        bridge.__init_bridge_state__()
+        return bridge
+
+    def test_workdir_denied_typed_with_dimensions_and_raw(self):
+        import asyncio
+
+        bridge = self._bridge()
+        result = asyncio.run(bridge._execute_dev_tool(
+            "git_status", {"cwd": r"C:\definitely\not\registered"}, "sess-t0i"))
+        assert result["success"] is False
+        assert result["error_type"] == "workdir_denied"
+        assert result["retryable"] == "no"
+        assert result["blame"] == "query"
+        assert result["info_state"] == "blocked"
+        # REQ-19 AC3: raw survives next to the label
+        assert "not\\registered" in result["details"]["raw"]
+        # legacy message text preserved (T0b contract)
+        assert "outside the project root. Aborting." in result["error"]
+
+    def test_nonzero_exit_is_success_with_returncode_never_error(self):
+        import asyncio
+
+        bridge = self._bridge()
+        result = asyncio.run(bridge._execute_dev_tool(
+            "run_command", {"command": "exit 1"}, "sess-t0i"))
+        # A failing command is a SUCCESSFUL tool call carrying returncode.
+        assert result["success"] is True
+        assert result["returncode"] == 1
+        assert "error_type" not in result
+
+    def test_zero_exit_still_success(self):
+        import asyncio
+
+        bridge = self._bridge()
+        result = asyncio.run(bridge._execute_dev_tool(
+            "run_command", {"command": "exit 0"}, "sess-t0i"))
+        assert result["success"] is True
+        assert result["returncode"] == 0
+
+
+class TestAbortedBudgetExclusion:
+    """REQ-19 AC4: a user abort never counts against the failure budget."""
+
+    def _box_with_bridge(self, bridge_result):
+        from backend.agent.tool_decision import ToolDecisionBox
+
+        class _FakeRouter:
+            def __init__(self, gen_result):
+                self._gen = gen_result
+
+            def generate(self, role, messages, **kw):
+                return self._gen
+
+            def health_check_provider(self, role="reasoning"):
+                return {"ok": True, "provider": "test", "model": "test"}
+
+        class _FakeTB:
+            def __init__(self, result):
+                self._result = result
+                self.calls = 0
+
+            async def execute_tool(self, name, params, **kw):
+                self.calls += 1
+                return dict(self._result)
+
+        tb = _FakeTB(bridge_result)
+        box = ToolDecisionBox(
+            router=_FakeRouter(('{"kind": "tool", "tool": "run_command", "params": {}}', "", [])),
+            tool_bridge=tb,
+            get_available_tools=lambda: [{"name": "run_command", "description": "x"}],
+            validate_tool_call=lambda n, p: (True, None),
+            infer_fn=lambda prompt, **kw: "",
+            memory_lookup_fn=lambda _g: None,
+        )
+        return box, tb
+
+    def _tool_decision(self, box, params=None):
+        from backend.agent.tool_decision import DecisionKind
+
+        decision = box.resolve(step={"description": "dev cmd"})
+        assert decision.kind == DecisionKind.TOOL
+        if params:
+            decision.params.update(params)
+        return decision
+
+    def test_aborted_never_accumulates_budget(self):
+        box, tb = self._box_with_bridge({
+            "success": False, "error": "user aborted",
+            "error_type": "aborted",
+        })
+        for i in range(6):  # well past the budget of 3
+            dr = box.dispatch(self._tool_decision(box, params={"n": i}))
+            assert dr.success is False          # abort propagates as failure…
+            assert "exceeded consecutive failure budget" not in (dr.error or "")
+        assert box._tool_fails.get("run_command", 0) == 0   # …but counts nothing
+
+    def test_real_failures_still_hit_budget(self):
+        box, tb = self._box_with_bridge({
+            "success": False, "error": "API down",
+        })
+        for i in range(3):
+            dr = box.dispatch(self._tool_decision(box, params={"n": i}))
+            assert "exceeded consecutive failure budget" not in (dr.error or "")
+        dr = box.dispatch(self._tool_decision(box, params={"n": "over"}))
+        assert "exceeded consecutive failure budget" in (dr.error or "")

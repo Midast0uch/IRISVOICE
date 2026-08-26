@@ -106,6 +106,11 @@ def register_error_label(
             or info_state not in INFO_STATE_VALUES:
         return False
     with _LABELS_LOCK:
+        if label in ERROR_LABELS:
+            # REQ-19 edge case: a duplicate registration is REFUSED, not
+            # silently overwritten — the first spec to name a failure mode
+            # owns its dimensions.
+            return False
         ERROR_LABELS[label] = LabelSpec(
             label=label,
             dimensions=FailureDimensions(retryable=retryable, blame=blame, info_state=info_state),
@@ -144,6 +149,43 @@ register_error_label(
 register_error_label(
     "crashed", "maybe", "self", "unknown",
     "Unhandled exception inside the tool. Details carry the traceback signal.",
+)
+
+# ── REQ-19 AC1: dev/shell surface labels (was FAULTLINE §8 Roadmap) ─────────
+# A DATA edit per FAULTLINE §2 — registered vocabulary, never new branches.
+# Dimensions come verbatim from REQ-19's AC1 table.
+register_error_label(
+    "workdir_denied", "no", "query", "blocked",
+    "Path outside the registered project roots (REQ-4 AC6 allowlist) — an "
+    "identical retry can never succeed.",
+)
+register_error_label(
+    "cap_reached", "yes", "self", "missing",
+    "Dev subprocess semaphore full (REQ-5) — the same call succeeds once a "
+    "slot frees.",
+)
+register_error_label(
+    "aborted", "maybe", "self", "unknown",
+    "User abort (REQ-8) — not a tool defect. Excluded from the failure "
+    "budget and the tool-decision veto memory.",
+)
+register_error_label(
+    "shell_spawn_failed", "maybe", "world", "blocked",
+    "No shell resolvable or the workdir vanished before spawn.",
+)
+register_error_label(
+    "output_truncated", "no", "world", "missing",
+    "Output budget hit (REQ-12); full output is in the terminal panel, "
+    "not lost.",
+)
+register_error_label(
+    "injection_suppressed", "no", "self", "blocked",
+    "Output matched the injection deny-list (REQ-2 AC4) — it exists but "
+    "must not enter context.",
+)
+register_error_label(
+    "worktree_unavailable", "maybe", "world", "blocked",
+    "REQ-13 sandbox worktree could not be created; the write was refused.",
 )
 
 

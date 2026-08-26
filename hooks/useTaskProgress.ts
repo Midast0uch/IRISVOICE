@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useSyncExternalStore } from "react"
 import { sortRows, deriveProgress } from "@/lib/cards/rowOrder"
 
 export type TaskStepStatus =
@@ -1220,16 +1220,58 @@ function toPublicProgress(state: CardsState): TaskProgress {
  * The single-card fields on the returned `TaskProgress` are derived from the
  * active card for backward compatibility; `cards` is the full collection.
  */
-export function useTaskProgress(): TaskProgress {
-  const [cardsState, setCardsState] = useState<CardsState>(EMPTY_CARDS_STATE)
-  const ref = useRef(cardsState)
-  ref.current = cardsState
+// ─────────────────────────────────────────────────────────────────────────────
+// MODULE-LEVEL CARD STORE (REQ-38)
+//
+// This state used to live in `useState` inside useTaskProgress, with the window
+// listeners registered in effects that unsubscribed on unmount. In a desktop
+// widget whose panels mount and unmount constantly that fails twice over:
+//   1. the state died on unmount and remounted as EMPTY_CARDS_STATE, and
+//   2. a `task_update` arriving while nothing was mounted was LOST OUTRIGHT --
+//      the listener was gone, so the state could not even be rebuilt from it.
+// Worse, FIVE components call this hook (chat-view, TaskListCard, XurOrb,
+// AmbientCrawlTier, terminalScrollback), so each held its own independent copy
+// of what the agent was doing and they could disagree.
+//
+// The pattern is the one this repo already proved in
+// components/terminal/terminalScrollback.ts: "Component state dies with the
+// component; a module-level store survives ANY unmount... a plain subscriber
+// store (no React) so it can be driven from window event listeners that live
+// for the whole session, not just while the panel is mounted."
+//
+// The reducer, the bounds (MAX_CARDS_PER_CONVERSATION / MAX_TRACKED_CONVERSATIONS
+// / MAX_STEPS) and every handler body below are UNCHANGED. Only their lifetime
+// moved: from per-mount to per-session.
+let _cardsState: CardsState = EMPTY_CARDS_STATE
+let _snapshot: TaskProgress = EMPTY_PROGRESS
+const _subscribers = new Set<() => void>()
 
-  // A card belongs to the conversation that produced it. `iris:new_conversation`
-  // / `iris:conversation_switched` change which conversation is BEING VIEWED;
-  // they no longer erase any conversation's cards (REQ-4 AC2 - restore, not
-  // reset). Both fire when the user is looking at a different conversation.
-  useEffect(() => {
+/** Apply a reducer update, refresh the cached snapshot, notify subscribers.
+ *  The snapshot is cached because useSyncExternalStore requires a STABLE
+ *  reference between changes -- recomputing per call would loop forever. */
+function setCardsState(updater: (prev: CardsState) => CardsState): void {
+  const next = updater(_cardsState)
+  if (next === _cardsState) return
+  _cardsState = next
+  _snapshot = toPublicProgress(_cardsState)
+  _subscribers.forEach((fn) => {
+    try { fn() } catch { /* a bad subscriber must not stop the others */ }
+  })
+}
+
+function _subscribe(fn: () => void): () => void {
+  _subscribers.add(fn)
+  return () => { _subscribers.delete(fn) }
+}
+
+/** Install the session-lifetime listeners exactly once. Guarded for SSR and
+ *  for React 18 double-invocation / HMR re-evaluation. */
+let _listenersInstalled = false
+function _installCardListeners(): void {
+  if (_listenersInstalled || typeof window === "undefined") return
+  _listenersInstalled = true
+
+  ;(() => {
     const goTo = (convId: string) => {
       setCardsState((prev) => ({ ...prev, activeConversationId: convId, ...touchConversation(prev, convId) }))
     }
@@ -1244,9 +1286,9 @@ export function useTaskProgress(): TaskProgress {
       window.removeEventListener("iris:new_conversation", onNew)
       window.removeEventListener("iris:conversation_switched", onSwitched)
     }
-  }, [])
+  })()
 
-  useEffect(() => {
+  ;(() => {
     const handler = (e: Event) => {
       const d = (e as CustomEvent<TaskUpdateDetail>).detail
       if (!d) return
@@ -1254,13 +1296,9 @@ export function useTaskProgress(): TaskProgress {
     }
     window.addEventListener("iris:task_update", handler)
     return () => window.removeEventListener("iris:task_update", handler)
-  }, [])
+  })()
 
-  // T7a (REQ-4 AC2/AC4/AC5): response to `get_cards`, forwarded by
-  // useIRISWebSocket as `iris:cards`. This is the read half of the T4/T4a
-  // write path — without it a fresh page load never shows a card that was
-  // persisted before the reload, which is the bug REQ-4 exists to fix.
-  useEffect(() => {
+  ;(() => {
     const handler = (e: Event) => {
       const detail = (e as CustomEvent<{ cards?: PersistedCard[] }>).detail
       const cards = detail?.cards
@@ -1276,18 +1314,9 @@ export function useTaskProgress(): TaskProgress {
     }
     window.addEventListener("iris:cards", handler)
     return () => window.removeEventListener("iris:cards", handler)
-  }, [])
+  })()
 
-  // REQ-12 AC4 (T19): while the browser panel is closed the orb must still
-  // reflect crawl progress. The crawl's phase arrives over the SSE fallback as
-  // `iris:task:event` (ux_map CRAWLER_PHASE -> msg_type "task:event") and the
-  // in-flight stage message as `iris:crawler_progress` - neither is an
-  // `iris:task_update` message, so they would never flip the orb working state.
-  // Terminal `iris:crawler_complete` / `iris:crawler_error` clear it (the
-  // SSE-only path has no task:done/fail to do so). Neither carries a card_id,
-  // so - like any legacy event - it targets whichever card is "active" in the
-  // conversation currently being viewed.
-  useEffect(() => {
+  ;(() => {
     const targetCardId = (conv: ConversationCardState | undefined): string | undefined =>
       conv?.legacyCardId ?? (conv && conv.order.length > 0 ? conv.order[conv.order.length - 1] : undefined)
 
@@ -1354,7 +1383,20 @@ export function useTaskProgress(): TaskProgress {
       window.removeEventListener("iris:crawler_complete", done)
       window.removeEventListener("iris:crawler_error", done)
     }
-  }, [])
+  })()
+}
 
-  return useMemo(() => toPublicProgress(cardsState), [cardsState])
+if (typeof window !== "undefined") {
+  _installCardListeners()
+}
+
+export function useTaskProgress(): TaskProgress {
+  // Reads the module store above. State and listeners are session-lifetime, so
+  // unmounting a panel no longer discards what the agent is doing, and every
+  // consumer sees the SAME state rather than its own copy.
+  return useSyncExternalStore(
+    _subscribe,
+    () => _snapshot,
+    () => EMPTY_PROGRESS,
+  )
 }

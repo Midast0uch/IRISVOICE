@@ -222,7 +222,22 @@ async def test_act_executes_actions_and_counts():
 
     assert session.actions_taken == 4
     page = fake_pw._browser._page
-    assert ("evaluate", "window.scrollBy(0, 800)") in page.calls
+    # REPORTABLE TEST EDIT (T15, 2026-08-24): the script literal changed when
+    # the scroll and the REQ-16 AC7 mirror read were FUSED into one evaluate
+    # (browser_session.py) — two CDP round trips per scroll became one. The
+    # assertion is still exact string equality against a literal spelled out
+    # here, NOT a substring or regex: same strength, re-pinned to the current
+    # contract. Test 3 below counts evaluates and now passes unchanged at 2,
+    # which is the guard this fusion actually restores.
+    assert (
+        "evaluate",
+        "(() => { window.scrollBy(0, 800);"
+        " try { return {y: window.pageYOffset"
+        " || document.documentElement.scrollTop || 0,"
+        " h: Math.max(document.documentElement.scrollHeight,"
+        " document.body ? document.body.scrollHeight : 0)}; }"
+        " catch (e) { return null; } })()",
+    ) in page.calls
     assert ("locator.click", "#btn") in page.calls
     assert ("locator.fill", "#q", "hello") in page.calls
     assert ("wait_for_timeout", 50) in page.calls

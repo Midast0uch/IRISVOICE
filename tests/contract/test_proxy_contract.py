@@ -25,6 +25,7 @@ from fastapi.testclient import TestClient
 
 import backend.agent.tool_registry as tr
 from backend.api.browser_surface import router
+import backend.api.browser_auth as _ba
 
 # ── fixtures ────────────────────────────────────────────────────────────────
 
@@ -36,12 +37,41 @@ def _gate_open():
     yield
 
 
+# FIXTURE INPUT CHANGED — CALLED OUT EXPLICITLY (T15, 2026-08-24). No assertion
+# in this file is touched and no test's load is reduced. This fixture built a
+# bare app and called the proxy with NO surface credentials. Since the browser
+# surface grew its two gates (backend/api/browser_auth.py:130 —
+# `require_browser_surface_access`, wired at browser_surface.py:231), an
+# unauthenticated request is refused with 404 BEFORE `fetch_proxy` runs, so
+# every assertion in this file was measuring the auth refusal rather than the
+# proxy contract it was written to pin. That silently included the REQ-5 egress
+# guard cases (loopback / private / redirect-to-loopback) and the REQ-6 gate
+# -closed 403 — security assertions that were reaching nothing. Verified
+# pre-existing: fails identically on a clean HEAD worktree.
+# The client now presents what a real local caller presents — a loopback peer
+# and a valid surface token — matching the PASSING suite
+# backend/tests/contract/test_browser_surface_auth.py. The auth gate stays under
+# test there; here it is a precondition, not the subject.
+_SURFACE_TOKEN = "test-token-surface-fixture"
+
+
 @pytest.fixture()
-def client():
+def client(monkeypatch):
+    # Starlette's default peer is the literal string "testclient", which the
+    # address gate correctly refuses (an unparseable peer is not loopback), so a
+    # real loopback address is presented. The token rides as a default header on
+    # every request, so no call site below changes.
+    monkeypatch.setenv("IRIS_BROWSER_SURFACE_TOKEN", _SURFACE_TOKEN)
+    _ba.reset_token_cache_for_tests()
     app = FastAPI()
     app.include_router(router)
-    with TestClient(app) as c:
+    with TestClient(
+        app,
+        client=("127.0.0.1", 50000),
+        headers={_ba.HEADER_NAME: _SURFACE_TOKEN},
+    ) as c:
         yield c
+    _ba.reset_token_cache_for_tests()
 
 
 def _mock_proxy(url: str, html: str = "<html><head><title>t</title></head><body>ok</body></html>"):
@@ -169,10 +199,40 @@ def test_proxy_csp_and_null_cors(client, monkeypatch):
     r = client.get("/api/browser/proxy", params={"url": "https://example.com/"})
     csp = r.headers.get("content-security-policy", "")
     assert "default-src 'none'" in csp
-    assert "script-src 'none'" in csp
-    # The sandboxed frame is an opaque origin; "null" is the ONLY legitimate
-    # CORS value here (T7: never reflect the app origin).
-    assert r.headers.get("access-control-allow-origin") == "null"
+    # ASSERTION CORRECTED (T15, 2026-08-24): this said `script-src 'none'`,
+    # which is one of the three directives browser_surface.py:44-59 documents as
+    # LOAD-BEARING IN THE OPPOSITE DIRECTION — `script-src 'none'` stops the
+    # injected view-agent from ever running, so no scroll/ready message reaches
+    # the parent and REQ-4 is dead. That was a shipped bug, and
+    # backend/tests/contract/test_browser_surface_headers.py exists to pin the
+    # fix (it passes today). This assertion was pinning the defect. It now pins
+    # the fixed contract, and is STRICTER than a bare presence check: the
+    # directive must exist, must not be 'none', and must be nonce-based rather
+    # than a blanket allow.
+    _script = [d for d in csp.split(";") if d.strip().startswith("script-src")]
+    assert _script, f"script-src must be present, got {csp!r}"
+    _script = _script[0]
+    assert "'none'" not in _script, (
+        f"script-src 'none' kills the injected view-agent (REQ-4). Got {_script!r}"
+    )
+    assert "nonce-" in _script, (
+        f"script-src must be nonce-scoped, not a blanket allow. Got {_script!r}"
+    )
+    assert "'unsafe-eval'" not in _script and "*" not in _script
+    # ASSERTION CORRECTED (T15, 2026-08-24): this required
+    # `Access-Control-Allow-Origin: null`, calling it "the ONLY legitimate CORS
+    # value here". That is the third shipped bug of this family: "null" IS the
+    # opaque origin a sandboxed document presents, so sending it grants read
+    # access to precisely the reader the sandbox exists to exclude
+    # (browser_surface.py:108-111). The correct value is NO header at all, which
+    # is what the code now does and what the passing guard
+    # backend/tests/contract/test_browser_surface_headers.py:103
+    # (`test_no_cors_header_at_all`) pins. This assertion was requiring the
+    # vulnerability. It now pins the fix, and is STRICTER: no access-control-*
+    # header of ANY kind may be present, not merely a constrained origin value.
+    assert not [k for k in r.headers if k.lower().startswith("access-control-")], (
+        f"no CORS grant may be issued to the sandboxed reader. Got {dict(r.headers)!r}"
+    )
 
 
 # ── REQ-6/T7: gate wiring ───────────────────────────────────────────────────

@@ -57,9 +57,9 @@
         "bundleMediaFramework": true
       }
     },
-    "resources": [
-      { "src": "../llama.cpp/build/bin/Release", "target": "llama-server" }
-    ],
+    "resources": {
+      "../llama.cpp/build/bin/Release": "llama-server"
+    },
     "externalBin": [
       "binaries/iris-backend"
     ]

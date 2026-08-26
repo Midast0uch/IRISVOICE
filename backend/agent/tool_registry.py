@@ -640,6 +640,40 @@ def register_builtin_tools() -> None:
             permission_tier="destructive",
         ),
         ToolSpec(
+            # REQ-18 (T0h): fast codebase search over the bundled ripgrep.
+            name="grep_files",
+            description=(
+                "Fast content search with ripgrep: regex pattern across a directory "
+                "tree, .gitignore respected by default. Returns matching PATHS by "
+                "default; use output_mode='content' for lines or 'count' for per-file counts."
+            ),
+            parameters={
+                "pattern": {"type": "string", "description": "Regex pattern to search for"},
+                "path": {"type": "string", "description": "Directory scope (defaults to the session workdir)", "optional": True},
+                "glob": {"type": "string", "description": "Glob filter, e.g. '*.py'", "optional": True},
+                "output_mode": {"type": "string", "description": "files_with_matches (default) | content | count", "optional": True},
+                "context_lines": {"type": "integer", "description": "Context lines around content matches", "optional": True},
+                "max_results": {"type": "integer", "description": "Result cap (default 100); truncation is reported", "optional": True},
+                "no_ignore": {"type": "boolean", "description": "Search ignored files too (.gitignore opt-out)", "optional": True},
+            },
+            category="file", executor="dev", permission_tier="read_only", parallel_safe=True,
+            critical=True,
+        ),
+        ToolSpec(
+            name="glob_files",
+            description=(
+                "Fast filename search with ripgrep --files: glob pattern like '**/*.tsx', "
+                ".gitignore respected by default, results most-recently-modified first."
+            ),
+            parameters={
+                "pattern": {"type": "string", "description": "Glob pattern, e.g. '**/*.tsx'"},
+                "path": {"type": "string", "description": "Directory scope (defaults to the session workdir)", "optional": True},
+                "max_results": {"type": "integer", "description": "Result cap (default 200); truncation is reported", "optional": True},
+                "no_ignore": {"type": "boolean", "description": "Search ignored files too (.gitignore opt-out)", "optional": True},
+            },
+            category="file", executor="dev", permission_tier="read_only", parallel_safe=True,
+        ),
+        ToolSpec(
             name="get_system_info",
             description="Get system information",
             parameters={}, category="system", executor="mcp", mcp_server="system",
@@ -815,6 +849,21 @@ def register_builtin_tools() -> None:
 
     # ── Memory / Research / Internal ─────────────────────────────────────────
     specs += [
+        ToolSpec(
+            name="read_shell_output",
+            description=(
+                "Return the EXACT output of an earlier shell command by its ref "
+                "(e.g. 's3'), as listed in the '[earlier shell output is retained]' "
+                "index. Use this whenever a question refers to what a previous "
+                "command printed. Never answer from memory of the output -- read it."
+            ),
+            parameters={"ref": {
+                "type": "string",
+                "description": "Record ref from the retained-output index, e.g. 's3'",
+            }},
+            category="shell", executor="internal", permission_tier="read_only",
+            parallel_safe=True, critical=False,
+        ),
         ToolSpec(
             name="recall_memory",
             description=(

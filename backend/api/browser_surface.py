@@ -164,9 +164,13 @@ async def capture_replay(job_id: str, page_number: int, request: Request):
     # REQ-4 (T9): inject the view-agent so the sandboxed frame can speak OUT
     # (scroll/ready). Idempotent; a stripped script degrades to coarse states
     # (REQ-4 AC5) — the replay bytes themselves are never altered otherwise.
-    from backend.proxy.view_agent import inject_view_agent
+    from backend.proxy.view_agent import inject_view_agent, inject_view_scaler
 
     html = inject_view_agent(html, nonce=nonce)
+    # REQ-10 (specs/vision-browser-stage T7): fit-to-width scaler — wide
+    # fixed-layout pages SCALE to the frame instead of being clipped by the
+    # fit style's overflow cap. Same nonce, same idempotency rules.
+    html = inject_view_scaler(html, nonce=nonce)
     return HTMLResponse(content=html, headers=headers)
 
 
@@ -302,9 +306,11 @@ async def fetch_proxy(
     html_text = (result.body or b"").decode("utf-8", errors="replace")
     anchored = _rewrite_html(html_text, result.final_url or url)
     # REQ-4 (T9): view-agent injection, idempotent, degrades to coarse overlay.
-    from backend.proxy.view_agent import inject_view_agent
+    from backend.proxy.view_agent import inject_view_agent, inject_view_scaler
 
     anchored = inject_view_agent(anchored, nonce=nonce)
+    # REQ-10 (specs/vision-browser-stage T7): fit-to-width scaler, same rules.
+    anchored = inject_view_scaler(anchored, nonce=nonce)
     return HTMLResponse(
         content=anchored,
         status_code=status_code,

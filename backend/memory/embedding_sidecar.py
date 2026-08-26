@@ -35,7 +35,12 @@ logger = logging.getLogger(__name__)
 _SIDECAR_PORT = int(os.environ.get("IRIS_EMBEDDING_SIDECAR_PORT", "18183"))
 # Idle-stop: long enough to survive a typical browsing session (a reload
 # costs ~3.5 min of CPU), short enough that RAM actually comes back.
-_IDLE_TIMEOUT_S = float(os.environ.get("IRIS_EMBEDDING_SIDECAR_IDLE_S", "1800"))
+# Session 248: 30min was WRONG for the latency contract — the sidecar died
+# between searches and the next one paid a ~55s synchronous boot INSIDE
+# episodic recall/TaskClassifier (measured live: ensure_running 55.5s cold).
+# A warm embed is 8-175ms; the RAM cost of staying resident is ~0.5-1GB.
+# 4h covers a working day; IRIS_EMBEDDING_SIDECAR_IDLE_S still overrides.
+_IDLE_TIMEOUT_S = float(os.environ.get("IRIS_EMBEDDING_SIDECAR_IDLE_S", "14400"))
 
 _lock = threading.Lock()
 _proc = None            # subprocess.Popen of the owned llama-server
@@ -219,21 +224,40 @@ def _get_client() -> "httpx.Client":
 
 def embed(text: str, timeout_s: float = 30.0) -> Optional[List[float]]:
     """One text -> one vector via POST /v1/embeddings. None on any failure."""
+    vecs = embed_batch([text], timeout_s=timeout_s)
+    return vecs[0] if vecs else None
+
+
+def embed_batch(texts: List[str], timeout_s: float = 60.0) -> List[Optional[List[float]]]:
+    """Many texts -> many vectors in ONE POST (llama-server accepts arrays).
+
+    Session 248: the pre-search path made 4-6 SEQUENTIAL single-text calls;
+    measured live, a batch of 6 costs 88ms total vs ~100ms EACH sequential —
+    and one round trip instead of N removes the per-call overhead entirely.
+    Returns one entry per input: a vector, or None for that input on failure
+    (never raises)."""
+    if not texts:
+        return []
     if not ensure_running():
-        return None
+        return [None] * len(texts)
     try:
         r = _get_client().post(
             f"http://127.0.0.1:{_SIDECAR_PORT}/v1/embeddings",
-            json={"input": text},
+            json={"input": list(texts)},
             timeout=timeout_s,
         )
         r.raise_for_status()
-        data = r.json()
-        vec = data["data"][0]["embedding"]
+        data = r.json()["data"]
+        # llama-server returns data sorted by index; be defensive anyway.
+        by_index = {int(item["index"]): item["embedding"] for item in data}
+        out: List[Optional[List[float]]] = []
+        for i in range(len(texts)):
+            vec = by_index.get(i)
+            out.append(list(vec) if vec is not None else None)
         touch()
-        return list(vec)
+        return out
     except Exception as exc:
-        logger.debug("[EmbSidecar] embed failed: %s", exc)
+        logger.debug("[EmbSidecar] embed_batch failed: %s", exc)
         # Connection may be poisoned after a server restart — reset the pool.
         global _client
         with _client_lock:
@@ -243,7 +267,7 @@ def embed(text: str, timeout_s: float = 30.0) -> Optional[List[float]]:
             except Exception:
                 pass
             _client = None
-        return None
+        return [None] * len(texts)
 
 
 # ── Ripple coverage ─────────────────────────────────────────────────────────
@@ -308,3 +332,13 @@ class SidecarLlama:
             # Surface failure to the caller's existing hash-fallback path.
             raise RuntimeError("sidecar embed failed")
         return vec
+
+    def embed_batch(self, texts: List[str]) -> List[List[float]]:
+        """Batch interface mirroring `.embed` — one HTTP round trip for all.
+
+        Raises on ANY failure so the caller falls back to the per-text path
+        (same contract as embed() raising)."""
+        vecs = embed_batch(texts)
+        if any(v is None for v in vecs):
+            raise RuntimeError("sidecar batch embed failed")
+        return [v for v in vecs if v is not None]

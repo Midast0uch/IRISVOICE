@@ -80,6 +80,12 @@ export interface TerminalSnapshot {
   taskBlocks: TerminalTaskBlock[]
   questions: TerminalQuestion[]
   isOpen: boolean
+  /** Gate 3 T11 (REQ-6): recalled command history, newest last, bounded 200. */
+  history: string[]
+  /** Gate 3 T14 (REQ-5 AC3): idle / working / blocked / done. */
+  sessionState: "idle" | "working" | "blocked" | "done"
+  /** Gate 3 T10 (REQ-4 AC4): effective workdir shown in the panel header. */
+  workdir: string
 }
 
 export interface ResolvedAnswer {
@@ -93,6 +99,8 @@ const MAX_LINES = 500
 const MAX_TASK_BLOCKS = 10
 const MAX_QUESTIONS = 10
 const MAX_STEPS = 50
+/** Gate 3 T11 (REQ-6 AC3): bounded command history. */
+export const MAX_HISTORY = 200
 
 // ── Internal state ──────────────────────────────────────────────────────────
 
@@ -105,6 +113,112 @@ let snapshotCache: TerminalSnapshot | null = null
 const listeners = new Set<() => void>()
 let initialized = false
 
+// ── Gate 3 T11/T10/T14 state ───────────────────────────────────────────────
+let history: string[] = []
+let historyConversationId: string | null = null
+let historySaveTimer: ReturnType<typeof setTimeout> | null = null
+let sessionState: "idle" | "working" | "blocked" | "done" = "idle"
+let workdir = ""
+
+/**
+ * Load persisted history for a conversation (backend-backed — REQ-6 AC2
+ * decided NOT localStorage: the Tauri webview's localStorage is per-webview
+ * and cleared on some reinstall paths). Fire-and-forget; failure degrades to
+ * in-memory-only history.
+ */
+export function loadHistory(conversationId: string): void {
+  if (historyConversationId === conversationId) return
+  historyConversationId = conversationId
+  flushHistorySave()
+  fetch(`/api/terminal/history?conversation_id=${encodeURIComponent(conversationId)}`)
+    .then((r) => (r.ok ? r.json() : { history: [] }))
+    .then((data) => {
+      if (historyConversationId !== conversationId) return // switched mid-flight
+      const loaded = Array.isArray(data.history) ? data.history : []
+      if (loaded.length > history.length) {
+        history = loaded.slice(-MAX_HISTORY)
+        notify()
+      }
+    })
+    .catch(() => { /* degraded: memory-only */ })
+}
+
+function flushHistorySave(): void {
+  if (historySaveTimer) {
+    clearTimeout(historySaveTimer)
+    historySaveTimer = null
+  }
+  const conversationId = historyConversationId
+  if (!conversationId) return
+  fetch("/api/terminal/history", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ conversation_id: conversationId, history }),
+  }).catch(() => { /* silent — REQ-12 AC3 off the latency path */ })
+}
+
+/** Record a sent command: consecutive dedupe (REQ-6 edge), bounded 200. */
+export function recordHistory(command: string): void {
+  const trimmed = command.trim()
+  if (!trimmed) return
+  if (history[history.length - 1] === trimmed) return // consecutive dedupe
+  history = [...history, trimmed].slice(-MAX_HISTORY)
+  notify()
+  if (historySaveTimer) clearTimeout(historySaveTimer)
+  historySaveTimer = setTimeout(flushHistorySave, 1500) // debounced persist
+}
+
+const recallState: { index: number; draft: string } = { index: -1, draft: "" }
+
+/** Called after a command is SENT so recall starts fresh from the newest. */
+export function resetRecall(): void {
+  recallState.index = -1
+  recallState.draft = ""
+}
+
+/** Recall navigation: ↑ walks back (stashing the live draft once), ↓ walks
+ *  forward and returns to the stashed draft at the end. */
+export function recallHistory(
+  direction: "up" | "down",
+  draft: string,
+): { line: string | null; index: number } {
+  if (history.length === 0) return { line: null, index: -1 }
+  if (direction === "up") {
+    if (recallState.index === -1) {
+      recallState.draft = draft // REQ-6 edge: stash draft on first ArrowUp
+      recallState.index = history.length - 1
+    } else if (recallState.index > 0) {
+      recallState.index -= 1
+    }
+    return { line: history[recallState.index], index: recallState.index }
+  }
+  // down
+  if (recallState.index === -1) return { line: null, index: -1 }
+  if (recallState.index < history.length - 1) {
+    recallState.index += 1
+    return { line: history[recallState.index], index: recallState.index }
+  }
+  // past newest → restore the stashed live draft
+  recallState.index = -1
+  const stash = recallState.draft
+  recallState.draft = ""
+  return { line: stash, index: -1 }
+}
+
+/** T14 (REQ-5 AC3): session state from cli_* events. */
+export function setSessionState(state: "idle" | "working" | "blocked" | "done"): void {
+  if (sessionState === state) return
+  sessionState = state
+  notify()
+}
+
+/** T10 (REQ-4 AC4): effective workdir for the header. */
+export function setWorkdir(path: string): void {
+  if (workdir === path) return
+  workdir = path
+  notify()
+}
+
 // ── Subscription / snapshot ─────────────────────────────────────────────────
 
 function notify(): void {
@@ -113,7 +227,7 @@ function notify(): void {
 }
 
 export function getSnapshot(): TerminalSnapshot {
-  if (!snapshotCache) snapshotCache = { lines, taskBlocks, questions, isOpen }
+  if (!snapshotCache) snapshotCache = { lines, taskBlocks, questions, isOpen, history, sessionState, workdir }
   return snapshotCache
 }
 
@@ -185,6 +299,12 @@ export function reset(): void {
   questions = []
   isOpen = false
   nextId = 1
+  history = []
+  historyConversationId = null
+  recallState.index = -1
+  recallState.draft = ""
+  sessionState = "idle"
+  workdir = ""
   notify()
 }
 
@@ -560,6 +680,20 @@ function ensureInit(): void {
     if (detail?.line !== undefined) appendOutput(detail.line)
   }
 
+  // Gate 3 T1/T10: direct shell output — same panel, own event.
+  const onTerminalOutput = (e: Event) => {
+    const detail = (e as CustomEvent<{ line?: string }>).detail
+    if (detail?.line !== undefined) appendOutput(detail.line)
+    setSessionState("working") // output arriving ⇒ session alive
+  }
+
+  // Gate 3 T14 (REQ-5 AC3): badge transitions from events already on the wire.
+  const onCliStartedState = () => setSessionState("working")
+  const onCliActivityState = () => setSessionState("working")
+
+  const onQuestionAskState = () => setSessionState("blocked")
+  const onQuestionResolvedState = () => setSessionState("working")
+
   const onCliStarted = (e: Event) => {
     const detail = (e as CustomEvent<{ tool_name?: string }>).detail
     if (detail?.tool_name) appendSystem(`[${detail.tool_name} started]`)
@@ -592,13 +726,33 @@ function ensureInit(): void {
 
   window.addEventListener("iris:task_update", onTaskUpdate)
   window.addEventListener("iris:task:event", onTaskEvent)
-  window.addEventListener("iris:question_ask", onQuestionAsk)
-  window.addEventListener("iris:question_answered", onQuestionResolved)
-  window.addEventListener("iris:question_timeout", onQuestionResolved)
+  window.addEventListener("iris:question_ask", (e) => {
+    onQuestionAsk(e)
+    onQuestionAskState()
+  })
+  window.addEventListener("iris:question_answered", (e) => {
+    onQuestionResolved(e)
+    onQuestionResolvedState()
+  })
+  window.addEventListener("iris:question_timeout", (e) => {
+    onQuestionResolved(e)
+    onQuestionResolvedState()
+  })
   window.addEventListener("iris:cli_output", onCliOutput)
-  window.addEventListener("iris:cli_started", onCliStarted)
-  window.addEventListener("iris:cli_activity", onCliActivity)
-  window.addEventListener("iris:text_response", onTextResponse)
+  window.addEventListener("iris:cli_started", (e) => {
+    onCliStarted(e)
+    onCliStartedState()
+  })
+  window.addEventListener("iris:cli_activity", (e) => {
+    onCliActivity(e)
+    onCliActivityState()
+  })
+  window.addEventListener("iris:text_response", (e) => {
+    onTextResponse(e)
+    setSessionState("done") // a completed turn settles the badge
+  })
+  // Gate 3 T1: direct shell output stream.
+  window.addEventListener("iris:terminal_output", onTerminalOutput)
 }
 
 // ── ASCII renderers (text-only — the "no canvas" fallback) ──────────────────
@@ -766,7 +920,7 @@ export function resolveTerminalAnswer(
 export const TERMINAL_HELP = [
   "Available commands:",
   "  <command>          run in the shell (terminal_input)",
-  "  /run <request>     delegate to IRIS (dev_cli — agent picks the tool)",
+  "  /run <request>     delegate to IRIS (dev_cli — IRIS's own agent runs it)",
   "  >term              open/close this terminal",
   "  clear              clear the scrollback",
   "  help               show this help",

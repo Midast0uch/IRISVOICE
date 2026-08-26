@@ -32,51 +32,29 @@ const nextConfig = {
   },
 
   // ===========================================================================
-  // Webpack exclusions — applies to `next build` (production) only.
+  // NO webpack CONFIG HERE — AND THAT IS DELIBERATE.
   //
-  // Dev mode now uses Turbopack (lazy, path-independent cache, respects
-  // .gitignore) which avoids the 18GB+ models/ scan entirely.
+  // Next.js 16 builds with Turbopack by default (the banner prints
+  // "Next.js <ver> (Turbopack)" on every run, and package.json calls a plain
+  // `next build` with no --no-turbopack). A `webpack: (config) => {...}`
+  // function is therefore NEVER INVOKED.
   //
-  // For production builds (`next build`) these exclusions still prevent
-  // webpack from scanning model-weight directories.
+  // A block of webpack exclusions used to live here — watchOptions.ignored for
+  // models/backend/llama.cpp/venv, a module rule for .gguf/.safetensors/.bin,
+  // and moduleIds/chunkIds: 'named'. It was verified dead on 2026-08-25 by
+  // inserting a console.log as the function's first statement and running a
+  // full build: the marker never printed. Its comment claimed it still applied
+  // to production builds; that was false. Removed rather than left as a lie —
+  // see specs/dev-cli-ide/GATE0-FINDINGS.md (G0-10).
   //
-  // watchOptions.ignored MUST be a RegExp — webpack 5 only processes RegExp
-  // correctly here (glob strings are silently ignored on Windows).
+  // Turbopack honours .gitignore, so heavy directories are excluded THERE, not
+  // here. models/gguf, venv, .venv and llama.cpp were added to .gitignore for
+  // exactly this reason. If you need to exclude something from the build, add
+  // it to .gitignore — adding a webpack() function back will silently do
+  // nothing.
   //
-  // History: see docs/OPTIMIZATION_LOG.md — February 23, 2026.
+  // History: docs/OPTIMIZATION_LOG.md — February 23, 2026 (webpack era).
   // ===========================================================================
-  webpack: (config, { isServer, dev }) => {
-    config.watchOptions = {
-      ...config.watchOptions,
-      // Exclude backend Python files, session data, model weights, and
-      // everything outside the app source tree. The [/\\] character class
-      // matches both / (Unix) and \ (Windows).
-      ignored: /[/\\](node_modules|\.git|\.next|dist|backend|models|llama\.cpp|llama-cpp-turboquant|.iris-logs|.iris-pids|.iris-worktree|.mcm|.venv|venv|tests|e2e|benchmarks|research|specs|verification|hooks|pyinstaller_hooks)[/\\]/,
-    };
-
-    // Prevent webpack from trying to process model weight files as JS assets.
-    config.module.rules.push({
-      test: /\.(bin|safetensors|gguf|pt|pth)$/,
-      type: 'javascript/auto',
-      exclude: /models\//,
-    });
-
-    // Named module/chunk IDs aid stack-trace debugging but add significant
-    // overhead during dev compilation. Only enable them in production builds.
-    if (!isServer && !dev) {
-      config.optimization = {
-        ...config.optimization,
-        moduleIds: 'named',
-        chunkIds: 'named',
-      };
-    }
-
-    // Note: do NOT set config.devtool in dev — Next.js will revert it with
-    // a warning ("severe performance regressions"). Next.js picks an
-    // appropriate devtool automatically.
-
-    return config;
-  },
 
   // Turbopack is the default dev bundler in Next.js 16.
   // To disable it (e.g. for CSS issues), pass --no-turbopack to the CLI:

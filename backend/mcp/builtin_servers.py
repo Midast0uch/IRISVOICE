@@ -418,10 +418,18 @@ class FileManagerServer(BuiltinServer):
             path = arguments.get("path", ".")
             recursive = arguments.get("recursive", False)
             try:
-                items = await asyncio.to_thread(
+                listing = await asyncio.to_thread(
                     self._sync_list_directory, path, recursive
                 )
-                return {"success": True, "items": items, "path": path}
+                result = {"success": True, "items": listing["items"], "path": path}
+                if listing["truncated"]:
+                    # REQ-18 AC4: a silently truncated listing reads as complete.
+                    result["truncated"] = True
+                    result["notice"] = (
+                        f"Listing truncated at {len(listing['items'])} entries — "
+                        f"use glob_files for recursive discovery."
+                    )
+                return result
             except Exception as e:
                 return {"success": False, "error": str(e)}
 
@@ -456,18 +464,27 @@ class FileManagerServer(BuiltinServer):
             f.write(content)
 
     @staticmethod
-    def _sync_list_directory(path: str, recursive: bool) -> list:
+    def _sync_list_directory(path: str, recursive: bool) -> dict:
+        # REQ-18: recursive listing is BOUNDED — the old unbounded
+        # Path.rglob("*") walked node_modules/.next/venv into agent context
+        # with no ignore rules and no end. Recursive discovery belongs to
+        # glob_files (ripgrep); this bound is a backstop, not a search.
+        max_entries = 2000
         items = []
+        truncated = False
         p = Path(path)
         it = p.rglob("*") if recursive else p.iterdir()
         for entry in it:
+            if len(items) >= max_entries:
+                truncated = True
+                break
             items.append({
                 "name": entry.name,
                 "path": str(entry),
                 "type": "directory" if entry.is_dir() else "file",
                 "size": entry.stat().st_size if entry.is_file() else None,
             })
-        return items
+        return {"items": items, "truncated": truncated}
 
     @staticmethod
     def _sync_create_directory(path: str) -> None:

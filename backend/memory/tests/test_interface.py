@@ -160,16 +160,6 @@ class TestSessionManagement:
         
         memory_interface.context.append.assert_called_once()
     
-    def test_update_tool_state_delegates_to_context(self, memory_interface):
-        """Test that update_tool_state delegates to ContextManager.append."""
-        memory_interface.context = Mock()
-        
-        memory_interface.update_tool_state("session_123", "tool output")
-        
-        memory_interface.context.append.assert_called_once_with(
-            "session_123", "tool output", zone="active_tool_state"
-        )
-    
     def test_clear_session_delegates_to_context(self, memory_interface):
         """Test that clear_session delegates to ContextManager."""
         memory_interface.context = Mock()

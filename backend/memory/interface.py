@@ -278,18 +278,6 @@ class MemoryInterface:
         """
         self.context.append(session_id, content, zone)
 
-    def update_tool_state(self, session_id: str, tool_output: str) -> None:
-        """
-        Update the live tool output zone.
-
-        Does not trigger compression.
-
-        Args:
-            session_id: Session identifier
-            tool_output: Current tool output
-        """
-        self.context.append(session_id, tool_output, zone="active_tool_state")
-
     def get_assembled_context(self, session_id: str) -> str:
         """
         Get current rendered context for a session.

@@ -47,12 +47,19 @@ import {
   clear as clearTerminal,
   resolveTerminalAnswer,
   TERMINAL_HELP,
+  // Gate 3 T10/T11/T14
+  recordHistory,
+  recallHistory,
+  resetRecall,
+  loadHistory,
+  setWorkdir as setTerminalWorkdir,
 } from "@/components/terminal/terminalScrollback";
 import ContextPill from "@/components/chat/ContextPill";
 import ModelSwitcher from "@/components/ModelSwitcher";
 import { RichDocument } from "@/components/chat/RichDocument";
 import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
 import { DocumentPanel } from "@/components/chat/DocumentPanel";
+import { useManualDragWindow } from "@/hooks/useManualDragWindow"
 import { useTaskProgress } from "@/hooks/useTaskProgress";
 import { useCrawlContext } from "@/hooks/CrawlProvider";
 import type { ConversationChip, Suggestion } from "@/types/iris";
@@ -503,6 +510,53 @@ export function ChatWing({
   // this only re-renders when the store actually mutates (bounded at 500 lines).
   const terminalSnapshot = useSyncExternalStore(subscribeTerminal, getTerminalSnapshot, getTerminalSnapshot)
 
+  // ── Gate 3 T10 (REQ-4): active-tab workdir ──────────────────────────────
+  // A non-virtual tab with a local path drives `>` and /run workdir; virtual
+  // tabs send nothing (backend default). Header display rides the store.
+  const activeTabPath = useWorkspaceStore((s) => {
+    const tab = s.tabs.find((t) => t.id === s.activeTabId)
+    return tab && !tab.isVirtual && tab.path ? tab.path : null
+  })
+  useEffect(() => {
+    setTerminalWorkdir(activeTabPath ?? "")
+  }, [activeTabPath])
+
+  // ── Gate 3 T11 (REQ-6 AC2): per-conversation history rehydration ────────
+  useEffect(() => {
+    if (activeConversationId) loadHistory(activeConversationId)
+  }, [activeConversationId])
+
+  // ── Gate 3 T12 (REQ-7): slash-command menu ──────────────────────────────
+  // Sourced from GET /api/dev/cli-tools (REQ-0 AC4) — never a second
+  // hardcoded list. Suppressed while listening; must not hijack @taskcard.
+  const [slashCommands, setSlashCommands] = useState<Array<{
+    name: string; display_name: string; when_to_use: string; available: boolean;
+  }>>([])
+  const [slashMenuOpen, setSlashMenuOpen] = useState(false)
+  useEffect(() => {
+    if (!isDeveloper) return
+    let cancelled = false
+    fetch('/api/dev/cli-tools')
+      .then((r) => (r.ok ? r.json() : { tools: [] }))
+      .then((data) => { if (!cancelled) setSlashCommands(data.tools ?? []) })
+      .catch(() => { /* menu degrades to empty — input unaffected */ })
+    return () => { cancelled = true }
+  }, [isDeveloper])
+  const slashMatches = useMemo(() => {
+    if (!slashMenuOpen) return []
+    const q = inputText.slice(1).toLowerCase() // after the leading '/'
+    return slashCommands
+      .filter((c) => c.available !== false)
+      .filter((c) => !q || c.name.toLowerCase().startsWith(q) ||
+        c.display_name.toLowerCase().includes(q))
+      .slice(0, 8)
+  }, [slashMenuOpen, slashCommands, inputText])
+  const acceptSlash = (command: string) => {
+    setInputText(`/${command} `)
+    setSlashMenuOpen(false)
+    requestAnimationFrame(() => inputRef.current?.focus())
+  }
+
   // Suggestion pills — populated from text_response WS payload, cleared on send or dismiss
   const [currentSuggestions, setCurrentSuggestions] = useState<Suggestion[]>([])
 
@@ -698,28 +752,9 @@ export function ChatWing({
   }, [sendMessage])
   const mentionCandidates = taskProgress.cards.length > 0 ? taskProgress.cards : mentionCards
 
-  // ── cli-workspace-unification T1/T4 (REQ-1/REQ-3): unified timeline ──────
-  // Developer mode renders ONE chronological stream: chat messages and shell
-  // lines interleaved by timestamp inside a single overflow-y-auto. Lines the
-  // scrollback store mirrored from `iris:text_response` are EXCLUDED — those
-  // are already rendered as regular assistant messages here (source: "chat").
-  const unifiedTimeline = useMemo(() => {
-    if (!isDeveloper) return null
-    const items: Array<
-      | { kind: "message"; ts: number; message: Message; index: number }
-      | { kind: "shell"; ts: number; line: (typeof terminalSnapshot.lines)[number] }
-    > = []
-    for (let i = 0; i < messages.length; i++) {
-      const m = messages[i]
-      items.push({ kind: "message", ts: m.timestamp?.getTime?.() ?? 0, message: m, index: i })
-    }
-    for (const line of terminalSnapshot.lines) {
-      if (line.source === "chat") continue
-      items.push({ kind: "shell", ts: line.ts, line })
-    }
-    items.sort((a, b) => a.ts - b.ts)
-    return items
-  }, [isDeveloper, messages, terminalSnapshot])
+  // ── Gate 3 T9 (REQ-3/D5): DE-UNIFIED. Shell lines no longer merge into
+  // the chat stream — they render in the terminal panel only (scrollback
+  // store stays authoritative there). Chat keeps messages + cards.
 
   // ── Session 244: card↔response inline join ─────────────────────────────
   // Cards render INLINE with the assistant message they belong to (matched
@@ -731,16 +766,13 @@ export function ChatWing({
   const renderTimeline = useMemo(() => {
     type Entry =
       | { kind: "message"; ts: number; message: Message; index: number }
-      | { kind: "shell"; ts: number; line: (typeof terminalSnapshot.lines)[number] }
       | { kind: "card"; ts: number; card: TaskCard }
-    const base: Entry[] = unifiedTimeline
-      ? [...unifiedTimeline]
-      : messages.map((message, index) => ({
-          kind: "message" as const,
-          ts: message.timestamp?.getTime?.() ?? 0,
-          message,
-          index,
-        }))
+    const base: Entry[] = messages.map((message, index) => ({
+      kind: "message" as const,
+      ts: message.timestamp?.getTime?.() ?? 0,
+      message,
+      index,
+    }))
     // Session 246 (user directive): ONE card per response — never stack.
     // Later cards for the same turn supersede earlier ones ('continues'
     // double-emits, re-plans); unmatched orphans collapse to the single
@@ -789,7 +821,7 @@ export function ChatWing({
       }
     }
     return out
-  }, [unifiedTimeline, messages, taskProgress.cards])
+  }, [messages, taskProgress.cards])
 
   // REQ-3 AC2: elapsed running timer for the active Blueprint Matrix. Ticks
   // ONLY while a card is working (interval cleaned up on settle — bounded).
@@ -808,10 +840,10 @@ export function ChatWing({
   // and the first streamed block — the glyph's exact mount window.
   const awaitingFirstBlock = useMemo(() => {
     if (!isDeveloper || !isTyping || taskProgressStillRunning) return false
-    if (!unifiedTimeline || unifiedTimeline.length === 0) return false
-    const last = unifiedTimeline[unifiedTimeline.length - 1]
-    return last.kind === "message" && last.message.sender === "user"
-  }, [isDeveloper, isTyping, taskProgressStillRunning, unifiedTimeline])
+    if (messages.length === 0) return false
+    const last = messages[messages.length - 1]
+    return last.sender === "user"
+  }, [isDeveloper, isTyping, taskProgressStillRunning, messages])
 
   // T11 (REQ-8 AC1): Blueprint Matrix transition log — every status change of
   // any card is recorded with ISO ts + conversation id. Compares a compact
@@ -1023,8 +1055,36 @@ export function ChatWing({
         // highlighting stays in sync with actual audio playback.
       }
     }
+    // REQ-28: a long answer's spoken brief is generated AFTER the body and
+    // streamed to TTS sentence by sentence, so its final text arrives once
+    // speech is already playing. Re-point `spoken` and `words` at what is
+    // actually being said; otherwise the highlight follows the fallback line
+    // the body carried, which is the desync `spoken` exists to prevent.
+    const handleSpokenUpdate = (e: Event) => {
+      const detail = (e as CustomEvent).detail as {
+        turn_id?: string; spoken?: string
+      }
+      const spokenLine = (detail?.spoken || '').trim()
+      const turnId = detail?.turn_id
+      if (!spokenLine || !turnId) return
+      setConversations(prev => prev.map(conv => {
+        const idx = conv.messages.findIndex(m => m.id === turnId)
+        if (idx < 0) return conv
+        const updated = [...conv.messages]
+        updated[idx] = {
+          ...updated[idx],
+          spoken: spokenLine,
+          words: spokenLine.split(' '),
+        }
+        return { ...conv, messages: updated }
+      }))
+    }
     window.addEventListener('iris:text_response', handleTextResponse)
-    return () => window.removeEventListener('iris:text_response', handleTextResponse)
+    window.addEventListener('iris:spoken_update', handleSpokenUpdate)
+    return () => {
+      window.removeEventListener('iris:text_response', handleTextResponse)
+      window.removeEventListener('iris:spoken_update', handleSpokenUpdate)
+    }
   }, [])
 
   // Handle streaming chat chunks (iris:chat_chunk) from the WebSocket path.
@@ -1667,7 +1727,9 @@ export function ChatWing({
           appendCommand(text)
           appendSystem('[delegate] /run → dev_cli')
           logStructured('cli_dispatch', { command: text, kind: 'run_delegate', conversation_id: activeConversationId })
-          sendMessage?.('dev_cli', { query })
+          // Gate 3 T10: active tab's directory rides as workdir (REQ-4 AC1).
+          sendMessage?.('dev_cli', { query, ...(activeTabPath ? { workdir: activeTabPath } : {}) })
+          recordHistory(text)
           if (!snap.isOpen) toggleTerminalOpen()
         }
         return
@@ -1687,7 +1749,10 @@ export function ChatWing({
         appendCommand(text)
         appendSystem('[shell] → terminal_input')
         logStructured('cli_dispatch', { command: text, kind: 'shell', conversation_id: activeConversationId })
-        sendMessage?.('terminal_input', { line: text })
+        // Gate 3 T10: active tab's directory rides as workdir (REQ-4 AC1).
+        sendMessage?.('terminal_input', { line: text, ...(activeTabPath ? { workdir: activeTabPath } : {}) })
+        recordHistory(text)
+        resetRecall()
         if (!snap.isOpen) toggleTerminalOpen()
         return
       }
@@ -1813,10 +1878,48 @@ export function ChatWing({
         ? text.slice(1).trim()
         : text.slice(5).trim()
       if (command) {
-        sendMessage?.('terminal_input', { line: command })
+        // Gate 3 T10: active tab's directory rides as workdir (REQ-4 AC1).
+        sendMessage?.('terminal_input', { line: command, ...(activeTabPath ? { workdir: activeTabPath } : {}) })
+        recordHistory(text)
+        resetRecall()
         setInputText('')
         return
       }
+    }
+
+    // dev-cli-ide REQ-25: a message typed WHILE a turn is running is a STEER,
+    // not a new turn. `text_message` queues behind the backend's per-session
+    // lock for the turn's WHOLE duration, so a user watching a task go the
+    // wrong way could only wait it out (the comment at the top of this
+    // function records a 23-minute case). The steering channel (REQ-15) has
+    // been implemented backend-side since T25/T26 and NOTHING ever sent to it;
+    // this is the sender. The record reaches the DER loop at its next step
+    // boundary, never mid-step, and revises the remaining plan.
+    // Mode-independent: steering carries no capability gate, so it works the
+    // same in personal and developer mode.
+    if (anyCardWorking && sendMessage) {
+      sendMessage('steer', {
+        text,
+        message_id: `steer-${Date.now()}`,
+        conversation_id: threadId,
+      })
+      const steerNotice: Message = {
+        id: `steer-note-${Date.now()}`,
+        text: 'Steering the running task. The agent applies this at its next step.',
+        sender: 'system',
+        timestamp: new Date(),
+      }
+      if (threadId) {
+        setConversations(prev => prev.map(conv =>
+          conv.id === threadId
+            ? { ...conv, messages: [...conv.messages, steerNotice] }
+            : conv
+        ))
+      }
+      recordHistory(text)
+      resetRecall()
+      setInputText('')
+      return
     }
 
     // === Primary path: WebSocket (streaming, no timeout) ===
@@ -2566,6 +2669,19 @@ ${message.text}`;
   const getOuterPerspective = () => isRemoteView ? 'none' : '800px';
   const getInnerBorderRadius = () => isRemoteView ? '16px' : '12px';
 
+  // Window drag from the chat HEADER (the 48px bar). Deliberately the header
+  // and not the whole panel: a mousedown anywhere would start a drag from the
+  // message list and the input, making text selection impossible.
+  //
+  // No click callback is passed — the header has no click action of its own,
+  // and the hook only invokes onClickAction when one is given, so the header's
+  // own buttons (dashboard, notifications, history, close) keep working
+  // untouched. A drag that begins on one of those buttons no longer fires its
+  // click on release: the hook swallows exactly one capture-phase click after
+  // a real (>12px) drag.
+  const chatHeaderRef = useRef<HTMLDivElement>(null)
+  const { handleMouseDown: handleHeaderDragStart } = useManualDragWindow(chatHeaderRef)
+
   return (
     <AnimatePresence>
       {isOpen && (
@@ -2666,8 +2782,10 @@ ${message.text}`;
 
             {/* 48px Header (60px on mobile for larger touch targets) */}
             <div 
+              ref={chatHeaderRef}
+              onMouseDown={handleHeaderDragStart}
               className={isRemoteView ? "h-[60px] px-4 flex items-center flex-shrink-0 border-b relative z-30" : "h-12 px-3 flex items-center flex-shrink-0 border-b relative z-30"}
-              style={{ borderColor: `${glowColor}15`, position: 'relative' }}
+              style={{ borderColor: `${glowColor}15`, position: 'relative', cursor: isRemoteView ? undefined : 'grab' }}
             >
               {/* Global error line */}
               {globalError && (
@@ -3110,7 +3228,7 @@ ${message.text}`;
                   cards. A thread can hold a card with no rendered messages —
                   a simulation, or a rehydrated card whose messages are still
                   loading (conv-40 evidence). Cards count as content. */}
-              {(unifiedTimeline ? unifiedTimeline.length === 0 : (messages.length === 0 && renderTimeline.length === 0)) && !isTyping ? (
+              {(messages.length === 0 && renderTimeline.length === 0) && !isTyping ? (
                 <div 
                   className="flex-1 flex items-center justify-center h-full"
                   style={{ color: `${fontColor}50` }}
@@ -3134,24 +3252,8 @@ ${message.text}`;
               ) : (
                 <div className="space-y-0">
                   {renderTimeline.map((entry) => {
-                    // T4 (REQ-1/REQ-3): shell lines interleave chronologically
-                    // between chat messages in developer mode — one stream.
-                    if (entry.kind === "shell") {
-                      const line = entry.line
-                      return (
-                        <div key={`shell-${line.id}`} className="py-0.5 font-mono text-[10px] leading-snug break-all whitespace-pre-wrap"
-                          style={{
-                            color:
-                              line.kind === "command" ? glowColor
-                              : line.kind === "error" ? '#ef4444'
-                              : line.kind === "system" ? 'rgba(255,255,255,0.45)'
-                              : 'rgba(255,255,255,0.75)',
-                          }}
-                        >
-                          {line.text}
-                        </div>
-                      )
-                    }
+                    // Gate 3 T9: shell lines render in the terminal panel
+                    // only (D5) — the chat stream carries messages + cards.
                     // Session 244: task cards render INLINE — after the
                     // assistant message they belong to (responseTurnId join),
                     // or at the bottom for unmatched/legacy cards. Dev mode
@@ -4343,6 +4445,35 @@ ${message.text}`;
                       ))}
                     </div>
                   )}
+                  {/* Gate 3 T12 (REQ-7): slash-command menu — filtered from
+                      GET /api/dev/cli-tools; Tab/Enter accept, Escape dismiss.
+                      Rendered above the input; never intercepts '@'. */}
+                  {isDeveloper && slashMenuOpen && slashMatches.length > 0 && (
+                    <div className="absolute bottom-full left-0 right-0 mb-1 z-50 overflow-hidden"
+                      style={{
+                        background: 'linear-gradient(135deg, rgba(5,5,12,0.97) 0%, rgba(12,12,20,0.95) 100%)',
+                        border: `1px solid ${glowColor}40`,
+                        borderRadius: '8px',
+                        boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
+                      }}>
+                      {slashMatches.map((c) => (
+                        <button key={c.name} type="button"
+                          onMouseDown={(ev) => { ev.preventDefault(); acceptSlash(c.name) }}
+                          className="w-full text-left px-3 py-1.5 flex items-baseline gap-2 hover:bg-white/5 transition-colors">
+                          <span className="font-mono text-[11px]" style={{ color: glowColor }}>{c.display_name}</span>
+                          <span className="text-[10px] opacity-60 truncate">{c.when_to_use}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {/* Gate 3 T12 AC2: '>' hint row — workdir + shell mode,
+                      non-blocking. */}
+                  {isDeveloper && inputText.startsWith('>') && (
+                    <div className="absolute bottom-full left-0 mb-1 px-2 py-0.5 font-mono text-[9px] opacity-60 pointer-events-none"
+                      style={{ color: fontColor }}>
+                      {'{'}shell mode{'}'} {activeTabPath ?? '(default repo)'}
+                    </div>
+                  )}
                   <textarea
                     ref={inputRef as any}
                     value={inputText}
@@ -4352,11 +4483,69 @@ ${message.text}`;
                       const opening = /(^|\s)@$/.test(v);
                       if (opening && !cardMentionOpen) openCardMentionPicker();
                       setCardMentionOpen(opening);
+                      // ── Gate 3 T12 (REQ-7): '/' opens the command menu;
+                      // '@' picker precedence is untouched (CONTRACT LOCK).
+                      if (isDeveloper && voiceState !== 'listening') {
+                        setSlashMenuOpen(v.startsWith('/'))
+                      } else if (slashMenuOpen) {
+                        setSlashMenuOpen(false)
+                      }
                       // Auto-expand height
                       e.target.style.height = 'auto';
                       e.target.style.height = `${e.target.scrollHeight}px`;
                     }}
                     onKeyDown={(e) => {
+                      // ── Gate 3 T12 (REQ-7): slash menu keys ──────────
+                      if (slashMenuOpen && slashMatches.length > 0) {
+                        if (e.key === 'Escape') {
+                          e.preventDefault()
+                          setSlashMenuOpen(false) // close without clearing input
+                          return
+                        }
+                        if ((e.key === 'Tab' || e.key === 'Enter') && !e.shiftKey) {
+                          e.preventDefault() // accept beats send while menu is open
+                          acceptSlash(slashMatches[0].name)
+                          return
+                        }
+                      } else if (slashMenuOpen && e.key === 'Escape') {
+                        e.preventDefault()
+                        setSlashMenuOpen(false)
+                        return
+                      }
+                      // ── Gate 3 T11 (REQ-6): ↑/↓ command history ──────
+                      if (isDeveloper && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+                        const el = e.currentTarget
+                        // multi-line draft: arrows must move the caret (REQ-6 edge)
+                        if (inputText.includes('\n')) return
+                        const atStart = el.selectionStart === 0 && el.selectionEnd === 0
+                        const atEnd = el.selectionStart === el.value.length
+                        if (e.key === 'ArrowUp' && !atStart) return
+                        if (e.key === 'ArrowDown' && !atEnd) return
+                        e.preventDefault()
+                        const { line } = recallHistory(e.key === 'ArrowUp' ? 'up' : 'down', inputText)
+                        if (line !== null) {
+                          setInputText(line)
+                          requestAnimationFrame(() => {
+                            el.selectionStart = el.selectionEnd = el.value.length
+                          })
+                        }
+                        return
+                      }
+                      // ── Gate 3 T13 (REQ-8): Ctrl+C abort ─────────────
+                      if (isDeveloper && e.key === 'c' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
+                        // Only when text is NOT selected (copy keeps working).
+                        const el = inputRef.current
+                        const hasSelection = !!el && el.selectionStart !== el.selectionEnd
+                        if (hasSelection) return
+                        e.preventDefault()
+                        if (terminalSnapshot.sessionState === 'working') {
+                          sendMessage?.('dev_abort', {})
+                          appendSystem('^C — abort sent')
+                        } else {
+                          setInputText('') // nothing running: clear line (AC3)
+                        }
+                        return
+                      }
                       if (e.key === 'Enter' && !e.shiftKey) {
                         e.preventDefault();
                         handleSendMessage();
@@ -4396,7 +4585,7 @@ ${message.text}`;
                     (balanced ≈16px distribution margin). The ⏎ enter icon stays
                     removed (AC4); its width is allocated to ContextPill (174px). */}
                 {isDeveloper ? (
-                <div className="flex items-center justify-between w-full px-1 gap-2 mt-2 h-[32px] flex-shrink-0">
+                 <div className="flex items-center justify-evenly w-full px-2 gap-2 mt-2 h-[32px] flex-shrink-0">
 
                   {/* Web toggle — internet-access capability gate (plan Issue E).
                       OFF by default: agent has no web tools. ON: agent is granted

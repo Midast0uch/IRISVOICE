@@ -75,22 +75,38 @@ class TestTaskStartRevisionOrigin:
         # between emit sites, and the origin vocabulary passing through. The
         # assertion is still EXACT equality — that strictness is the whole point,
         # because it is what proves each addition was additive, not a rewrite.
+        # RE-UPDATED 2026-08-26, session 260 (GROUND TRUTH row ordering):
+        # _task_start_payload now STAMPS each step with `seq` from
+        # backend/agent/row_sequence.py -- the backend-owned ordering key that
+        # anything producing a card row must carry. That is committed,
+        # intended behaviour (verified with `git show HEAD`), so this literal
+        # is stale, not the code.
+        # TWO CHANGES, BOTH CALLED OUT:
+        #   1. the expected step gains "seq" (additive, same as every earlier
+        #      update recorded above);
+        #   2. conversation_id moves off the shared literal "conv_1" to an id
+        #      unique to this test. `seq_for` allocates from a MODULE-LEVEL
+        #      counter keyed by conversation, so a shared id makes the expected
+        #      value depend on which other tests ran first. A unique id makes
+        #      the first row deterministically 1.
+        # The assertion stays EXACT equality -- the strictness is the point.
+        _conv = "conv_task_start_revision_origin"
         payload = AgentKernel._task_start_payload(
             task_id="t1", description="d", plan_title="p", mode="full",
             steps=[{"id": "s1"}], total_steps=1, origin="initial",
-            card_id="card_t1", card_relation="new", conversation_id="conv_1",
+            card_id="card_t1", card_relation="new", conversation_id=_conv,
         )
         assert payload == {
             "task_id": "t1",
             "description": "d",
             "plan_title": "p",
             "mode": "full",
-            "steps": [{"id": "s1"}],
+            "steps": [{"id": "s1", "seq": 1}],
             "total_steps": 1,
             "origin": "initial",
             "card_id": "card_t1",
             "card_relation": "new",
-            "conversation_id": "conv_1",
+            "conversation_id": _conv,
             "agent_id": None,
             "project_id": None,
             "turn_id": None,

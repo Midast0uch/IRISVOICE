@@ -411,6 +411,7 @@ class CrawlOrchestrator:
             job_id = uuid.uuid4().hex
         _emit = self._make_emitter(on_progress, session_id)
 
+
         # Session 247: zero-yield cutoff. When this session's last N jobs ALL
         # returned zero usable pages inside the window, the environment is not
         # yielding content — run the full funnel again and it will burn its
@@ -1193,27 +1194,51 @@ class CrawlOrchestrator:
             # through ask_non_blocking raises the card AND parks with the card's
             # own id, which is what makes AC3 resumption reachable.
             source = None
-            try:
-                question = get_ask_user_tool().ask_non_blocking(
-                    text=(
-                        f"I hit a {wall_kind} wall on {_domain} and moved on to "
-                        f"other sources. Want me to keep trying that one?"
-                    ),
-                    options=["Skip it", "Try it again"],
-                    allow_other=True,
-                    run_id=run_id,
-                    parked_url=url,
-                    wall_kind=wall_kind,
-                )
-                source = registry.get(question.question_id)
-            except Exception as _ask_exc:  # noqa: BLE001
-                # Asking is best-effort; a failure here must still park the
-                # source so the run reports it as parked (AC4).
-                logger.info(
-                    "[CrawlOrchestrator] non-blocking ask failed url=%s: %s "
-                    "(falling back to park-only)", url, _ask_exc,
-                )
-                source = registry.park(run_id=run_id, url=url, wall_kind=wall_kind)
+            # Session 248 POLICY CHANGE (user direction, pin_587a3e612558
+            # item #7): a run_budget wall is OUR budget expiring, not a wall
+            # the user can help with — the agent should PERSIST toward its
+            # goal, not interrupt with "want me to keep trying?". Run-budget
+            # parks are therefore SILENT: still ledgered, still emitted as
+            # CRAWLER_SOURCE_PARKED (the sources list stays honest), still
+            # folded into park_summary — but NO QuestionCard. Challenge walls
+            # (bot blocks a user could solve, e.g. by logging in) keep the ask.
+            if wall_kind == "run_budget":
+                try:
+                    source = registry.park(run_id=run_id, url=url, wall_kind=wall_kind)
+                    logger.info(
+                        "[CrawlOrchestrator] silent park job_id=%s url=%s "
+                        "wall=run_budget (policy: no user question for "
+                        "self-inflicted budget walls)",
+                        run_id, url,
+                    )
+                except Exception as _park_exc:
+                    logger.info(
+                        "[CrawlOrchestrator] silent park failed url=%s: %s",
+                        url, _park_exc,
+                    )
+                    return
+            else:
+                try:
+                    question = get_ask_user_tool().ask_non_blocking(
+                        text=(
+                            f"I hit a {wall_kind} wall on {_domain} and moved on to "
+                            f"other sources. Want me to keep trying that one?"
+                        ),
+                        options=["Skip it", "Try it again"],
+                        allow_other=True,
+                        run_id=run_id,
+                        parked_url=url,
+                        wall_kind=wall_kind,
+                    )
+                    source = registry.get(question.question_id)
+                except Exception as _ask_exc:  # noqa: BLE001
+                    # Asking is best-effort; a failure here must still park the
+                    # source so the run reports it as parked (AC4).
+                    logger.info(
+                        "[CrawlOrchestrator] non-blocking ask failed url=%s: %s "
+                        "(falling back to park-only)", url, _ask_exc,
+                    )
+                    source = registry.park(run_id=run_id, url=url, wall_kind=wall_kind)
             if source is None:
                 # Already parked for this domain this run — no re-ask (AC6).
                 logger.info(
@@ -1341,7 +1366,7 @@ class CrawlOrchestrator:
             logger.debug("[CrawlOrchestrator] evidence stamp failed: %s", exc)
 
     @staticmethod
-    async def _vision_fetch(vision_cap, url: str, goal: str, job_id: str, _emit, page_offset: int = 0):
+    async def _vision_fetch(vision_cap, url: str, goal: str, job_id: str, _emit, page_offset: int = 0, escalated: bool = False):
         """Call fetch.vision, passing the REQ-11 AC4 action emitter when the
         capability supports it. Capabilities implementing only the bare
         3-positional-arg protocol are called unchanged (REQ-6 AC1).
@@ -1350,8 +1375,13 @@ class CrawlOrchestrator:
         space. A vision session publishes MANY frames for ONE url; every session
         used to start at page 1 under the shared job_id, so URL 4's frames
         overwrote URL 1's captured page and the panel served the wrong bytes.
+
+        ``escalated`` (specs/vision-browser-stage REQ-8): stamped onto every
+        action payload so the frontend's "notice" beat fires only when vision
+        took over from a FAILED crawl — a raced session is not an escalation.
         """
         def _on_action(payload: dict) -> None:
+            payload["escalated"] = escalated
             _emit("CRAWLER_VISION_ACTION", payload)
 
         try:
@@ -1391,6 +1421,7 @@ class CrawlOrchestrator:
         _t_esc_start = time.monotonic()
         vision_outcome = await self._vision_fetch(
             vision_cap, url, query, job_id, _emit, page_offset=page_offset,
+            escalated=True,
         )
         # REQ-9 AC1/AC4 (specs/dag-node-execution-model, T18): every recovery
         # node execution is logged with node name + typed reason + duration +

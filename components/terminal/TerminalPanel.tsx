@@ -25,7 +25,11 @@
  *   - xterm is dynamically imported (lazy) to avoid bundling in non-dev builds
  */
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import {
+  subscribe as subscribeTerminal,
+  getSnapshot as getTerminalSnapshot,
+} from './terminalScrollback'
 
 interface TerminalPanelProps {
   glowColor?: string
@@ -39,6 +43,23 @@ export function TerminalPanel({ glowColor = '#60a5fa', sendMessage }: TerminalPa
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const fitAddonRef = useRef<any>(null)
   const lineBufferRef = useRef<string>('')
+  // REQ-13 AC3 (T0d): surface sandbox-worktree isolation in the panel header.
+  const [sandboxPath, setSandboxPath] = useState<string | null>(null)
+  // Gate 3 T10/T14: effective workdir + session state badge (store-driven).
+  const terminal = useSyncExternalStore(subscribeTerminal, getTerminalSnapshot, getTerminalSnapshot)
+  const workdir = terminal.workdir
+  const sessionState = terminal.sessionState
+
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/git/worktree/status')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((s) => {
+        if (!cancelled && s?.exists && s?.path) setSandboxPath(s.path as string)
+      })
+      .catch(() => { /* personal mode / offline — no badge */ })
+    return () => { cancelled = true }
+  }, [])
 
   // Stable ref so event listeners don't capture stale sendMessage
   const sendRef = useRef(sendMessage)
@@ -160,6 +181,14 @@ export function TerminalPanel({ glowColor = '#60a5fa', sendMessage }: TerminalPa
       }
     }
 
+    // Gate 3 T1: direct shell output — same display, own event.
+    const onShellOutput = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { line?: string }
+      if (detail?.line !== undefined && termRef.current) {
+        termRef.current.write(detail.line.replace(/\r?\n/g, '\r\n') + '\r\n')
+      }
+    }
+
     // cli_started: CLI tool / subprocess started
     const onStarted = (e: Event) => {
       const detail = (e as CustomEvent).detail as { tool_name?: string; proc_id?: string }
@@ -186,6 +215,7 @@ export function TerminalPanel({ glowColor = '#60a5fa', sendMessage }: TerminalPa
     }
 
     window.addEventListener('iris:cli_output', onOutput)
+    window.addEventListener('iris:terminal_output', onShellOutput)
     window.addEventListener('iris:cli_started', onStarted)
     window.addEventListener('iris:cli_activity', onActivity)
     window.addEventListener('iris:text_response', onTextResponse)
@@ -193,6 +223,7 @@ export function TerminalPanel({ glowColor = '#60a5fa', sendMessage }: TerminalPa
     return () => {
       disposed = true
       window.removeEventListener('iris:cli_output', onOutput)
+      window.removeEventListener('iris:terminal_output', onShellOutput)
       window.removeEventListener('iris:cli_started', onStarted)
       window.removeEventListener('iris:cli_activity', onActivity)
       window.removeEventListener('iris:text_response', onTextResponse)
@@ -205,6 +236,46 @@ export function TerminalPanel({ glowColor = '#60a5fa', sendMessage }: TerminalPa
 
   return (
     <div className="w-full h-full flex flex-col" style={{ minHeight: 0 }}>
+      {/* Gate 3 T10 (REQ-4 AC4) + T14 (REQ-5 AC3): effective workdir and
+          session state badge, driven by the scrollback store's snapshot. */}
+      {(workdir || sessionState !== 'idle') && (
+        <div
+          className="flex items-center gap-2 px-4 py-1 text-[10px] font-mono shrink-0"
+          style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.45)' }}
+          role="status"
+          aria-label="Terminal workdir and session state"
+        >
+          {workdir && (
+            <>
+              <span style={{ color: glowColor }}>DIR</span>
+              <span className="truncate" title={workdir}>{workdir}</span>
+            </>
+          )}
+          <span className="ml-auto flex items-center gap-1">
+            <span style={{
+              color:
+                sessionState === 'working' ? '#34d399'
+                : sessionState === 'blocked' ? '#fbbf24'
+                : sessionState === 'done' ? 'rgba(255,255,255,0.6)'
+                : 'rgba(255,255,255,0.3)',
+            }}>
+              ● {sessionState.toUpperCase()}
+            </span>
+          </span>
+        </div>
+      )}
+      {sandboxPath && (
+        <div
+          className="flex items-center gap-2 px-4 py-1 text-[10px] font-mono shrink-0"
+          style={{ borderBottom: '1px solid rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.45)' }}
+          role="status"
+          aria-label="Sandbox worktree active"
+        >
+          <span style={{ color: '#fbbf24' }}>SANDBOX</span>
+          <span className="truncate" title={sandboxPath}>{sandboxPath}</span>
+          <span className="ml-auto">agent edits land here — not the live tree</span>
+        </div>
+      )}
       <div
         ref={containerRef}
         className="flex-1 overflow-hidden"

@@ -90,6 +90,26 @@ export function useManualDragWindow(
     document.body.style.cursor = "default"
     document.body.style.userSelect = ""
 
+    // A drag that STARTED on an interactive child still ends with the browser
+    // firing that child's click on release. Pressing the Close button and
+    // dragging the window would therefore also close the panel. Swallow
+    // exactly one click, in the capture phase, after a real drag.
+    // Registered only when a drag actually happened (>12px), so ordinary
+    // clicks are untouched; `once` means it cannot leak into a later click.
+    if (didDrag && typeof document !== "undefined") {
+      const swallow = (ev: MouseEvent) => {
+        ev.stopPropagation()
+        ev.preventDefault()
+      }
+      document.addEventListener("click", swallow, { capture: true, once: true })
+      // Safety net: if no click follows (some browsers skip it when the
+      // pointer moved far), drop the listener rather than leaving it armed
+      // for the next unrelated click.
+      setTimeout(() => {
+        document.removeEventListener("click", swallow, { capture: true } as EventListenerOptions)
+      }, 300)
+    }
+
     // Treat a non-drag mousedown+up on the element as a click
     if (draggingThis && !didDrag && currentElement && onClickAction) {
       const upTarget = e.target as Node

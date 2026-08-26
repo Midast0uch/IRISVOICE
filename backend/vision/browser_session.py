@@ -449,7 +449,6 @@ class BrowserSession:
             await page.go_forward()
         elif kind == "scroll":
             delta = _parse_int(action.value, default=800)
-            await page.evaluate(f"window.scrollBy(0, {delta})")
             # Particle-trail cursor mirror (REQ-16 AC7): a scroll has no single
             # point on the page — a point would drift meaninglessly as the
             # content moves under it — so we emit direction/delta instead.
@@ -459,21 +458,42 @@ class BrowserSession:
             # be mirrored reliably: the iframe and this page do not start from
             # the same offset, and any dropped or reordered event desynchronises
             # them permanently. An absolute top is self-correcting — every event
-            # re-anchors the iframe to where the model actually is. Best-effort:
-            # if the read fails the deltas are still emitted exactly as before.
+            # re-anchors the iframe to where the model actually is.
+            #
+            # ONE evaluate, not two. The mirror read was originally a second
+            # `page.evaluate` issued after the scroll, so every scroll cost two
+            # CDP round trips to Chromium. A vision session is scroll-dominated
+            # — scroll is its hottest action — and the second trip bought
+            # nothing: `window.scrollBy` with the default (instant) behavior
+            # applies synchronously, so reading pageYOffset/scrollHeight in the
+            # SAME script already observes the post-scroll document. Folding
+            # them halves the round trips on that path.
+            #
+            # The read sits in a JS try/catch (not just the Python one) so the
+            # original guarantee survives the fusion: if the mirror read fails,
+            # the scroll has still happened and the deltas are still emitted
+            # exactly as before — a failed mirror can never cost a scroll.
+            # NOT wrapped in try/except: this call now performs the scroll
+            # itself, so a failure here is a FAILED SCROLL and must reach
+            # act()'s handler as last_error (REQ-7 AC6) rather than be
+            # swallowed as a missing mirror reading. The JS try/catch above is
+            # what keeps a bad mirror read from throwing in the first place.
+            _pos = await page.evaluate(
+                "(() => { window.scrollBy(0, %d);"
+                " try { return {y: window.pageYOffset"
+                " || document.documentElement.scrollTop || 0,"
+                " h: Math.max(document.documentElement.scrollHeight,"
+                " document.body ? document.body.scrollHeight : 0)}; }"
+                " catch (e) { return null; } })()" % delta
+            )
             _abs_y: Optional[int] = None
             _doc_h: Optional[int] = None
-            try:
-                _pos = await page.evaluate(
-                    "({y: window.pageYOffset || document.documentElement.scrollTop || 0,"
-                    " h: Math.max(document.documentElement.scrollHeight,"
-                    " document.body ? document.body.scrollHeight : 0)})"
-                )
-                if isinstance(_pos, dict):
+            if isinstance(_pos, dict):
+                try:
                     _abs_y = int(_pos.get("y") or 0)
                     _doc_h = int(_pos.get("h") or 0)
-            except Exception:  # noqa: BLE001 — the mirror never costs a scroll
-                pass
+                except Exception:  # noqa: BLE001 — the mirror never costs a scroll
+                    pass
             self.last_action_point = {"scroll_dx": 0, "scroll_dy": delta}
             if _abs_y is not None:
                 self.last_action_point["scroll_y"] = _abs_y

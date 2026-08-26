@@ -191,7 +191,14 @@ def test_t0c_penalize_url_downweights_existing_entry():
 
 def test_t0c_orchestrator_applies_penalty_for_dead_status():
     fake = type("FakeReg", (), {"calls": []})()
-    def _pen(url, topics):
+    # REPORTABLE FIXTURE EDIT (T15, 2026-08-24): the real
+    # SourceRegistry.penalize_url grew `last_error` (source_registry.py:139)
+    # when REQ-10/T12 added the challenge reason, and the orchestrator passes
+    # it. This stub still took two args, so the production call raised
+    # TypeError, `_apply_har_penalties`'s except-clause swallowed it, and the
+    # assertion below saw an empty list. The stub now matches the real
+    # signature so the call REACHES it. The assertion is unchanged.
+    def _pen(url, topics, last_error="crawl_failed"):
         fake.calls.append((url, topics))
     fake.penalize_url = _pen
     with mock.patch("backend.crawler.source_registry.get_source_registry",
@@ -207,7 +214,12 @@ def test_t0c_orchestrator_applies_penalty_for_dead_status():
 
 def test_t0c_orchestrator_skips_healthy_status():
     fake = type("FakeReg", (), {"calls": []})()
-    fake.penalize_url = lambda url, topics: fake.calls.append((url, topics))
+    # Signature kept in step with the real penalize_url for the same reason as
+    # above: otherwise a regression that DID penalize a healthy status would
+    # raise TypeError, be swallowed, and leave this test falsely green.
+    fake.penalize_url = (
+        lambda url, topics, last_error="crawl_failed": fake.calls.append((url, topics))
+    )
     with mock.patch("backend.crawler.source_registry.get_source_registry",
                     return_value=fake):
         orch = CrawlOrchestrator()

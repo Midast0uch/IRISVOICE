@@ -135,47 +135,123 @@ def rollback(target: str) -> dict:
 
 
 # ── Diff review / pending writes ─────────────────────────────
+# REQ-14 (T0e): the queue is PER-SESSION and BOUNDED (was a process-global
+# unbounded list — violated REQ-5 AC1). approve/reject are REAL gates:
+# approve stages the path and commits it in the sandbox worktree (returning
+# the hash); reject discards the change so nothing survives on disk.
+# Promotion of approved worktree commits into the LIVE tree stays a separate
+# user action (/api/git/worktree/merge) — REQ-13 AC2.
 
-_pending_writes: list[dict] = []
+import threading
+
+_PENDING_LOCK = threading.Lock()
+_pending_writes: dict[str, list[dict]] = {}  # session_id -> bounded queue
+_MAX_QUEUE_PER_SESSION = 50
 _write_counter = 0
 
 
-def get_pending_writes() -> dict:
-    """Return pending agent writes awaiting diff review."""
-    return {"writes": _pending_writes}
+def get_pending_writes(session_id: str | None = None) -> dict:
+    """Return pending agent writes awaiting diff review (one session or all)."""
+    with _PENDING_LOCK:
+        if session_id is not None:
+            return {"writes": [dict(w) for w in _pending_writes.get(session_id, [])]}
+        all_writes = [dict(w) for q in _pending_writes.values() for w in q]
+        return {"writes": all_writes}
 
 
-def queue_write(path: str, diff: str, description: str = "") -> str:
-    """Queue a write for diff review."""
+def queue_write(path: str, diff: str, description: str = "",
+                session_id: str = "default") -> str:
+    """Queue a write for diff review. Oldest evicted past the bound."""
     global _write_counter
-    _write_counter += 1
-    write_id = f"write-{_write_counter}"
-    _pending_writes.append({
-        "id": write_id,
-        "path": path,
-        "diff": diff,
-        "description": description,
-        "status": "pending",
-    })
+    with _PENDING_LOCK:
+        _write_counter += 1
+        write_id = f"write-{_write_counter}"
+        queue = _pending_writes.setdefault(session_id, [])
+        if len(queue) >= _MAX_QUEUE_PER_SESSION:
+            queue.pop(0)
+        queue.append({
+            "id": write_id,
+            "session_id": session_id,
+            "path": path,
+            "diff": diff,
+            "description": description,
+            "status": "pending",
+        })
     return write_id
 
 
+def _find_write(write_id: str) -> tuple[str | None, dict | None]:
+    with _PENDING_LOCK:
+        for session_queue in _pending_writes.values():
+            for w in session_queue:
+                if w["id"] == write_id:
+                    return session_queue, w
+    return None, None
+
+
+def _remove_write(write_id: str) -> None:
+    with _PENDING_LOCK:
+        for session_queue in _pending_writes.values():
+            session_queue[:] = [w for w in session_queue if w["id"] != write_id]
+
+
 def approve_write(write_id: str) -> dict:
-    """Approve a pending write."""
-    for w in _pending_writes:
-        if w["id"] == write_id:
-            w["status"] = "approved"
-            return {"status": "ok", "writeId": write_id}
-    return {"status": "error", "error": "write not found"}
+    """Approve a pending write: stage its path and COMMIT it in the sandbox
+    worktree, returning the commit hash. The change was already written to
+    the worktree by the agent (pre-apply gate, REQ-13/REQ-14 AC3); approval
+    makes it durable on the sandbox branch. It does NOT touch the live tree —
+    promotion is /api/git/worktree/merge."""
+    _, write = _find_write(write_id)
+    if write is None:
+        return {"status": "error", "error": "write not found"}
+
+    root = _find_git_root(_get_project_root())
+    wt = _get_worktree_path(root) if root else None
+    cwd = wt if wt and os.path.isdir(wt) else root
+    if not cwd:
+        return {"status": "error", "error": "not a git repository"}
+
+    path = write["path"]
+    rc, out, err = _run_git(["add", "--", path], cwd=cwd)
+    if rc != 0:
+        return {"status": "error", "error": f"git add failed: {err or out}"}
+    message = write.get("description") or f"approve write {write_id}: {path}"
+    rc, out, err = _run_git(["commit", "-m", message, "--", path], cwd=cwd)
+    if rc != 0:
+        # Nothing was committed — surface why (conflict, nothing to commit…)
+        return {"status": "error", "error": f"git commit failed: {err or out}"}
+    _remove_write(write_id)
+    return {"status": "ok", "writeId": write_id, "commit": out.strip()}
 
 
 def reject_write(write_id: str) -> dict:
-    """Reject a pending write."""
-    for w in _pending_writes:
-        if w["id"] == write_id:
-            w["status"] = "rejected"
-            return {"status": "ok", "writeId": write_id}
-    return {"status": "error", "error": "write not found"}
+    """Reject a pending write: discard the change so it leaves no trace —
+    tracked files restored to HEAD, untracked files deleted."""
+    _, write = _find_write(write_id)
+    if write is None:
+        return {"status": "error", "error": "write not found"}
+
+    root = _find_git_root(_get_project_root())
+    wt = _get_worktree_path(root) if root else None
+    cwd = wt if wt and os.path.isdir(wt) else root
+    if not cwd:
+        return {"status": "error", "error": "not a git repository"}
+
+    path = write["path"]
+    rc, out, err = _run_git(["restore", "--", path], cwd=cwd)
+    if rc != 0:
+        # Not a tracked modification — likely an untracked new file: delete it.
+        target = os.path.join(cwd, path)
+        try:
+            if os.path.isfile(target):
+                os.remove(target)
+            elif os.path.isdir(target):
+                import shutil
+                shutil.rmtree(target)
+        except OSError as exc:
+            return {"status": "error", "error": f"could not discard {path}: {exc}"}
+    _remove_write(write_id)
+    return {"status": "ok", "writeId": write_id}
 
 
 # ── Worktree API ─────────────────────────────────────────────

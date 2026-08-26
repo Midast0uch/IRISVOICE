@@ -18,6 +18,7 @@ Requirements: 8.1, 8.2, 8.3, 8.4, 8.5, 8.6
 import asyncio
 import logging
 import os
+import sys
 import subprocess
 import time  # used by _on_page_done; absent until now, see below
 from typing import Any, Dict, List, Optional
@@ -115,6 +116,13 @@ class AgentToolBridge:
         # Security and audit integration (from task 9)
         self._security_filter = security_filter
         self._audit_logger = audit_logger
+
+        # REQ-27 AC1/AC3: live crawl progress, written by _on_page_done and read
+        # by the narration heartbeat's status_fn. Without it the heartbeat had
+        # no detail at all and fell back to the fixed verb, so a whole crawl
+        # narrated as the single word "reading". One slot per session, cleared
+        # when the crawl ends -- bounded by the number of live sessions.
+        self._crawl_progress: Dict[str, str] = {}
 
         # SpeakTool singleton — used by the crawler_query narration heartbeat
         # (run_with_narration(..., speak=self._speak_tool.speak)) and any path
@@ -416,6 +424,21 @@ class AgentToolBridge:
             # Shell — developer mode command runner (sandboxed to repo directory)
             {"name": "run_command", "description": "Run a shell command in the project directory (npm, python, pytest, etc.)", "parameters": {"command": {
                 "type": "string", "description": "Command to run"}, "cwd": {"type": "string", "description": "Working directory (defaults to IRISVOICE root)"}}, "category": "shell"},
+
+            {
+                "name": "read_shell_output",
+                "description": (
+                    "Return the EXACT output of an earlier shell command by its ref "
+                    "(e.g. 's3'), as listed in the '[earlier shell output is retained]' "
+                    "index. Use this whenever a question refers to what a previous "
+                    "command printed. Never answer from memory of the output -- read it."
+                ),
+                "parameters": {"ref": {
+                    "type": "string",
+                    "description": "Record ref from the retained-output index, e.g. 's3'",
+                }},
+                "category": "shell",
+            },
 
             # Memory
             {
@@ -733,7 +756,13 @@ class AgentToolBridge:
                 # (execute_vision_tool -> vision.describe_live_frame).
                 if _ensure_vision_server_running is not None:
                     try:
-                        _ensure_vision_server_running()
+                        # BUGFIX (session 259, pin_3bf7b4344f56): this call
+                        # does SYNC httpx probes and can block for minutes on
+                        # a cold spawn (Defender GGUF scan) — it must never
+                        # run on the event loop.
+                        import asyncio as _asyncio
+
+                        await _asyncio.to_thread(_ensure_vision_server_running)
                     except Exception as exc:  # noqa: BLE001
                         logger.warning("vision server start failed: %s", exc)
                 if "vision" not in self._mcp_servers:
@@ -1443,9 +1472,60 @@ class AgentToolBridge:
                 )
                 return result
 
+            # ── REQ-13 (T0d): self-edit isolation ────────────────────────
+            # When the session workdir is the IRIS repo root, the agent's
+            # file writes are rewritten into the sandbox worktree so the
+            # live tree is never touched. Non-IRIS workdirs write direct.
+            sandbox_note = None
+            if tool_name in ("write_file", "create_directory", "delete_file"):
+                routed = await self._route_self_edit(tool_name, params, session_id)
+                if routed.get("reject"):
+                    result = routed["result"]
+                    self._record_tool_event(session_id, tool_name, "failure", params, result, plan_title=plan_title)
+                    return result
+                params = routed["params"]
+                sandbox_note = routed.get("note")
+
             if tool_name in mcp_tools:
                 server_name, mcp_tool_name = mcp_tools[tool_name]
                 result = await self.execute_mcp_tool(server_name, mcp_tool_name, params, session_id)
+
+                # REQ-13 AC4: one-line note when the edited module is one the
+                # running backend has loaded. A note, NOT a reload system.
+                if sandbox_note and result.get("success"):
+                    result["note"] = sandbox_note
+
+                # REQ-13/REQ-14: queue the sandboxed write as a pending diff
+                # review entry (pre-gate record; approve commits it to the
+                # sandbox branch, reject discards it).
+                if sandbox_note is not None and result.get("success"):
+                    try:
+                        import asyncio as _aio
+                        from backend import git_ops as _gitops
+
+                        rel = routed["worktree_rel"]
+                        diff_rc, diff_text, _ = await _aio.to_thread(
+                            _gitops._run_git, ["diff", "--", rel], routed["worktree_cwd"]
+                        )
+                        await _aio.to_thread(
+                            _gitops.queue_write,
+                            rel,
+                            (diff_text or f"+ changed by agent ({tool_name})")[:2000],
+                            f"agent {tool_name}: {rel}",
+                            session_id,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("[ToolBridge] write queueing failed: %s", exc)
+
+                # Gate 3 T4b (REQ-15): track files this turn wrote, so the
+                # orchestrator can run the targeted verification gate after
+                # the turn. Session-scoped, cleared by pop_turn_writes().
+                if tool_name in ("write_file", "delete_file") \
+                        and isinstance(result, dict) and result.get("success"):
+                    try:
+                        self.note_turn_write(session_id, str(params.get("path", "")))
+                    except Exception:
+                        pass  # tracking must never break the write path
 
                 # After agent creates a skill, broadcast to the frontend so UI updates immediately.
                 # MUST use run_coroutine_threadsafe — this runs in a background thread, not the event loop.
@@ -1480,6 +1560,49 @@ class AgentToolBridge:
             if tool_name in git_tools:
                 result = await self._execute_dev_tool(tool_name, params, session_id)
                 self._record_tool_event(session_id, tool_name, "success" if result.get("success") else "failure", params, result, plan_title=plan_title)
+                return result
+
+            # Search tools (REQ-18 / T0h) — ripgrep-backed, honour the REQ-4
+            # workdir binding + allowlist like every other dev tool.
+            if tool_name in ("grep_files", "glob_files"):
+                result = await self._execute_search_tool(tool_name, params, session_id)
+                self._record_tool_event(session_id, tool_name, "success" if result.get("success") else "failure", params, result, plan_title=plan_title)
+                return result
+
+            if tool_name == "read_shell_output":
+                # Gate 3 T4b: the exact-read path back to output that already
+                # left the turn context. Returns the SAME redacted, budget-capped
+                # text that was injected -- a read can not surface what an
+                # injection would have withheld.
+                _ref = str(params.get("ref") or "").strip()
+                from backend.dev.shell_records import get_shell_record_queue
+
+                _out = get_shell_record_queue().get_output(session_id, _ref)
+                if _out is None:
+                    result = {
+                        "success": False,
+                        "error": (
+                            f"No retained shell output for ref={_ref!r}. Refs come "
+                            f"from the retained-output index in the shell context "
+                            f"block; retention is bounded, so an old ref can expire."
+                        ),
+                    }
+                else:
+                    result = {"success": True, "ref": _ref, "output": _out}
+                # A read that misses is a silent quality failure: the agent
+                # falls back to re-running the command, which for anything
+                # non-deterministic produces a DIFFERENT answer presented as
+                # the original one. Name the ref and the outcome.
+                logger.info(
+                    "[ToolBridge][%s] read_shell_output ref=%r -> %s (%d chars)",
+                    session_id, _ref, "hit" if _out is not None else "MISS",
+                    len(_out or ""),
+                )
+                self._record_tool_event(
+                    session_id, tool_name,
+                    "success" if result.get("success") else "failure",
+                    params, result, plan_title=plan_title,
+                )
                 return result
 
             if tool_name == "recall_memory":
@@ -1522,12 +1645,28 @@ class AgentToolBridge:
                 # periodic progress through the SpeakTool while the crawl runs.
                 from backend.agent.narration import run_with_narration
 
-                result = await run_with_narration(
-                    lambda: self._execute_crawler_query(params, session_id),
-                    speak=self._speak_tool.speak,
-                    tool_name=tool_name,
-                    conversation_id=session_id,
-                )
+                # REQ-27 AC1/AC4: give the heartbeat something real to say.
+                # `plan_title` is the model's own words for this task, so it
+                # beats the fixed verb whenever no page detail exists yet.
+                _crawl_opening = (plan_title or "").strip()
+
+                def _crawl_status() -> str:
+                    _live = self._crawl_progress.get(session_id, "")
+                    if _live:
+                        return _live
+                    return _crawl_opening
+
+                self._crawl_progress.pop(session_id, None)
+                try:
+                    result = await run_with_narration(
+                        lambda: self._execute_crawler_query(params, session_id),
+                        speak=self._speak_tool.speak,
+                        tool_name=tool_name,
+                        status_fn=_crawl_status,
+                        conversation_id=session_id,
+                    )
+                finally:
+                    self._crawl_progress.pop(session_id, None)
                 self._record_tool_event(session_id, tool_name, "success" if result.get("success") else "failure", params, result, plan_title=plan_title)
                 return result
 
@@ -1739,92 +1878,357 @@ class AgentToolBridge:
         os.path.join(os.path.dirname(__file__), "..", "..")
     )
 
+    # REQ-4 AC6: source of registered workspace roots (data/iris_config.json,
+    # the same store GET /api/projects serves). Class attribute so tests can
+    # point it at a fixture config without touching the live one.
+    _IRIS_CONFIG_PATH: str = os.path.join(_DEFAULT_REPO, "data", "iris_config.json")
+
+    def __init_bridge_state__(self) -> None:
+        """Per-instance state that must exist even on partially-built bridges."""
+        # REQ-4 AC5: session_id → workdir, bound once per turn by the
+        # DevOrchestrator before dispatching an agent turn.
+        if not hasattr(self, "_session_workdirs"):
+            self._session_workdirs: Dict[str, str] = {}
+
+    def set_session_workdir(self, session_id: str, workdir: str) -> None:
+        """Bind the resolved session workdir for this turn's tool executions."""
+        self.__init_bridge_state__()
+        self._session_workdirs[session_id] = workdir
+
+    # ── T4b (REQ-15): per-turn write tracking for the verification gate ──
+
+    def note_turn_write(self, session_id: str, path: str) -> None:
+        """Record a file path written during the in-flight turn."""
+        if not path:
+            return
+        self.__init_bridge_state__()
+        if not hasattr(self, "_turn_writes"):
+            self._turn_writes: Dict[str, set] = {}
+        self._turn_writes.setdefault(session_id, set()).add(path)
+
+    def pop_turn_writes(self, session_id: str) -> list:
+        """Return and clear the files written during this session's last turn."""
+        self.__init_bridge_state__()
+        writes = getattr(self, "_turn_writes", {})
+        return sorted(writes.pop(session_id, set()))
+
+    def _registered_roots(self) -> list:
+        """Allowlist roots: the IRIS repo itself plus every registered project path.
+
+        Sourced from data/iris_config.json ("projects" key) — the same store
+        GET /api/projects reads (REQ-4 AC6). Read per call so a project the
+        user just registered is usable on the next turn; the file is tiny.
+        """
+        roots = [os.path.normpath(self._DEFAULT_REPO)]
+        try:
+            import json
+
+            with open(self._IRIS_CONFIG_PATH, "r", encoding="utf-8") as fh:
+                cfg = json.load(fh)
+            for project in cfg.get("projects") or []:
+                path = project.get("path") if isinstance(project, dict) else None
+                if path:
+                    roots.append(os.path.normpath(path))
+        except FileNotFoundError:
+            pass  # no config yet — repo root only (matches GET /api/projects default)
+        except Exception as exc:
+            logger.debug("[ToolBridge] could not read project registry: %s", exc)
+        return roots
+
+    def _resolve_scope(self, raw: str, session_id: str) -> str:
+        """Absolute, normalised path for a tool-supplied working directory.
+
+        The allowlist guard below compares against ABSOLUTE registered roots,
+        so a RELATIVE path could never satisfy it -- and a relative path is
+        exactly what a model naturally produces. Live 2026-08-26: the agent
+        resolved `grep_files(path='backend')` for a legitimate subfolder of
+        this very project and the turn died with "Working directory 'backend'
+        is outside the project root. Aborting." The steps ran, the tools were
+        called, and every one of them was refused.
+
+        Resolving first does NOT weaken the guard: the result is normalised, so
+        a `..` escape becomes an absolute path OUTSIDE the roots and is still
+        rejected. It only stops the guard rejecting the project's own folders.
+        """
+        base = self._session_workdirs.get(session_id) or self._DEFAULT_REPO
+        scope = os.path.normpath(str(raw or base))
+        if not os.path.isabs(scope):
+            scope = os.path.normpath(os.path.join(base, scope))
+        return scope
+
+    @staticmethod
+    def _path_under(candidate: str, root: str) -> bool:
+        """True if candidate == root or lies beneath it (separator-aware)."""
+        candidate = os.path.normcase(os.path.normpath(candidate))
+        root = os.path.normcase(os.path.normpath(root))
+        return candidate == root or candidate.startswith(root.rstrip(os.sep) + os.sep)
+
+    async def _route_self_edit(self, tool_name: str, params: Dict, session_id: str) -> Dict:
+        """REQ-13 (T0d): route agent file writes into the sandbox worktree
+        when the session workdir is the IRIS repo root.
+
+        Returns one of:
+          {"params": <possibly rewritten params>}                       — proceed
+          {"reject": True, "result": <typed error>}                     — refuse
+          {"params": ..., "note": ..., "worktree_rel": ..., "worktree_cwd": ...}
+                                                                        — routed
+        """
+        self.__init_bridge_state__()
+        workdir = self._session_workdirs.get(session_id)
+        if not workdir:
+            return {"params": params}  # no binding — behave as before
+
+        repo_root = os.path.normpath(self._DEFAULT_REPO)
+        if not self._path_under(os.path.normpath(workdir), repo_root):
+            return {"params": params}  # non-IRIS workdir: writes go direct (REQ-13 edge)
+
+        import asyncio as _asyncio
+        from backend import git_ops as _gitops
+
+        wt_info = await _asyncio.to_thread(_gitops.ensure_worktree)
+        if wt_info.get("status") != "ok":
+            # REQ-13 edge case: worktree creation fails -> REJECT the write.
+            # Never fall back to writing the live tree — a degraded safety
+            # rail is worse than an absent one, because the user believes it held.
+            from backend.agent.tool_errors import tool_error
+
+            rejection = (
+                f"Self-edit isolation unavailable (worktree creation failed: "
+                f"{wt_info.get('error')}). Write refused — the live tree is protected."
+            )
+            return {"reject": True,
+                    "result": tool_error("worktree_unavailable", rejection, raw=rejection)}
+
+        worktree = os.path.normpath(wt_info["path"]) if wt_info.get("path") else _gitops._get_worktree_path(repo_root)
+
+        raw_path = str(params.get("path", ""))
+        if not raw_path:
+            return {"params": params}
+        candidate = raw_path if os.path.isabs(raw_path) else os.path.join(workdir, raw_path)
+        candidate = os.path.normpath(candidate)
+
+        if not self._path_under(candidate, repo_root):
+            return {"params": params}  # target outside IRIS root — not a self-edit
+
+        rel = os.path.relpath(candidate, repo_root)
+        new_params = dict(params)
+        new_params["path"] = os.path.join(worktree, rel)
+
+        note = None
+        if rel.endswith(".py"):
+            module_name = rel[:-3].replace(os.sep, ".").replace("/", ".")
+            if module_name in sys.modules or any(
+                k.endswith("." + module_name) for k in sys.modules
+            ):
+                note = f"{rel} is loaded by the running backend — this change requires a backend restart to take effect."
+
+        return {
+            "params": new_params,
+            "note": note,
+            "worktree_rel": rel,
+            "worktree_cwd": worktree,
+        }
+
+    async def _execute_search_tool(self, tool_name: str, params: Dict, session_id: str) -> Dict:
+        """Execute grep_files / glob_files (REQ-18) inside the REQ-4 workdir.
+
+        Scope resolution mirrors _execute_dev_tool: explicit path param >
+        session workdir > repo root — and the same allowlist check applies,
+        so search is scoped to the active project, never the filesystem
+        (REQ-18 AC7). rg runs in a worker thread; the event loop never blocks.
+        """
+        self.__init_bridge_state__()
+
+        scope = self._resolve_scope(
+            params.get("path") or self._session_workdirs.get(session_id)
+            or self._DEFAULT_REPO,
+            session_id,
+        )
+        if not any(self._path_under(scope, root) for root in self._registered_roots()):
+            from backend.agent.tool_errors import tool_error
+
+            rejection = f"Working directory '{scope}' is outside the project root. Aborting."
+            return tool_error("workdir_denied", rejection, raw=rejection)
+
+        import asyncio as _asyncio
+        from backend.agent import search_tools
+
+        try:
+            if tool_name == "grep_files":
+                return await _asyncio.to_thread(
+                    search_tools.grep_files,
+                    pattern=str(params.get("pattern", "")),
+                    path=scope,
+                    glob=params.get("glob"),
+                    output_mode=str(params.get("output_mode", "files_with_matches")),
+                    context_lines=int(params.get("context_lines", 0)),
+                    max_results=int(params.get("max_results", 100)),
+                    no_ignore=bool(params.get("no_ignore", False)),
+                )
+            return await _asyncio.to_thread(
+                search_tools.glob_files,
+                pattern=str(params.get("pattern", "")),
+                path=scope,
+                max_results=int(params.get("max_results", 200)),
+                no_ignore=bool(params.get("no_ignore", False)),
+            )
+        except Exception as exc:
+            return {"success": False, "error": f"{tool_name} failed: {exc}"}
+
+    def _broadcast_shell_line(self, session_id: str, line: str) -> None:
+        """T0c DONE: agent-launched commands appear in the terminal panel.
+
+        Fire-and-forget terminal_output to every WS client of this session.
+        Called on the shells' home loop (the reader pump's loop), so creating
+        a task is safe. Never raises into the execution path.
+        """
+        try:
+            import asyncio as _asyncio
+
+            from backend.ws_manager import get_websocket_manager
+
+            ws = get_websocket_manager()
+            clients = ws.get_clients_for_session(session_id)
+            if not clients:
+                return
+
+            async def _send_all() -> None:
+                for cid in clients:
+                    try:
+                        await ws.send_to_client(
+                            cid,
+                            {"type": "terminal_output", "line": line,
+                             "proc_id": f"agent-{session_id[:8]}"},
+                        )
+                    except Exception:
+                        pass  # dead client must not break the pump
+
+            _asyncio.get_running_loop().create_task(_send_all())
+        except Exception as exc:
+            logger.debug("[ToolBridge][%s] panel broadcast skipped: %s", session_id, exc)
+
     async def _execute_dev_tool(self, tool_name: str, params: Dict, session_id: str) -> Dict:
         """Execute git or shell commands for developer mode.
 
-        All commands run inside the repo directory by default.  The caller can
-        pass a ``repo_path`` / ``cwd`` parameter to override the working directory,
-        but paths outside the project tree are rejected to prevent accidents.
+        REQ-4 AC5: the working directory resolves once per turn — explicit
+        param, else the session's bound workdir (active tab), else the IRIS
+        repo root. REQ-4 AC6: every resolution is checked against the
+        registered-root allowlist; a path under no registered root is
+        rejected with the same explicit error as before.
         """
-        # Resolve working directory
-        cwd_param = params.get("repo_path") or params.get(
-            "cwd") or self._DEFAULT_REPO
-        cwd = os.path.normpath(cwd_param)
-        repo_root = os.path.normpath(self._DEFAULT_REPO)
+        self.__init_bridge_state__()
 
-        # Safety: reject paths outside the project tree
-        if not cwd.startswith(repo_root):
-            return {"error": f"Working directory '{cwd}' is outside the project root. Aborting."}
+        # Resolve working directory: explicit param > session workdir > repo root
+        cwd = self._resolve_scope(
+            params.get("repo_path")
+            or params.get("cwd")
+            or self._session_workdirs.get(session_id)
+            or self._DEFAULT_REPO,
+            session_id,
+        )
 
-        def _run(cmd: list, timeout: int = 30) -> Dict:
-            """Run a subprocess and return {stdout, stderr, returncode}."""
-            try:
-                result = subprocess.run(
-                    cmd,
-                    cwd=cwd,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                    encoding="utf-8",
-                    errors="replace",
+        # Safety: reject paths outside every registered project root.
+        # REQ-19 AC1: typed as workdir_denied — retryable:no, blame:query.
+        # Message text is the legacy guard's, preserved verbatim (T0b).
+        if not any(self._path_under(cwd, root) for root in self._registered_roots()):
+            from backend.agent.tool_errors import tool_error
+
+            rejection = f"Working directory '{cwd}' is outside the project root. Aborting."
+            return tool_error("workdir_denied", rejection, raw=rejection)
+
+        async def _run(cmd, timeout: int = 30) -> Dict:
+            """T0c (REQ-1 AC5): run on the session ShellSession — the SAME
+            substrate as user `>` commands (design D10). Inherits cwd/env
+            persistence, output bounds, the global semaphore cap, and abort.
+
+            REQ-19 AC2: a command that RAN and exited non-zero is a SUCCESSFUL
+            tool call carrying returncode — never an error_type.
+            The shell pipe merges stderr into stdout; stdout carries everything
+            and stderr is empty by construction.
+            """
+            import shlex
+
+            from backend.dev.subprocess_manager import get_subprocess_manager
+
+            if isinstance(cmd, (list, tuple)):
+                cmd_str = (
+                    subprocess.list2cmdline(cmd) if os.name == "nt" else shlex.join(cmd)
                 )
+            else:
+                cmd_str = cmd
+
+            out_lines: list = []
+
+            def _sink(line: str):
+                out_lines.append(line)
+                self._broadcast_shell_line(session_id, line)
+
+            res = await get_subprocess_manager().execute(
+                session_id, cmd_str, workdir=cwd, timeout=timeout, on_output=_sink
+            )
+            if res.get("success"):
                 return {
-                    "success": result.returncode == 0,
-                    "stdout": result.stdout.strip(),
-                    "stderr": result.stderr.strip(),
-                    "returncode": result.returncode,
+                    "success": True,
+                    "stdout": "\n".join(out_lines).strip(),
+                    "stderr": "",
+                    "returncode": res.get("exit_code") or 0,
                 }
-            except subprocess.TimeoutExpired:
-                return {"success": False, "error": f"Command timed out after {timeout}s"}
-            except Exception as exc:
-                return {"success": False, "error": str(exc)}
+            if res.get("aborted"):
+                # REQ-19: aborted is not a tool defect.
+                return {"success": False, "error": "aborted", "aborted": True}
+            if res.get("queued"):
+                # Cap queueing is informational; the command still ran.
+                logger.info("[ToolBridge][%s] %s", session_id, res.get("message"))
+            return {"success": False, "error": str(res.get("error", "command failed"))}
 
         # ── git_status ──────────────────────────────────────────────
         if tool_name == "git_status":
-            return _run(["git", "status", "--short", "--branch"])
+            return await _run(["git", "status", "--short", "--branch"])
 
         # ── git_diff ────────────────────────────────────────────────
         if tool_name == "git_diff":
             cmd = ["git", "diff"]
             if params.get("staged"):
                 cmd.append("--staged")
-            return _run(cmd)
+            return await _run(cmd)
 
         # ── git_log ─────────────────────────────────────────────────
         if tool_name == "git_log":
             n = int(params.get("n", 10))
-            return _run(["git", "log", f"-{n}", "--oneline", "--decorate"])
+            return await _run(["git", "log", f"-{n}", "--oneline", "--decorate"])
 
         # ── git_commit ──────────────────────────────────────────────
         if tool_name == "git_commit":
             message = params.get("message", "").strip()
             if not message:
                 return {"success": False, "error": "Commit message is required"}
-            add = _run(["git", "add", "-A"])
-            if not add["success"]:
+            add = await _run(["git", "add", "-A"])
+            # REQ-19 AC2: _run reports success=True for any completed process;
+            # the exit code is the real signal.
+            if add.get("returncode") != 0:
                 return {"success": False, "error": f"git add failed: {add['stderr']}"}
-            return _run(["git", "commit", "-m", message])
+            return await _run(["git", "commit", "-m", message])
 
         # ── git_create_branch ───────────────────────────────────────
         if tool_name == "git_create_branch":
             branch = params.get("branch", "").strip()
             if not branch:
                 return {"success": False, "error": "Branch name is required"}
-            return _run(["git", "checkout", "-b", branch])
+            return await _run(["git", "checkout", "-b", branch])
 
         # ── git_checkout ────────────────────────────────────────────
         if tool_name == "git_checkout":
             branch = params.get("branch", "").strip()
             if not branch:
                 return {"success": False, "error": "Branch name is required"}
-            return _run(["git", "checkout", branch])
+            return await _run(["git", "checkout", branch])
 
         # ── git_push ────────────────────────────────────────────────
         if tool_name == "git_push":
             cmd = ["git", "push", "--set-upstream", "origin", "HEAD"]
             if params.get("force"):
                 cmd.append("--force-with-lease")
-            return _run(cmd, timeout=60)
+            return await _run(cmd, timeout=60)
 
         # ── run_command ─────────────────────────────────────────────
         if tool_name == "run_command":
@@ -1836,23 +2240,11 @@ class AgentToolBridge:
                         "format ", "del /f /s /q C:\\")
             if any(raw.startswith(b) for b in _BLOCKED):
                 return {"success": False, "error": "Blocked: destructive system command"}
-            # Shell=True so pipes, &&, etc. work — still sandboxed to cwd
-            try:
-                result = subprocess.run(
-                    raw, shell=True, cwd=cwd,
-                    capture_output=True, text=True,
-                    timeout=120, encoding="utf-8", errors="replace",
-                )
-                return {
-                    "success": result.returncode == 0,
-                    "stdout": result.stdout.strip(),
-                    "stderr": result.stderr.strip(),
-                    "returncode": result.returncode,
-                }
-            except subprocess.TimeoutExpired:
-                return {"success": False, "error": "Command timed out after 120s"}
-            except Exception as exc:
-                return {"success": False, "error": str(exc)}
+            # T0c: same session-shell substrate as user `>` commands — the
+            # shell IS the pipe, so pipes/&& work and cwd/env persist.
+            # REQ-19 AC2: non-zero exit is a result (success:True + returncode),
+            # never a tool failure.
+            return await _run(raw, timeout=120)
 
         return {"error": f"Unknown dev tool: {tool_name}"}
 
@@ -2175,6 +2567,16 @@ class AgentToolBridge:
                         )
                 except Exception as _spk_exc:  # pragma: no cover - best effort
                     logger.debug("[crawler_query] progress speak failed: %s", _spk_exc)
+            # REQ-27 AC3: publish the CURRENT phase detail for the heartbeat.
+            # This changes as the crawl advances, so the no-repeat guard lets
+            # it through while suppressing a stalled line.
+            try:
+                self._crawl_progress[session_id] = (
+                    f"reading {_label}, {page_number} of {total}"
+                )
+            except Exception:  # pragma: no cover - narration is never fatal
+                pass
+
             # Live step feed: the source currently being read, plus the
             # ContextPill action text.
             #

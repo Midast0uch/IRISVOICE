@@ -659,10 +659,30 @@ class TaskClassifier:
             ],
         }
 
-        centroids: Dict[str, Optional[List[float]]] = {}
+        # Session 248 (live conv-52): the per-class loop issued 25 SEQUENTIAL
+        # single-text encodes on FIRST classify — measured 26.5s inside the
+        # DER hot path (stage timing, agent_kernel). encode_batch sends all
+        # seed texts in ONE sidecar call: measured 22.7s -> 1.34s for the
+        # same 20 texts. Centroid math (mean + L2) is unchanged.
+        flat_seeds: List[str] = []
+        seed_slices: Dict[str, tuple] = {}
+        offset = 0
         for cls_name, texts in seeds.items():
-            try:
-                vectors = [encoder.encode(t) for t in texts]
+            seed_slices[cls_name] = (offset, len(texts))
+            flat_seeds.extend(texts)
+            offset += len(texts)
+
+        centroids: Dict[str, Optional[List[float]]] = {}
+        try:
+            flat_vectors = encoder.encode_batch(flat_seeds)
+        except Exception as exc:
+            logger.debug("[TaskClassifier] batch centroid embed failed: %s", exc)
+            flat_vectors = []
+
+        if len(flat_vectors) == len(flat_seeds):
+            for cls_name, texts in seeds.items():
+                start, count = seed_slices[cls_name]
+                vectors = flat_vectors[start : start + count]
                 if vectors and all(v is not None for v in vectors):
                     dim = len(vectors[0])
                     mean = [sum(v[i] for v in vectors) / len(vectors) for i in range(dim)]
@@ -673,9 +693,25 @@ class TaskClassifier:
                     centroids[cls_name] = mean
                 else:
                     centroids[cls_name] = None
-            except Exception as exc:
-                logger.debug("[TaskClassifier] centroid compute failed for %s: %s", cls_name, exc)
-                centroids[cls_name] = None
+        else:
+            # Batch path unavailable (non-batch encoder): fall back to the
+            # original sequential loop so classification still works.
+            logger.debug("[TaskClassifier] encode_batch unavailable; sequential centroid fallback")
+            for cls_name, texts in seeds.items():
+                try:
+                    vectors = [encoder.encode(t) for t in texts]
+                    if vectors and all(v is not None for v in vectors):
+                        dim = len(vectors[0])
+                        mean = [sum(v[i] for v in vectors) / len(vectors) for i in range(dim)]
+                        norm = math.sqrt(sum(x * x for x in mean))
+                        if norm > 0:
+                            mean = [x / norm for x in mean]
+                        centroids[cls_name] = mean
+                    else:
+                        centroids[cls_name] = None
+                except Exception as exc:
+                    logger.debug("[TaskClassifier] centroid compute failed for %s: %s", cls_name, exc)
+                    centroids[cls_name] = None
 
         cls._CLASS_CENTROIDS = centroids
         return centroids
