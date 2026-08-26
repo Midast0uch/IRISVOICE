@@ -42,6 +42,16 @@ import {
   LayoutDashboard, ShoppingBag, Menu, User, ArrowLeft, RotateCcw, Home, ArrowRight as ArrowRightIcon, ExternalLink, History, AlertCircle, Code, FileCode, Plus as PlusIcon,
   Network as NetworkIcon, Loader, AlertTriangle
 } from 'lucide-react';
+import { invoke } from "@tauri-apps/api/core";
+
+// Launch the separate IRIS Launcher Tauri app (bidirectional launcher⇄widget).
+const openIrisLauncher = async () => {
+  try {
+    await invoke("launch_launcher");
+  } catch (e) {
+    console.warn("[Dashboard] launch_launcher failed:", e);
+  }
+};
 
 interface DarkGlassDashboardProps {
   theme?: string;
@@ -1770,6 +1780,17 @@ export function DarkGlassDashboard({
             <MessageSquare size={16} />
           </button>
         )}
+        {/* Open IRIS Launcher — re-open the separate launcher app if closed */}
+        <button
+          onClick={() => openIrisLauncher()}
+          className="p-2 rounded-lg transition-all duration-150"
+          style={{ color: 'rgba(255,255,255,0.75)' }}
+          onMouseEnter={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.95)'; e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)'; }}
+          onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.75)'; e.currentTarget.style.backgroundColor = 'transparent'; }}
+          title="Open IRIS Launcher"
+        >
+          <ExternalLink size={16} />
+        </button>
         <button
           onClick={onNotificationsClick}
           className="p-2 rounded-lg transition-all duration-150 relative"

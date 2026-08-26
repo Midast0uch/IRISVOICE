@@ -63,6 +63,16 @@ import { useManualDragWindow } from "@/hooks/useManualDragWindow"
 import { useTaskProgress } from "@/hooks/useTaskProgress";
 import { useCrawlContext } from "@/hooks/CrawlProvider";
 import type { ConversationChip, Suggestion } from "@/types/iris";
+import { invoke } from "@tauri-apps/api/core";
+
+// Launch the separate IRIS Launcher Tauri app (bidirectional launcher⇄widget).
+const openIrisLauncher = async () => {
+  try {
+    await invoke("launch_launcher");
+  } catch (e) {
+    console.warn("[ChatView] launch_launcher failed:", e);
+  }
+};
 
 // Notification types for the universal notification system
 interface Notification {
@@ -2840,6 +2850,17 @@ ${message.text}`;
                   title={isDashboardOpen ? "Close Dashboard" : "Open Dashboard"}
                 >
                   <BarChart3 size={isRemoteView ? 20 : 14} />
+                </button>
+                {/* Open IRIS Launcher — re-open the separate launcher app if closed */}
+                <button
+                  onClick={() => openIrisLauncher()}
+                  className={isRemoteView ? "p-2.5 rounded-lg transition-all duration-150 min-h-[44px] min-w-[44px] flex items-center justify-center" : "p-1.5 rounded-lg transition-all duration-150"}
+                  style={{ color: 'rgba(255,255,255,0.75)' }}
+                  onMouseEnter={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.95)'; e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.75)'; e.currentTarget.style.backgroundColor = 'transparent'; }}
+                  title="Open IRIS Launcher"
+                >
+                  <ExternalLink size={isRemoteView ? 20 : 14} />
                 </button>
               </div>
 

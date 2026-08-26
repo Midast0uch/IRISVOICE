@@ -246,6 +246,8 @@
     "test:preservation": "node --experimental-vm-modules node_modules/jest/bin/jest.js tests/preservation-property.test.js",
     "test:bug-condition": "node tests/bug-condition-navigation-level3.test.js",
     "tauri": "tauri",
+    "launch": "npm --prefix iris-launcher run tauri dev",
+    "launch:build": "npm --prefix iris-launcher run tauri build",
     "dev:backend": "python start-backend.py",
     "dev:tauri": "npx tauri dev",
     "dev:tauri:nowatch": "npx tauri dev -- --no-watch",

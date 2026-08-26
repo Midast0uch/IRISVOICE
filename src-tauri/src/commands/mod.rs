@@ -7,4 +7,5 @@
 // See ws.rs for the WS client control commands.
 
 pub mod caducean;
+pub mod launcher;
 pub mod ws;

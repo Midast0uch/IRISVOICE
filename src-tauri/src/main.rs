@@ -28,6 +28,7 @@ fn main() {
             commands::ws::ws_send,
             commands::ws::ws_disconnect,
             commands::ws::get_ws_connection_state,
+            commands::launcher::launch_launcher,
         ])
         .setup(move |app| {
             let window = app.get_webview_window("main").unwrap();
