@@ -31,11 +31,20 @@ pub struct WsClient {
     /// Sender half of the outgoing message channel.
     /// None = disconnected.  Set to Some(tx) on connect, None on disconnect.
     pub sender: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    /// True while the run_ws_loop task is alive.  Guards against duplicate
+    /// start_ws_client invokes: the frontend mounts several useIRISWebSocket
+    /// instances, each calling start_ws_client on mount.  Without this guard
+    /// they each spawn their own loop and all fight for the single backend
+    /// `client="iris"` slot, evicting each other in a reconnect storm that
+    /// cancelled every in-flight chat thread.
+    pub running: bool,
+    /// Set by ws_disconnect so the running loop exits instead of reconnecting.
+    pub stop: bool,
 }
 
 impl WsClient {
     pub fn new() -> Self {
-        Self { sender: None }
+        Self { sender: None, running: false, stop: false }
     }
 }
 
@@ -43,13 +52,27 @@ impl WsClient {
 
 /// Start the WebSocket client in a background Tokio task.
 ///
-/// Call this once from the frontend (via `invoke('start_ws_client', { url })`).
+/// Call this from the frontend (via `invoke('start_ws_client', { url })`).
 /// The task runs until `ws_disconnect` is called or the app exits.
-pub fn start(
+///
+/// Idempotent: only one run_ws_loop may exist at a time.  The frontend
+/// instantiates useIRISWebSocket in several components, each calling
+/// start_ws_client on mount, so without this guard multiple loops would
+/// spawn and evict each other on the backend's single `client="iris"` slot.
+pub async fn start(
     url: String,
     app_handle: tauri::AppHandle,
     state: Arc<Mutex<WsClient>>,
 ) {
+    {
+        let mut state_lock = state.lock().await;
+        if state_lock.running {
+            eprintln!("[WS Client] start_ws_client ignored — loop already running");
+            return;
+        }
+        state_lock.running = true;
+        state_lock.stop = false;
+    }
     tokio::spawn(async move {
         run_ws_loop(url, app_handle, state).await;
     });
@@ -66,6 +89,14 @@ async fn run_ws_loop(
     let mut stable_since: Option<std::time::Instant> = None;
 
     loop {
+        // Exit if a stop was requested (ws_disconnect) so a later
+        // start_ws_client can spawn a fresh loop (e.g. after an HMR remount).
+        {
+            let state_lock = state.lock().await;
+            if state_lock.stop {
+                break;
+            }
+        }
         match connect_async(&url).await {
             Ok((ws_stream, _)) => {
                 let (mut write, mut read) = ws_stream.split();
@@ -146,9 +177,25 @@ async fn run_ws_loop(
             }
         }
 
+        // Stop requested? Exit instead of sleeping/reconnecting.
+        {
+            let state_lock = state.lock().await;
+            if state_lock.stop {
+                break;
+            }
+        }
+
         // Exponential backoff with cap
         tokio::time::sleep(tokio::time::Duration::from_secs(backoff)).await;
         backoff = std::cmp::min(backoff * 2, MAX_BACKOFF_SECS);
+    }
+
+    // Loop exited (stop requested): clear flags so start_ws_client may spawn
+    // again.  Done under the lock so a concurrent start() sees running=false.
+    {
+        let mut state_lock = state.lock().await;
+        state_lock.running = false;
+        state_lock.stop = false;
     }
 }
 

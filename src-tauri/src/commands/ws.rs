@@ -30,7 +30,7 @@ pub async fn start_ws_client(
     ws_state: State<'_, Arc<Mutex<WsClient>>>,
     url: String,
 ) -> Result<(), String> {
-    crate::ws_client::start(url, app_handle, ws_state.inner().clone());
+    crate::ws_client::start(url, app_handle, ws_state.inner().clone()).await;
     Ok(())
 }
 
@@ -60,7 +60,8 @@ pub async fn ws_disconnect(
     ws_state: State<'_, Arc<Mutex<WsClient>>>,
 ) -> Result<(), String> {
     let mut state = ws_state.lock().await;
-    state.sender = None; // Dropping the sender causes the pump loop to exit
+    state.stop = true;      // tell the running loop to exit, not reconnect
+    state.sender = None;    // Dropping the sender causes the pump loop to exit
     Ok(())
 }
 
