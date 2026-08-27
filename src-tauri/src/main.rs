@@ -29,6 +29,9 @@ fn main() {
             commands::ws::ws_disconnect,
             commands::ws::get_ws_connection_state,
             commands::launcher::launch_launcher,
+            commands::launcher::launch_widget,
+            commands::wings::detach_wing,
+            commands::wings::reattach_wing,
         ])
         .setup(move |app| {
             let window = app.get_webview_window("main").unwrap();
@@ -43,10 +46,81 @@ fn main() {
             // there are no window decorations, so this doesn't expose a resize handle.
             window.set_resizable(true).ok();
 
-            let min_size = PhysicalSize::new(680u32, 680u32);
+            // 420 is the idle frame in lib/orbWingGeometry — the orb alone,
+            // with room for its labels, the voice haze and the level-2 radial
+            // menu. It was 680, which silently floored every attempt the
+            // frontend made to shrink the window at idle; a transparent window
+            // cannot be clicked through, so those extra pixels blocked the
+            // desktop underneath for nothing.
+            let min_size = PhysicalSize::new(420u32, 420u32);
             window.set_min_size(Some(min_size)).ok();
             // No max size — the window expands dynamically when chat/dashboard wings open
             window.set_max_size(None::<PhysicalSize<u32>>).ok();
+
+            // ── The launcher window ───────────────────────────────────────
+            // The launcher used to be a SEPARATE Tauri application in the
+            // iris-launcher submodule. It is now a second window of this one,
+            // so showing it costs a show() instead of a cargo build plus a
+            // dev-server boot.
+            //
+            // It is built here rather than declared in tauri.conf.json because
+            // its URL differs by build profile, and the config cannot branch:
+            //   dev  — the launcher's own Vite server on :8080, so the
+            //          launcher keeps hot reload and needs no migration into
+            //          Next.js.
+            //   prod — launcher/index.html inside the app bundle.
+            //
+            // It is the window the user meets first: the widget is hidden at
+            // startup so a fresh install asks for a mode, and lets the user set
+            // up a wallet, before the widget ever appears.
+            #[cfg(debug_assertions)]
+            let launcher_url = tauri::WebviewUrl::External(
+                "http://localhost:8080".parse().expect("launcher dev url"),
+            );
+            #[cfg(not(debug_assertions))]
+            let launcher_url = tauri::WebviewUrl::App("launcher/index.html".into());
+
+            // Closing the launcher must never strand the user. RunEvent::
+            // ExitRequested below calls prevent_exit(), so a process whose only
+            // visible window has just been closed stays alive with nothing on
+            // screen and no way back — and the widget is skipTaskbar, so it
+            // would not even appear in the taskbar. If the launcher is closed
+            // while the widget is still hidden, hand the user the widget.
+            let widget_fallback = window.clone();
+
+            match tauri::WebviewWindowBuilder::new(
+                app,
+                commands::launcher::LAUNCHER_LABEL,
+                launcher_url,
+            )
+            .title("IRIS Launcher")
+            .inner_size(1100.0, 720.0)
+            .min_inner_size(900.0, 600.0)
+            .resizable(true)
+            .center()
+            .visible(true)
+            .build()
+            {
+                Ok(launcher) => {
+                    launcher.on_window_event(move |event| {
+                        if let tauri::WindowEvent::CloseRequested { .. } = event {
+                            if !widget_fallback.is_visible().unwrap_or(false) {
+                                widget_fallback.show().ok();
+                                widget_fallback.set_focus().ok();
+                            }
+                        }
+                    });
+                    println!("[Tauri] Launcher window created");
+                }
+                Err(e) => {
+                    // Never fatal. If the launcher cannot come up, the widget
+                    // must still be reachable rather than leaving the user with
+                    // no window at all.
+                    println!("[Tauri] Launcher window failed ({e}) — showing the widget instead");
+                    window.show().ok();
+                    window.set_focus().ok();
+                }
+            }
 
             // ── Launch the Python backend sidecar ─────────────────────────
             // Only runs in release builds (production installs).

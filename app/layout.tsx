@@ -6,6 +6,11 @@ import Script from "next/script"
 // to avoid Turbopack's PostCSS pipeline timeout. The source is css-src/globals.css
 // and must be re-compiled with `npx @tailwindcss/cli -i css-src/globals.css -o public/globals.css`.
 
+// FIRST import, deliberately. Its module body installs the /api origin bridge,
+// and module bodies evaluate in import order — so the bridge is in place before
+// any provider below can fire a request. See components/ApiOriginBridge.tsx.
+import "@/components/ApiOriginBridge"
+
 import { NavigationProvider } from "@/contexts/NavigationContext"
 import { BrandColorProvider } from "@/contexts/BrandColorContext"
 import { TransitionProvider } from "@/contexts/TransitionContext"

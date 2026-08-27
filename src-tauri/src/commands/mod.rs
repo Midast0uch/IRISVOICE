@@ -9,3 +9,4 @@
 pub mod caducean;
 pub mod launcher;
 pub mod ws;
+pub mod wings;

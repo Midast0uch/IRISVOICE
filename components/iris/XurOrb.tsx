@@ -579,6 +579,55 @@ export function XurOrb({
               animation: 'xurFloat 4s ease-in-out infinite',
             }}
           >
+            {/* Contrast haze. Every particle is drawn with
+                globalCompositeOperation='lighter' on a TRANSPARENT window, so
+                the orb's contrast used to come from the user's wallpaper, and
+                on a pale one it nearly disappeared.
+
+                TWO DIFFERENT BLURS, and only one of them is possible here:
+                  - backdrop-filter would blur the DESKTOP behind the window.
+                    It cannot work: the compositor never hands WebView2 those
+                    pixels, so there is nothing to sample. Real desktop blur
+                    needs window-vibrancy acrylic, which tints the whole square
+                    window rather than a circle.
+                  - filter: blur() blurs THIS ELEMENT's own pixels, and that
+                    does work. It is what turns the haze from a disc with an
+                    edge into a soft shadow that has no edge at all.
+
+                Because it is blurred it can be nearly transparent and still
+                do its job: it only has to seat the particles, not back them.
+                Peak alpha is 0.12 — the first two attempts at 0.50 and 0.30
+                both read as a grey plate under the orb. The border ring is
+                gone too; a blurred 1px ring is only mud. What is left is a
+                breath of depth, and the wallpaper reads through it almost
+                unchanged.
+
+                It shares this wrapper with the canvas, so it stays centred on
+                the orb and floats with it on the same xurFloat keyframes.
+
+                SIZED FOR THE BLUR, not for the box. blur(7px) feathers the
+                disc roughly 7px past whatever edge it is given, so an
+                inset-0 disc ended up visibly wider than the orb. Pulling it in
+                9% (~11px of the 120px box) means the FEATHERED result lands
+                just inside the canvas edge — a tight fit around the particles
+                rather than a halo around the whole box. Kept as a percentage
+                so it tracks the orb at any size. */}
+            <div
+              aria-hidden
+              className="absolute pointer-events-none"
+              style={{
+                inset: '9%',
+                zIndex: 0,
+                borderRadius: '50%',
+                background: `radial-gradient(circle at 50% 47%,
+                  rgba(10,14,26,0.12) 0%,
+                  rgba(8,11,20,0.09) 55%,
+                  rgba(6,8,16,0.04) 82%,
+                  rgba(6,8,16,0) 100%)`,
+                filter: 'blur(7px)',
+              }}
+            />
+            <div className="relative" style={{ zIndex: 1 }}>
             <OrbCanvas
               glowColor={glowColor}
               breathMode={isReconnecting ? 'pulse' : cadence.breathMode}
@@ -596,6 +645,7 @@ export function XurOrb({
               animationMode={isReconnecting ? 'D' : animationMode}
               animActive={isReconnecting ? true : animActive}
             />
+            </div>
           </div>
 
           {/* Glitch labels — → Chat ← / ↑ Menu / ↑↑ Voice */}

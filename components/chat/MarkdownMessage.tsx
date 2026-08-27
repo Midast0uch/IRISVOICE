@@ -116,6 +116,19 @@ export interface MarkdownMessageProps {
   /** Only true for the message whose SPOKEN text this element renders. */
   highlightActive?: boolean
   className?: string
+  /**
+   * How the body reads.
+   *
+   * "markdown" — parsed and styled prose. Personal mode.
+   * "cli"      — the raw text, monospaced and preformatted, the way a terminal
+   *              prints it. Developer mode. Task cards there already render as
+   *              a monospaced matrix, so a proportional, markdown-styled answer
+   *              between two CLI blocks was the odd one out.
+   *
+   * The TTS highlight works in both: it paints a Range over live text nodes and
+   * never inserts elements, so it does not care which tree it is over.
+   */
+  variant?: "markdown" | "cli"
 }
 
 export function MarkdownMessage({
@@ -123,9 +136,23 @@ export function MarkdownMessage({
   highlightIndex = -1,
   highlightActive = false,
   className = "",
+  variant = "markdown",
 }: MarkdownMessageProps) {
   const ref = useRef<HTMLDivElement>(null)
   useTtsWordHighlight(ref, highlightIndex, highlightActive)
+
+  if (variant === "cli") {
+    return (
+      <div ref={ref} className={`iris-cli ${className}`}>
+        <pre
+          className="font-mono text-[11px] leading-[1.5] whitespace-pre-wrap break-words"
+          style={{ color: "rgba(255,255,255,0.86)" }}
+        >
+          {text}
+        </pre>
+      </div>
+    )
+  }
 
   return (
     <div ref={ref} className={`iris-md ${className}`}>

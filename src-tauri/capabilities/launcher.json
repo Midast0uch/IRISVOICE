@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "launcher-capability",
+  "description": "Capability for the IRIS Launcher window. In dev this window loads the launcher's own Vite server on :8080, which Tauri treats as a REMOTE origin — without the `remote` block below it can render but cannot use the IPC at all, so launch_widget would never reach Rust. In a packaged build the same window loads launcher/index.html from the app bundle and the remote entry is unused.",
+  "windows": ["launcher"],
+  "remote": {
+    "urls": ["http://localhost:8080"]
+  },
+  "permissions": [
+    "core:window:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-focus",
+    "core:window:allow-unminimize",
+    "core:event:default"
+  ]
+}

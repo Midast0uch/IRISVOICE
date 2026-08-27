@@ -40,9 +40,10 @@ import {
   Mic, Bot, Cpu, Settings, Palette, Activity, Volume2, Waves, Brain, Database, Sparkles, MessageSquare, Smile, Wrench, Layers, Star, Keyboard, Monitor, Power, HardDrive, Wifi, Bell, Sliders, RefreshCw, BarChart3, FileText, Stethoscope, X, ChevronRight, ChevronLeft, ChevronDown, ChevronUp, Eye, Globe,
   Shield, Zap, Workflow, Boxes, Puzzle, FolderOpen, Monitor as MonitorIcon, Play, Volume1, MicVocal,
   LayoutDashboard, ShoppingBag, Menu, User, ArrowLeft, RotateCcw, Home, ArrowRight as ArrowRightIcon, ExternalLink, History, AlertCircle, Code, FileCode, Plus as PlusIcon,
-  Network as NetworkIcon, Loader, AlertTriangle
+  Network as NetworkIcon, Loader, AlertTriangle, Maximize2, Minimize2
 } from 'lucide-react';
 import { invoke } from "@tauri-apps/api/core";
+import { detachWing, reattachWing } from "@/hooks/useDetachedWing";
 
 // Launch the separate IRIS Launcher Tauri app (bidirectional launcher⇄widget).
 const openIrisLauncher = async () => {
@@ -58,6 +59,8 @@ interface DarkGlassDashboardProps {
   fieldValues?: Record<string, Record<string, string | number | boolean>>;
   updateField?: (sectionId: string, fieldId: string, value: any) => void;
   onClose?: () => void;
+  /** This dashboard is alone in its own detached window (?pane=dashboard). */
+  isDetached?: boolean;
   onNotificationsClick?: () => void;
   unreadCount?: number;
   isNotificationsOpen?: boolean;
@@ -462,6 +465,7 @@ export function DarkGlassDashboard({
   onOpenChat,
   initialSubApp,
   onRequestSpotlight,
+  isDetached = false,
 }: DarkGlassDashboardProps) {
   // Domain 13.3 — iris mode from launcher (personal | developer).
   // Fetches persisted mode from backend on mount; listens for real-time WS events.
@@ -1780,6 +1784,24 @@ export function DarkGlassDashboard({
             <MessageSquare size={16} />
           </button>
         )}
+        {/* Detach / reattach — see the matching control in chat-view. */}
+        <button
+          onClick={async () => {
+            if (isDetached) {
+              await reattachWing('dashboard')
+            } else if (await detachWing('dashboard')) {
+              onClose?.()
+            }
+          }}
+          className="p-2 rounded-lg transition-all duration-150"
+          style={{ color: 'rgba(255,255,255,0.75)' }}
+          onMouseEnter={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.95)'; e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)'; }}
+          onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.75)'; e.currentTarget.style.backgroundColor = 'transparent'; }}
+          title={isDetached ? "Put the dashboard back in the widget" : "Move the dashboard to its own window"}
+          aria-label={isDetached ? "Reattach dashboard" : "Detach dashboard"}
+        >
+          {isDetached ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+        </button>
         {/* Open IRIS Launcher — re-open the separate launcher app if closed */}
         <button
           onClick={() => openIrisLauncher()}

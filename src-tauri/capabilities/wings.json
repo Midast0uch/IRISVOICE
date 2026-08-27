@@ -1,0 +1,25 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "wings-capability",
+  "description": "Capability for wings detached into their own windows. A detached wing runs the same frontend as the widget and drives the same shared WS client, so it needs the widget's permissions. In DEV it is built with WebviewUrl::External pointing at the Next dev server, which Tauri classifies as a remote origin even though the widget reaches that same server through devUrl — a remote window gets no IPC at all without the `remote` block below, so reattach_wing would never reach Rust. A packaged build loads index.html from the bundle and the remote entry is unused.",
+  "windows": ["wing-chat", "wing-dashboard"],
+  "remote": {
+    "urls": ["http://localhost:3000"]
+  },
+  "permissions": [
+    "core:window:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-set-position",
+    "core:window:allow-outer-position",
+    "core:window:allow-set-size",
+    "core:window:allow-set-ignore-cursor-events",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-close",
+    "core:window:allow-set-focus",
+    "core:window:allow-unminimize",
+    "core:window:allow-scale-factor",
+    "core:window:allow-inner-size",
+    "core:event:default"
+  ]
+}

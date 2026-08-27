@@ -13,9 +13,18 @@ import { useKeyboardNavigation } from "@/hooks/useKeyboardNavigation"
 import { BackdropBlur } from "@/components/backdrop-blur"
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const DashboardWing = lazy(() => import("@/components/dashboard-wing") as any)
-import { isTauri } from "@/hooks/useDeepLink"
 import { useIsMobile } from "@/hooks/use-mobile"
 import { useTailscaleAccess } from "@/hooks/useTailscaleAccess"
+import { useDetachedPane, useWingReattachListener, detachWing, reattachWing, type PaneName } from "@/hooks/useDetachedWing"
+import {
+  computeFrame,
+  frameLeft,
+  orbCenterOffsetX,
+  ORB_BOX,
+  ORB_BAND,
+  type UIStr,
+  type SpotlightStr,
+} from "@/lib/orbWingGeometry"
 
 // Lazy load heavy components for faster initial page load
 // Note: Using 'any' here due to TypeScript/React.lazy() compatibility issues with Next.js 16/React 19
@@ -63,66 +72,44 @@ export default function Home() {
     return () => window.removeEventListener("resize", handleResize)
   }, [])
 
-  // Compute wing widths based on spotlight state (mirrors getSpotlightWidth in each wing)
-  const getChatWidth = () => {
-    if (isChatSpotlight) return 680
-    if (isDashboardSpotlight) return 360
-    return 510
-  }
-  const getDashboardWidth = () => {
-    if (isDashboardSpotlight) return 680
-    if (isChatSpotlight) return 360
-    return 510
-  }
+  // Detached wings. `detachedPane` is set only in a window opened by
+  // detach_wing; the widget itself always reads null and instead listens for
+  // the reattach event so a closed wing comes back inline.
+  const detachedPane = useDetachedPane()
 
-  // Tilt extension: how far the tilted inner edge visually extends toward the orb
-  const getTiltExtension = (width: number, angleDeg: number) => {
-    const rad = (angleDeg * Math.PI) / 180
-    const sin = Math.sin(rad)
-    const cos = Math.cos(rad)
-    const perspective = 800
-    const z = width * sin
-    const scale = perspective / (perspective - z)
-    return width * (cos * scale - 1)
-  }
+  const handleReattach = useCallback((pane: PaneName) => {
+    if (pane === 'chat') openChat()
+    else openDashboardSolo()
+  }, [openChat, openDashboardSolo])
+  useWingReattachListener(handleReattach)
 
-  // Compute orb diameter so the wings' tilted edges barely touch it (0px visual gap)
-  // and the wings never overflow the frame.
-  const BOTH_OPEN_TILT = 15
-  // Balanced: wings pulled in slightly (-2px overlap = "just a tad bit closer")
-  // Spotlight: wings moved away (+4px gap = proper spacing, no overlap)
-  const isAnySpotlight = isChatSpotlight || isDashboardSpotlight
-  const ORB_WING_GAP = isAnySpotlight ? 4 : -2
-  const MIN_ORB = 60
-  // Keep orb at full size in spotlight mode — wings adjust position instead.
-  const MAX_ORB = 400
+  // The frame this page lays out inside — see lib/orbWingGeometry.
+  const spotlightKey: SpotlightStr = isChatSpotlight
+    ? 'chatSpotlight'
+    : isDashboardSpotlight
+      ? 'dashboardSpotlight'
+      : 'balanced'
+  const uiKey: UIStr = isBothOpen
+    ? 'both_open'
+    : isChatOpen
+      ? 'chat_open'
+      : isDashboardOpen
+        ? 'dashboard_open'
+        : 'idle'
+  const frame = computeFrame(uiKey, spotlightKey, state.level)
+  const frameX = frameLeft(windowWidth, frame.width)
 
-  const getOrbDiameter = () => {
-    const baseSize = 175
-    if (!isBothOpen) return baseSize
-    const chatW = getChatWidth()
-    const dashW = getDashboardWidth()
-    const chatExt = getTiltExtension(chatW, BOTH_OPEN_TILT)
-    const dashExt = getTiltExtension(dashW, BOTH_OPEN_TILT)
-    const available = windowWidth - chatW - dashW - chatExt - dashExt - 2 * ORB_WING_GAP
-    return Math.max(MIN_ORB, Math.min(MAX_ORB, available))
-  }
+  // Where the swallowed card should sit. It stands in for the orb, so it sits
+  // wherever the orb sits: the centre of the orb band, expressed as an offset
+  // from the viewport centre. Both wings open -> ~0, between them. One open ->
+  // pushed into the empty half.
+  const swallowCenterOffsetX = orbCenterOffsetX(frame)
 
-  // Where the swallowed card should sit. It stands in for the orb, but the
-  // orb's spot is NOT free when a single wing is open and maximised — the wing
-  // is sitting on it, and the card overlapped into its content.
-  // The free band runs from the chat wing's right edge to the dashboard wing's
-  // left edge; its centre, expressed as an offset from the viewport centre, is
-  // (chatW - dashW)/2. Both open and balanced -> ~0, i.e. between them. One
-  // open -> pushed fully into the empty half.
-  const swallowCenterOffsetX = (() => {
-    const chatW = isChatOpen || isBothOpen ? getChatWidth() : 0
-    const dashW = isDashboardOpen || isBothOpen ? getDashboardWidth() : 0
-    return (chatW - dashW) / 2
-  })()
-
-  const orbDiameter = getOrbDiameter()
-  const ORB_RADIUS = orbDiameter / 2
+  // Fixed. The orb container used to inflate to fill whatever space the wings
+  // left over (60-400 px), but XurOrb caps its canvas at 120 px, so growing
+  // the container only spread the labels and pushed the wings further out. The
+  // band in orbWingGeometry is sized to this constant.
+  const orbDiameter = ORB_BOX
 
   // Track which sub-app to open when the dashboard is triggered from WheelView
   const [pendingSubApp, setPendingSubApp] = useState<string | null>(null);
@@ -189,17 +176,6 @@ export default function Home() {
     } catch {}
   }, [])
 
-  // In Tauri the window dynamically expands to fit wings. The orb must stay
-  // centered in the fixed 680px "home" column (to the right of the chat panel).
-  // In browser mode the viewport is already wide enough so no offset is needed.
-  const chatPanelWidth = (() => {
-    if (!isTauri()) return 0
-    if (!isChatOpen && !isBothOpen) return 0
-    if (isChatSpotlight) return 680
-    if (isDashboardSpotlight) return 360
-    return 510 // balanced
-  })()
-
   // Get theme configuration for WheelView
   const theme = getThemeConfig()
   const glowColor = theme.glow.color
@@ -245,6 +221,58 @@ export default function Home() {
   const handleWheelViewBack = () => {
     // Dispatch GO_BACK action to return to level 2
     handleGoBack()
+  }
+
+  // ── Detached wing window ────────────────────────────────────────────────
+  // This window was opened by detach_wing and shows ONE wing filling it. No
+  // orb, no second wing, no window resizing: the OS owns this window's size
+  // and position, which is the entire point — it can sit on another monitor
+  // and stay there.
+  //
+  // It is the same frontend in the same process as the widget, so it shares
+  // the one Rust WebSocket client rather than opening a second connection the
+  // backend would evict.
+  if (detachedPane) {
+    return (
+      <main
+        suppressHydrationWarning
+        className="w-full h-screen max-h-screen overflow-hidden relative"
+        style={{ background: '#06070e' }}
+      >
+        {detachedPane === 'chat' ? (
+          <Suspense fallback={null}>
+            <LazyChatWing
+              isOpen={true}
+              /* Closing from inside a detached window means "put it back",
+                 which is what closing the window does. */
+              onClose={() => { void reattachWing('chat') }}
+              onDashboardClick={() => { void detachWing('dashboard') }}
+              onDashboardClose={() => {}}
+              sendMessage={sendMessage}
+              spotlightState={SpotlightState.BALANCED}
+              isDashboardOpen={false}
+              uiState={uiLayoutState}
+              onOpenBrowserUrl={browseTo}
+              isDetached
+            />
+          </Suspense>
+        ) : (
+          <Suspense fallback={null}>
+            <DashboardWing
+              isOpen={true}
+              onClose={() => { void reattachWing('dashboard') }}
+              sendMessage={sendMessage}
+              spotlightState={SpotlightState.BALANCED}
+              isSolo={true}
+              uiState={uiLayoutState}
+              isChatOpen={false}
+              initialSubApp={pendingSubApp}
+              isDetached
+            />
+          </Suspense>
+        )}
+      </main>
+    )
   }
 
   // Mobile / Tailscale / Remote: simplified full-screen chat
@@ -306,104 +334,44 @@ export default function Home() {
       <BackdropBlur uiState={uiLayoutState} />
       
       {(state.level !== 3 || isChatOpen || isBothOpen) && (
-        /* Positioning wrapper:
-           - Only chat open: orb visible to the right of chat wing
-           - Only dashboard open: orb centered
-           - Both open: orb in the middle (on top of wings), still visible
-           - Tauri mode: pinned to center of 680px home column */
+        /* Positioning wrapper — ONE rule for every layout.
+           The orb always sits at the centre of the orb band, which is the
+           middle third of the frame described in lib/orbWingGeometry. In Tauri
+           the native window IS the frame, so frameX is 0 and the band lands
+           between two flush-mounted wings. In a browser the same frame is
+           centred in the wider viewport.
+
+           This replaces five branches (Tauri home column, browser chat-only,
+           browser dashboard-only, both-open chat spotlight, both-open dashboard
+           spotlight) that each computed a different orb centre from a different
+           set of magic numbers. */
         <div
-          className={(() => {
-            // Only chat open in browser mode: use fixed positioning to the right
-            if (chatPanelWidth === 0 && isChatOpen && !isDashboardOpen && !isBothOpen) {
-              return "fixed"
-            }
-            return "absolute inset-0 flex items-center justify-center"
-          })()}
-          style={(() => {
-            const wingsOpen = isChatOpen || isBothOpen
-            const bothOpen = isBothOpen || (isChatOpen && isDashboardOpen)
-            if (chatPanelWidth > 0) {
-              // Tauri mode: pinned to center of home column
-              return {
-                left: chatPanelWidth + 340,
-                top: '50%',
-                transform: 'translateX(-50%) translateY(-50%)',
-                zIndex: bothOpen ? 100 : wingsOpen ? 5 : 0,
-                pointerEvents: wingsOpen ? 'none' : 'auto',
-              }
-            }
-            // Browser mode: only chat open — position RIGHT NEXT to chat wing (close, not far)
-            if (isChatOpen && !isDashboardOpen && !isBothOpen) {
-              // Chat wing is at left:252, width varies (360/510/680)
-              const chatWidth = isChatSpotlight ? 680 : isDashboardSpotlight ? 360 : 510
-              // Position orb right next to chat wing with a small gap
-              const chatRight = 252 + chatWidth
-              const orbCenterX = chatRight + 120
-              return {
-                left: orbCenterX,
-                top: '50%',
-                transform: 'translateX(-50%) translateY(-50%)',
-                zIndex: 25,
-                pointerEvents: 'none',
-              }
-            }
-            // Browser mode: only dashboard open — position RIGHT NEXT to dashboard wing (close, not far)
-            if (isDashboardOpen && !isChatOpen && !isBothOpen) {
-              // Dashboard wing is at right:252, width varies (360/560/760)
-              const dashWidth = isDashboardSpotlight ? 760 : isChatSpotlight ? 360 : 560
-              const screenRight = typeof window !== 'undefined' ? window.innerWidth : 1280
-              // Position orb right next to dashboard wing with a small gap
-              const dashLeft = screenRight - 252 - dashWidth
-              const orbCenterX = dashLeft - 120
-              return {
-                left: orbCenterX,
-                top: '50%',
-                transform: 'translateX(-50%) translateY(-50%)',
-                zIndex: 25,
-                pointerEvents: 'none',
-              }
-            }
-            // BOTH OPEN IN SPOTLIGHT: position orb in the gap between spotlight wing and blurred wing
-            if (isBothOpen && (isChatSpotlight || isDashboardSpotlight)) {
-              if (isChatSpotlight) {
-                // Chat at left=0 (width=680), dashboard at right=80 (blurred, width=360)
-                // Orb sits in the gap between them
-                const chatRight = 0 + 680
-                const dashLeft = windowWidth - 80 - 360
-                const orbCenterX = (chatRight + dashLeft) / 2
-                return {
-                  left: orbCenterX,
-                  top: '50%',
-                  transform: 'translateX(-50%) translateY(-50%)',
-                  zIndex: 100,
-                  pointerEvents: 'none',
-                }
-              } else {
-                // Dashboard at right=0 (width=680), chat at left=80 (blurred, width=360)
-                const chatRight = 80 + 360
-                const dashLeft = windowWidth - 0 - 680
-                const orbCenterX = (chatRight + dashLeft) / 2
-                return {
-                  left: orbCenterX,
-                  top: '50%',
-                  transform: 'translateX(-50%) translateY(-50%)',
-                  zIndex: 100,
-                  pointerEvents: 'none',
-                }
-              }
-            }
-            // Default: centered (no wings, dashboard only, or balanced both open)
-            // When both wings are open, orb is on top (zIndex 100) so it stays visible
-            return {
-              zIndex: bothOpen ? 100 : wingsOpen ? 5 : 0,
-              pointerEvents: wingsOpen ? 'none' : 'auto',
-            }
-          })()}
+          className="absolute inset-0"
+          style={{
+            zIndex: isBothOpen ? 100 : (isChatOpen || isDashboardOpen) ? 5 : 0,
+            pointerEvents: 'none',
+          }}
+        >
+        <div
+          className="absolute flex items-center justify-center"
+          style={{
+            left: frameX + frame.orbCenterX,
+            top: '50%',
+            transform: 'translateX(-50%) translateY(-50%)',
+            width: ORB_BAND,
+            height: ORB_BAND,
+            // The orb itself stays clickable even while the wings are open —
+            // a single click on it closes them (handleSingleClick).
+            pointerEvents: 'auto',
+          }}
         >
           <motion.div
             className="flex items-center justify-center"
             animate={{
-              scale: (isBothOpen || (isChatOpen && isDashboardOpen)) ? 1.0 : uiLayoutState !== UILayoutState.UI_STATE_IDLE ? 0.7 : 1,
+              // Held at 1. It used to drop to 0.7 whenever a single wing was
+              // open, which left the orb floating in the middle of a band
+              // sized for its full width — the gap the user reported.
+              scale: 1,
               filter: 'blur(0px)',
               opacity: 1,
             }}
@@ -425,6 +393,7 @@ export default function Home() {
               />
             </div>
           </motion.div>
+        </div>
         </div>
       )}
       {state.level === 3 && state.selectedMain && (

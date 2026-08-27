@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo, useSyncExternalStore } from "react"
 import { sortRows, deriveProgress } from "@/lib/cards/rowOrder";
 import { motion, AnimatePresence } from "framer-motion"
-import { Send, X, BarChart3, Plus, Trash2, AlertCircle, Bell, AlertTriangle, Shield, Loader, CheckCircle, Info, History, Pin, Copy, ThumbsUp, ThumbsDown, Volume2, ChevronDown, ChevronUp, Download, Share, FileText, Mail, Video, Image, File, Smile, ExternalLink, RefreshCw, Pencil, Archive } from 'lucide-react';
+import { Send, X, BarChart3, Plus, Trash2, AlertCircle, Bell, AlertTriangle, Shield, Loader, CheckCircle, Info, History, Pin, Copy, ThumbsUp, ThumbsDown, Volume2, ChevronDown, ChevronUp, Download, Share, FileText, Mail, Video, Image, File, Smile, ExternalLink, RefreshCw, Pencil, Archive, Maximize2, Minimize2 } from 'lucide-react';
 import { Icon } from '@iconify/react';
 import { Xur } from "@/components/Xur";
 import { useNavigation } from "@/contexts/NavigationContext";
@@ -15,6 +15,13 @@ import { useReducedMotion } from "@/hooks/useReducedMotion";
 import { IrisApertureIcon } from "@/components/ui/IrisApertureIcon";
 import { SpotlightState, SpotlightStateType } from "@/hooks/useUILayoutState";
 import { useLauncherMode } from "@/hooks/useLauncherMode";
+import {
+  computeFrame,
+  chatWidth,
+  frameLeft,
+  TILT_DEG,
+  type SpotlightStr,
+} from "@/lib/orbWingGeometry";
 import { ConversationChips } from "@/components/chat/ConversationChips";
 
 // Lazy-load entire workspace — only bundles in developer mode
@@ -64,6 +71,7 @@ import { useTaskProgress } from "@/hooks/useTaskProgress";
 import { useCrawlContext } from "@/hooks/CrawlProvider";
 import type { ConversationChip, Suggestion } from "@/types/iris";
 import { invoke } from "@tauri-apps/api/core";
+import { detachWing, reattachWing } from "@/hooks/useDetachedWing";
 
 // Launch the separate IRIS Launcher Tauri app (bidirectional launcher⇄widget).
 const openIrisLauncher = async () => {
@@ -279,6 +287,13 @@ interface ChatWingProps {
   // Remote/mobile view: full-screen flat rendering for phone access via Tailscale
   isRemoteView?: boolean
   orbDiameter?: number
+  /**
+   * This wing is alone in its own detached window (?pane=chat). It fills that
+   * window flat: no tilt, no perspective, no 3D panel, no entrance slide.
+   * Distinct from isRemoteView, which ALSO means "phone" and enlarges every
+   * hit target — a wing on a second monitor is still a desktop surface.
+   */
+  isDetached?: boolean
 }
 
 export function ChatWing({
@@ -295,6 +310,7 @@ export function ChatWing({
   onOpenBrowserUrl,
   isRemoteView = false,
   orbDiameter = 175,
+  isDetached = false,
 }: ChatWingProps) {
   const prefersReducedMotion = useReducedMotion();
   
@@ -2601,32 +2617,35 @@ ${message.text}`;
   const isInDashboardSpotlight = spotlightState === SpotlightState.DASHBOARD_SPOTLIGHT;
   const isBalanced = spotlightState === SpotlightState.BALANCED;
 
-  // Spotlight dynamic styles — overridden for remote/mobile view
-  // Both-open layout constants
-  const BOTH_OPEN_TILT = 15; // degrees
-  const ORB_RADIUS = orbDiameter / 2; // dynamic from parent
-  const ORB_WING_GAP = -20; // negative = wings pulled closer to orb
+  // Both surfaces that render the wing edge-to-edge with no 3D: the phone
+  // layout and a detached window. Geometry only — the mobile hit-target sizing
+  // stays on isRemoteView alone.
+  const isFlat = isRemoteView || isDetached;
+
+  // The shared frame this wing sits in (lib/orbWingGeometry).
+  const spotlightKey: SpotlightStr = isInChatSpotlight
+    ? 'chatSpotlight'
+    : isInDashboardSpotlight
+      ? 'dashboardSpotlight'
+      : 'balanced';
+  const frame = computeFrame(
+    isDashboardOpen ? 'both_open' : 'chat_open',
+    spotlightKey,
+  );
+
+  // Layout geometry — see lib/orbWingGeometry. The wing no longer computes its
+  // own tilt, gap or orb radius; it asks the shared module for the frame and
+  // pins itself to the frame's left edge.
+  const BOTH_OPEN_TILT = TILT_DEG; // degrees
 
   const getSpotlightWidth = () => {
+    if (isDetached) return '100vw';
     if (isRemoteView) return 'calc(100vw - 24px)';
-    if (isInChatSpotlight) return 680; // Spotlight width (2×)
-    if (isInDashboardSpotlight) return 360; // Background width (2×)
-    return 510; // Balanced width (2×)
-  };
-
-  // How far the tilted inner edge visually extends toward the orb due to perspective.
-  const getTiltExtension = (width: number, angleDeg: number) => {
-    const rad = (angleDeg * Math.PI) / 180;
-    const sin = Math.sin(rad);
-    const cos = Math.cos(rad);
-    const perspective = 800;
-    const z = width * sin;
-    const scale = perspective / (perspective - z);
-    return width * (cos * scale - 1);
+    return chatWidth(spotlightKey);
   };
 
   const getSpotlightTransform = () => {
-    if (isRemoteView) return 'rotateY(0deg) rotateX(0deg)';
+    if (isFlat) return 'rotateY(0deg) rotateX(0deg)';
     if (isInChatSpotlight) return 'rotateY(0deg) rotateX(0deg)';
     if (isInDashboardSpotlight) return 'rotateY(15deg) rotateX(2deg)';
     if (isDashboardOpen) return `rotateY(${BOTH_OPEN_TILT}deg) rotateX(2deg)`; // Both open: tilted divider
@@ -2634,50 +2653,47 @@ ${message.text}`;
   };
 
   const getSpotlightOpacity = () => {
-    if (isRemoteView) return 1.0;
+    if (isFlat) return 1.0;
     if (isInDashboardSpotlight) return 0.3;
     return 1.0;
   };
 
   const getSpotlightFilter = () => {
-    if (isRemoteView) return 'none';
+    if (isFlat) return 'none';
     if (isInDashboardSpotlight) return 'saturate(0.6) blur(2px)';
     return 'none';
   };
 
   const getSpotlightZIndex = () => {
-    if (isRemoteView) return 20;
+    if (isFlat) return 20;
     if (isInChatSpotlight) return 20;
     if (isInDashboardSpotlight) return 5;
     return 10;
   };
 
   const getSpotlightPointerEvents = () => {
-    if (isRemoteView) return 'auto';
+    if (isFlat) return 'auto';
     if (isInDashboardSpotlight) return 'none';
     return 'auto';
   };
 
-  // Remote/mobile view: minimized centered panel with horizontal padding, no offset, no tilt
+  // The chat wing is the LEFT part of the frame, so it pins to the frame's
+  // left edge in every wing state. In Tauri the window is exactly the frame,
+  // so this is 0; in a browser the frame is centred in the wider viewport.
+  //
+  // This replaces four special cases (0 / 80 / 252 / a windowWidth-relative
+  // formula) that between them put the wing anywhere from flush to 252 px in.
+  // The 252 px case is the one the user saw as "wings too far apart".
   const getOuterLeft = () => {
+    if (isDetached) return 0;
     if (isRemoteView) return '12px';
-    if (isDashboardOpen) {
-      // CHAT SPOTLIGHT: pin chat to left edge so it's fully visible within frame.
-      if (isInChatSpotlight) return 0;
-      // DASHBOARD SPOTLIGHT: chat is blurred background — shift closer to left edge.
-      if (isInDashboardSpotlight) return 80;
-      // BALANCED: both wings meet at center with tilt formula.
-      const width = getSpotlightWidth() as number;
-      const extension = getTiltExtension(width, BOTH_OPEN_TILT);
-      return windowWidth / 2 - ORB_RADIUS - ORB_WING_GAP - extension - width;
-    }
-    return 252;
+    return frameLeft(windowWidth, frame.width);
   };
-  const getOuterTop = () => isRemoteView ? '16px' : '6vh';
-  const getOuterHeight = () => isRemoteView ? 'calc(100dvh - 32px)' : '88vh';
-  const getOuterMaxHeight = () => isRemoteView ? 'calc(100dvh - 32px)' : 'calc(100vh - 24px)';
-  const getOuterPerspective = () => isRemoteView ? 'none' : '800px';
-  const getInnerBorderRadius = () => isRemoteView ? '16px' : '12px';
+  const getOuterTop = () => isDetached ? 0 : isRemoteView ? '16px' : '6vh';
+  const getOuterHeight = () => isDetached ? '100vh' : isRemoteView ? 'calc(100dvh - 32px)' : '88vh';
+  const getOuterMaxHeight = () => isDetached ? '100vh' : isRemoteView ? 'calc(100dvh - 32px)' : 'calc(100vh - 24px)';
+  const getOuterPerspective = () => isFlat ? 'none' : '800px';
+  const getInnerBorderRadius = () => isDetached ? '0px' : isRemoteView ? '16px' : '12px';
 
   // Window drag from the chat HEADER (the 48px bar). Deliberately the header
   // and not the whole panel: a mousedown anywhere would start a drag from the
@@ -2698,13 +2714,13 @@ ${message.text}`;
         <motion.div
           ref={chatOuterRef}
           className="fixed"
-          initial={isRemoteView ? {} : { x: -120, opacity: 0, scale: 0.95 }}
-          animate={isRemoteView ? {} : {
+          initial={isFlat ? {} : { x: -120, opacity: 0, scale: 0.95 }}
+          animate={isFlat ? {} : {
             x: 0,
             opacity: getSpotlightOpacity(),
             scale: 1
           }}
-          exit={isRemoteView ? {} : { x: -120, opacity: 0, scale: 0.95 }}
+          exit={isFlat ? {} : { x: -120, opacity: 0, scale: 0.95 }}
           transition={isRemoteView ? { duration: 0 } : { 
             type: "spring", 
             stiffness: 280, 
@@ -2729,10 +2745,10 @@ ${message.text}`;
             <motion.div
               ref={chatPanelRef}
               className="h-full overflow-hidden flex flex-col relative"
-              animate={isRemoteView ? {} : {
+              animate={isFlat ? {} : {
                 transform: getSpotlightTransform()
               }}
-              transition={isRemoteView ? { duration: 0 } : {
+              transition={isFlat ? { duration: 0 } : {
                 type: "spring",
                 stiffness: 280,
                 damping: 25,
@@ -2740,8 +2756,8 @@ ${message.text}`;
               }}
             style={{
               transformOrigin: 'left center',
-              transformStyle: isRemoteView ? 'flat' : 'preserve-3d',
-              transform: isRemoteView ? 'rotateY(0deg) rotateX(0deg)' : undefined,
+              transformStyle: isFlat ? 'flat' : 'preserve-3d',
+              transform: isFlat ? 'rotateY(0deg) rotateX(0deg)' : undefined,
               background: 'linear-gradient(135deg, rgba(10,11,22,0.97) 0%, rgba(6,7,14,0.99) 100%)',
               boxShadow: isRemoteView ? `
                 inset 0 1px 1px rgba(255,255,255,0.05),
@@ -2751,8 +2767,7 @@ ${message.text}`;
               ` : `
                 inset 0 1px 1px rgba(255,255,255,0.05),
                 inset 0 -1px 1px rgba(0,0,0,0.5),
-                0 0 0 1px rgba(0,0,0,0.8),
-                20px 0 60px rgba(0,0,0,0.5)
+                0 0 0 1px rgba(0,0,0,0.8)
               `,
               borderRadius: getInnerBorderRadius(),
               border: isRemoteView ? `1px solid ${glowColor}20` : `1px solid ${glowColor}20`,
@@ -2851,6 +2866,30 @@ ${message.text}`;
                 >
                   <BarChart3 size={isRemoteView ? 20 : 14} />
                 </button>
+                {/* Detach / reattach. The chat wing becomes its own OS window
+                    so it can live on a second monitor — the widget window is
+                    transparent, borderless and always-on-top, and cannot span
+                    two screens. Detaching closes the wing here so it is never
+                    drawn twice; closing the detached window puts it back. */}
+                {!isRemoteView && (
+                  <button
+                    onClick={async () => {
+                      if (isDetached) {
+                        await reattachWing('chat')
+                      } else if (await detachWing('chat')) {
+                        onClose()
+                      }
+                    }}
+                    className="p-1.5 rounded-lg transition-all duration-150"
+                    style={{ color: 'rgba(255,255,255,0.75)' }}
+                    onMouseEnter={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.95)'; e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)'; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.75)'; e.currentTarget.style.backgroundColor = 'transparent'; }}
+                    title={isDetached ? "Put chat back in the widget" : "Move chat to its own window"}
+                    aria-label={isDetached ? "Reattach chat" : "Detach chat"}
+                  >
+                    {isDetached ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+                  </button>
+                )}
                 {/* Open IRIS Launcher — re-open the separate launcher app if closed */}
                 <button
                   onClick={() => openIrisLauncher()}
@@ -3744,6 +3783,7 @@ ${message.text}`;
                                   <MarkdownMessage
                                     text={message.text}
                                     className={isExpanded ? '' : 'line-clamp-6'}
+                                    variant={isDeveloper ? 'cli' : 'markdown'}
                                   />
                                   {!isExpanded && (
                                     <div 
@@ -3798,6 +3838,7 @@ ${message.text}`;
                                   message.id === currentTtsMessageId && !spokenDiffersFromBody
                                 }
                                 highlightIndex={ttsWordIndex}
+                                variant={isDeveloper ? 'cli' : 'markdown'}
                               />
                             )}
                             
@@ -4576,17 +4617,46 @@ ${message.text}`;
                     }}
                     onFocus={() => setIsInputFocused(true)}
                     onBlur={() => setIsInputFocused(false)}
-                    placeholder={voiceState === 'listening' ? 'Listening...' : 'Type command or drop file...'}
+                    placeholder={
+                      voiceState === 'listening'
+                        ? 'Listening...'
+                        : isDeveloper
+                          ? 'command  ·  / tools  ·  > shell  ·  @ card'
+                          : 'Type command or drop file...'
+                    }
                     disabled={voiceState === 'listening'}
-                    className={isRemoteView ? "w-full bg-transparent border-0 py-3 pr-2 text-[16px] focus:outline-none transition-all placeholder:text-white/30 disabled:opacity-50 resize-none min-h-[44px] max-h-[120px] scrollbar-hide" : "w-full bg-transparent border-0 py-2 pr-2 text-[13px] focus:outline-none transition-all placeholder:text-white/30 disabled:opacity-50 resize-none min-h-[36px] max-h-[120px] scrollbar-hide"}
+                    className={
+                      isRemoteView
+                        ? "w-full bg-transparent border-0 py-3 pr-2 text-[16px] focus:outline-none transition-all placeholder:text-white/30 disabled:opacity-50 resize-none min-h-[44px] max-h-[120px] scrollbar-hide"
+                        : isDeveloper
+                          /* pl-5 clears the prompt glyph rendered below. */
+                          ? "w-full bg-transparent border-0 py-2 pl-5 pr-2 font-mono text-[12px] focus:outline-none transition-all placeholder:text-white/25 disabled:opacity-50 resize-none min-h-[36px] max-h-[120px] scrollbar-hide"
+                          : "w-full bg-transparent border-0 py-2 pr-2 text-[13px] focus:outline-none transition-all placeholder:text-white/30 disabled:opacity-50 resize-none min-h-[36px] max-h-[120px] scrollbar-hide"
+                    }
                     rows={1}
                     style={{
                       borderColor: isDraggingFile ? glowColor : inputText ? glowColor : `${glowColor}30`,
                       color: fontColor,
                       borderBottomWidth: '1px',
                       boxShadow: isDraggingFile ? `0 0 8px ${glowColor}40` : inputText ? `0 1px 0 0 ${glowColor}` : 'none',
+                      // The caret is the one part of a CLI the user watches
+                      // constantly, so it carries the brand colour rather than
+                      // the browser default.
+                      caretColor: isDeveloper ? glowColor : undefined,
                     }}
                   />
+
+                  {/* Prompt glyph. Developer mode only, and hidden while the
+                      mic is open — the line is not yours to type on then. */}
+                  {isDeveloper && !isRemoteView && voiceState !== 'listening' && (
+                    <span
+                      aria-hidden
+                      className="absolute left-0 font-mono text-[12px] pointer-events-none select-none"
+                      style={{ top: '0.5rem', lineHeight: '1.25rem', color: glowColor, opacity: 0.75 }}
+                    >
+                      ❯
+                    </span>
+                  )}
                   
                   {/* Voice indicator */}
                   {voiceState === 'listening' && (

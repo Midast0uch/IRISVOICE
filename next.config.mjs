@@ -1,5 +1,22 @@
 const isProd = process.env.NODE_ENV === 'production';
 
+/**
+ * Static export, for the packaged Tauri widget only.
+ *
+ * Set by scripts/build-static.mjs, which is what tauri.conf.json's
+ * beforeBuildCommand runs. It is a DEDICATED flag rather than NODE_ENV because
+ * `next start` is still a supported way to run this app in production, and
+ * `output: 'export'` would break it.
+ *
+ * Two things below are mutually exclusive with an export and are therefore
+ * gated on it:
+ *   - rewrites(), which has no runtime to execute in a static bundle. The
+ *     client keeps working because lib/apiOrigin reinstates the same rewrite
+ *     in the browser, where a package still has one.
+ *   - next/image optimisation, which needs a server.
+ */
+const staticExport = process.env.IRIS_STATIC_EXPORT === '1';
+
 // On Windows + slow project drives (e.g. Desktop under OneDrive / antivirus
 // real-time scan), Next.js dev compilation in .next can hang for minutes and
 // balloon to 1-15 GB. The fix is to relocate the cache off the slow drive
@@ -8,6 +25,10 @@ const isProd = process.env.NODE_ENV === 'production';
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Tauri's frontendDist is ../dist, so an export has to land there. A normal
+  // build keeps .next untouched.
+  ...(staticExport ? { output: 'export', distDir: 'dist', images: { unoptimized: true } } : {}),
+
   // Allow dev access from 127.0.0.1 (used by phone via Tailscale / QR code)
   allowedDevOrigins: [
     // Local development
@@ -22,14 +43,20 @@ const nextConfig = {
   // Backend lives on :8090; let the browser reach it through the same origin
   // so we don't have to fight CORS, and so production builds don't need a
   // separate API base URL.
-  async rewrites() {
-    return [
-      {
-        source: '/api/:path*',
-        destination: `http://localhost:${process.env.IRIS_BACKEND_PORT || 8090}/api/:path*`,
-      },
-    ];
-  },
+  // Omitted entirely under a static export — Next.js rejects the combination,
+  // and there would be no server to run it anyway.
+  ...(staticExport
+    ? {}
+    : {
+        async rewrites() {
+          return [
+            {
+              source: '/api/:path*',
+              destination: `http://localhost:${process.env.IRIS_BACKEND_PORT || 8090}/api/:path*`,
+            },
+          ];
+        },
+      }),
 
   // ===========================================================================
   // NO webpack CONFIG HERE — AND THAT IS DELIBERATE.

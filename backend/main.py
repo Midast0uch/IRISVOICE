@@ -67,7 +67,7 @@ ALLOWED_ORIGINS = os.environ.get(
     "ALLOWED_ORIGINS",
     # port 3000/3001 = Next.js dev; 8080 = iris-launcher dev; tauri = packaged app
     # *.ts.net = Tailscale MagicDNS; 100.* = Tailscale direct CGNAT IPs
-    "http://localhost:3000,http://localhost:3001,http://localhost:8080,http://127.0.0.1:3000,http://127.0.0.1:8080,tauri://localhost,https://tauri.localhost,http://*.ts.net,https://*.ts.net,http://100.*",
+    "http://localhost:3000,http://localhost:3001,http://localhost:8080,http://127.0.0.1:3000,http://127.0.0.1:8080,tauri://localhost,http://tauri.localhost,https://tauri.localhost,http://*.ts.net,https://*.ts.net,http://100.*",
 ).split(",")
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException
@@ -903,12 +903,16 @@ from backend.api.crawl_stream import router as crawl_stream_router
 from backend.api.caducean_debug import router as caducean_debug_router
 # In-app browser surface: capture replay (REQ-1) + fetch proxy (REQ-2/REQ-5).
 from backend.api.browser_surface import router as browser_surface_router
+# Structured frontend logs. Was a Next.js route handler; moved here because the
+# packaged widget is a static export with no Next.js server to run one.
+from backend.api.frontend_logs import router as frontend_logs_router
 
 app.include_router(status_snapshot_router)
 app.include_router(chat_router)
 app.include_router(crawl_stream_router)
 app.include_router(caducean_debug_router)
 app.include_router(browser_surface_router)
+app.include_router(frontend_logs_router)
 
 
 # ── Idle tracker middleware ────────────────────────────────────────────────

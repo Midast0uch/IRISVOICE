@@ -1,5 +1,6 @@
 "use client"
 
+import { apiUrl } from "@/lib/apiOrigin"
 import { useEffect, useRef, useState } from "react"
 
 /**
@@ -31,7 +32,10 @@ export function useCrawlSSE(sessionId: string | null, wsConnected: boolean) {
       return
     }
 
-    const url = `/api/crawl/stream/${encodeURIComponent(sessionId)}`
+    // apiUrl, not a bare path: EventSource is not fetch, so the origin bridge
+    // in lib/apiOrigin cannot intercept it. In a packaged build a relative
+    // path here would resolve against tauri.localhost and never connect.
+    const url = apiUrl(`/api/crawl/stream/${encodeURIComponent(sessionId)}`)
     const es = new EventSource(url)
     esRef.current = es
 

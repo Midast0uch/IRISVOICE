@@ -418,8 +418,10 @@ export function useUILayoutState() {
    * window always matches what's visible on screen.
    */
   useEffect(() => {
-    resize(uiState as any, spotlightState as any)
-  }, [uiState, spotlightState, resize])
+    // navState.level rides along because level 3 replaces the orb with
+    // WheelView, which needs a different frame than the orb does.
+    resize(uiState as any, spotlightState as any, navState.level)
+  }, [uiState, spotlightState, navState.level, resize])
 
   return {
     // Current state

@@ -37,10 +37,16 @@ const DEFAULT_SIZE = 120   // was 90 — now matches the 120 px orb container
  */
 const DEFAULT_ORBIT_PERIOD_MS = 28000
 
+// Alphas and sizes were raised (0.55/0.40/0.85 -> 0.72/0.55/0.95) so the orb
+// reads against a bright desktop wallpaper. Every particle is drawn with
+// globalCompositeOperation='lighter' on a TRANSPARENT window, so its contrast
+// is set by whatever sits behind the window. Additive light on a pale
+// wallpaper is close to invisible. XurOrb also puts a scrim disc behind the
+// canvas; the two changes are one fix and are tuned against each other.
 const SHELLS = [
-  { scale: 1.05, speed: 1.0, count: 80, alpha: 0.55, size: 1.0 },
-  { scale: 0.70, speed: 1.45, count: 56, alpha: 0.40, size: 0.8 },
-  { scale: 0.42, speed: 0.62, count: 32, alpha: 0.85, size: 0.7 },
+  { scale: 1.05, speed: 1.0, count: 80, alpha: 0.72, size: 1.0 },
+  { scale: 0.70, speed: 1.45, count: 56, alpha: 0.55, size: 0.8 },
+  { scale: 0.42, speed: 0.62, count: 32, alpha: 0.95, size: 0.7 },
 ]
 
 const PULSE_DURATION = 4200
@@ -266,7 +272,7 @@ export const OrbCanvas = React.memo(function OrbCanvas({
       idleGrad.addColorStop(0, '#ffffff')
       idleGrad.addColorStop(0.6, color)
       idleGrad.addColorStop(1, 'transparent')
-      ctx.globalAlpha = 0.45
+      ctx.globalAlpha = 0.62
       ctx.fillStyle = idleGrad
       ctx.beginPath()
       ctx.arc(center, center, idleCoreRadius, 0, Math.PI * 2)
@@ -354,8 +360,8 @@ export const OrbCanvas = React.memo(function OrbCanvas({
           breathAlphaMult = Math.max(0.05, 1 + wave)
         }
 
-        const particleSize = (0.5 + fade * 1.6) * (SIZE / 200) * shell.size
-        ctx.globalAlpha = fade * 0.6 * shell.alpha * overallAlpha * depthFactor * breathAlphaMult
+        const particleSize = (0.65 + fade * 1.8) * (SIZE / 200) * shell.size
+        ctx.globalAlpha = fade * 0.8 * shell.alpha * overallAlpha * depthFactor * breathAlphaMult
         ctx.beginPath()
         ctx.arc(px, py, particleSize, 0, Math.PI * 2)
         ctx.fill()

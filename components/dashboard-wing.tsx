@@ -10,6 +10,13 @@ import { SendMessageFunction } from "@/hooks/useIRISWebSocket"
 import { IrisApertureIcon } from "@/components/ui/IrisApertureIcon"
 import { SpotlightState, UILayoutState } from "@/hooks/useUILayoutState"
 import { useLauncherMode } from "@/hooks/useLauncherMode"
+import {
+  computeFrame,
+  dashboardWidth,
+  frameLeft,
+  TILT_DEG,
+  type SpotlightStr,
+} from "@/lib/orbWingGeometry"
 
 // Notification types for the universal notification system
 interface Notification {
@@ -62,6 +69,11 @@ interface DashboardWingProps {
   initialSubApp?: string | null
   isRemoteView?: boolean
   orbDiameter?: number
+  /**
+   * This wing is alone in its own detached window (?pane=dashboard). It fills
+   * that window flat. Distinct from isRemoteView, which also means "phone".
+   */
+  isDetached?: boolean
 }
 
 export function DashboardWing({
@@ -80,6 +92,7 @@ export function DashboardWing({
   initialSubApp,
   isRemoteView = false,
   orbDiameter = 175,
+  isDetached = false,
 }: DashboardWingProps) {
   const { voiceState } = useNavigation()
   const { getThemeConfig } = useBrandColor()
@@ -117,46 +130,40 @@ export function DashboardWing({
   const isInChatSpotlight = spotlightState === SpotlightState.CHAT_SPOTLIGHT;
   const isBalanced = spotlightState === SpotlightState.BALANCED;
 
-  // Both-open layout constants
-  const BOTH_OPEN_TILT = 15; // degrees
-  const ORB_RADIUS = orbDiameter / 2; // dynamic from parent
-  const ORB_WING_GAP = -20; // negative = wings pulled closer to orb
+  // Both surfaces that render the wing edge-to-edge with no 3D: the phone
+  // layout and a detached window.
+  const isFlat = isRemoteView || isDetached;
 
-  const getSpotlightWidth = () => {
-    if (isInDashboardSpotlight) return 680; // Spotlight width (matches chat)
-    if (isSolo) return 510; // Solo balanced width (matches chat)
-    if (isInChatSpotlight) return 360; // Background width when chat is spotlighted
-    return 510; // Balanced width (matches chat)
-  };
+  // Layout geometry — see lib/orbWingGeometry. The wing no longer computes its
+  // own tilt, gap or orb radius; it asks the shared module for the frame and
+  // pins itself to the frame's right edge.
+  const BOTH_OPEN_TILT = TILT_DEG; // degrees
 
-  // How far the tilted inner edge visually extends toward the orb due to perspective.
-  const getTiltExtension = (width: number, angleDeg: number) => {
-    const rad = (angleDeg * Math.PI) / 180;
-    const sin = Math.sin(rad);
-    const cos = Math.cos(rad);
-    const perspective = 800;
-    const z = width * sin;
-    const scale = perspective / (perspective - z);
-    return width * (cos * scale - 1);
-  };
+  const spotlightKey: SpotlightStr = isInChatSpotlight
+    ? 'chatSpotlight'
+    : isInDashboardSpotlight
+      ? 'dashboardSpotlight'
+      : 'balanced';
+  const frame = computeFrame(
+    isBothOpen || isChatOpen ? 'both_open' : 'dashboard_open',
+    spotlightKey,
+  );
 
+  const getSpotlightWidth = () => (isDetached ? '100vw' : dashboardWidth(spotlightKey));
+
+  // The dashboard wing is the RIGHT part of the frame, so it pins to the
+  // frame's right edge in every wing state. In Tauri the window is exactly the
+  // frame, so this is 0; in a browser the frame is centred in the viewport.
+  //
+  // This replaces four special cases (0 / 80 / 252 / a windowWidth-relative
+  // formula). The 252 px case is what the user saw as "wings too far apart".
   const getOuterRight = () => {
-    if (isRemoteView) return 0;
-    if (isBothOpen) {
-      // DASHBOARD SPOTLIGHT: pin dashboard to right edge so it's fully visible within frame.
-      if (isInDashboardSpotlight) return 0;
-      // CHAT SPOTLIGHT: dashboard is blurred background — shift closer to right edge.
-      if (isInChatSpotlight) return 80;
-      // BALANCED: both wings meet at center with tilt formula.
-      const width = getSpotlightWidth();
-      const extension = getTiltExtension(width, BOTH_OPEN_TILT);
-      return windowWidth / 2 - ORB_RADIUS - ORB_WING_GAP - extension - width;
-    }
-    return 252;
+    if (isFlat) return 0;
+    return frameLeft(windowWidth, frame.width);
   };
 
   const getSpotlightTransform = () => {
-    if (isRemoteView) return 'rotateY(0deg) rotateX(0deg)'; // Flat on mobile
+    if (isFlat) return 'rotateY(0deg) rotateX(0deg)'; // Flat on mobile and when detached
     if (isInDashboardSpotlight) return 'rotateY(0deg) rotateX(0deg)'; // Flat when spotlighted
     if (isSolo) return 'rotateY(-15deg) rotateX(2deg)'; // Solo balanced: angled
     if (isInChatSpotlight) return 'rotateY(-15deg) rotateX(2deg)';
@@ -240,28 +247,28 @@ export function DashboardWing({
       {isOpen && (
         <motion.div
           className="fixed"
-          initial={isRemoteView ? {} : { x: 120, opacity: 0, scale: 0.95 }}
-          animate={isRemoteView ? {} : { 
+          initial={isFlat ? {} : { x: 120, opacity: 0, scale: 0.95 }}
+          animate={isFlat ? {} : { 
             x: 0, 
             opacity: getSpotlightOpacity(), 
             scale: 1 
           }}
-          exit={isRemoteView ? {} : { x: 120, opacity: 0, scale: 0.95 }}
-          transition={isRemoteView ? { duration: 0 } : { 
+          exit={isFlat ? {} : { x: 120, opacity: 0, scale: 0.95 }}
+          transition={isFlat ? { duration: 0 } : { 
             type: "spring", 
             stiffness: 280, 
             damping: 25,
             mass: 0.8
           }}
           style={{
-            left: isRemoteView ? 0 : undefined,
-            right: isRemoteView ? 0 : getOuterRight(),
-            top: isRemoteView ? 0 : '6vh',
-            width: isRemoteView ? '100vw' : getSpotlightWidth(),
-            height: isRemoteView ? '100dvh' : '88vh',
-            maxHeight: isRemoteView ? '100dvh' : 'calc(100vh - 24px)',
+            left: isFlat ? 0 : undefined,
+            right: isFlat ? 0 : getOuterRight(),
+            top: isFlat ? 0 : '6vh',
+            width: isFlat ? '100vw' : getSpotlightWidth(),
+            height: isDetached ? '100vh' : isRemoteView ? '100dvh' : '88vh',
+            maxHeight: isDetached ? '100vh' : isRemoteView ? '100dvh' : 'calc(100vh - 24px)',
             overflow: 'hidden',
-            perspective: isRemoteView ? 'none' : '800px',
+            perspective: isFlat ? 'none' : '800px',
             zIndex: getSpotlightZIndex(),
             filter: getSpotlightFilter(),
             pointerEvents: getSpotlightPointerEvents() as any,
@@ -272,10 +279,10 @@ export function DashboardWing({
           {/* HUD Glass Panel Container */}
             <motion.div 
               className="h-full overflow-hidden flex flex-col relative"
-              animate={isRemoteView ? {} : {
+              animate={isFlat ? {} : {
                 transform: getSpotlightTransform()
               }}
-              transition={isRemoteView ? { duration: 0 } : {
+              transition={isFlat ? { duration: 0 } : {
                 type: "spring",
                 stiffness: 280,
                 damping: 25,
@@ -283,17 +290,16 @@ export function DashboardWing({
               }}
               style={{
                 transformOrigin: 'right center',
-                transformStyle: isRemoteView ? 'flat' : 'preserve-3d',
-                transform: isRemoteView ? 'rotateY(0deg) rotateX(0deg)' : undefined,
+                transformStyle: isFlat ? 'flat' : 'preserve-3d',
+                transform: isFlat ? 'rotateY(0deg) rotateX(0deg)' : undefined,
                 background: 'linear-gradient(225deg, rgba(10,11,22,0.97) 0%, rgba(6,7,14,0.99) 100%)',
-                boxShadow: isRemoteView ? 'none' : `
+                boxShadow: isFlat ? 'none' : `
                   inset 0 1px 1px rgba(255,255,255,0.05),
                   inset 0 -1px 1px rgba(0,0,0,0.5),
-                  0 0 0 1px rgba(0,0,0,0.8),
-                  -20px 0 60px rgba(0,0,0,0.5)
+                  0 0 0 1px rgba(0,0,0,0.8)
                 `,
-                borderRadius: isRemoteView ? '0px' : '12px',
-                border: isRemoteView ? 'none' : `1px solid ${glowColor}20`,
+                borderRadius: isFlat ? '0px' : '12px',
+                border: isFlat ? 'none' : `1px solid ${glowColor}20`,
                 touchAction: 'manipulation',
                 willChange: 'auto',
               }}
@@ -397,6 +403,7 @@ export function DashboardWing({
                   onOpenChat={onOpenChat}
                   initialSubApp={initialSubApp}
                   onRequestSpotlight={onSpotlightToggle}
+                  isDetached={isDetached}
                 />
               </div>
             </div>

@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "identifier": "com.iris.widget",
   "build": {
-    "beforeBuildCommand": "npm run build",
-    "beforeDevCommand": "npm run dev -- --port 3000",
+    "beforeBuildCommand": "npm run build:static",
+    "beforeDevCommand": "npm run dev:servers",
     "devUrl": "http://localhost:3000",
     "frontendDist": "../dist"
   },
@@ -14,10 +14,10 @@
       {
         "label": "main",
         "title": "IRIS Widget",
-        "width": 680,
-        "height": 680,
-        "minWidth": 680,
-        "minHeight": 680,
+        "width": 420,
+        "height": 420,
+        "minWidth": 420,
+        "minHeight": 420,
         "resizable": true,
         "maximizable": false,
         "decorations": false,
@@ -25,7 +25,7 @@
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "center": true,
-        "visible": true,
+        "visible": false,
         "shadow": false,
         "dragDropEnabled": false,
         "acceptFirstMouse": true
