@@ -209,3 +209,158 @@ class TestFasterWhisperFallback:
         result = handler._transcribe_via_parakeet(np.zeros(16000, dtype=np.float32))
         assert result == ""
         assert handler._last_stt_timing["stt_backend"] == "parakeet_loading"
+
+
+# ---------------------------------------------------------------------------
+# Tests: wait_ready (ParakeetTranscriber)
+# ---------------------------------------------------------------------------
+
+class TestWaitReady:
+    """wait_ready() must block until Parakeet loads, fails, or times out."""
+
+    def test_returns_true_when_already_loaded(self, parakeet):
+        parakeet._loaded = True
+        assert parakeet.wait_ready(timeout=0.5) is True
+
+    def test_returns_false_on_load_error(self, parakeet):
+        parakeet._load_error = RuntimeError("boom")
+        assert parakeet.wait_ready(timeout=0.5) is False
+
+    def test_waits_for_load_to_complete(self, parakeet):
+        """wait_ready polls until _loaded flips True."""
+        def _flip_loaded():
+            time.sleep(0.2)
+            with parakeet._lock:
+                parakeet._loaded = True
+        threading.Thread(target=_flip_loaded, daemon=True).start()
+        assert parakeet.wait_ready(timeout=2.0) is True
+
+    def test_times_out_when_never_loads(self, parakeet):
+        """wait_ready returns False after timeout if Parakeet never loads."""
+        parakeet._loading = True  # stuck loading
+        start = time.monotonic()
+        result = parakeet.wait_ready(timeout=0.3)
+        elapsed = time.monotonic() - start
+        assert result is False
+        assert elapsed >= 0.25  # actually waited, didn't return instantly
+
+
+# ---------------------------------------------------------------------------
+# Tests: _parakeet_warm_up (no thread churn when already warm)
+# ---------------------------------------------------------------------------
+
+class TestParakeetWarmUp:
+    """_parakeet_warm_up must be a cheap no-op when Parakeet is already loaded."""
+
+    def test_noop_when_already_loaded(self, handler, monkeypatch):
+        """Already-loaded Parakeet must NOT spawn a warm-up thread."""
+        handler._parakeet._loaded = True
+        spawned = []
+        monkeypatch.setattr(
+            "backend.audio.voice_command.threading.Thread",
+            lambda *a, **k: spawned.append(a) or MagicMock(),
+        )
+        handler._parakeet_warm_up()
+        assert spawned == [], "No thread should be spawned when already loaded"
+
+    def test_spawns_thread_when_cold(self, handler, monkeypatch):
+        """Cold Parakeet spawns a warm-up thread."""
+        handler._parakeet._loaded = False
+        handler._parakeet._loading = False
+        handler._parakeet._load_error = None
+        handler._parakeet._ensure_loaded = MagicMock(return_value=False)
+        spawned = []
+        monkeypatch.setattr(
+            "backend.audio.voice_command.threading.Thread",
+            lambda *a, **k: spawned.append(a) or MagicMock(),
+        )
+        handler._parakeet_warm_up()
+        assert len(spawned) == 1, "Cold Parakeet should spawn exactly one thread"
+
+
+# ---------------------------------------------------------------------------
+# Tests: _get_whisper bounded lock (no hang behind warm-up)
+# ---------------------------------------------------------------------------
+
+class TestGetWhisperBoundedLock:
+    """_get_whisper must not block forever behind the warm-up thread's load."""
+
+    @pytest.fixture
+    def whisper_handler(self):
+        """A handler with the REAL _get_whisper (not mocked)."""
+        from backend.audio.voice_command import VoiceCommandHandler
+        h = VoiceCommandHandler.__new__(VoiceCommandHandler)
+        h._logger = MagicMock()
+        h._whisper = None
+        h._whisper_lock = threading.Lock()
+        h._whisper_loading = False
+        return h
+
+    def test_returns_none_when_load_in_progress(self, whisper_handler):
+        """If another thread is loading, _get_whisper returns None after timeout."""
+        whisper_handler._whisper_loading = True  # warm-up in progress
+        start = time.monotonic()
+        result = whisper_handler._get_whisper(timeout=0.2)
+        elapsed = time.monotonic() - start
+        assert result is None, "Should return None when load is in progress"
+        assert elapsed >= 0.15  # actually waited, didn't return instantly
+
+    def test_returns_model_when_load_finishes(self, whisper_handler):
+        """If the in-progress load finishes, _get_whisper returns the model."""
+        fake_model = MagicMock()
+        def _finish_load():
+            time.sleep(0.2)
+            whisper_handler._whisper = fake_model
+        threading.Thread(target=_finish_load, daemon=True).start()
+        whisper_handler._whisper_loading = True
+        result = whisper_handler._get_whisper(timeout=2.0)
+        assert result is fake_model
+
+    def test_returns_model_when_lock_free(self, whisper_handler):
+        """When nothing is loading, _get_whisper loads and returns the model."""
+        fake_model = MagicMock()
+        fake_fw = SimpleNamespace(WhisperModel=lambda *a, **k: fake_model)
+        with patch.dict(sys.modules, {"faster_whisper": fake_fw}):
+            result = whisper_handler._get_whisper(timeout=1.0)
+        assert result is fake_model
+        assert whisper_handler._whisper is fake_model
+        assert whisper_handler._whisper_loading is False
+
+
+# ---------------------------------------------------------------------------
+# Tests: _start_recording_locked triggers Parakeet warm-up
+# ---------------------------------------------------------------------------
+
+class TestStartRecordingWarmsParakeet:
+    """start_recording must trigger Parakeet warm-up (lazy load on wake word)."""
+
+    def test_start_recording_calls_parakeet_warm_up(self, handler, monkeypatch):
+        """The wake-word path (start_recording) must kick off Parakeet warm-up."""
+        handler._parakeet._loaded = False
+        handler._parakeet._loading = False
+        handler._parakeet._load_error = None
+        handler._parakeet._ensure_loaded = MagicMock(return_value=False)
+        warm_calls = []
+        monkeypatch.setattr(
+            handler, "_parakeet_warm_up",
+            lambda: warm_calls.append(True),
+        )
+        # Minimal state so _start_recording_locked doesn't crash.
+        handler.is_recording = False
+        handler._cancel_idle_timer = MagicMock()
+        handler._cancel_event = threading.Event()
+        handler._stop_event = threading.Event()
+        handler._start_lock = threading.Lock()
+        handler._register_frame_listener = MagicMock()
+        handler._run_transcription = MagicMock()
+        handler._on_audio_envelope = None
+        handler._post_start_flush_frames = 0
+        handler.sample_rate = 16000
+        handler._recording_started_at = 0.0
+        handler._auto_stop_mode = False
+        handler._pre_speech_timeout_sec = 0.0
+        handler._voice_timing = {}
+        handler._set_state = MagicMock()
+
+        handler.start_recording(auto_stop=True)
+        assert warm_calls, "start_recording must trigger Parakeet warm-up"

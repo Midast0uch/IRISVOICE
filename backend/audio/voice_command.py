@@ -132,6 +132,27 @@ class ParakeetTranscriber:
         )
         return False
 
+    def wait_ready(self, timeout: float = 30.0) -> bool:
+        """Block until the sherpa worker is loaded, fails, or timeout elapses.
+
+        The primary STT engine (Parakeet GPU) resolves itself in ~17-22 s on
+        a cold start. Rather than bailing to the CPU whisper fallback the
+        moment it is "still loading" (which can itself hang on the whisper
+        lock — see _get_whisper), the transcription path waits a bounded time
+        for the GPU engine. Returns True if loaded, False on timeout or
+        permanent load error.
+        """
+        import time as _t
+        _deadline = _t.monotonic() + timeout
+        while _t.monotonic() < _deadline:
+            with self._lock:
+                if self._loaded:
+                    return True
+                if self._load_error is not None:
+                    return False
+            _t.sleep(0.2)
+        return False
+
     def _load_model_worker(self) -> None:
         """Spawn the sherpa worker subprocess and wait for its "ready" signal.
 
@@ -502,6 +523,7 @@ class VoiceCommandHandler:
         self.audio_engine = audio_engine
         self._whisper = None  # lazy-loaded WhisperModel
         self._whisper_lock = threading.Lock()
+        self._whisper_loading = False  # True while a thread is importing faster_whisper
         self._parakeet = ParakeetTranscriber()  # in-process GPU ASR (lazy-loaded)
 
         # State
@@ -690,6 +712,13 @@ class VoiceCommandHandler:
             self._recording_started_at = time.monotonic()
             self.audio_buffer = []
             self._raw_frames = []
+            # Lazy-load Parakeet on the FIRST wake word trigger (not at
+            # end-of-speech). This gives the GPU engine a head start during
+            # the utterance (~17-22s cold build overlaps with VAD recording),
+            # so by the time VAD detects end-of-speech Parakeet is usually
+            # ready and the first transcription uses GPU, not the CPU whisper
+            # fallback. No-op if already loaded or already loading.
+            self._parakeet_warm_up()
             # Post-start flush: drop first N frames captured after start.
             # This lets residual TTS echo from barge-in decay before VAD
             # starts speech detection.  Caller sets flush_ms > 0 for barge-in.
@@ -805,6 +834,14 @@ class VoiceCommandHandler:
         # Attempt 1: faster_whisper (reuse cached model, do not create a new one)
         try:
             _fw_model = self._get_whisper()
+            if _fw_model is None:
+                # Lock held by warm-up — skip whisper this turn rather than
+                # block for minutes (see _get_whisper docstring).
+                logger.warning(
+                    "[VoiceCommand] faster_whisper unavailable (warm-up in "
+                    "progress) — skipping to next fallback"
+                )
+                raise RuntimeError("whisper unavailable (warm-up)")
             segments, _ = _fw_model.transcribe(
                 audio_np, language="en", beam_size=1, vad_filter=False
             )
@@ -852,26 +889,64 @@ class VoiceCommandHandler:
 
         return ""
 
-    def _get_whisper(self):
-        """Lazy-load and cache the WhisperModel (thread-safe)."""
-        if self._whisper is None:
-            with self._whisper_lock:
-                if self._whisper is None:
-                    from faster_whisper import WhisperModel
+    def _get_whisper(self, timeout: float = 5.0):
+        """Lazy-load and cache the WhisperModel (thread-safe).
 
-                    logger.info(
-                        "[VoiceCommand] Loading faster-whisper tiny/int8 on CPU..."
-                    )
-                    # Always use CPU for STT.  tiny/int8 transcribes a 3 s clip
-                    # in ~80 ms on any modern CPU â€” no reason to occupy CUDA.
-                    self._whisper = WhisperModel(
-                        "tiny",
-                        device="cpu",
-                        compute_type="int8",
-                        num_workers=1,  # single-threaded is fine for our latency target
-                        cpu_threads=4,  # cap so we don't starve the F5-TTS thread
-                    )
-                    logger.info("[VoiceCommand] faster-whisper ready")
+        Uses a ``_whisper_loading`` flag rather than holding the lock across
+        the slow import. The background warm-up thread sets the flag, then
+        imports faster_whisper (~126s cold) WITHOUT holding the lock, so a
+        live transcription thread is never blocked behind it. If a load is
+        already in progress, this waits up to ``timeout`` for it to finish
+        and returns the model, or None on timeout (caller skips whisper).
+        """
+        if self._whisper is not None:
+            return self._whisper
+        # Fast path: another thread is already loading — wait briefly.
+        if self._whisper_loading:
+            _deadline = time.monotonic() + timeout
+            while time.monotonic() < _deadline:
+                if self._whisper is not None:
+                    return self._whisper
+                time.sleep(0.1)
+            logger.warning(
+                "[VoiceCommand] _get_whisper: load in progress for >%.1fs — "
+                "skipping whisper fallback this turn",
+                timeout,
+            )
+            return None
+        # Claim the loading flag (guarded by the lock so only one thread loads).
+        with self._whisper_lock:
+            if self._whisper is not None:
+                return self._whisper
+            if self._whisper_loading:
+                # Lost the race — another thread just claimed it. Wait briefly.
+                _deadline = time.monotonic() + timeout
+                while time.monotonic() < _deadline:
+                    if self._whisper is not None:
+                        return self._whisper
+                    time.sleep(0.1)
+                return None
+            self._whisper_loading = True
+        # Load WITHOUT holding the lock — the import can take ~126s cold and
+        # must not block a live transcription thread.
+        try:
+            from faster_whisper import WhisperModel
+
+            logger.info(
+                "[VoiceCommand] Loading faster-whisper tiny/int8 on CPU..."
+            )
+            # Always use CPU for STT.  tiny/int8 transcribes a 3 s clip
+            # in ~80 ms on any modern CPU â€” no reason to occupy CUDA.
+            self._whisper = WhisperModel(
+                "tiny",
+                device="cpu",
+                compute_type="int8",
+                num_workers=1,  # single-threaded is fine for our latency target
+                cpu_threads=4,  # cap so we don't starve the F5-TTS thread
+            )
+            logger.info("[VoiceCommand] faster-whisper ready")
+        finally:
+            self._whisper_loading = False
         return self._whisper
 
     def warm_up(self) -> None:
@@ -914,9 +989,12 @@ class VoiceCommandHandler:
             asyncio event loop. No env-var gates, delay hacks, or idle-wait
             loops are needed — the subprocess is physically isolated.
 
-            Safe to call multiple times — subsequent calls are no-ops because
-            _ensure_loaded() returns True immediately if already loaded.
+            Safe to call on EVERY wake word trigger: if already loaded this
+            returns immediately (no thread spawned). Only the first cold
+            trigger spawns the worker.
             """
+            if self._parakeet._loaded:
+                return  # already warm — no-op, no thread churn
             def _do_parakeet_warm():
                 try:
                     if self._parakeet._ensure_loaded():
@@ -959,6 +1037,29 @@ class VoiceCommandHandler:
         """
         import time as _stt_time
         _stt_start = _stt_time.monotonic()
+        # If Parakeet is still loading (cold start ~17-22s), WAIT for it
+        # (bounded) instead of immediately falling back to whisper. Parakeet
+        # is the primary GPU engine and resolves within the transcription
+        # watchdog budget; the whisper fallback is only for a genuine load
+        # failure or timeout, not a transient warm-up. This avoids routing
+        # the first utterance to CPU whisper (which can itself hang on the
+        # whisper lock — see _get_whisper).
+        if getattr(self._parakeet, "_loading", False):
+            logger.info(
+                "[STT] parakeet loading — waiting up to 25s for GPU engine"
+            )
+            if not self._parakeet.wait_ready(timeout=25.0):
+                logger.warning(
+                    "[STT] parakeet not ready after 25s — falling back to whisper"
+                )
+                self._last_stt_timing = {
+                    "stt_start_monotonic": _stt_start,
+                    "stt_end_monotonic": _stt_time.monotonic(),
+                    "stt_latency_ms": 0.0,
+                    "stt_backend": "parakeet_timeout",
+                    "stt_audio_seconds": len(audio_np) / self.sample_rate,
+                }
+                return ""
         text = self._parakeet.transcribe(audio_np, self.sample_rate)
         _stt_end = _stt_time.monotonic()
         # Record timing for the result callback to pick up
