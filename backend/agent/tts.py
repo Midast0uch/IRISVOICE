@@ -279,11 +279,45 @@ class TTSManager:
         self._proc.stdin.write(json.dumps(payload) + "\n")
         self._proc.stdin.flush()
 
-    def _read_line(self) -> Optional[dict]:
-        """Read one JSONL response line from the worker."""
+    def _read_line(self, timeout: float = 30.0) -> Optional[dict]:
+        """Read one JSONL response line from the worker with timeout.
+
+        Uses a daemon reader thread to implement the timeout — on Windows,
+        select() does not work on pipes, so a blocking readline() with no
+        timeout would hang the TTS thread forever if the worker gets stuck
+        (observed 2026-09-03: Pocket-TTS worker received synthesize for
+        'Hey there.' but never sent 'done' — readline blocked indefinitely,
+        no TTS audio played, thread never returned).
+
+        On timeout: the reader thread is daemon (will not prevent process
+        exit) and the worker is restarted so the next call starts fresh.
+        """
         if self._proc is None or self._proc.stdout is None:
             return None
-        line = self._proc.stdout.readline()
+        import queue as _queue
+        import threading as _thr
+        _q: _queue.Queue = _queue.Queue(maxsize=1)
+        _reader = _thr.Thread(
+            target=lambda: _q.put(self._proc.stdout.readline()),
+            daemon=True,
+            name="tts-readline",
+        )
+        _reader.start()
+        _reader.join(timeout=timeout)
+        if _reader.is_alive():
+            # Timeout — worker is stuck. Restart and return None so the
+            # caller (synthesize_stream) sees a worker death and recovers.
+            logger.error(
+                "[TTSManager] _read_line timed out after %.1fs — "
+                "worker appears stuck, restarting",
+                timeout,
+            )
+            self._restart_worker()
+            return None
+        try:
+            line = _q.get_nowait()
+        except _queue.Empty:
+            return None
         if not line:
             return None
         try:
