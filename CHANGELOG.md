@@ -1,6 +1,60 @@
 # IRIS Changelog
 
-## [Unreleased] — DER-DAG Execution Model + Server-Side Browser Automation — 2026-08-14
+## [Unreleased] — Model-Selection Authority + Sherpa STT + UI/WS Hardening — 2026-09-03
+
+### feat: Model-selection authority (timestamps over heuristics)
+
+The recurring "I picked X and it went back to Y" revert is fixed by replacing
+heuristics with timestamped selections. Every explicit gesture (confirm_card,
+set_model_selection, set_role_binding) stamps the binding with `selected_at`;
+boot restore applies the newer record (flat vs bindings, either direction).
+Swarm-defer records intent instead of dropping it. Unload rebinds loudly.
+
+- **T1 schema:** `InferenceConfig.provider_selected_at` + `RoleBinding.selected_at`
+  (0.0 default, migration-safe) + `deferred_selection` (swarm-defer dict)
+- **T2 choke-point:** stamp+persist+broadcast + `[Authority]` log on every bind path
+- **T3 boot restore:** newer-record-wins both directions; both-zero keeps legacy
+  heuristic + warning
+- **T4b swarm-defer:** switch during swarm recorded as timestamped intent, never dropped
+- **T8 unload loud-fallback:** local-bound roles rebind to last API provider + WS broadcast
+- **Double /v1 fix:** local routing stripped trailing /v1 in ProviderInstance + ProviderEntry
+- **18 contract tests** (test_selection_authority.py) + **26 behavioral provider tests** green
+- **e2e real-backend harness** (validate_model_selection_e2e_real.py) — real GGUF, real WS
+
+### feat: Sherpa-onnx STT (replaces transformers subprocess)
+
+ParakeetTranscriber reimplemented on sherpa-onnx int8 GPU inside the same class shell.
+Worker subprocess for DLL isolation (preloaded onnxruntime conflict). faster-whisper
+pre-warmed at boot (was 126s cold import). Unified pid-stamped backend logging.
+
+- **Measured:** import 1-2.6s, cold build 12-22s, "Hey Iris" 0.3s warm CUDA
+- **Worker subprocess** (`parakeet_sherpa_worker.py`) — JSONL stdin/stdout, torch-free
+- **faster-whisper background warm** at boot (90s lifespan task)
+- **Unified logging:** `.iris-logs/backend-<ts>-pid<PID>.log` for all launchers
+- **32 tests pass**, 5 pre-existing failures byte-identical, 3 stale tests healed
+
+### fix: UI state races and WS wiring
+
+- **useInferenceState:** retry fetch (8 attempts over ~40s), WS version-gated re-fetch
+  (prevents stale-fetch-overwrite race), handle singular `role_binding_updated` event
+  (root cause of Brain/Tool revert), re-fetch on `local_model_status=loaded`
+- **ModelInferenceSection:** dropdown only shows registered providers (not all presets)
+- **XurOrb:** remove `isProcessing` from `isAgentWorking` (STT is preamble, not work)
+- **UnifiedMarketplaceModelsSurface:** pass `sendMessage` prop to ModelBrowserPanel
+
+### fix: Backend hardening
+
+- **Violawake:** CONSECUTIVE_CHUNKS 2→5 (filters transient room noises, ~160ms)
+- **WS client:** 90s silence timeout in Rust (backend heartbeat watchdog for wedged loops)
+- **Local provider kind fix:** `set_model_selection` now handles `local:<stem>` model_provider
+  (was falling through to `ProviderKind.API`, causing validate_providers to drop on restart)
+- **validate_providers:** clear model_path on non-local bindings instead of dropping them
+- **RoleBindingTable:** preserve `selected_at` on same-instance rebind (seed/echo paths)
+- **config_version migration:** legacy providers normalized, boot warning if empty
+
+---
+
+## [91595ba1] — DER-DAG Execution Model + Server-Side Browser Automation — 2026-08-14
 
 ### feat: DER-DAG — physics-governed, memory-backed execution graph
 
