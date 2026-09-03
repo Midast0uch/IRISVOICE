@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\nn\parameter.py
+# hypothesis_version: 6.151.9
+
+['Buffer', 'Parameter', 'UninitializedBuffer', '_is_buffer', '_is_param', 'device', 'dtype', 'is_lazy', 'method-wrapper']

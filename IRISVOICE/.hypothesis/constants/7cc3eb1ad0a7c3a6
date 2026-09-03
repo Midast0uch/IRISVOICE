@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\sympy\tensor\array\ndim_array.py
+# hypothesis_version: 6.151.9
+
+[11.0, ' out of border', ', ', 'ArrayKind', 'ArrayKind(%s)', 'Index ', '[', ']', 'abstract method', 'array rank not 2', 'array shape mismatch', 'evaluate', 'index out of range', 'scalar expected']

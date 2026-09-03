@@ -1,0 +1,271 @@
+{
+  "_generated_by": "scripts/gen_tool_registry_fixture.py",
+  "_source": "backend/agent/tool_registry.py:get_all_specs()",
+  "_note": "Snapshot, not live. Re-run this script after any tool_registry.py change. See CT-6 (specs/task-card-v2-liquid-ink) for why this fixture exists.",
+  "tool_count": 52,
+  "tools": [
+    {
+      "name": "analyze_video_frames",
+      "category": "media",
+      "aliases": []
+    },
+    {
+      "name": "ask_user_question",
+      "category": "system",
+      "aliases": []
+    },
+    {
+      "name": "clip_video",
+      "category": "media",
+      "aliases": []
+    },
+    {
+      "name": "combine_documents",
+      "category": "memory",
+      "aliases": []
+    },
+    {
+      "name": "crawler_query",
+      "category": "web",
+      "aliases": []
+    },
+    {
+      "name": "create_directory",
+      "category": "file",
+      "aliases": []
+    },
+    {
+      "name": "create_skill",
+      "category": "system",
+      "aliases": []
+    },
+    {
+      "name": "delete_file",
+      "category": "file",
+      "aliases": []
+    },
+    {
+      "name": "get_rendered_documents",
+      "category": "memory",
+      "aliases": []
+    },
+    {
+      "name": "get_system_info",
+      "category": "system",
+      "aliases": []
+    },
+    {
+      "name": "git_checkout",
+      "category": "git",
+      "aliases": []
+    },
+    {
+      "name": "git_commit",
+      "category": "git",
+      "aliases": []
+    },
+    {
+      "name": "git_create_branch",
+      "category": "git",
+      "aliases": []
+    },
+    {
+      "name": "git_diff",
+      "category": "git",
+      "aliases": []
+    },
+    {
+      "name": "git_log",
+      "category": "git",
+      "aliases": []
+    },
+    {
+      "name": "git_push",
+      "category": "git",
+      "aliases": []
+    },
+    {
+      "name": "git_status",
+      "category": "git",
+      "aliases": []
+    },
+    {
+      "name": "github_connect_pat",
+      "category": "github",
+      "aliases": []
+    },
+    {
+      "name": "github_delete_ssh_key",
+      "category": "github",
+      "aliases": []
+    },
+    {
+      "name": "github_generate_ssh_key",
+      "category": "github",
+      "aliases": []
+    },
+    {
+      "name": "github_get_repo_branches",
+      "category": "github",
+      "aliases": []
+    },
+    {
+      "name": "github_get_user",
+      "category": "github",
+      "aliases": []
+    },
+    {
+      "name": "github_list_repos",
+      "category": "github",
+      "aliases": []
+    },
+    {
+      "name": "github_list_ssh_keys",
+      "category": "github",
+      "aliases": []
+    },
+    {
+      "name": "gui_automate_click",
+      "category": "gui",
+      "aliases": []
+    },
+    {
+      "name": "gui_automate_type",
+      "category": "gui",
+      "aliases": []
+    },
+    {
+      "name": "gui_click",
+      "category": "web",
+      "aliases": []
+    },
+    {
+      "name": "gui_press_key",
+      "category": "web",
+      "aliases": []
+    },
+    {
+      "name": "gui_type",
+      "category": "web",
+      "aliases": []
+    },
+    {
+      "name": "improve_self",
+      "category": "research",
+      "aliases": []
+    },
+    {
+      "name": "launch_app",
+      "category": "app",
+      "aliases": []
+    },
+    {
+      "name": "list_conversations",
+      "category": "memory",
+      "aliases": []
+    },
+    {
+      "name": "list_directory",
+      "category": "file",
+      "aliases": []
+    },
+    {
+      "name": "lock_screen",
+      "category": "system",
+      "aliases": []
+    },
+    {
+      "name": "open_file",
+      "category": "app",
+      "aliases": []
+    },
+    {
+      "name": "open_url",
+      "category": "web",
+      "aliases": []
+    },
+    {
+      "name": "read_file",
+      "category": "file",
+      "aliases": []
+    },
+    {
+      "name": "recall_memory",
+      "category": "memory",
+      "aliases": []
+    },
+    {
+      "name": "restart",
+      "category": "system",
+      "aliases": []
+    },
+    {
+      "name": "run_command",
+      "category": "shell",
+      "aliases": []
+    },
+    {
+      "name": "screenshot_page",
+      "category": "vision",
+      "aliases": []
+    },
+    {
+      "name": "search",
+      "category": "web",
+      "aliases": [
+        "web_search",
+        "google_search"
+      ]
+    },
+    {
+      "name": "shutdown",
+      "category": "system",
+      "aliases": []
+    },
+    {
+      "name": "speak",
+      "category": "system",
+      "aliases": []
+    },
+    {
+      "name": "start_screen_monitor",
+      "category": "vision",
+      "aliases": []
+    },
+    {
+      "name": "take_screenshot",
+      "category": "vision",
+      "aliases": []
+    },
+    {
+      "name": "transcribe_media",
+      "category": "media",
+      "aliases": []
+    },
+    {
+      "name": "vision_analyze_screen",
+      "category": "vision",
+      "aliases": []
+    },
+    {
+      "name": "vision_detect_element",
+      "category": "vision",
+      "aliases": []
+    },
+    {
+      "name": "vision_get_context",
+      "category": "vision",
+      "aliases": []
+    },
+    {
+      "name": "vision_validate_action",
+      "category": "vision",
+      "aliases": []
+    },
+    {
+      "name": "write_file",
+      "category": "file",
+      "aliases": []
+    }
+  ]
+}

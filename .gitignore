@@ -1,0 +1,129 @@
+# dependencies
+/node_modules
+/.pnp
+.pnp.js
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+/dist
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# local env files
+.env
+.env*.local
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# IDE
+.vscode/
+.idea/
+
+# logs
+# `/logs` matches the ROOT dir only and `*.log` misses logrotate suffixes, so
+# backend/logs/irisvoice.log.1 slipped through both and was committed — it
+# carried a full API key into this public repo (2026-08-13). Match log
+# directories at any depth, and rotated files, not just bare *.log.
+/logs
+**/logs/
+.iris-logs/
+*.log
+*.log.[0-9]*
+*.out
+
+# IRIS-specific
+# Runtime config — holds provider api_key values written by the settings UI.
+# It was tracked, and carried a live Cerebras key into this public repo
+# (2026-08-13). load_config() falls back to defaults when it is absent, so a
+# fresh clone bootstraps itself; nothing needs this file in git.
+data/iris_config.json
+*.db
+*.db-shm
+*.db-wal
+/bootstrap/*.db
+/bootstrap/*.db-shm
+/bootstrap/*.db-wal
+.mcm/
+
+# Per-machine local-model calibration state (regenerated from use, never committed)
+.iris-config/
+
+# Session state files contain API keys
+/backend/sessions/
+
+# Benchmark secrets
+.env.benchmark
+
+# API keys / model config (contains secrets)
+data/iris_config.json
+
+# Dilithium Post-Quantum identity private key — never commit the real key.
+# Loaded at runtime via IRIS_DILITHIUM_KEY (env hex) or IRIS_DILITHIUM_KEY_FILE
+# (an external path you supply). Raw key-byte files must never enter the repo.
+*.key
+
+# Windows nul file (reserved name bug)
+nul
+NUL
+
+# screenshots (generated)
+/screenshots
+
+# test artifacts
+test_output.txt
+test.txt
+test_image.png
+
+# tailscale
+tailscale_active.png
+
+# llama.cpp forks (external dependencies, not committed)
+llama.cpp/build/
+
+# Bundled llama-server (built artifact shipped via Tauri bundle.resources)
+src-tauri/binaries/llama-server/
+llama.cpp/CMakeCache.txt
+llama.cpp/CMakeFiles/
+ik_llama.cpp/build_ik/
+ik_llama.cpp/CMakeCache.txt
+ik_llama.cpp/CMakeFiles/
+llama-cpp-turboquant/
+
+# build scripts (generated)
+build_*.bat
+bench_*.bat
+**/__pycache__/
+
+llama.cpp-prismml-src/
+
+# ── Heavy local-only directories (added 2026-08-25, GATE0-FINDINGS G0-10) ──
+# Turbopack honours .gitignore, so these entries are what actually keeps model
+# weights and virtualenvs out of the build scan. The old next.config.mjs
+# webpack `watchOptions.ignored` regex that used to do this never ran under
+# Next 16 — see specs/dev-cli-ide/GATE0-FINDINGS.md.
+#
+# NOTE: models/wake_words/ is deliberately NOT ignored — the Porcupine
+# hey-iris .ppn is tracked and required at runtime. Only the weights go.
+models/gguf/
+venv/
+.venv/
+llama.cpp/

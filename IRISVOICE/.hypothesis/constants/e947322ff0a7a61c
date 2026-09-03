@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchaudio\datasets\tedlium.py
+# hypothesis_version: 6.151.9
+
+[16000, '.', '.sph', '.stm', 'TEDLIUM.150K.dic', 'TEDLIUM.152k.dic', 'TEDLIUM_release-3', 'TEDLIUM_release1', 'TEDLIUM_release2', 'checksum', 'data/', 'data_path', 'dev', 'dict', 'folder_in_archive', 'frame_offset', 'legacy', 'num_frames', 'r', 'release1', 'release2', 'release3', 'sph', 'stm', 'subset', 'supported_subsets', 'test', 'train', 'url', 'utf-8']

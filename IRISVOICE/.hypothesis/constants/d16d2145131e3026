@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\models\speecht5\modeling_speecht5.py
+# hypothesis_version: 6.151.9
+
+[-100.0, -0.5, 0.0, 0.1, 0.5, 1.0, 5.0, 20.0, 10000.0, -100, 512, 1000, 5000, 10000, 'SpeechT5HifiGan', 'SpeechT5Model', '_is_hf_initialized', 'apply_spec_augment', 'audio', 'cache_position', 'floor', 'group', 'input_ids', 'input_values', 'layer', 'masked_spec_embed', 'mean', 'parametrizations', 'pe', 'running_mean', 'scale', 'speaker_embeddings', 'spectrogram', 'speecht5', 'text', 'weight', 'weight_norm', 'weights', 'xy']

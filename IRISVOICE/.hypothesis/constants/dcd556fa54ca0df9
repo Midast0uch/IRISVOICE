@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\datasets\caltech.py
+# hypothesis_version: 6.151.9
+
+['.gz', '.jpg', '101_ObjectCategories', '256_ObjectCategories', 'Airplanes_Side_2', 'Annotations', 'BACKGROUND_Google', 'Faces', 'Faces_2', 'Faces_3', 'Faces_easy', 'Motorbikes', 'Motorbikes_16', 'airplanes', 'annotation', 'caltech-101', 'caltech-101.zip', 'caltech101', 'caltech256', 'category', 'obj_contour', 'target_type']

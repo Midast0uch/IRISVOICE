@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\accelerate\hooks.py
+# hypothesis_version: 6.151.9
+
+['GraphModuleImpl', 'Linear8bitLt', 'SCB', 'UserCpuOffloadHook', '_hf_hook', '_old_forward', 'cpu', 'cuda', 'meta', 'mlu', 'musa', 'npu', 'sdaa', 'to', 'weight', 'xpu']

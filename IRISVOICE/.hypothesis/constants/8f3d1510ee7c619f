@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\models\quantization\mobilenetv2.py
+# hypothesis_version: 6.151.9
+
+[0.301, 3.423, 71.658, 90.15, 224, 3504872, '0', '1', '2', 'ImageNet-1K', '_docs', '_file_size', '_metrics', '_ops', 'acc@1', 'acc@5', 'backend', 'categories', 'min_size', 'mobilenet_v2', 'num_classes', 'num_params', 'pretrained', 'qnnpack', 'quantize', 'recipe', 'unquantized']

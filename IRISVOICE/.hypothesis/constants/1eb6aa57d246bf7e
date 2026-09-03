@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\_dynamo\logging.py
+# hypothesis_version: 6.151.9
+
+['Step %s: %s', 'stacklevel', 'torch._dynamo', 'torch._inductor', 'torch.compile()']

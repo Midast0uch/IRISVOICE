@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\distributed\tensor\_utils.py
+# hypothesis_version: 6.151.9
+
+['_active', 'curr_local_size', 'num_chunks', 'raise', 'rank', 'return_first_offset', 'warn']

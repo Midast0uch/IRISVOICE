@@ -1,0 +1,152 @@
+{
+  "_schema_version": 1,
+  "_session_id": "session_derprobe",
+  "_gaps": [
+    "no der_fan_traces rows for this session - the execution history was not recorded (pre-T4 store)",
+    "no session exit recorded - this run has NO terminal frame"
+  ],
+  "_redacted": true,
+  "frames": [
+    {
+      "event": "task:start",
+      "task_id": "session_derprobe",
+      "card_id": "card_session_derprobe",
+      "card_relation": "new",
+      "conversation_id": "session_derprobe",
+      "agent_id": "session_derprobe",
+      "project_id": null,
+      "origin": "initial",
+      "steps": [
+        {
+          "id": "s1",
+          "status": "pending",
+          "seq": 1
+        },
+        {
+          "id": "s2",
+          "status": "pending",
+          "seq": 2
+        },
+        {
+          "id": "gap-s2-1",
+          "status": "pending",
+          "seq": 3
+        },
+        {
+          "id": "s1",
+          "status": "pending",
+          "seq": 4
+        },
+        {
+          "id": "s1",
+          "status": "pending",
+          "seq": 5
+        },
+        {
+          "id": "s1",
+          "status": "pending",
+          "seq": 6
+        },
+        {
+          "id": "s1",
+          "status": "pending",
+          "seq": 7
+        },
+        {
+          "id": "s2",
+          "status": "pending",
+          "seq": 8
+        }
+      ],
+      "total_steps": 8
+    },
+    {
+      "event": "task:progress",
+      "task_id": "session_derprobe",
+      "card_id": "card_session_derprobe",
+      "conversation_id": "session_derprobe",
+      "step_id": "s1",
+      "step_done": true,
+      "seq": 1,
+      "tool": null,
+      "outcome": "VERIFIED"
+    },
+    {
+      "event": "task:progress",
+      "task_id": "session_derprobe",
+      "card_id": "card_session_derprobe",
+      "conversation_id": "session_derprobe",
+      "step_id": "s2",
+      "step_done": true,
+      "seq": 2,
+      "tool": null,
+      "outcome": "VERIFIED"
+    },
+    {
+      "event": "task:progress",
+      "task_id": "session_derprobe",
+      "card_id": "card_session_derprobe",
+      "conversation_id": "session_derprobe",
+      "step_id": "gap-s2-1",
+      "step_done": true,
+      "seq": 3,
+      "tool": null,
+      "outcome": "VERIFIED"
+    },
+    {
+      "event": "task:progress",
+      "task_id": "session_derprobe",
+      "card_id": "card_session_derprobe",
+      "conversation_id": "session_derprobe",
+      "step_id": "s1",
+      "step_done": true,
+      "seq": 4,
+      "tool": null,
+      "outcome": "VERIFIED"
+    },
+    {
+      "event": "task:progress",
+      "task_id": "session_derprobe",
+      "card_id": "card_session_derprobe",
+      "conversation_id": "session_derprobe",
+      "step_id": "s1",
+      "step_done": true,
+      "seq": 5,
+      "tool": null,
+      "outcome": "VERIFIED"
+    },
+    {
+      "event": "task:progress",
+      "task_id": "session_derprobe",
+      "card_id": "card_session_derprobe",
+      "conversation_id": "session_derprobe",
+      "step_id": "s1",
+      "step_done": true,
+      "seq": 6,
+      "tool": null,
+      "outcome": "VERIFIED"
+    },
+    {
+      "event": "task:progress",
+      "task_id": "session_derprobe",
+      "card_id": "card_session_derprobe",
+      "conversation_id": "session_derprobe",
+      "step_id": "s1",
+      "step_done": true,
+      "seq": 7,
+      "tool": null,
+      "outcome": "VERIFIED"
+    },
+    {
+      "event": "task:progress",
+      "task_id": "session_derprobe",
+      "card_id": "card_session_derprobe",
+      "conversation_id": "session_derprobe",
+      "step_id": "s2",
+      "step_done": true,
+      "seq": 8,
+      "tool": null,
+      "outcome": "VERIFIED"
+    }
+  ]
+}

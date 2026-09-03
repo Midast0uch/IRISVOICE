@@ -1,0 +1,22 @@
+{
+  "rust-analyzer": {
+    "enable": false
+  },
+  "files": {
+    "exclude": {
+      "**/target": true
+    }
+  },
+  "[python]": {
+    "editor.formatOnSave": false,
+    "editor.formatOnSaveMode": "file",
+    "editor.defaultFormatter": null
+  },
+  "python.formatting.provider": "none",
+  "python.languageServer": "None",
+  "autopep8.interpreter": [],
+  "autopep8.args": [],
+  "python.analysis.typeCheckingMode": "off",
+  "python.analysis.autoImportCompletions": false,
+  "editor.formatOnSave": false
+}

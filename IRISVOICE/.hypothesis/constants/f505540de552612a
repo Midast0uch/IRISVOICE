@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\utils.py
+# hypothesis_version: 6.151.9
+
+[0.0, 1e-05, 0.5, 0.8, 255.0, 100, 255, '.', 'RGBA', '_Image_fromarray', 'black', 'cpu', 'draw_bounding_boxes', 'draw_keypoints', 'flow_to_image', 'make_grid', 'raw', 'save_image', 'shape', 'strides', 'tobytes', 'torchvision', 'tostring']

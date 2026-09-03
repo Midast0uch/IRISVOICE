@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\fx\subgraph_rewriter.py
+# hypothesis_version: 6.151.9
+
+['.', 'InternalMatch', 'Match', 'ReplacedPatterns', 'call_module', 'get_attr', 'output', 'placeholder', 'replace_pattern']

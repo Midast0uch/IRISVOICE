@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchaudio\datasets\fluentcommands.py
+# hypothesis_version: 6.151.9
+
+[16000, '.', '/', 'Dataset not found.', 'data', 'path', 'speakers', 'test', 'train', 'valid', 'wavs']

@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\nn\utils\_expanded_weights\linear_expanded_weights.py
+# hypothesis_version: 6.151.9
+
+['bias', 'n...i,n...j->nij', 'n...k->nk']

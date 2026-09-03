@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\sympy\polys\domains\finitefield.py
+# hypothesis_version: 6.151.9
+
+['.', 'FF', 'FiniteField', 'GF(%s)', '_is_field', 'flint', 'gmpy', 'python']

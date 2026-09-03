@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\accelerate\launchers.py
+# hypothesis_version: 6.151.9
+
+[0.1, '1', '127.0.0.1', '29500', '>=', 'IPython', 'KAGGLE', 'PJRT_DEVICE', 'TPU', 'TPU_NAME', 'XLA', 'bitsandbytes', 'false', 'fork', 'google.colab', 'nccl_ib_disable', 'nccl_p2p_disable', 'no', 'none', 'rank', 'static', 'true', 'yes']

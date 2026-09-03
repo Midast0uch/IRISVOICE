@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\video_processing_utils.py
+# hypothesis_version: 6.151.9
+
+[255.0, 255, 'AutoVideoProcessor', 'NOT_FOUND', '_from_auto', '_from_pipeline', '_valid_kwargs_names', 'cache_dir', 'commit_message', 'crop_size', 'data_format', 'default_to_square', 'device', 'do_sample_frames', 'file_type', 'force_download', 'from_auto_class', 'input_data_format', 'local_files_only', 'main', 'pixel_values_videos', 'processor_class', 'proxies', 'r', 'repo_id', 'return_metadata', 'return_tensors', 'return_unused_kwargs', 'revision', 'size', 'subfolder', 'token', 'torch.Tensor', 'torchcodec', 'torchvision', 'using_pipeline', 'utf-8', 'video processor', 'video processor file', 'video_metadata', 'video_processor', 'video_processor_type', 'vision', 'w']

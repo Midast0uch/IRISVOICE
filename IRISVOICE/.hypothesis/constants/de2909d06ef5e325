@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\accelerate\commands\config\config_args.py
+# hypothesis_version: 6.151.9
+
+['.json', 'HF_HOME', 'NO', 'XDG_CACHE_HOME', 'accelerate', 'all', 'compute_environment', 'debug', 'default_config.yaml', 'distributed_type', 'dynamo_backend', 'dynamo_config', 'enable_cpu_affinity', 'fp16', 'huggingface', 'main', 'mixed_precision', 'num_processes', 'static', 'us-east-1', 'use_cpu', 'utf-8', 'w', '~/.cache']

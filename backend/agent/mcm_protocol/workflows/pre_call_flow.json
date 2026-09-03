@@ -1,0 +1,22 @@
+{
+  "name": "pre_call_flow",
+  "description": "Runs before every LLM call. Prunes context, injects MCM_MITO tag, adds episodic memory.",
+  "dry_run": false,
+  "steps": [
+    {
+      "action": "dcp_prune",
+      "on_error": "continue",
+      "params": {}
+    },
+    {
+      "action": "mito_inject",
+      "on_error": "continue",
+      "params": {"position": 1}
+    },
+    {
+      "action": "pacman_recall",
+      "on_error": "continue",
+      "params": {"max_tokens": 2000}
+    }
+  ]
+}

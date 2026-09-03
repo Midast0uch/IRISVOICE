@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\datasets\_optical_flow.py
+# hypothesis_version: 6.151.9
+
+[b'PIEH', '*.flo', '*.pfm', '*.png', '*.ppm', '*/*', '*10.png', '*11.png', '*_10.png', '*_11.png', '<f4', '<i4', 'FlyingChairs', 'FlyingThings3D', 'HD1K', 'KittiFlow', 'Sintel', 'both', 'c', 'camera', 'clean', 'data', 'final', 'flow', 'flow_occ', 'frames_cleanpass', 'frames_finalpass', 'hd1k', 'hd1k_challenge', 'hd1k_flow_gt', 'hd1k_input', 'image_2', 'ing', 'into_future', 'into_past', 'left', 'optical_flow', 'pass_name', 'rb', 'right', 'split', 'test', 'train', 'training', 'val']

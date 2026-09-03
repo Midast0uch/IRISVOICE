@@ -1,0 +1,3 @@
+C:/Users/midas/Desktop/IRISVOICE/backend/native/build/CMakeFiles/iris_audio.dir
+C:/Users/midas/Desktop/IRISVOICE/backend/native/build/CMakeFiles/ALL_BUILD.dir
+C:/Users/midas/Desktop/IRISVOICE/backend/native/build/CMakeFiles/ZERO_CHECK.dir

@@ -1,0 +1,8 @@
+{
+  "name": "swarm_flow",
+  "description": "Check for compound join opportunities after each DER step. Only active when swarm_enabled=True.",
+  "dry_run": false,
+  "steps": [
+    {"action": "swarm_check", "on_error": "continue", "params": {}}
+  ]
+}

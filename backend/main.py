@@ -286,18 +286,36 @@ async def lifespan(app: FastAPI):
         # REQ-1 AC1.2: NO Parakeet pre-load at boot. Previously this scheduled
         # _preload_parakeet(), which called voice_handler._parakeet._ensure_loaded()
         # and paid the CUDA warm-up inference at startup — adding ~4.2 GB to the
-        # boot-time idle footprint. Parakeet now spawns LAZILY on the first voice
-        # command (REQ-1 AC1.3): faster-whisper serves utterance 1 (<100 ms) while
-        # the worker loads in the background, then Parakeet takes over on GPU.
-        # The worker also idle-exits after 20 min of no requests (REQ-1 AC1.6).
+        # boot-time idle footprint. Parakeet now builds LAZILY on the first voice
+        # command: faster-whisper serves utterance 1 while the recognizer builds
+        # in the background, then Parakeet takes over on GPU.
+        # The recognizer also idle-releases after 20 min of no requests.
 
-        # faster-whisper / ctranslate2 warm-up is intentionally deferred.
-        # Importing ctranslate2 allocates ~400 MB RAM and initialises a CUDA
-        # context on GPU machines.  Running this at startup races with the
-        # Next.js dev-server compilation and has caused OOM crashes.
-        # Whisper loads lazily on the first voice command instead (~1-2 s).
+        # 2026-09-03 FIX (watchdog ERROR on cold first speech): warm
+        # faster-whisper in the BACKGROUND after boot, not on first use.
+        # Measured on this box: `import ctranslate2` alone costs ~126 s cold
+        # on HDD and runs ON the transcription thread — the 60 s watchdog
+        # fires, the orb shows ERROR, and the utterance is lost (the old
+        # "loads in ~1-2 s" assumption only holds warm). Delayed 90 s so boot
+        # + Next.js compilation finish first (the original OOM-race concern);
+        # daemon thread, never blocks startup; warm_up() no-ops if loaded.
+        def _delayed_whisper_warm_up(_handler=voice_handler):
+            try:
+                import time as _t
+                _t.sleep(90)
+                _handler.warm_up()
+            except Exception as _w_exc:
+                logger.warning(
+                    f"    [x] [VOICE HANDLER] background whisper warm-up failed: {_w_exc}"
+                )
+
+        import threading as _threading
+        _whisper_warm_thread = _threading.Thread(
+            target=_delayed_whisper_warm_up, daemon=True, name="iris-whisper-warmup"
+        )
+        _whisper_warm_thread.start()
         logger.info(
-            "    [+] [VOICE HANDLER] faster-whisper will load on first voice command (deferred)"
+            "    [+] [VOICE HANDLER] faster-whisper background warm-up scheduled (+90 s)"
         )
 
         # ==========================================================================
@@ -571,6 +589,25 @@ async def lifespan(app: FastAPI):
             _thinking_style = _inf.get("thinking_style", "")
             _response_length = _inf.get("response_length", "")
             _tool_mode = _inf.get("tool_mode", "")
+            # Authority stamps (specs/model-selection-authority T3/REQ-3):
+            # the flat provider record and the role_bindings record share one
+            # clock (T1/T2). Newer record wins at boot, either direction.
+            def _epoch(v: object) -> float:
+                try:
+                    return float(v or 0.0)  # type: ignore[arg-type]
+                except (TypeError, ValueError):
+                    return 0.0
+
+            _flat_stamp = _epoch(_inf.get("provider_selected_at", 0.0))
+            try:
+                _bind_stamps = [
+                    _epoch(b.get("selected_at", 0.0))
+                    for b in (_inf.get("role_bindings") or [])
+                    if isinstance(b, dict)
+                ]
+            except Exception:
+                _bind_stamps = []
+            _bindings_stamp = max(_bind_stamps) if _bind_stamps else 0.0
             if _provider and _reasoning and hasattr(app.state, "agent_kernel"):
 
                 def _configure_kernel(kernel):
@@ -600,6 +637,15 @@ async def lifespan(app: FastAPI):
                     # is what this call is really for) and bind ONLY the roles
                     # that nothing has claimed — a genuinely fresh config with no
                     # role_bindings still gets working roles below.
+                    #
+                    # Authority (T3): when BOTH records carry stamps, the newer
+                    # wins either direction. Flat-newer (explicit switch
+                    # persisted flat + bindings, then bindings went stale)
+                    # forces a rebind from flat even though the table is
+                    # already seeded — this is the 09-03 inversion of the
+                    # 08-16 case the old heuristic guessed wrong. Both-zero
+                    # (pre-migration) keeps the legacy preserve-if-bound
+                    # heuristic + warning below.
                     _r = getattr(kernel, "_router", None)
                     _already_bound = False
                     if _r is not None:
@@ -607,15 +653,40 @@ async def lifespan(app: FastAPI):
                             _already_bound = _r.roles.is_bound("reasoning")
                         except Exception:
                             _already_bound = False
+                    _flat_newer = bool(
+                        _flat_stamp > 0.0 and _flat_stamp > _bindings_stamp
+                    )
+                    _preserve = _already_bound and not _flat_newer
                     kernel.set_model_selection(
                         reasoning_model=_reasoning,
                         tool_execution_model=_tool_exec or _reasoning,
                         model_provider=_provider,
                         api_base_url=_api_base_url or "",
                         api_key=_api_key or "",
-                        preserve_bindings=_already_bound,
+                        preserve_bindings=_preserve,
                     )
-                    if _already_bound:
+                    if _flat_newer:
+                        logger.info(
+                            "[Authority] source=restore winner=flat provider=%r "
+                            "prev=bindings reason=flat-newer "
+                            "(flat=%.3f bindings=%.3f)",
+                            _provider, _flat_stamp, _bindings_stamp,
+                        )
+                    elif _already_bound:
+                        if _flat_stamp == 0.0 and _bindings_stamp == 0.0:
+                            logger.warning(
+                                "[Authority] source=restore winner=bindings "
+                                "reason=legacy-heuristic-no-stamps "
+                                "(pre-migration config; flat treated as stale copy)"
+                            )
+                        else:
+                            logger.info(
+                                "[Authority] source=restore winner=bindings "
+                                "reason=bindings-newer-or-equal "
+                                "(flat=%.3f bindings=%.3f)",
+                                _flat_stamp, _bindings_stamp,
+                            )
+                    if _already_bound and not _flat_newer:
                         logger.info(
                             "    [Model] Roles already seeded from "
                             "inference.role_bindings — registered provider "

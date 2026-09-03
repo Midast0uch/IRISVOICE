@@ -1,0 +1,5 @@
+{
+  "env": {
+    "MCM_DB_PATH": "C:/dev/IRISVOICE/.mcm/coordinates.db"
+  }
+}

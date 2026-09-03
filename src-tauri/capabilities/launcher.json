@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "launcher-capability",
+  "description": "Capability for the IRIS Launcher window. It loads launcher/index.html from the app's OWN origin in both profiles \u2014 proxied to the Vite server by Next in dev, served from the bundle in a package \u2014 so there is no `remote` block and no remote-origin IPC restriction. It used to be a WebviewUrl::External on :8080, which rendered fine and silently dropped every invoke().",
+  "windows": [
+    "launcher"
+  ],
+  "permissions": [
+    "core:window:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-focus",
+    "core:window:allow-unminimize",
+    "core:event:default"
+  ]
+}

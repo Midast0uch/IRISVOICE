@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\ops\misc.py
+# hypothesis_version: 6.151.9
+
+[0.0, 1e-05, 'bias', 'inplace', 'num_batches_tracked', 'running_mean', 'running_var', 'weight']

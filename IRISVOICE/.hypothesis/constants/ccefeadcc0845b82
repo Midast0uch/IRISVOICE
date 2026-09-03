@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\sympy\utilities\__init__.py
+# hypothesis_version: 6.151.9
+
+['capture', 'cartes', 'dict_merge', 'filldedent', 'flatten', 'group', 'has_dups', 'has_variety', 'lambdify', 'memoize_property', 'numbered_symbols', 'postfixes', 'prefixes', 'public', 'reshape', 'rotations', 'sift', 'subsets', 'take', 'threaded', 'timed', 'topological_sort', 'unflatten', 'variations', 'xthreaded']

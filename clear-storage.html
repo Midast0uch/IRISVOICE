@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Clear IRIS Storage</title>
+  <style>
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      background: linear-gradient(135deg, #0a0a0f 0%, #1a1a2e 100%);
+      color: white;
+    }
+    .container {
+      text-align: center;
+      padding: 2rem;
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 1rem;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    button {
+      margin-top: 1rem;
+      padding: 0.75rem 2rem;
+      font-size: 1rem;
+      background: #00d4ff;
+      color: #0a0a0f;
+      border: none;
+      border-radius: 0.5rem;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    button:hover {
+      background: #00b8e6;
+    }
+    .status {
+      margin-top: 1rem;
+      padding: 0.5rem;
+      border-radius: 0.5rem;
+      display: none;
+    }
+    .status.success {
+      background: rgba(0, 255, 0, 0.2);
+      border: 1px solid rgba(0, 255, 0, 0.3);
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Clear IRIS Navigation Storage</h1>
+    <p>This will clear all cached navigation state including the old 'accordion' view mode.</p>
+    <button onclick="clearStorage()">Clear Storage</button>
+    <div id="status" class="status"></div>
+  </div>
+
+  <script>
+    function clearStorage() {
+      try {
+        // Clear all IRIS-related localStorage keys
+        localStorage.removeItem('iris-nav-state');
+        localStorage.removeItem('iris-nav-config');
+        localStorage.removeItem('iris-mini-node-values');
+        localStorage.removeItem('irisvoice_confirmed_nodes');
+        
+        const status = document.getElementById('status');
+        status.textContent = '✓ Storage cleared! Please refresh your IRIS app.';
+        status.className = 'status success';
+      } catch (e) {
+        alert('Error clearing storage: ' + e.message);
+      }
+    }
+  </script>
+</body>
+</html>

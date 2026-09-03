@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\pipelines\audio_utils.py
+# hypothesis_version: 6.151.9
+
+['"', '(audio)', '-ac', '-ar', '-f', '-fflags', '-hide_banner', '-i', '-list_devices', '-loglevel', '1', ':default', 'Darwin', 'Linux', 'Windows', 'alsa', 'avfoundation', 'default', 'dshow', 'f32le', 'ffmpeg', 'nobuffer', 'partial', 'pipe:0', 'pipe:1', 'quiet', 'raw', 's16le', 'sampling_rate', 'stride', 'true', 'utf-8']

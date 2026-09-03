@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\datasets\stl10.py
+# hypothesis_version: 6.151.9
+
+['Split: {split}', 'class_names.txt', 'fold_indices.txt', 'rb', 'split', 'stl10_binary', 'stl10_binary.tar.gz', 'test', 'test_X.bin', 'test_y.bin', 'train', 'train+unlabeled', 'train_X.bin', 'train_y.bin', 'unlabeled', 'unlabeled_X.bin']

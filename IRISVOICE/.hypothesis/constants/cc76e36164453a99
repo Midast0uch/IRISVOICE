@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\accelerate\data_loader.py
+# hypothesis_version: 6.151.9
+
+['0.11', '2.0.1', '2.6.0', '<', '>=', '_index_sampler_state', '_iterator_finished', '_num_yielded', 'base_dataloader', 'batch_sampler', 'batch_size', 'collate_fn', 'cp', 'cpu', 'data_seed', 'dp', 'dp_replicate', 'dp_shard', 'drop_last', 'fsdp', 'generator', 'get_default_device', 'in_order', 'num_processes', 'num_workers', 'persistent_workers', 'pin_memory', 'pin_memory_device', 'prefetch_factor', 'sampler', 'samples_yielded', 'set_epoch', 'shuffle', 'skip_batches', 'split_batches', 'state_dict', 'timeout', 'torchdata', 'total_dataset_length', 'total_length', 'tp', 'worker_init_fn']

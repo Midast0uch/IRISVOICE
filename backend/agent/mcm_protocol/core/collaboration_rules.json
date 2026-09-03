@@ -1,0 +1,53 @@
+{
+  "protocol_version": "0.2",
+  "description": "Swarm compound collaboration rules — loaded by MCMOrchestrator, evolved by agents",
+  "enabled": true,
+  "last_updated": "2026-04-18",
+
+  "compound_mode": {
+    "enabled": true,
+    "max_helpers_per_task": 2,
+    "open_after_pct": 0.75,
+    "min_task_tokens": 500,
+    "join_window_seconds": 120,
+    "context_load_strategy": "pacman_recall",
+    "allowed_task_types": ["coding", "research", "analysis", "writing"],
+    "skills_required": []
+  },
+
+  "context_control_codes": {
+    "enabled": true,
+    "prefix": "MCM:",
+    "pattern": "\\bMCM:(999|998|997|996)\\s+(.{0,200})",
+    "_note": "Prefix MCM: required. Coordinate values are 0.0-1.0 floats; gates 1-5; DER steps max 40. No collision possible. Prose numbers ('998 tokens') never match without prefix.",
+    "codes": {
+      "MCM:999": {"action": "dcp_prune_tools",     "description": "Prune tool-call history, keep reasoning + coordinates. Usage: MCM:999 <reason>"},
+      "MCM:998": {"action": "pin_artifact",        "description": "Pin artifact to mycelium_pins (permanent). Usage: MCM:998 <artifact content or file ref>"},
+      "MCM:997": {"action": "condense_and_recall", "description": "Condense to NBL + trigger MCM compress + recall. Usage: MCM:997 <context summary>"},
+      "MCM:996": {"action": "broadcast_coordinate","description": "Update coordinate + broadcast to collective brain. Usage: MCM:996 <coordinate update>"}
+    }
+  },
+
+  "join_policy": {
+    "allow_self_join": true,
+    "require_skill_match": false,
+    "max_pivot_after_join": 1,
+    "signal_expiry_seconds": 300
+  },
+
+  "signals": {
+    "finished_early_threshold_pct": 0.80,
+    "poll_interval_seconds": 10,
+    "broadcast_on_join": true
+  },
+
+  "natural_language_rules": [
+    "When you finish early, signal readiness — do not wait. Post finished_early to DB.",
+    "If a compound_open task exists and you are idle, check required_skills and join if eligible.",
+    "Load shared context from context_pin_id before starting helper work.",
+    "Use MCM:999 to prune tool-call history when context exceeds 70% budget. Example: MCM:999 pruning tool history at 74%",
+    "Use MCM:998 to pin important artifacts immediately. Example: MCM:998 backend/agent/mcm.py refactor complete",
+    "Use MCM:997 only when approaching context limit. Example: MCM:997 compressing — 68% budget used",
+    "Use MCM:996 to share coordinate updates. Example: MCM:996 gate3→gate4 confidence 0.82"
+  ]
+}

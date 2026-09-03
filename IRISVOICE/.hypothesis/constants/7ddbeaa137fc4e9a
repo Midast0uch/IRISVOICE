@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\liquid_audio\moshi\modules\transformer.py
+# hypothesis_version: 6.151.9
+
+[0.0, 1e-08, 1e-05, 0.0001, 1.0, 2048, 10000, 'KVCacheResult', '_scb', 'b h t d -> b t (h d)', 'b t (h d) -> b h t d', 'cuda', 'device', 'dtype', 'embed_dim', 'in_proj.weight', 'in_proj_weight', 'in_projs.{i}.weight', 'layer_norm', 'layer_norm_f32', 'none', 'num_heads', 'out_proj.weight', 'out_projs.{i}.weight', 'rms_norm', 'rms_norm_f32', 'rope', 'sin', 'sin_rope']

@@ -1,0 +1,78 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "IRIS Widget",
+  "version": "0.1.0",
+  "identifier": "com.iris.widget",
+  "build": {
+    "beforeBuildCommand": "npm run build:static",
+    "beforeDevCommand": "npm run dev:servers",
+    "devUrl": "http://localhost:3000",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "IRIS Widget",
+        "width": 420,
+        "height": 420,
+        "minWidth": 420,
+        "minHeight": 420,
+        "resizable": true,
+        "maximizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "center": true,
+        "visible": false,
+        "shadow": false,
+        "dragDropEnabled": false,
+        "acceptFirstMouse": true
+      }
+    ],
+    "security": {
+      "csp": null
+    },
+    "trayIcon": {
+      "iconPath": "icons/icon.png",
+      "iconAsTemplate": true
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["msi", "deb", "appimage"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "linux": {
+      "deb": {
+        "depends": ["libwebkit2gtk-4.1-0", "libgtk-3-0", "libayatana-appindicator3-1"]
+      },
+      "appimage": {
+        "bundleMediaFramework": true
+      }
+    },
+    "resources": {
+      "../llama.cpp/build/bin/Release": "llama-server"
+    },
+    "externalBin": [
+      "binaries/iris-backend"
+    ]
+  },
+  "plugins": {
+    "deep-link": {
+      "mobile": [{
+        "host": "oauth",
+        "pathPrefix": ["/callback"]
+      }],
+      "desktop": {
+        "schemes": ["iris"]
+      }
+    }
+  }
+}

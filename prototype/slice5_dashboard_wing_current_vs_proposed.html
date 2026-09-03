@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SLICE 5 — dashboard-wing: CURRENT vs PROPOSED</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  :root { --glow: #00d4ff; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 22px; background: radial-gradient(1200px 800px at 50% 0%, #0b1020 0%, #05060c 60%, #03040a 100%);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #fff;
+  }
+  .topbar { text-align:center; margin-bottom: 18px; }
+  .topbar h1 { font-size: 15px; letter-spacing: 0.18em; text-transform: uppercase; color: rgba(255,255,255,0.8); margin:0 0 4px; }
+  .topbar p { font-size: 11px; color: rgba(255,255,255,0.45); margin:0; }
+  .cols { display:flex; gap: 22px; align-items:flex-start; justify-content:center; flex-wrap:wrap; }
+  .col-head { font-size: 12px; letter-spacing:0.14em; text-transform:uppercase; padding: 8px 12px; border-radius:8px 8px 0 0; flex-shrink:0; }
+  .col-current .col-head { background: rgba(255,255,255,0.05); color: rgba(255,255,255,0.7); border:1px solid rgba(255,255,255,0.08); }
+  .col-proposed .col-head { background: rgba(0,212,255,0.08); color: var(--glow); border:1px solid rgba(0,212,255,0.25); }
+
+  /* wing panel */
+  .wing { width: 510px; max-width: 100%; height: 88vh; display:flex; flex-direction:column; border-radius: 0 0 12px 12px; border:1px solid rgba(255,255,255,0.08);
+    background: linear-gradient(225deg, rgba(10,11,22,0.97) 0%, rgba(6,7,14,0.99) 100%);
+    box-shadow: inset 0 1px 1px rgba(255,255,255,0.05), 0 0 0 1px rgba(0,0,0,0.8), -20px 0 60px rgba(0,0,0,0.5);
+    position: relative; }
+  .wing::before { content:""; position:absolute; inset:0; pointer-events:none; border-radius:inherit; z-index:30;
+    background: linear-gradient(180deg, transparent 0%, rgba(255,255,255,0.02) 50%, transparent 100%),
+      repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.03) 2px, rgba(0,0,0,0.03) 4px);
+    background-size: 100% 100%, 100% 4px; }
+  .scroll { flex:1; min-height:0; overflow-y:auto; padding: 14px; display:flex; flex-direction:column; gap:14px; z-index:40; position:relative; }
+  .scroll::-webkit-scrollbar { width:8px; } .scroll::-webkit-scrollbar-thumb { background: rgba(0,212,255,0.25); border-radius:8px; }
+
+  .card { border:1px solid rgba(255,255,255,0.07); border-radius:10px; background: rgba(255,255,255,0.02); overflow:hidden; }
+  .card-head { display:flex; align-items:center; gap:8px; padding:9px 13px; border-bottom:1px solid rgba(255,255,255,0.06);
+    background: linear-gradient(90deg, rgba(0,212,255,0.05), transparent); }
+  .card-icon { color: var(--glow); display:flex; }
+  .card-label { font-size:12px; letter-spacing:0.14em; text-transform:uppercase; color: rgba(255,255,255,0.85); }
+  .card-body { padding:11px 13px; display:flex; flex-direction:column; gap:11px; }
+  .replaces { font-size:9.5px; letter-spacing:0.04em; color:#7CFFB2; margin-top:-4px; opacity:0.85; }
+
+  .field { display:flex; flex-direction:column; gap:4px; }
+  .field-row { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+  .field-label { font-size:11px; letter-spacing:0.06em; text-transform:uppercase; color: rgba(255,255,255,0.55); }
+  .field-hint { font-size:10px; color: rgba(255,255,255,0.32); }
+  select, input[type=text] { width:100%; background: rgba(0,0,0,0.45); color:#fff; border:1px solid rgba(255,255,255,0.12);
+    border-radius:7px; padding:7px 9px; font-size:12px; outline:none; }
+  select:focus, input[type=text]:focus { border-color: rgba(0,212,255,0.6); box-shadow:0 0 0 2px rgba(0,212,255,0.15); }
+  .ctrl-wide { width:230px; } .ctrl-mid { width:150px; }
+  .divider { height:1px; background: rgba(255,255,255,0.07); margin:2px 0; }
+  .tag { font-size:10px; letter-spacing:0.16em; text-transform:uppercase; color: var(--glow); opacity:0.8; }
+  .toggle { position:relative; width:42px; height:22px; border-radius:999px; background: rgba(0,212,255,0.55); border:1px solid rgba(0,212,255,0.7); }
+  .toggle .knob { position:absolute; top:2px; right:2px; width:16px; height:16px; border-radius:50%; background:#04121a; box-shadow:0 0 6px rgba(0,212,255,0.6); }
+  .toggle.off { background: rgba(255,255,255,0.12); border-color: rgba(255,255,255,0.2); }
+  .toggle.off .knob { left:2px; right:auto; background:#222; box-shadow:none; }
+  .btn { padding:7px 12px; border-radius:8px; font-size:12px; border:1px solid rgba(0,212,255,0.4); background: rgba(0,212,255,0.10); color: var(--glow); cursor:pointer; }
+  .btn.danger { border-color: rgba(239,68,68,0.4); background: rgba(239,68,68,0.10); color:#ff6b6b; }
+  .btn-row { display:flex; gap:9px; }
+  .routing { border:1px dashed rgba(0,212,255,0.3); border-radius:8px; padding:9px 11px; background: rgba(0,212,255,0.04);
+    font-family: ui-monospace, Menlo, monospace; font-size:11px; color: rgba(255,255,255,0.8); display:flex; flex-direction:column; gap:4px; }
+  .routing .k { color: var(--glow); }
+  .pill { display:inline-block; padding:1px 7px; border-radius:999px; background: rgba(0,212,255,0.12); border:1px solid rgba(0,212,255,0.3); color: var(--glow); font-size:10px; }
+  .local-opt { color:#7CFFB2; }
+  .note { font-size:10px; color: rgba(255,255,255,0.4); font-style:italic; }
+</style>
+</head>
+<body>
+  <div class="topbar">
+    <h1>dashboard-wing · Agent Settings — CURRENT vs PROPOSED</h1>
+    <p>Left: what exists today (all 6 agent sections). Right: new design, annotated with what each section becomes.</p>
+  </div>
+
+  <div class="cols">
+    <!-- ════════════════════ CURRENT ════════════════════ -->
+    <div class="col-current">
+      <div class="col-head">Current — dashboard-wing (agent category)</div>
+      <div class="wing"><div class="scroll">
+
+        <!-- Model Selection -->
+        <div class="card">
+          <div class="card-head"><span class="card-icon">⬡</span><span class="card-label">Model Selection</span></div>
+          <div class="card-body">
+            <div class="field"><span class="field-label">Provider</span>
+              <select class="ctrl-wide">
+                <option>OpenCodeGo</option><option selected>Cerebras</option><option>Chutes AI</option>
+                <option>Cohere</option><option>DeepSeek</option><option>Anthropic</option><option>LM Studio</option>
+              </select></div>
+            <div class="field"><span class="field-label">API Key</span><input type="text" class="ctrl-wide" placeholder="sk-…" value="sk-••••"/></div>
+            <div class="field-row"><span class="field-label">Use Same Model for Both</span><div class="toggle"><div class="knob"></div></div></div>
+            <div class="field"><span class="field-label">Reasoning Model</span><select class="ctrl-wide"><option>(from PROVIDER_MODELS)</option></select></div>
+            <div class="field"><span class="field-label">Tool Model</span><select class="ctrl-wide"><option>(from PROVIDER_MODELS)</option></select></div>
+            <div class="field"><span class="field-label">LM Studio Endpoint</span><input type="text" class="ctrl-wide" placeholder="http://localhost:1234"/></div>
+            <div class="note">Provider→model list is HARDCODED (PROVIDER_MODELS). Drifts from wheel view.</div>
+          </div>
+        </div>
+
+        <!-- Inference Mode -->
+        <div class="card">
+          <div class="card-head"><span class="card-icon">⚙</span><span class="card-label">Inference Mode</span></div>
+          <div class="card-body">
+            <div class="field-row"><span class="field-label">Agent Thinking Style</span><select class="ctrl-mid"><option selected>balanced</option><option>concise</option><option>thorough</option></select></div>
+            <div class="field-row"><span class="field-label">Max Response Length</span><select class="ctrl-mid"><option selected>medium</option><option>short</option><option>long</option></select></div>
+            <div class="field-row"><span class="field-label">Reasoning Effort</span><select class="ctrl-mid"><option selected>balanced</option><option>fast</option><option>accurate</option></select></div>
+            <div class="field-row"><span class="field-label">Tool Mode</span><select class="ctrl-mid"><option selected>auto</option><option>ask_first</option><option>disabled</option></select></div>
+          </div>
+        </div>
+
+        <!-- Local Model -->
+        <div class="card">
+          <div class="card-head"><span class="card-icon">▦</span><span class="card-label">Local Model</span></div>
+          <div class="card-body">
+            <div class="field"><span class="field-label">GGUF Model</span><select class="ctrl-wide"><option selected>llama-3-8b (loaded)</option><option>mistral-7b</option></select></div>
+            <div class="field-row"><span class="field-label">Hardware Profile</span><select class="ctrl-mid"><option selected>balanced</option><option>eco</option><option>performance</option></select></div>
+            <div class="field-row"><span class="field-label">Context Length</span><span>16384</span></div>
+            <div class="field-row"><span class="field-label">GPU Offload (-1=auto)</span><span>-1</span></div>
+            <div class="field-row"><span class="field-label">Model Status</span><span class="pill" style="border-color:rgba(34,197,94,0.4);color:#22c55e;background:rgba(34,197,94,0.12)">LOADED</span></div>
+            <div class="btn-row"><button class="btn danger">Unload</button><button class="btn">Browse</button></div>
+          </div>
+        </div>
+
+        <!-- Swarm Setup -->
+        <div class="card">
+          <div class="card-head"><span class="card-icon">❖</span><span class="card-label">Swarm Setup</span></div>
+          <div class="card-body">
+            <div class="field-row"><span class="field-label">Swarm Mode</span><div class="toggle off"><div class="knob"></div></div></div>
+            <div class="field-row"><span class="field-label">Swarm Configuration</span><select class="ctrl-mid"><option selected>local_fast</option><option>api_director</option><option>quality_director</option></select></div>
+            <div class="field-row"><span class="field-label">Director Source</span><select class="ctrl-mid"><option selected>Local GGUF</option><option>API Provider</option></select></div>
+            <div class="field"><span class="field-label">Workers Model</span><select class="ctrl-wide"><option>(scanned GGUFs only)</option></select></div>
+            <div class="field-row"><span class="field-label">Worker Count</span><span>2</span></div>
+            <div class="field-row"><span class="field-label">Worker Context</span><span>2048</span></div>
+            <div class="field"><span class="field-label">GGUF Models Directory</span><input type="text" class="ctrl-wide" placeholder="~/.lmstudio/models"/></div>
+            <div class="btn-row"><button class="btn">Browse</button><button class="btn">Start Swarm</button></div>
+          </div>
+        </div>
+
+        <!-- Personality -->
+        <div class="card">
+          <div class="card-head"><span class="card-icon">☻</span><span class="card-label">Personality</span></div>
+          <div class="card-body">
+            <div class="field"><span class="field-label">Agent Name</span><input type="text" class="ctrl-wide" value="Iris"/></div>
+            <div class="field-row"><span class="field-label">Persona</span><select class="ctrl-mid"><option selected>Friendly</option><option>Professional</option><option>Concise</option></select></div>
+            <div class="field"><span class="field-label">Greeting Message</span><input type="text" class="ctrl-wide" value="Hello! How can I help you?"/></div>
+          </div>
+        </div>
+
+        <!-- Memory -->
+        <div class="card">
+          <div class="card-head"><span class="card-icon">⛁</span><span class="card-label">Memory</span></div>
+          <div class="card-body">
+            <div class="field-row"><span class="field-label">Memory Enabled</span><div class="toggle"><div class="knob"></div></div></div>
+            <div class="field-row"><span class="field-label">Save Conversations</span><div class="toggle"><div class="knob"></div></div></div>
+          </div>
+        </div>
+
+      </div></div>
+    </div>
+
+    <!-- ════════════════════ PROPOSED ════════════════════ -->
+    <div class="col-proposed">
+      <div class="col-head">Proposed — new design (SLICE 5)</div>
+      <div class="wing"><div class="scroll">
+
+        <!-- Model & Inference (merged) -->
+        <div class="card">
+          <div class="card-head"><span class="card-icon">⬡</span><span class="card-label">Model &amp; Inference</span></div>
+          <div class="card-body">
+            <div class="field"><span class="field-label">Provider (API)</span>
+              <select class="ctrl-wide">
+                <option selected>Cerebras</option><option>OpenCodeGo</option><option>Chutes AI</option>
+                <option>Cohere</option><option>DeepSeek</option><option>Anthropic</option><option>LM Studio</option>
+              </select></div>
+            <div class="field"><span class="field-label">API Key</span><input type="text" class="ctrl-wide" placeholder="sk-…" value="sk-••••"/></div>
+            <div class="divider"></div><span class="tag">Models</span>
+            <div class="field"><span class="field-label">Brain (Reasoning) Model</span>
+              <select class="ctrl-wide">
+                <option selected>Gemma 4 31B · cerebras</option><option>GPT OSS 120B · cerebras</option>
+                <option class="local-opt">Local: llama-3-8b · local</option><option class="local-opt">Local: mistral-7b · local</option>
+              </select>
+              <span class="field-hint">Provider models + loaded local (unified)</span></div>
+            <div class="field-row"><span class="field-label">Use Same Model for Both</span><div class="toggle"><div class="knob"></div></div></div>
+            <div class="field" style="opacity:0.4"><span class="field-label">Tool Model</span><select class="ctrl-wide" disabled><option>Gemma 4 31B · cerebras</option></select></div>
+            <div class="divider"></div><span class="tag">Inference Behavior</span>
+            <div class="field-row"><span class="field-label">Agent Thinking Style</span><select class="ctrl-mid"><option selected>balanced</option><option>concise</option><option>thorough</option></select></div>
+            <div class="field-row"><span class="field-label">Max Response Length</span><select class="ctrl-mid"><option selected>medium</option><option>short</option><option>long</option></select></div>
+            <div class="field-row"><span class="field-label">Reasoning Effort</span><select class="ctrl-mid"><option selected>balanced</option><option>fast</option><option>accurate</option></select></div>
+            <div class="field-row"><span class="field-label">Tool Mode</span><select class="ctrl-mid"><option selected>auto</option><option>ask_first</option><option>disabled</option></select></div>
+            <div class="divider"></div><span class="tag">Active Routing (read-only)</span>
+            <div class="routing">
+              <div><span class="k">reasoning</span> → <span class="pill">cerebras</span> / gemma-4-31b</div>
+              <div><span class="k">tool_execution</span> → <span class="pill">cerebras</span> / gemma-4-31b</div>
+              <div style="opacity:0.6; margin-top:2px">when Swarm ON → reasoning: swarm_director, tool: swarm_worker (same router)</div>
+            </div>
+            <div class="replaces">↳ replaces “Model Selection” + “Inference Mode” (merged, single source of truth)</div>
+          </div>
+        </div>
+
+        <!-- Local Model (separate, unchanged) -->
+        <div class="card">
+          <div class="card-head"><span class="card-icon">▦</span><span class="card-label">Local Model</span></div>
+          <div class="card-body">
+            <div class="field"><span class="field-label">GGUF Model</span><select class="ctrl-wide"><option selected>llama-3-8b (loaded)</option><option>mistral-7b</option></select></div>
+            <div class="field-row"><span class="field-label">Hardware Profile</span><select class="ctrl-mid"><option selected>balanced</option><option>eco</option><option>performance</option></select></div>
+            <div class="field-row"><span class="field-label">Context Length</span><span>16384</span></div>
+            <div class="field-row"><span class="field-label">GPU Offload (-1=auto)</span><span>-1</span></div>
+            <div class="field-row"><span class="field-label">Model Status</span><span class="pill" style="border-color:rgba(34,197,94,0.4);color:#22c55e;background:rgba(34,197,94,0.12)">LOADED</span></div>
+            <div class="btn-row"><button class="btn danger">Unload</button><button class="btn">Browse</button></div>
+            <div class="replaces">↳ unchanged — kept SEPARATE from API provider setup</div>
+          </div>
+        </div>
+
+        <!-- Swarm Setup (unified LLM) -->
+        <div class="card">
+          <div class="card-head"><span class="card-icon">❖</span><span class="card-label">Swarm Setup</span></div>
+          <div class="card-body">
+            <div class="field-row"><span class="field-label">Swarm Mode</span><div class="toggle off"><div class="knob"></div></div></div>
+            <div class="field-row"><span class="field-label">Swarm Configuration</span><select class="ctrl-mid"><option selected>local_fast</option><option>api_director</option><option>quality_director</option></select></div>
+            <div class="field-row"><span class="field-label">Director Source</span><select class="ctrl-mid"><option selected>Local GGUF</option><option>API Provider</option></select></div>
+            <div class="field"><span class="field-label">Workers Model</span>
+              <select class="ctrl-wide">
+                <option selected>llama-3-8b (local GGUF)</option><option>mistral-7b</option>
+              </select>
+              <span class="field-hint">Local GGUFs when Director=Local GGUF; API models when Director=API Provider</span></div>
+            <div class="field-row"><span class="field-label">Worker Count</span><span>2</span></div>
+            <div class="field-row"><span class="field-label">Worker Context</span><span>2048</span></div>
+            <div class="field"><span class="field-label">GGUF Models Directory</span><input type="text" class="ctrl-wide" placeholder="~/.lmstudio/models"/></div>
+            <div class="btn-row"><button class="btn">Browse</button><button class="btn">Start Swarm</button></div>
+            <div class="replaces">↳ On Start Swarm: registers swarm_director + swarm_worker as InferenceRouter instances and binds reasoning→director, tool→worker — DER+Pacman route through the SAME router (not a separate path).</div>
+          </div>
+        </div>
+
+        <!-- Personality (unchanged) -->
+        <div class="card">
+          <div class="card-head"><span class="card-icon">☻</span><span class="card-label">Personality</span></div>
+          <div class="card-body">
+            <div class="field"><span class="field-label">Agent Name</span><input type="text" class="ctrl-wide" value="Iris"/></div>
+            <div class="field-row"><span class="field-label">Persona</span><select class="ctrl-mid"><option selected>Friendly</option><option>Professional</option><option>Concise</option></select></div>
+            <div class="field"><span class="field-label">Greeting Message</span><input type="text" class="ctrl-wide" value="Hello! How can I help you?"/></div>
+            <div class="replaces">↳ unchanged</div>
+          </div>
+        </div>
+
+        <!-- Memory (unchanged) -->
+        <div class="card">
+          <div class="card-head"><span class="card-icon">⛁</span><span class="card-label">Memory</span></div>
+          <div class="card-body">
+            <div class="field-row"><span class="field-label">Memory Enabled</span><div class="toggle"><div class="knob"></div></div></div>
+            <div class="field-row"><span class="field-label">Save Conversations</span><div class="toggle"><div class="knob"></div></div></div>
+            <div class="replaces">↳ unchanged</div>
+          </div>
+        </div>
+
+      </div></div>
+    </div>
+  </div>
+</body>
+</html>

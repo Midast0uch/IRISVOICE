@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\models\video\s3d.py
+# hypothesis_version: 6.151.9
+
+[0.001, 0.2, 17.979, 31.972, 68.368, 88.05, 112, 128, 144, 160, 192, 208, 224, 256, 288, 320, 384, 400, 480, 512, 528, 832, 1024, 8320048, 'Kinetics-400', 'S3D', 'S3D_Weights', '_docs', '_file_size', '_metrics', '_ops', 'acc@1', 'acc@5', 'categories', 'min_size', 'min_temporal_size', 'num_classes', 'num_params', 'pretrained', 'recipe', 's3d']

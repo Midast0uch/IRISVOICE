@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\quantizers\quantizer_torchao.py
+# hypothesis_version: 6.151.9
+
+[0.5, 0.9, '(\\d)weight', '.', '.safetensors', '0.15.0', '2.5.0', '4', 'PreTrainedModel', '_default', '_weight_qdata', '_weight_scale', '_weight_zero_point', 'cpu', 'device_map', 'disk', 'int4_weight_only', 'int8_weight_only', 'pt', 'torch', 'torch.Tensor', 'torchao', 'weight', 'weights_only']

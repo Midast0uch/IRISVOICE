@@ -1,0 +1,33 @@
+{
+  "count": 28,
+  "modules": [
+    "_debug_crawl",
+    "_test_patch_isolated",
+    "audit",
+    "automation_audit",
+    "crawl_worker",
+    "custom_skill_template",
+    "inference_router",
+    "installer_service",
+    "iris_supervisor",
+    "live_benchmark",
+    "main",
+    "marketplace_client",
+    "permission_system",
+    "recall_phases",
+    "sandbox_executor",
+    "security_analytics",
+    "semantic_snapshot",
+    "skill_registry",
+    "snapshot_cache",
+    "spec_engine",
+    "task_kernel",
+    "telegram_bridge",
+    "temp_fix",
+    "termination",
+    "trailing_director",
+    "universal_gui_operator",
+    "validate_phase1_foundation",
+    "verify_rubric"
+  ]
+}

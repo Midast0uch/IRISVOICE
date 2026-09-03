@@ -1,0 +1,5 @@
+[build]
+incremental = true
+# Changed from AppData/Local/Temp (permission issues) to temp folder
+target-dir = "C:\\temp\\tauri-build"
+jobs = 8

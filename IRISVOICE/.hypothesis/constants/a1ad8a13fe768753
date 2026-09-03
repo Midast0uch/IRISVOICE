@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\_dynamo\external_utils.py
+# hypothesis_version: 6.151.9
+
+['_P', '_R', 'hook_type', 'post_acc_grad_hook', 'saved_variables']

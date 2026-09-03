@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\liquid_audio\moshi\modules\resample.py
+# hypothesis_version: 6.151.9
+
+[1.0, '(b c) () t -> b c t', 'b c t -> (b c) () t', 'replicate']

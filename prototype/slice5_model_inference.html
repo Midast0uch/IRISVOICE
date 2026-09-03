@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SLICE 5 — Model &amp; Inference (Prototype)</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  :root { --glow: #00d4ff; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh;
+    background: radial-gradient(1200px 800px at 70% 20%, #0b1020 0%, #05060c 60%, #03040a 100%);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: #fff; display: flex; justify-content: center; padding: 28px;
+  }
+  /* ── Dashboard wing panel (mirrors dashboard-wing.tsx) ── */
+  .wing {
+    width: 520px; max-width: 100%; height: 88vh; overflow: hidden;
+    border-radius: 12px; border: 1px solid rgba(0,212,255,0.125);
+    background: linear-gradient(225deg, rgba(10,11,22,0.97) 0%, rgba(6,7,14,0.99) 100%);
+    box-shadow: inset 0 1px 1px rgba(255,255,255,0.05), inset 0 -1px 1px rgba(0,0,0,0.5),
+                0 0 0 1px rgba(0,0,0,0.8), -20px 0 60px rgba(0,0,0,0.5);
+    position: relative; display: flex; flex-direction: column;
+  }
+  /* scanline HUD overlay */
+  .wing::before {
+    content:""; position:absolute; inset:0; pointer-events:none; z-index:30;
+    background: linear-gradient(180deg, transparent 0%, rgba(255,255,255,0.02) 50%, transparent 100%),
+                repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.03) 2px, rgba(0,0,0,0.03) 4px);
+    background-size: 100% 100%, 100% 4px;
+  }
+  /* fresnel edge glow */
+  .wing::after {
+    content:""; position:absolute; inset:0; pointer-events:none; z-index:20;
+    background: linear-gradient(90deg, rgba(0,212,255,0.03) 0%, transparent 15%, transparent 85%, rgba(0,212,255,0.03) 100%),
+                linear-gradient(0deg, rgba(0,212,255,0.02) 0%, transparent 20%, transparent 80%, rgba(0,212,255,0.02) 100%);
+  }
+  .wing-header {
+    padding: 14px 18px; border-bottom: 1px solid rgba(0,212,255,0.12);
+    display:flex; align-items:center; gap:10px; z-index:40;
+  }
+  .wing-title { font-size: 13px; letter-spacing: 0.18em; text-transform: uppercase; color: rgba(255,255,255,0.75); }
+  .scroll { overflow-y: auto; padding: 16px; display:flex; flex-direction:column; gap:16px; z-index:40; }
+  .scroll::-webkit-scrollbar { width: 8px; }
+  .scroll::-webkit-scrollbar-thumb { background: rgba(0,212,255,0.25); border-radius: 8px; }
+
+  /* ── Card (mirrors data/cards.ts card + DarkGlassDashboard FieldRow) ── */
+  .card {
+    border: 1px solid rgba(255,255,255,0.07); border-radius: 10px;
+    background: rgba(255,255,255,0.02); overflow: hidden;
+  }
+  .card-head {
+    display:flex; align-items:center; gap:8px; padding: 10px 14px;
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    background: linear-gradient(90deg, rgba(0,212,255,0.06), transparent);
+  }
+  .card-icon { color: var(--glow); display:flex; }
+  .card-label { font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; color: rgba(255,255,255,0.85); }
+  .card-body { padding: 12px 14px; display:flex; flex-direction:column; gap:12px; }
+
+  .field { display:flex; flex-direction:column; gap:5px; }
+  .field-row { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+  .field-label { font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: rgba(255,255,255,0.55); }
+  .field-hint { font-size: 10px; color: rgba(255,255,255,0.35); }
+  select, input[type=text] {
+    width: 100%; background: rgba(0,0,0,0.45); color:#fff; border:1px solid rgba(255,255,255,0.12);
+    border-radius:7px; padding:8px 10px; font-size:12px; outline:none;
+  }
+  select:focus, input[type=text]:focus { border-color: rgba(0,212,255,0.6); box-shadow:0 0 0 2px rgba(0,212,255,0.15); }
+  .ctrl-wide { width: 240px; }
+  .section-divider { height:1px; background: rgba(255,255,255,0.07); margin: 2px 0; }
+  .section-tag { font-size:10px; letter-spacing:0.16em; text-transform:uppercase; color: var(--glow); opacity:0.8; }
+
+  /* toggle */
+  .toggle { position:relative; width:42px; height:22px; border-radius:999px; background: rgba(0,212,255,0.55); border:1px solid rgba(0,212,255,0.7); cursor:pointer; }
+  .toggle .knob { position:absolute; top:2px; right:2px; width:16px; height:16px; border-radius:50%; background:#04121a; box-shadow:0 0 6px rgba(0,212,255,0.6); }
+  .toggle.off { background: rgba(255,255,255,0.12); border-color: rgba(255,255,255,0.2); }
+  .toggle.off .knob { left:2px; right:auto; background:#222; box-shadow:none; }
+
+  /* buttons */
+  .btn { padding:8px 14px; border-radius:8px; font-size:12px; border:1px solid rgba(0,212,255,0.4);
+         background: rgba(0,212,255,0.10); color: var(--glow); cursor:pointer; letter-spacing:0.04em; }
+  .btn:hover { background: rgba(0,212,255,0.18); }
+  .btn.danger { border-color: rgba(239,68,68,0.4); background: rgba(239,68,68,0.10); color:#ff6b6b; }
+  .btn-row { display:flex; gap:10px; }
+
+  /* active routing summary */
+  .routing { border:1px dashed rgba(0,212,255,0.3); border-radius:8px; padding:10px 12px; background: rgba(0,212,255,0.04);
+             font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size:11px; color: rgba(255,255,255,0.8); display:flex; flex-direction:column; gap:4px; }
+  .routing .k { color: var(--glow); }
+  .pill { display:inline-block; padding:1px 7px; border-radius:999px; background: rgba(0,212,255,0.12); border:1px solid rgba(0,212,255,0.3); color: var(--glow); font-size:10px; }
+
+  .local-opt { color:#7CFFB2; }  /* local models tinted green in dropdowns */
+  .prototype-tag { position:absolute; top:8px; right:12px; z-index:50; font-size:9px; letter-spacing:0.2em; text-transform:uppercase; color: rgba(255,255,255,0.3); }
+</style>
+</head>
+<body>
+  <div class="wing">
+    <div class="prototype-tag">prototype · not wired</div>
+    <div class="wing-header">
+      <span class="card-icon">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
+      </span>
+      <span class="wing-title">Agent · Model &amp; Inference</span>
+    </div>
+
+    <div class="scroll">
+
+      <!-- ═══════════ CARD A — MODEL & INFERENCE (merged) ═══════════ -->
+      <div class="card">
+        <div class="card-head">
+          <span class="card-icon">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a4 4 0 0 1 4 4 4 4 0 0 1-4 4 4 4 0 0 1-4-4 4 4 0 0 1 4-4zM4 22a8 8 0 0 1 16 0"/></svg>
+          </span>
+          <span class="card-label">Model &amp; Inference</span>
+        </div>
+        <div class="card-body">
+
+          <div class="field">
+            <span class="field-label">Provider (API)</span>
+            <select class="ctrl-wide">
+              <option value="cerebras" selected>Cerebras</option>
+              <option value="opencodego">OpenCodeGo</option>
+              <option value="chutes">Chutes AI</option>
+              <option value="cohere">Cohere</option>
+              <option value="deepseek">DeepSeek</option>
+              <option value="anthropic">Anthropic</option>
+              <option value="lmstudio">LM Studio</option>
+            </select>
+          </div>
+
+          <div class="field">
+            <span class="field-label">API Key</span>
+            <input type="text" class="ctrl-wide" placeholder="sk-…" value="sk-••••••••••••" />
+          </div>
+
+          <div class="section-divider"></div>
+          <span class="section-tag">Models</span>
+
+          <div class="field">
+            <span class="field-label">Brain (Reasoning) Model</span>
+            <select class="ctrl-wide">
+              <option value="gemma-4-31b" selected>Gemma 4 31B · cerebras</option>
+              <option value="gpt-oss-120b">GPT OSS 120B · cerebras</option>
+              <option value="zai-glm-4.7">Z.ai GLM 4.7 · cerebras</option>
+              <option value="llama-3-8b" class="local-opt">Local: llama-3-8b · local</option>
+              <option value="mistral-7b" class="local-opt">Local: mistral-7b · local</option>
+            </select>
+            <span class="field-hint">Provider models + loaded local model (unified)</span>
+          </div>
+
+          <div class="field-row">
+            <span class="field-label">Use Same Model for Both</span>
+            <div class="toggle" title="ON"><div class="knob"></div></div>
+          </div>
+
+          <div class="field" style="opacity:0.4">
+            <span class="field-label">Tool Model</span>
+            <select class="ctrl-wide" disabled>
+              <option>Gemma 4 31B · cerebras</option>
+            </select>
+            <span class="field-hint">Hidden when “Use Same Model” is ON</span>
+          </div>
+
+          <div class="section-divider"></div>
+          <span class="section-tag">Inference Behavior</span>
+
+          <div class="field-row">
+            <span class="field-label">Agent Thinking Style</span>
+            <select style="width:150px"><option selected>balanced</option><option>concise</option><option>thorough</option></select>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Max Response Length</span>
+            <select style="width:150px"><option selected>medium</option><option>short</option><option>long</option></select>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Reasoning Effort</span>
+            <select style="width:150px"><option selected>balanced</option><option>fast</option><option>accurate</option></select>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Tool Mode</span>
+            <select style="width:150px"><option selected>auto</option><option>ask_first</option><option>disabled</option></select>
+          </div>
+
+          <div class="section-divider"></div>
+          <span class="section-tag">Active Routing (read-only)</span>
+          <div class="routing">
+            <div><span class="k">reasoning</span> → <span class="pill">cerebras</span> / gemma-4-31b</div>
+            <div><span class="k">tool_execution</span> → <span class="pill">cerebras</span> / gemma-4-31b</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ═══════════ CARD B — LOCAL MODEL (separate) ═══════════ -->
+      <div class="card">
+        <div class="card-head">
+          <span class="card-icon">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7l9-4 9 4v10l-9 4-9-4z"/><path d="M3 7l9 4 9-4M12 11v10"/></svg>
+          </span>
+          <span class="card-label">Local Model</span>
+        </div>
+        <div class="card-body">
+          <div class="field">
+            <span class="field-label">GGUF Model</span>
+            <select class="ctrl-wide">
+              <option value="llama-3-8b" selected>llama-3-8b (loaded)</option>
+              <option value="mistral-7b">mistral-7b</option>
+              <option value="browse">Browse &amp; Manage…</option>
+            </select>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Hardware Profile</span>
+            <select style="width:150px"><option selected>balanced</option><option>eco</option><option>performance</option><option>voice_first</option><option>research</option><option>custom</option></select>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Context Length</span>
+            <span style="font-size:12px;color:rgba(255,255,255,0.8)">16384</span>
+          </div>
+          <div class="field-row">
+            <span class="field-label">GPU Offload (-1 = auto)</span>
+            <span style="font-size:12px;color:rgba(255,255,255,0.8)">-1</span>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Model Status</span>
+            <span class="pill" style="border-color:rgba(34,197,94,0.4);color:#22c55e;background:rgba(34,197,94,0.12)">LOADED</span>
+          </div>
+          <div class="btn-row">
+            <button class="btn danger">Unload Model</button>
+            <button class="btn">Browse &amp; Manage</button>
+          </div>
+          <span class="field-hint">Loading registers instance “local” → appears in Brain/Tool/Swarm dropdowns via provider_added.</span>
+        </div>
+      </div>
+
+      <!-- ═══════════ CARD C — SWARM SETUP (unified LLM) ═══════════ -->
+      <div class="card">
+        <div class="card-head">
+          <span class="card-icon">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M7.5 7.5l3 9M16.5 7.5l-3 9"/></svg>
+          </span>
+          <span class="card-label">Swarm Setup</span>
+        </div>
+        <div class="card-body">
+          <div class="field">
+            <span class="field-label">Swarm LLM (local or provider)</span>
+            <select class="ctrl-wide">
+              <option value="gemma-4-31b" selected>Gemma 4 31B · cerebras</option>
+              <option value="gpt-oss-120b">GPT OSS 120B · cerebras</option>
+              <option value="llama-3-8b" class="local-opt">Local: llama-3-8b · local</option>
+            </select>
+            <span class="field-hint">Same unified source as Brain/Tool.</span>
+          </div>
+          <div class="field-row">
+            <span class="field-label">Director Mode</span>
+            <select style="width:150px"><option selected>auto</option><option>manual</option><option>off</option></select>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</body>
+</html>

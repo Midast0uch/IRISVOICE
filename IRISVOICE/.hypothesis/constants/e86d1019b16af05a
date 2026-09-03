@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\pytorch_utils.py
+# hypothesis_version: 6.151.9
+
+[0.02, '1.12', '1.13', '2.0', '2.1', '2.2', '2.3', '2.4', '2.5', '2.6', '2.8', 'xla']

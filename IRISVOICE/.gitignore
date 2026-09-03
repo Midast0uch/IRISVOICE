@@ -1,0 +1,88 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+dist/
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files
+.env*
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+
+# local models
+models/
+backend/audio/models/
+backend/voice/pretrained_models/
+backend/voice/piper_models/
+backend/voice/CosyVoice/
+offload/
+
+# test/hypothesis artifacts
+.hypothesis/
+*.hypothesis
+
+# generated debug images / temp files
+*.png
+data/smoke_tts_output.wav
+.tmp_test.py
+
+# editor / tool config
+.roomodes
+.opencode/
+
+# tauri
+src-tauri/target/
+src-tauri/binaries/
+tauri-build/
+
+# recordings
+recordings/
+
+# logs
+*.log
+backend/logs/
+
+# runtime session data (generated at runtime, never commit)
+backend/sessions/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-*/
+backend/sessions/sess-*/
+backend/sessions/session_*/
+backend/sessions/test*/
+
+# encrypted database + WAL files (runtime, machine-specific)
+data/memory.db
+data/memory.db-shm
+data/memory.db-wal
+
+# voice reference audio (large binary, machine-specific)
+data/voice_clone_ref.wav
+
+# local machine ID
+data/.machine_id
+
+# claude project config (local only)
+.claude/

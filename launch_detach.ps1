@@ -1,0 +1,10 @@
+$psi = New-Object System.Diagnostics.ProcessStartInfo
+$psi.FileName = "C:\dev\IRISVOICE\venv\Scripts\python.exe"
+$psi.Arguments = "start-backend.py"
+$psi.WorkingDirectory = "C:\dev\IRISVOICE"
+$psi.UseShellExecute = $false
+$psi.RedirectStandardOutput = $true
+$psi.RedirectStandardError = $true
+$psi.CreateNoWindow = $true
+$p = [System.Diagnostics.Process]::Start($psi)
+Write-Host "PID=$($p.Id) LAUNCHED"

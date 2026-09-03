@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\sympy\matrices\expressions\matexpr.py
+# hypothesis_version: 6.151.9
+
+[11.0, 'Add', 'Invalid index %s', 'Mul', '__add__', '__mul__', '__pow__', '__radd__', '__rmul__', '__rpow__', '__rsub__', '__rtruediv__', '__sub__', '__truediv__', 'deep', 'incompatible shapes', 'indices out of range', 'other', 'valid_index', 'z1, z2']

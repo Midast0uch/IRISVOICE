@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\models\densenet.py
+# hypothesis_version: 6.151.9
+
+[2.834, 3.36, 4.291, 7.728, 30.845, 54.708, 74.434, 75.6, 76.896, 77.138, 77.373, 91.972, 92.806, 93.37, 93.56, 110.369, 224, 1000, 7978856, 14149480, 20013928, 28681000, 'DenseNet', 'DenseNet121_Weights', 'DenseNet161_Weights', 'DenseNet169_Weights', 'DenseNet201_Weights', 'ImageNet-1K', '_docs', '_file_size', '_metrics', '_ops', 'acc@1', 'acc@5', 'categories', 'conv0', 'denseblock%d', 'denselayer%d', 'densenet121', 'densenet161', 'densenet169', 'densenet201', 'min_size', 'norm0', 'norm5', 'num_classes', 'num_params', 'pool0', 'pretrained', 'recipe', 'relu0', 'transition%d']

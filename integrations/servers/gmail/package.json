@@ -1,0 +1,26 @@
+{
+  "name": "iris-mcp-gmail",
+  "version": "1.0.0",
+  "description": "Gmail MCP server for IRIS - provides email access via Google APIs",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@googleapis/gmail": "^9.0.0",
+    "google-auth-library": "^9.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "mcp",
+    "gmail",
+    "google",
+    "email",
+    "iris"
+  ],
+  "license": "MIT"
+}

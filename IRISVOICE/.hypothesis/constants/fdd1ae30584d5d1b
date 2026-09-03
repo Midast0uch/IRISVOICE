@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\models\segmentation\lraspp.py
+# hypothesis_version: 6.151.9
+
+[2.086, 12.49, 57.9, 91.2, 128, 520, 3221538, 'LRASPP', '_docs', '_file_size', '_is_cn', '_metrics', '_ops', 'aux_loss', 'bilinear', 'categories', 'high', 'low', 'min_size', 'miou', 'num_classes', 'num_params', 'out', 'pixel_acc', 'pretrained', 'pretrained_backbone', 'recipe']

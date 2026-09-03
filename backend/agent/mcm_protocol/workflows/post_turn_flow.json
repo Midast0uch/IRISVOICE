@@ -1,0 +1,17 @@
+{
+  "name": "post_turn_flow",
+  "description": "Runs after every LLM response. Stores fragments, checks compression budget.",
+  "dry_run": false,
+  "steps": [
+    {
+      "action": "pacman_fragment",
+      "on_error": "continue",
+      "params": {}
+    },
+    {
+      "action": "mcm_check_compress",
+      "on_error": "continue",
+      "params": {}
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "compress_flow",
+  "description": "Explicit full MCM compression — called when forced compress needed.",
+  "dry_run": false,
+  "steps": [
+    {
+      "action": "mcm_check_compress",
+      "on_error": "abort",
+      "params": {"force": true}
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\models\quantization\inception.py
+# hypothesis_version: 6.151.9
+
+[5.713, 23.146, 77.176, 93.354, 299, 342, 27161264, 'ImageNet-1K', '_docs', '_file_size', '_metrics', '_ops', 'acc@1', 'acc@5', 'aux_logits', 'backend', 'bn', 'categories', 'conv', 'fbgemm', 'inception_v3', 'min_size', 'num_classes', 'num_params', 'pretrained', 'quantize', 'recipe', 'relu', 'transform_input', 'unquantized']

@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\models\mnasnet.py
+# hypothesis_version: 6.151.9
+
+[0.0, 0.1, 0.104, 0.2, 0.215, 0.314, 0.5, 0.526, 0.75, 0.9, 0.9997, 1.0, 1.3, 8.591, 12.303, 16.915, 24.246, 67.734, 71.18, 73.456, 76.506, 87.49, 90.496, 91.51, 93.522, 192, 224, 232, 320, 1000, 1280, 2218512, 3170208, 4383312, 6282256, 'ImageNet-1K', 'MNASNet', 'MNASNet0_5_Weights', 'MNASNet0_75_Weights', 'MNASNet1_0_Weights', 'MNASNet1_3_Weights', '_docs', '_file_size', '_metrics', '_ops', 'acc@1', 'acc@5', 'categories', 'fan_out', 'min_size', 'mnasnet0_5', 'mnasnet0_75', 'mnasnet1_0', 'mnasnet1_3', 'num_classes', 'num_params', 'pretrained', 'recipe', 'relu', 'sigmoid', 'version']

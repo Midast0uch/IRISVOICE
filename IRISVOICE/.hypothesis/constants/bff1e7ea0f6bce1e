@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\pipelines\image_text_to_text.py
+# hypothesis_version: 6.151.9
+
+[256, '<image>', 'Image.Image', 'assistant', 'chat_template', 'content', 'decoder_input_ids', 'eos_token_id', 'generate_kwargs', 'generated_sequence', 'generated_text', 'generated_token_ids', 'generation_config', 'images', 'input_ids', 'input_text', 'max_new_tokens', 'padding', 'prompt_text', 'pt', 'return_type', 'role', 'skip_special_tokens', 'text', 'timeout', 'vision']

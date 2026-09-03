@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\datasets\cifar.py
+# hypothesis_version: 6.151.9
+
+['Test', 'Train', 'batches.meta', 'cifar-10-batches-py', 'cifar-100-python', 'data', 'data_batch_1', 'data_batch_2', 'data_batch_3', 'data_batch_4', 'data_batch_5', 'filename', 'fine_label_names', 'fine_labels', 'key', 'label_names', 'labels', 'latin1', 'md5', 'meta', 'rb', 'test', 'test_batch', 'train']

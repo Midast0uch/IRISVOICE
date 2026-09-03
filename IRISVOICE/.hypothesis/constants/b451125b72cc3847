@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\fastapi\routing.py
+# hypothesis_version: 6.151.9
+
+[400, '+json', '/', 'APIRoute', 'APIRouter', 'DELETE', 'GET', 'HEAD', 'JSON decode error', 'OPTIONS', 'PATCH', 'POST', 'PUT', 'Response_', 'Successful Response', 'TRACE', '__name__', 'application', 'background', 'body', 'content-type', 'ctx', 'error', 'fastapi_inner_astack', 'file', 'function', 'input', 'json', 'json_invalid', 'line', 'loc', 'model', 'msg', 'name', 'path', 'response', 'root_path', 'route', 'serialization', 'shutdown', 'startup', 'status_code', 'type', 'unknown']

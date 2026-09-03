@@ -1,0 +1,26 @@
+{
+  "protocol_version": "0.2",
+  "description": "MCM core rules — compression, DCP, and context lifecycle",
+  "enabled": true,
+  "last_updated": "2026-04-18",
+  "author": "IRIS MCM system",
+  "compression": {
+    "budget_pct": 0.70,
+    "recovery_target_tokens": 200,
+    "nbl_max_tokens": 40,
+    "active_files_max": 5,
+    "unverified_edits_max": 3,
+    "warnings_max": 2
+  },
+  "dcp": {
+    "turn_protection": 6,
+    "error_age_turns": 4,
+    "protected_tools": [
+      "mcm_compress", "mcm_recall", "get_session", "navigate",
+      "pin_search", "pin_list", "pin_add", "pin_link",
+      "record_edit", "record_test", "record_create",
+      "claim_work", "complete_task", "advance_gate",
+      "pacman_retrieve", "pacman_fragment", "swarm_broadcast"
+    ]
+  }
+}

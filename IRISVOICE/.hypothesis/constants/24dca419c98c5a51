@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\sympy\polys\numberfields\__init__.py
+# hypothesis_version: 6.151.9
+
+['field_isomorphism', 'galois_group', 'isolate', 'minimal_polynomial', 'minpoly', 'prime_decomp', 'prime_valuation', 'primitive_element', 'round_two', 'to_number_field']

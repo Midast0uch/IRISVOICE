@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\pipelines\document_question_answering.py
+# hypothesis_version: 6.151.9
+
+[256, 1000, 1000000, '<.*?>', 'Fast', 'Image.Image', 'LayoutLMConfig', 'answer', 'assistant_model', 'assistant_tokenizer', 'attention_mask', 'bbox', 'boxes', 'decoder_input_ids', 'dict', 'do_not_pad', 'doc_stride', 'donut-swin', 'end', 'end_logits', 'generation_config', 'height', 'image', 'input_ids', 'inputs', 'is_last', 'is_split_into_words', 'lang', 'layoutlm', 'layoutlmv2andv3', 'left', 'max_answer_len', 'max_question_len', 'max_seq_len', 'only_second', 'output_attentions', 'p_mask', 'padding', 'pixel_values', 'pt', 'question', 'right', 'score', 'sequences', 'start', 'start_logits', 'tesseract_config', 'text', 'text_pair', 'timeout', 'tokenizer', 'tokenizers', 'top', 'top_k', 'width', 'word_boxes', 'word_ids', 'words']

@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\datasets\sbd.py
+# hypothesis_version: 6.151.9
+
+['.jpg', '.mat', '.txt', 'Boundaries', 'GTcls', 'Mode: {mode}', 'RGB', 'Segmentation', 'benchmark.tgz', 'benchmark_RELEASE', 'boundaries', 'cls', 'dataset', 'image_set', 'img', 'inst', 'mode', 'segmentation', 'train', 'train.txt', 'train_noval', 'train_noval.txt', 'val', 'val.txt']

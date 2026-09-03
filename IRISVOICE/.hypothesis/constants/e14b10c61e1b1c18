@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\models\shufflenetv2.py
+# hypothesis_version: 6.151.9
+
+[0.04, 0.145, 0.296, 0.583, 5.282, 8.791, 13.557, 28.433, 60.552, 69.362, 72.996, 76.23, 81.746, 88.316, 91.086, 93.006, 116, 176, 192, 224, 232, 244, 352, 464, 488, 704, 976, 1000, 1024, 2048, 1366792, 2278604, 3503624, 7393996, 'ImageNet-1K', 'ShuffleNetV2', '_docs', '_file_size', '_metrics', '_ops', 'acc@1', 'acc@5', 'categories', 'illegal stride value', 'min_size', 'num_classes', 'num_params', 'pretrained', 'recipe', 'shufflenet_v2_x0_5', 'shufflenet_v2_x1_0', 'shufflenet_v2_x1_5', 'shufflenet_v2_x2_0']

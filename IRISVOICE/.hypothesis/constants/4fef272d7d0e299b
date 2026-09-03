@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchaudio\datasets\vctk.py
+# hypothesis_version: 6.151.9
+
+['.flac', '.txt', 'VCTK-Corpus-0.92', 'VCTK-Corpus-0.92.zip', '_', 'mic1', 'mic2', 'p280', 'p362', 'txt']

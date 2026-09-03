@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\quantizers\auto.py
+# hypothesis_version: 6.151.9
+
+['_4bit', '_8bit', 'aqlm', 'auto-round', 'awq', 'bitnet', 'bitsandbytes_4bit', 'bitsandbytes_8bit', 'compressed-tensors', 'dequantize', 'eetq', 'fbgemm_fp8', 'fp8', 'fp_quant', 'gptq', 'higgs', 'hqq', 'load_in_4bit', 'load_in_8bit', 'mxfp4', 'quant', 'quant_method', 'quantization_config', 'quanto', 'quark', 'sinq', 'spqr', 'torchao', 'value', 'vptq']

@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\distributed\fsdp\_optim_utils.py
+# hypothesis_version: 6.151.9
+
+['_device_mesh', '_use_dtensor', 'clone', 'cpu', 'param_groups', 'params', 'preprocessing', 'state', 'state_converting']

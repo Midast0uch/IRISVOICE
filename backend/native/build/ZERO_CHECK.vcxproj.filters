@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="C:\Users\midas\Desktop\IRISVOICE\backend\native\build\CMakeFiles\f85e37ef0573658acced9b408d612628\generate.stamp.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{90F28BA7-17B5-3175-A6E0-55AFF88C2C68}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

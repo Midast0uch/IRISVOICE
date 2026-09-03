@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\sympy\assumptions\relation\equality.py
+# hypothesis_version: 6.151.9
+
+['EqualityPredicate', 'GreaterThanPredicate', 'LessThanPredicate', 'UnequalityPredicate', 'eq', 'ge', 'gt', 'le', 'lt', 'ne']

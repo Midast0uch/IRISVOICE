@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\sklearn\preprocessing\_target_encoder.py
+# hypothesis_version: 6.151.9
+
+['allow-nan', 'auto', 'binary', 'boolean', 'categories', 'continuous', 'cv', 'ignore', 'left', 'multiclass', 'n_features_in_', 'random_state', 'shuffle', 'smooth', 'target_type', 'y']

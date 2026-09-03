@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\utils\chat_template_utils.py
+# hypothesis_version: 6.151.9
+
+['3.1.0', 'UnionType', '\\s*\\n+\\s*', '_generation_support', 'additionalProperties', 'anyOf', 'array', 'audio', 'boolean', 'cls', 'content', 'description', 'enum', 'function', 'generation', 'image', 'integer', 'items', 'messages', 'name', 'name:endgeneration', 'null', 'nullable', 'number', 'object', 'parameters', 'prefixItems', 'properties', 'raise_exception', 'required', 'return', 'role', 'self', 'strftime_now', 'string', 'text', 'tojson', 'type']

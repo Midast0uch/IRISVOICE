@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\sympy\solvers\simplex.py
+# hypothesis_version: 6.151.9
+
+['expecting min or max', 'max', 'min', 'must give A and B', 'shape', 'unexpected bounds %s', 'x', 'x1:%s', 'y', 'z']

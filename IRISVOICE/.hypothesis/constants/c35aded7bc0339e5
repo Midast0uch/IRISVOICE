@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\models\auto\video_processing_auto.py
+# hypothesis_version: 6.151.9
+
+['--', 'AutoImageProcessor', 'AutoVideoProcessor', 'Glm46VVideoProcessor', 'Glm4vVideoProcessor', 'ImageProcessor', 'VJEPA2VideoProcessor', 'VideoProcessor', '__name__', '_from_auto', 'auto_map', 'code_revision', 'config', 'ernie4_5_vl_moe', 'glm46v', 'glm4v', 'image_processor_type', 'instructblip', 'instructblipvideo', 'internvl', 'llava_next_video', 'llava_onevision', 'pe_audio_video', 'pe_video', 'perception_lm', 'qwen2_5_omni', 'qwen2_5_vl', 'qwen2_vl', 'qwen3_5', 'qwen3_5_moe', 'qwen3_omni_moe', 'qwen3_vl', 'qwen3_vl_moe', 'sam2_video', 'sam3_video', 'smolvlm', 'torchvision', 'transformers', 'transformers.models', 'trust_remote_code', 'video_llama_3', 'video_llava', 'video_processor', 'video_processor_type', 'videomae', 'vision', 'vjepa2']

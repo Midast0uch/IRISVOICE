@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\pipelines\token_classification.py
+# hypothesis_version: 6.151.9
+
+['-', 'B', 'B-', 'I', 'I-', 'O', '_tokenizer', 'aggregation_strategy', 'average', 'delimiter', 'end', 'entity', 'entity_group', 'first', 'ignore_labels', 'index', 'input_ids', 'is_last', 'is_split_into_words', 'is_subword', 'logits', 'max', 'none', 'offset_mapping', 'padding', 'pt', 'score', 'scores', 'sentence', 'sequences', 'simple', 'special_tokens_mask', 'start', 'stride', 'tokenizer_params', 'word', 'word_ids', 'word_to_chars_map']

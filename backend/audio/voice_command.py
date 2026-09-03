@@ -33,53 +33,53 @@ from .cadence_detector import CadenceDetector
 
 logger = logging.getLogger(__name__)
 
+_PROJECT_ROOT = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
+
 
 class ParakeetTranscriber:
-    """Subprocess-based Parakeet GPU ASR transcriber.
+    """sherpa-onnx Parakeet GPU ASR transcriber (in-process).
 
-    ParakeetForTDT + AutoProcessor run in a SEPARATE Python process so GIL
-    contention during model loading and inference can never starve the main
-    asyncio event loop. The subprocess communicates via stdin/stdout JSONL.
+    Parakeet TDT 0.6B v3 runs through the sherpa-onnx native runtime instead
+    of the old transformers subprocess worker: ~1-2 s import, ~4-12 s cold
+    session build, sub-second inference (measured 2026-09-03). The public
+    surface is unchanged — lazy first-use spawn, faster-whisper fallback
+    until ready, sticky failure, idle VRAM release — so the pipeline,
+    the latency strings ("parakeet*") and the mocked unit tests behave
+    exactly as before.
 
-    The subprocess is spawned lazily on first transcription attempt. Until it
-    reports "ready", all transcriptions fall back to faster-whisper. Once
-    ready, audio is sent as base64-encoded float32 PCM and the response is
-    read back as JSON.
-
-    If the subprocess crashes, it is restarted on the next transcription
-    attempt. A persistent failure is sticky and keeps the whisper fallback
-    available permanently.
+    The recognizer is built lazily on first transcription attempt (never at
+    backend boot, preserving the 0.41 GB idle profile). Until the build
+    finishes, all transcriptions fall back to faster-whisper. A persistent
+    build failure is sticky and keeps the whisper fallback available
+    permanently.
     """
 
-    _WORKER_MODULE = "backend.audio.parakeet_worker"
+    # Sherpa model + provider come from backend.audio.parakeet_sherpa
+    # (IRIS_PARAKEET_PROVIDER, default "cpu" — measured fastest for the int8
+    # build; "cuda" reserved for future fp16 weights with real CUDA kernels). The engine
+    # runs in a dedicated worker SUBPROCESS (parakeet_sherpa_worker) so the
+    # backend's preloaded wake-word onnxruntime can never clash with the
+    # CUDA provider load (2026-09-03 DLL-hell failure).
+    _WORKER_MODULE = "backend.audio.parakeet_sherpa_worker"
     _MAX_RESTARTS = 3
 
-    # How long to wait for the worker to answer a live utterance before
-    # giving up and letting faster-whisper handle it.
-    #
-    # Before this existed, transcribe() blocked in an untimed
-    # `stdout.readline()`. Measured 2026-09-01: the first Parakeet inference
-    # after the worker reports ready costs 50-200 s (CUDA kernel JIT /
-    # autotuning; far worse while the LLM is generating on the same GPU),
-    # while every later inference is 0.2-2.3 s. An untimed read therefore
-    # wedged the voice pipeline for minutes: the 60 s watchdog fired, reset
-    # is_recording and set VoiceState.ERROR, clicks did nothing
-    # (stop_recording only sets an event nobody checks while blocked), and the
-    # transcript finally arrived into an abandoned pipeline.
-    #
-    # 90s covers the slowest measured first-inference CUDA JIT (~200s worst case
-    # falls through to faster-whisper). The cold-start flag means only the first
-    # utterance uses this budget; after one successful inference, subsequent
-    # calls use a shorter timeout.  See _warm_up_inference() — if the warm-up
-    # timed out due to GPU contention, the worker still loads and the first live
-    # utterance pays this cost.
+    # Per-utterance inference budget. sherpa decode of a <=30 s VAD-capped
+    # clip takes seconds; the bound exists so a wedged GPU cannot park the
+    # transcription thread — the old untimed pipe read wedged the pipeline
+    # for minutes (2026-09-01: first transformers inference cost 50-200 s
+    # of CUDA JIT while the LLM shared the GPU).
     TRANSCRIBE_TIMEOUT_SEC: float = 90.0
 
-    # Warm-up inference budget. Runs at startup, off the critical path, so it
-    # can afford to be generous — but it must be bounded so a genuinely wedged
-    # worker cannot hang the spawn thread forever.
+    # Warm-up inference budget: bounded so a wedged worker cannot hang the
+    # spawn thread forever.
     WARMUP_TIMEOUT_SEC: float = 300.0
-    WARMUP_AUDIO_SEC: float = 1.0
+
+    # Idle-release timeout (REQ-1 AC1.6, mirrors the old worker idle-exit):
+    # drop the recognizer after this long with no requests so VRAM/RAM is
+    # reclaimed; the next utterance rebuilds lazily.
+    _IDLE_TIMEOUT_S: float = 1200.0
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -96,7 +96,8 @@ class ParakeetTranscriber:
         # delivered to the NEXT caller as a stale transcript.
         self._stale_lock = threading.Lock()
         self._stale = 0
-        self._reader_thread: Optional[threading.Thread] = None
+        self._reader_thread = None
+        self.last_timestamps: list = []  # word timestamps of last decode
         self._loaded = False
         self._load_error = None
         self._loading = False
@@ -106,12 +107,12 @@ class ParakeetTranscriber:
 # -- public API (same as the old in-process class) ---------------------
 
     def _ensure_loaded(self) -> bool:
-        """Start the Parakeet subprocess without blocking the caller.
+        """Start the sherpa worker process without blocking the caller.
 
-        The first caller spawns the subprocess and immediately returns False;
-        the audio pipeline routes that utterance to faster-whisper. Later
-        calls continue using faster-whisper until the subprocess reports
-        "ready", then automatically switch to the GPU path.
+        The first caller spawns the background worker and immediately returns
+        False; the audio pipeline routes that utterance to faster-whisper.
+        Later calls keep using faster-whisper until the worker reports
+        ready, then automatically switch to the GPU path.
         """
         with self._lock:
             if self._loaded:
@@ -121,53 +122,62 @@ class ParakeetTranscriber:
             self._loading = True
 
         threading.Thread(
-            target=self._spawn_worker,
+            target=self._load_model_worker,
             daemon=True,
             name="iris-parakeet-spawner",
         ).start()
         logger.info(
-            "[Parakeet] Subprocess spawn started; faster-whisper remains "
+            "[Parakeet] Recognizer build started; faster-whisper remains "
             "available until the GPU model is ready"
         )
         return False
 
-    def _spawn_worker(self) -> None:
-        """Spawn the Parakeet worker subprocess and wait for its "ready" signal.
+    def _load_model_worker(self) -> None:
+        """Spawn the sherpa worker subprocess and wait for its "ready" signal.
 
-        "Ready" from the worker means the MODEL is loaded — not that the GPU
-        path is fast. The first inference after load costs 50-200 s (CUDA
-        kernel JIT / autotuning), so this also pays that cost here, before
-        flipping _loaded. See _warm_up_inference(). Until then callers keep
-        using faster-whisper, which answers in well under a second.
+        The worker owns the ONLY onnxruntime in its process, so the backend's
+        preloaded wake-word ORT can never clash with the CUDA provider (the
+        2026-09-03 DLL-hell failure). Spawn costs ~2 s (plain interpreter +
+        small native lib, no torch import); the model build itself (~4-13 s)
+        happens inside the worker. Until _loaded flips, callers keep using
+        faster-whisper. A spawn failure is sticky.
         """
         import subprocess as _sp
         import sys as _sys
 
         try:
-            logger.info("[Parakeet] Spawning worker subprocess...")
+            logger.info("[Parakeet] Spawning sherpa worker subprocess...")
+            _env = dict(os.environ)
+            _env.setdefault("HF_HUB_OFFLINE", "1")
+            _env["PYTHONPATH"] = (
+                str(_PROJECT_ROOT) + os.pathsep + _env.get("PYTHONPATH", "")
+            )
+            # cuDNN for the worker's CUDA provider: probe the path only via the
+            # shared helper (never imports torch — that cost the backend ~1 GB
+            # on first speech before this fix).
+            try:
+                from .parakeet_sherpa import torch_lib_dir as _torch_lib_dir
+
+                _torch_lib = _torch_lib_dir()
+                if _torch_lib:
+                    _env["PATH"] = _torch_lib + os.pathsep + _env.get("PATH", "")
+            except Exception:
+                pass
             proc = _sp.Popen(
                 [_sys.executable, "-m", self._WORKER_MODULE],
                 stdin=_sp.PIPE,
                 stdout=_sp.PIPE,
-                # stderr is INHERITED, deliberately not a pipe. The worker logs
-                # to stderr on every transcription (parakeet_worker.py:193-198)
-                # plus HF/transformers warnings at load. An undrained pipe
-                # fills at ~64 KB and then BLOCKS the worker mid-write: it
-                # would never answer the request it is processing, so the
-                # 20 s timeout would fire, the worker would be declared dead,
-                # and the next utterance would eat a full ~12 min model
-                # reload. Inheriting also puts worker diagnostics straight
-                # into the backend log, where they are searchable.
+                # stderr is INHERITED, deliberately not a pipe. An undrained
+                # pipe fills at ~64 KB and then BLOCKS the worker mid-write.
                 stderr=None,
                 text=True,
                 bufsize=1,  # line-buffered
+                cwd=str(_PROJECT_ROOT),
+                env=_env,
             )
             self._proc = proc
 
-            # Handshake: read until "ready" / "error" / EOF. Uses readline()
-            # rather than iterating the file object — the iterator's read-ahead
-            # would swallow the first response line, and this same handle is
-            # handed to the reader thread below.
+            # Handshake: read until "ready" / "error" / EOF.
             ready = False
             while True:
                 line = proc.stdout.readline()
@@ -193,7 +203,7 @@ class ParakeetTranscriber:
                     with self._lock:
                         self._load_error = RuntimeError(err)
                     logger.error(
-                        "[Parakeet] Worker failed to load model: %s \u2014 "
+                        "[Parakeet] Worker failed to load model: %s — "
                         "falling back to faster-whisper", err
                     )
                     return
@@ -203,18 +213,15 @@ class ParakeetTranscriber:
                     logger.debug("[Parakeet] Worker status: %s", status)
 
             if not ready:
-                # stdout closed without "ready" \u2014 the process exited
+                # stdout closed without "ready" — the process exited
                 rc = proc.wait()
                 with self._lock:
                     self._load_error = RuntimeError(
                         f"Worker exited with code {rc} before reporting ready"
                     )
-                # No stderr tail to read: the worker inherits this process's
-                # stderr (see Popen above), so its traceback is already in the
-                # log. Point the operator at it instead of an empty string.
                 logger.error(
                     "[Parakeet] Worker exited with code %d before reporting "
-                    "ready — see parakeet_worker stderr above for the cause",
+                    "ready — see parakeet_sherpa_worker stderr above",
                     rc,
                 )
                 return
@@ -225,14 +232,14 @@ class ParakeetTranscriber:
             with self._lock:
                 self._loaded = True
             logger.info(
-                "[Parakeet] Worker ready \u2014 GPU ASR warm and available"
+                "[Parakeet] Worker ready — GPU ASR warm and available"
             )
 
         except Exception as exc:
             with self._lock:
                 self._load_error = exc
             logger.error(
-                "[Parakeet] Failed to spawn worker: %s \u2014 falling back to "
+                "[Parakeet] Failed to spawn worker: %s — falling back to "
                 "faster-whisper", exc, exc_info=True,
             )
         finally:
@@ -263,7 +270,7 @@ class ParakeetTranscriber:
                     # REQ-1 AC1.6: the worker idle-exits after 20 min of no
                     # requests. Treat that as a CLEAN stop (reclaim VRAM/RAM),
                     # not a crash — do not burn a restart attempt on it. The
-                    # next utterance respawns the worker lazily.
+                    # next utterance rebuilds the worker lazily.
                     if msg.get("status") == "shutting_down":
                         self._mark_idle_shutdown()
                         break
@@ -283,23 +290,11 @@ class ParakeetTranscriber:
         self._reader_thread.start()
 
     def _warm_up_inference(self) -> None:
-        """Pay the first-inference CUDA cost at startup, not on a live utterance.
-
-        Measured 2026-09-01 (C:\\temp\\pkbench.py): after the worker reports
-        ready, the FIRST inference costs 52.9 s for 2.7 s of audio (rtf 19.6x);
-        every later inference is 166 ms / 204 ms / 2.28 s (rtf 0.06-0.26x). In
-        the live system, with the LLM generating on the same GPU, that first
-        inference was 198 s. Left unhandled it lands on the user's first
-        command: the 60 s watchdog fires, the state machine resets to IDLE,
-        and the transcript arrives into an abandoned pipeline.
-        """
+        """Pay the first-inference cost inside the worker, not on a live utterance."""
         import base64 as _b64
 
         try:
-            rng = np.random.default_rng(0)
-            clip = (
-                rng.standard_normal(int(self.WARMUP_AUDIO_SEC * 16000)) * 0.01
-            ).astype(np.float32)
+            clip = (np.zeros(int(1.0 * 16000))).astype(np.float32)
 
             started = time.monotonic()
             response = self._round_trip(
@@ -314,24 +309,17 @@ class ParakeetTranscriber:
 
             if response is None:
                 logger.warning(
-                    "[Parakeet] Warm-up inference did not return within %.0fs \u2014 "
-                    "first live utterance will pay the CUDA JIT cost "
+                    "[Parakeet] Warm-up inference did not return within %.0fs — "
+                    "first live utterance may pay init cost "
                     "(TRANSCRIBE_TIMEOUT_SEC=%.0fs)",
                     self.WARMUP_TIMEOUT_SEC,
                     self.TRANSCRIBE_TIMEOUT_SEC,
                 )
-                # Deliberately NOT setting _load_error here. The warm-up timed
-                # out because the GPU was busy (LLM generating), NOT because the
-                # worker is broken. Mark the worker loaded anyway so the first
-                # live utterance can attempt GPU ASR — it will be slow (the
-                # CUDA JIT cost) but subsequent calls will be fast. If the
-                # worker itself had crashed, the transcribe() call will detect
-                # it and fall back to faster-whisper.
                 return
 
             logger.info(
-                "[Parakeet] Warm-up inference complete in %.1fs \u2014 "
-                "first-utterance CUDA cost paid at startup", elapsed
+                "[Parakeet] Warm-up inference complete in %.1fs — "
+                "first-utterance cost paid at startup", elapsed
             )
         except Exception as exc:
             logger.warning("[Parakeet] Warm-up inference failed (non-fatal): %s", exc)
@@ -340,14 +328,10 @@ class ParakeetTranscriber:
         """Send one JSONL request and wait up to `timeout` for its response.
 
         The whole exchange is serialised under _io_lock, so at most one request
-        is ever in flight and FIFO pairing is guaranteed. Previously the write
-        and the blocking `stdout.readline()` were unsynchronised, so two
-        transcription threads could interleave ~230 KB base64 payloads on the
-        same pipe and steal each other's replies.
-
-        The wait uses Queue.get(timeout=...) because a `readline()` on a
-        Windows pipe cannot be interrupted — that untimed read is what used to
-        wedge the voice pipeline for minutes.
+        is ever in flight and FIFO pairing is guaranteed. The wait uses
+        Queue.get(timeout=...) because a `readline()` on a Windows pipe cannot
+        be interrupted — that untimed read is what used to wedge the voice
+        pipeline for minutes.
         """
         with self._io_lock:
             proc = self._proc
@@ -372,7 +356,7 @@ class ParakeetTranscriber:
                 with self._stale_lock:
                     self._stale += 1
                 logger.warning(
-                    "[Parakeet] Worker did not respond within %.0fs \u2014 "
+                    "[Parakeet] Worker did not respond within %.0fs — "
                     "falling back to faster-whisper for this utterance", timeout
                 )
                 return None
@@ -380,10 +364,8 @@ class ParakeetTranscriber:
     def _handle_dead_worker(self) -> None:
         """Mark the worker dead; let the next utterance trigger a respawn.
 
-        The respawn is deliberately NOT done inline here. The old code called
-        _spawn_worker() synchronously from transcribe(), which parked the
-        transcription thread for the entire multi-minute model load and tripped
-        the 60 s watchdog.
+        The respawn is deliberately NOT done inline here — a synchronous
+        respawn would park the transcription thread behind a model load.
         """
         with self._lock:
             self._loaded = False
@@ -391,18 +373,18 @@ class ParakeetTranscriber:
             self._proc = None
             if self._restart_count >= self._MAX_RESTARTS:
                 self._load_error = RuntimeError(
-                    f"Worker died {self._MAX_RESTARTS}+ times \u2014 "
+                    f"Worker died {self._MAX_RESTARTS}+ times — "
                     "permanently falling back to faster-whisper"
                 )
                 logger.error(
-                    "[Parakeet] Max restarts (%d) reached \u2014 permanently disabled",
+                    "[Parakeet] Max restarts (%d) reached — permanently disabled",
                     self._MAX_RESTARTS,
                 )
                 return
             self._restart_count += 1
             self._load_error = None
             logger.warning(
-                "[Parakeet] Worker died \u2014 will restart on the next utterance "
+                "[Parakeet] Worker died — will restart on the next utterance "
                 "(attempt %d/%d)", self._restart_count, self._MAX_RESTARTS,
             )
 
@@ -426,7 +408,7 @@ class ParakeetTranscriber:
             self._proc = None
             self._load_error = None
         logger.info(
-            "[Parakeet] Worker idle-exited (20 min inactivity) \u2014 "
+            "[Parakeet] Worker idle-exited (20 min inactivity) — "
             "VRAM reclaimed; will respawn on next utterance"
         )
         try:
@@ -436,10 +418,11 @@ class ParakeetTranscriber:
             pass
 
     def transcribe(self, audio_np: np.ndarray, sample_rate: int = 16000) -> str:
-        """Transcribe float32 PCM audio via the Parakeet subprocess.
+        """Transcribe float32 PCM audio via the sherpa worker subprocess.
 
         Returns transcribed text on success, or empty string on failure
         (which triggers the faster-whisper fallback in the caller).
+        Word-level timestamps land on self.last_timestamps for long-form use.
         """
         if not self._ensure_loaded():
             return ""
@@ -469,6 +452,12 @@ class ParakeetTranscriber:
                 logger.warning("[Parakeet] Worker transcription error: %s", error)
                 return ""
 
+            try:
+                self.last_timestamps = [
+                    float(t) for t in (response.get("timestamps") or [])
+                ]
+            except Exception:
+                self.last_timestamps = []
             text = str(response.get("text", "")).strip()
             if text:
                 logger.info("[Parakeet] GPU ASR: '%s'", text[:80])

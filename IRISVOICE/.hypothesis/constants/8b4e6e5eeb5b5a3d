@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\models\detection\backbone_utils.py
+# hypothesis_version: 6.151.9
+
+[256, 'IMAGENET1K_V1', '_is_cn', 'backbone_name', 'bn1', 'conv1', 'layer1', 'layer2', 'layer3', 'layer4', 'pretrained']

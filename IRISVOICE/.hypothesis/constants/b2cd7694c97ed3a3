@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\scipy\sparse\dia.py
+# hypothesis_version: 6.151.9
+
+['_dia', 'dia', 'dia_matrix', 'isspmatrix_dia', 'sparse', 'spmatrix']

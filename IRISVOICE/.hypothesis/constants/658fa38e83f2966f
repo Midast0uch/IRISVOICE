@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\pipelines\zero_shot_image_classification.py
+# hypothesis_version: 6.151.9
+
+['Image.Image', 'candidate_labels', 'hypothesis_template', 'images', 'label', 'logits', 'max_length', 'padding', 'pt', 'score', 'siglip', 'text_inputs', 'timeout', 'vision']

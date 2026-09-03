@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\models\optical_flow\raft.py
+# hypothesis_version: 6.151.9
+
+[0.25, 1.3822, 1.4411, 1.819, 1.94, 1.9901, 2.1231, 2.7161, 2.7894, 3.067, 3.18, 3.279, 3.2831, 3.821, 4.5118, 5.0172, 5.1, 5.19, 7.5978, 7.6557, 16.0679, 17.4506, 20.129, 25.2369, 25.2801, 47.655, 211.007, 128, 160, 192, 256, 990162, 5257536, 'Kitti-Test', 'Kitti-Train', 'RAFT', 'Raft_Large_Weights', 'Raft_Small_Weights', '_docs', '_file_size', '_metrics', '_ops', 'bilinear', 'context_encoder', 'corr_block', 'epe', 'fan_out', 'feature_encoder', 'fl_all', 'hidden_state_size', 'ij', 'mask_predictor', 'min_size', 'num_params', 'per_image_epe', 'pretrained', 'raft_large', 'raft_small', 'recipe', 'relu', 'update_block']

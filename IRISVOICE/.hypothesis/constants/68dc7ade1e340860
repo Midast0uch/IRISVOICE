@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\pipelines\any_to_any.py
+# hypothesis_version: 6.151.9
+
+[256, 'Image.Image', 'MistralCommonBackend', '_postprocess_params', 'assistant', 'audio', 'chat_template', 'content', 'decode_image_tokens', 'decoder_input_ids', 'feature_extractor', 'generate_kwargs', 'generated_sequence', 'generated_token_ids', 'generation_config', 'generation_mode', 'image', 'images', 'input_ids', 'input_text', 'librosa', 'max_length', 'max_new_tokens', 'np.ndarray', 'padding', 'prompt_text', 'pt', 'return_type', 'role', 'skip_special_tokens', 'stop_strings', 'text', 'timeout', 'tokenizer', 'torch.Tensor', 'torchvision', 'truncation', 'use_audio_in_video', 'video', 'vision']

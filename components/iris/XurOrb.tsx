@@ -1,0 +1,750 @@
+"use client"
+
+import React, { useState, useCallback, useRef, useEffect } from "react"
+import { motion, AnimatePresence } from "framer-motion"
+import { useReducedMotion } from "@/hooks/useReducedMotion"
+import { useNavigation } from "@/contexts/NavigationContext"
+import { useBrandColor } from "@/contexts/BrandColorContext"
+import { useManualDragWindow } from "@/hooks/useManualDragWindow"
+import { useCadenceDetection } from "@/hooks/useCadenceDetection"
+import { UILayoutState } from "@/hooks/useUILayoutState"
+import type { XurOrbProps } from "./types"
+import { OrbCanvas } from "./orb/OrbCanvas"
+import {
+  type AnimationMode,
+  nextAnimationMode,
+  ANIM_DURATION_MS,
+} from "./orb/animationModes"
+import { RadialArcNodes } from "./radial/RadialArcNodes"
+import { useTaskProgress } from "@/hooks/useTaskProgress"
+import { useAgentQuestion } from "@/hooks/useAgentQuestion"
+import { useCrawlContext } from "@/hooks/CrawlProvider"
+import { useSwallowTarget, useTierDismissed } from "./swallowTarget"
+
+// ── Label configuration (matches PrototypeOrbShellsRotating winner) ────
+// Positions are relative to orb center in a 120px container.
+// CHAT at bottom, MENU at top, VOICE at left — exactly as the winner.
+
+const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789→↑←'
+
+// Label positions are relative to orb center, scaled to container size.
+// Base values are for 120px container; we scale by size/120 at render time.
+const LABEL_BASE = 45
+const LABELS = [
+  { final: '→ Chat ←', x: 0, y: LABEL_BASE, swirl: '180deg', action: 'chat' as const },
+  { final: '↑ Menu', x: 0, y: -LABEL_BASE, swirl: '-120deg', action: 'menu' as const },
+  { final: '↑↑ Voice', x: -LABEL_BASE, y: 20, swirl: '240deg', action: 'voice' as const },
+]
+
+const CANVAS_SIZE = 90
+
+
+const CONTAINER_SIZE = 120
+
+/**
+ * XurOrb — the Spiral Dissolve Winner orb component.
+ *
+ * Replaces IrisOrb.tsx. Composes:
+ * - OrbCanvas (canvas particle shells with cadence breathing)
+ * - Glitch labels (→ Chat ← / ↑ Menu / ↑↑ Voice) — always visible at level 1 idle
+ *   with scramble cycling every 2800ms and C/D/A click text animations
+ * - RadialArcNodes (6 hex category nodes) — level 2 menu when MENU clicked
+ * - 3 animation modes (C-opening, D-burst, A-bloom) cycled C→D→A→C on clicks
+ * - Cadence breathing at ALL navigation levels (via useCadenceDetection)
+ * - Voice activation: VOICE label, double-click, wake word (driven by backend WS)
+ * - Click interception: cancel voice, close wings, navigate back
+ * - Transparent background — XurOrb is the only thing visible
+ */
+export function XurOrb({
+  isExpanded,
+  onClick,
+  onDoubleClick,
+  size = CONTAINER_SIZE,
+  glowColor: glowColorProp,
+  uiState = UILayoutState.UI_STATE_IDLE,
+  onCategorySelect,
+  onMenuClick,
+  onChatClick,
+}: XurOrbProps) {
+  // ── Context ──────────────────────────────────────────────────────
+  const {
+    voiceState,
+    connectionState,
+    startVoiceCommand,
+    endVoiceCommand,
+    cancelVoiceCommand,
+    handleSelectMain,
+    handleExpandToMain,
+    handleGoBack,
+    state,
+  } = useNavigation()
+  const { getThemeConfig } = useBrandColor()
+  const cadence = useCadenceDetection()
+  const taskProgress = useTaskProgress()
+  const agentQuestion = useAgentQuestion()
+  // REQ-16: a CRAWL is the agent working too. Without this the orb's idea of
+  // "working" disagreed with the tier's, and the swallow never fired for the
+  // case it was built for — crawler_* events drive CrawlProvider, NOT
+  // useTaskProgress, so a research run left taskProgress.isWorking false.
+  // Provider is mounted at app/layout.tsx, above every orb instance.
+  const { state: crawl } = useCrawlContext()
+
+  // ── State ────────────────────────────────────────────────────────
+  const [animationMode, setAnimationMode] = useState<AnimationMode>('C')
+  const [animActive, setAnimActive] = useState(false)
+  const [menuOpen, setMenuOpen] = useState(false)
+  const [doubleClickFlash, setDoubleClickFlash] = useState(false)
+  const [isPressed, setIsPressed] = useState(false)
+
+  // ── Label scramble state (matches PrototypeOrbShellsRotating) ─────
+  const [activeIdx, setActiveIdx] = useState(0)
+  const [scrambledSet, setScrambledSet] = useState<Set<number>>(new Set())
+  const [displayTexts, setDisplayTexts] = useState<string[]>(['', '', ''])
+  const [isAnimatingText, setIsAnimatingText] = useState(false)
+  const scrambleTimersRef = useRef<ReturnType<typeof setInterval>[]>([])
+  const switchTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // ── Refs ─────────────────────────────────────────────────────────
+  const orbRef = useRef<HTMLDivElement>(null)
+  const prefersReducedMotion = useReducedMotion()
+  const animTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // ── Derived values ───────────────────────────────────────────────
+  const theme = getThemeConfig()
+  const glowColor = glowColorProp ?? theme.glow.color
+  const isVoiceActive = voiceState !== "idle"
+  const isListening = voiceState === "listening"
+  const isSpeaking = voiceState === "speaking"
+  const isReconnecting = connectionState === "disconnected" || connectionState === "connecting"
+  // Independent playback breathing — set by tts_started/tts_word(is_final)
+  // CustomEvents from the play-button TTS path.  Never touches voiceState,
+  // so it can't accidentally trigger listening_state or conversation reset.
+  const [playbackSpeaking, setPlaybackSpeaking] = useState(false)
+  useEffect(() => {
+    function onStart() { setPlaybackSpeaking(true) }
+    function onWord(e: Event) {
+      const detail = (e as CustomEvent<{ is_final?: boolean }>).detail
+      if (detail?.is_final) setPlaybackSpeaking(false)
+    }
+    window.addEventListener('iris:tts_started', onStart)
+    window.addEventListener('iris:tts_word', onWord)
+    return () => {
+      window.removeEventListener('iris:tts_started', onStart)
+      window.removeEventListener('iris:tts_word', onWord)
+    }
+  }, [])
+  const isSpeakingActive = isSpeaking || playbackSpeaking
+  const isProcessing = voiceState === "processing_conversation" || voiceState === "processing_tool"
+  const isError = voiceState === "error"
+  const isWingsOpen =
+    uiState === UILayoutState.UI_STATE_CHAT_OPEN ||
+    uiState === UILayoutState.UI_STATE_BOTH_OPEN ||
+    uiState === UILayoutState.UI_STATE_DASHBOARD_OPEN
+
+  // OrbBadge visibility computation REMOVED (REQ-16/T18, 2026-08-25).
+  // AmbientCrawlTier owns this decision now and makes it from the same two
+  // sources (useTaskProgress + useAgentQuestion) plus crawl state, so the
+  // "working" judgement lives in ONE place instead of being computed here and
+  // again in the tier. The lesson the old comment recorded is preserved in the
+  // tier: do NOT gate the working indicator on wings being closed — doing so
+  // hid it for the whole duration of a voice/chat turn.
+
+  // Explicit "agent is thinking / working" flag that drives a visible orb
+  // state during processing — independent of wing open/closed.
+  //
+  // NOTE: isProcessing (voice STT state) is deliberately excluded from this
+  // condition. Sending/receiving a message is transient and does not represent
+  // agent work — it is the preamble to it. The swallow mechanic (REQ-16 AC2)
+  // hides the orb inside AmbientCrawlTier during active agent execution; using
+  // it during STT would make the orb vanish every time the user speaks, which
+  // is disorienting. Only real task progress, agent questions, and crawl
+  // activity constitute "working."
+  const isAgentWorking =
+    taskProgress.isWorking ||
+    agentQuestion.hasPendingQuestion ||
+    crawl.active
+
+  // ── SWALLOWED (REQ-16 AC2/AC3, T19) ──────────────────────────────────────
+  // While a wing is open during an active run the orb is ABSORBED into
+  // AmbientCrawlTier, which becomes the sole working indicator. Orb and tier
+  // are never both visible in that state — a HARD contract.
+  //
+  // Enforced HERE rather than in the tier: only the orb can guarantee the orb
+  // is hidden. A component cannot make a promise about a sibling it does not
+  // render, and splitting the rule across both is how "both visible" slips
+  // back in when one side changes.
+  // Dismissing the card is an explicit "give me the orb back" — it must
+  // un-swallow here too, or the dismissal would leave neither on screen.
+  const tierDismissed = useTierDismissed()
+  const isSwallowed = isWingsOpen && isAgentWorking && !tierDismissed
+
+  // ── THE TRAVEL (T19) ─────────────────────────────────────────────────────
+  // The orb flies to the tier's LOGO SLOT, measured and published by the tier.
+  // Shrinking and fading in place is what read as snapping out of existence;
+  // going somewhere specific is what reads as being absorbed.
+  //
+  // Delta is computed from the orb's OWN rect rather than from the viewport
+  // centre, because the orb is not always centred — Tauri offsets it by the
+  // chat panel's width.
+  const swallowTarget = useSwallowTarget()
+  const [drift, setDrift] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
+  useEffect(() => {
+    if (!isSwallowed || !swallowTarget || !orbRef.current || prefersReducedMotion) {
+      setDrift({ x: 0, y: 0 })
+      return
+    }
+    const r = orbRef.current.getBoundingClientRect()
+    setDrift({
+      x: swallowTarget.x - (r.left + r.width / 2),
+      y: swallowTarget.y - (r.top + r.height / 2),
+    })
+  }, [isSwallowed, swallowTarget, prefersReducedMotion])
+
+  // Sync menuOpen with navigation level — menu is only open at level 2.
+  // When navigating forward to level 3 (WheelView), menu closes.
+  // Don't close when navLevel is 1 — that's the idle state before the
+  // menu's own state has been dispatched to the navigation system.
+  const navLevel = state.level
+  useEffect(() => {
+    // Forward to WheelView (level 3+): close menu
+    if (navLevel > 2 && menuOpen) {
+      setMenuOpen(false)
+    }
+    // Back to idle (level 1): close menu if open
+    else if (navLevel === 1 && menuOpen) {
+      setMenuOpen(false)
+    }
+    // At menu level (level 2): open menu if closed (e.g., after wheel-view back)
+    else if (navLevel === 2 && !menuOpen) {
+      setMenuOpen(true)
+    }
+  }, [navLevel, menuOpen])
+
+  // ── Label scramble function (from PrototypeOrbShellsRotating) ─────
+  const scramble = useCallback((idx: number, finalText: string) => {
+    const len = finalText.length
+    let frame = 0
+    const totalFrames = 24
+    if (scrambleTimersRef.current[idx]) clearInterval(scrambleTimersRef.current[idx])
+    const timer = setInterval(() => {
+      frame++
+      let out = ''
+      for (let i = 0; i < len; i++) {
+        if (frame / totalFrames > i / len) {
+          out += finalText[i]
+        } else {
+          out += CHARS[Math.floor(Math.random() * CHARS.length)]
+        }
+      }
+      setDisplayTexts(prev => {
+        const next = [...prev]
+        next[idx] = out
+        return next
+      })
+      if (frame >= totalFrames) {
+        clearInterval(timer)
+        setDisplayTexts(prev => {
+          const next = [...prev]
+          next[idx] = finalText
+          return next
+        })
+      }
+    }, 30)
+    scrambleTimersRef.current[idx] = timer
+  }, [])
+
+  // ── Label cycling — switch active label every 2800ms ──────────────
+  useEffect(() => {
+    switchTimerRef.current = setInterval(() => {
+      setActiveIdx(prev => {
+        const next = (prev + 1) % 3
+        setScrambledSet(s => {
+          const ns = new Set(s)
+          ns.delete(next)
+          return ns
+        })
+        return next
+      })
+    }, 2800)
+    return () => {
+      if (switchTimerRef.current) clearInterval(switchTimerRef.current)
+    }
+  }, [])
+
+  // ── Trigger scramble when active label changes ────────────────────
+  useEffect(() => {
+    if (!scrambledSet.has(activeIdx)) {
+      scramble(activeIdx, LABELS[activeIdx].final)
+      setScrambledSet(s => new Set([...s, activeIdx]))
+    }
+  }, [activeIdx, scrambledSet, scramble])
+
+  // ── Cleanup scramble timers ───────────────────────────────────────
+  useEffect(() => {
+    return () => {
+      scrambleTimersRef.current.forEach(t => clearInterval(t))
+    }
+  }, [])
+
+  // ── Animation trigger ────────────────────────────────────────────
+  const triggerAnimation = useCallback(() => {
+    if (prefersReducedMotion) return
+    setAnimationMode((cur) => nextAnimationMode(cur))
+    setAnimActive(true)
+    setIsAnimatingText(true)
+    if (animTimerRef.current) clearTimeout(animTimerRef.current)
+    animTimerRef.current = setTimeout(() => setAnimActive(false), ANIM_DURATION_MS[animationMode])
+  }, [prefersReducedMotion, animationMode])
+
+  const handleTextAnimEnd = useCallback(() => {
+    setTimeout(() => setIsAnimatingText(false), 700)
+  }, [])
+
+  // ── Click handlers ───────────────────────────────────────────────
+
+  const handleOrbClick = useCallback(() => {
+    if (isVoiceActive) {
+      if (isSpeaking) {
+        // Clicking while TTS is playing cancels it immediately.
+        cancelVoiceCommand()
+      } else {
+        // Single-click while listening ENDS the voice command and processes STT.
+        // Previously this called cancelVoiceCommand() which discarded the audio
+        // — the user never saw their transcript because it was thrown away.
+        //
+        // endVoiceCommand() itself degrades to a cancel when the state is
+        // already past listening (see useIRISWebSocket) — that guard is what
+        // stops a wedged backend from deadlocking the orb in
+        // "processing_conversation" with every click a no-op.
+        endVoiceCommand()
+      }
+      return
+    }
+    if (isWingsOpen) {
+      onClick()
+      return
+    }
+    triggerAnimation()
+    // Sync menuOpen with navigation level
+    if (state.level > 1 && menuOpen) {
+      setMenuOpen(false)
+    } else if (state.level === 1 && !menuOpen) {
+      setMenuOpen(true)
+    }
+    onClick()
+  }, [isVoiceActive, isSpeaking, endVoiceCommand, cancelVoiceCommand, isWingsOpen, onClick, menuOpen, triggerAnimation, state.level])
+
+  const handleDoubleClick = useCallback(() => {
+    if (isVoiceActive) {
+      endVoiceCommand()
+    } else {
+      startVoiceCommand()
+    }
+    // Intentionally NOT calling onDoubleClick() here — that would fire
+    // the parent's handleDoubleClick (app/page.tsx) which also calls
+    // startVoiceCommand().  Since React hasn't re-rendered yet after
+    // the setVoiceState("listening") in startVoiceCommand(), the parent
+    // would still see voiceState === "idle" and fire a duplicate
+    // voice_command_start, killing the just-started recording.
+  }, [isVoiceActive, startVoiceCommand, endVoiceCommand])
+
+  // Label click handlers — cycle animation + trigger action
+  const handleLabelClick = useCallback((action: 'chat' | 'menu' | 'voice', e: React.MouseEvent) => {
+    e.stopPropagation()
+    e.preventDefault()
+    // Only animate on chat/menu labels. Voice gets its own state change
+    // (scale + haze) from voiceState — the C/D/A click animation here
+    // was visually dominating and making users think voice didn't fire.
+    if (action !== 'voice') {
+      triggerAnimation()
+    }
+    if (action === 'menu') {
+      // Sync menuOpen with navigation: opening menu = nav level 2, closing = level 1
+      const willOpen = !menuOpen
+      setMenuOpen(willOpen)
+      if (willOpen && state.level === 1) {
+        handleExpandToMain()
+      } else if (!willOpen && state.level > 1) {
+        handleGoBack()
+      }
+      onMenuClick?.()
+    } else if (action === 'voice') {
+      if (isVoiceActive) {
+        endVoiceCommand()
+      } else {
+        startVoiceCommand()
+      }
+    } else if (action === 'chat') {
+      onChatClick?.()
+    }
+  }, [triggerAnimation, onMenuClick, onChatClick, isVoiceActive, startVoiceCommand, endVoiceCommand, state.level, menuOpen, handleExpandToMain, handleGoBack])
+
+  // Stop mousedown propagation on labels so the drag handler doesn't
+  // intercept label clicks (which would fire handleOrbClick and cancel voice)
+  const handleLabelMouseDown = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation()
+  }, [])
+
+  const handleCategorySelect = useCallback((categoryId: string) => {
+    onCategorySelect?.(categoryId)
+    // handleSelectMain aggregates cards for the category and dispatches
+    // SELECT_MAIN (level 3 → WheelView) with the correct card data.
+    // It also sends the select_category WS message to the backend.
+    handleSelectMain(categoryId)
+  }, [onCategorySelect, handleSelectMain])
+
+  // ── Window drag + double-click ───────────────────────────────────
+  const { handleMouseDown } = useManualDragWindow(
+    orbRef,
+    handleOrbClick,
+    handleDoubleClick,
+    setDoubleClickFlash,
+    setIsPressed
+  )
+
+  // Flash on voice state transition into listening.
+  // This is the SINGLE animation hook that fires for BOTH wake-word and
+  // double-click paths: the backend broadcasts `listening_state` and
+  // `useIRISWebSocket` calls `setVoiceState('listening')`. The orb flash
+  // here is the canonical "voice started" visual cue.
+  const prevVoiceStateRef = useRef(voiceState)
+  useEffect(() => {
+    const prev = prevVoiceStateRef.current
+    prevVoiceStateRef.current = voiceState
+    if (prev !== "listening" && voiceState === "listening") {
+      setDoubleClickFlash(true)
+      setTimeout(() => setDoubleClickFlash(false), 600)
+    }
+  }, [voiceState])
+
+  // Cleanup animation timer
+  useEffect(() => {
+    return () => {
+      if (animTimerRef.current) clearTimeout(animTimerRef.current)
+    }
+  }, [])
+
+  // ── Visual scaling ───────────────────────────────────────────────
+  // Color does NOT change based on clicks or voice state — color changes
+  // only happen through the customize category in the side panel.
+  // Voice state affects scale/shape only, not color.
+  const labelsVisible = !isWingsOpen && !menuOpen
+
+  // When voice is active (listening / speaking / processing) the orb must breathe
+  // at FULL prominence — identical to the "hey iris" wake-word flow — even with a
+  // wing open. Only the IDLE orb retreats/dims behind an open wing (the VOICE label
+  // stays hidden there for UX, but the listening animation must stay consistent with
+  // the wake word regardless of orb state). This keeps all three activations
+  // (VOICE label, double-click orb, wake word) visually equivalent.
+  const orbRetreatScale = isWingsOpen && !isVoiceActive ? 0.85 : 1.0
+  // Blur removed while wings are open — it made the orb look unfocused.
+  // Keep a subtle opacity dip so it reads as background without vanishing.
+  const orbBlur = 0
+  const orbOpacity = isWingsOpen && !isVoiceActive ? 0.85 : 1.0
+  const baseScale = isExpanded ? 1.1 : 1
+  const effectiveScale = isPressed
+    ? 0.92
+    : isSpeakingActive ? 1.2
+      : isListening ? 1.15
+        : isProcessing ? 1.08
+          : isError ? 1.0
+            : baseScale
+  const finalScale = effectiveScale * orbRetreatScale
+
+  // ── Text animation class + CSS variables (from PrototypeOrbShellsRotating) ──
+  const getTextClass = () => {
+    if (!isAnimatingText || !animActive) return ''
+    if (animationMode === 'C') return 'xur-text-anim-iris'
+    if (animationMode === 'D') return 'xur-text-anim-pull'
+    return 'xur-text-anim-fade' // A
+  }
+
+  const getTextVars = (label: { x: number; y: number }) => {
+    if (animationMode === 'C') {
+      const axisCollapse =
+        label.x === 0
+          ? { x: 0, y: -label.y, sx: 1, sy: 0.1 }
+          : { x: -label.x, y: 0, sx: 0.1, sy: 1 }
+      return {
+        ['--iris-x' as any]: `${axisCollapse.x}px`,
+        ['--iris-y' as any]: `${axisCollapse.y}px`,
+        ['--iris-sx' as any]: axisCollapse.sx,
+        ['--iris-sy' as any]: axisCollapse.sy,
+      }
+    } else if (animationMode === 'D') {
+      return {
+        ['--pull-x' as any]: `${-label.x}px`,
+        ['--pull-y' as any]: `${-label.y}px`,
+      }
+    }
+    return {}
+  }
+
+  return (
+    <>
+      {/* onDoubleClick intentionally omitted — useManualDragWindow (above)
+          handles double-click via its mousedown/mouseup timer.
+          Duplicating it here as a React onDoubleClick would fire
+          handleDoubleClick twice, sending duplicate voice_command_start
+          messages and killing the just-started recording. */}
+      <motion.div
+        ref={orbRef}
+        data-swallowed={isSwallowed ? "true" : "false"}
+        className="relative flex items-center justify-center cursor-pointer pointer-events-auto"
+        style={{
+          width: size,
+          height: size,
+          // Swallowed: hidden AND non-interactive, so a fully transparent orb
+          // cannot still swallow the user's clicks.
+          pointerEvents: isSwallowed ? 'none' : undefined,
+          perspective: '900px',
+          transformStyle: 'preserve-3d',
+          overflow: 'visible',
+          zIndex: 100,
+          background: 'transparent',
+          position: 'relative',
+        }}
+        onMouseDown={handleMouseDown}
+        animate={{
+          // REQ-16 AC2 — SWALLOW. The orb must look ABSORBED, so it collapses
+          // hard (0.28, not a polite 0.72) and drifts toward the tier's resting
+          // point rather than dissolving where it stands. Shrinking in place at
+          // near-full size while fading is what read as "snapping out of
+          // existence"; travel plus a deep collapse is what reads as being
+          // taken in.
+          //
+          // Folded into the EXISTING animate rather than added as a second
+          // animate prop, so the swallow and the orb's own scale/blur/error
+          // states stay one animation instead of two fighting one transform.
+          scale: isSwallowed && !prefersReducedMotion ? finalScale * 0.28 : finalScale,
+          filter: `blur(${isSwallowed && !prefersReducedMotion ? orbBlur + 3 : orbBlur}px)`,
+          opacity: isSwallowed ? 0 : orbOpacity,
+          x: isError ? [0, -10, 10, -10, 10, 0] : drift.x,
+          y: drift.y,
+        }}
+        transition={{
+          // One curve, one duration, shared with the tier — the orb collapsing
+          // and the tier arriving are halves of a single gesture, so they must
+          // not run on different timings.
+          scale: isSwallowed
+            ? { duration: prefersReducedMotion ? 0 : 0.45, ease: [0.4, 0, 0.2, 1] }
+            : { type: "spring", stiffness: 300, damping: 25 },
+          filter: { duration: 0.45, ease: "easeOut" },
+          opacity: {
+            // Fade LATE. Fading at the same rate as the collapse made the orb
+            // vanish before it had visibly gone anywhere.
+            duration: isSwallowed ? (prefersReducedMotion ? 0.2 : 0.45) : 0.3,
+            ease: isSwallowed ? [0.7, 0, 0.9, 0.4] : "easeOut",
+          },
+          x: isError
+            ? { duration: 0.5, repeat: Infinity, repeatDelay: 2 }
+            : { duration: prefersReducedMotion ? 0 : 0.45, ease: [0.4, 0, 0.2, 1] },
+          y: { duration: prefersReducedMotion ? 0 : 0.45, ease: [0.4, 0, 0.2, 1] },
+        }}
+      >
+        {/* Voice-active haze */}
+        <AnimatePresence>
+          {isVoiceActive && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 0.25 }}
+              exit={{ opacity: 0 }}
+              className="absolute rounded-full pointer-events-none"
+              style={{
+                inset: -60,
+                background: `radial-gradient(circle, ${glowColor}22 0%, transparent 70%)`,
+              }}
+            />
+          )}
+        </AnimatePresence>
+
+        {/* OrbWorkingIndicator REMOVED (REQ-16, 2026-08-25) — the orbiting
+            particles that ringed the orb while the agent executed. It answered
+            "is the agent working", which AmbientCrawlTier now answers with a
+            count, a status line and, when a wing is open, the orb itself. Two
+            indicators for one question is the debt REQ-16 exists to remove, and
+            this was the last of them.
+            NOTE: RadialArcNodes (the level-2 category menu) is untouched — that
+            is navigation, not an execution indicator. */}
+
+        {/* OrbBadge RETIRED here — REQ-16/T18, 2026-08-25.
+            AmbientCrawlTier is now the single working indicator: it shows task
+            steps AND crawl pages on one unified counter (AC5), where the badge
+            could only ever show steps. Two indicators with different grammars
+            for the same question ("is it working, how far along") is the debt
+            this removes. The component file survives for now — see the REQ-16
+            open question about the "?" variant, which the tier currently takes
+            over. */}
+
+        {/* Inner 3D layer — canvas + labels */}
+        <div
+          className="absolute inset-0 rounded-full flex flex-col items-center justify-center"
+          style={{ transform: 'translateZ(12px)', background: 'transparent' }}
+        >
+          {/* OrbCanvas — floating particle shell visual */}
+          <div
+            className="relative"
+            style={{
+              width: `${Math.min(size, 120)}px`,
+              height: `${Math.min(size, 120)}px`,
+              zIndex: 2,
+              animation: 'xurFloat 4s ease-in-out infinite',
+            }}
+          >
+            {/* NO SCRIM HERE, DELIBERATELY. A dark disc behind the orb was
+                the first fix for "the orb vanishes on a pale wallpaper", and
+                it was treating the symptom: the particles composite with
+                'lighter' (additive), so on a near-white backdrop the pixel is
+                already saturated and adding cyan does nothing. A plate works
+                only by dimming the wallpaper, which is why it always read as a
+                dark spot behind the mark rather than as the mark getting
+                brighter.
+                The contrast now lives on the particles themselves — see the
+                two-pass halo in orb/OrbCanvas.tsx drawShell. It travels with
+                them, darkens only where a particle actually is, and leaves the
+                wallpaper alone everywhere else. */}
+            <div className="relative" style={{ zIndex: 1 }}>
+            <OrbCanvas
+              glowColor={glowColor}
+              breathMode={isReconnecting ? 'pulse' : cadence.breathMode}
+              // Central glow halo = voice active (listening STT OR TTS speaking/
+              // playback). The calm core dot is always drawn by OrbCanvas
+              // regardless. TTS is rendered slightly LARGER than listening
+              // (glowScale) for consistency across voice states. The reconnecting
+              // state must NOT force the halo on (that lit the core at idle
+              // whenever the backend WS was down). Reconnect gets its own shell
+              // pulse cue below.
+              breathLevel={playbackSpeaking ? 0.6 : cadence.breathLevel}
+              isBreathing={cadence.isBreathing || playbackSpeaking}
+              glowActive={isListening || isSpeakingActive}
+              glowScale={isSpeakingActive ? 1.18 : 1.0}
+              animationMode={isReconnecting ? 'D' : animationMode}
+              animActive={isReconnecting ? true : animActive}
+            />
+            </div>
+          </div>
+
+          {/* Glitch labels — → Chat ← / ↑ Menu / ↑↑ Voice */}
+          <div className="absolute inset-0" style={{ zIndex: 1 }}>
+            {LABELS.map((label, i) => {
+              const scale = size / 120
+              const lx = label.x * scale
+              const ly = label.y * scale
+              return (
+              <div
+                key={i}
+                className="absolute"
+                style={{
+                  left: '50%',
+                  top: '50%',
+                  transform: `translate(-50%, -50%) translate(${lx}px, ${ly}px)`,
+                  pointerEvents: labelsVisible ? 'auto' : 'none',
+                  opacity: labelsVisible ? 1 : 0,
+                  transition: 'opacity 0.3s ease',
+                  // Increased hit target — padding absorbs mis-clicks near text
+                  padding: '8px 10px',
+                  margin: '-8px -10px',
+                  cursor: 'pointer',
+                }}
+                onMouseDown={handleLabelMouseDown}
+                onClick={(e) => handleLabelClick(label.action, e)}
+              >
+                <span
+                  className={getTextClass()}
+                  onAnimationEnd={isAnimatingText ? handleTextAnimEnd : undefined}
+                  style={{
+                    display: 'block',
+                    fontSize: '11px',
+                    fontWeight: 700,
+                    letterSpacing: '0.12em',
+                    textTransform: 'uppercase' as const,
+                    color: activeIdx === i ? '#e2e8f0' : '#475569',
+                    textShadow: activeIdx === i
+                      ? `0 0 16px ${glowColor}55, 0 0 4px ${glowColor}88`
+                      : '0 0 6px rgba(148,163,184,0.1)',
+                    whiteSpace: 'nowrap',
+                    opacity: activeIdx === i ? 1 : 0.4,
+                    fontFamily: "'Courier New', Courier, monospace",
+                    transformOrigin: 'center center',
+                    cursor: 'pointer',
+                    userSelect: 'none',
+                    ...getTextVars(label),
+                  } as React.CSSProperties}
+                >
+                  {displayTexts[i] || ''}
+                </span>
+              </div>
+              )
+            })}
+          </div>
+        </div>
+
+        {/* RadialArcNodes — level 2 category menu (visible when MENU clicked) */}
+        <div
+          className="absolute"
+          style={{
+            left: '50%',
+            top: '50%',
+            transform: 'translate(-50%, -50%)',
+            zIndex: 5,
+            pointerEvents: menuOpen ? 'auto' : 'none',
+          }}
+        >
+            <RadialArcNodes
+            glowColor={glowColor}
+            isVisible={menuOpen}
+            onCategorySelect={handleCategorySelect}
+          />
+        </div>
+
+        {/* Voice-active flash overlay (fires on any voiceState → listening transition:
+            wake word, double-click, VOICE label, optimistic startVoiceCommand). */}
+        <AnimatePresence>
+          {doubleClickFlash && (
+            <motion.div
+              initial={{ opacity: 0.8 }}
+              animate={{ opacity: 0 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.5 }}
+              className="absolute rounded-full pointer-events-none"
+              style={{ inset: 0, background: 'white' }}
+            />
+          )}
+        </AnimatePresence>
+      </motion.div>
+
+      {/* CSS keyframes for label text animations (C/D/A pairs) */}
+      <style>{`
+        @keyframes xurFloat {
+          0%, 100% { transform: translateY(0px); }
+          50% { transform: translateY(-6px); }
+        }
+        /* C-pair text: iris shutter (axis-specific collapse) */
+        @keyframes xurTextAnimIris {
+          0% { transform: translate(0, 0) scale(1, 1); opacity: 1; }
+          100% { transform: translate(var(--iris-x), var(--iris-y)) scale(var(--iris-sx), var(--iris-sy)); opacity: 0; }
+        }
+        .xur-text-anim-iris {
+          animation: xurTextAnimIris 0.9s cubic-bezier(0.6, 0, 0.8, 1) forwards;
+        }
+        /* D-pair text: magnetic pull (translate to center, spiral, scale to 0) */
+        @keyframes xurTextAnimPull {
+          0% { transform: translate(0, 0) scale(1) rotate(0deg); opacity: 1; }
+          60% { transform: translate(calc(var(--pull-x) * 0.6), calc(var(--pull-y) * 0.6)) scale(0.6) rotate(180deg); opacity: 0.6; }
+          100% { transform: translate(var(--pull-x), var(--pull-y)) scale(0) rotate(360deg); opacity: 0; }
+        }
+        .xur-text-anim-pull {
+          animation: xurTextAnimPull 1s cubic-bezier(0.6, 0, 0.8, 1) forwards;
+        }
+        /* A-pair text: simple fade out */
+        @keyframes xurTextAnimFade {
+          0% { opacity: 1; }
+          100% { opacity: 0; }
+        }
+        .xur-text-anim-fade {
+          animation: xurTextAnimFade 0.8s ease-out forwards;
+        }
+      `}</style>
+    </>
+  )
+}

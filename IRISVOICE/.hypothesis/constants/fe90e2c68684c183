@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\models\lfm2\modeling_lfm2.py
+# hypothesis_version: 6.151.9
+
+[-0.5, 0.0, 1e-06, 1.0, 'Lfm2DecoderLayer', 'Lfm2ForCausalLM', 'Lfm2Model', 'Lfm2PreTrainedModel', 'RMSNorm', 'attentions', 'cache_position', 'cos', 'cpu', 'cuda', 'default', 'full_attention', 'head_dim', 'hidden_states', 'inv_freq', 'lm_head', 'lm_head.weight', 'logits', 'model', 'mps', 'original_inv_freq', 'past_key_values', 'rope_theta', 'rope_type', 'rotary_pos_emb', 'sin', 'torch.Tensor', 'torch.device']

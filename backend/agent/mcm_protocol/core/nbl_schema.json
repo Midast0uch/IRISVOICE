@@ -1,0 +1,22 @@
+{
+  "protocol_version": "0.2",
+  "description": "NBL format spec and MCM_MITO tag template",
+  "last_updated": "2026-04-18",
+  "nbl_format": {
+    "primary_line": "MYCELIUM: context:[gate_prog,landmark_density,session_depth]@gate<N> | toolpath:[t1,t2,t3] | confidence:<float>",
+    "optional_lines": [
+      "TOPOLOGY: <space_label>",
+      "CHAIN: entries:<N> landmarks:<N>",
+      "GRADIENT: <warning_summary>"
+    ],
+    "max_tokens": 40
+  },
+  "mito_tag": {
+    "format": "short",
+    "max_tokens": 300,
+    "inject_position": 1,
+    "template": "<MCM_MITO>\nv{version} | Task:{task_id} | WF:{workflow} | Collab:{collab_mode}\nNBL: {nbl_line}\nPins: {pin_count} active | Compress at {compress_pct_int}% budget\nRule: Trust NBL for spatial reasoning | Compress naturally at limit\n</MCM_MITO>",
+    "note": "Agents treat this tag as internal biology, not an external tool call. Insert at messages[1]."
+  },
+  "fallback": "plain_system_message"
+}

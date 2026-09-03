@@ -1797,6 +1797,14 @@ class IRISGateway:
                             f"'{_existing.get('reasoning')}')",
                             extra={"session_id": session_id, "client_id": client_id},
                         )
+                        try:
+                            self._logger.info(
+                                "[Authority] source=confirm_card winner=%s prev=%s reason=explicit-switch",
+                                _effective_provider, _existing.get("reasoning"),
+                                extra={"session_id": session_id, "client_id": client_id},
+                            )
+                        except Exception:
+                            pass
                     elif _bound_any:
                         self._logger.info(
                             f"[Session: {session_id}] Bound unbound roles to "
@@ -2592,9 +2600,23 @@ class IRISGateway:
                 # Track which client triggered this so wake-word callback knows where to respond
                 self._active_voice_client[session_id] = client_id
 
-                # Pocket-TTS loads lazily on first synthesize_stream() call.
-                # No pre-trigger here â€” model must not load until the user
-                # actually requests speech output.
+                # REQ-5 follow-up (pin_763c3f349ba7): warm TTS on the FIRST
+                # voice command, mirroring _on_wake_word_async in main.py.
+                # The ~10s Pocket-TTS load overlaps with the user speaking +
+                # the agent thinking, so the first double-click response is
+                # NOT delayed — while idle memory stays 0 for TTS.
+                # Fire-and-forget; never blocks the voice path.
+                try:
+                    _tts = get_tts_manager()
+                    if not _tts.is_loaded():
+                        self._logger.info(
+                            "[Voice] Warming TTS on first voice command (background)..."
+                        )
+                        asyncio.get_running_loop().create_task(
+                            asyncio.to_thread(_tts._load_pocket_tts)
+                        )
+                except Exception as _warm_exc:
+                    self._logger.warning(f"[Voice] TTS warm-up failed (non-fatal): {_warm_exc}")
 
                 # Broadcast LISTENING immediately so IrisOrb animates
                 await self._ws_manager.broadcast_to_session(
@@ -6867,9 +6889,26 @@ class IRISGateway:
                             _r = getattr(agent_kernel, "_router", None)
                             if _r is not None:
                                 try:
-                                    cfg.inference.role_bindings = _r.snapshot()[
-                                        "role_bindings"
-                                    ]
+                                    _snap_rb = _r.snapshot()["role_bindings"]
+                                    cfg.inference.role_bindings = _snap_rb
+                                    try:
+                                        _stamps2 = [
+                                            float(b.get("selected_at", 0.0) or 0.0)
+                                            for b in (_snap_rb or [])
+                                            if isinstance(b, dict)
+                                        ]
+                                        _max2 = max(_stamps2) if _stamps2 else 0.0
+                                        if _max2 > 0.0:
+                                            cfg.inference.provider_selected_at = _max2
+                                    except Exception:
+                                        pass
+                                    try:
+                                        _def2 = getattr(_r, "_deferred_selection", None)
+                                        cfg.inference.deferred_selection = (
+                                            dict(_def2) if isinstance(_def2, dict) else None
+                                        )
+                                    except Exception:
+                                        pass
                                 except Exception as _rb_err:
                                     self._logger.warning(
                                         "[set_model_selection] role_bindings "
@@ -8942,7 +8981,12 @@ class IRISGateway:
                         kind="INPROCESS" if _inproc_p else "LOCAL_OPENAI",
                         model=_model_id,
                         purpose="chat",
-                        endpoint="" if _inproc_p else mgr.ENDPOINT,
+                        # Strip /v1 (see the ProviderInstance above) so a
+                        # re-hydrated local provider routes without /v1/v1.
+                        endpoint=(
+                            "" if _inproc_p
+                            else mgr.ENDPOINT.rstrip("/").removesuffix("/v1")
+                        ),
                         model_path=model_path,
                         profile=profile,
                     )
@@ -8985,7 +9029,17 @@ class IRISGateway:
                                 else ProviderKind.LOCAL_OPENAI
                             ),
                             model=_model_name,
-                            api_base_url="" if _inproc else mgr.ENDPOINT,
+                            # Strip the trailing /v1 from mgr.ENDPOINT: the
+                            # OpenAICompatTransport appends /v1/chat/completions
+                            # itself, so an endpoint that already ends in /v1
+                            # produced a double /v1/v1/chat/completions -> 404
+                            # (File Not Found) on every local turn. Mirrors the
+                            # kernel wiring at _handle_load_local_model which
+                            # strips /v1 the same way.
+                            api_base_url=(
+                                "" if _inproc
+                                else mgr.ENDPOINT.rstrip("/").removesuffix("/v1")
+                            ),
                             loaded=True,
                             vision_loaded=_vision_loaded,
                         )
@@ -9229,6 +9283,47 @@ class IRISGateway:
                         f"[iris_local] Removed local provider(s) {_local_ids} "
                         f"from registry (session {session_id})"
                     )
+                    # REQ-4 (specs/model-selection-authority): a binding held on
+                    # an unloaded local model must fall back LOUDLY to the last
+                    # API provider — never a dead binding, never a silent
+                    # rebind. The role table is process-wide, so rebinding here
+                    # (on the shared table) is visible to every kernel/session.
+                    try:
+                        _fallback = None
+                        for _b in router.roles.list():
+                            if _b.instance_id in _local_ids:
+                                if _fallback is None:
+                                    _fallback = next(
+                                        (
+                                            i.id
+                                            for i in router.registry.list()
+                                            if i.id not in _local_ids
+                                            and (i.purpose or "chat") == "chat"
+                                        ),
+                                        None,
+                                    )
+                                if _fallback:
+                                    router.bind_role(
+                                        _b.role, _fallback,
+                                        model_override=None,
+                                        selected_at=_time.time(),
+                                    )
+                                    self._logger.warning(
+                                        "[Authority] source=unload winner=%s prev=%s "
+                                        "reason=local-unloaded-loud-fallback",
+                                        _fallback, _b.instance_id,
+                                    )
+                                else:
+                                    self._logger.warning(
+                                        "[Authority] source=unload winner=none prev=%s "
+                                        "reason=local-unloaded-no-api-fallback "
+                                        "(role left unbound; user must choose)",
+                                        _b.instance_id,
+                                    )
+                    except Exception as _fb_err:
+                        self._logger.debug(
+                            f"[iris_local] loud-fallback rebind skipped: {_fb_err}"
+                        )
                 self._logger.info(
                     f"[iris_local] Kernel de-wired after unload (session {session_id})"
                 )
@@ -9238,6 +9333,29 @@ class IRISGateway:
             # Re-emit the snapshot so every model surface drops the unloaded
             # provider immediately instead of at the next system_status tick.
             await self._broadcast_inference_snapshot(session_id)
+
+            # REQ-4 (specs/model-selection-authority): a local model that was
+            # serving a role unloaded mid-session — surface the loud fallback
+            # to the USER, not just the log. The frontend renders this as a
+            # visible flag + message (silent fallback is forbidden).
+            try:
+                await self._ws_manager.broadcast_to_session(
+                    session_id,
+                    {
+                        "type": "model_selection_fallback",
+                        "payload": {
+                            "reason": "local_unloaded",
+                            "message": (
+                                "The local model was unloaded. Turns now fall "
+                                "back to the last API provider."
+                            ),
+                        },
+                    },
+                )
+            except Exception as _fb_msg_err:
+                self._logger.debug(
+                    f"[iris_local] fallback user-message broadcast skipped: {_fb_msg_err}"
+                )
 
             await self._ws_manager.send_to_client(
                 client_id,
@@ -9705,6 +9823,30 @@ class IRISGateway:
 
             _cfg = _lc()
             _cfg.inference.role_bindings = snap["role_bindings"]
+            # Swarm-defer seam (T4b): persist the timestamped intent alongside
+            # the bindings so a restart while swarm is active never loses it.
+            # None clears a consumed intent.
+            try:
+                _deferred = snap.get("deferred_selection")
+                _cfg.inference.deferred_selection = (
+                    dict(_deferred) if isinstance(_deferred, dict) else None
+                )
+            except Exception:
+                pass
+            # Authority stamps (T1-T3): the flat provider record and the
+            # role_bindings record share one clock. Persist the newest binding
+            # stamp as the flat record's time so boot can compare (newer wins).
+            try:
+                _stamps = [
+                    float(b.get("selected_at", 0.0) or 0.0)
+                    for b in (snap.get("role_bindings") or [])
+                    if isinstance(b, dict)
+                ]
+                _max_stamp = max(_stamps) if _stamps else 0.0
+                if _max_stamp > 0.0:
+                    _cfg.inference.provider_selected_at = _max_stamp
+            except Exception:
+                pass
             # Keep the legacy provider field consistent with the canonical
             # role_bindings (reasoning role's instance) so the config file and
             # /api/inference/state always agree with actual routing.
@@ -10016,7 +10158,8 @@ class IRISGateway:
             # one level down, where it has always been. Routing this through the
             # kernel would only couple the gateway to an object that holds no
             # authority over the binding.
-            _router.bind_role(role, instance_id, model_override)
+            _stamp = time.time()
+            _router.bind_role(role, instance_id, model_override, selected_at=_stamp)
 
             # REQ-7 AC1/AC3: log off the critical path — a logging failure
             # must never fail the bind. High-frequency switching still logs
@@ -10025,6 +10168,13 @@ class IRISGateway:
                 self._logger.info(
                     "[set_role_binding] role=%s prev_instance=%s new_instance=%s outcome=%s",
                     role, _prev_instance_id, instance_id, _binding_status,
+                )
+            except Exception:
+                pass
+            try:
+                self._logger.info(
+                    "[Authority] source=set_role_binding winner=%s prev=%s reason=explicit-gesture stamp=%.3f",
+                    instance_id, _prev_instance_id, _stamp,
                 )
             except Exception:
                 pass

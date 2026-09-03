@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\accelerate\utils\fsdp_utils.py
+# hypothesis_version: 6.151.9
+
+['.', '._orig_mod', '2.3.0', '>=', 'ACCELERATE_USE_FSDP', 'False', 'Params4bit', 'True', '_local_tensor', '_no_split_modules', '_orig_mod.', '_tied_weights_keys', 'dtype', 'float8_e4m3fn', 'ignored_params', 'instead.', 'mesh', 'meta', 'model', 'mp_policy', 'no', 'offload_policy', 'offload_to_cpu', 'optimizer', 'optimizer_0', 'params', 'pytorch_model_fsdp_0', 'rank0_only', 'tie_weights', 'torch_device_mesh']

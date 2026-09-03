@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torch\_dynamo\polyfills\functools.py
+# hypothesis_version: 6.151.9
+
+['_T', '_U', 'reduce']

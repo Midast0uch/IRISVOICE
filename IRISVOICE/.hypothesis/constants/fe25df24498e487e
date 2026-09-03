@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\transformers\pipelines\automatic_speech_recognition.py
+# hypothesis_version: 6.151.9
+
+[0.0, 10000.0, 256, 'BeamSearchDecoderCTC', 'PreTrainedModel', 'array', 'assistant_model', 'assistant_tokenizer', 'attention_mask', 'char', 'char_offsets', 'chunk_length_s', 'chunks', 'ctc', 'ctc_with_lm', 'decoder_kwargs', 'end_offset', 'generate_kwargs', 'generation_config', 'http://', 'https://', 'input_features', 'input_values', 'inputs', 'is_last', 'lasr_ctc', 'logits', 'longest', 'main_input_name', 'num_frames', 'path', 'pt', 'raw', 'rb', 'return_language', 'return_segments', 'return_timestamps', 'sampling_rate', 'segments', 'seq2seq', 'seq2seq_whisper', 'sequences', 'start_offset', 'stride', 'stride_length_s', 'text', 'timestamp', 'token_timestamps', 'tokenizer', 'tokens', 'torch.device', 'whisper', 'word']

@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchaudio\models\wav2vec2\utils\import_fairseq.py
+# hypothesis_version: 6.151.9
+
+['GroupNorm', 'HubertEncoder', 'HubertModel', 'Wav2Vec2Model', 'Wav2VecEncoder', 'encoder_dropout', 'encoder_embed_dim', 'encoder_layer_drop', 'encoder_num_heads', 'encoder_num_layers', 'extractor_conv_bias', 'extractor_mode', 'group_norm', 'label_embs_concat', 'layer_norm', 'proj\\.(weight|bias)', 'w2v_model.']

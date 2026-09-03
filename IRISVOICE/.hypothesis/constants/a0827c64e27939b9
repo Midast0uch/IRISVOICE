@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\transforms\v2\_augment.py
+# hypothesis_version: 6.151.9
+
+[0.0, 0.02, 0.3, 0.33, 0.5, 1.0, 3.3, 100, 'batch_size', 'box', 'default', 'labels', 'lam', 'lam_adjusted', 'quality', 'random', 'v']

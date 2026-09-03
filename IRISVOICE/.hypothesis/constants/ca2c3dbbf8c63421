@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\models\quantization\resnet.py
+# hypothesis_version: 6.151.9
+
+[1.814, 4.089, 11.238, 15.46, 16.414, 24.759, 24.953, 69.494, 75.92, 78.986, 80.282, 81.556, 82.574, 82.898, 86.034, 86.645, 88.882, 92.814, 94.48, 94.976, 96.132, 96.326, 224, 232, 11689512, 25557032, 83455272, 88791336, '0', '1', 'ImageNet-1K', 'QuantizableResNet', '_docs', '_file_size', '_metrics', '_ops', 'acc@1', 'acc@5', 'backend', 'bn1', 'bn2', 'bn3', 'categories', 'conv1', 'conv2', 'conv3', 'fbgemm', 'groups', 'min_size', 'num_classes', 'num_params', 'pretrained', 'quantize', 'quantized_resnet18', 'quantized_resnet50', 'recipe', 'relu', 'relu1', 'relu2', 'resnet18', 'resnet50', 'resnext101_32x8d', 'resnext101_64x4d', 'unquantized', 'width_per_group']

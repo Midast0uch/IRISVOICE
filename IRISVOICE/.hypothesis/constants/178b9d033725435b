@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\sympy\logic\__init__.py
+# hypothesis_version: 6.151.9
+
+['And', 'Equivalent', 'ITE', 'Implies', 'Nand', 'Nor', 'Not', 'Or', 'POSform', 'SOPform', 'Xor', 'bool_map', 'false', 'gateinputcount', 'satisfiable', 'simplify_logic', 'to_cnf', 'to_dnf', 'to_nnf', 'true']

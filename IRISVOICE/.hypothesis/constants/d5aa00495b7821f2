@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\transforms\v2\_color.py
+# hypothesis_version: 6.151.9
+
+[-0.5, -0.05, 0.0, 0.05, 0.1, 0.5, 0.875, 1.0, 1.125, 1.5, 'brightness', 'brightness_factor', 'channel_permutation', 'contrast', 'contrast_before', 'contrast_factor', 'fn_idx', 'hue', 'hue_factor', 'inf', 'num_input_channels', 'permutation', 'saturation', 'saturation_factor', 'threshold']

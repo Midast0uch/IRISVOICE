@@ -1,0 +1,24 @@
+{
+  "name": "iris-mcp-discord",
+  "version": "1.0.0",
+  "description": "Iris MCP Server for Discord",
+  "main": "index.js",
+  "type": "module",
+  "bin": {
+    "iris-mcp-discord": "./index.js"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [
+    "iris",
+    "mcp",
+    "discord",
+    "messaging"
+  ],
+  "author": "Torus Network",
+  "license": "MIT",
+  "dependencies": {
+    "discord.js": "^14.14.1"
+  }
+}

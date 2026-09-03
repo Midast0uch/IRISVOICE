@@ -1,0 +1,5 @@
+# Ignore all JSON settings files (user data)
+*.json
+
+# But keep folder structure
+!.gitignore

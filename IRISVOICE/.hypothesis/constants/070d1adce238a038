@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\tokenizers\implementations\sentencepiece_bpe.py
+# hypothesis_version: 6.151.9
+
+[1000, 30000, '<unk>', 'SentencePieceBPE', 'add_prefix_space', 'always', 'dropout', 'model', 'never', 'replacement', 'unk_token', '▁']

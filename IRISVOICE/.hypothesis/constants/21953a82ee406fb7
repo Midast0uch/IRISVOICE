@@ -1,0 +1,4 @@
+# file: C:\Users\midas\AppData\Roaming\Python\Python313\site-packages\torchvision\transforms\v2\_geometry.py
+# hypothesis_version: 6.151.9
+
+[0.0, 0.08, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0, 2.0, 3.0, 4.0, 5.0, 50.0, 'alpha', 'center', 'constant', 'degrees', 'edge', 'fill', 'height', 'is_within_crop_area', 'left', 'needs_crop', 'needs_pad', 'padding', 'reflect', 'scale', 'shear', 'side_range', 'sigma', 'size', 'symmetric', 'top', 'translate', 'width']
