@@ -2266,6 +2266,7 @@ class IRISGateway:
                 # even without an active orbit category â€” they're global settings.
                 if section_id in (
                     "model_selection",
+                    "model_inference",
                     "identity",
                     "inference_mode",
                     "vision_fallback_ladder",
