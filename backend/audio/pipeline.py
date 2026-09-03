@@ -5,6 +5,7 @@ AudioPipeline - Manages audio input/output streams using sounddevice
 import threading
 import queue
 import logging
+import time
 from typing import Optional, Callable, List
 
 logger = logging.getLogger(__name__)
@@ -55,6 +56,11 @@ class AudioPipeline:
         # Half-duplex gate: when True, incoming frames are dropped (TTS is
         # playing through the headphones and would be captured by the mic).
         self._tts_active: bool = False
+        # Monotonic timestamp of the last TTS chunk that reached the output
+        # device. Drives the stall backstop in _tts_gate_closed(): 0.0 means
+        # "TTS claimed the mic but has not played anything yet".
+        self._tts_last_audio_at: float = 0.0
+        self._tts_gate_stall_logged: bool = False
 
         # Barge-in energy callback (registered by AudioEngine). Fired ~31Hz
         # from the input callback with frame RMS while TTS is active.
@@ -83,6 +89,45 @@ class AudioPipeline:
         # and half-duplex gate lock issues. Using sd.play() instead.
         self._native_player = None
         self._native_available = False
+
+    # Half-duplex stall backstop. If TTS holds the mic but produces no audio
+    # for this long, the gate reopens and the mic goes back to the user.
+    #
+    # Without it the gate is a one-way latch: it closes when _speak_response
+    # starts and only reopens in that function's `finally`, which a stuck
+    # producer thread can delay indefinitely. Observed 2026-09-03 (pid 25120):
+    # a wedged TTS turn held the mic through a whole conversation turn — the
+    # wake word went deaf and the transcription thread hit its 60 s watchdog
+    # instead. 10 s is far longer than any legitimate inter-chunk gap
+    # (Pocket-TTS streams its first chunk ~0.3 s in) and far shorter than the
+    # 60 s watchdog.
+    _TTS_GATE_STALL_GRACE: float = 10.0
+
+    def note_tts_audio(self) -> None:
+        """Record that a TTS chunk reached the output device (stall clock)."""
+        self._tts_last_audio_at = time.monotonic()
+
+    def _tts_gate_closed(self) -> bool:
+        """True while IRIS is speaking and mic frames must be dropped.
+
+        Self-healing: a TTS turn that stops producing audio releases the mic
+        after _TTS_GATE_STALL_GRACE even though _tts_active is still True.
+        """
+        if not self._tts_active or not self.echo_cancellation:
+            return False
+        if not self._tts_last_audio_at:
+            return True
+        stalled = time.monotonic() - self._tts_last_audio_at
+        if stalled <= self._TTS_GATE_STALL_GRACE:
+            return True
+        if not self._tts_gate_stall_logged:
+            self._tts_gate_stall_logged = True
+            logger.warning(
+                "[AudioPipeline] TTS held the mic with no audio for %.1fs "
+                "(stuck half-duplex gate) — reopening the mic",
+                stalled,
+            )
+        return False
 
     def start_buffering(self):
         """Starts collecting audio frames into the buffer."""
@@ -183,6 +228,10 @@ class AudioPipeline:
         propagated through ``AudioEngine.set_tts_active``.
         """
         self._tts_active = bool(active)
+        # (Re)start the stall clock. A turn that never plays anything still
+        # gets the full grace period before the gate self-releases.
+        self._tts_last_audio_at = time.monotonic()
+        self._tts_gate_stall_logged = False
 
     def set_barge_in_energy_callback(
         self, callback: Optional[Callable[[float], None]]
@@ -210,7 +259,7 @@ class AudioPipeline:
             # callback (AudioEngine._process_audio_frame) is still invoked so
             # the engine's own _tts_active gate can suppress wake-word
             # detection uniformly — but STT capture is blocked here.
-            if self._tts_active and self.echo_cancellation:
+            if self._tts_gate_closed():
                 # Energy-based barge-in: compute RMS before dropping so the
                 # AudioEngine can detect user speech over TTS playback.  The
                 # callback fires at ~31Hz from the PortAudio input thread.

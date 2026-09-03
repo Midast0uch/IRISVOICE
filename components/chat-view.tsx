@@ -113,6 +113,23 @@ function newMessageId(): string {
   return `${Date.now()}-${__messageSeq}`
 }
 
+/**
+ * Coarse key for "is this the same content?". Used to detect that a rendered
+ * prism card already displays the turn's plain text, so the text bubble can be
+ * skipped without dropping the message that the card attaches to.
+ *
+ * Deliberately lossy: fenced-code markers and all whitespace runs collapse, so
+ * the same body survives the markdown -> card render unchanged. It only ever
+ * suppresses a duplicate, never decides what gets shown.
+ */
+function normalizeCardText(value: string): string {
+  return (value || '')
+    .replace(/```[a-zA-Z0-9]*\n?/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+}
+
 export type ContentType = 'markdown' | 'email' | 'video' | 'picture' | 'text';
 
 const MESSAGE_THRESHOLDS = {
@@ -428,17 +445,47 @@ export function ChatWing({
   // Each document:render WS event appends or updates a DocRender within the
   // active conversation; the expand action opens it full-panel via DocumentPanel.
   const [expandedDocId, setExpandedDocId] = useState<string | null>(null)
-  // Ref + effect for closure-safe document turn ID lookup in the REST handler
-  // (avoids closure staleness when a document:render WS event arrives between
-  // fetch send and response).
-  const activeDocTurnIdsRef = useRef<Set<string>>(new Set())
+  // turnId -> normalized content of every document rendered under that turn.
+  // This exists so the text_response handlers can tell "a card exists for this
+  // turn" apart from "this card IS the answer". The old check only had the turn
+  // IDs, so ANY document claimed the turn and the assistant's plain text was
+  // dropped outright. That did two kinds of damage: the narration the user
+  // should read alongside the card disappeared, and — because no message was
+  // ever created for the turn — nothing carried `id === turnId`, so the card
+  // failed the inline join (doc.turnId === message.id) and fell through to the
+  // orphan block at the bottom of the scroll.
+  //
+  // A ref, not state, for the same reason the old turn-ID set was: the REST
+  // path reads it inside a fetch .then(), and a document:render can land
+  // between send and response.
+  const activeDocContentsRef = useRef<Map<string, string[]>>(new Map())
   useEffect(() => {
     const _docs =
       conversations.find(c => c.id === activeConversationId)?.documents || []
-    activeDocTurnIdsRef.current = new Set(
-      _docs.map(d => d.turnId).filter((t): t is string => !!t)
-    )
+    const _byTurn = new Map<string, string[]>()
+    for (const d of _docs) {
+      if (!d.turnId) continue
+      const norm = normalizeCardText(d.content || '')
+      if (!norm) continue
+      const cur = _byTurn.get(d.turnId)
+      if (cur) cur.push(norm)
+      else _byTurn.set(d.turnId, [norm])
+    }
+    activeDocContentsRef.current = _byTurn
   }, [activeConversationId, conversations])
+
+  // True only when the incoming plain text is ALREADY shown by one of this
+  // turn's rendered documents. Anything else — narration wrapping a card, a
+  // short answer next to a table — is not a duplicate and must survive so the
+  // turn keeps both its text and its card.
+  const isTextRenderedAsDocument = (turnId: string | undefined, text: string): boolean => {
+    if (!turnId) return false
+    const rendered = activeDocContentsRef.current.get(turnId)
+    if (!rendered || rendered.length === 0) return false
+    const norm = normalizeCardText(text)
+    if (!norm) return false
+    return rendered.some((r) => r === norm || r.includes(norm))
+  }
 
   const [inputText, setInputText] = useState("")
   const [webMode, setWebMode] = useState(() => {
@@ -1009,16 +1056,18 @@ export function ChatWing({
 
       const turnId = detail.turn_id
 
-      // If this turn is a rendered document (prism card), skip plain-text —
-      // the RichDocument card already shows the structured content.
+      // Skip plain-text ONLY when one of this turn's documents already shows
+      // exactly this text — otherwise the user reads the answer twice.
       //
-      // NOTE for anyone re-adding an early/plan card: this suppression is why
-      // that is dangerous. A document emitted BEFORE the answer exists claims
-      // the turn here, and an answer arriving as plain text is then dropped —
-      // the user is left reading a plan for work that already finished. Any
-      // pre-answer card needs this branch to distinguish "a card exists" from
-      // "the answer was rendered" before it can be safe.
-      if (turnId && activeDocTurnIdsRef.current.has(turnId)) {
+      // This used to fire on `activeDocTurnIdsRef.current.has(turnId)`: ANY
+      // document claimed the turn and the text was dropped unconditionally.
+      // That is what let a card emitted before the answer swallow the answer,
+      // and it is also why prism cards drifted to the bottom of the scroll —
+      // no message was ever created for the turn, so `doc.turnId === message.id`
+      // never matched and the card fell through to the orphan fallback.
+      // Comparing content instead lets plain text and a render coexist in one
+      // response, which is the whole point of showing a card beside its text.
+      if (isTextRenderedAsDocument(turnId, text)) {
         seenTurnIds.current.add(turnId)
         return
       }
@@ -2039,10 +2088,10 @@ export function ChatWing({
         .then((data) => {
           setLocalTyping(false)
           const turnId = data.turn_id
-          // If a rendered document (prism card) with this turn_id already
-          // exists, skip adding a duplicate plain-text message — the
-          // RichDocument card already shows the structured content.
-          if (turnId && activeDocTurnIdsRef.current.has(turnId)) {
+          // Same content-equality test as the WS path above. A card merely
+          // EXISTING for this turn must not suppress the answer — only a card
+          // that already renders this exact text should.
+          if (isTextRenderedAsDocument(turnId, data.content || "")) {
             return
           }
           // Unify through iris:text_response — exactly the same path the

@@ -3704,6 +3704,59 @@ class IRISGateway:
 
             # Helper: push chunk to native player with auto-fallback to queue
             _last_level_time = [0.0]  # mutable for closure; throttle to ~10 Hz
+            # Mutable closure state: monotonic start of the current unbroken
+            # run of queue.Full (0.0 = not currently backed up). See _put_chunk.
+            _queue_full_since = [0.0]
+            # How long a continuously-full audio queue is tolerated before the
+            # producer gives up. A live consumer drains the 4-deep queue far
+            # faster than this, so tripping it means the consumer is gone.
+            _PUT_STALL_LIMIT = 5.0
+
+            def _put_chunk(audio_chunk: np.ndarray) -> bool:
+                """Enqueue a chunk for the consumer, never blocking forever.
+
+                ``audio_queue`` has maxsize=4, so a bare ``put()`` blocks as
+                soon as the consumer stops draining — and the consumer DOES
+                stop: barge-in, or the 0.5 s stall timeout at the end of this
+                method's caller. A producer blocked in ``put()`` still holds
+                ``TTSManager._synthesis_lock``, which is process-wide, so every
+                later TTS call on every thread queued up behind it. Observed
+                2026-09-03 (pid 25120): a 964-char synthesis whose consumer had
+                already given up stayed blocked for ~4 minutes and took the
+                whole TTS subsystem with it. Re-check the abort flags on a
+                0.25 s cycle instead, so an abandoned turn unwinds in well
+                under a second.
+
+                Returns False when the turn was aborted (caller should stop).
+                """
+                while True:
+                    if interrupted.is_set() or engine.is_speech_interrupted():
+                        return False
+                    try:
+                        audio_queue.put(audio_chunk, timeout=0.25)
+                    except queue.Full:
+                        # The consumer exits on its own timeout WITHOUT setting
+                        # `interrupted` (both the 60 s pre-first-audio wait and
+                        # the 0.5 s post-streaming stall). If the abort flags
+                        # are the only way out of this loop, an abandoned turn
+                        # spins here forever — still holding the process-wide
+                        # synthesis lock. Bound the *unbroken* fullness instead:
+                        # a live consumer drains continuously, so every attempt
+                        # succeeds within 0.25 s. Sustained failure means the
+                        # consumer is gone and this turn must unwind.
+                        if not _queue_full_since[0]:
+                            _queue_full_since[0] = time.monotonic()
+                        elif time.monotonic() - _queue_full_since[0] > _PUT_STALL_LIMIT:
+                            self._logger.error(
+                                "[Voice] TTS audio queue stayed full for %.1fs "
+                                "(consumer gone) — abandoning synthesis",
+                                time.monotonic() - _queue_full_since[0],
+                            )
+                            return False
+                        continue
+                    _queue_full_since[0] = 0.0
+                    engine.note_tts_audio()
+                    return True
 
             def _push_or_queue(audio_chunk: np.ndarray):
                 native_ok = False
@@ -3714,6 +3767,7 @@ class IRISGateway:
                         gained = np.clip(audio_chunk * 2.5, -0.99, 0.99)
                         engine.pipeline._native_player.push_chunk(gained)
                         native_ok = True
+                        engine.note_tts_audio()
                         # Signal that audio playback has started (first chunk)
                         if _playback_event is not None and not _playback_event.is_set():
                             _playback_event.set()
@@ -3721,7 +3775,7 @@ class IRISGateway:
                         pass
                 if not native_ok:
                     # Push raw chunk â€” play_stream will apply gain/normalization
-                    audio_queue.put(audio_chunk)
+                    _put_chunk(audio_chunk)
 
                 # Track total samples for native-path cadence duration
                 _total_synth_samples[0] += len(audio_chunk)
@@ -3871,12 +3925,14 @@ class IRISGateway:
                                                 engine.pipeline._native_player.push_chunk(
                                                     gained
                                                 )
+                                                engine.note_tts_audio()
                                             except Exception as _push_err:
                                                 self._logger.warning(
                                                     f"[Voice] Native push failed ({_push_err})"
                                                 )
                                         else:
-                                            audio_queue.put(audio_chunk)
+                                            if not _put_chunk(audio_chunk):
+                                                break
                             break
 
                         _pending.append(item)
@@ -3904,6 +3960,7 @@ class IRISGateway:
                                             engine.pipeline._native_player.push_chunk(
                                                 gained
                                             )
+                                            engine.note_tts_audio()
                                             if not _first_audio_pushed:
                                                 _first_audio_pushed = True
                                                 _mark("first_audio_pushed")
@@ -3970,7 +4027,8 @@ class IRISGateway:
                                                 f"[Voice] Native push failed ({_push_err})"
                                             )
                                     else:
-                                        audio_queue.put(audio_chunk)
+                                        if not _put_chunk(audio_chunk):
+                                            break
                                         if not _first_audio_pushed:
                                             _first_audio_pushed = True
                                             _mark("first_audio_pushed")
@@ -4228,7 +4286,15 @@ class IRISGateway:
                 while True:
                     # Fast timeout (0.5s) after streaming starts so barge-in
                     # (interrupt_speech) is detected promptly.
-                    _timeout = 300 if not _sd_stream_started else 0.5
+                    #
+                    # Before the first chunk: was 300s. This consumer runs
+                    # _speak_response's `finally` — the block that clears
+                    # _tts_active and hands the mic back — so a 300s wait was
+                    # a 300s mic outage whenever TTS stalled. Bounded to 60s:
+                    # comfortably more than a cold worker spawn (~35s), and the
+                    # pipeline's own stall backstop now releases the mic after
+                    # 10s anyway.
+                    _timeout = 60 if not _sd_stream_started else 0.5
                     try:
                         chunk = audio_queue.get(timeout=_timeout)
                     except queue.Empty:

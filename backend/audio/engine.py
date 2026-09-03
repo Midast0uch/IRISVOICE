@@ -274,6 +274,19 @@ class AudioEngine:
             except Exception as exc:
                 logger.warning(f"[AudioEngine] pipeline.set_tts_active failed: {exc}")
 
+    def note_tts_audio(self) -> None:
+        """Tell the half-duplex gate that a TTS chunk just reached the device.
+
+        Feeds the pipeline's stall backstop: a TTS turn that claims the mic and
+        then stops producing audio releases it after _TTS_GATE_STALL_GRACE
+        instead of holding it until _speak_response's finally finally runs.
+        """
+        try:
+            if self.pipeline is not None:
+                self.pipeline.note_tts_audio()
+        except Exception as exc:  # noqa: BLE001 — never fail a TTS chunk
+            logger.debug(f"[AudioEngine] note_tts_audio failed: {exc}")
+
     def interrupt_speech(self) -> None:
         """Signal any in-progress TTS playback to stop immediately.
 

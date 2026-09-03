@@ -250,6 +250,12 @@ class ToolDecisionBox:
         self._tool_fails: Dict[str, int] = {}  # tool_name -> consecutive failures REQ-12
         self._last_call: Dict[str, tuple[str, bool, int]] = {}  # tool -> (args_hash, success, repeat_count) REQ-12
         self._tool_call_nodes: list[ToolCallNode] = []  # REQ-13
+        # (tool, args_hash) -> how many times that exact call came back with a
+        # PERMANENT error. Deliberately NOT cleared by reset_failure_counters():
+        # the DER calls that on every _split_step, which is exactly how a
+        # permanently-failing call kept escaping its failure budget. Cleared
+        # for a given call as soon as that call succeeds.
+        self._permanent_failed_args: Dict[tuple, int] = {}
 
     @staticmethod
     def _run_async(coro):
@@ -808,6 +814,51 @@ class ToolDecisionBox:
                     dr.duration_ms = int((time.perf_counter() - start) * 1000)
                     return dr
 
+                # ── Permanent-failure replay guard — after the budget ───────
+                # Deliberately placed AFTER the budget check above so it never
+                # preempts it: within one box the budget is the authority and
+                # its "exceeded" message must win. This guard covers the gap
+                # the budget cannot: reset_failure_counters() wipes the budget
+                # on every DER _split_step, so a call that fails permanently
+                # can be re-dispatched forever across splits. Observed
+                # 2026-09-03 (pid 25120) as ask_user_question dispatched four
+                # times with an empty `text` — each rejected by the bridge with
+                # "Question text is required", each feeding a DER split that
+                # reset the very budget meant to stop it.
+                #
+                # Same threshold as the budget, so a failing call gets exactly
+                # the same number of attempts as before; the only change is
+                # that the count now survives a reset. A permanent error is
+                # non-retryable by definition, so an identical retry can only
+                # be a loop. Transient failures are untouched — retrying those
+                # is legitimate recovery.
+                _replay_limit = 3
+                if (
+                    decision.tool
+                    and self._permanent_failed_args.get(
+                        (decision.tool, _args_hash), 0
+                    ) >= _replay_limit
+                ):
+                    logger.warning(
+                        "[TOOL_DISPATCH] REPLAY OF PERMANENT FAILURE tool=%s "
+                        "args=%s attempts=%d conv=%s",
+                        decision.tool, _args_hash,
+                        self._permanent_failed_args[(decision.tool, _args_hash)],
+                        conversation_id,
+                    )
+                    dr = DispatchResult(
+                        success=False,
+                        error=(
+                            f"'{decision.tool}' already failed permanently with "
+                            "these exact arguments — re-issuing it cannot "
+                            "succeed. Change the arguments or use a different "
+                            "tool."
+                        ),
+                        error_type="permanent", duration_ms=0,
+                    )
+                    dr.duration_ms = int((time.perf_counter() - start) * 1000)
+                    return dr
+
                 # execute_tool is a coroutine — it MUST be awaited, not called
                 # bare (a bare call returns a coroutine object, which previously
                 # surfaced as "Unexpected tool result type: <class 'coroutine'>"
@@ -843,6 +894,12 @@ class ToolDecisionBox:
                     _et = result.get("error_type") if isinstance(result, dict) else None
                     if success:
                         self._tool_fails.pop(decision.tool, None)
+                        # This exact call demonstrably CAN succeed — drop any
+                        # permanent-failure tally against it.
+                        if _args_hash:
+                            self._permanent_failed_args.pop(
+                                (decision.tool, _args_hash), None
+                            )
                     elif _et == "aborted":
                         # REQ-19 AC4: a user abort is not tool unreliability —
                         # it never counts against the failure budget. (The
@@ -883,6 +940,21 @@ class ToolDecisionBox:
                 # usable content. A success carries no permanent error.
                 if success and dr.error_type == "permanent":
                     dr.error_type = None
+
+                # Remember permanently-failed calls so an identical retry is
+                # rejected as a loop instead of re-executed. Recorded only
+                # after the REQ-15 AC2 fixup above, so a healthy result that
+                # merely lacked an error string is never marked permanent.
+                if (
+                    not success
+                    and dr.error_type == "permanent"
+                    and decision.tool
+                    and _args_hash
+                ):
+                    _pf_key = (decision.tool, _args_hash)
+                    self._permanent_failed_args[_pf_key] = (
+                        self._permanent_failed_args.get(_pf_key, 0) + 1
+                    )
 
                 # ── Idempotency store (REQ-11) ──────────────────────────
                 if _ik and _is_write_tool(decision.tool):

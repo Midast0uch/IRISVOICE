@@ -45,6 +45,11 @@ TTS_NATIVE_RATE: int = 24_000  # Pocket-TTS native output sample rate
 OUTPUT_SAMPLE_RATE: int = TTS_NATIVE_RATE  # pipeline rate
 SAMPLE_RATE: int = OUTPUT_SAMPLE_RATE  # legacy alias
 
+# Sentinel pushed onto the line queue when the worker's stdout closes.
+# Distinct from ``None`` (read timeout) so callers can tell "the worker is
+# slow" apart from "the worker is gone" and restart at most once.
+_WORKER_EOF = object()
+
 # Paths (relative to this file: backend/agent/tts.py)
 _THIS_DIR = Path(__file__).parent  # backend/agent/
 _BACKEND_DIR = _THIS_DIR.parent  # backend/
@@ -178,6 +183,12 @@ class TTSManager:
         self._synthesis_lock = threading.Lock()  # serializes synthesis requests
         self._filler_cache: Dict[str, tuple] = {}  # phrase → (audio_array, sample_rate)
 
+        # Worker stdout lines. One persistent reader thread feeds this queue
+        # (see ``_read_stdout``); ``_read_line`` drains it with a timeout.
+        # Replaced on every respawn so lines from a dead worker can never be
+        # mistaken for the new one's.
+        self._lines: "queue.Queue" = queue.Queue()
+
         TTSManager._initialized = True
 
         threading.Thread(
@@ -188,6 +199,46 @@ class TTSManager:
     # Subprocess lifecycle
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _read_stdout(stream, lines: "queue.Queue") -> None:
+        """Pump worker stdout into *lines*, then push the EOF sentinel.
+
+        One long-lived thread per worker. The previous design started a fresh
+        thread per ``_read_line`` call and abandoned it on timeout; those
+        threads stayed blocked on ``readline()`` forever and, because
+        ``TextIOWrapper`` is not thread-safe, a stale reader could consume the
+        line the *current* caller was waiting for — making a healthy worker
+        look dead.
+        """
+        try:
+            for line in stream:
+                lines.put(line)
+        except Exception:  # noqa: BLE001 — pipe torn down on restart
+            pass
+        finally:
+            lines.put(_WORKER_EOF)
+
+    @staticmethod
+    def _drain_stderr(stream) -> None:
+        """Forward worker stderr into the parent log.
+
+        This MUST run. Leaving stderr as an unread ``subprocess.PIPE`` deadlocks
+        the worker: Windows anonymous pipes buffer only ~4 KB, Pocket-TTS logs
+        ~35 lines per synthesized sentence (~16 KB over a long response), so
+        the buffer fills and the worker blocks forever inside its own logging.
+        Observed 2026-09-03 (pid 25120): an 853-char synthesis produced no
+        audio for 30 s, the parent's read timed out, and it killed a worker
+        that was merely blocked on a full stderr pipe. Draining also restores
+        worker diagnostics, which were otherwise discarded unread.
+        """
+        try:
+            for line in stream:
+                line = line.rstrip()
+                if line:
+                    logger.info("[tts-worker] %s", line)
+        except Exception:  # noqa: BLE001 — pipe torn down on restart
+            pass
+
     def _spawn_worker(self) -> None:
         """Spawn the TTS subprocess worker and wait for it to become ready."""
         with self._proc_lock:
@@ -196,8 +247,8 @@ class TTSManager:
 
             logger.info("[TTSManager] Spawning Pocket-TTS subprocess worker...")
             try:
-                self._proc = subprocess.Popen(
-                    [sys.executable, "-m", "backend.audio.tts_worker"],
+                proc = subprocess.Popen(
+                    [sys.executable, "-u", "-m", "backend.audio.tts_worker"],
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
@@ -216,51 +267,54 @@ class TTSManager:
                 self._proc = None
                 return
 
-            # Read the initial status line (loading or ready).
-            try:
-                line = self._proc.stdout.readline().strip()
-                if line:
-                    status = json.loads(line)
-                    if status.get("status") == "ready":
-                        self._ready = True
-                        self._load_error = None
-                        logger.info("[TTSManager] Worker ready")
-                    elif status.get("status") == "error":
-                        self._ready = False
-                        self._load_error = status.get("error")
-                        logger.error(
-                            f"[TTSManager] Worker load error: {self._load_error}"
-                        )
-                    else:
-                        # loading — poll until ready or timeout
-                        self._wait_ready(timeout=120)
-            except Exception as exc:
-                self._load_error = str(exc)
-                logger.error(f"[TTSManager] Worker startup read failed: {exc}")
+            self._proc = proc
+            self._lines = queue.Queue()
+            threading.Thread(
+                target=self._read_stdout,
+                args=(proc.stdout, self._lines),
+                daemon=True,
+                name="tts-stdout",
+            ).start()
+            threading.Thread(
+                target=self._drain_stderr,
+                args=(proc.stderr,),
+                daemon=True,
+                name="tts-stderr",
+            ).start()
+
+            self._wait_ready(timeout=120)
 
     def _wait_ready(self, timeout: float = 120.0) -> None:
-        """Poll the worker until it reports ready or the timeout elapses."""
+        """Poll the worker until it reports ready or the timeout elapses.
+
+        Waits in short slices so the deadline is honoured: a single
+        ``Queue.get(timeout)`` could otherwise overrun it by however long the
+        worker stays silent (observed 2026-09-03: a respawn took 178 s under a
+        nominal 120 s limit while holding ``_proc_lock`` against every other
+        TTS caller).
+        """
         if self._proc is None:
             return
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            try:
-                line = self._proc.stdout.readline().strip()
-                if not line:
-                    continue
-                status = json.loads(line)
-                if status.get("status") == "ready":
-                    self._ready = True
-                    self._load_error = None
-                    logger.info("[TTSManager] Worker ready")
-                    return
-                if status.get("status") == "error":
-                    self._ready = False
-                    self._load_error = status.get("error")
-                    logger.error(f"[TTSManager] Worker load error: {self._load_error}")
-                    return
-            except Exception:
-                break
+            status = self._read_line(timeout=min(5.0, deadline - time.monotonic()))
+            if status is _WORKER_EOF:
+                self._ready = False
+                self._load_error = "worker exited during startup"
+                logger.error("[TTSManager] Worker exited during startup")
+                return
+            if status is None:
+                continue  # still loading, no line yet
+            if status.get("status") == "ready":
+                self._ready = True
+                self._load_error = None
+                logger.info("[TTSManager] Worker ready")
+                return
+            if status.get("status") == "error":
+                self._ready = False
+                self._load_error = status.get("error")
+                logger.error(f"[TTSManager] Worker load error: {self._load_error}")
+                return
         if not self._ready:
             self._load_error = "worker startup timeout"
             logger.error("[TTSManager] Worker startup timed out")
@@ -279,47 +333,26 @@ class TTSManager:
         self._proc.stdin.write(json.dumps(payload) + "\n")
         self._proc.stdin.flush()
 
-    def _read_line(self, timeout: float = 30.0) -> Optional[dict]:
-        """Read one JSONL response line from the worker with timeout.
+    def _read_line(self, timeout: float = 30.0):
+        """Read one JSONL response line from the worker with a timeout.
 
-        Uses a daemon reader thread to implement the timeout — on Windows,
-        select() does not work on pipes, so a blocking readline() with no
-        timeout would hang the TTS thread forever if the worker gets stuck
-        (observed 2026-09-03: Pocket-TTS worker received synthesize for
-        'Hey there.' but never sent 'done' — readline blocked indefinitely,
-        no TTS audio played, thread never returned).
+        Returns the decoded message, ``None`` on timeout, or ``_WORKER_EOF``
+        when the worker's stdout closed.
 
-        On timeout: the reader thread is daemon (will not prevent process
-        exit) and the worker is restarted so the next call starts fresh.
+        Restarting is deliberately NOT this method's job. It used to restart
+        the worker itself and return ``None``, whereupon the caller
+        (``synthesize_stream``) restarted a *second* time — killing the worker
+        that had just been spawned and paying the ~35 s model load twice
+        (observed 2026-09-03: "restarting" logged twice, 7 s apart).
         """
-        if self._proc is None or self._proc.stdout is None:
-            return None
-        import queue as _queue
-        import threading as _thr
-        _q: _queue.Queue = _queue.Queue(maxsize=1)
-        _reader = _thr.Thread(
-            target=lambda: _q.put(self._proc.stdout.readline()),
-            daemon=True,
-            name="tts-readline",
-        )
-        _reader.start()
-        _reader.join(timeout=timeout)
-        if _reader.is_alive():
-            # Timeout — worker is stuck. Restart and return None so the
-            # caller (synthesize_stream) sees a worker death and recovers.
-            logger.error(
-                "[TTSManager] _read_line timed out after %.1fs — "
-                "worker appears stuck, restarting",
-                timeout,
-            )
-            self._restart_worker()
-            return None
+        if self._proc is None:
+            return _WORKER_EOF
         try:
-            line = _q.get_nowait()
-        except _queue.Empty:
+            line = self._lines.get(timeout=timeout)
+        except queue.Empty:
             return None
-        if not line:
-            return None
+        if line is _WORKER_EOF:
+            return _WORKER_EOF
         try:
             return json.loads(line.strip())
         except json.JSONDecodeError:
@@ -329,13 +362,21 @@ class TTSManager:
         """Kill and respawn the worker after a crash."""
         logger.warning("[TTSManager] Restarting TTS worker after crash")
         with self._proc_lock:
-            if self._proc is not None:
-                try:
-                    self._proc.kill()
-                except Exception:
-                    pass
-                self._proc = None
+            old = self._proc
+            self._proc = None
             self._ready = False
+        # Close the dead worker's pipes before killing it. Skipping this leaks
+        # a pipe handle per restart and keeps the old reader thread alive.
+        if old is not None:
+            for stream in (old.stdin, old.stdout, old.stderr):
+                try:
+                    stream.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                old.kill()
+            except Exception:  # noqa: BLE001 — already exited
+                pass
         self._spawn_worker()
 
     # ------------------------------------------------------------------
@@ -432,6 +473,21 @@ class TTSManager:
     _INTER_SENTENCE_SILENCE: float = 0.50  # 500ms pause between sentences
     _TRAILING_SILENCE: float = 0.60  # 600ms silence after last word
 
+    # Overall budget for one synthesize_stream() call. Measured throughput is
+    # ~0.025 s/char (964 chars -> 23.8 s), so this is ~4x headroom — generous
+    # enough never to cut a healthy synthesis short, tight enough that a wedged
+    # worker cannot hold ``_synthesis_lock`` indefinitely. That lock is
+    # process-wide: on 2026-09-03 a single wedged synthesis held it for ~4 min
+    # and every other TTS caller on every thread blocked behind it.
+    _SYNTHESIS_BASE_TIMEOUT: float = 30.0
+    _SYNTHESIS_PER_CHAR_TIMEOUT: float = 0.10
+
+    def _synthesis_deadline(self, text: str) -> float:
+        """Monotonic deadline for one call to synthesize_stream(*text*)."""
+        return time.monotonic() + (
+            self._SYNTHESIS_BASE_TIMEOUT + len(text) * self._SYNTHESIS_PER_CHAR_TIMEOUT
+        )
+
     def synthesize_stream(self, text: str) -> Generator[np.ndarray, None, None]:
         """Stream synthesis — yields float32 arrays at OUTPUT_SAMPLE_RATE Hz.
 
@@ -462,6 +518,7 @@ class TTSManager:
 
         # Serialize synthesis requests (one at a time, same as single-model).
         with self._synthesis_lock:
+            deadline = self._synthesis_deadline(text)
             req_id = int(time.time() * 1000) % 100000
             try:
                 self._send({"action": "synthesize", "text": text, "id": req_id})
@@ -472,9 +529,26 @@ class TTSManager:
 
             # Read chunks until done/error.
             while True:
-                msg = self._read_line()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    _root_log.error(
+                        "[TTSManager] Synthesis exceeded its %.0fs budget for %d "
+                        "chars — worker is wedged, restarting",
+                        self._SYNTHESIS_BASE_TIMEOUT
+                        + len(text) * self._SYNTHESIS_PER_CHAR_TIMEOUT,
+                        len(text),
+                    )
+                    self._restart_worker()
+                    return
+                msg = self._read_line(timeout=min(30.0, remaining))
                 if msg is None:
-                    # Worker died mid-synthesis.
+                    _root_log.error(
+                        "[TTSManager] Worker produced nothing for 30s "
+                        "mid-synthesis — restarting"
+                    )
+                    self._restart_worker()
+                    return
+                if msg is _WORKER_EOF:
                     _root_log.error(
                         "[TTSManager] Worker died mid-synthesis — restarting"
                     )
@@ -524,7 +598,7 @@ class TTSManager:
             # Read the fillers_ready response.
             while True:
                 msg = self._read_line()
-                if msg is None:
+                if msg is None or msg is _WORKER_EOF:
                     return
                 if msg.get("status") == "fillers_ready":
                     logger.info(
