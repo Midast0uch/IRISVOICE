@@ -1,0 +1,497 @@
+"""
+Pocket-TTS worker — runs in a SUBPROCESS so GIL-bound model loading and
+streaming synthesis never starve the main asyncio event loop.
+
+Protocol (stdin/stdout JSONL, one JSON object per line):
+  → {"action": "load", "language": "english", "voice": "Cloned Voice"}
+  ← {"status": "ready", "duration_s": 12.4}
+
+  → {"action": "synthesize", "text": "Hello world", "id": 1}
+  ← {"type": "chunk", "id": 1, "data": "<base64 float32 PCM>", "sample_rate": 24000}
+  ← {"type": "done", "id": 1, "total_samples": 48000, "duration_s": 2.0}
+  ← {"type": "error", "id": 1, "error": "message"}
+
+  → {"action": "set_voice", "voice": "alba"}
+  ← {"status": "voice_loaded", "voice": "alba", "duration_s": 3.1}
+
+  → {"action": "pre_synthesize_fillers"}
+  ← {"status": "fillers_ready", "count": 5}
+
+  → {"action": "ping"}
+  ← {"status": "ready"}   or   {"status": "loading"}
+
+  → {"action": "shutdown"}
+  ← (process exits cleanly)
+
+The worker sends {"status": "ready"} on stdout as soon as the model + voice
+state are loaded. All diagnostic logging goes to stderr so it never
+contaminates the JSONL protocol on stdout.
+"""
+
+# ── CUDA masking (REQ-5 AC5.1) ─────────────────────────────────────────────
+# Pocket-TTS is a strictly CPU-bound model. Probing and initialising CUDA
+# contexts (runtime DLLs, contexts, caching allocators) wasted ~1.4 GB of
+# private memory in this worker. Mask CUDA BEFORE any import that could
+# transitively load torch, so torch.cuda.is_available() is False and no CUDA
+# runtime is ever initialised.
+import os as _os
+
+_os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
+import base64
+import json
+import logging
+import os
+import sys
+import time
+import traceback
+from pathlib import Path
+
+import numpy as np
+
+# ── Logging to stderr ─────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="[tts-worker] %(asctime)s %(levelname)s %(message)s",
+    stream=sys.stderr,
+)
+logger = logging.getLogger("tts_worker")
+
+# ── Constants (mirror backend/agent/tts.py) ───────────────────────────────
+OUTPUT_SAMPLE_RATE: int = 24_000
+_PROJECT_DIR = Path(__file__).resolve().parent.parent.parent
+REFERENCE_AUDIO = _PROJECT_DIR / "data" / "TOMV2.wav"
+
+# ── Model singleton ───────────────────────────────────────────────────────
+_model = None
+_voice_state = None
+_load_error = None
+_voice_name = "Cloned Voice"
+
+
+def _load_model(language: str = "english") -> None:
+    """Load Pocket-TTS model + voice state. Called once at startup."""
+    global _model, _voice_state, _load_error
+    try:
+        # Pocket-TTS v2.x applies beartype runtime type-checking to every
+        # function at import time, which adds ~40s to the first import.
+        # No-op it here — we don't need runtime type validation in production.
+        try:
+            import beartype.claw as _bt
+
+            _bt.beartype_this_package = lambda **_: None
+        except ImportError:
+            pass
+
+        from pocket_tts import TTSModel
+
+        t0 = time.monotonic()
+        # eos_threshold=-1.0 forces clean EOS termination (default -4.0 hits
+        # max length with broken voice state, producing garbled tail).
+        _model = TTSModel.load_model(
+            language=language,
+            eos_threshold=-1.0,
+        )
+        dt = time.monotonic() - t0
+        logger.info("Pocket-TTS model loaded in %.1fs", dt)
+
+        _load_voice_state()
+
+        # REQ-5 AC5.3: compact the working set after model + voice-state load.
+        # The safetensors heap buffers freed during load stay resident in the
+        # working set until the OS reclaims them; EmptyWorkingSet forces that
+        # reclaim, dropping this worker's private footprint (~2.3 GB -> ~0.9 GB).
+        try:
+            from backend.utils.memory_trim import trim_working_set
+
+            trim_working_set()
+        except Exception as _trim_exc:  # noqa: BLE001 — trim must never fail load
+            logger.debug("Working set trim skipped: %s", _trim_exc)
+    except Exception as exc:
+        _load_error = exc
+        logger.error(
+            "Failed to load Pocket-TTS: %s\n%s", exc, traceback.format_exc()
+        )
+
+
+def _load_voice_state() -> None:
+    """Load the appropriate voice state: cloned from TOMV2.wav or catalog voice."""
+    global _voice_state
+    if _model is None:
+        return
+
+    voice_name = _voice_name
+
+    # Catalog voice path
+    if voice_name in _PREDEFINED_VOICES:
+        _load_catalog_voice(voice_name)
+        return
+
+    # Voice cloning path (Cloned Voice / default)
+    ref_path = REFERENCE_AUDIO
+    if _model.has_voice_cloning and ref_path.exists():
+        try:
+            t0 = time.monotonic()
+            _voice_state = _model.get_state_for_audio_prompt(str(ref_path))
+            dt = time.monotonic() - t0
+            logger.info("Voice state from %s in %.1fs", ref_path.name, dt)
+            return
+        except Exception as exc:
+            logger.error(
+                "Failed to clone voice '%s' from %s: %s",
+                voice_name, ref_path, exc,
+            )
+
+    logger.warning(
+        "Voice cloning failed — falling back to catalog voice 'alba'. "
+        "Accept terms at https://huggingface.co/kyutai/pocket-tts "
+        "to enable voice cloning."
+    )
+    _load_catalog_voice(_PREDEFINED_VOICES[0])
+
+
+_PREDEFINED_VOICES = [
+    "alba",
+    "marius",
+    "javert",
+    "jean",
+    "fantine",
+    "cosette",
+    "eponine",
+    "azelma",
+]
+
+
+def _load_catalog_voice(voice_name: str) -> None:
+    """Download a Pocket-TTS catalog voice embedding and convert to state dict."""
+    global _voice_state
+    try:
+        from huggingface_hub import hf_hub_download
+        from safetensors.torch import load_file
+
+        t0 = time.monotonic()
+        emb_path = hf_hub_download(
+            repo_id="kyutai/pocket-tts",
+            filename=f"languages/english/embeddings/{voice_name}.safetensors",
+        )
+        flat = load_file(emb_path)
+
+        # Convert flat key format to nested dict format expected by
+        # generate_audio_stream.
+        state = {}
+        for flat_key, tensor in flat.items():
+            module_path, attr = flat_key.split("/")
+            if module_path not in state:
+                state[module_path] = {}
+            state[module_path][attr] = tensor
+
+        _voice_state = state
+        dt = time.monotonic() - t0
+        logger.info(
+            "Catalog voice '%s' loaded in %.1fs (%d tensors)",
+            voice_name, dt, len(flat),
+        )
+    except Exception as exc:
+        logger.error(
+            "Failed to load catalog voice '%s': %s", voice_name, exc
+        )
+        _voice_state = None
+
+
+def _normalize(text: str) -> str:
+    """Run text through tts_normalizer before synthesis."""
+    try:
+        from backend.voice.tts_normalizer import normalize_for_speech
+
+        return normalize_for_speech(text)
+    except ImportError:
+        import re
+
+        text = re.sub(r"```[\s\S]*?```", "", text)
+        text = re.sub(r"`[^`]+`", "", text)
+        text = re.sub(r"\*{1,3}(.*?)\*{1,3}", r"\1", text)
+        return text.strip()
+
+
+def _split_into_chunks(text: str, max_chars: int = 200):
+    """Split text into sentence-level chunks for natural pacing."""
+    import re
+
+    raw = re.split(r"(?<=[.!?])\s+", text.strip())
+    chunks = []
+    for sentence in raw:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        if len(sentence) <= max_chars:
+            chunks.append(sentence)
+        else:
+            parts = re.split(r",\s+", sentence)
+            buf = ""
+            for part in parts:
+                if buf and len(buf) + len(part) + 2 > max_chars:
+                    chunks.append(buf.strip())
+                    buf = part
+                else:
+                    buf = f"{buf}, {part}" if buf else part
+            if buf.strip():
+                chunks.append(buf.strip())
+    return chunks if chunks else [text.strip()]
+
+
+def _synthesize(text: str, req_id: int) -> None:
+    """Synthesize text and stream base64 audio chunks to stdout."""
+    global _model, _voice_state
+    if _model is None or _voice_state is None:
+        print(
+            json.dumps(
+                {"type": "error", "id": req_id, "error": "model not ready"}
+            ),
+            flush=True,
+        )
+        return
+
+    normalized = _normalize(text)
+    if not normalized:
+        print(
+            json.dumps(
+                {"type": "error", "id": req_id, "error": "empty text"}
+            ),
+            flush=True,
+        )
+        return
+
+    sentences = _split_into_chunks(normalized, max_chars=200)
+    silence_gap = int(0.50 * OUTPUT_SAMPLE_RATE)
+    trailing = int(0.60 * OUTPUT_SAMPLE_RATE)
+    total_samples = 0
+    t0 = time.monotonic()
+
+    try:
+        for idx, sentence in enumerate(sentences):
+            for chunk_tensor in _model.generate_audio_stream(
+                _voice_state,
+                sentence,
+                frames_after_eos=0,
+            ):
+                audio = chunk_tensor.cpu().numpy().astype(np.float32)
+                if len(audio) == 0:
+                    continue
+                # Clamp NaN/Inf
+                if np.isnan(audio).any() or np.isinf(audio).any():
+                    audio = np.nan_to_num(
+                        audio, nan=0.0, posinf=0.0, neginf=0.0
+                    )
+                # Skip near-silent lead-in chunks
+                if np.max(np.abs(audio)) < 0.01:
+                    continue
+                total_samples += len(audio)
+                b64 = base64.b64encode(audio.tobytes()).decode("ascii")
+                print(
+                    json.dumps(
+                        {
+                            "type": "chunk",
+                            "id": req_id,
+                            "data": b64,
+                            "sample_rate": OUTPUT_SAMPLE_RATE,
+                        }
+                    ),
+                    flush=True,
+                )
+
+            # Inter-sentence silence
+            if idx < len(sentences) - 1 and silence_gap > 0:
+                silence = np.zeros(silence_gap, dtype=np.float32)
+                b64 = base64.b64encode(silence.tobytes()).decode("ascii")
+                print(
+                    json.dumps(
+                        {
+                            "type": "chunk",
+                            "id": req_id,
+                            "data": b64,
+                            "sample_rate": OUTPUT_SAMPLE_RATE,
+                        }
+                    ),
+                    flush=True,
+                )
+                total_samples += silence_gap
+
+        # Trailing silence
+        if trailing > 0:
+            silence = np.zeros(trailing, dtype=np.float32)
+            b64 = base64.b64encode(silence.tobytes()).decode("ascii")
+            print(
+                json.dumps(
+                    {
+                        "type": "chunk",
+                        "id": req_id,
+                        "data": b64,
+                        "sample_rate": OUTPUT_SAMPLE_RATE,
+                    }
+                ),
+                flush=True,
+            )
+            total_samples += trailing
+
+        duration = time.monotonic() - t0
+        print(
+            json.dumps(
+                {
+                    "type": "done",
+                    "id": req_id,
+                    "total_samples": total_samples,
+                    "duration_s": round(duration, 2),
+                }
+            ),
+            flush=True,
+        )
+        logger.info(
+            "Synthesized %d samples (%.1fs audio) in %.2fs",
+            total_samples,
+            total_samples / OUTPUT_SAMPLE_RATE,
+            duration,
+        )
+    except Exception as exc:
+        logger.error("Synthesis error: %s", exc)
+        print(
+            json.dumps(
+                {"type": "error", "id": req_id, "error": str(exc)}
+            ),
+            flush=True,
+        )
+
+
+def _pre_synthesize_fillers() -> None:
+    """Pre-synthesize filler phrases to .wav cache (best-effort)."""
+    global _model, _voice_state
+    if _model is None or _voice_state is None:
+        print(json.dumps({"status": "fillers_ready", "count": 0}), flush=True)
+        return
+
+    fillers_dir = _PROJECT_DIR / "data" / "fillers"
+    fillers_dir.mkdir(parents=True, exist_ok=True)
+
+    phrases = [
+        "One moment.",
+        "Let me check that for you.",
+        "Hmm, let me think.",
+        "Give me a second.",
+        "Looking into it.",
+    ]
+    count = 0
+    for phrase in phrases:
+        safe_name = (
+            phrase.lower().replace(" ", "_").replace(".", "").replace(",", "")
+        )
+        wav_path = fillers_dir / f"{safe_name}.wav"
+        if wav_path.exists():
+            count += 1
+            continue
+        try:
+            import soundfile as _sf
+
+            audio_chunks = []
+            for chunk in _model.generate_audio_stream(_voice_state, phrase):
+                if chunk is not None and len(chunk) > 0:
+                    audio_chunks.append(chunk.cpu().numpy().astype(np.float32))
+            if audio_chunks:
+                audio = np.concatenate(audio_chunks)
+                _sf.write(str(wav_path), audio, OUTPUT_SAMPLE_RATE)
+                count += 1
+                logger.info("Pre-synthesized filler: %r", phrase)
+        except Exception as exc:
+            logger.warning("Filler synthesis failed for %r: %s", phrase, exc)
+
+    print(json.dumps({"status": "fillers_ready", "count": count}), flush=True)
+
+
+# ── Main loop ─────────────────────────────────────────────────────────────
+
+def main() -> None:
+    """Read JSONL commands from stdin, write JSONL responses to stdout."""
+    logger.info("TTS worker starting — loading model...")
+
+    # Send loading status immediately so the parent knows we're alive
+    print(json.dumps({"status": "loading"}), flush=True)
+
+    language = os.environ.get("POCKET_TTS_LANGUAGE", "english")
+    _load_model(language)
+
+    if _load_error is not None:
+        print(
+            json.dumps({"status": "error", "error": str(_load_error)}),
+            flush=True,
+        )
+        logger.error("Worker exiting due to load failure")
+        sys.exit(1)
+
+    print(json.dumps({"status": "ready"}), flush=True)
+    logger.info("TTS worker ready — listening for synthesis requests")
+
+    # ── Command loop ──────────────────────────────────────────────────────
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+
+        try:
+            request = json.loads(line)
+        except json.JSONDecodeError as exc:
+            logger.warning("Invalid JSON on stdin: %s", exc)
+            print(
+                json.dumps({"type": "error", "id": 0, "error": f"invalid json: {exc}"}),
+                flush=True,
+            )
+            continue
+
+        action = request.get("action", "")
+
+        if action == "ping":
+            status = "ready" if _model is not None else "loading"
+            print(json.dumps({"status": status}), flush=True)
+
+        elif action == "synthesize":
+            text = request.get("text", "")
+            req_id = request.get("id", 0)
+            _synthesize(text, req_id)
+
+        elif action == "set_voice":
+            global _voice_name
+            new_voice = request.get("voice", "Cloned Voice")
+            _voice_name = new_voice
+            _voice_state = None
+            _load_voice_state()
+            ok = _voice_state is not None
+            print(
+                json.dumps(
+                    {
+                        "status": "voice_loaded" if ok else "voice_error",
+                        "voice": new_voice,
+                        "duration_s": 0.0,
+                    }
+                ),
+                flush=True,
+            )
+
+        elif action == "pre_synthesize_fillers":
+            _pre_synthesize_fillers()
+
+        elif action == "shutdown":
+            logger.info("Worker shutting down")
+            print(json.dumps({"status": "shutting_down"}), flush=True)
+            break
+
+        else:
+            logger.warning("Unknown action: %s", action)
+            print(
+                json.dumps(
+                    {"type": "error", "id": 0, "error": f"unknown action: {action}"}
+                ),
+                flush=True,
+            )
+
+    logger.info("Worker exited")
+
+
+if __name__ == "__main__":
+    main()

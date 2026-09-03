@@ -1,0 +1,3330 @@
+# main.py
+# IRISVOICE/backend/main.py - Audio Engine Initialization Diagnostic Logging
+
+import asyncio
+import json
+import logging
+import os
+import sys
+import time
+import uuid
+from contextlib import asynccontextmanager
+from datetime import datetime
+from typing import Optional, Any, Dict, Set
+
+# Add parent directory to path to allow absolute imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# ═══════════════════════════════════════════════════════════════════════
+# Load .env.local BEFORE any other imports so real API keys
+# (Picovoice, HuggingFace, etc.) are in os.environ before modules
+# that read them at import time (porcupine_detector, etc.).
+# .env is loaded second with override=False so local keys win.
+# ═══════════════════════════════════════════════════════════════════════
+from dotenv import load_dotenv
+load_dotenv(".env.local", override=True)
+load_dotenv()  # .env — placeholders, won't override existing real keys
+
+# Configure structured logging
+from backend.core.logging_config import setup_backend_logging
+from backend.utils.log_redaction import redact as redact_log
+
+logger = setup_backend_logging(log_level=os.environ.get("IRIS_LOG_LEVEL", "INFO"))
+
+"""
+IRIS FastAPI Backend Server (Session-Aware)
+Main application entry point with WebSocket endpoint and session management.
+
+This server provides:
+- WebSocket-based real-time communication
+- Session management with state isolation
+- Dual-LLM agent system (lfm2-8b reasoning + lfm2.5-1.2b-instruct execution)
+- Voice pipeline with wake word detection
+- MCP tool integration
+- Structured logging
+"""
+
+logger.info("Starting IRIS Backend initialization...")
+logger.info("  - Importing FastAPI and middleware...")
+
+# CORS configuration for Next.js and Tauri
+# In development: Allow localhost origins
+# In production: Restrict to specific origins
+ALLOWED_ORIGINS = os.environ.get(
+    "ALLOWED_ORIGINS",
+    # port 3000/3001 = Next.js dev; 8080 = iris-launcher dev; tauri = packaged app
+    # *.ts.net = Tailscale MagicDNS; 100.* = Tailscale direct CGNAT IPs
+    "http://localhost:3000,http://localhost:3001,http://localhost:8080,http://127.0.0.1:3000,http://127.0.0.1:8080,tauri://localhost,http://tauri.localhost,https://tauri.localhost,http://*.ts.net,https://*.ts.net,http://100.*",
+).split(",")
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+
+logger.info("  - Importing session-aware managers...")
+# Session-aware managers
+from backend.sessions import get_session_manager
+from backend.state_manager import get_state_manager
+from backend.ws_manager import get_websocket_manager
+from backend.git_ops import (
+    get_git_status,
+    get_git_log,
+    commit_all,
+    rollback,
+    get_pending_writes,
+    approve_write,
+    reject_write,
+    get_worktree_status,
+    ensure_worktree,
+    remove_worktree,
+    commit_worktree,
+    merge_worktree,
+    reset_worktree,
+)
+from backend.github_ops import (
+    connect_with_pat,
+    is_connected,
+    disconnect as github_disconnect,
+    get_user as github_get_user,
+    get_repos,
+    generate_ssh_key,
+    list_ssh_keys,
+    delete_ssh_key,
+)
+from backend.network_ops import (
+    get_tailscale_status,
+    get_iris_urls,
+    generate_qr_png,
+    start_tailscale_service,
+)
+
+logger.info("  - Importing models...")
+from backend.models import (
+    Category,
+    IRISState,
+    ColorTheme,
+    get_sections_for_category,
+    SECTION_CONFIGS,
+)
+
+logger.info("  - Importing audio components...")
+# ... other imports remain the same ...
+from backend.audio import get_audio_engine
+from backend.audio.pipeline import AudioPipeline
+from backend.audio.voice_command import VoiceCommandHandler, VoiceState
+
+logger.info("  - Importing agent components...")
+from backend.agent import (
+    get_personality_engine,
+    get_tts_manager,
+    get_conversation_memory,
+    get_wake_config,
+)
+
+logger.info("  - Importing MCP components...")
+from backend.mcp import (
+    get_server_manager,
+    get_tool_registry,
+    ServerConfig,
+    BrowserServer,
+    AppLauncherServer,
+    SystemServer,
+    FileManagerServer,
+    GUIAutomationServer,
+)
+
+logger.info("  - Importing system components...")
+from backend.system import (
+    get_power_manager,
+    get_display_manager,
+    get_storage_manager,
+    get_network_manager,
+)
+
+logger.info("  - Importing customize components...")
+from backend.customize import (
+    get_startup_manager,
+    get_behavior_manager,
+    get_notification_manager,
+)
+
+logger.info("  - Importing IRIS Gateway...")
+from backend.iris_gateway import get_iris_gateway, IRISGateway
+
+logger.info("  - Importing monitor components...")
+from backend.monitor import (
+    get_analytics_manager,
+    get_log_manager,
+    get_diagnostics_manager,
+    get_update_manager,
+)
+
+logger.info("Finished backend.main imports.")
+
+
+# ============================================================================
+# Lifespan Management (Startup & Shutdown) - AUDIO ENGINE INITIALIZATION LOGGING
+# ============================================================================
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage startup and shutdown events."""
+    import time as _time
+
+    app.state.ready = False  # set True only after full startup
+    app.state._started_at = _time.time()
+    logger.info("IRIS Backend starting up...")
+
+    # ── Port availability check at startup ────────────────────────────
+    try:
+        from backend.iris_config import load_config as _pc_load
+        from backend.utils.port_checker import resolve_ports as _pc_resolve
+
+        _cfg = _pc_load()
+        _ports = _pc_resolve("0.0.0.0", {
+            "backend": _cfg.ports.backend_port,
+            "brain": _cfg.ports.brain_port,
+            "vision": _cfg.ports.vision_port,
+        })
+        for _name, _actual in _ports.items():
+            _expected = {
+                "backend": _cfg.ports.backend_port,
+                "brain": _cfg.ports.brain_port,
+                "vision": _cfg.ports.vision_port,
+            }
+            if _actual != _expected[_name]:
+                logger.warning(
+                    f"[Ports] {_name} was configured for port {_expected[_name]} "
+                    f"but it is in use — using port {_actual} instead"
+                )
+        logger.info(
+            f"[Ports] Backend → 0.0.0.0:{_ports['backend']} | "
+            f"Brain → 0.0.0.0:{_ports['brain']} | "
+            f"Vision → 0.0.0.0:{_ports['vision']}"
+        )
+    except Exception as _pc_exc:
+        logger.warning(f"[Ports] Port availability check unavailable: {_pc_exc}")
+
+    try:
+        # Prune stale UUID session directories older than 7 days.
+        # Keeps session_iris* dirs — removes only auto-generated UUID dirs.
+        try:
+            import time as _cleanup_time
+            from pathlib import Path as _Path
+
+            _sessions_root = _Path(__file__).parent / "sessions"
+            if _sessions_root.is_dir():
+                _cutoff = _cleanup_time.time() - 7 * 86400
+                _removed = 0
+                for _entry in _sessions_root.iterdir():
+                    if _entry.name.startswith("_") or _entry.name.startswith(
+                        "session_iris"
+                    ):
+                        continue
+                    if _entry.is_dir() and _entry.stat().st_mtime < _cutoff:
+                        import shutil as _shutil
+
+                        _shutil.rmtree(_entry, ignore_errors=True)
+                        _removed += 1
+                if _removed:
+                    logger.info(f"  - [CLEANUP] Removed {_removed} stale session dirs")
+        except Exception as _ce:
+            logger.warning(
+                f"  - [CLEANUP] Session dir cleanup failed (non-fatal): {_ce}"
+            )
+
+        # Kill any orphaned llama-server from previous crashes
+        try:
+            from .agent.local_model_manager import kill_orphan_servers
+
+            # Subprocess (tasklist/taskkill) — off the event loop.
+            await asyncio.to_thread(kill_orphan_servers)
+            logger.info("  - [CLEANUP] Orphaned llama-server processes killed")
+        except Exception:
+            pass
+
+        logger.info("  - Starting session manager...")
+        session_manager = get_session_manager()
+        await session_manager.start()
+
+        logger.info("  - Initializing state manager...")
+        state_manager = get_state_manager()
+
+        # ==========================================================================
+        # AUDIO ENGINE INITIALIZATION WITH COMPREHENSIVE DIAGNOSTIC LOGGING
+        # ==========================================================================
+        logger.info("  - Initializing audio engine...")
+        start_time = datetime.now()
+
+        # Step 1: Get AudioEngine instance via factory function
+        try:
+            audio_engine = get_audio_engine()
+            logger.info(f"    [+] [AUDIO ENGINE] Instance created successfully")
+        except Exception as e:
+            logger.error(f"    [x] [AUDIO ENGINE] Failed to create instance: {e}")
+            raise
+
+        # Step 2: Log initialization progress with timestamps
+        elapsed = (datetime.now() - start_time).total_seconds()
+        logger.info(f"  - [AUDIO ENGINE] Instance created in {elapsed:.3f}s")
+
+        # ==========================================================================
+        # VOICE COMMAND HANDLER INITIALIZATION WITH DIAGNOSTIC LOGGING
+        # ==========================================================================
+        logger.info("  - Initializing voice command handler...")
+        start_time = datetime.now()
+        try:
+            from backend.audio.voice_command import VoiceCommandHandler, VoiceState
+
+            voice_handler = VoiceCommandHandler(audio_engine)
+            app.state.voice_handler = voice_handler
+            logger.info(f"    [+] [VOICE HANDLER] Created successfully")
+        except Exception as e:
+            logger.error(f"    [x] [VOICE HANDLER] Failed to create: {e}")
+            raise
+
+        # REQ-1 AC1.2: NO Parakeet pre-load at boot. Previously this scheduled
+        # _preload_parakeet(), which called voice_handler._parakeet._ensure_loaded()
+        # and paid the CUDA warm-up inference at startup — adding ~4.2 GB to the
+        # boot-time idle footprint. Parakeet now spawns LAZILY on the first voice
+        # command (REQ-1 AC1.3): faster-whisper serves utterance 1 (<100 ms) while
+        # the worker loads in the background, then Parakeet takes over on GPU.
+        # The worker also idle-exits after 20 min of no requests (REQ-1 AC1.6).
+
+        # faster-whisper / ctranslate2 warm-up is intentionally deferred.
+        # Importing ctranslate2 allocates ~400 MB RAM and initialises a CUDA
+        # context on GPU machines.  Running this at startup races with the
+        # Next.js dev-server compilation and has caused OOM crashes.
+        # Whisper loads lazily on the first voice command instead (~1-2 s).
+        logger.info(
+            "    [+] [VOICE HANDLER] faster-whisper will load on first voice command (deferred)"
+        )
+
+        # ==========================================================================
+        # IRIS GATEWAY INITIALIZATION WITH DIAGNOSTIC LOGGING
+        # ==========================================================================
+        logger.info("  - Initializing IRIS Gateway...")
+        start_time = datetime.now()
+        try:
+            from backend.iris_gateway import get_iris_gateway, IRISGateway
+
+            iris_gateway = get_iris_gateway()
+            app.state.iris_gateway = iris_gateway
+            logger.info(f"    [+] [IRIS GATEWAY] Instance created successfully")
+        except Exception as e:
+            logger.error(f"    [x] [IRIS GATEWAY] Failed to create: {e}")
+            raise
+
+        # Step 6: Capture the running event loop for background task dispatch
+        try:
+            iris_gateway.set_main_loop(asyncio.get_running_loop())
+            logger.info("    [+] [IRIS GATEWAY] Event loop captured")
+        except Exception as e:
+            logger.error(f"    [x] [IRIS GATEWAY] Failed to capture event loop: {e}")
+            raise
+
+        # Step 7: Wire VoiceCommandHandler → iris_gateway for 4-pillar voice processing
+        try:
+            iris_gateway.set_voice_handler(voice_handler)
+            logger.info("    [+] [IRIS GATEWAY] Voice handler wired")
+        except Exception as e:
+            logger.error(f"    [x] [IRIS GATEWAY] Failed to wire voice handler: {e}")
+            raise
+
+        # v2 (Phase 7): wire the active session_id for the ConversationKernel.
+        # The kernel reads this via session_id_getter() in iris_gateway.
+        # Default to "session_iris" if no other ID is set (matches the
+        # legacy hardcoded behavior in ws_manager.py).
+        try:
+            iris_gateway._caducean_session_id = "session_iris"
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"[main] could not set default session_id: {exc}")
+
+        # ── Reset stale local-model status on boot ────────────────────────────
+        # The in-process Llama dies with the backend, so `local_model_status`
+        # can never be "loaded" at startup — that value is stale from the
+        # previous process. Reset it to "unloaded" so the config is truthful
+        # and the frontend never shows a phantom "loading model" / "loaded"
+        # state for a model that is not resident. The model loads ONLY when
+        # the user clicks Load (pin_8e40f54a98dc: dropdown is load-only).
+        try:
+            from backend.iris_config import load_config as _boot_load
+            from backend.iris_config import save_config as _boot_save
+
+            _boot_cfg = _boot_load()
+            if _boot_cfg.inference.local_model_status != "unloaded":
+                _boot_cfg.inference.local_model_status = "unloaded"
+                _boot_save(_boot_cfg)
+                logger.info(
+                    "[Boot] Reset stale local_model_status='loaded' -> 'unloaded' "
+                    "(in-process model does not survive a backend restart)"
+                )
+        except Exception as _boot_exc:
+            logger.warning(f"[Boot] local_model_status reset skipped: {_boot_exc}")
+
+        # ==========================================================================
+        # WAKE WORD CALLBACK REGISTRATION WITH DIAGNOSTIC LOGGING
+        # ==========================================================================
+        logger.info("  - Registering wake word callback...")
+        try:
+            _main_loop = asyncio.get_running_loop()
+            global _main_event_loop
+            _main_event_loop = _main_loop
+            audio_engine.set_main_loop(_main_loop)  # needed for device hot-plug broadcasts
+            audio_engine.set_wake_word_callback(lambda word: _on_wake_word_sync(word))
+            logger.info("    [+] [WAKE WORD] Callback registered")
+        except Exception as e:
+            logger.error(f"    [x] [WAKE WORD] Failed to register callback: {e}")
+            raise
+
+        # ==========================================================================
+        # TTS IS LAZY (REQ-5): Pocket-TTS is NOT pre-loaded at boot.
+        # Previously this spawned the tts_worker subprocess at startup, leaving a
+        # ~2.3 GB resident process at idle. The worker now spawns lazily on the
+        # first synthesize() call (TTSManager._ensure_worker), so idle memory is
+        # 0 for TTS. Tradeoff: the first voice response pays the ~55s model load.
+        # ==========================================================================
+        logger.info("  - TTS deferred (lazy load on first voice response)")
+
+        # ==========================================================================
+        # WAKE WORD MODEL DISCOVERY AND CONFIGURATION WITH DIAGNOSTIC LOGGING
+        # ==========================================================================
+        logger.info("  - Discovering wake word model...")
+        try:
+            from backend.agent.wake_config import get_wake_config as _get_wake_cfg
+
+            _wake_cfg = _get_wake_cfg()
+            if not _wake_cfg.get_custom_model_path():
+                from backend.voice.wake_word_discovery import WakeWordDiscovery
+
+                _model = WakeWordDiscovery().resolve_onnx_model()
+                if _model:
+                    _wake_cfg.config["custom_model_path"] = _model.path
+                    _wake_cfg.config["wake_phrase"] = _model.display_name
+                    logger.info(
+                        f"    [+] [WAKE WORD] Auto-configured: '{_model.display_name}' -> {_model.path}"
+                    )
+                else:
+                    logger.warning("    [~] [WAKE WORD] No ONNX wake model found")
+            else:
+                logger.debug(
+                    f"    - [WAKE WORD] Using custom config: {_wake_cfg.get_custom_model_path()}"
+                )
+        except Exception as e:
+            logger.warning(f"    [~] [WAKE WORD] Discovery failed (non-fatal): {e}")
+
+        # ==========================================================================
+        # WAKE WORD DETECTOR INITIALIZATION WITH DIAGNOSTIC LOGGING
+        # Wake word failure is NON-FATAL — app still works, just no wake word.
+        # A bad model, missing dependency, or audio driver issue must never crash
+        # the entire backend. The agent kernel, chat, and TTS all work without it.
+        # ==========================================================================
+        logger.info("  - Initializing wake word detector (Violawake)...")
+        try:
+            if audio_engine.initialize_detector():  # reads phrase + sensitivity from WakeConfig
+                logger.info("    [+] [WAKE] Initialized with wake word config")
+            else:
+                logger.error(
+                    "    [x] [WAKE] Initialization FAILED — "
+                    "wake word detection disabled. Check the ONNX model path."
+                )
+        except Exception as e:
+            logger.warning(
+                f"    [~] [WAKE] Wake word init failed (non-fatal — voice activation disabled): {e}"
+            )
+            # Do NOT raise — the app is fully usable without wake word detection.
+
+        # Step 8: Register live-update callback for dynamic wake word changes
+        try:
+            from backend.agent.wake_config import get_wake_config
+
+            get_wake_config().register_change_callback(
+                audio_engine.reinitialize_detector
+            )
+            logger.info("    [+] [WAKE] Live wake-word updates registered")
+        except Exception as e:
+            logger.warning(
+                f"    [~] [WAKE] Wake-word update callback failed (non-fatal): {e}"
+            )
+
+        # Step 9: Start the AudioEngine so wake frame detection runs
+        start_time = datetime.now()
+        if not audio_engine.start():
+            elapsed = (datetime.now() - start_time).total_seconds()
+            logger.warning(
+                f"    [x] [AUDIO ENGINE] Failed to start in {elapsed:.3f}s (mic may be unavailable)"
+            )
+        else:
+            elapsed = (datetime.now() - start_time).total_seconds()
+            logger.info(
+                f"    [+] [AUDIO ENGINE] Started successfully in {elapsed:.3f}s — wake word detection active"
+            )
+
+        # Step 10: Log overall audio subsystem initialization status
+        total_elapsed = (datetime.now() - start_time).total_seconds()
+        logger.info(
+            f"  - [AUDIO SUBSYSTEM] Initialization complete in {total_elapsed:.3f}s"
+        )
+        logger.info(
+            f"  - [AUDIO DIAG] Wake word: {'READY' if audio_engine._wake_detector_initialized else 'DISABLED'} | "
+            f"Pipeline: {'RUNNING' if audio_engine._is_running else 'STOPPED'} | "
+            f"Voice handler: {'WIRED' if voice_handler.is_recording is False else 'RECORDING'} | "
+            f"Whisper: {'READY' if voice_handler._whisper is not None else 'PRE-WARMING'} | "
+            f"Parakeet: {'READY' if voice_handler._parakeet._loaded else 'PRE-WARMING'}"
+        )
+        logger.debug(
+            "  - Audio subsystem ready for wake word detection and voice processing"
+        )
+
+        # ==========================================================================
+        # AGENT KERNEL INITIALIZATION WITH DIAGNOSTIC LOGGING
+        # ==========================================================================
+        logger.info("  - Initializing agent kernel...")
+        try:
+            from backend.agent import get_agent_kernel
+            from backend.agent.tool_bridge import initialize_agent_tools
+
+            agent_kernel = get_agent_kernel()
+
+            # Initialize tool bridge (async — calls bridge.initialize() which wires
+            # all MCP servers: vision, file_manager, browser, etc.).
+            # get_agent_tool_bridge() alone only creates the instance but never calls
+            # initialize(), leaving _mcp_servers empty and all tool calls failing.
+            tool_bridge = await initialize_agent_tools()
+            agent_kernel._tool_bridge = tool_bridge
+
+            # Capture main loop so background threads can dispatch WS broadcasts.
+            agent_kernel.set_main_loop(asyncio.get_running_loop())
+
+            app.state.agent_kernel = agent_kernel
+
+            logger.info("    [+] [AGENT KERNEL] Initialized successfully")
+            logger.info("    [+] [TOOL BRIDGE] MCP servers initialized")
+            logger.info(
+                "  - LAZY LOADING ACTIVE: Models will NOT be loaded automatically"
+            )
+            logger.info(
+                "  - Models will load only when user selects Local Model inference mode"
+            )
+        except Exception as e:
+            logger.warning(f"  - Warning: Failed to initialize agent kernel: {e}")
+            logger.info("  - Agent functionality will be unavailable.")
+
+        # ==========================================================================
+        # MEMORY SYSTEM INITIALIZATION WITH DIAGNOSTIC LOGGING
+        # ==========================================================================
+        logger.info("  - Initializing memory system...")
+        try:
+            from backend.memory import initialise_memory
+
+            # Use agent kernel's model router as adapter if available
+            adapter = None
+            if hasattr(app.state, "agent_kernel") and app.state.agent_kernel:
+                adapter = app.state.agent_kernel._model_router
+
+            if adapter:
+                memory = await initialise_memory(adapter=adapter)
+                app.state.memory = memory
+
+                # Wire memory to agent kernel
+                if hasattr(app.state, "agent_kernel") and app.state.agent_kernel:
+                    app.state.agent_kernel.set_memory_interface(memory)
+
+                logger.info("    [+] [MEMORY SYSTEM] Initialized successfully")
+            else:
+                logger.warning(
+                    "  - Memory system: no model adapter available, skipping."
+                )
+                app.state.memory = None
+        except Exception as e:
+            logger.warning(
+                f"  - Warning: Memory system init failed (non-critical): {e}"
+            )
+            app.state.memory = None
+
+        # Apply persisted launch mode (set by iris-launcher before first run)
+        try:
+            cfg = _load_iris_config()
+            persisted_mode = cfg.get("mode", "personal")
+            if hasattr(app.state, "agent_kernel") and app.state.agent_kernel:
+                app.state.agent_kernel.set_launcher_mode(persisted_mode)
+                logger.info(
+                    f"    [Mode] Launch mode loaded from config: {persisted_mode}"
+                )
+        except Exception as exc:
+            logger.warning(f"  - Could not apply persisted launch mode: {exc}")
+
+        # Apply persisted model configuration from iris_config.json
+        try:
+            _mc = _load_iris_config()
+            # Config lives under the "inference" block (cerebras/gemma by
+            # default). The legacy top-level keys (active_provider, etc.) no
+            # longer exist in iris_config.json, so reading them returned ""
+            # and silently skipped model restoration — leaving the kernel
+            # "uninitialized" and breaking DER tool calls.
+            _inf = (_mc.get("inference") or {}) if isinstance(_mc, dict) else {}
+            _provider = _inf.get("provider", "")
+            _reasoning = _inf.get("reasoning_model", "")
+            _tool_exec = _inf.get("tool_execution_model", "")
+            _api_key = _inf.get("api_key", "")
+            _api_base_url = _inf.get("api_base_url", "")
+            _thinking_style = _inf.get("thinking_style", "")
+            _response_length = _inf.get("response_length", "")
+            _tool_mode = _inf.get("tool_mode", "")
+            if _provider and _reasoning and hasattr(app.state, "agent_kernel"):
+
+                def _configure_kernel(kernel):
+                    # CRITICAL: pass api_base_url and api_key here so the
+                    # InferenceRouter's ProviderInstance gets the CORRECT
+                    # endpoint and key. Without these, set_model_selection
+                    # creates a provider with api_base_url="" which falls
+                    # back to self._api_base_url (default = OpenAI).
+                    # The old `if _provider == "api"` branch was dead code
+                    # because _provider is "cerebras" (or another named
+                    # provider), never the literal "api".
+                    #
+                    # preserve_bindings: this call reads the LEGACY FLAT config
+                    # fields (inference.provider / reasoning_model), which are a
+                    # denormalised copy of the role bindings. InferenceRouter.
+                    # _apply_config has already seeded the roles from
+                    # inference.role_bindings — the authoritative record — by the
+                    # time we get here. Rebinding from the flat copy overwrote
+                    # that seed and lost the user's choice across a restart:
+                    # observed 2026-08-16, role_bindings said cohere, the flat
+                    # provider said cerebras, and the process came up on
+                    # cerebras. Worse, the wrong binding was then persisted back
+                    # over inference.provider, so the staleness reinforced itself
+                    # on every subsequent boot.
+                    #
+                    # So: register the provider, credentials and endpoint (which
+                    # is what this call is really for) and bind ONLY the roles
+                    # that nothing has claimed — a genuinely fresh config with no
+                    # role_bindings still gets working roles below.
+                    _r = getattr(kernel, "_router", None)
+                    _already_bound = False
+                    if _r is not None:
+                        try:
+                            _already_bound = _r.roles.is_bound("reasoning")
+                        except Exception:
+                            _already_bound = False
+                    kernel.set_model_selection(
+                        reasoning_model=_reasoning,
+                        tool_execution_model=_tool_exec or _reasoning,
+                        model_provider=_provider,
+                        api_base_url=_api_base_url or "",
+                        api_key=_api_key or "",
+                        preserve_bindings=_already_bound,
+                    )
+                    if _already_bound:
+                        logger.info(
+                            "    [Model] Roles already seeded from "
+                            "inference.role_bindings — registered provider "
+                            "%r without rebinding (legacy flat fields are a "
+                            "stale copy, not the authority)", _provider,
+                        )
+
+                try:
+                    # Configure the default kernel (used during startup)
+                    _configure_kernel(app.state.agent_kernel)
+
+                    # ALSO configure the session_iris kernel (used by WebSocket clients)
+                    # The ws_manager maps client_id "iris" to session_id "session_iris"
+                    # which has its own separate kernel instance.
+                    from backend.agent.agent_kernel import get_agent_kernel as _get_ak
+
+                    _iris_kernel = _get_ak("session_iris")
+                    if _iris_kernel is not app.state.agent_kernel:
+                        _configure_kernel(_iris_kernel)
+                        logger.info(f"    [Model] Also configured session_iris kernel")
+
+                    # The global `_model_config_snapshot` stash that used to sit
+                    # here is gone (2026-08-16). Lazily-created kernels no longer
+                    # hydrate from a stored copy of this config — they read the
+                    # process-wide role-binding table, which the
+                    # `_configure_kernel` calls above have just seeded. Config
+                    # seeds the router once, at startup; from then on the router
+                    # is the authority and this block would only have been a
+                    # second, diverging copy of it.
+
+                    logger.info(
+                        f"    [Model] Restored provider={_provider} "
+                        f"reasoning={_reasoning} tool={_tool_exec}"
+                    )
+                except Exception as _me:
+                    logger.warning(
+                        f"  - Could not restore model config to kernel: {_me}"
+                    )
+        except Exception as e:
+            logger.warning(f"  - Could not load persisted model config: {e}")
+
+        # ==========================================================================
+        # MEMORY SEEDING [5.3] — transfer bootstrap landmarks to runtime Mycelium
+        # ==========================================================================
+        try:
+            from backend.memory.bootstrap_seed import seed_mycelium_from_bootstrap
+
+            n = seed_mycelium_from_bootstrap()
+            if n > 0:
+                logger.info(
+                    f"    [BootstrapSeed] Seeded {n} permanent landmarks into Mycelium"
+                )
+        except Exception as _seed_err:
+            logger.debug(f"  - Bootstrap seed skipped: {_seed_err}")
+
+        app.state.ready = True
+        logger.info("IRIS Backend startup completed successfully!")
+
+        # ── REQ-6 AC6.2: post-boot working-set reclamation ────────────────
+        # Startup imports (FastAPI routers, agent kernel, audio engine) leave
+        # transient heap pages resident in the Uvicorn process's working set.
+        # Trim it now that all lifecycle routers are bound so the main process
+        # idles well under its 1.0 GB target. Best-effort; never blocks startup.
+        try:
+            from backend.utils.memory_trim import trim_working_set
+
+            await asyncio.to_thread(trim_working_set)
+            logger.info("  - [MEMORY] Uvicorn working set trimmed post-boot")
+        except Exception as _trim_err:
+            logger.debug(f"  - [MEMORY] Post-boot working set trim skipped: {_trim_err}")
+
+        # ── Warm the pooled vision browser ─────────────────────────────────
+        # browser_pool exists to "eliminate the per-URL cold browser launch",
+        # but it starts LAZILY — and nothing ever pre-started it, so the cost
+        # landed inside the first budgeted operation instead of before it.
+        #
+        # Measured consequence: the first websearch after a restart spent
+        # 76,495 ms against search_discovery's 30,000 ms wall-clock budget
+        # (REQ-19 AC8) and was killed, so crawler_query got "no candidate urls"
+        # and the run failed with no browser animations — nothing had reached
+        # the page-event stage. Later searches, with the pool warm, are fine.
+        #
+        # This moves the one-time Playwright import + Chromium launch OUT of
+        # the measured window rather than widening the budget to hide it. It is
+        # deliberately fire-and-forget: startup must not block on Chromium, and
+        # a machine that never searches simply has the pool's own idle watchdog
+        # reclaim it.
+        async def _warm_browser_pool() -> None:
+            try:
+                from backend.vision.browser_pool import acquire_browser
+
+                # Returns (browser, lease) — NOT a context manager. The lease
+                # must be released on every path or the pool's idle watchdog
+                # defers forever and the browser is never reclaimed.
+                _browser, lease = await acquire_browser()
+                try:
+                    logger.info("  - [WARM] Pooled vision browser ready")
+                finally:
+                    lease.release()
+            except Exception as warm_err:  # noqa: BLE001 — best effort by design
+                # Never fatal. A missing Playwright/Chromium degrades the crawl
+                # path on its own terms (browser_session.available() == False);
+                # it must not stop the backend from serving everything else.
+                logger.info(f"  - [WARM] Vision browser warm-up skipped ({warm_err})")
+
+        asyncio.create_task(_warm_browser_pool())
+
+        # ── Memory watchdog ────────────────────────────────────────────────
+        # Graduated response to RSS growth: soft cap → GC + mycelium maint;
+        # hard cap → also unload active local LLM.
+        try:
+            from backend.core.memory_watchdog import watchdog_loop
+
+            async def _on_soft():
+                import gc as _gc
+
+                _gc.collect()
+                try:
+                    from backend.memory.interface import get_memory_interface
+
+                    mem = get_memory_interface()
+                    if mem and hasattr(mem, "_mycelium") and mem._mycelium:
+                        mem._mycelium.run_maintenance()
+                except Exception:
+                    pass
+
+            async def _on_hard():
+                await _on_soft()
+                try:
+                    from backend.agent.local_model_manager import (
+                        get_local_model_manager,
+                    )
+
+                    mgr = get_local_model_manager()
+                    if hasattr(mgr, "unload_active_model"):
+                        mgr.unload_active_model()
+                except Exception:
+                    pass
+
+            app.state.watchdog_task = asyncio.create_task(
+                watchdog_loop(on_soft=_on_soft, on_hard=_on_hard),
+                name="iris-memory-watchdog",
+            )
+            logger.info("  [Watchdog] Memory watchdog started")
+        except Exception as _wd_err:
+            logger.warning(
+                f"  [Watchdog] Could not start watchdog (non-fatal): {_wd_err}"
+            )
+
+        # ── Status broadcast loop ──────────────────────────────────────────────
+        # Broadcast system status updates to all connected WebSocket clients
+        # at adaptive intervals (fast when active, slow when idle).
+        try:
+
+            async def _status_broadcast_loop():
+                from backend.api.status_snapshot import build_snapshot
+                from backend.core.idle_tracker import get_idle_tracker
+
+                last_payload: dict | None = None
+                while True:
+                    try:
+                        tracker = get_idle_tracker()
+                        # Fast interval (1s) when user is active, slow (30s) when idle
+                        interval = (
+                            1.0 if not tracker.is_idle(threshold_s=30.0) else 30.0
+                        )
+                        await asyncio.sleep(interval)
+                        snap = await build_snapshot()
+                        # Only broadcast if changed
+                        if snap != last_payload:
+                            last_payload = snap
+                            ws_mgr = get_websocket_manager()
+                            await ws_mgr.broadcast(
+                                {"type": "system_status", "payload": snap}
+                            )
+                    except asyncio.CancelledError:
+                        return
+                    except Exception as e:
+                        logger.warning(f"[status_broadcast] error: {e}")
+
+            app.state.status_broadcast_task = asyncio.create_task(
+                _status_broadcast_loop(),
+                name="iris-status-broadcast",
+            )
+            logger.info("  [StatusBroadcast] System status broadcast loop started")
+        except Exception as _sb_err:
+            logger.warning(
+                f"  [StatusBroadcast] Could not start status broadcast (non-fatal): {_sb_err}"
+            )
+
+        # Pre-warm the GGUF file metadata cache in the background (filesystem
+        # scan only — no model weights loaded, no CUDA initialization).
+        # This means the first ModelsScreen open returns instantly instead of
+        # re-parsing GGUF binary headers on demand.
+        #
+        # INTENTIONALLY does NOT call get_hardware_info() here — that function
+        # can trigger CUDA driver init (via torch or llama_cpp) which causes a
+        # visible memory spike on startup before the user has done anything.
+        # Hardware info is fetched lazily when the user first opens ModelsScreen.
+        #
+        # NOTE: The 30-second background GGUF scan was REMOVED (Domain 16 optimization).
+        # scan_models() now runs lazily on first ModelsScreen open via get_available_models().
+        # This eliminates the RSS spike at t=30s on every cold start.
+        logger.info(
+            "  [LocalModel] GGUF scan deferred to first ModelsScreen open (no startup pre-warm)"
+        )
+
+    except Exception as e:
+        app.state.ready = False
+        logger.error(f"[ERROR] Failed to initialize backend: {e}")
+        import traceback
+
+        traceback.print_exc()
+
+    yield
+
+    logger.info("IRIS Backend shutting down...")
+    try:
+        # Cancel status broadcast and memory watchdog first so they don't log spurious errors during teardown
+        if (
+            hasattr(app.state, "status_broadcast_task")
+            and app.state.status_broadcast_task
+        ):
+            app.state.status_broadcast_task.cancel()
+            try:
+                await app.state.status_broadcast_task
+            except asyncio.CancelledError:
+                pass
+        if hasattr(app.state, "watchdog_task") and app.state.watchdog_task:
+            app.state.watchdog_task.cancel()
+            try:
+                await app.state.watchdog_task
+            except asyncio.CancelledError:
+                pass
+        logger.info("  - Stopping session manager...")
+        session_manager = get_session_manager()
+        await session_manager.stop()
+
+        logger.info("  - Cleaning up audio engine...")
+        audio_engine = get_audio_engine()
+        audio_engine.cleanup()
+
+        logger.info("  - Stopping all servers...")
+        server_manager = get_server_manager()
+        server_manager.stop_all_servers()
+
+        # Kill any orphaned llama-server processes before shutdown
+        try:
+            from .agent.local_model_manager import kill_orphan_servers
+
+            # Subprocess (tasklist/taskkill) — off the event loop.
+            await asyncio.to_thread(kill_orphan_servers)
+            logger.info("  - [CLEANUP] Orphaned llama-server processes killed")
+        except Exception:
+            pass
+
+        # Close the pooled vision browser. Its idle watchdog handles the normal
+        # case, but on shutdown there is no later tick to fire — without this an
+        # owned Chromium survives the backend as an orphan. Ownership-gated
+        # inside the pool: it only ever closes a browser it started itself.
+        try:
+            from backend.vision.browser_pool import shutdown_browser_pool
+
+            await shutdown_browser_pool()
+            logger.info("  - [CLEANUP] Pooled vision browser closed")
+        except Exception:
+            pass
+
+        logger.info("IRIS Backend shutdown completed successfully!")
+    except Exception as e:
+        logger.error(f"[ERROR] Error during shutdown: {e}")
+        import traceback
+
+        traceback.print_exc()
+
+
+# ============================================================================
+# Capability gating helper
+# ============================================================================
+
+from fastapi import Request, HTTPException, Depends
+from backend.capabilities import CapabilitySet
+
+
+def require_developer_mode(request: Request) -> None:
+    """FastAPI dependency that raises 403 when mode != developer."""
+    try:
+        CapabilitySet.require(CapabilitySet.REPO_ACCESS)
+    except PermissionError:
+        raise HTTPException(
+            status_code=403,
+            detail="This endpoint is only available in developer mode",
+        )
+
+
+# Re-usable Depends() wrapper for decorator usage
+_require_dev = Depends(require_developer_mode)
+
+
+# ============================================================================
+# FastAPI App Initialization
+# ============================================================================
+
+app = FastAPI(
+    title="IRIS Backend API",
+    description="WebSocket-based backend for IRISVOICE with dual-LLM agent system",
+    version="1.0.0",
+    lifespan=lifespan,
+)
+
+# Configure CORS middleware for Next.js and Tauri integration
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+)
+
+logger.info(f"CORS configured with allowed origins: {ALLOWED_ORIGINS}")
+
+# Register status snapshot router
+from backend.api.status_snapshot import router as status_snapshot_router
+from backend.api.chat import router as chat_router
+from backend.api.crawl_stream import router as crawl_stream_router
+# Read-only Caducean introspection (GET /api/debug/caducean). The phase scheduler
+# and multi-session coupling ship DISABLED, and their metrics are otherwise
+# in-process only — this is how a live run is verified by hand.
+from backend.api.caducean_debug import router as caducean_debug_router
+# In-app browser surface: capture replay (REQ-1) + fetch proxy (REQ-2/REQ-5).
+from backend.api.browser_surface import router as browser_surface_router
+# Structured frontend logs. Was a Next.js route handler; moved here because the
+# packaged widget is a static export with no Next.js server to run one.
+from backend.api.frontend_logs import router as frontend_logs_router
+
+app.include_router(status_snapshot_router)
+app.include_router(chat_router)
+app.include_router(crawl_stream_router)
+app.include_router(caducean_debug_router)
+app.include_router(browser_surface_router)
+app.include_router(frontend_logs_router)
+
+
+# ── Idle tracker middleware ────────────────────────────────────────────────
+# Touch the idle tracker on every HTTP request so background workers
+# (distillation, memory maintenance) know the user is interacting.
+# Excludes health-check polls so they don't mask real idle periods.
+from backend.core.idle_tracker import get_idle_tracker as _get_idle_tracker
+from starlette.middleware.base import BaseHTTPMiddleware as _BaseHTTPMiddleware
+from starlette.requests import Request as _Request
+
+
+class _IdleTrackerMiddleware(_BaseHTTPMiddleware):
+    _SKIP_PATHS = frozenset({"", "/", "/health", "/api/status"})
+
+    async def dispatch(self, request: _Request, call_next):
+        if request.url.path not in self._SKIP_PATHS:
+            try:
+                _get_idle_tracker().touch()
+            except Exception:
+                pass
+        return await call_next(request)
+
+
+app.add_middleware(_IdleTrackerMiddleware)
+
+
+# ============================================================================
+# Health Check Endpoint
+# ============================================================================
+
+
+@app.get("/")
+@app.get("/debug/stacks")
+async def debug_thread_stacks():
+    """Dump every live thread's Python stack. DIAGNOSTIC — read-only.
+
+    Added 2026-08-17 to locate a reproducible stall: a DER turn stops producing
+    log lines after the final step's TOOL_DISPATCH and never returns from
+    process_text_message, with the process blocked rather than spinning (0.2 s
+    CPU over 5 s). Logs alone cannot say which call is parked, and a sampling
+    profiler is not installed — but sys._current_frames() is stdlib and answers
+    it directly: hit this endpoint while the turn is hung and read the frame.
+
+    Localhost-only surface, no arguments, mutates nothing.
+    """
+    import sys as _sys
+    import threading as _threading
+    import traceback as _traceback
+
+    names = {t.ident: t.name for t in _threading.enumerate()}
+    frames = _sys._current_frames()
+    out = []
+    for tid, frame in frames.items():
+        out.append({
+            "thread_id": tid,
+            "name": names.get(tid, "?"),
+            "stack": [
+                f"{fs.filename}:{fs.lineno} in {fs.name}"
+                for fs in _traceback.extract_stack(frame)
+            ][-25:],
+        })
+    return {"thread_count": len(out), "threads": out}
+
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint — used by the frontend WS hook before opening the socket.
+    Returns 200 so the hook proceeds to connect immediately instead of retrying.
+
+    Phase 4.1: also reports the model-runner supervisor state + worker memory
+    metric when a supervisor is registered on app.state (otherwise omitted).
+    """
+    payload: dict = {"status": "ok", "service": "IRIS Backend"}
+    sup = getattr(app.state, "model_runner_supervisor", None)
+    if sup is not None:
+        try:
+            payload["model_runner"] = sup.health()
+        except Exception as exc:
+            payload["model_runner"] = {"status": "error", "error": str(exc)}
+    return payload
+
+
+@app.get("/ready")
+async def readiness_check():
+    """Readiness probe — returns 200 only after full startup (agent + memory initialized).
+    Frontend or health monitors can poll this before sending the first WS message."""
+    is_ready = getattr(app.state, "ready", False)
+    if is_ready:
+        return {"status": "ready", "service": "IRIS Backend"}
+    from fastapi import Response
+
+    return Response(
+        content='{"status":"starting","service":"IRIS Backend"}',
+        status_code=503,
+        media_type="application/json",
+    )
+
+
+@app.get("/first_run")
+async def first_run_check():
+    """Returns whether this is a first-run install (no model configured yet).
+    The frontend shows the setup wizard when first_run=true."""
+    try:
+        if hasattr(app.state, "agent_kernel") and app.state.agent_kernel:
+            provider = getattr(
+                app.state.agent_kernel, "_model_provider", "uninitialized"
+            )
+            is_first_run = provider in (None, "uninitialized")
+        else:
+            is_first_run = True
+        return {"first_run": is_first_run}
+    except Exception:
+        return {"first_run": True}
+
+
+# ============================================================================
+# Launcher Mode API — integration with iris-launcher
+# ============================================================================
+
+_IRIS_CONFIG_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "data",
+    "iris_config.json",
+)
+
+
+def _load_iris_config() -> dict:
+    """Load persisted IRIS config from data/iris_config.json."""
+    try:
+        if os.path.exists(_IRIS_CONFIG_PATH):
+            with open(_IRIS_CONFIG_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+
+def _save_iris_config(data: dict) -> None:
+    """Persist IRIS config to data/iris_config.json."""
+    try:
+        os.makedirs(os.path.dirname(_IRIS_CONFIG_PATH), exist_ok=True)
+        with open(_IRIS_CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception as exc:
+        logger.warning(f"[Config] Failed to save iris_config.json: {exc}")
+
+
+@app.post("/api/mode")
+async def set_launcher_mode(request: dict):
+    """
+    Called by iris-launcher after mode selection.
+
+    Body: { "mode": "personal" | "developer" }
+
+    personal  — standard agent, curated skills, no source code access
+    developer — full source access, git integration, diff review, rebuild pipeline
+    """
+    from fastapi import Response as FastAPIResponse
+
+    mode = (request.get("mode") or "").strip().lower()
+    if mode not in ("personal", "developer"):
+        return FastAPIResponse(
+            content=json.dumps(
+                {"error": f"Invalid mode: {mode!r}. Must be 'personal' or 'developer'."}
+            ),
+            status_code=422,
+            media_type="application/json",
+        )
+
+    # Persist to disk so the mode survives restarts
+    cfg = _load_iris_config()
+    cfg["mode"] = mode
+
+    # Manage developer worktree isolation.
+    # BUGFIX (session 259, pin_3bf7b4344f56): dev_worktree.setup()/teardown()
+    # run git subprocesses and were called inline on the event loop — a slow
+    # git op (fsmonitor/index rebuild on a large dirty tree) wedged the whole
+    # backend. Off-loop via to_thread; the endpoint stays responsive.
+    wt_info = None
+    try:
+        import asyncio as _asyncio
+        from backend import dev_worktree
+
+        if mode == "developer":
+            wt_info = await _asyncio.to_thread(dev_worktree.setup)
+            if wt_info.get("status") == "ok":
+                cfg["worktree_path"] = wt_info.get("worktree_path")
+                cfg["worktree_branch"] = wt_info.get("branch")
+                logger.info(f"[Mode] Worktree ready at {wt_info.get('worktree_path')}")
+            else:
+                logger.warning(f"[Mode] Worktree setup failed: {wt_info.get('error')}")
+        elif mode == "personal":
+            teardown = await _asyncio.to_thread(dev_worktree.teardown, merge=False)
+            cfg.pop("worktree_path", None)
+            cfg.pop("worktree_branch", None)
+            logger.info(f"[Mode] Worktree teardown: {teardown.get('status')}")
+    except Exception as exc:
+        logger.warning(f"[Mode] Worktree management error: {exc}")
+
+    _save_iris_config(cfg)
+
+    # Apply to live agent kernel if running
+    try:
+        if hasattr(app.state, "agent_kernel") and app.state.agent_kernel:
+            app.state.agent_kernel.set_launcher_mode(mode)
+    except Exception as exc:
+        logger.warning(f"[Mode] Could not apply mode to agent kernel: {exc}")
+
+    logger.info(f"[Mode] Launch mode set to: {mode}")
+
+    # Broadcast mode_changed to all connected WebSocket clients so the
+    # IRISVOICE frontend can react immediately without polling.
+    try:
+        ws_manager = get_websocket_manager()
+        await ws_manager.broadcast({"type": "mode_changed", "mode": mode})
+    except Exception as exc:
+        logger.debug(f"[Mode] WS broadcast skipped (no clients?): {exc}")
+
+    return {"mode": mode, "status": "ok"}
+
+
+@app.post("/api/approved-tools")
+async def api_save_approved_tools(request: dict = {}):
+    """Persist the user's standing approved-tools list (REQ-19 AC3).
+
+    Body: { "approved_tools": ["write_file", "git_commit", ...] }
+    ALWAYS_ASK tools are rejected (they can never be pre-approved, AC4/AC8).
+    """
+    from fastapi import Response as FastAPIResponse
+    from backend.agent.permissions import approval_class, ApprovalClass
+
+    raw = request.get("approved_tools")
+    if not isinstance(raw, list):
+        return FastAPIResponse(
+            content=json.dumps({"error": "approved_tools must be a list of tool names"}),
+            status_code=422,
+            media_type="application/json",
+        )
+    validated = []
+    seen = set()
+    for name in raw:
+        if not isinstance(name, str) or not name.strip():
+            continue
+        low = name.strip().lower()
+        if low in seen:
+            continue
+        if approval_class(low) == ApprovalClass.ALWAYS_ASK:
+            return FastAPIResponse(
+                content=json.dumps(
+                    {"error": f"Tool '{low}' is ALWAYS_ASK and cannot be pre-approved"}
+                ),
+                status_code=422,
+                media_type="application/json",
+            )
+        seen.add(low)
+        validated.append(low)
+
+    cfg = _load_iris_config()
+    cfg["approved_tools"] = validated
+    _save_iris_config(cfg)
+    return {"status": "ok", "approved_tools": validated}
+
+
+@app.get("/api/mode")
+async def get_launcher_mode():
+    """Returns the currently configured launch mode."""
+    cfg = _load_iris_config()
+    mode = cfg.get("mode", None)
+    return {"mode": mode}
+
+
+@app.get("/api/config")
+async def get_config():
+    """Single source of truth for the permissions UI (REQ-16 AC2, REQ-19 AC3/AC5).
+
+    Returns the EFFECTIVE mode (not just the stored value) plus the standing
+    approved-tools list and the set of tools the user is allowed to pre-approve.
+    The UI reflects `effective_mode` immediately after a toggle (REQ-19 AC5).
+
+    Both `mode` and `effective_mode` are read from the SAME config source that
+    `CapabilitySet.get_mode()` consults, so they can never diverge even if the
+    two path constants (`_IRIS_CONFIG_PATH` vs `_CFG_PATH`) ever drift.
+    """
+    from backend.agent.permissions import get_approvable_tools
+    from backend.capabilities import CapabilitySet, _CFG_PATH
+
+    effective_mode = CapabilitySet.get_mode()
+    stored_mode = None
+    approved: list = []
+    try:
+        with open(_CFG_PATH, encoding="utf-8") as _f:
+            _cfg = json.load(_f)
+        stored_mode = _cfg.get("mode")
+        _raw = _cfg.get("approved_tools") or []
+        if isinstance(_raw, list):
+            approved = [t for t in _raw if isinstance(t, str)]
+    except Exception:
+        pass
+    return {
+        "mode": stored_mode,
+        "effective_mode": effective_mode,
+        "approved_tools": approved,
+        "available_tools": get_approvable_tools(),
+    }
+
+
+@app.get("/api/worktree/status", dependencies=[_require_dev])
+async def get_worktree_status():
+    """Returns developer worktree isolation status."""
+    from backend import dev_worktree
+
+    return dev_worktree.status()
+
+
+# REQ-0 AC4: IRIS's own dev command surface — the single source of truth the
+# slash menu reads (REQ-7 AC1 initial surface). The external CLI registry
+# (cli_tools.yaml) was removed with D7; these commands execute inside IRIS.
+IRIS_DEV_COMMANDS = [
+    {
+        "name": "run",
+        "display_name": "/run",
+        "when_to_use": "Run a task on IRIS's own agent in the active project workdir.",
+        "available": True,
+        "reason": None,
+    },
+    {
+        "name": "help",
+        "display_name": "/help",
+        "when_to_use": "Show the developer-mode command surface and usage hints.",
+        "available": True,
+        "reason": None,
+    },
+    {
+        "name": "review",
+        "display_name": "/review",
+        "when_to_use": "Audit the current diff for over-engineering and return a delete-list.",
+        "available": True,
+        "reason": None,
+    },
+    {
+        "name": "debt",
+        "display_name": "/debt",
+        "when_to_use": "Scan the workdir for deferred-work markers and render them as cards.",
+        "available": True,
+        "reason": None,
+    },
+    {
+        "name": "term",
+        "display_name": "/term",
+        "when_to_use": "Toggle the terminal panel.",
+        "available": True,
+        "reason": None,
+    },
+    {
+        "name": "clear",
+        "display_name": "/clear",
+        "when_to_use": "Clear the terminal scrollback.",
+        "available": True,
+        "reason": None,
+    },
+]
+
+
+@app.get("/api/dev/cli-tools", dependencies=[_require_dev])
+async def get_cli_tools():
+    """
+    Expose IRIS's own dev command surface to the UI.
+
+    REQ-0 AC4: this is the single source of truth the slash menu reads —
+    not a second hardcoded list in the frontend. Built-in commands are always
+    available; the field set matches the historical shape so the frontend
+    contract is unchanged.
+    """
+    try:
+        return {"tools": [dict(cmd) for cmd in IRIS_DEV_COMMANDS]}
+    except Exception as exc:  # pragma: no cover - defensive: help must never break
+        logger.error("[api/dev/cli-tools] failed to load command surface: %s", exc)
+        return {"tools": []}
+
+
+@app.get("/api/launcher/status")
+async def get_launcher_status():
+    """
+    Returns live agent status for iris-launcher's dashboard.
+
+    iris-launcher displays: activeMode, agentActive, uptime, version.
+    Maps to the LauncherStatus type in mock-data.ts.
+    """
+    import time as _time
+
+    cfg = _load_iris_config()
+    mode = cfg.get("mode", "personal")
+    agent_active = getattr(app.state, "ready", False)
+
+    # Uptime since backend started
+    started_at = getattr(app.state, "_started_at", None)
+    if started_at is None:
+        uptime_str = "unknown"
+    else:
+        elapsed = int(_time.time() - started_at)
+        h, m = divmod(elapsed // 60, 60)
+        uptime_str = f"{h}h {m:02d}m" if h else f"{m}m"
+
+    return {
+        "mode": mode,
+        "sourceValid": True,
+        "driveConnected": True,
+        "agentActive": agent_active,
+        "pendingWrites": 0,
+        "uptime": uptime_str,
+        "version": "0.3.0-alpha",
+    }
+
+
+@app.get("/api/projects")
+async def get_projects():
+    """
+    Returns the list of IRIS projects known to this backend.
+
+    iris-launcher's ProjectsPage reads this to populate the project cards.
+    Projects are stored in data/iris_config.json under the "projects" key.
+    If no projects are configured, returns a default entry for the current install.
+    """
+    cfg = _load_iris_config()
+    projects = cfg.get("projects", None)
+
+    if not projects:
+        # Default: the current IRIS installation
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        mode = cfg.get("mode", "personal")
+        projects = [
+            {
+                "id": "iris-main",
+                "name": "IRIS",
+                "path": project_root,
+                "mode": "developer" if mode == "developer" else "standard",
+                "driveType": "local",
+            }
+        ]
+
+    return {"projects": projects}
+
+
+@app.post("/api/projects")
+async def save_projects(request: dict):
+    """
+    Save the project list from iris-launcher.
+
+    Body: { "projects": [ { id, name, path, mode, driveType }, ... ] }
+    """
+    projects = request.get("projects", [])
+    if not isinstance(projects, list):
+        from fastapi import Response as FastAPIResponse
+
+        return FastAPIResponse(
+            content=json.dumps({"error": "projects must be a list"}),
+            status_code=422,
+            media_type="application/json",
+        )
+    cfg = _load_iris_config()
+    cfg["projects"] = projects
+    _save_iris_config(cfg)
+    return {"projects": projects, "status": "ok"}
+
+
+# ============================================================================
+# Workspace Persistence API (Phase 2 — Developer Workspace)
+# ============================================================================
+
+_WORKSPACE_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "workspaces"
+)
+
+
+def _workspace_path(conversation_id: str) -> str:
+    """Return the filesystem path for a conversation's workspace state."""
+    safe_id = conversation_id.replace("/", "_").replace("\\", "_")
+    return os.path.join(_WORKSPACE_DIR, f"{safe_id}.json")
+
+
+@app.post("/api/workspace/save")
+async def api_workspace_save(request: dict):
+    """
+    Save workspace state keyed by conversation ID.
+
+    Body: { "conversationId": string, "state": WorkspaceState }
+    """
+    conversation_id = request.get("conversationId", "").strip()
+    state = request.get("state")
+    if not conversation_id:
+        from fastapi import Response as FastAPIResponse
+
+        return FastAPIResponse(
+            content=json.dumps({"error": "conversationId required"}),
+            status_code=422,
+            media_type="application/json",
+        )
+    if not isinstance(state, dict):
+        from fastapi import Response as FastAPIResponse
+
+        return FastAPIResponse(
+            content=json.dumps({"error": "state must be an object"}),
+            status_code=422,
+            media_type="application/json",
+        )
+    try:
+        os.makedirs(_WORKSPACE_DIR, exist_ok=True)
+        path = _workspace_path(conversation_id)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2)
+        return {"status": "ok", "conversationId": conversation_id}
+    except Exception as exc:
+        logger.error(
+            f"[Workspace] Failed to save workspace for {conversation_id}: {exc}"
+        )
+        from fastapi import Response as FastAPIResponse
+
+        return FastAPIResponse(
+            content=json.dumps({"error": str(exc)}),
+            status_code=500,
+            media_type="application/json",
+        )
+
+
+@app.get("/api/workspace/{conversation_id}")
+async def api_workspace_get(conversation_id: str):
+    """
+    Restore workspace state for a given conversation ID.
+    Returns 404 if no saved state exists.
+    """
+    path = _workspace_path(conversation_id)
+    if not os.path.exists(path):
+        from fastapi import Response as FastAPIResponse
+
+        return FastAPIResponse(
+            content=json.dumps({"error": "not found"}),
+            status_code=404,
+            media_type="application/json",
+        )
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            state = json.load(f)
+        return {"status": "ok", "conversationId": conversation_id, "state": state}
+    except Exception as exc:
+        logger.error(
+            f"[Workspace] Failed to load workspace for {conversation_id}: {exc}"
+        )
+        from fastapi import Response as FastAPIResponse
+
+        return FastAPIResponse(
+            content=json.dumps({"error": str(exc)}),
+            status_code=500,
+            media_type="application/json",
+        )
+
+
+# ============================================================================
+# Git + Diff API (Domain 13.1 — iris-launcher developer mode)
+# ============================================================================
+
+
+@app.get("/api/git/status", dependencies=[_require_dev])
+async def api_git_status():
+    """Returns git status for the active project.
+
+    get_git_status() shells out to `git status` and `git log` and is
+    SYNCHRONOUS by contract — its own docstring requires callers to run it
+    off the event loop. Calling it inline blocked the loop for the full
+    duration of both git commands, and this worktree is large enough
+    (node_modules/.next/models) that `git status` takes seconds — far longer
+    under the disk load of a model load. Every WebSocket frame, including the
+    heartbeat, stalled with it, which is what the widget experiences as a
+    freeze.
+    """
+    return await asyncio.to_thread(get_git_status)
+
+
+@app.get("/api/git/log", dependencies=[_require_dev])
+async def api_git_log(limit: int = 20):
+    """Returns recent commits."""
+    return get_git_log(limit=limit)
+
+
+@app.post("/api/git/commit", dependencies=[_require_dev])
+async def api_git_commit(request: dict):
+    """Stage all changes and commit."""
+    message = request.get("message", "").strip()
+    if not message:
+        message = "user: manual commit from iris-launcher"
+    return commit_all(message)
+
+
+@app.post("/api/git/rollback", dependencies=[_require_dev])
+async def api_git_rollback(request: dict):
+    """Hard reset to target commit."""
+    target = request.get("target", "").strip()
+    if not target:
+        from fastapi import Response as FastAPIResponse
+
+        return FastAPIResponse(
+            content=json.dumps({"error": "target commit hash required"}),
+            status_code=422,
+            media_type="application/json",
+        )
+    return rollback(target)
+
+
+@app.get("/api/diff/pending", dependencies=[_require_dev])
+async def api_diff_pending():
+    """Returns pending agent writes awaiting diff review."""
+    return get_pending_writes()
+
+
+@app.post("/api/diff/approve", dependencies=[_require_dev])
+async def api_diff_approve(request: dict):
+    """Approve a pending write — apply to disk and commit."""
+    write_id = request.get("id", "").strip()
+    if not write_id:
+        from fastapi import Response as FastAPIResponse
+
+        return FastAPIResponse(
+            content=json.dumps({"error": "write id required"}),
+            status_code=422,
+            media_type="application/json",
+        )
+    return approve_write(write_id)
+
+
+@app.post("/api/diff/reject", dependencies=[_require_dev])
+async def api_diff_reject(request: dict):
+    """Reject a pending write — discard without applying."""
+    write_id = request.get("id", "").strip()
+    if not write_id:
+        from fastapi import Response as FastAPIResponse
+
+        return FastAPIResponse(
+            content=json.dumps({"error": "write id required"}),
+            status_code=422,
+            media_type="application/json",
+        )
+    return reject_write(write_id)
+
+
+# ============================================================================
+# Git Worktree API (Domain 13.2)
+# ============================================================================
+
+
+@app.get("/api/git/worktree/status", dependencies=[_require_dev])
+async def api_worktree_status():
+    """Returns agent sandbox worktree status."""
+    return get_worktree_status()
+
+
+@app.post("/api/git/worktree/ensure", dependencies=[_require_dev])
+async def api_worktree_ensure():
+    """Create the agent sandbox worktree."""
+    return ensure_worktree()
+
+
+@app.post("/api/git/worktree/remove", dependencies=[_require_dev])
+async def api_worktree_remove():
+    """Remove the agent sandbox worktree."""
+    return remove_worktree()
+
+
+@app.post("/api/git/worktree/commit", dependencies=[_require_dev])
+async def api_worktree_commit(request: dict):
+    """Commit all changes in the worktree."""
+    message = request.get("message", "").strip()
+    if not message:
+        message = "agent: sandbox commit"
+    return commit_worktree(message)
+
+
+@app.post("/api/git/worktree/merge", dependencies=[_require_dev])
+async def api_worktree_merge(request: dict):
+    """Merge sandbox into main branch."""
+    strategy = request.get("strategy", "squash")
+    return merge_worktree(strategy=strategy)
+
+
+@app.post("/api/git/worktree/reset", dependencies=[_require_dev])
+async def api_worktree_reset():
+    """Hard reset worktree to main HEAD."""
+    return reset_worktree()
+
+
+# ============================================================================
+# GitHub OAuth + API (Real Integration)
+# ============================================================================
+
+
+@app.get("/api/github/status", dependencies=[_require_dev])
+async def api_github_status():
+    """Return GitHub connection status."""
+    connected = is_connected()
+    user = github_get_user() if connected else {}
+    return {
+        "connected": connected,
+        "user": user,
+    }
+
+
+@app.post("/api/github/connect", dependencies=[_require_dev])
+async def api_github_connect(request: dict):
+    """Connect using a Personal Access Token."""
+    token = request.get("token", "").strip()
+    if not token:
+        from fastapi import Response as FastAPIResponse
+
+        return FastAPIResponse(
+            content=json.dumps({"error": "token required"}),
+            status_code=422,
+            media_type="application/json",
+        )
+    result = connect_with_pat(token)
+    if result.get("status") == "ok":
+        return {
+            "status": "ok",
+            "login": result.get("login", ""),
+            "avatar_url": result.get("avatar_url", ""),
+        }
+    return {"status": "error", "error": result.get("error", "unknown")}
+
+
+@app.post("/api/github/disconnect", dependencies=[_require_dev])
+async def api_github_disconnect():
+    """Disconnect GitHub and revoke token."""
+    return github_disconnect()
+
+
+@app.get("/api/github/repos", dependencies=[_require_dev])
+async def api_github_repos():
+    """Return list of user repositories."""
+    return {"repos": get_repos()}
+
+
+@app.post("/api/github/ssh-keys/generate", dependencies=[_require_dev])
+async def api_github_ssh_generate(request: dict):
+    """Generate a new SSH key pair."""
+    name = request.get("name", "").strip()
+    key_type = request.get("type", "ed25519")
+    if not name:
+        from fastapi import Response as FastAPIResponse
+
+        return FastAPIResponse(
+            content=json.dumps({"error": "key name required"}),
+            status_code=422,
+            media_type="application/json",
+        )
+    return generate_ssh_key(name, key_type)
+
+
+@app.get("/api/github/ssh-keys", dependencies=[_require_dev])
+async def api_github_ssh_list():
+    """List generated SSH keys."""
+    return {"keys": list_ssh_keys()}
+
+
+@app.post("/api/github/ssh-keys/delete", dependencies=[_require_dev])
+async def api_github_ssh_delete(request: dict):
+    """Delete an SSH key."""
+    name = request.get("name", "").strip()
+    if not name:
+        from fastapi import Response as FastAPIResponse
+
+        return FastAPIResponse(
+            content=json.dumps({"error": "name is required"}),
+            status_code=422,
+            media_type="application/json",
+        )
+    return delete_ssh_key(name)
+
+
+# ============================================================================
+# Network / Tailscale API (Domain 13.6 — Tailscale Mobile Integration)
+# ============================================================================
+
+
+@app.get("/api/network/status")
+async def api_network_status():
+    """
+    Return Tailscale connection status and IRIS URLs.
+    Used by the TailscalePage to show real data and QR codes.
+    """
+    ts = get_tailscale_status()
+    urls = get_iris_urls(ts.get("ip"))
+    return {
+        "tailscale": ts,
+        "urls": urls,
+    }
+
+
+@app.get("/api/network/qrcode")
+async def api_network_qrcode(url: str):
+    """
+    Generate a QR code PNG for the given URL.
+    Query param: url (required)
+    """
+    if not url:
+        from fastapi import Response as FastAPIResponse
+
+        return FastAPIResponse(
+            content=json.dumps({"error": "url query param is required"}),
+            status_code=422,
+            media_type="application/json",
+        )
+    png_bytes = generate_qr_png(url)
+    from fastapi import Response as FastAPIResponse
+
+    return FastAPIResponse(content=png_bytes, media_type="image/png")
+
+
+@app.post("/api/network/tailscale/start")
+async def api_network_tailscale_start():
+    """Start the Tailscale service so this device can join the tailnet."""
+    result = start_tailscale_service()
+    return {
+        "started": result.get("started", False),
+        "service_running": result.get("service_running", False),
+        "error": result.get("error"),
+        "status": get_tailscale_status(),
+    }
+
+
+# ============================================================================
+# Model Browser API
+# ============================================================================
+
+
+@app.get("/api/models")
+async def api_list_models():
+    """List available GGUF models scanned from the configured models directory."""
+    try:
+        import asyncio as _asyncio
+
+        from .agent.local_model_manager import get_local_model_manager
+        from .iris_config import load_config
+
+        mgr = get_local_model_manager()
+        # scan_models() walks the models dir and parses GGUF headers — blocking
+        # disk I/O that stalls the event loop (and WS heartbeats) for seconds on
+        # a busy HDD, freezing the frontend dropdown + orb. Run it off the loop.
+        # The frontend re-fetches this right after a model load, which is exactly
+        # when the disk is busiest (session 279).
+        models = await _asyncio.to_thread(mgr.scan_models)
+        # REQ-10 AC2/AC3: surface the user's persisted vision fallback ladder
+        # alongside the candidates it was built from, so ModelBrowserPanel can
+        # seed its selection/order from the SAME fetch it already makes â€”
+        # no extra round trip. Reading config never raises on a missing/empty
+        # field (dataclass default is []), so this cannot break model listing.
+        try:
+            ladder = (await _asyncio.to_thread(load_config)).inference.vision_fallback_ladder or []
+        except Exception:
+            ladder = []
+        return {
+            "models": models,
+            "models_dir": str(mgr.effective_models_dir),
+            "vision_fallback_ladder": ladder,
+        }
+    except Exception as e:
+        from fastapi.responses import JSONResponse
+        import traceback
+
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e), "traceback": traceback.format_exc()},
+        )
+
+
+@app.get("/api/inference/state")
+async def api_inference_state():
+    """Return the live provider registry + role bindings.
+
+    Single source of truth for the frontend's provider/role selection UI.
+    Mirrors the unified status-snapshot pattern (replaces ad-hoc FE polling).
+    """
+    try:
+        from backend.agent.inference.snapshot import build_inference_snapshot
+
+        # Read the live provider registry + role bindings WITHOUT constructing
+        # a kernel.  get_agent_kernel(conversation_id="default") builds a full
+        # AgentKernel when absent (measured 71.81s cold), which made this
+        # endpoint time out on page loads racing backend startup — the exact
+        # cause of the "provider card empty until refresh" bug (root-caused
+        # 2026-08-12, pin_05511443f03b).  peek_active_kernel returns None when
+        # no kernel exists yet; build_inference_snapshot(None) still returns
+        # the FULL key set (empty providers, static provider_presets +
+        # model_catalog), so the dropdown populates even before the first WS
+        # session.  The process-wide provider registry (router.py) is shared,
+        # so providers registered by ANY session are always visible here.
+        from backend.agent.agent_kernel import peek_active_kernel
+
+        kernel = peek_active_kernel("session_iris")
+        router = getattr(kernel, "_router", None) if kernel else None
+        return build_inference_snapshot(router)
+    except Exception as e:
+        from fastapi.responses import JSONResponse
+        import traceback
+
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e), "traceback": traceback.format_exc()},
+        )
+
+
+# NOTE (2026-08-17): this endpoint has NO callers in the tree — the frontend
+# loads over the WebSocket `load_local_model` path, which is the only one that
+# also wires the kernel to the iris_local provider and registers it in the
+# InferenceRouter. A model loaded through HERE is resident in VRAM but invisible
+# to the Brain/Tool dropdowns and unreachable by inference.
+#
+# It is kept because test_local_model_load.py pins its behaviour
+# (test_api_load_model_reports_error_on_failed_load /
+# ..._reports_ok_on_successful_load) — those tests exist because of a real
+# "false loaded" regression. Removing the endpoint means removing its tests,
+# which is a deliberate decision to make explicitly, not a side effect of a
+# cleanup. Do not delete one without the other.
+@app.post("/api/models/load")
+async def api_load_model(body: dict):
+    """Load a GGUF model. Body: { path, profile? }
+    Blocks until loaded; progress is broadcast via WebSocket model_load_progress events.
+    """
+    from .agent.local_model_manager import get_local_model_manager
+    from backend.ws_manager import get_websocket_manager
+
+    mgr = get_local_model_manager()
+    ws = get_websocket_manager()
+    model_path = (body.get("path") or "").strip()
+    if not model_path:
+        return {"status": "error", "message": "No model path provided"}
+    profile = body.get("profile", "balanced")
+
+    async def _progress_cb(event: dict):
+        """Broadcast load progress to all connected WebSocket clients."""
+        try:
+            await ws.broadcast(
+                {
+                    "type": "model_load_progress",
+                    "percent": event.get("pct", 0),
+                    "message": event.get("msg", ""),
+                    "phase": event.get("phase", ""),
+                }
+            )
+        except Exception:
+            pass
+
+    try:
+        ok = await mgr.load_model(model_path, profile=profile, progress_cb=_progress_cb)
+        if not ok:
+            # load_model() returned False → the model did NOT actually load.
+            # Do NOT report success — the frontend must not show "loaded".
+            await ws.broadcast(
+                {
+                    "type": "model_load_progress",
+                    "percent": 100,
+                    "message": "Load failed — model not loaded",
+                    "phase": "error",
+                }
+            )
+            return {"status": "error", "message": "Model failed to load"}
+        # Signal completion only on a genuine successful load.
+        await ws.broadcast(
+            {
+                "type": "model_load_progress",
+                "percent": 100,
+                "message": f"Model loaded ({profile})",
+                "phase": "done",
+            }
+        )
+        return {"status": "ok", "message": f"Model loaded (profile={profile})"}
+    except Exception as e:
+        await ws.broadcast(
+            {
+                "type": "model_load_progress",
+                "percent": 100,
+                "message": f"Error: {e}",
+                "phase": "error",
+            }
+        )
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/api/models/unload")
+async def api_unload_model():
+    """Unload the currently loaded GGUF model."""
+    from .agent.local_model_manager import get_local_model_manager
+
+    mgr = get_local_model_manager()
+    try:
+        await mgr.unload_model()
+        return {"status": "ok", "message": "Model unloaded"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+# ============================================================================
+# Hugging Face Hub bridge (cli-workspace-unification T10 / REQ-9)
+# Search + streamed 1-click downloads into the scanned models/ directory.
+# Error-handling contract (design.md): cancel/fail deletes the partial file;
+# unsafe filenames are rejected (path-traversal guard); upstream failures are
+# surfaced, never fabricated; a missing token degrades to public search.
+# ============================================================================
+
+_HF_API_BASE = "https://huggingface.co/api/models"
+_HF_RESOLVE_BASE = "https://huggingface.co"
+# Bounded registry of in-flight downloads (quality check: bounded footprint).
+_HF_DOWNLOAD_JOBS: dict = {}
+_HF_MAX_CONCURRENT_DOWNLOADS = 3
+
+
+def _hf_headers() -> dict:
+    """User-agent always; Authorization only when a token is configured.
+    Token-absent degrades to public search (gated repos marked unavailable)."""
+    import os as _os
+
+    headers = {"user-agent": "IRIS-Voice/1.0 (+local-model-manager)"}
+    token = _os.environ.get("HF_TOKEN") or _os.environ.get("HUGGING_FACE_HUB_TOKEN")
+    if token:
+        headers["authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _sanitize_hf_filename(name: str) -> str:
+    """REQ-9 AC7 path-traversal guard: a remote filename containing path
+    separators, '..' or non-asset characters is REJECTED before anything is
+    written under models/. Only .gguf weight files are accepted."""
+    import re as _re
+
+    if not name or not isinstance(name, str):
+        raise HTTPException(status_code=400, detail="missing filename")
+    name = name.strip()
+    if "/" in name or "\\" in name or ".." in name:
+        raise HTTPException(status_code=400, detail=f"unsafe filename: {name!r}")
+    if not _re.fullmatch(r"[A-Za-z0-9._\- ]+", name):
+        raise HTTPException(status_code=400, detail=f"unsafe filename: {name!r}")
+    if not name.lower().endswith(".gguf"):
+        raise HTTPException(status_code=400, detail=f"only .gguf files are downloadable, got: {name!r}")
+    return name
+
+
+@app.get("/api/models/hf/search")
+async def api_hf_search(q: str = "", limit: int = 20):
+    """Search the Hugging Face Hub index for GGUF/text-generation models.
+    Returns repo title, author, likes, downloads and available .gguf quant
+    files with sizes. Upstream failure -> surfaced error, no fabricated rows."""
+    import httpx
+    from fastapi.responses import JSONResponse
+
+    try:
+        params = {
+            "search": q or "gguf",
+            "limit": max(1, min(int(limit), 50)),
+            "sort": "downloads",
+            "direction": -1,
+            "blobs": "true",
+        }
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+            resp = await client.get(_HF_API_BASE, params=params, headers=_hf_headers())
+        if resp.status_code != 200:
+            return JSONResponse(
+                status_code=502,
+                content={"error": f"Hugging Face API returned {resp.status_code}"},
+            )
+        repos = resp.json()
+    except Exception as e:
+        return JSONResponse(status_code=502, content={"error": f"Hugging Face API unreachable: {e}"})
+
+    results = []
+    for repo in repos or []:
+        siblings = [
+            {
+                "filename": s.get("rfilename", ""),
+                "size": s.get("size"),
+            }
+            for s in (repo.get("siblings") or [])
+            if str(s.get("rfilename", "")).lower().endswith(".gguf")
+        ]
+        results.append(
+            {
+                "repo_id": repo.get("id", ""),
+                "author": (repo.get("id", "").split("/")[0] if "/" in repo.get("id", "") else ""),
+                "likes": repo.get("likes", 0),
+                "downloads": repo.get("downloads", 0),
+                "gated": bool(repo.get("gated")),
+                "gguf_files": siblings,
+            }
+        )
+    return {"results": results}
+
+
+async def _hf_download_job(job_id: str, repo_id: str, filename: str, dest, job: dict):
+    """Stream one HF file into models/ via a .part temp file. Cancel/fail
+    deletes the partial; success renames atomically and triggers an
+    automatic scan_models() rescan (REQ-9 AC7/AC8)."""
+    import asyncio
+    import time
+
+    import httpx
+    from backend.ws_manager import get_websocket_manager
+
+    part_path = dest.with_suffix(dest.suffix + ".part")
+    ws = get_websocket_manager()
+
+    async def _broadcast(payload: dict):
+        try:
+            await ws.broadcast({"type": "model:download_progress", **payload})
+        except Exception:
+            pass  # progress is best-effort; never kill the download for it
+
+    last_broadcast = 0.0
+    try:
+        url = f"{_HF_RESOLVE_BASE}/{repo_id}/resolve/main/{filename}"
+        async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client:
+            async with client.stream("GET", url, headers=_hf_headers()) as resp:
+                if resp.status_code != 200:
+                    raise RuntimeError(f"HF returned {resp.status_code} for {repo_id}/{filename}")
+                total = int(resp.headers.get("content-length") or 0)
+                job.update(status="downloading", total=total, received=0)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                started = time.monotonic()
+                received = 0
+                with open(part_path, "wb") as fh:
+                    async for chunk in resp.aiter_bytes(1 << 20):
+                        if job.get("cancel"):
+                            raise asyncio.CancelledError()
+                        fh.write(chunk)
+                        received += len(chunk)
+                        now = time.monotonic()
+                        if now - last_broadcast >= 0.5 or received == total:
+                            elapsed = max(now - started, 1e-6)
+                            last_broadcast = now
+                            await _broadcast(
+                                {
+                                    "job_id": job_id,
+                                    "filename": filename,
+                                    "pct": round(received * 100.0 / total, 1) if total else 0,
+                                    "speed_mb": round((received / (1024 * 1024)) / elapsed, 2),
+                                    "received": received,
+                                    "total": total,
+                                }
+                            )
+        # Atomic promote — a truncated weight can never appear under its real
+        # name, so a later scan can never offer it for loading.
+        part_path.replace(dest)
+        job.update(status="done", pct=100.0)
+        await _broadcast({"job_id": job_id, "filename": filename, "pct": 100.0, "speed_mb": 0, "received": job.get("total", 0), "total": job.get("total", 0)})
+        # REQ-9 AC8: automatic rescan so the model appears ready to load.
+        try:
+            from .agent.local_model_manager import get_local_model_manager
+
+            # scan_models() walks the models directory and parses GGUF headers
+            # from multi-GB files — synchronous disk I/O. Off-loop so the
+            # rescan cannot stall the heartbeat right after a large download.
+            await asyncio.to_thread(get_local_model_manager().scan_models)
+        except Exception as scan_err:
+            logger.warning(f"[HF download] post-download rescan failed: {scan_err}")
+    except asyncio.CancelledError:
+        job.update(status="cancelled")
+        part_path.unlink(missing_ok=True)
+        await _broadcast({"job_id": job_id, "filename": filename, "pct": 0, "speed_mb": 0, "cancelled": True})
+    except Exception as e:
+        job.update(status="failed", error=str(e))
+        # Never leave a truncated weight a later scan could offer for loading.
+        part_path.unlink(missing_ok=True)
+        await _broadcast({"job_id": job_id, "filename": filename, "pct": 0, "speed_mb": 0, "error": str(e)})
+
+
+@app.post("/api/models/hf/download")
+async def api_hf_download(body: dict = {}):
+    """Start a streamed download of {repo_id, filename} into models/.
+    Returns {job_id}; progress streams over WS as model:download_progress."""
+    import asyncio
+    import uuid
+    from pathlib import Path as _Path
+
+    from .agent.local_model_manager import get_local_model_manager
+
+    repo_id = str(body.get("repo_id", "")).strip()
+    filename = _sanitize_hf_filename(str(body.get("filename", "")))
+    if not repo_id or "/" not in repo_id or any(c in repo_id for c in ("..", "\\")):
+        raise HTTPException(status_code=400, detail=f"unsafe repo_id: {repo_id!r}")
+
+    active = sum(1 for j in _HF_DOWNLOAD_JOBS.values() if j.get("status") == "downloading")
+    if active >= _HF_MAX_CONCURRENT_DOWNLOADS:
+        raise HTTPException(status_code=429, detail="too many concurrent downloads")
+
+    mgr = get_local_model_manager()
+    models_dir = mgr.effective_models_dir.resolve()
+    dest = (models_dir / filename).resolve()
+    # Double-guard: even a sanitized name must resolve INSIDE models/.
+    if dest.parent != models_dir:
+        raise HTTPException(status_code=400, detail="destination escapes models directory")
+
+    job_id = uuid.uuid4().hex[:12]
+    job = {"status": "queued", "repo_id": repo_id, "filename": filename, "cancel": False}
+    _HF_DOWNLOAD_JOBS[job_id] = job
+    asyncio.create_task(_hf_download_job(job_id, repo_id, filename, dest, job))
+    return {"job_id": job_id, "status": "queued", "filename": filename}
+
+
+@app.post("/api/models/hf/download/cancel")
+async def api_hf_download_cancel(body: dict = {}):
+    """Cancel an in-flight download. The partial .part file is deleted by the
+    worker — never left for a later scan to offer."""
+    job_id = str(body.get("job_id", ""))
+    job = _HF_DOWNLOAD_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="unknown job_id")
+    job["cancel"] = True
+    return {"status": "cancelling", "job_id": job_id}
+
+
+@app.get("/api/models/hf/download/status")
+async def api_hf_download_status(job_id: str = ""):
+    """Poll fallback for clients that missed WS progress frames."""
+    job = _HF_DOWNLOAD_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="unknown job_id")
+    return {k: v for k, v in job.items() if k != "cancel"}
+
+
+@app.post("/api/swarm/start")
+async def api_swarm_start(body: dict = {}):
+    """Start swarm mode. Body: { mode?, worker_count?, director_model? }
+    Delegates to SwarmInferenceManager."""
+    from .agent.swarm_inference_manager import SwarmInferenceManager
+    from backend.ws_manager import get_websocket_manager
+
+    mgr = SwarmInferenceManager()
+    ws = get_websocket_manager()
+    mode = body.get("mode", "local_fast")
+    worker_count = int(body.get("worker_count", 2))
+    director_model = body.get("director_model", "")
+
+    try:
+        await mgr.start_swarm(
+            director_model=director_model,
+            worker_count=worker_count,
+            mode=mode,
+        )
+        await ws.broadcast(
+            {
+                "type": "swarm_status",
+                "title": "Swarm Started",
+                "message": f"Swarm active — {worker_count} workers ({mode})",
+                "status": "active",
+            }
+        )
+        return {
+            "status": "ok",
+            "message": f"Swarm started (mode={mode}, workers={worker_count})",
+            "status_payload": mgr.get_status(),
+        }
+    except Exception as e:
+        import traceback
+
+        return {
+            "status": "error",
+            "message": str(e),
+            "traceback": traceback.format_exc(),
+        }
+
+
+@app.post("/api/swarm/stop")
+async def api_swarm_stop():
+    """Stop swarm mode and kill all worker processes."""
+    from .agent.swarm_inference_manager import SwarmInferenceManager
+    from backend.ws_manager import get_websocket_manager
+
+    mgr = SwarmInferenceManager()
+    ws = get_websocket_manager()
+    try:
+        mgr.stop_swarm()
+        await ws.broadcast(
+            {
+                "type": "swarm_status",
+                "title": "Swarm Stopped",
+                "message": "All swarm workers terminated",
+                "status": "inactive",
+            }
+        )
+        return {"status": "ok", "message": "Swarm stopped"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.get("/api/swarm/status")
+async def api_swarm_status():
+    """Get current swarm status and configuration."""
+    from .agent.swarm_inference_manager import SwarmInferenceManager
+
+    mgr = SwarmInferenceManager()
+    try:
+        status = mgr.get_status()
+        return {"status": "ok", "payload": status}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+# ── Config Save (HTTP fallback for APPLY button when WebSocket unavailable) ─
+# ── Gate 3 T11 (REQ-6): terminal command history persistence ────────────────
+# Per-conversation, backend-backed (NOT localStorage — REQ-6 AC2: the Tauri
+# webview's localStorage is per-webview and cleared on some reinstall paths).
+_TERMINAL_HISTORY_DIR = os.path.join(os.path.dirname(__file__), "data", "terminal_history")
+_TERMINAL_HISTORY_BOUND = 200
+
+
+def _terminal_history_path(conversation_id: str) -> str:
+    safe = "".join(c for c in conversation_id if c.isalnum() or c in "-_")[:80]
+    if not safe:
+        raise HTTPException(status_code=400, detail="bad conversation_id")
+    return os.path.join(_TERMINAL_HISTORY_DIR, f"{safe}.json")
+
+
+@app.get("/api/terminal/history")
+async def api_terminal_history_get(conversation_id: str):
+    path = _terminal_history_path(conversation_id)
+    try:
+        import json as _json
+        with open(path, "r", encoding="utf-8") as fh:
+            return {"history": _json.load(fh)}
+    except FileNotFoundError:
+        return {"history": []}
+    except Exception as exc:
+        logger.warning("[terminal-history] read failed: %s", exc)
+        return {"history": []}
+
+
+@app.post("/api/terminal/history")
+async def api_terminal_history_post(body: dict = {}):
+    conversation_id = str(body.get("conversation_id", ""))
+    history = body.get("history")
+    if not conversation_id or not isinstance(history, list):
+        return {"status": "error", "message": "conversation_id and history[] required"}
+    history = [str(h)[:500] for h in history][-_TERMINAL_HISTORY_BOUND:]
+    try:
+        import json as _json
+
+        os.makedirs(_TERMINAL_HISTORY_DIR, exist_ok=True)
+        tmp = _terminal_history_path(conversation_id) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            _json.dump(history, fh)
+        os.replace(tmp, _terminal_history_path(conversation_id))
+        return {"status": "ok"}
+    except Exception as exc:
+        logger.warning("[terminal-history] write failed: %s", exc)
+        return {"status": "error", "message": str(exc)}
+
+
+@app.post("/api/config/save")
+async def api_config_save(body: dict = {}):
+    """Save section card values to config.
+
+    Body: { section_id: str, card_id: str, values: dict }
+
+    This is the HTTP fallback for the APPLY button — used when WebSocket
+    is disconnected or unavailable. Delegates to the same handler logic
+    as the WebSocket confirm_card handler.
+    """
+    try:
+        from backend.iris_config import load_config, save_config
+
+        section_id = body.get("section_id", "")
+        values = body.get("values", {})
+
+        if not section_id or not values:
+            return {"status": "error", "message": "section_id and values required"}
+
+        cfg = load_config()
+
+        # ── model_selection ───────────────────────────────────────────────
+        if section_id == "model_selection":
+            # IMPORTANT: frontend sends "model_provider", NOT "provider".
+            # Check both to match the WS confirm_card handler in iris_gateway.py.
+            provider = values.get("model_provider") or values.get("provider")
+            if provider:
+                cfg.inference.provider = provider
+                # Derive api_base_url from provider — MUST override any stale
+                # "api_base_url" that the frontend may have cached from a
+                # previous provider selection (e.g. Cohere URL when provider
+                # is now Cerebras). This matches the logic in the WS
+                # confirm_card handler (iris_gateway.py line 1112).
+                _provider_endpoints = {
+                    "opencodego": "https://opencode.ai/zen/go/v1",
+                    "cerebras": "https://api.cerebras.ai/v1",
+                    "cohere": "https://api.cohere.ai/compatibility/v1",
+                    "chutes": "https://api.chutes.ai/v1",
+                    "deepseek": "https://api.deepseek.com/beta",
+                    "anthropic": "https://api.anthropic.com/v1",
+                }
+                if provider in _provider_endpoints:
+                    cfg.inference.api_base_url = _provider_endpoints[provider]
+            elif "api_base_url" in values:
+                # Only use raw api_base_url from frontend if no provider was
+                # specified (for custom/unknown endpoints).
+                cfg.inference.api_base_url = values["api_base_url"]
+            if "reasoning_model" in values:
+                cfg.inference.reasoning_model = values["reasoning_model"]
+            if "tool_execution_model" in values:
+                cfg.inference.tool_execution_model = values["tool_execution_model"]
+            if "lm_studio_url" in values:
+                cfg.inference.lm_studio_url = values["lm_studio_url"]
+            if "ollama_url" in values:
+                cfg.inference.ollama_url = values["ollama_url"]
+            # API keys NEVER persist in the config file. The kernel's fallback
+            # (agent_kernel._resolve_effective_key) reads cfg.inference.api_key
+            # and serves it to any provider whose id matches
+            # cfg.inference.provider, so a stale value here cross-contaminates
+            # providers (the recurring cerebras-key-sent-to-cohere 401). Route
+            # the key to the OS keyring — the same store set_model_selection
+            # uses — and clear the legacy field so the fallback can never serve
+            # an outdated credential.
+            if "api_key" in values:
+                if provider:
+                    from backend.agent.inference.keyring import set_secret
+
+                    set_secret(provider, values["api_key"])
+                cfg.inference.api_key = ""
+
+        # ── inference_mode ───────────────────────────────────────────────
+        elif section_id == "inference_mode":
+            if "thinking_style" in values:
+                cfg.inference.thinking_style = values["thinking_style"]
+            if "response_length" in values:
+                cfg.inference.response_length = values["response_length"]
+            if "reasoning_effort" in values:
+                cfg.inference.reasoning_effort = values["reasoning_effort"]
+            if "tool_mode" in values:
+                cfg.inference.tool_mode = values["tool_mode"]
+
+        # ── local_model ───────────────────────────────────────────────────
+        elif section_id == "local_model":
+            path = values.get("local_model_path", "")
+            profile = values.get("local_model_profile", "balanced")
+            ctx = int(values.get("local_model_ctx", 16384))
+            gpu = int(values.get("local_model_gpu_layers", -1))
+            md = values.get("models_directory", "").strip()
+
+            cfg.inference.local_model_path = path
+            cfg.inference.local_model_profile = profile
+            cfg.inference.local_model_ctx = ctx
+            cfg.inference.local_model_gpu_layers = gpu
+            if md:
+                cfg.inference.models_directory = md
+
+        # ── swarm_setup ──────────────────────────────────────────────────
+        elif section_id == "swarm_setup":
+            swarm_on = bool(values.get("swarm_enabled", False))
+            mode = values.get("swarm_mode", "local_fast")
+            worker_ctx = int(values.get("worker_context", 2048))
+            worker_count = int(values.get("worker_count", 2))
+            md = values.get("models_directory", "").strip()
+
+            cfg.inference.swarm_enabled = swarm_on
+            cfg.inference.swarm_mode = mode
+            cfg.inference.worker_context = str(worker_ctx)
+            cfg.inference.swarm_worker_count = worker_count
+            if md:
+                cfg.inference.models_directory = md
+
+        # ── identity ─────────────────────────────────────────────────────
+        elif section_id == "identity":
+            if "agent_name" in values:
+                cfg.system.agent_name = values["agent_name"]
+            if "system_prompt" in values:
+                cfg.system.system_prompt = values["system_prompt"]
+
+        # ── memory ───────────────────────────────────────────────────────
+        elif section_id == "memory":
+            if "memory_count" in values:
+                cfg.memory.max_memories = int(values["memory_count"])
+
+        # ── field_values persistence (ALL sections) ──────────────────────
+        # The dashboard's unmount save (the reliable close-path) POSTs here
+        # for every populated section. Persist the raw form values so they
+        # survive frontend remounts / page reloads — this mirrors the WS
+        # update_field / confirm_card path (save_field_values in iris_config).
+        # Without this, only cfg.inference.* (model_selection etc.) was saved
+        # and every other section's settings were silently dropped on close.
+        try:
+            _base = dict(cfg.field_values or {})
+            _base[section_id] = values
+            cfg.field_values = _base
+        except Exception as _fv_err:
+            logger.warning(f"[Config] Failed to persist field_values for {section_id}: {_fv_err}")
+
+        save_config(cfg)
+        return {"status": "ok", "section": section_id}
+
+    except Exception as e:
+        import traceback
+
+        return {
+            "status": "error",
+            "message": str(e),
+            "traceback": traceback.format_exc(),
+        }
+
+
+# ============================================================================
+# Conversation Sync API (Domain 13.8 — Cross-device chat history)
+# ============================================================================
+
+from backend.conversation_store import (
+    create_conversation,
+    get_conversations,
+    get_conversation,
+    add_message,
+    delete_conversation,
+    update_conversation_title,
+    toggle_pin_conversation,
+    truncate_conversation,
+)
+
+
+@app.get("/api/conversations")
+async def api_conversations():
+    """List all conversations (most recent first)."""
+    return {"conversations": get_conversations()}
+
+
+@app.post("/api/conversations")
+async def api_create_conversation(request: dict):
+    """Create a new conversation."""
+    title = request.get("title", "").strip()
+    return create_conversation(title=title)
+
+
+@app.get("/api/conversations/{conversation_id}")
+async def api_get_conversation(conversation_id: str):
+    """Get a conversation with all its messages."""
+    conv = get_conversation(conversation_id)
+    if not conv:
+        from fastapi import Response as FastAPIResponse
+
+        return FastAPIResponse(
+            content=json.dumps({"error": "Conversation not found"}),
+            status_code=404,
+            media_type="application/json",
+        )
+    return conv
+
+
+@app.post("/api/conversations/{conversation_id}/messages")
+async def api_add_message(conversation_id: str, request: dict):
+    """Append a message to a conversation."""
+    text = request.get("text", "").strip()
+    # Accept either `role` (canonical, matches add_message()) or `sender` (legacy alias).
+    role = request.get("role") or request.get("sender") or ""
+    if not text or role not in ("user", "assistant", "error"):
+        from fastapi import Response as FastAPIResponse
+
+        return FastAPIResponse(
+            content=json.dumps({"error": "text and valid sender required"}),
+            status_code=422,
+            media_type="application/json",
+        )
+    return add_message(
+        conversation_id,
+        role=role,
+        text=text,
+        thinking=request.get("thinking", ""),
+        feedback=request.get("feedback"),
+    )
+
+
+@app.get("/api/documents/{document_id}/image")
+async def api_document_image(document_id: str):
+    """Serve a document's binary body (a screenshot) for the chat card's <img>.
+
+    Addressed by the document's OWN id, never by a filename or a path: there is
+    nothing here to traverse, and the image cannot be requested independently of
+    a document that exists. Its lifetime is the document's — the store's
+    eviction drops the blob with the row — so a served image can never outlive
+    the card that shows it.
+
+    A missing blob is an explicit 404, never a placeholder image: a screenshot
+    that failed to store must be VISIBLY missing rather than silently blank,
+    which is the failure mode this codebase keeps reproducing.
+    """
+    from fastapi.responses import Response as _Response
+
+    try:
+        from backend.agent.agent_kernel import get_active_kernel
+        from backend.agent.document_store import DocumentDataStore
+
+        kernel = get_active_kernel("session_iris")
+        store = (
+            DocumentDataStore.get_for(kernel._memory_interface)
+            if kernel is not None
+            else None
+        )
+        blob = store.get_blob(document_id) if store is not None else None
+    except Exception as exc:  # noqa: BLE001 — a lookup failure is a 404, not a 500
+        logger.warning("[api] document image lookup failed id=%s: %s", document_id, exc)
+        blob = None
+
+    if not blob:
+        raise HTTPException(status_code=404, detail="image unavailable")
+
+    return _Response(
+        content=blob["data"],
+        media_type=blob.get("mime") or "image/png",
+        headers={
+            # Immutable: a document id addresses exactly one set of bytes for
+            # its whole life, so re-fetching on every render is pure waste.
+            "Cache-Control": "private, max-age=86400, immutable",
+            # The bytes are a rendered web page. Refuse to let a browser
+            # re-interpret them as anything but the declared image type.
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@app.delete("/api/conversations/{conversation_id}")
+async def api_delete_conversation(conversation_id: str):
+    """Delete a conversation and all its messages."""
+    deleted = delete_conversation(conversation_id)
+    return {"deleted": deleted}
+
+
+@app.patch("/api/conversations/{conversation_id}")
+async def api_patch_conversation(conversation_id: str, request: dict):
+    """Update title or toggle pin."""
+    if "title" in request:
+        update_conversation_title(conversation_id, request["title"])
+    if "toggle_pin" in request and request["toggle_pin"]:
+        toggle_pin_conversation(conversation_id)
+    conv = get_conversation(conversation_id)
+    return conv or {"error": "not found"}
+
+
+@app.post("/api/conversations/{conversation_id}/truncate")
+async def api_truncate_conversation(conversation_id: str, request: dict):
+    """Delete all messages after `keep_until_message_id`."""
+    keep_until = request.get("keep_until_message_id", "")
+    if not keep_until:
+        return {"error": "keep_until_message_id is required"}, 400
+    try:
+        result = truncate_conversation(conversation_id, keep_until)
+        return result
+    except ValueError as e:
+        return {"error": str(e)}, 404
+
+
+# ============================================================================
+# Wake Word Handler
+# ============================================================================
+
+
+# Last wake-word detection time — used to debounce Porcupine's repeated triggers
+_last_wake_word_time: float = 0.0
+_WAKE_WORD_COOLDOWN_SEC: float = 5.0
+# Stored at setup so _on_wake_word_sync (called from audio thread) can schedule
+# the async handler on the correct event loop without calling get_running_loop().
+_main_event_loop: asyncio.AbstractEventLoop = None
+
+
+async def _async_preload_tts(tts_manager) -> None:
+    """Pre-load Pocket-TTS model in background to cache on first use.
+
+    Session 244 fix (pin_1fd290307cac): ``_load_pocket_tts`` is SYNCHRONOUS and
+    slow (HF hub fetch + 438MB weight load + voice-state encode — 282s cold).
+    Called directly inside this coroutine it ran ON THE EVENT LOOP, starving
+    everything else: uvicorn could not bind :8090 until TTS finished, so the
+    whole backend appeared dead for ~5 minutes despite 'background' logging.
+    Offloading to a worker thread keeps the loop free — the server binds and
+    serves while the model loads.
+    """
+    try:
+        logger.info("[TTS] Starting Pocket-TTS pre-load (worker thread)...")
+        t0 = time.monotonic()
+        success = await asyncio.to_thread(tts_manager._load_pocket_tts)
+        elapsed = time.monotonic() - t0
+        if success:
+            logger.info(f"[TTS] Pocket-TTS pre-loaded in {elapsed:.1f}s")
+        else:
+            logger.error(
+                f"[TTS] Pocket-TTS pre-load FAILED in {elapsed:.1f}s "
+                f"(model=None). TTS will produce silence. "
+                f"Check 'TTSManager' error logs above for the reason."
+            )
+    except Exception as e:
+        logger.error(
+            f"[TTS] Pocket-TTS pre-load crashed: {e}",
+            exc_info=True,
+        )
+
+
+def _on_wake_word_sync(wake_word_name: str):
+    """
+    Called from the audio engine thread when Porcupine detects the wake word.
+
+    Synchronous wrapper that debounces (cooldown) and then schedules
+    ``_on_wake_word_async`` on the main event loop via
+    ``asyncio.run_coroutine_threadsafe``.
+
+    The lambda in ``set_wake_word_callback`` calls this function.
+    ``_on_wake_word_async`` does the actual routing to the IRIS Gateway.
+    """
+    global _last_wake_word_time
+    now = time.monotonic()
+    if now - _last_wake_word_time < _WAKE_WORD_COOLDOWN_SEC:
+        logger.info(
+            f"[WakeWord] '{wake_word_name}' within cooldown ({_WAKE_WORD_COOLDOWN_SEC}s) — skipping"
+        )
+        return
+    _last_wake_word_time = now
+    logger.info(f"[WakeWord] '{wake_word_name}' PASSED cooldown — scheduling async handler")
+
+    if _main_event_loop is None:
+        logger.error("[WakeWord] _main_event_loop is None — cannot schedule async handler")
+        return
+
+    asyncio.run_coroutine_threadsafe(
+        _on_wake_word_async(wake_word_name), _main_event_loop
+    )
+
+
+async def _on_wake_word_async(wake_word_name: str):
+    """
+    Async half of the wake word callback.  Scheduled by ``_on_wake_word_sync``
+    on the main event loop.  Routes ``voice_command_start`` through the
+    IRIS Gateway.
+
+    NOTE: Cooldown is handled in ``_on_wake_word_sync`` (the thread-safe
+    caller).  This function runs on the main event loop and should NOT
+    re-check ``_last_wake_word_time`` (it was just set a few ms ago).
+    """
+    try:
+        logger.info(
+            f"[WakeWord] 'hey iris' DETECTED — "  # noqa: suppress log noise
+            "firing voice_command_start via iris_gateway"
+        )
+        ws_manager = get_websocket_manager()
+
+        # REQ-5: warm TTS on the FIRST voice command (not at boot). The ~55s
+        # Pocket-TTS model load overlaps with the user speaking + the agent
+        # thinking, so the first response is NOT delayed — while idle memory
+        # stays 0 for TTS. Fire-and-forget; never blocks the wake word path.
+        try:
+            from backend.agent.tts import get_tts_manager
+
+            _tts = get_tts_manager()
+            if not _tts.is_loaded():
+                logger.info(
+                    "[WakeWord] Warming TTS on first voice command (background)..."
+                )
+                asyncio.get_running_loop().create_task(
+                    asyncio.to_thread(_tts._load_pocket_tts)
+                )
+        except Exception as _warm_exc:
+            logger.warning(f"[WakeWord] TTS warm-up failed (non-fatal): {_warm_exc}")
+
+        # Resolve the conversation thread to attach the wake word to.
+        # Priority 1: the most recently active session (set on connect / every
+        #   message via SessionManager._mark_active). This is what makes the wake
+        #   word work at STARTUP and with a freshly-created frontend thread,
+        #   instead of only after a manual trigger. (REQ-1, REQ-2)
+        # Priority 2: most recent active session from the WS manager.
+        # Priority 3: headless mode (no browser connected).
+        session_manager = getattr(ws_manager, "_session_manager", None)
+        session_id = None
+        resolution_source = "none"
+        if session_manager is not None and hasattr(session_manager, "get_last_active_session_id"):
+            session_id = session_manager.get_last_active_session_id()
+            if session_id:
+                resolution_source = "last_active"
+
+        if not session_id:
+            active_sessions = ws_manager.get_active_session_ids()
+            if active_sessions:
+                # Most recently active, not insertion order [0].
+                session_id = active_sessions[-1]
+                resolution_source = "active_list"
+
+        if not session_id:
+            # Priority 3: headless mode — no browser connected.
+            session_id = "voice_headless"
+            resolution_source = "headless"
+            logger.info(
+                "[WakeWord] No active sessions — entering headless voice mode "
+                f"(session={session_id})"
+            )
+
+        logger.info(
+            f"[WakeWord] '{wake_word_name}' -> resolved session {session_id} "
+            f"(source={resolution_source})"
+        )
+
+        # Notify ALL clients in the session that the wake word was detected —
+        # triggers the same visual feedback as double-click (flash + listening
+        # state). Broadcasting (not a single client_id) guarantees the frontend
+        # reacts even if the session/client mapping was established late. (REQ-1)
+        try:
+            await ws_manager.broadcast_to_session(
+                session_id,
+                {"type": "wake_detected", "payload": {"keyword": wake_word_name}},
+            )
+        except Exception as e:
+            # Headless mode has no WS clients — this is expected, not an error.
+            if resolution_source != "headless":
+                logger.warning(f"[WakeWord] wake_detected broadcast failed: {e}")
+
+        iris_gateway = get_iris_gateway()
+        # Resolve a concrete client_id for the voice handler (headless fallback).
+        client_ids = ws_manager.get_clients_for_session(session_id)
+        client_id = client_ids[0] if client_ids else "voice_headless_client"
+        logger.info(
+            f"[WakeWord] Routing to iris_gateway._handle_voice "
+            f"(session={session_id}, client={client_id})"
+        )
+        await iris_gateway._handle_voice(
+            session_id,
+            client_id,
+            {"type": "voice_command_start"},
+            auto_stop=True,
+            # 8.0s, not 3.0s. The wake word fires near the END of "Hey Iris",
+            # then the activation chime plays and VAD spends ~0.5s calibrating.
+            # Users pause before speaking; at 3.0s the VAD gave up with
+            # "no speech detected" and the whole interaction died silently
+            # (2026-09-01: 4 of 7 wake triggers hit pre-speech timeout).
+            # 8.0s matches the conversation-mode relisten window.
+            pre_speech_timeout_sec=8.0,
+        )
+        logger.info(f"[WakeWord] _handle_voice returned for session={session_id}")
+    except Exception as e:
+        logger.error(f"[WakeWord] Error routing wake word: {e}", exc_info=True)
+
+
+# ============================================================================
+# WebSocket Endpoint
+# ============================================================================
+
+# Per-session message ordering locks and per-client in-flight task tracking
+_session_message_locks: Dict[str, asyncio.Lock] = {}
+_client_tasks: Dict[str, Set[asyncio.Task]] = {}
+
+# Message types that are handled immediately (lightweight control frames)
+_CONTROL_FRAMES = {"ping", "pong", "request_state"}
+
+# Session 248 FIX (live conv-53): permission/question responses MUST bypass
+# the per-session ordering lock. The lock is held for a turn's WHOLE
+# duration, and the DER turn blocks INSIDE the permission wait — so a grant
+# dispatched through the locked lane sat unread for the full 120s timeout,
+# resolved nothing ("Response for unknown request"), and the card never
+# acknowledged the click. These handlers are tiny and side-effect-light;
+# they are exactly the messages that must arrive WHILE a turn runs.
+_CONTROL_FRAMES |= {"notification_response", "question_response"}
+
+# dev-cli-ide REQ-24: frames that must reach the backend WHILE a turn runs but
+# are too slow to handle inline in the reader loop. They are dispatched as
+# background tasks WITHOUT _session_message_locks.
+#
+# terminal_input is the case that matters: the session lock is held for a
+# turn's WHOLE duration, so a user `>` command typed while the agent worked sat
+# unread until the turn ended. Developer mode advertises a terminal that runs
+# beside the agent; behind the lock it does not. Ordering is NOT lost by
+# leaving the lock: SubprocessManager owns a per-session `_cmd_lock` ("one
+# shell => serialized commands"), so two commands from one session still run in
+# the order they arrived. The lock was ordering the shell against the AGENT's
+# turn, which is exactly the coupling that has to go.
+_UNLOCKED_FRAMES = {"terminal_input"}
+
+# REQ-15 (T25/T26): steer / pause / stop / resume ride a dedicated channel so
+# they reach the RUNNING DER loop at its next step boundary instead of
+# queueing behind a running turn's handle_message (_session_message_locks).
+try:
+    from backend.agent.steering import (
+        STEERING_CHANNELS,
+        CHANNEL_RESUME,
+        get_steering_inbox,
+        emit_queued_ack,
+        resend_stale_acks,
+    )
+except Exception:  # pragma: no cover — import must never break startup
+    STEERING_CHANNELS = frozenset()
+    CHANNEL_RESUME = "resume"
+
+    def get_steering_inbox(*_a, **_k):  # type: ignore[no-redef]
+        return None
+
+    def emit_queued_ack(*_a, **_k):  # type: ignore[no-redef]
+        return None
+
+    def resend_stale_acks(*_a, **_k):  # type: ignore[no-redef]
+        return []
+
+
+@app.websocket("/ws/{client_id}")
+async def websocket_endpoint(
+    websocket: WebSocket, client_id: str, session_id: Optional[str] = Query(None)
+):
+    """Handle WebSocket connections with session management."""
+    ws_manager = get_websocket_manager()
+
+    active_session_id = await ws_manager.connect(websocket, client_id, session_id)
+    if not active_session_id:
+        logger.warning(f"Failed to establish connection for client {client_id}")
+        return
+
+    # Ensure ordering lock exists for this session
+    if active_session_id not in _session_message_locks:
+        _session_message_locks[active_session_id] = asyncio.Lock()
+
+    try:
+        session = get_session_manager().get_session(active_session_id)
+        if session and session.state_manager:
+
+            async def state_change_callback(key: str, value: Any):
+                await ws_manager.send_to_client(
+                    client_id, {"type": "state_update", "key": key, "value": value}
+                )
+
+            session.state_manager.register_state_change_callback(state_change_callback)
+
+        while True:
+            data = await websocket.receive_text()
+            # Redact BEFORE truncating. `data[:200]` on its own does not
+            # protect anything — it publishes the first 200 characters of
+            # whatever the frame contains. The settings UI sends one
+            # field_update per keystroke, so this line wrote ~30 progressively
+            # longer prefixes of every API key a user typed straight to disk,
+            # and backend/logs was tracked in git (found 2026-08-13: a full
+            # Cerebras key reached a public repo through irisvoice.log.1).
+            logger.info(
+                f"[WS] Received from {client_id}: {redact_log(data, limit=200)}"
+            )
+            try:
+                message = json.loads(data)
+            except json.JSONDecodeError:
+                logger.warning(
+                    f"[WS] Invalid JSON from {client_id}: {redact_log(data, limit=100)}"
+                )
+                continue
+
+            msg_type = message.get("type", "")
+
+            # Heartbeat hardening: treat any inbound frame as liveness
+            try:
+                ws_manager.mark_liveness(client_id)
+            except Exception:
+                pass  # never block the message loop
+            logger.info(f"[WS] Processing msg_type={msg_type} from {client_id}")
+
+            # REQ-15 AC5: any frame is a chance to re-send an unacknowledged
+            # steering record's "queued" ack (cheap; off the critical path).
+            try:
+                if active_session_id:
+                    resend_stale_acks(active_session_id)
+            except Exception:
+                pass
+
+            if msg_type in _CONTROL_FRAMES:
+                # Control frames: handle immediately inline
+                try:
+                    await handle_message(client_id, active_session_id, message)
+                except Exception as exc:
+                    logger.error(
+                        f"[WS] Error in control frame handler for {client_id}: {exc}",
+                        exc_info=True,
+                    )
+            elif msg_type in STEERING_CHANNELS or msg_type == CHANNEL_RESUME:
+                # REQ-15 (T25/T26): steer / pause / stop / resume — push into
+                # the steering inbox NOW (not behind the session lock) so the
+                # RUNNING DER loop consumes them at its next step boundary
+                # (AC1). AC5: acknowledge the landing immediately ("queued")
+                # and re-send any still-unacknowledged (stale) records.
+                try:
+                    # REQ-25: the WS client wraps every frame as
+                    # {type, payload, seq}, while the original REQ-15 handler
+                    # read `text` from the TOP level only. A steer sent by the
+                    # UI therefore arrived with text="" and revised nothing --
+                    # the channel looked alive (it acked) and did nothing.
+                    # Accept both shapes.
+                    _sp = message.get("payload")
+                    if not isinstance(_sp, dict):
+                        _sp = {}
+                    _rec = get_steering_inbox().push(
+                        channel=msg_type,
+                        session_id=active_session_id,
+                        text=message.get("text") or _sp.get("text") or "",
+                        message_id=(message.get("message_id")
+                                    or _sp.get("message_id")),
+                    )
+                    emit_queued_ack(_rec)
+                    # REQ-26 AC1-AC4: acknowledge RECEIPT out loud. The ack
+                    # frame and the chat line are both VISIBLE signals; a
+                    # voice-first user gets neither. Measured on 2026-08-26:
+                    # a steer sat 136s between arriving and being applied,
+                    # while narration kept describing the work the user had
+                    # just asked to stop. AC2: this says HEARD, not APPLIED --
+                    # the record is consumed at the next step boundary, and
+                    # claiming the plan already changed would be a lie for the
+                    # length of the running step. AC3/AC4: the SpeakTool
+                    # singleton with priority "low" queues behind whatever is
+                    # already speaking on the narration lock; it never
+                    # interrupts and never opens a second audio path.
+                    if msg_type == "steer" and (_rec.text or "").strip():
+                        try:
+                            from backend.agent.tools.speak_tool import get_speak_tool
+                            from backend.agent.narration import may_narrate
+
+                            if may_narrate():
+                                get_speak_tool().speak(
+                                    "Got it. I will switch after this step.",
+                                    priority="low",
+                                    conversation_id=active_session_id,
+                                )
+                        except Exception as _spk_exc:  # noqa: BLE001
+                            logger.debug(
+                                "[WS] steer acknowledgement speak skipped: %s",
+                                _spk_exc,
+                            )
+                    # AC5: an unacknowledged steering message SHALL be re-sent.
+                    resend_stale_acks(active_session_id)
+                    logger.info(
+                        f"[WS] {msg_type} queued for session {active_session_id} "
+                        f"(REQ-15 steering channel)"
+                    )
+                except Exception as exc:
+                    logger.error(
+                        f"[WS] Error queueing {msg_type} for {client_id}: {exc}",
+                        exc_info=True,
+                    )
+            else:
+                # Long-running: dispatch to background task, preserving per-session order
+                _unlocked = msg_type in _UNLOCKED_FRAMES
+
+                async def _dispatch(msg: dict, sid: str, cid: str,
+                                    unlocked: bool = _unlocked):
+                    try:
+                        lock = None if unlocked else _session_message_locks.get(sid)
+                        if lock:
+                            async with lock:
+                                await handle_message(cid, sid, msg)
+                        else:
+                            await handle_message(cid, sid, msg)
+                    except Exception as exc:
+                        logger.error(
+                            f"[WS] Error in dispatched task for {cid}: {exc}",
+                            exc_info=True,
+                        )
+
+                task = asyncio.create_task(
+                    _dispatch(message, active_session_id, client_id)
+                )
+                _client_tasks.setdefault(client_id, set()).add(task)
+                task.add_done_callback(
+                    lambda t, c=client_id: _client_tasks.get(c, set()).discard(t)
+                )
+
+    except WebSocketDisconnect:
+        logger.info(f"Client {client_id} disconnected.")
+    except RuntimeError as e:
+        if "WebSocket is not connected" in str(e) or "accept" in str(e):
+            logger.info(
+                f"Client {client_id}: stale socket superseded by reconnect (normal)"
+            )
+        else:
+            logger.error(f"Error in WebSocket for client {client_id}: {e}")
+    except Exception as e:
+        logger.error(f"Error in WebSocket for client {client_id}: {e}")
+    finally:
+        # Cancel any in-flight tasks for this client
+        for task in list(_client_tasks.pop(client_id, set())):
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+        owns_connection = ws_manager.active_connections.get(client_id) is websocket
+        if active_session_id and owns_connection:
+            try:
+                iris_gateway = get_iris_gateway()
+                await iris_gateway.cleanup_session(active_session_id)
+            except Exception as cleanup_error:
+                logger.error(
+                    f"Error cleaning up session {active_session_id}: {cleanup_error}"
+                )
+        if owns_connection:
+            ws_manager.disconnect(client_id)
+
+
+# ============================================================================
+# Message Handler
+# ============================================================================
+
+
+async def handle_message(client_id: str, session_id: str, message: dict):
+    """Process incoming messages — delegates to IRISGateway for unified routing."""
+    msg_type = message.get("type", "")
+
+    if msg_type.startswith("memory/"):
+        await handle_memory_message(client_id, session_id, message)
+        return
+
+    iris_gateway = get_iris_gateway()
+    await iris_gateway.handle_message(client_id, message, session_id=session_id)
+
+
+async def handle_memory_message(client_id: str, session_id: str, message: dict):
+    """Handle memory-related WebSocket messages."""
+    msg_type = message.get("type", "")
+    ws_manager = get_websocket_manager()
+
+    try:
+        from backend.memory import get_memory_interface
+
+        memory = get_memory_interface()
+
+        if memory is None:
+            await ws_manager.send_to_client(
+                client_id,
+                {
+                    "type": "memory/error",
+                    "payload": {"error": "Memory system not initialized"},
+                },
+            )
+            return
+
+        if msg_type == "memory/get_preferences":
+            entries = memory.get_user_profile_display()
+            await ws_manager.send_to_client(
+                client_id,
+                {"type": "memory/preferences", "payload": {"entries": entries}},
+            )
+
+        elif msg_type == "memory/forget_preference":
+            key = message.get("payload", {}).get("key")
+            if key:
+                success = memory.forget_preference(key)
+                await ws_manager.send_to_client(
+                    client_id,
+                    {
+                        "type": "memory/forget_result",
+                        "payload": {"key": key, "success": success},
+                    },
+                )
+            else:
+                await ws_manager.send_to_client(
+                    client_id,
+                    {"type": "memory/error", "payload": {"error": "No key provided"}},
+                )
+
+        elif msg_type == "memory/get_stats":
+            stats = memory.get_memory_stats()
+            await ws_manager.send_to_client(
+                client_id, {"type": "memory/stats", "payload": stats}
+            )
+
+        else:
+            await ws_manager.send_to_client(
+                client_id,
+                {
+                    "type": "memory/error",
+                    "payload": {"error": f"Unknown memory message type: {msg_type}"},
+                },
+            )
+
+    except Exception as e:
+        logger.error(f"[Memory] Error handling memory message: {e}")
+        await ws_manager.send_to_client(
+            client_id, {"type": "memory/error", "payload": {"error": str(e)}}
+        )
+
+
+# ── v2: Caducean Mitochondria-to-Mycelium Endpoints (Phase 5) ───────
+#
+# These endpoints are thin pass-throughs to backend/gateway/iris_ffi.py.
+# The Tauri Rust shell calls these via the caducean.rs commands; the
+# frontend calls them indirectly via Tauri invoke() (not directly).
+#
+# Contract: see backend/tests/contract/caducean_api_v2.json and
+# backend/tests/test_caducean_api_contract.py for the FROZEN schema.
+#
+# Design notes:
+#   - GET endpoints take session_id as query param
+#   - POST endpoints take JSON body
+#   - 404 on missing session, 422 on schema violation (FastAPI default)
+#   - 503 if C++ engine not live (for /state and /direction reads)
+#   - 200 with {ok: false} if /params update failed (engine down)
+# ────────────────────────────────────────────────────────────────────
+
+
+@app.get("/api/caducean/state")
+async def api_caducean_state(session_id: str = Query(...)):
+    """Return full Caducean state for a session.
+
+    Response shape (FROZEN):
+      {
+        "session_id": str,
+        "engine_live": bool,
+        "x": int, "y": int,
+        "xi": float, "u": float,
+        "a": float, "b": float, "s": float, "c_eff": float
+      }
+    """
+    try:
+        from backend.gateway.iris_ffi import ffi_caducean_get_state
+
+        state = ffi_caducean_get_state(session_id)
+        # Also check if engine is live for the frontend health indicator
+        engine_live = False
+        try:
+            from backend.memory.interface import MemoryInterface
+
+            # Check if any MemoryInterface has the engine live (cheap heuristic)
+            from backend.gateway.iris_ffi import _engine
+
+            engine_live = (
+                _engine is not None and getattr(_engine, "_ffi", None) is not None
+            )
+        except Exception:
+            pass
+        if not state:
+            # Empty dict = engine not live or session unknown
+            return {
+                "session_id": session_id,
+                "engine_live": engine_live,
+                "x": 0,
+                "y": 0,
+                "xi": 0.0,
+                "u": 0.0,
+                "a": 2.0,
+                "b": 2.0,
+                "s": 0.35,
+                "c_eff": 1.0,
+            }
+        # FROZEN contract: x and y are integers (accumulator counts).
+        # ffi_caducean_get_state() returns them as floats (c_double)
+        # for FFI uniformity; coerce here to match the API contract.
+        return {
+            "session_id": session_id,
+            "engine_live": engine_live,
+            "x": int(state.get("x", 0)),
+            "y": int(state.get("y", 0)),
+            "xi": float(state.get("xi", 0.0)),
+            "u": float(state.get("u", 0.0)),
+            "a": float(state.get("a", 2.0)),
+            "b": float(state.get("b", 2.0)),
+            "s": float(state.get("s", 0.35)),
+            "c_eff": float(state.get("c_eff", 1.0)),
+        }
+    except Exception as e:
+        logger.warning(f"[caducean] state endpoint failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/caducean/direction")
+async def api_caducean_direction(
+    session_id: str = Query(...),
+    balance: float = Query(1.0, ge=0.1, le=3.0),
+):
+    """Return the bias-free DirectionSignal for a session.
+
+    Response shape (FROZEN — matches IrisDirectionSignal C struct):
+      {
+        "session_id": str,
+        "target_u": float,        // +1.0 or -1.0
+        "force_magnitude": float, // |F(u)| in [0, ~6]
+        "u_current": float,       // in [-1, 1]
+        "phase": float,           // xi in [0, 2pi)
+        "balance": float          // EML-derived urgency in [0.1, 3.0]
+      }
+    """
+    try:
+        from backend.gateway.iris_ffi import ffi_caducean_get_direction_signal
+
+        sig = ffi_caducean_get_direction_signal(session_id, balance)
+        return {
+            "session_id": session_id,
+            "target_u": sig.target_u,
+            "force_magnitude": sig.force_magnitude,
+            "u_current": sig.u_current,
+            "phase": sig.phase,
+            "balance": sig.balance,
+        }
+    except Exception as e:
+        logger.warning(f"[caducean] direction endpoint failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/caducean/params")
+async def api_caducean_params(body: dict = {}):
+    """Update Duffing potential constants and walk speed for a session.
+
+    Request body (FROZEN):
+      {
+        "session_id": str,    // required
+        "a": float,            // clamped to [1, 4] in C++
+        "b": float,            // clamped to [1, 4] in C++
+        "s": float             // clamped to [0.1, 0.8] in C++
+      }
+
+    Response (FROZEN):
+      {"ok": bool, "session_id": str, "applied": {"a": float, "b": float, "s": float}}
+    """
+    session_id = body.get("session_id")
+    a = body.get("a")
+    b = body.get("b")
+    s = body.get("s")
+    if not session_id or not isinstance(session_id, str):
+        raise HTTPException(status_code=422, detail="session_id (str) required")
+    for name, val in (("a", a), ("b", b), ("s", s)):
+        if not isinstance(val, (int, float)):
+            raise HTTPException(
+                status_code=422,
+                detail=f"{name} must be a number, got {type(val).__name__}",
+            )
+    try:
+        from backend.gateway.iris_ffi import (
+            ffi_caducean_set_params,
+            ffi_caducean_get_state,
+        )
+
+        ok = ffi_caducean_set_params(session_id, float(a), float(b), float(s))
+        if not ok:
+            return {"ok": False, "session_id": session_id, "applied": None}
+        # Read back to confirm clamping
+        new_state = ffi_caducean_get_state(session_id)
+        # Re-anchor the homeostat baseline to the clamped values (REQ-2 AC1).
+        # Uses the FFI-read-back values, not the requested ones, so relaxation
+        # targets a reachable point.
+        try:
+            from backend.agent.param_homeostasis import get_param_homeostasis
+
+            get_param_homeostasis().set_baseline(
+                session_id,
+                new_state.get("a", a),
+                new_state.get("b", b),
+                new_state.get("s", s),
+            )
+        except Exception:
+            logger.debug("[caducean] set_baseline failed for %s", session_id)
+        return {
+            "ok": True,
+            "session_id": session_id,
+            "applied": {
+                "a": new_state.get("a", a),
+                "b": new_state.get("b", b),
+                "s": new_state.get("s", s),
+            },
+        }
+    except Exception as e:
+        logger.warning(f"[caducean] params endpoint failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/caducean/health")
+async def api_caducean_health():
+    """v2 health check — used by CaduceanDebugPanel to show engine state.
+
+    Response (FROZEN):
+      {"engine_live": bool, "engine_initialized_at": str | None}
+    """
+    try:
+        from backend.gateway.iris_ffi import _engine
+
+        engine_live = _engine is not None and getattr(_engine, "_ffi", None) is not None
+        return {
+            "engine_live": engine_live,
+            "engine_initialized_at": None,  # placeholder for future
+        }
+    except Exception as e:
+        return {"engine_live": False, "engine_initialized_at": None, "error": str(e)}

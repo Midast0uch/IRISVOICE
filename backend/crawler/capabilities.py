@@ -1,0 +1,649 @@
+"""Fetch capabilities — REQ-6.
+
+Capability registry for the fetch layer. Each capability is a named, async
+single-URL fetcher that returns a standardized :class:`FetchOutcome`. The
+research orchestrator selects between ``fetch.crawl`` (headless markdown
+extraction) and ``fetch.vision`` (vision-guided browser session) per URL
+(REQ-6 AC3, design D2).
+
+The registry is the integration point the DER node machinery consumes: the
+orchestrator's per-URL dispatch (T12) and any DER plan step that needs a
+``fetch.*`` node read from :data:`CAPABILITIES` instead of hard-coding a
+backend. No agent_kernel edits are required here.
+"""
+
+from __future__ import annotations
+
+import logging
+import time
+from dataclasses import dataclass, field
+from enum import Enum
+from typing import Optional, Protocol
+
+logger = logging.getLogger(__name__)
+
+
+class WallKind(str, Enum):
+    """Interstitial walls a vision session can hit (REQ-7)."""
+
+    CAPTCHA = "captcha"
+    LOGIN = "login"
+    PAYWALL = "paywall"
+    UNKNOWN = "unknown"
+
+
+class FetchCapability(Protocol):
+    """A named way to fetch one URL (design.md verbatim interface)."""
+
+    name: str  # "fetch.crawl" | "fetch.vision"
+
+    async def available(self) -> bool: ...
+
+    async def fetch_one(self, url: str, goal: str, job_id: str) -> "FetchOutcome": ...
+
+
+@dataclass
+class FetchOutcome:
+    """Outcome of one capability fetch (design.md verbatim interface)."""
+
+    url: str
+    capability: str
+    page: Optional["PageData"]  # noqa: F821 — imported lazily for typing
+    verdict: "UsabilityVerdict"  # noqa: F821
+    settled_dom: Optional[str] = None  # vision hands this to crawl (REQ-6 AC5)
+    wall: Optional[WallKind] = None  # CAPTCHA | LOGIN | PAYWALL | UNKNOWN
+    actions_taken: int = 0
+    duration_ms: int = 0
+    # Per-request HAR evidence (REQ-13). The hybrid fetch tiers populate this with
+    # the REAL request record (status, response headers, body sha256) so
+    # dispatch_urls can score actual transport facts instead of a synthesized light
+    # entry. Empty when a capability produced none (e.g. vision).
+    har_entries: list = field(default_factory=list)
+
+
+class FetchCrawlCapability:
+    """``fetch.crawl`` — hybrid browser-silo fetch (REQ-3 / REQ-4).
+
+    Tier 1 (REQ-3 AC3.2/AC3.3): fast async HTTP retrieval (httpx) + readable-text
+    extraction, ~150 ms with 0 MB browser overhead. Handles the large majority of
+    static informational pages. When Tier 1 is usable the capture is stored and the
+    result returned WITHOUT launching Chromium.
+
+    Tier 2 (REQ-3 AC3.4/AC3.5, REQ-4 AC4.2/AC4.3): on a challenge page, CAPTCHA,
+    401/403, or a dynamic client-side SPA with insufficient text, escalate to the
+    shared pooled browser via ``backend.vision.browser_pool.acquire_browser()``,
+    using an isolated ``browser.new_context()`` per fetch. The pool's idle watchdog
+    (IRIS_BROWSER_IDLE_TIMEOUT, 180 s) reclaims Chromium when unused (REQ-4 AC4.4).
+
+    Browser-panel events (CRAWLER_PAGE_FETCHED) and capture paths are preserved so
+    the in-app browser panel shows pages arriving exactly as before (REQ-3 AC3.1).
+    """
+
+    name = "fetch.crawl"
+
+    async def available(self) -> bool:
+        # Headless extraction is always available; no external server needed.
+        return True
+
+    async def fetch_one(
+        self,
+        url: str,
+        goal: str,
+        job_id: str,
+        on_progress=None,
+        page_offset: int = 0,
+    ) -> FetchOutcome:
+        """Hybrid fetch: Tier 1 Fast-HTTP first, escalate to Tier 2 pooled browser.
+
+        ``on_progress`` and ``page_offset`` remain OPTIONAL keywords (the protocol
+        call stays 3-positional so capabilities remain interchangeable, REQ-6 AC1).
+        ``on_progress`` is load-bearing for the UI: without it CRAWLER_PAGE_FETCHED
+        never reaches the browser panel. ``page_offset`` reserves this URL's block
+        of the job's capture address space so concurrent single-URL fetches do not
+        overwrite each other's captured bytes.
+        """
+        # ── Tier 1: Fast-HTTP (REQ-3 AC3.2) ───────────────────────────────
+        outcome = await _fast_http_fetch_one(url, goal, job_id, page_offset, on_progress)
+        if outcome.verdict.usable:
+            # REQ-3 AC3.3: usable static content — capture stored + page event
+            # emitted inside _fast_http_fetch_one; no Chromium was launched.
+            return outcome
+
+        # ── Tier 2: pooled-browser escalation (REQ-3 AC3.4) ───────────────
+        logger.info(
+            "[capabilities][job_id=%s] fetch.crawl Tier-1 unusable (reason=%s) — "
+            "escalating to pooled browser: %s",
+            job_id, outcome.verdict.reason.value, url,
+        )
+        return await _browser_pool_fetch_one(url, goal, job_id, page_offset, on_progress)
+
+
+# ── Hybrid fetch helpers (REQ-3 / REQ-4) ───────────────────────────────────
+
+
+def _host(url: str) -> str:
+    """Best-effort hostname for progress payloads (never raises)."""
+    try:
+        from urllib.parse import urlparse
+
+        return urlparse(url).netloc or url
+    except Exception:  # noqa: BLE001
+        return url
+
+
+def _emit_page_fetched(on_progress, url: str, title: str, job_id: str, capture_page: int) -> None:
+    """Emit CRAWLER_PAGE_FETCHED through the capability's on_progress consumer.
+
+    Mirrors the orchestrator's payload shape (orchestrator.py ~:1683) so the
+    browser panel builds the same replay URL /api/browser/capture/{job_id}/{page}.
+    page_number/total are the single-URL fetch's own counter (1/1); the OUTER run
+    renumbers them in dispatch_urls._forward. capture_page is the storage address
+    and is NOT renumbered. Never raises — a failing emitter must never break a fetch.
+    """
+    if on_progress is None:
+        return
+    try:
+        from backend.crawler.orchestrator import CrawlProgress
+
+        payload = {
+            "url": url,
+            "page_number": 1,
+            "total": 1,
+            "host": _host(url),
+            "title": title,
+            "snippet": "",
+            "job_id": job_id,
+            "capture_page": capture_page,
+            "capture_available": True,
+        }
+        on_progress(CrawlProgress("CRAWLER_PAGE_FETCHED", payload))
+    except Exception:  # noqa: BLE001 — never fail a fetch on a progress emit
+        pass
+
+
+def _strip_html_to_text(html: str) -> str:
+    """Strip scripts/styles/tags to readable text (shared by both tiers)."""
+    import re
+
+    stripped = re.sub(
+        r"<script[\s\S]*?</script>|<style[\s\S]*?</style>", " ", html, flags=re.I
+    )
+    stripped = re.sub(r"<[^>]+>", " ", stripped)
+    return re.sub(r"\s+", " ", stripped).strip()
+
+
+def _extract_title(html: str, fallback: str) -> str:
+    import re
+
+    m = re.search(r"<title[^>]*>([^<]+)</title>", html, re.I)
+    return m.group(1).strip() if m else fallback
+
+
+async def _fast_http_fetch_one(url, goal, job_id, page_offset, on_progress) -> FetchOutcome:
+    """Tier 1: async HTTP retrieval (httpx) + readable-text extraction.
+
+    REQ-3 AC3.2. Returns a FetchOutcome carrying REAL per-request HAR evidence
+    (status, response headers, body sha256). Never raises — any failure returns
+    an unusable verdict so the caller escalates to Tier 2.
+    """
+    import hashlib
+
+    import httpx
+
+    from backend.crawler.capture_store import get_capture_store
+    from backend.crawler.crawler_engine import PageData, _coerce_headers
+    from backend.crawler.usability import is_challenge_page, page_is_usable
+
+    t0 = time.monotonic()
+    capture_page = page_offset + 1
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+            resp = await client.get(
+                url,
+                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+            )
+        html = resp.text
+        status = resp.status_code
+        text = _strip_html_to_text(html)
+        title = _extract_title(html, url)
+
+        # REQ-3 AC3.4 triggers: challenge page / CAPTCHA / 401 / 403.
+        challenged = is_challenge_page(html) or status in (401, 403)
+        page = PageData(
+            url=url,
+            title=title,
+            markdown=text,
+            html=None,
+            metadata={},
+            error="challenge" if challenged else None,
+            html_bytes=len(html),
+        )
+        verdict = page_is_usable(page)
+        duration_ms = int((time.monotonic() - t0) * 1000)
+
+        # Real per-request HAR evidence (REQ-13) for dispatch penalty scoring.
+        har = {
+            "url": url,
+            "method": "GET",
+            "status": status,
+            "response_headers": _coerce_headers(dict(resp.headers)),
+            "duration_ms": duration_ms,
+            "content_length": len(html),
+            "body_sha256": hashlib.sha256(html.encode("utf-8", "replace")).hexdigest(),
+            "error": "challenge" if challenged else None,
+            "capability": "fetch.crawl",
+        }
+
+        if verdict.usable and not challenged:
+            # REQ-3 AC3.3: persist the capture + emit the page event so the
+            # browser panel shows the page arriving — all without Chromium.
+            try:
+                get_capture_store().save(
+                    job_id=job_id, page_number=capture_page, url=url, html=html
+                )
+            except Exception:  # noqa: BLE001 — capture failure never fails a fetch
+                pass
+            _emit_page_fetched(on_progress, url, title, job_id, capture_page)
+        return FetchOutcome(
+            url=url,
+            capability="fetch.crawl",
+            page=page if verdict.usable else None,
+            verdict=verdict,
+            duration_ms=duration_ms,
+            har_entries=[har],
+        )
+    except Exception as exc:  # noqa: BLE001 — Tier-1 failure escalates to Tier 2
+        logger.info(
+            "[capabilities][job_id=%s] Tier-1 fast-http failed %s: %s", job_id, url, exc
+        )
+        return FetchOutcome(
+            url=url,
+            capability="fetch.crawl",
+            page=None,
+            verdict=_unusable_verdict(),
+            duration_ms=int((time.monotonic() - t0) * 1000),
+            har_entries=[],
+        )
+
+
+async def _browser_pool_fetch_one(url, goal, job_id, page_offset, on_progress) -> FetchOutcome:
+    """Tier 2: pooled-browser fetch via backend.vision.browser_pool.
+
+    REQ-3 AC3.5 / REQ-4 AC4.2/AC4.3. Uses ``acquire_browser()`` + an isolated
+    ``browser.new_context()`` so cookies/storage/sessions stay isolated per fetch.
+
+    Extraction is CONTENT-AWARE, not a naive tag-strip: it reads the RENDERED
+    visible text (``innerText``), preferring the semantic main-content container
+    (``<article>`` / ``<main>``) over the whole body so nav/footer/boilerplate is
+    excluded. ``innerText`` reflects the JS-settled DOM and skips hidden elements
+    — the whole reason this tier escalates to a browser for SPAs/dynamic pages.
+    The ``goal`` is logged as the extraction target; downstream rerank scores the
+    extracted content against it.
+
+    The pool's idle watchdog (IRIS_BROWSER_IDLE_TIMEOUT, 180 s) reclaims Chromium
+    when unused (REQ-4 AC4.4). Returns a FetchOutcome carrying REAL per-request
+    HAR evidence; never raises.
+    """
+    import hashlib
+
+    from backend.crawler.capture_store import get_capture_store
+    from backend.crawler.crawler_engine import PageData
+    from backend.crawler.usability import page_is_usable
+
+    t_start = time.monotonic()
+    capture_page = page_offset + 1
+    lease = None
+    context = None
+    status = None
+    try:
+        from backend.vision.browser_pool import acquire_browser
+
+        browser, lease = await acquire_browser(max_lease_ms=45_000.0)
+        # REQ-4 AC4.3: isolated context per fetch (cookies/storage/session).
+        context = await browser.new_context()
+        pg = await context.new_page()
+        logger.info(
+            "[capabilities][job_id=%s] Tier-2 browser fetch (goal=%r): %s",
+            job_id, (goal or "")[:60], url,
+        )
+        response = await pg.goto(url, wait_until="domcontentloaded", timeout=30_000)
+        status = response.status if response is not None else None
+        # Best-effort wait for client-side rendering to settle; some SPAs never
+        # reach networkidle, so a timeout here is non-fatal.
+        try:
+            await pg.wait_for_load_state("networkidle", timeout=10_000)
+        except Exception:  # noqa: BLE001
+            pass
+        html = await pg.content()
+        title = await pg.title() or _extract_title(html, url)
+
+        # Content-aware extraction: read the RENDERED visible text, preferring the
+        # semantic main-content container (<article>/<main>) over the whole body so
+        # nav/footer/boilerplate is excluded. innerText reflects the JS-settled DOM
+        # and skips hidden elements — the reason this tier exists.
+        try:
+            text = await pg.evaluate(
+                "() => {"
+                " const root = document.querySelector('article')"
+                " || document.querySelector('main')"
+                " || document.body;"
+                " return root ? root.innerText : '';"
+                "}"
+            )
+        except Exception:  # noqa: BLE001 — fall back to stripping raw HTML
+            text = ""
+        if not (text or "").strip():
+            text = _strip_html_to_text(html)
+        text = (text or "").strip()
+
+        page_data = PageData(
+            url=url,
+            title=title,
+            markdown=text,
+            html=None,
+            metadata={},
+            error=None,
+            html_bytes=len(html),
+        )
+        verdict = page_is_usable(page_data)
+        duration_ms = int((time.monotonic() - t_start) * 1000)
+
+        # Real per-request HAR evidence (REQ-13) for dispatch penalty scoring.
+        har = {
+            "url": url,
+            "method": "GET",
+            "status": status,
+            "response_headers": {},
+            "duration_ms": duration_ms,
+            "content_length": len(html),
+            "body_sha256": hashlib.sha256(html.encode("utf-8", "replace")).hexdigest(),
+            "error": None,
+            "capability": "fetch.crawl",
+        }
+
+        if verdict.usable:
+            try:
+                get_capture_store().save(
+                    job_id=job_id, page_number=capture_page, url=url, html=html
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            _emit_page_fetched(on_progress, url, title, job_id, capture_page)
+
+        return FetchOutcome(
+            url=url,
+            capability="fetch.crawl",
+            page=page_data if verdict.usable else None,
+            verdict=verdict,
+            duration_ms=duration_ms,
+            har_entries=[har],
+        )
+    except Exception as exc:  # noqa: BLE001 — capability must never raise
+        logger.warning(
+            "[capabilities][job_id=%s] Tier-2 browser-pool fetch failed %s: %s",
+            job_id, url, exc,
+        )
+        return FetchOutcome(
+            url=url,
+            capability="fetch.crawl",
+            page=None,
+            verdict=_unusable_verdict(),
+            duration_ms=int((time.monotonic() - t_start) * 1000),
+            har_entries=[],
+        )
+    finally:
+        # REQ-4 AC4.3: ALWAYS close the isolated context + release the lease on
+        # every exit path (normal + exception) so the pool is never leaked.
+        if context is not None:
+            try:
+                await context.close()
+            except Exception:  # noqa: BLE001
+                pass
+        if lease is not None:
+            try:
+                lease.release()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+# Registry (REQ-6 AC3: dispatch reads CAPABILITIES, never hard-coded backends).
+# REQ-2 AC4 (specs/dag-node-execution-model, T11): the registry is a FACADE
+# over the unified tool registry — every capability registered here ALSO
+# declares its NodeSpec (artifact types + advertised recovery) in
+# backend.agent.tool_registry, so the parallel node-registry mechanism is
+# retired: node metadata has ONE home, and the planner sees fetch.crawl /
+# fetch.vision exactly like any other node (REQ-2 AC3). The dict below
+# remains as the EXECUTION binding (capability object -> fetch_one), not as
+# a second place to declare routing behavior.
+CAPABILITIES: dict[str, FetchCapability] = {}
+
+
+def register_capability(cap: FetchCapability) -> None:
+    """Register a fetch capability (execution) + its node metadata (REQ-2 AC4).
+
+    Execution binding lives in :data:`CAPABILITIES`; node metadata (produces/
+    emits/recovers) is declared ONCE in the unified registry via NodeSpec, so
+    the router can match failure reasons to this capability's advertised
+    recovery (REQ-4 AC1) and the planner can compose it (REQ-3 AC1).
+    """
+    CAPABILITIES[cap.name] = cap
+    _declare_node_metadata(cap)
+
+
+def _declare_node_metadata(cap: FetchCapability) -> None:
+    """Declare the capability's NodeSpec in the unified registry (REQ-2 AC4).
+
+    Advertisements encode the recovery decisions the websearch spec previously
+    hand-wrote as branches (T13 deletes those branches; the advertisement is
+    their replacement):
+      * fetch.vision  recovers CHALLENGE / EMPTY / TOO_SHORT  — the fresh-
+        failure escalation set (never TRANSPORT_ERROR: robots/DNS must not be
+        routed around — REQ-5 AC3 / REQ-8 AC3, pinned by BT-12).
+      * search_discovery recovers NO_CANDIDATES — the planner-gave-nothing
+        pivot (REQ-19), replacing the hand-written discovery trigger.
+      * fetch.crawl emits the UsabilityReason-derived set and recovers nothing.
+    """
+    from backend.agent.nodes.outcome import Reason
+    from backend.agent.nodes.spec import NodeSpec
+    from backend.agent.tool_registry import (
+        ToolSpec,
+        get_node_spec,
+        register_node,
+        register_tool,
+        resolve_tool,
+    )
+
+    if get_node_spec(cap.name) is not None:
+        return  # already declared (idempotent facade)
+
+    _produces = "pages" if cap.name.startswith("fetch.") else "text"
+    _emits = frozenset({
+        Reason.EMPTY, Reason.TOO_SHORT, Reason.CHALLENGE, Reason.TRANSPORT_ERROR,
+    })
+    _recovers: frozenset = frozenset()
+    if cap.name == "fetch.vision":
+        # CHALLENGE IS DELIBERATELY NOT HERE ANY MORE.
+        #
+        # Advertising it made fetch.vision a challenge-recovery node, which meant
+        # it only ever ran on URLs the crawl had already failed — in practice,
+        # Cloudflare-walled pages. A headless browser fails those too. Measured
+        # live 2026-08-11 (job 40e4e523…): three escalations, 240s + 188s + 243s,
+        # ALL THREE returning status=challenge. A 0/3 success rate for roughly
+        # four minutes of a seven-minute turn, while the one source that did
+        # yield content came from the ordinary crawl.
+        #
+        # The inversion that caused: vision spent all its time on the job it is
+        # worst at and none on the job it exists for — being the live reading
+        # surface on pages we CAN reach, scrolling the iframe so the user watches
+        # the search happen. A walled page now parks immediately (REQ-13 AC2
+        # already handles that path) and the run moves to the next Exa URL, which
+        # is cheap because the planner returns more candidates than it dispatches.
+        #
+        # EMPTY / TOO_SHORT are RETAINED: those are pages the crawl reached but
+        # could not extract from — reachable, and exactly where a reading pass
+        # adds content instead of fighting a wall. transport_error stays absent:
+        # robots.txt refusal and DNS must never be routed around (REQ-5 AC3 /
+        # REQ-8 AC3), which is unchanged.
+        _recovers = frozenset({Reason.EMPTY, Reason.TOO_SHORT})
+    elif cap.name == "search_discovery":
+        _recovers = frozenset({Reason.NO_CANDIDATES})
+    try:
+        if resolve_tool(cap.name) is None:
+            register_tool(ToolSpec(
+                name=cap.name,
+                description=f"{cap.name} fetch capability (REQ-2 AC4)",
+                parameters={},
+                category="web",
+                permission_tier="read_only",
+                executor="crawler",
+            ))
+        register_node(NodeSpec(
+            tool=resolve_tool(cap.name),
+            produces=_produces,
+            emits_reasons=_emits,
+            recovers_reasons=_recovers,
+        ))
+    except Exception as _decl_exc:  # noqa: BLE001 — declaration must never break registration
+        logger.warning("[capabilities] node metadata declaration for %s failed: %s", cap.name, _decl_exc)
+
+
+def get_capability(name: str) -> FetchCapability:
+    """Look up a capability by name. Raises KeyError for unknown names."""
+    try:
+        return CAPABILITIES[name]
+    except KeyError:
+        raise KeyError(f"unknown fetch capability: {name!r}") from None
+
+
+def register_default_capabilities() -> dict[str, FetchCapability]:
+    """Register fetch.crawl always; fetch.vision best-effort (REQ-6 AC3).
+
+    A missing/import-broken vision stack must never break fetch.crawl, so the
+    vision capability is registered inside try/except.
+    """
+    if "fetch.crawl" not in CAPABILITIES:
+        register_capability(FetchCrawlCapability())
+    if "fetch.vision" not in CAPABILITIES:
+        try:
+            from backend.vision.fetch_vision import FetchVisionCapability
+
+            register_capability(FetchVisionCapability())
+        except Exception as exc:  # noqa: BLE001 — optional capability
+            logger.warning("[capabilities] fetch.vision unavailable: %s", exc)
+    _register_search_discovery_node()
+    _register_crawler_query_composite()
+    return CAPABILITIES
+
+
+def _register_crawler_query_composite() -> None:
+    """Declare crawler_query as the reference composite (REQ-3 AC5 / T12).
+
+    ``crawler_query`` stays a SINGLE callable unit — one outer outcome, so the
+    existing UI card and callers are unchanged (REQ-3 AC4, design D5) — while
+    its sub-graph (fetch.crawl / fetch.vision / search_discovery) is declared
+    as ``composite_of`` so the planner can see and re-route at sub-node
+    boundaries (REQ-3 AC2/AC3). Idempotent.
+    """
+    from backend.agent.nodes.outcome import Reason  # noqa: F401 — frozenset members
+    from backend.agent.nodes.spec import NodeSpec
+    from backend.agent.tool_registry import (
+        ToolSpec,
+        get_node_spec,
+        register_node,
+        register_tool,
+        resolve_tool,
+    )
+
+    if get_node_spec("crawler_query") is not None:
+        return
+    try:
+        if resolve_tool("crawler_query") is None:
+            register_tool(ToolSpec(
+                name="crawler_query",
+                description=(
+                    "Deep web research crawl — the reference composite "
+                    "(REQ-3 AC5): plans URLs, fetches via fetch.crawl / "
+                    "fetch.vision with advertisement-driven recovery, and "
+                    "returns a structured summary + extracted content."
+                ),
+                parameters={"query": {"type": "string", "description": "The research topic"}},
+                category="web",
+                permission_tier="read_only",
+                executor="crawler",
+                requires_internet=True,
+            ))
+        register_node(NodeSpec(
+            tool=resolve_tool("crawler_query"),
+            produces="pages",
+            emits_reasons=frozenset({
+                Reason.NO_CANDIDATES,
+                Reason.CHALLENGE,
+                Reason.EMPTY,
+                Reason.TOO_SHORT,
+                Reason.TRANSPORT_ERROR,
+                Reason.BUDGET_EXCEEDED,
+            }),
+            recovers_reasons=frozenset(),
+            composite_of=("fetch.crawl", "fetch.vision", "search_discovery"),
+        ))
+    except Exception as _cq_exc:  # noqa: BLE001 — declaration must never break import
+        logger.warning("[capabilities] crawler_query composite declaration failed: %s", _cq_exc)
+
+
+def _register_search_discovery_node() -> None:
+    """Declare the vision search-discovery node (REQ-19 / T13).
+
+    ``search_discovery`` is a module function (backend/vision/search_discovery
+    ``discover_urls_via_vision``), not a FetchCapability — it does not live in
+    CAPABILITIES. It is registered as a node advertising NO_CANDIDATES recovery
+    so the orchestrator's zero-URL pivot consults the router instead of a
+    hand-written discovery branch (design D4: no branch in the failing node's
+    module). Idempotent.
+    """
+    from backend.agent.nodes.outcome import Reason
+    from backend.agent.nodes.spec import NodeSpec
+    from backend.agent.tool_registry import (
+        ToolSpec,
+        get_node_spec,
+        register_node,
+        register_tool,
+        resolve_tool,
+    )
+
+    if get_node_spec("search_discovery") is not None:
+        return
+    try:
+        if resolve_tool("search_discovery") is None:
+            register_tool(ToolSpec(
+                name="search_discovery",
+                description=(
+                    "Drive a search engine in a vision browser session and "
+                    "harvest candidate result URLs (REQ-19 discovery)"
+                ),
+                parameters={},
+                category="web",
+                permission_tier="read_only",
+                executor="crawler",
+            ))
+        register_node(NodeSpec(
+            tool=resolve_tool("search_discovery"),
+            produces="urls",
+            emits_reasons=frozenset(),
+            recovers_reasons=frozenset({Reason.NO_CANDIDATES}),
+        ))
+    except Exception as _sd_exc:  # noqa: BLE001 — declaration must never break import
+        logger.warning("[capabilities] search_discovery node declaration failed: %s", _sd_exc)
+
+
+def _unusable_verdict():
+    from backend.crawler.usability import UsabilityReason, UsabilityVerdict
+
+    return UsabilityVerdict(usable=False, reason=UsabilityReason.TRANSPORT_ERROR)
+
+
+# module-level convenience (REQ-6 AC3): importing the crawler package registers
+# the default capabilities so orchestrator dispatch works out of the box.
+try:
+    register_default_capabilities()
+except Exception:  # noqa: BLE001 — import-time registration must never break import
+    logger.exception("[capabilities] default registration failed")
