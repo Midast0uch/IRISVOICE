@@ -1,10 +1,10 @@
 # IRIS Voice — Full Audio Pipeline Architecture
 
-> **DEFINITIVE REFERENCE** — Last updated 2026-09-03 (Parakeet sherpa-onnx GPU worker subprocess).
+> **DEFINITIVE REFERENCE** — Last updated 2026-09-03 (Parakeet-first STT, lazy-load on wake word, whisper loading flag).
 > This document is the single source of truth for the audio pipeline. If the
 > code and this document ever disagree, treat this as a bug and update both.
 > All values below are verified against `backend/audio/voice_command.py` and
-> `backend/iris_gateway.py` at commit `3997c3ca`.
+> `backend/iris_gateway.py` at commit `106a271e`.
 
 ---
 
@@ -195,8 +195,13 @@ TTS echo from the interrupted playback decay before VAD speech detection begins.
 │     └─ True → proceed to transcription                   │
 │                                                          │
 │  2. Try ParakeetTranscriber (sherpa worker GPU)          │
-│     ├─ Lazy-spawns worker subprocess on first speech     │
-│     │  (~2 s spawn, ~4–13 s build, overlapped w/ agent)  │
+│     ├─ LAZY-LOADED ON FIRST WAKE WORD (start_recording)  │
+│     │  — GPU engine gets a head start during the         │
+│     │  utterance (~17-22s build overlaps VAD recording). │
+│     │  No-op when already loaded (no thread churn).      │
+│     ├─ If still loading, _transcribe_via_parakeet WAITS  │
+│     │  (bounded 25s via wait_ready()) instead of bailing │
+│     │  to whisper — Parakeet is the PRIMARY engine.      │
 │     ├─ int8 transducer (encoder 622 MB), GPU-resident    │
 │     ├─ JSONL base64 PCM → text + timestamps (90 s bound) │
 │     ├─ Worker owns sole ORT: no clash w/ wake-word DLL   │
@@ -205,6 +210,11 @@ TTS echo from the interrupted playback decay before VAD speech detection begins.
 │                                                          │
 │  3. Fallback: faster-whisper (tiny/int8, ~40MB CPU)      │
 │     ├─ WhisperModel('tiny', compute_type='int8')         │
+│     ├─ _get_whisper uses a _whisper_loading FLAG (not a  │
+│     │  lock held across the ~126s cold import) — the     │
+│     │  +90s background warm-up never blocks a live turn. │
+│     │  A concurrent caller waits up to 5s then returns   │
+│     │  None (skips whisper) instead of hanging.          │
 │     ├─ transcribe(wav_buffer, beam_size=1)               │
 │     └─ ~40MB RAM, no VRAM conflict                       │
 │                                                          │
@@ -971,6 +981,9 @@ LLM provider memory (separate, user-selected):
 | Activation beep during barge-in | Fixed: `play_beep=False` skips beep during re-recordings |
 | .env PICOVOICE_ACCESS_KEY missing (Porcupine era) | Legacy row: Violawake needs no key and runs fully offline; kept for history |
 | Parakeet hallucination after barge-in | Fixed: RMS guard (`< 1e-4`) skips Parakeet on near-silence |
+| Parakeet still loading on first utterance | Fixed (2026-09-03): lazy-load on first wake word; `_transcribe_via_parakeet` waits (bounded 25s) for the GPU engine instead of bailing to whisper |
+| faster-whisper cold import (~126s) blocks a live turn | Fixed (2026-09-03): `_get_whisper` uses a `_whisper_loading` flag, not a lock held across the import — the +90s warm-up never blocks a live transcription thread (waits up to 5s then skips whisper) |
+| TTS worker dies mid-synthesis on long text | **OPEN (2026-09-03)**: each death → 30s `_read_line` timeout + restart → producer thread stuck for minutes → `_tts_active` stays True → half-duplex gate drops mic frames → VAD never detects speech → transcription hangs → 60s watchdog. Follow-up: reset `_tts_active` even when producer is stuck; investigate why the worker dies on long text; shorten the 30s timeout. |
 
 ---
 
