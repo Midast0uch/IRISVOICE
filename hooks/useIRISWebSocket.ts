@@ -125,6 +125,32 @@ function _getActiveConvIdServer(): string | undefined {
   return undefined
 }
 
+// ── Thread mirror (session 291 H1): the viewed thread teaches the socket ──
+// ChatView dispatches iris:conversation_switched (with id, including
+// frontend-local threads the backend has never seen) on every view change,
+// and bare iris:new_conversation when no thread is viewed yet. Mirroring both
+// keeps ACTIVE_ID — and therefore the voice_command_start SUPPLY injection
+// and the backend binding — pointed at the thread on screen. This closes the
+// voice-only gap (live 2026-09-04: with no text_message ever sent, the socket
+// never learned the local thread, so whole voice turns filed under
+// session_iris while the user watched a local thread — cards+phase invisible).
+// Only chatview-originated events teach (detail.source === "chatview"): the
+// backend's switch ack is re-emitted under the same name and could regress
+// the id if it arrives after a newer local switch. Clearing on empty
+// new_conversation mirrors the backend unbind (no stale thread for voice).
+let _threadMirrorReady = false
+function ensureThreadMirror() {
+  if (_threadMirrorReady || typeof window === "undefined") return
+  _threadMirrorReady = true
+  window.addEventListener("iris:conversation_switched", (e) => {
+    const d = (e as CustomEvent<{ conversation_id?: unknown; source?: unknown }>).detail
+    if (d?.source === "chatview" && typeof d.conversation_id === "string" && d.conversation_id) {
+      _emitActiveConvId(d.conversation_id)
+    }
+  })
+  window.addEventListener("iris:new_conversation", () => _emitActiveConvId(undefined))
+}
+
 // ── Shared WebSocket connection (REQ-4 AC4, specs/local-model-lifecycle-sync) ──
 // Multiple useIRISWebSocket instances (NavigationContext, orbit-node,
 // useInferenceState) each opened their OWN WebSocket as client="iris", and the
@@ -2241,6 +2267,8 @@ export function useIRISWebSocket(
 
   // Initialize connection
   useEffect(() => {
+    ensureThreadMirror()              // H1: viewed thread teaches ACTIVE_ID (once)
+    ensureThreadMirror() // H1: viewed thread teaches ACTIVE_ID so voice binds it
     _cancelDeferredClose()          // cancel pending delayed-close from a prior HMR
     // REQ-4 AC4: this instance joins the shared socket — increment the refcount
     // so the socket stays open while any consumer is mounted.

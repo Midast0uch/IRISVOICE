@@ -474,17 +474,20 @@ export function ChatWing({
     activeDocContentsRef.current = _byTurn
   }, [activeConversationId, conversations])
 
-  // True only when the incoming plain text is ALREADY shown by one of this
-  // turn's rendered documents. Anything else — narration wrapping a card, a
-  // short answer next to a table — is not a duplicate and must survive so the
-  // turn keeps both its text and its card.
+  // True only when the incoming plain text is EXACTLY one of this turn's
+  // rendered documents (normalized). A card CONTAINING the text as a
+  // substring is NOT a duplicate — that is narration + artifact coexisting,
+  // and dropping the message orphans the card to the bottom fallback
+  // (2026-09-04: r.includes(norm) matched every short narration inside a
+  // large markdown synthesis, so no anchor message existed and every card
+  // piled at the scroll bottom). Exact equality only.
   const isTextRenderedAsDocument = (turnId: string | undefined, text: string): boolean => {
     if (!turnId) return false
     const rendered = activeDocContentsRef.current.get(turnId)
     if (!rendered || rendered.length === 0) return false
     const norm = normalizeCardText(text)
     if (!norm) return false
-    return rendered.some((r) => r === norm || r.includes(norm))
+    return rendered.some((r) => r === norm)
   }
 
   const [inputText, setInputText] = useState("")
@@ -710,7 +713,10 @@ export function ChatWing({
     if (typeof window === 'undefined') return
     if (activeConversationId) {
       window.dispatchEvent(
-        new CustomEvent('iris:conversation_switched', { detail: { conversation_id: activeConversationId } })
+        // source:'chatview' marks view-originated switches so the socket's
+        // thread mirror (useIRISWebSocket) learns them while ignoring the
+        // backend's own switch-ack re-emit under the same name (H1, 2026-09-04).
+        new CustomEvent('iris:conversation_switched', { detail: { conversation_id: activeConversationId, source: 'chatview' } })
       )
     } else {
       window.dispatchEvent(new CustomEvent('iris:new_conversation'))
@@ -1067,9 +1073,15 @@ export function ChatWing({
       // never matched and the card fell through to the orphan fallback.
       // Comparing content instead lets plain text and a render coexist in one
       // response, which is the whole point of showing a card beside its text.
+      // Exact-duplicate text is still given its anchor message. The bubble
+      // may render beside its card (coexist rule), but the message MUST
+      // exist with id === turnId or the inline join
+      // (doc.turnId === message.id) can never match and the card falls to
+      // the orphan bottom pile. Never return before the anchor is created.
+      // The render branch decides bubble visibility, not ingest.
       if (isTextRenderedAsDocument(turnId, text)) {
         seenTurnIds.current.add(turnId)
-        return
+        // fall through — anchor creation below keeps the card inline
       }
 
       // Deduplicate by turn_id — skip if we've already finalized this turn.
@@ -2088,12 +2100,9 @@ export function ChatWing({
         .then((data) => {
           setLocalTyping(false)
           const turnId = data.turn_id
-          // Same content-equality test as the WS path above. A card merely
-          // EXISTING for this turn must not suppress the answer — only a card
-          // that already renders this exact text should.
-          if (isTextRenderedAsDocument(turnId, data.content || "")) {
-            return
-          }
+          // Same exact-equality test as the WS path. Never drop the turn:
+          // the anchor message must exist for the inline card join, even
+          // on an exact duplicate (bubble + card coexist).
           // Unify through iris:text_response — exactly the same path the
           // WS chat_message / text_response events use.
           window.dispatchEvent(new CustomEvent('iris:text_response', {
@@ -3233,14 +3242,29 @@ ${message.text}`;
                   exit={{ height: 0, opacity: 0 }}
                   transition={{ duration: prefersReducedMotion ? 0 : 0.2, ease: [0.22, 1, 0.36, 1] }}
                   className="overflow-hidden border-b flex-shrink-0 z-20"
-                  style={{ 
+                  style={{
                     borderColor: `${glowColor}10`,
                     background: 'linear-gradient(180deg, rgba(10,10,20,0.98) 0%, rgba(10,10,20,0.9) 100%)',
                     backdropFilter: 'blur(20px)',
-                    maxHeight: '50%'
+                    // Live fix 2026-09-04: maxHeight '50%' never constrained —
+                    // a percentage resolves against an indefinite flex parent
+                    // (height animates to auto), so 778 rows grew past the panel,
+                    // clipped under overflow-hidden ancestors, and the wheel
+                    // chained to the main timeline. A viewport-relative cap always
+                    // resolves, so the inner list below can actually scroll.
+                    maxHeight: 'min(46vh, 520px)',
                   }}
                 >
-                  <div className="p-3 space-y-2 overflow-y-auto">
+                  <div
+                    className="p-3 space-y-2 overflow-y-auto"
+                    style={{
+                      // Inherit the panel cap so this box is bounded even when its
+                      // content is 778 rows tall; containment stops the wheel from
+                      // scrolling the conversation thread behind the dropdown.
+                      maxHeight: 'inherit',
+                      overscrollBehavior: 'contain',
+                    }}
+                  >
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-[10px] font-semibold tracking-widest uppercase text-white/50">
                         Conversation Threads
@@ -3283,7 +3307,12 @@ ${message.text}`;
                           className="group relative p-2.5 rounded-lg cursor-pointer transition-all duration-150 hover:bg-white/5"
                           style={{
                             backgroundColor: activeConversationId === conv.id ? `${glowColor}15` : 'rgba(255,255,255,0.03)',
-                            borderLeft: `2px solid ${activeConversationId === conv.id ? glowColor : 'transparent'}`
+                            borderLeft: `2px solid ${activeConversationId === conv.id ? glowColor : 'transparent'}`,
+                            // 778 rows: skip off-screen row rendering work. The
+                            // intrinsic size keeps the scrollbar stable while rows
+                            // are skipped; highlight + buttons unaffected.
+                            contentVisibility: 'auto',
+                            containIntrinsicSize: 'auto 76px',
                           }}
                         >
                           <div className="flex items-center gap-2">

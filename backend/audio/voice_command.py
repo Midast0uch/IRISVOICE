@@ -514,8 +514,8 @@ class VoiceCommandHandler:
     # VAD tuning â€” adjustable per environment
     VAD_ENERGY_THRESHOLD: float = 0.006  # RMS level that counts as speech
     VAD_MIN_SPEECH_SEC: float = 0.3  # ignore blips shorter than this (plan Â§1.3.4)
-    VAD_SILENCE_SEC: float = 0.5  # snappier cutoff
-    VAD_SILENCE_SEC_MAX: float = 0.8  # hard cap on adaptive silence (long utterances)
+    VAD_SILENCE_SEC: float = 0.8  # 0.5 cut mid-sentence pauses (live 2026-09-04); 0.8 covers breaths
+    VAD_SILENCE_SEC_MAX: float = 1.2  # hard cap on adaptive silence (long utterances)
     VAD_MAX_DURATION_SEC: float = 30.0  # hard cap on recording length
     VAD_POLL_INTERVAL_SEC: float = 0.015  # how often VAD loop checks for new frames
 
@@ -1237,6 +1237,16 @@ class VoiceCommandHandler:
                 import time as _stt_time_w
                 _w_start = _stt_time_w.monotonic()
                 whisper = self._get_whisper()
+                if whisper is None:
+                    # Both engines cold (Parakeet loading + whisper loading).
+                    # Complete gracefully with "" (IDLE, not ERROR) so the
+                    # next wake word still works. Mirrors the no-speech path.
+                    logger.warning("[STT] whisper unavailable (loading) — skipping this turn")
+                    self._on_transcription_complete("")
+                    self._raw_frames = []
+                    if hasattr(self, "audio_buffer"):
+                        self.audio_buffer = []
+                    return
                 segments, _ = whisper.transcribe(
                     audio_np,
                     language="en",
@@ -1514,7 +1524,7 @@ class VoiceCommandHandler:
                             adaptive_silence = silence_needed
                         elif speech_sec > 5.0:
                             # Long utterance → allow a little more for natural pauses,
-                            # but cap at VAD_SILENCE_SEC_MAX (0.8s) so it never lags.
+                            # but cap at VAD_SILENCE_SEC_MAX (1.2s) so it never lags.
                             adaptive_silence = min(
                                 int(silence_needed * 1.5),
                                 int(self.VAD_SILENCE_SEC_MAX / frame_sec),
@@ -1636,7 +1646,7 @@ class VoiceCommandHandler:
             "audio_context": "",
             "session_id": self._active_session_id,
             "status": "success",
-            "stt_timing": dict(self._last_stt_timing),  # STT latency for metric broadcast
+            "stt_timing": dict(getattr(self, "_last_stt_timing", {})),  # STT latency for metric broadcast
         }
 
         if self._on_command_result:

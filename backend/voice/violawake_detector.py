@@ -75,14 +75,25 @@ DEFAULT_THRESHOLD: float = 0.70
 #     consecutive 320-sample chunks (~40 ms). A door slam, keyboard clack or
 #     a speaker thump spikes one chunk and is gone; the wake phrase sustains.
 #     The wake phrase produces 18+ consecutive hits, so 2 was too permissive:
-#     transient room noises can sustain for 2-3 chunks.  5 (= ~160ms) filters
+#     transient room noises can sustain for 2-3 chunks.  8 (= ~256ms) filters
 #     all non-speech transients while still catching the wake phrase with room
-#     to spare.
+#     to spare: one utterance sustains 18+ consecutive hits, and the threshold
+#     itself cannot rise (live peak 0.748 vs 0.70 floor), so chunk-count is the
+#     only false-trigger lever. Raised 5 -> 8 live 2026-09-04 (loud-room falses).
 #   COOLDOWN_SEC — after a detection, further detections are ignored for this
 #     long. One utterance collapses to one trigger, and the activation chime
 #     (which the mic hears) cannot re-fire the detector.
-CONSECUTIVE_CHUNKS: int = 5
+CONSECUTIVE_CHUNKS: int = 8
 COOLDOWN_SEC: float = 2.0
+#   RELEASE_WINDOW_SEC — after the streak gate passes, the score must drop
+#     back below threshold within this long. A spoken phrase always ends;
+#     sustained noise (TV dialogue, hums) never releases and therefore never
+#     fires, no matter how long it holds above threshold. Window measured
+#     from the arming instant (~8 chunks into the phrase); a "hey iris" is
+#     ~300-700ms end to end, so 0.8s clears it with margin while an endless
+#     sound ages out and disarms. When in doubt the detector stays silent:
+#     a missed wake retries by speaking again, a false wake interrupts work.
+RELEASE_WINDOW_SEC: float = 0.8
 
 
 def _patch_onnx_single_thread() -> None:
@@ -178,8 +189,16 @@ class ViolawakeWakeWordDetector:
         # Max 319 samples after each call — never accumulates unbounded.
         self._remainder = bytearray()
 
-        # Anti-retrigger state (see CONSECUTIVE_CHUNKS / COOLDOWN_SEC).
+        # Anti-retrigger state (see CONSECUTIVE_CHUNKS / RELEASE_WINDOW_SEC /
+        # COOLDOWN_SEC).
         self._consecutive_hits = 0
+        # Peak score of the current streak (for the detection log: the fire
+        # happens on the below-threshold RELEASE chunk, whose own score is
+        # meaningless — report what the phrase itself scored).
+        self._streak_peak = 0.0
+        # Monotonic timestamp when the streak gate passed (armed, awaiting
+        # the release); None while idle or disarmed.
+        self._streak_armed_at: float | None = None
         self._last_detection_at = 0.0
 
         # Lifecycle status for diagnostics.
@@ -312,32 +331,71 @@ class ViolawakeWakeWordDetector:
 
                 score = self._detector.process(chunk)
                 if score is None or float(score) <= self._threshold:
-                    # Below threshold — a lone loud chunk cannot accumulate,
-                    # so the next hit has to start the streak over.
+                    # Below threshold — either idle (restart the streak) or the
+                    # RELEASE of an armed streak: the sound ENDED the way a
+                    # spoken phrase does, so this is the moment to fire.
+                    # Sustained noise never releases and therefore never fires
+                    # (peak-and-release, live 2026-09-04: TV dialogue held
+                    # 0.70+ indefinitely and defeated the chunk-count gate at
+                    # any count).
+                    if (
+                        self._streak_armed_at is not None
+                        and now - self._streak_armed_at <= RELEASE_WINDOW_SEC
+                    ):
+                        self._streak_armed_at = None
+                        self._consecutive_hits = 0
+                        # Refractory period (unchanged semantics).
+                        if now - self._last_detection_at < COOLDOWN_SEC:
+                            logger.debug(
+                                f"[ViolawakeDetector] suppressed within cooldown "
+                                f"(score={float(score):.3f}, "
+                                f"{now - self._last_detection_at:.2f}s since last)"
+                            )
+                            continue
+                        self._last_detection_at = now
+                        detected = True
+                        self._detection_count += 1
+                        logger.info(
+                            f"[ViolawakeDetector] Wake word detected: '{WAKE_PHRASE}' "
+                            f"(peak={self._streak_peak:.3f})"
+                        )
+                        self._streak_peak = 0.0
+                        continue
+                    # Idle blip, or an armed streak that outlived its window
+                    # without releasing (sustained noise — reject quietly).
+                    if self._streak_armed_at is not None:
+                        logger.debug(
+                            "[ViolawakeDetector] sustained score rejected "
+                            "(no release within window)"
+                        )
+                        self._streak_armed_at = None
                     self._consecutive_hits = 0
+                    self._streak_peak = 0.0
                     continue
 
                 self._consecutive_hits += 1
+                if float(score) > self._streak_peak:
+                    self._streak_peak = float(score)
                 if self._consecutive_hits < CONSECUTIVE_CHUNKS:
                     continue
 
-                # Sustained score — real candidate. Apply the refractory period.
-                if now - self._last_detection_at < COOLDOWN_SEC:
-                    logger.debug(
-                        f"[ViolawakeDetector] suppressed within cooldown "
-                        f"(score={float(score):.3f}, "
-                        f"{now - self._last_detection_at:.2f}s since last)"
-                    )
+                # Streak gate passed — ARM and wait for the release instead of
+                # firing immediately. If the score never drops (constant hum,
+                # TV dialogue), the deadline below disarms without firing, and
+                # the streak restarts from zero so an endless sound can never
+                # accumulate its way to a trigger.
+                if self._streak_armed_at is None:
+                    self._streak_armed_at = now
                     continue
-
-                self._consecutive_hits = 0
-                self._last_detection_at = now
-                detected = True
-                self._detection_count += 1
-                logger.info(
-                    f"[ViolawakeDetector] Wake word detected: '{WAKE_PHRASE}' "
-                    f"(score={float(score):.3f})"
-                )
+                if now - self._streak_armed_at > RELEASE_WINDOW_SEC:
+                    logger.debug(
+                        "[ViolawakeDetector] sustained score rejected "
+                        "(hot past release window)"
+                    )
+                    self._streak_armed_at = None
+                    self._consecutive_hits = 0
+                    self._streak_peak = 0.0
+                    continue
 
             # Bound the remainder buffer (should never exceed 319 samples).
             if len(self._remainder) >= FRAME_LENGTH * 2:

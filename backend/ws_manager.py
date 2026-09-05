@@ -469,7 +469,7 @@ class WebSocketManager:
         if exclude_clients is None:
             exclude_clients = set()
 
-        clients_in_session = session.connected_clients
+        clients_in_session = list(session.connected_clients)
         for client_id in clients_in_session:
             if client_id not in exclude_clients:
                 await self.send_to_client(client_id, message)
@@ -487,7 +487,8 @@ class WebSocketManager:
         # Use client_to_session to find all sessions that have active clients
         session_ids = []
         seen = set()
-        for client_id, session_id in self._session_manager.client_to_session.items():
+        # Snapshot: reconnects mutate client_to_session during iteration.
+        for client_id, session_id in list(self._session_manager.client_to_session.items()):
             if session_id not in seen and client_id in self.active_connections:
                 seen.add(session_id)
                 session_ids.append(session_id)

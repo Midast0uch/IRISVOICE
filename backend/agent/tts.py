@@ -243,7 +243,16 @@ class TTSManager:
         """Spawn the TTS subprocess worker and wait for it to become ready."""
         with self._proc_lock:
             if self._proc is not None and self._proc.poll() is None:
-                return  # already running
+                if self._ready:
+                    return  # already running and ready
+                # Alive but never became ready (startup timed out on another
+                # thread while holding no lock — the waiter gave up but the
+                # worker may still be loading). Wait briefly for the late
+                # ready instead of abandoning it: every later synthesize
+                # otherwise fails with ZERO audio forever (2026-09-04 log).
+                logger.info("[TTSManager] Worker alive but not ready — waiting 30s for late ready")
+                self._wait_ready(timeout=30)
+                return
 
             logger.info("[TTSManager] Spawning Pocket-TTS subprocess worker...")
             try:

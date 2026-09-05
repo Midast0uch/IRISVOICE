@@ -187,6 +187,10 @@ def test_exa_configured_without_key_falls_back_to_llm(monkeypatch):
         sp_mod, "_read_search_config", lambda: {"provider": "exa", "exa_api_key": ""}
     )
     monkeypatch.delenv("EXA_API_KEY", raising=False)
+    # Seal the third key source: this machine's real keyring may hold a live
+    # Exa key (migrated 2026-09-04), which would satisfy the reader and break
+    # the "NO key anywhere" precondition this fallback contract requires.
+    monkeypatch.setattr(sp_mod, "get_secret", lambda slot: None)
     sp_mod.clear_search_provider_cache()
 
     kern = _FakeKernel([

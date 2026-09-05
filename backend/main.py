@@ -575,7 +575,7 @@ async def lifespan(app: FastAPI):
         # Apply persisted model configuration from iris_config.json
         try:
             _mc = _load_iris_config()
-            # Config lives under the "inference" block (cerebras/gemma by
+            # Config lives under the "inference" block (cerebras/qwen by
             # default). The legacy top-level keys (active_provider, etc.) no
             # longer exist in iris_config.json, so reading them returned ""
             # and silently skipped model restoration — leaving the kernel
@@ -2417,6 +2417,7 @@ async def api_config_save(body: dict = {}):
                     "opencodego": "https://opencode.ai/zen/go/v1",
                     "cerebras": "https://api.cerebras.ai/v1",
                     "cohere": "https://api.cohere.ai/compatibility/v1",
+                    "clinepass": "https://api.cline.bot/api/v1",
                     "chutes": "https://api.chutes.ai/v1",
                     "deepseek": "https://api.deepseek.com/beta",
                     "anthropic": "https://api.anthropic.com/v1",

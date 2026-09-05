@@ -48,7 +48,7 @@ _CREDENTIAL_NAMES = frozenset(
         "password", "passwd", "pwd",
         "authorization", "auth",
         "private_key", "credential", "credentials",
-        "cohere_key", "cerebras_key", "venice_key", "chutes_key",
+        "cohere_key", "cerebras_key", "clinepass_key", "venice_key", "chutes_key",
         "deepseek_key", "openai_key", "anthropic_key", "hf_token",
     }
 )

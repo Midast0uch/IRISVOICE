@@ -114,6 +114,8 @@ PROVIDER_PRESETS: list[dict] = [
      "api_base_url": "https://llm.chutes.ai/v1"},
     {"id": "cohere", "label": "Cohere", "kind": "api", "needs_key": True,
      "api_base_url": "https://api.cohere.ai/compatibility/v1"},
+    {"id": "clinepass", "label": "ClinePass", "kind": "api", "needs_key": True,
+     "api_base_url": "https://api.cline.bot/api/v1"},
     {"id": "deepseek", "label": "DeepSeek", "kind": "api", "needs_key": True,
      "api_base_url": "https://api.deepseek.com"},
     {"id": "anthropic", "label": "Anthropic", "kind": "api", "needs_key": True,

@@ -11,7 +11,7 @@ Config schema (``iris_config.json``) is auto-applied on init if present::
       "inference": {
         "provider_registry": [
           { "id": "cerebras", "label": "Cerebras", "kind": "api",
-            "model": "gemma-4-31b", "api_base_url": "https://api.cerebras.ai/v1" },
+            "model": "qwen-3.8-27b", "api_base_url": "https://api.cerebras.ai/v1" },
           ...
         ],
         "role_bindings": [

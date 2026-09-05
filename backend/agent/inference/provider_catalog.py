@@ -58,7 +58,7 @@ PROVIDER_MODEL_CATALOG: Dict[str, List[Dict[str, str]]] = {
     "cerebras": [
         {"id": "gpt-oss-120b", "name": "GPT OSS 120B (Recommended)"},
         {"id": "zai-glm-4.7", "name": "Z.ai GLM 4.7"},
-        {"id": "gemma-4-31b", "name": "Gemma 4 31B Preview"},
+        {"id": "qwen-3.8-27b", "name": "Qwen 3.8 27B"},
         {"id": "qwen-3-235b-instruct", "name": "Qwen 3 235B Instruct"},
         {"id": "qwen-3-235b-thinking", "name": "Qwen 3 235B Thinking"},
         {"id": "qwen-3-32b", "name": "Qwen 3 32B"},
@@ -88,6 +88,24 @@ PROVIDER_MODEL_CATALOG: Dict[str, List[Dict[str, str]]] = {
         {"id": "claude-haiku-4-5-20251001", "name": "Claude Haiku 4.5"},
         {"id": "moonshotai/Kimi-K2.6", "name": "Kimi K2.6"},
         {"id": "zai-org/GLM-5.1", "name": "GLM 5.1"},
+    ],
+    "clinepass": [
+        # VERIFIED against docs.cline.bot/getting-started/clinepass 2026-09-04.
+        # OpenAI-compatible (https://api.cline.bot/api/v1, Bearer CLINE_API_KEY).
+        # First entry is upstream's defaultModelId (cline-pass/kimi-k3).
+        {"id": "cline-pass/kimi-k3", "name": "Kimi K3 (Recommended)"},
+        {"id": "cline-pass/kimi-k2.7-code", "name": "Kimi K2.7 Code"},
+        {"id": "cline-pass/kimi-k2.6", "name": "Kimi K2.6"},
+        {"id": "cline-pass/glm-5.3", "name": "GLM-5.3"},
+        {"id": "cline-pass/glm-5.2", "name": "GLM-5.2"},
+        {"id": "cline-pass/deepseek-v4-pro", "name": "DeepSeek V4 Pro"},
+        {"id": "cline-pass/deepseek-v4-flash", "name": "DeepSeek V4 Flash"},
+        {"id": "cline-pass/mimo-v2.5", "name": "MiMo-V2.5"},
+        {"id": "cline-pass/mimo-v2.5-pro", "name": "MiMo-V2.5-Pro"},
+        {"id": "cline-pass/minimax-m3", "name": "MiniMax M3"},
+        {"id": "cline-pass/qwen3.8-max", "name": "Qwen3.8 Max"},
+        {"id": "cline-pass/qwen3.7-max", "name": "Qwen3.7 Max"},
+        {"id": "cline-pass/qwen3.7-plus", "name": "Qwen3.7 Plus"},
     ],
     "cohere": [
         {"id": "command-a-plus-05-2026", "name": "Command A+ (latest)"},

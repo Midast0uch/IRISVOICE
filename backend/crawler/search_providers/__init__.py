@@ -23,6 +23,11 @@ from backend.crawler.search_providers.base import (
 )
 from backend.crawler.search_providers.llm import LLMSearchProvider
 
+# Module-level (not function-local) so tests can seal this key source with
+# monkeypatch.setattr(sp_mod, "get_secret", ...) — the keyless-fallback
+# contract requires ALL of env/config/keyring to be empty.
+from backend.agent.inference.keyring import get_secret
+
 logger = logging.getLogger(__name__)
 
 _provider_instance: Optional[SearchProvider] = None
@@ -91,10 +96,17 @@ def get_search_provider() -> SearchProvider:
         try:
             from backend.crawler.search_providers.exa import ExaSearchProvider
 
-            # Try env first, then config field_values (from frontend settings).
+            # Try env first, then the OS keyring (Apply-time store), then the
+            # legacy config field_values copy (never written anymore — the
+            # save path strips secrets; kept as a fallback for old files).
             import os
 
-            exa_key = os.environ.get("EXA_API_KEY") or config.get("exa_api_key") or ""
+            exa_key = (
+                os.environ.get("EXA_API_KEY")
+                or get_secret("exa")
+                or config.get("exa_api_key")
+                or ""
+            )
             _provider_instance = ExaSearchProvider(api_key=exa_key)
             logger.info("[SearchProvider] using Exa neural search")
         except ValueError as exc:

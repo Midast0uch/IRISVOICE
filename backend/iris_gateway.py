@@ -1209,6 +1209,17 @@ class IRISGateway:
                         # it was already written to .env and the cache cleared.
                         os.environ["EXA_API_KEY"] = value
 
+                        # Mirror into the OS keyring (canonical secret store):
+                        # the JSON field_values copy is stripped on save, so
+                        # without this a restart on a machine without the .env
+                        # line would lose websearch auth. Best-effort only.
+                        try:
+                            from backend.agent.inference.keyring import set_secret
+
+                            set_secret("exa", value)
+                        except Exception:
+                            pass
+
                         # Clear the cached provider so it picks up the new key.
                         from backend.crawler.search_providers import clear_search_provider_cache
 
@@ -1871,6 +1882,9 @@ class IRISGateway:
                         "chutes": "https://llm.chutes.ai/v1",
                         # Cohere OpenAI-compatible API: https://docs.cohere.com/docs/compatibility-api
                         "cohere": "https://api.cohere.ai/compatibility/v1",
+                        # ClinePass OpenAI-compatible API (Bearer CLINE_API_KEY):
+                        # https://docs.cline.bot/getting-started/clinepass
+                        "clinepass": "https://api.cline.bot/api/v1",
                         "deepseek": "https://api.deepseek.com",
                         # Anthropic OpenAI-compatible API: https://platform.claude.com/docs/en/api/openai-sdk
                         "anthropic": "https://api.anthropic.com/v1",
@@ -1993,13 +2007,29 @@ class IRISGateway:
                                 _ep = get_provider_default_endpoint(_effective_provider)
                                 if _ep:
                                     cfg.inference.api_base_url = _ep
-                                # Only write the key when the card actually sent
+                                # Only route the key when the card actually sent
                                 # one. The frontend deliberately omits the key
-                                # when it is already stored — writing the blank
-                                # here wiped the persisted credential on every
-                                # APPLY that didn't re-enter it.
-                                if api_key:
-                                    cfg.inference.api_key = api_key
+                                # when it is already stored — a missing key must
+                                # never clear the keyring's copy, and a present
+                                # key must never touch the config file. Secrets
+                                # live in the OS keyring ONLY (mirror REST
+                                # api_config_save, pinned by
+                                # test_config_save_key_routing): set_model_selection
+                                # already routed this same key at Apply time, so
+                                # this persist path carries selections, never
+                                # secret values.
+                                if api_key and _effective_provider:
+                                    try:
+                                        from backend.agent.inference.keyring import (
+                                            set_secret,
+                                        )
+
+                                        set_secret(_effective_provider, api_key)
+                                    except Exception:
+                                        # Non-fatal: the key was already routed
+                                        # at Apply time; persist must not fail
+                                        # the model switch over a duplicate write.
+                                        pass
                             # Routing: model_selection only handles API/endpoint providers.
                             # LOCAL/SWARM routing is set by inference_mode confirm_card.
                             # Ollama is its own local-server mode (aligned with
@@ -2319,6 +2349,13 @@ class IRISGateway:
         """Wire the VoiceCommandHandler so voice triggers can delegate to it."""
         self._voice_handler = voice_handler
         voice_handler.set_command_result_callback(self._on_voice_result)
+        # H2 (session 291): mirror transcription-phase states to the chat
+        # typing indicator. Between VAD-end and the transcript (whole STT
+        # window, 23s cold) the frontend otherwise hears nothing — no
+        # thinking Xur while Parakeet works. ConversationKernel wraps this
+        # later via _CallbackChain (its own design anticipates a gateway
+        # callback already being here), so registration order is safe.
+        voice_handler.set_state_callback(self._on_voice_state)
 
         # v2 (Phase 7): Instantiate ConversationKernel â€” thin wrapper
         # on the existing voice pipeline. The kernel adds Caducean
@@ -2861,6 +2898,58 @@ class IRISGateway:
             return False
         return self._voice_handler is not None
 
+    def _send_voice_typing(self, session_id: str | None, client_id: str | None, active: bool) -> None:
+        """H2 (session 291): chat_typing for voice turns (thinking Xur in ChatView).
+
+        Text turns light the Xur via chat_typing; voice turns never sent it,
+        so the whole STT window (and any stretch before processing_conversation)
+        showed no thinking indicator. Called from VAD/STT background threads:
+        hops to the main loop, best-effort only — the indicator must never
+        break audio or a turn. Terminal False sites: _speak_response finally
+        branches, _on_voice_result early returns + exception, ERROR state here.
+        """
+        try:
+            ws = getattr(self, "_ws_manager", None)
+            loop = getattr(self, "_main_loop", None)
+            if ws is None or loop is None or not loop.is_running():
+                return
+            import asyncio as _asyncio
+
+            msg = {"type": "chat_typing", "payload": {"active": active}}
+            if client_id:
+                coro = ws.send_to_client(client_id, msg)
+            elif session_id:
+                coro = ws.broadcast_to_session(session_id, msg)
+            else:
+                return
+            _asyncio.run_coroutine_threadsafe(coro, loop)
+        except Exception:
+            pass
+
+    def _on_voice_state(self, state, message: str = "") -> None:
+        """H2 (session 291): mirror transcription-phase states to chat_typing.
+
+        Registered on the VoiceCommandHandler by set_voice_handler (the
+        ConversationKernel chains after us, so registration order is safe).
+        Fires from the VAD/STT background thread.
+        PROCESSING → True: covers the VAD-end→transcript STT window through
+          the rest of the turn (terminal sites below clear it).
+        ERROR → False: the pipeline died, no turn follows.
+        SUCCESS/IDLE → nothing: SUCCESS means the LLM turn is starting (keep
+          the Xur lit); IDLE fires on the post-SUCCESS 2s timer mid-LLM-turn,
+          so clearing there would kill the indicator mid-answer.
+        """
+        try:
+            value = getattr(state, "value", state)
+            if value not in ("processing", "error"):
+                return
+            vh = getattr(self, "_voice_handler", None)
+            session_id = getattr(vh, "_active_session_id", None) or "default"
+            client_id = (getattr(self, "_active_voice_client", None) or {}).get(session_id)
+            self._send_voice_typing(session_id, client_id, value == "processing")
+        except Exception:
+            pass
+
     def _on_voice_result(self, result: dict) -> None:
         """
         Callback fired by VoiceCommandHandler when LFM2-Audio finishes processing.
@@ -2913,6 +3002,7 @@ class IRISGateway:
                 asyncio.run_coroutine_threadsafe(
                     self._enter_sleep_mode(session_id, client_id), loop
                 )
+                self._send_voice_typing(session_id, client_id, False)
                 return
 
             if not transcript or not client_id:
@@ -2929,6 +3019,7 @@ class IRISGateway:
                     ),
                     loop,
                 )
+                self._send_voice_typing(session_id, client_id, False)
                 return
 
             asyncio.run_coroutine_threadsafe(
@@ -2940,6 +3031,11 @@ class IRISGateway:
             )
         except Exception as e:
             self._logger.error(f"[Voice] _on_voice_result error: {e}", exc_info=True)
+            try:
+                session_id = result.get("session_id", "default")
+                self._send_voice_typing(session_id, self._active_voice_client.get(session_id), False)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------ #
     # Helper: build a text_response WS message with a unique turn_id.   #
@@ -4652,6 +4748,7 @@ class IRISGateway:
                         ),
                         _main_loop,
                     )
+                    self._send_voice_typing(session_id, None, False)
                     # Give audio pipeline a moment to flush before recording
                     import time as _time
 
@@ -4678,6 +4775,7 @@ class IRISGateway:
                         ),
                         _main_loop,
                     )
+                    self._send_voice_typing(session_id, None, False)
             elif _main_loop:
                 # Fallback: no session_id â†’ broadcast idle to ALL connected
                 # clients so their orbs don't stay stuck in "speaking".
@@ -4686,6 +4784,12 @@ class IRISGateway:
                 _asyncio.run_coroutine_threadsafe(
                     self._ws_manager.broadcast(
                         {"type": "listening_state", "payload": {"state": "idle"}}
+                    ),
+                    _main_loop,
+                )
+                _asyncio.run_coroutine_threadsafe(
+                    self._ws_manager.broadcast(
+                        {"type": "chat_typing", "payload": {"active": False}}
                     ),
                     _main_loop,
                 )

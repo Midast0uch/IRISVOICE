@@ -139,23 +139,29 @@ def main() -> int:
 
     threading.Thread(target=_idle_watchdog, daemon=True, name="sherpa-idle").start()
     logger.info("listening for transcription requests")
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            msg = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        action = msg.get("action", "")
-        if action == "transcribe":
-            _send(_do_transcribe(msg))
-        elif action == "ping":
-            _send({"status": "ready" if _recognizer is not None else "loading"})
-        elif action == "shutdown":
-            break
-        else:
-            _send({"text": "", "timestamps": [], "error": f"unknown action {action!r}"})
+    try:
+        for line in sys.stdin:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                msg = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            action = msg.get("action", "")
+            if action == "transcribe":
+                _send(_do_transcribe(msg))
+            elif action == "ping":
+                _send({"status": "ready" if _recognizer is not None else "loading"})
+            elif action == "shutdown":
+                break
+            else:
+                _send({"text": "", "timestamps": [], "error": f"unknown action {action!r}"})
+    except KeyboardInterrupt:
+        # Ctrl+C reaches the whole process group: the parent is shutting
+        # down too. Exit quietly instead of dumping a traceback — there is
+        # no in-flight state worth preserving (stateless worker).
+        logger.info("worker interrupted (parent shutting down)")
     logger.info("worker exiting")
     return 0
 

@@ -756,6 +756,86 @@ def _apply_env_overrides(cfg: IRISConfig) -> None:
         cfg.inference.ollama_url = ollama_url
 
 
+# Field names that must never persist in iris_config.json. The save path
+# (save_field_values) strips these; the load-time scrub below heals files
+# that predate the stripping (or were restored from a backup).
+_SCRUB_SECRET_FIELDS = frozenset({"api_key", "exa_api_key"})
+
+
+def _scrub_persisted_secrets(cfg: IRISConfig) -> bool:
+    """One-way hygiene pass over an already-loaded config.
+
+    Moves surviving secret values out of persisted config into the OS
+    keyring, then clears them. Fill-gap ONLY: a value is written to the
+    keyring solely when the keyring holds nothing yet (an explicit Apply
+    always wins and is the only writer that may overwrite). A cleared value
+    is cleared only after a verified keyring round-trip, so the only copy
+    is never at risk — mirroring migrate_flat_to_collection's rule.
+
+    Attribution: ``search.exa_api_key`` -> keyring ``"exa"``;
+    ``<section>.api_key`` -> that section's ``model_provider`` sibling when
+    present, else left in place and logged. Covers the legacy top-level
+    ``model_selection`` block too (dead ballast preserved by ``extra``).
+
+    Returns True when anything changed (caller re-saves). Cheap no-op once
+    the file is clean.
+    """
+    changed = False
+
+    def _adopt(secret: str, slot: str | None, where: str) -> str:
+        """Return the value to keep in config ("" when safely migrated)."""
+        nonlocal changed
+        if not secret:
+            return secret
+        if not slot:
+            logger.warning(
+                f"[Config] secret at {where} has no attributable provider — "
+                f"left in place (not secure, needs a manual move)"
+            )
+            return secret
+        try:
+            from .agent.inference.keyring import get_secret, set_secret
+
+            if not get_secret(slot):
+                set_secret(slot, secret)
+                if get_secret(slot) != secret:
+                    logger.warning(
+                        f"[Config] keyring round-trip failed for {where} — "
+                        f"left in place rather than losing the credential"
+                    )
+                    return secret
+            changed = True
+            logger.info(
+                f"[Config] moved persisted secret at {where} into the "
+                f"keyring (startup scrub)"
+            )
+            return ""
+        except Exception as exc:
+            logger.warning(f"[Config] secret scrub failed at {where}: {exc}")
+            return secret
+
+    fv = cfg.field_values or {}
+    for section, fields in fv.items():
+        if not isinstance(fields, dict):
+            continue
+        for name in [k for k in fields if isinstance(k, str) and k.strip().lower() in _SCRUB_SECRET_FIELDS]:
+            slot = "exa" if name.strip().lower() == "exa_api_key" else (
+                fields.get("model_provider") or None
+            )
+            new_val = _adopt(fields[name], slot, f"field_values.{section}.{name}")
+            if new_val != fields[name]:
+                fields[name] = new_val
+
+    extra_ms = (cfg.extra or {}).get("model_selection")
+    if isinstance(extra_ms, dict) and extra_ms.get("api_key"):
+        slot = extra_ms.get("model_provider") or None
+        new_val = _adopt(extra_ms["api_key"], slot, "model_selection.api_key")
+        if new_val != extra_ms["api_key"]:
+            extra_ms["api_key"] = new_val
+
+    return changed
+
+
 def load_config() -> IRISConfig:
     """Load config from data/iris_config.json.
 
@@ -793,6 +873,15 @@ def load_config() -> IRISConfig:
     except Exception as _vex:
         logger.warning(f"[Config] validate_providers failed (non-fatal): {_vex}")
 
+    # Self-healing secret hygiene: move any secret that survived on disk
+    # (predating the save-time stripping, or restored from backup) into the
+    # keyring. Re-saves only when something actually moved.
+    try:
+        if _scrub_persisted_secrets(cfg):
+            save_config(cfg)
+    except Exception as _sexc:
+        logger.warning(f"[Config] secret scrub failed (non-fatal): {_sexc}")
+
     return cfg
 
 
@@ -817,10 +906,28 @@ def save_config(cfg: IRISConfig) -> None:
 
 def save_field_values(values: Dict[str, Dict[str, Any]]) -> None:
     """Persist raw field_values to the config file so they survive
-    frontend remounts and page reloads."""
+    frontend remounts and page reloads.
+
+    Secrets are stripped before the write: card inputs named ``api_key``
+    or ``exa_api_key`` (e.g. model_selection.api_key, the pasted provider
+    key) must never reach disk — live values already went to the OS keyring
+    at Apply time (set_model_selection / the settings field handler), and
+    the in-memory session copy keeps serving runtime readers. Persisting
+    the echo here is what kept live credentials in iris_config.json
+    indefinitely.
+    """
     try:
         cfg = load_config()
-        cfg.field_values = values
+        scrubbed: Dict[str, Dict[str, Any]] = {}
+        for section, fields in (values or {}).items():
+            if isinstance(fields, dict):
+                scrubbed[section] = {
+                    k: v for k, v in fields.items()
+                    if not (isinstance(k, str) and k.strip().lower() in _SCRUB_SECRET_FIELDS)
+                }
+            else:
+                scrubbed[section] = fields
+        cfg.field_values = scrubbed
         save_config(cfg)
     except Exception as exc:
         logger.warning(f"[Config] Failed to save field values: {exc}")

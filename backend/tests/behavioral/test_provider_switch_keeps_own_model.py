@@ -148,10 +148,12 @@ def _gateway_with(kernel):
 # A card that names cerebras and cerebras's own model. Under card-wins
 # precedence this is honoured as a switch TO cerebras whatever is bound —
 # what must never happen is its model landing on a DIFFERENT provider.
+# Fixture updated 2026-09-04: qwen-3.8-27b replaced gemma-4-31b as the
+# cerebras-native model (catalog swap). Test intent unchanged.
 CEREBRAS_CARD = {
     "model_provider": "cerebras",
-    "reasoning_model": "gemma-4-31b",
-    "tool_model": "gemma-4-31b",
+    "reasoning_model": "qwen-3.8-27b",
+    "tool_model": "qwen-3.8-27b",
 }
 
 # The card from the 2026-08-15 incident: the user picked Ollama in the
@@ -391,7 +393,7 @@ class TestProviderSwitchKeepsItsOwnModel:
 
         sel = kernel.selections[-1]
         assert sel["model_provider"] == "cerebras"
-        assert sel["reasoning_model"] == "gemma-4-31b", (
+        assert sel["reasoning_model"] == "qwen-3.8-27b", (
             "the card names cerebras, so its own model applies — cohere's "
             "'command-a-03-2025' must not be stamped onto cerebras (got "
             f"{sel['reasoning_model']!r})"
@@ -459,7 +461,7 @@ class TestProviderSwitchKeepsItsOwnModel:
 
         sel = kernel.selections[-1]
         assert sel["model_provider"] == "cerebras"
-        assert sel["reasoning_model"] == "gemma-4-31b", (
+        assert sel["reasoning_model"] == "qwen-3.8-27b", (
             "the card names the SAME provider that is bound, so its model is "
             "current, not stale — it must be applied"
         )
@@ -509,8 +511,11 @@ class TestCatalogOwnership:
     """The primitive the fix leans on: does this model belong to this provider?"""
 
     def test_a_cerebras_model_does_not_belong_to_cohere(self):
-        assert model_belongs_to_provider("cerebras", "gemma-4-31b") is True
-        assert model_belongs_to_provider("cohere", "gemma-4-31b") is False
+        # Pin updated 2026-09-04: qwen-3.8-27b replaced gemma-4-31b as the
+        # cerebras-native example (catalog swap). Test intent unchanged: a
+        # provider's own model must not belong to another provider.
+        assert model_belongs_to_provider("cerebras", "qwen-3.8-27b") is True
+        assert model_belongs_to_provider("cohere", "qwen-3.8-27b") is False
 
     def test_a_provider_without_a_catalog_accepts_anything(self):
         """Absence of a catalog is not evidence a model is wrong.

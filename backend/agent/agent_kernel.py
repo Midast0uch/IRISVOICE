@@ -1160,6 +1160,13 @@ class AgentKernel:
         # is too HIGH re-creates the overcommit this table's default exists to
         # prevent. Under-sizing is safe; over-sizing is the bug.
         ("cerebras", "gemma-4-31b", 256_000),
+        # Qwen 3.8 27B replaces gemma as the Cerebras offering 2026-09-04.
+        # Catalog context is 64k free / 128k paid; using the paid tier
+        # (Cerebras billing in use) — drop to 64_000 if on the free tier.
+        # The gemma row above stays: still-true model fact, pinned by the
+        # ctx-budget contract tests. ClinePass models stay unlisted on
+        # purpose (windows unverified) and take the safe 8k default.
+        ("cerebras", "qwen-3.8-27b", 128_000),
         # OpenRouter: REMOVED 2026-07-29. ("openrouter", "", 32_000) was a
         # bare-substring provider-wide fallback â€” it matched EVERY model from
         # OpenRouter, which fronts models from 4k to 2M windows. A blanket
@@ -2708,11 +2715,33 @@ class AgentKernel:
             if m.get("role") == "system" or (m.get("content") or "").strip()
         ]
 
-        # 3. Collapse consecutive same-role non-system messages
+        # 3. Collapse consecutive same-role non-system messages, and merge
+        # non-first system messages into the first. mito_inject (pos 1) and
+        # pacman_recall (pos 2) each add a system block beside the base
+        # prompt, so the wire list routinely carries 2-3 systems — which
+        # strict chat templates (Cerebras, llama.cpp) reject with 400
+        # "System message must be at the beginning" (live 2026-09-04: killed
+        # a direct answer plus topic + data extraction). Tolerant providers
+        # never minded, and fewer systems are safe everywhere, so merge
+        # instead of dropping: the content is load-bearing context.
         sanitized: List[Dict] = []
+        _first_system_idx: int | None = None
         for m in cleaned:
             if m["role"] == "system":
-                sanitized.append(m)
+                if _first_system_idx is None:
+                    _first_system_idx = len(sanitized)
+                    sanitized.append(m)
+                else:
+                    _extra = (m.get("content") or "").strip()
+                    if _extra:
+                        sanitized[_first_system_idx] = {
+                            **sanitized[_first_system_idx],
+                            "content": (
+                                (sanitized[_first_system_idx].get("content") or "").rstrip()
+                                + "\n\n" + _extra
+                            ),
+                        }
+                continue
             elif not sanitized:
                 # First non-system message is fine
                 sanitized.append(m)
