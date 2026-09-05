@@ -13,6 +13,15 @@
   779 threads (430px box, 76725px content, wheel-contained, last row reachable).
 - Audio pipeline (Parakeet warm-on-first-wake + 25s bounded wait, TTS late-ready
   recovery) is verified live and OUT of scope.
+- T7 pinned-to-bottom (2026-09-04): the 48px "pinned" threshold absorbs sub-pixel
+  scrollHeight/clientHeight rounding, so a user resting at the bottom is never
+  treated as scrolled up. Pinned state lives in a ref (not state) specifically so
+  the auto-scroll effect reads the PRE-insertion value — appending content fires no
+  scroll event, which is what makes the check correct.
+- T5 slash menu (2026-09-04): `overscroll-behavior: contain` alone is INERT on a
+  non-scrollable element, and the slash menu was `overflow-hidden`. AC1's "or
+  equivalent" is satisfied by making it a real scroll container (capped
+  `min(30vh,260px)` + `overflow-y:auto`) and only then containing it.
 - Personal and developer modes keep distinct renderers (Blueprint Matrix CLI vs
   TaskListCard; mono `MarkdownMessage` vs rich): the spec unifies the TURN STRUCTURE,
   never the visual language.
@@ -178,22 +187,44 @@ slash menu to share one coherent scroll so that live progress reads top-to-botto
 **User Story:** As a chatter I want a visible way to send so that I never wonder
 whether Enter is the only path.
 
+**Status:** DONE (T8, 2026-09-04) — **personal mode only.** See Decision below.
+
 **Verified:** `components/chat-view.tsx:4812-4817` (Enter-only send),
-`:4921` (send pill removed, "Enter already sends"), `:1789-1798` (empty-input and
-mic-listening guards). Live finding: programmatic fill + Enter never reaches
-`inputText` state — only real keystrokes send.
+`:4921` (send pill removed, "Enter already sends"), `:1844` (empty-input and
+mic-listening guards, inside `handleSendMessage`). Live finding: programmatic
+fill + Enter never reaches `inputText` state — only real keystrokes send.
 
 **Acceptance Criteria:**
-- AC1: THE SYSTEM SHALL present an explicit send control next to the composer in
-  both modes.
+- AC1: THE SYSTEM SHALL present an explicit send control next to the composer
+  **in personal mode**. Developer mode is deliberately excluded (Decision).
 - AC2: WHEN input is empty or the mic is listening THEN THE SYSTEM SHALL disable
-  the control (same guards as Enter).
+  the control (same guards as Enter). `isChatTyping` does NOT disable it — the
+  backend per-session lock queues messages (long-horizon-der-execution).
 - AC3: WHEN the control activates THEN THE SYSTEM SHALL run exactly
   `handleSendMessage` (no second send path).
 
 **Edge Cases:**
 - Multiline drafts (Shift+Enter) never send.
 - Voice `listening` state disables both Enter and the control identically.
+- Developer mode renders no control; its row is unchanged.
+
+**Decision (2026-09-04, user-signed) — scope and supersession.**
+Measured width budget before committing (phase-5 OQ-1 asked for exactly this):
+container `px-3`, row `gap-2` + `marginRight: 4px`; wings are 360 / 510 / 680.
+- Personal mode is `[Web 32] gap8 [textarea flex-1]` and the textarea has **no
+  min-width**, so it absorbs the control: 292→252px at 360 (−13.7%),
+  442→402 at 510 (−9.0%), 612→572 at 680 (−6.5%). It fits at every width.
+- Developer mode's REQ-2 footer toolbar is 454px explicit against 486px usable
+  at the balanced wing; +44px = 498px overflows by 12px, and 454px already
+  exceeds the 336px usable at the background wing. It does not fit.
+Developer mode is a **CLI surface** and should read as one, so the exclusion is
+a design choice, not merely a constraint.
+This **supersedes the visibility half** of `specs/phase-5-switcher` REQ-1 AC1
+(the Send pill removal). The load-bearing half of that REQ — AC3, the disabled
+conditions moving into the send path — is preserved and still locked by
+`__tests__/InputRow.test.tsx` AC3. `__tests__/InputRow.test.tsx` AC1 was
+rewritten from "absent" to "present" as a deliberate, recorded test change, and
+the REQ-7 blocks added there give the control guard coverage it never had.
 
 ### REQ-8: Placement observability
 **User Story:** As the tuner I want timestamped placement signals so that the next
@@ -223,6 +254,20 @@ iteration can measure inline-vs-orphan rates.
 
 ## Open Questions
 - Send-control visual treatment (icon button vs pill) — developer taste call, resolve
-  with user before Wave 2.
+  with user before Wave 2. **RESOLVED 2026-09-04: user chose the icon button.**
+  The treatment is no longer what holds T8 up — see the blocker below.
+- **RESOLVED (2026-09-04): REQ-7 contradicted an existing contract lock.**
+  `__tests__/InputRow.test.tsx` AC1, from `specs/phase-5-switcher` REQ-1, asserted
+  that no element titled "Send message" is rendered in the input row — the send pill
+  was deliberately REMOVED and its guards moved into `handleSendMessage`. REQ-7 asked
+  for exactly that control back.
+  **User chose (a), scoped: REQ-7 wins in personal mode only.** The width budget
+  was measured first (see REQ-7's Decision) — it fits in personal mode at every
+  wing width and overflows the developer toolbar. Developer mode is a CLI surface
+  and stays without the control. `InputRow.test.tsx` AC1 was rewritten from
+  "absent" to "present" as a deliberate, signed-off change, and two REQ-7 blocks
+  were ADDED there covering AC2's guards and AC3's single-path requirement.
+  Net test coverage went up, not down.
 - Slash menu + document modal containment (REQ-4 remainder): same one-line pattern
-  as history, left untouched per scope discipline — fold into Wave 2 or leave.
+  as history, left untouched per scope discipline — folded into Wave 2 and DONE
+  (T5, 2026-09-04).

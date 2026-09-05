@@ -1,15 +1,23 @@
 /**
  * Phase 5 (specs/phase-5-switcher) — Wave 1, T1.3.
  *
- * REQ-1: the Send pill is gone; `Enter` sends; `Shift+Enter` does not; and
- * every one of the three conditions the button's `disabled` used to carry
- * (`!inputText.trim() || isTyping || voiceState === 'listening'`) still
- * blocks a send from `Enter` — because the guard moved into
- * `handleSendMessage` itself (D-1), not because the button still exists.
+ * REQ-1: `Enter` sends; `Shift+Enter` does not; and the conditions the Send
+ * pill's `disabled` used to carry still block a send from `Enter` — because
+ * the guard moved into `handleSendMessage` itself (D-1), not because a button
+ * happens to exist. The original three were `!inputText.trim() || isTyping ||
+ * voiceState === 'listening'`; `isTyping` was later retired from the guard
+ * (long-horizon-der-execution: the backend per-session lock queues messages,
+ * so a send during a running turn is safe and must be allowed). Two remain.
  *
- * ⚠️ The guard assertions are the point of this file — parametrized over all
- * three conditions. Dropping one is a test modification (CLAUDE.md, "THE TEST
- * RULE — ABSOLUTE").
+ * ⚠️ The guard assertions are the point of this file. Dropping one is a test
+ * modification (CLAUDE.md, "THE TEST RULE — ABSOLUTE").
+ *
+ * 2026-09-04 — REQ-1 AC1 (the visibility half) is SUPERSEDED by
+ * specs/chatview-dev-cleanup REQ-7, user-signed: a Send control is back,
+ * scoped to personal mode. AC1 below was rewritten from "absent" to
+ * "present" as a deliberate, recorded decision — and the two REQ-7 blocks at
+ * the bottom ADD guard coverage this file never had. The load-bearing half of
+ * REQ-1 (AC3: guards live in the send path) is unchanged and still enforced.
  *
  * NOTE on querying: the input row's ancestors are `motion.div`s. The
  * `framer-motion` mock below returns a fresh forwardRef wrapper every time
@@ -133,7 +141,18 @@ beforeEach(() => {
 })
 
 describe("Chat input row — Send pill removed, Enter carries the guards (REQ-1)", () => {
-  it("AC1: no Send button is rendered in the input row", async () => {
+  it("AC1: an explicit Send control is rendered in the input row", async () => {
+    // SUPERSEDED 2026-09-04 by specs/chatview-dev-cleanup REQ-7, signed off by
+    // the user. This assertion used to be `expect(...).not.toBeInTheDocument()`:
+    // phase-5 REQ-1 deleted the Send pill to free row space. REQ-7 reinstates
+    // it, scoped to personal mode only, after a measured width budget showed
+    // the textarea (flex-1, no min-width) absorbs the 40px at every wing width.
+    //
+    // The half of REQ-1 that was actually load-bearing survives untouched:
+    // AC3 — the button's disabled conditions living inside handleSendMessage
+    // rather than on the button — is still locked by the AC3 block below and by
+    // the REQ-7 guard block. Only the visibility half is reversed, and it is
+    // reversed deliberately, not by weakening an assertion to make code pass.
     await act(async () => {
       render(
         <CrawlProvider>
@@ -141,8 +160,8 @@ describe("Chat input row — Send pill removed, Enter carries the guards (REQ-1)
         </CrawlProvider>
       )
     })
-    expect(screen.queryByTitle("Send message")).not.toBeInTheDocument()
-    expect(screen.queryByRole("button", { name: /send message/i })).not.toBeInTheDocument()
+    expect(screen.getByTitle("Send message")).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: /send message/i })).toBeInTheDocument()
   })
 
   it("AC2: Enter sends when nothing blocks it — input clears", async () => {
@@ -270,5 +289,113 @@ describe("Chat input row — Send pill removed, Enter carries the guards (REQ-1)
     expect(screen.getByTitle(/web mode/i)).toBeInTheDocument()
     expect(screen.getByTitle(/upload file/i)).toBeEnabled()
     expect(screen.getByTestId("model-switcher-stub")).toBeInTheDocument()
+  })
+})
+
+// specs/chatview-dev-cleanup REQ-7 — ADDED 2026-09-04 when the Send control
+// was reinstated. These assert the control is DISABLED under exactly the two
+// conditions handleSendMessage guards on (:1844). isChatTyping is deliberately
+// absent: the backend per-session lock queues messages, so a send during a
+// running turn is allowed (long-horizon-der-execution).
+describe("Chat input row — Send control guards (REQ-7 AC2)", () => {
+  function getSendButton(): HTMLElement {
+    return screen.getByTitle("Send message")
+  }
+
+  it("is disabled while the input is empty", async () => {
+    await act(async () => {
+      render(
+        <CrawlProvider>
+          <ChatWing isOpen onClose={() => {}} onDashboardClick={() => {}} />
+        </CrawlProvider>
+      )
+    })
+    expect(getTextarea().value).toBe("")
+    expect(getSendButton()).toBeDisabled()
+  })
+
+  it("is disabled while voiceState === 'listening'", async () => {
+    mockNav.voiceState = "listening"
+    await act(async () => {
+      render(
+        <CrawlProvider>
+          <ChatWing isOpen onClose={() => {}} onDashboardClick={() => {}} />
+        </CrawlProvider>
+      )
+    })
+    expect(getSendButton()).toBeDisabled()
+  })
+
+  it("is enabled once text is present and the mic is idle", async () => {
+    await act(async () => {
+      render(
+        <CrawlProvider>
+          <ChatWing isOpen onClose={() => {}} onDashboardClick={() => {}} />
+        </CrawlProvider>
+      )
+    })
+    expect(getSendButton()).toBeDisabled()
+    await act(async () => {
+      fireEvent.change(getTextarea(), { target: { value: "hello iris" } })
+    })
+    expect(getSendButton()).toBeEnabled()
+  })
+
+  it("stays enabled while isChatTyping — sends queue, they do not block", async () => {
+    mockNav.isChatTyping = true
+    await act(async () => {
+      render(
+        <CrawlProvider>
+          <ChatWing isOpen onClose={() => {}} onDashboardClick={() => {}} />
+        </CrawlProvider>
+      )
+    })
+    await act(async () => {
+      fireEvent.change(getTextarea(), { target: { value: "queued via button" } })
+    })
+    expect(getSendButton()).toBeEnabled()
+  })
+})
+
+// REQ-7 AC3: the control must run handleSendMessage itself. If it grew its own
+// send path the two would drift, and phase-5's real lesson — that the guards
+// belong in the path, not on the button — would be undone by the back door.
+describe("Chat input row — Send control runs the send path (REQ-7 AC3)", () => {
+  it("activating the control sends and clears, exactly as Enter does", async () => {
+    const sendMessage = jest.fn()
+    await act(async () => {
+      render(
+        <CrawlProvider>
+          <ChatWing isOpen onClose={() => {}} onDashboardClick={() => {}} sendMessage={sendMessage} />
+        </CrawlProvider>
+      )
+    })
+    await act(async () => {
+      fireEvent.change(getTextarea(), { target: { value: "via button" } })
+    })
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"))
+    })
+    expect(getTextarea().value).toBe("")
+    expect(sendMessage).toHaveBeenCalledWith(
+      "text_message",
+      expect.objectContaining({ text: "via button" })
+    )
+  })
+
+  it("a disabled control cannot be clicked into sending", async () => {
+    const sendMessage = jest.fn()
+    await act(async () => {
+      render(
+        <CrawlProvider>
+          <ChatWing isOpen onClose={() => {}} onDashboardClick={() => {}} sendMessage={sendMessage} />
+        </CrawlProvider>
+      )
+    })
+    expect(screen.getByTitle("Send message")).toBeDisabled()
+    await act(async () => {
+      fireEvent.click(screen.getByTitle("Send message"))
+    })
+    expect(sendMessage).not.toHaveBeenCalledWith("text_message", expect.anything())
   })
 })

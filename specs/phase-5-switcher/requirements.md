@@ -63,8 +63,23 @@ calls `handleSendMessage`, which `Enter` already invokes at
 [`:1535-1537`](components/chat-view.tsx:1535) (`if (e.key === "Enter" && !e.shiftKey)`) and again at
 [`:3252-3254`](components/chat-view.tsx:3252). Removing the button removes no capability.
 
+> **SUPERSEDED 2026-09-04 (AC1 only).** `specs/chatview-dev-cleanup` REQ-7 reinstates an
+> explicit send control in **personal mode**, user-signed. AC2–AC4 below stand unchanged.
+> AC3 in particular — the guards living in the send path rather than on the button — was the
+> load-bearing half of this REQ and is preserved; the new control is disabled by those same
+> guards and calls `handleSendMessage` directly. AC1's rationale was measured before being
+> reversed: personal mode's textarea is `flex-1` with no min-width and absorbs the 40px
+> (292→252 / 442→402 / 612→572 across the 360/510/680 wings), so the space cost this story
+> was protecting is real but modest. Developer mode keeps AC1: its REQ-2 toolbar is 454px
+> against 486px usable at the balanced wing (a 44px control overflows by 12px), and it is a
+> CLI surface. `__tests__/InputRow.test.tsx` AC1 was rewritten from "absent" to "present" as
+> a deliberate, recorded change — not a silent edit.
+> Historical AC1, kept for the record: *THE SYSTEM SHALL remove the Send button from the chat
+> input row.*
+
 **Acceptance Criteria:**
-- AC1: THE SYSTEM SHALL remove the Send button from the chat input row.
+- ~~AC1: THE SYSTEM SHALL remove the Send button from the chat input row.~~ **SUPERSEDED
+  in personal mode; still in force in developer mode.** See the note above.
 - AC2: THE SYSTEM SHALL continue to send on `Enter` and insert a newline on `Shift+Enter`.
 - AC3: THE SYSTEM SHALL preserve the button's disabled conditions — empty input, `isTyping`,
   `voiceState === 'listening'` — as guards **inside the send path**, so removing the button does not

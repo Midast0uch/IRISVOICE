@@ -141,6 +141,11 @@ const MESSAGE_THRESHOLDS = {
   WARNING_AT: 3000
 } as const;
 
+// REQ-6 AC3/AC4 (T7): how far from the bottom still counts as "pinned".
+// Absorbs sub-pixel rounding between scrollHeight and clientHeight so a user
+// resting at the bottom is never mistaken for a user who scrolled up.
+const PINNED_THRESHOLD_PX = 48;
+
 const ContentTypePatterns = {
   video: /(?:youtube\.com|youtu\.be|vimeo\.com|\.mp4|\.webm|\.mov)/i,
   picture: /\.(jpg|jpeg|png|gif|webp|svg|bmp)(?:\?.*)?$/i,
@@ -510,6 +515,15 @@ export function ChatWing({
   const [showHistory, setShowHistory] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
+  // REQ-6 AC3/AC4 (T7): the timeline only auto-scrolls while the user is
+  // pinned to the bottom. This ref is written by the container's onScroll and
+  // read by the auto-scroll effect — deliberately a ref, not state, so the
+  // effect always sees the value from BEFORE the new content was inserted
+  // (inserting content does not fire a scroll event, so the pre-insertion
+  // pinned state survives until the effect reads it).
+  const pinnedToBottomRef = useRef(true)
+  // Only drives the jump-to-latest button; must not re-render on every frame.
+  const [showJumpToLatest, setShowJumpToLatest] = useState(false)
   const activeConversationIdRef = useRef<string | null>(null)
   // Tracks turn_id values already dispatched to prevent duplicate message
   // insertion when both WS text_response and REST /api/chat deliver the same
@@ -1018,14 +1032,44 @@ export function ChatWing({
   // requestAnimationFrame defers the snap to after the new row has laid out,
   // so a multi-hundred-line MD card never reports a scrollHeight from the
   // frame before it painted.
+  //
+  // REQ-6 AC3/AC4 (T7): PINNED-ONLY. The old version assigned
+  // `el.scrollTop = el.scrollHeight` unconditionally, which yanked a user who
+  // had scrolled up to read history back to the bottom on every streaming
+  // chunk and every late card join. Now the snap happens only while the user
+  // is pinned to the bottom; `pinnedToBottomRef` still holds the PRE-insertion
+  // state because appending content does not fire a scroll event.
   useEffect(() => {
     const el = messagesContainerRef.current
     if (!el) return
     const raf = requestAnimationFrame(() => {
+      if (!pinnedToBottomRef.current) return
       el.scrollTop = el.scrollHeight
     })
     return () => cancelAnimationFrame(raf)
   }, [renderTimeline])
+
+  // REQ-6 AC4 (T7): a new/switching conversation replaces the whole timeline,
+  // so the previous thread's scroll position is meaningless. Re-pin so the
+  // first streamed chunk follows instead of showing a stale jump button.
+  useEffect(() => {
+    pinnedToBottomRef.current = true
+    setShowJumpToLatest(false)
+  }, [activeConversationId])
+
+  // REQ-6 AC3 (T7): jump-to-latest affordance for a user who scrolled up and
+  // is therefore no longer auto-followed. Reuses the container ref — no second
+  // scroll path, and it re-pins so streaming resumes following.
+  const jumpToLatest = useCallback(() => {
+    const el = messagesContainerRef.current
+    if (!el) return
+    pinnedToBottomRef.current = true
+    setShowJumpToLatest(false)
+    el.scrollTo({
+      top: el.scrollHeight,
+      behavior: prefersReducedMotion ? 'auto' : 'smooth',
+    })
+  }, [prefersReducedMotion])
 
   // Handle incoming WebSocket messages via the CustomEvent listener.
   // The event detail now carries turn_id from the backend _text_response helper
@@ -3121,14 +3165,24 @@ ${message.text}`;
                   exit={{ height: 0, opacity: 0 }}
                   transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
                   className="overflow-hidden border-b flex-shrink-0 z-20"
-                  style={{ 
+                  style={{
                     borderColor: `${glowColor}10`,
                     background: 'linear-gradient(180deg, rgba(10,10,20,0.98) 0%, rgba(10,10,20,0.9) 100%)',
                     backdropFilter: 'blur(20px)',
-                    maxHeight: '50%'
+                    // REQ-3/T5: same latent bug the history dropdown had — a
+                    // percentage max-height against an indefinite `height:auto`
+                    // parent never constrains, so the list grows past the panel
+                    // and the wheel chains to the timeline instead. Viewport
+                    // unit resolves against the window, which is definite.
+                    maxHeight: 'min(46vh, 520px)'
                   }}
                 >
-                  <div className="p-3 space-y-2 overflow-y-auto">
+                  {/* REQ-4 AC1: trap the wheel so scrolling notifications never
+                      scrolls the conversation behind it. */}
+                  <div
+                    className="p-3 space-y-2 overflow-y-auto"
+                    style={{ maxHeight: 'inherit', overscrollBehavior: 'contain' }}
+                  >
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-[10px] font-semibold tracking-widest uppercase text-white/50">
                         Notifications
@@ -3392,6 +3446,19 @@ ${message.text}`;
             <div
               ref={messagesContainerRef}
               className="flex-1 overflow-y-auto px-3 py-3 relative z-10"
+              // REQ-6 AC3/AC4 (T7): re-evaluate "pinned to bottom" on every
+              // user scroll. The threshold absorbs sub-pixel rounding and the
+              // drift of a rounding-error scrollHeight, so a user resting at
+              // the bottom is never treated as scrolled up.
+              onScroll={(e) => {
+                const el = e.currentTarget
+                const distance = el.scrollHeight - el.scrollTop - el.clientHeight
+                const atBottom = distance <= PINNED_THRESHOLD_PX
+                pinnedToBottomRef.current = atBottom
+                // Identical values are bailed out by React, so this does not
+                // re-render on every wheel tick.
+                setShowJumpToLatest(!atBottom)
+              }}
               // DIAGNOSTIC (2026-08-17): surfaces the exact values that decide
               // whether the thinking indicator renders, so the blind window
               // between "steps finished" and "answer arrives" can be measured
@@ -4471,8 +4538,12 @@ ${message.text}`;
                     </div>
                     
                     {/* Modal content - compact */}
-                    <div 
+                    {/* REQ-4 AC1: trap the wheel at this modal's edges — a long
+                        document body must scroll the modal, never the timeline
+                        behind it. */}
+                    <div
                       className="p-2 overflow-y-auto flex-1"
+                      style={{ overscrollBehavior: 'contain' }}
                     >
                       <pre 
                         className="text-[10px] leading-snug whitespace-pre-wrap font-mono"
@@ -4661,6 +4732,30 @@ ${message.text}`;
                     into personal mode. */}
                 <div className={isDeveloper ? "relative" : (isRemoteView ? "relative flex items-end gap-2 px-1" : "relative flex items-end gap-2")} style={{ marginRight: '4px' }}>
 
+                {/* REQ-6 AC3 (T7): the counterpart to pinned-only auto-scroll.
+                    Once the user scrolls up they are no longer auto-followed,
+                    so they need one control to get back. Sits above the
+                    composer (same `absolute bottom-full` slot the slash menu
+                    uses) and disappears the moment they are pinned again. */}
+                {showJumpToLatest && (
+                  <button
+                    type="button"
+                    onClick={jumpToLatest}
+                    data-testid="jump-to-latest"
+                    className="absolute bottom-full right-0 mb-1.5 z-40 flex items-center gap-1 px-2 py-1 rounded-full text-[10px] transition-opacity hover:opacity-90"
+                    style={{
+                      background: 'linear-gradient(135deg, rgba(5,5,12,0.97) 0%, rgba(12,12,20,0.95) 100%)',
+                      border: `1px solid ${glowColor}40`,
+                      color: fontColor,
+                      boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
+                    }}
+                    title="Jump to latest"
+                  >
+                    <ChevronDown size={12} style={{ color: glowColor }} />
+                    Jump to latest
+                  </button>
+                )}
+
                 {/* PERSONAL MODE ONLY — original Web toggle LEFT of the textarea
                     (restored from pre-spec HEAD). Developer mode keeps its Web
                     toggle inside the REQ-2 toolbar row below. */}
@@ -4735,12 +4830,19 @@ ${message.text}`;
                       GET /api/dev/cli-tools; Tab/Enter accept, Escape dismiss.
                       Rendered above the input; never intercepts '@'. */}
                   {isDeveloper && slashMenuOpen && slashMatches.length > 0 && (
-                    <div className="absolute bottom-full left-0 right-0 mb-1 z-50 overflow-hidden"
+                    <div className="absolute bottom-full left-0 right-0 mb-1 z-50"
                       style={{
                         background: 'linear-gradient(135deg, rgba(5,5,12,0.97) 0%, rgba(12,12,20,0.95) 100%)',
                         border: `1px solid ${glowColor}40`,
                         borderRadius: '8px',
                         boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
+                        // REQ-4 AC1: this menu was `overflow-hidden`, so it was
+                        // never a scroll container and the wheel passed straight
+                        // through it to the timeline. Cap it and let it scroll
+                        // itself, then trap the gesture at its edges.
+                        maxHeight: 'min(30vh, 260px)',
+                        overflowY: 'auto',
+                        overscrollBehavior: 'contain',
                       }}>
                       {slashMatches.map((c) => (
                         <button key={c.name} type="button"
@@ -4884,14 +4986,60 @@ ${message.text}`;
                   
                   {/* Voice indicator */}
                   {voiceState === 'listening' && (
-                    <motion.div 
+                    <motion.div
                       className="absolute left-0 bottom-0 h-[1px]"
                       style={{ backgroundColor: glowColor }}
                       animate={{ width: [`${audioLevel * 100}%`, `${Math.min(100, audioLevel * 150)}%`] }}
                       transition={{ duration: 0.1 }}
                     />
                   )}
+
                 </div>
+
+                {/* REQ-7 (T8) — explicit send control. PERSONAL MODE ONLY.
+                    Developer mode is a CLI surface with its own affordances,
+                    and its REQ-2 footer toolbar measures 454px against 486px
+                    usable at the balanced wing; a 44px control would overflow
+                    it (measured 2026-09-04). Personal mode's textarea is
+                    flex-1 with no min-width, so it absorbs the 40px: 292→252
+                    at the 360px wing, 442→402 at 510, 612→572 at 680.
+                    Guards mirror the send path (handleSendMessage :1844):
+                    empty input, or an actively-listening mic. isTyping
+                    deliberately does NOT disable — the backend per-session
+                    lock queues messages (long-horizon-der-execution).
+                    AC3: onClick is handleSendMessage itself; no second path.
+
+                    SUPERSEDES specs/phase-5-switcher REQ-1 AC1 (which removed
+                    the Send pill). That decision's load-bearing half — AC3,
+                    moving the button's disabled conditions into the send path —
+                    is preserved and still locked by its own tests; only the
+                    visibility half is reversed. Signed off 2026-09-04. */}
+                {!isDeveloper && (
+                  <div className="flex-shrink-0" style={{ transform: 'translateY(-6.5px)' }}>
+                    <motion.button
+                      type="button"
+                      onClick={handleSendMessage}
+                      disabled={!inputText.trim() || voiceState === 'listening'}
+                      className="flex items-center justify-center w-[32px] h-[32px] transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
+                      style={{
+                        color: inputText.trim() ? glowColor : 'rgba(255,255,255,0.5)',
+                        background: 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
+                        border: `1px solid ${inputText.trim() ? glowColor : `${fontColor}80`}`,
+                        borderRadius: '9999px',
+                        boxShadow: inputText.trim()
+                          ? `0 0 12px ${glowColor}40, inset 0 1px 0 rgba(255,255,255,0.03)`
+                          : '0 1px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.03)',
+                      }}
+                      whileHover={{ scale: 1.08 }}
+                      whileTap={{ scale: 0.92 }}
+                      title="Send message"
+                      aria-label="Send message"
+                      data-testid="send-message"
+                    >
+                      <Send size={14} />
+                    </motion.button>
+                  </div>
+                )}
 
                 {/* DEVELOPER MODE ONLY — attached horizontal footer toolbar (REQ-2).
                     Exact sequence: [Web 32] →8px→ [Upload 32] →12px→ |1px| →12px→
