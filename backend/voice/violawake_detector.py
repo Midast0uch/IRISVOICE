@@ -85,6 +85,29 @@ DEFAULT_THRESHOLD: float = 0.70
 #     (which the mic hears) cannot re-fire the detector.
 CONSECUTIVE_CHUNKS: int = 8
 COOLDOWN_SEC: float = 2.0
+#   RELEASE_FLOOR — the release chunk must score BELOW this, not merely below
+#     the (possibly adapted) threshold. A plateau dithering across the line
+#     (0.705, 0.699, 0.704, ...) released the old gate on every wobble.
+#     Measured 2026-09-05 through the real detector: a true "hey iris"
+#     collapses to 0.576-0.589 on its first below-threshold chunk (full and
+#     x0.3 gain alike), so 0.65 keeps true releases with ~0.06 margin while
+#     rejecting shallow dithers. A shallow release disarms as a reject.
+RELEASE_FLOOR: float = 0.65
+#   REARM_QUIET_CHUNKS — after any fire or sustained-reject, this many
+#     consecutive below-threshold 320-sample chunks (~0.5 s) must pass before
+#     a new streak may arm. Bursty background (TV dialogue with pauses)
+#     re-armed the old gate every 8 hot chunks and fired on every pause;
+#     a genuine second phrase always has real silence before it (and the 2 s
+#     cooldown covers the immediate repeat window anyway).
+REARM_QUIET_CHUNKS: int = 25
+#   PROFILER_MAX_THRESHOLD — ceiling for the SDK adaptive threshold (K4).
+#     The profiler raises the bar only for frames near the noise floor
+#     (quiet-room sustained mush, the 2026-09-04 false signature) and lowers
+#     it toward the floor for clear speech. Floor stays DEFAULT_THRESHOLD
+#     (0.70): in quiet conditions behavior is exactly today's, so no new
+#     misses are possible there; x0.3-gain phrase still arms+fires (measured
+#     2026-09-05), so 0.78 cannot clip real utterances either.
+PROFILER_MAX_THRESHOLD: float = 0.78
 #   RELEASE_WINDOW_SEC — after the streak gate passes, the score must drop
 #     back below threshold within this long. A spoken phrase always ends;
 #     sustained noise (TV dialogue, hums) never releases and therefore never
@@ -190,7 +213,7 @@ class ViolawakeWakeWordDetector:
         self._remainder = bytearray()
 
         # Anti-retrigger state (see CONSECUTIVE_CHUNKS / RELEASE_WINDOW_SEC /
-        # COOLDOWN_SEC).
+        # COOLDOWN_SEC / RELEASE_FLOOR / REARM_QUIET_CHUNKS).
         self._consecutive_hits = 0
         # Peak score of the current streak (for the detection log: the fire
         # happens on the below-threshold RELEASE chunk, whose own score is
@@ -200,6 +223,15 @@ class ViolawakeWakeWordDetector:
         # the release); None while idle or disarmed.
         self._streak_armed_at: float | None = None
         self._last_detection_at = 0.0
+        # Re-arm inhibit latch + consecutive-quiet counter. Set on every fire
+        # or sustained-reject; cleared only after REARM_QUIET_CHUNKS of real
+        # below-threshold audio, so bursty noise cannot re-arm on every pause.
+        self._inhibit_arm = False
+        self._quiet_chunks = 0
+        # SDK adaptive-threshold profiler (K4). None when the installed SDK
+        # predates it — the gate then runs on the fixed threshold exactly as
+        # before, plus hysteresis and the re-arm gap.
+        self._profiler = None
 
         # Lifecycle status for diagnostics.
         self._status = "loading"
@@ -263,6 +295,31 @@ class ViolawakeWakeWordDetector:
                 f"[ViolawakeDetector] Ready — {os.path.basename(model_path)} "
                 f"({SAMPLE_RATE} Hz, {FRAME_LENGTH} samples/frame)"
             )
+
+            # SDK adaptive threshold (K4): per-frame dynamic bar driven by a
+            # rolling noise-floor estimate. Raises only for near-floor frames
+            # (quiet-room sustained mush); never below DEFAULT_THRESHOLD, so
+            # quiet-condition behavior is unchanged. Absent on older SDKs —
+            # the gate degrades to the fixed threshold, never to an error.
+            try:
+                from violawake_sdk import NoiseProfiler
+
+                self._profiler = NoiseProfiler(
+                    base_threshold=self._threshold,
+                    min_threshold=DEFAULT_THRESHOLD,
+                    max_threshold=PROFILER_MAX_THRESHOLD,
+                    frames_per_second=50.0,  # 320 samples @16 kHz = 20 ms
+                )
+                logger.info(
+                    "[ViolawakeDetector] Adaptive threshold on "
+                    f"(floor={DEFAULT_THRESHOLD}, ceiling={PROFILER_MAX_THRESHOLD})"
+                )
+            except Exception as exc:
+                self._profiler = None
+                logger.debug(
+                    f"[ViolawakeDetector] NoiseProfiler unavailable ({exc}) — "
+                    "fixed threshold"
+                )
         except ImportError:
             self._disabled = True
             self._status = "error"
@@ -330,7 +387,17 @@ class ViolawakeWakeWordDetector:
                 del self._remainder[: FRAME_LENGTH * 2]
 
                 score = self._detector.process(chunk)
-                if score is None or float(score) <= self._threshold:
+                # Normalize once: a None score (SDK gap) is silence, never hot.
+                s = 0.0 if score is None else float(score)
+                # Dynamic bar: SDK noise-profiler threshold when available,
+                # else the fixed floor. In quiet conditions the profiler sits
+                # at the floor, so behavior there is exactly the old gate.
+                thr = (
+                    float(self._profiler.update(chunk.astype(np.float32)))
+                    if self._profiler is not None
+                    else self._threshold
+                )
+                if s <= thr:
                     # Below threshold — either idle (restart the streak) or the
                     # RELEASE of an armed streak: the sound ENDED the way a
                     # spoken phrase does, so this is the moment to fire.
@@ -338,19 +405,36 @@ class ViolawakeWakeWordDetector:
                     # (peak-and-release, live 2026-09-04: TV dialogue held
                     # 0.70+ indefinitely and defeated the chunk-count gate at
                     # any count).
+                    self._quiet_chunks += 1
+                    if self._quiet_chunks >= REARM_QUIET_CHUNKS:
+                        self._inhibit_arm = False
                     if (
                         self._streak_armed_at is not None
                         and now - self._streak_armed_at <= RELEASE_WINDOW_SEC
                     ):
                         self._streak_armed_at = None
                         self._consecutive_hits = 0
+                        # Hysteresis: a plateau dithering across the line also
+                        # "releases" within the window. Only a collapse below
+                        # RELEASE_FLOOR counts (true phrase: 0.576-0.589).
+                        if s >= RELEASE_FLOOR:
+                            logger.debug(
+                                "[ViolawakeDetector] shallow release rejected "
+                                f"(score={s:.3f}, floor={RELEASE_FLOOR})"
+                            )
+                            self._streak_peak = 0.0
+                            self._inhibit_arm = True
+                            self._quiet_chunks = 0
+                            continue
                         # Refractory period (unchanged semantics).
                         if now - self._last_detection_at < COOLDOWN_SEC:
                             logger.debug(
                                 f"[ViolawakeDetector] suppressed within cooldown "
-                                f"(score={float(score):.3f}, "
+                                f"(score={s:.3f}, "
                                 f"{now - self._last_detection_at:.2f}s since last)"
                             )
+                            self._inhibit_arm = True
+                            self._quiet_chunks = 0
                             continue
                         self._last_detection_at = now
                         detected = True
@@ -360,6 +444,8 @@ class ViolawakeWakeWordDetector:
                             f"(peak={self._streak_peak:.3f})"
                         )
                         self._streak_peak = 0.0
+                        self._inhibit_arm = True
+                        self._quiet_chunks = 0
                         continue
                     # Idle blip, or an armed streak that outlived its window
                     # without releasing (sustained noise — reject quietly).
@@ -369,13 +455,16 @@ class ViolawakeWakeWordDetector:
                             "(no release within window)"
                         )
                         self._streak_armed_at = None
+                        self._inhibit_arm = True
+                        self._quiet_chunks = 0
                     self._consecutive_hits = 0
                     self._streak_peak = 0.0
                     continue
 
+                self._quiet_chunks = 0
                 self._consecutive_hits += 1
-                if float(score) > self._streak_peak:
-                    self._streak_peak = float(score)
+                if s > self._streak_peak:
+                    self._streak_peak = s
                 if self._consecutive_hits < CONSECUTIVE_CHUNKS:
                     continue
 
@@ -385,6 +474,11 @@ class ViolawakeWakeWordDetector:
                 # the streak restarts from zero so an endless sound can never
                 # accumulate its way to a trigger.
                 if self._streak_armed_at is None:
+                    # Re-arm gap: after a fire or reject, bursty noise must
+                    # show real silence before it may arm again.
+                    if self._inhibit_arm:
+                        self._consecutive_hits = 0
+                        continue
                     self._streak_armed_at = now
                     continue
                 if now - self._streak_armed_at > RELEASE_WINDOW_SEC:
@@ -395,6 +489,8 @@ class ViolawakeWakeWordDetector:
                     self._streak_armed_at = None
                     self._consecutive_hits = 0
                     self._streak_peak = 0.0
+                    self._inhibit_arm = True
+                    self._quiet_chunks = 0
                     continue
 
             # Bound the remainder buffer (should never exceed 319 samples).
