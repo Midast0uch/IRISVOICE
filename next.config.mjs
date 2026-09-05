@@ -19,9 +19,15 @@ const staticExport = process.env.IRIS_STATIC_EXPORT === '1';
 
 // On Windows + slow project drives (e.g. Desktop under OneDrive / antivirus
 // real-time scan), Next.js dev compilation in .next can hang for minutes and
-// balloon to 1-15 GB. The fix is to relocate the cache off the slow drive
-// using a directory junction (see scripts/setup_fast_next_cache.py /
-// start-iris.bat) so .next resolves to a fast local path.
+// balloon to 1-15 GB.
+//
+// DO NOT relocate .next via a directory junction (see
+// scripts/setup_fast_next_cache.py): attempted 2026-09-05, it cut compiles
+// 6.7min -> 2.1min but Turbopack dev resolves externals through `..`-relative
+// paths that break across the junction boundary (every page 500s with
+// "Cannot find module" for next/dist/compiled/* and react/jsx-runtime).
+// Reverted the same day. If slowness returns, look at AV exclusions / drive
+// type instead — never re-junction .next.
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {

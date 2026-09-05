@@ -345,7 +345,7 @@ You do not need to run session cleanup manually.
 - **Component structure**: Use React Server Components where possible
 - **Styling**: Tailwind CSS v4 — use `@theme` and `@import "tailwindcss"`
 - **State**: React hooks, avoid global state for UI-only data
-- **Build cache**: `.next` is a junction to `%LOCALAPPDATA%\iris-next-cache` (managed by `scripts/setup_fast_next_cache.py`; re-run it if the junction is ever missing). If you suspect stale-cache trouble — phantom build errors, stale UI after edits, multi-minute compiles, ballooning size: stop the frontend, delete ONLY the *contents* of `%LOCALAPPDATA%\iris-next-cache` (never the junction itself, never anything else under LocalAppData), then reboot and let Next recompile fresh. A thrashing cache was a silent accomplice in the 2026-09-05 REST-hang incident: rule it out early before blaming backend code.
+- **Build cache**: `.next` must stay a REAL directory — do NOT relocate it with a junction (attempted 2026-09-05: faster compiles but every Turbopack dev page 500'd on externals resolution; reverted same day). If you suspect stale-cache trouble — phantom build errors, stale UI after edits, multi-minute compiles, ballooning size: stop the frontend, delete ONLY the *contents* of `.next` in place (never anything else), then reboot and let Next recompile fresh. Rule a poisoned cache out early before blaming backend code.
 
 ### Backend (Python FastAPI)
 - **Tests**: `pytest` in backend/ or root tests/
