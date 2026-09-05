@@ -42,7 +42,7 @@ import {
   type TaskStepItem,
 } from "@/lib/cli/CLITaskProgressRenderer";
 import type { TaskCard } from "@/hooks/useTaskProgress";
-import { isConversationReplyCard } from "@/hooks/useTaskProgress";
+import { buildChatTimeline } from "@/lib/chatview-turn-timeline";
 import { logStructured } from "@/lib/logger";
 import {
   subscribe as subscribeTerminal,
@@ -875,65 +875,10 @@ export function ChatWing({
   // whose response scrolled away) fall back to the bottom in creation order.
   // Conversation-reply cards (settled, tool-less — isConversationReplyCard)
   // are suppressed entirely: cards are for artifacts, not conversation.
-  const renderTimeline = useMemo(() => {
-    type Entry =
-      | { kind: "message"; ts: number; message: Message; index: number }
-      | { kind: "card"; ts: number; card: TaskCard }
-    const base: Entry[] = messages.map((message, index) => ({
-      kind: "message" as const,
-      ts: message.timestamp?.getTime?.() ?? 0,
-      message,
-      index,
-    }))
-    // Session 246 (user directive): ONE card per response — never stack.
-    // Later cards for the same turn supersede earlier ones ('continues'
-    // double-emits, re-plans); unmatched orphans collapse to the single
-    // newest so dead cards cannot pile up at the bottom of the thread.
-    const latestPerTurn = new Map<string, TaskCard>()
-    for (const card of taskProgress.cards) {
-      if (isConversationReplyCard(card)) continue
-      latestPerTurn.set(card.responseTurnId || `__orphan__:${card.cardId}`, card)
-    }
-    const out: Entry[] = []
-    const rendered = new Set<string>()
-    for (const entry of base) {
-      out.push(entry)
-      if (entry.kind !== "message") continue
-      const card = latestPerTurn.get(entry.message.id)
-      if (!card || rendered.has(card.cardId)) continue
-      rendered.add(card.cardId)
-      out.push({ kind: "card", ts: entry.ts, card })
-    }
-    // Not-yet-rendered cards (orphans without a turn-id match): insert
-    // CHRONOLOGICALLY using the card's creation time — after the last
-    // message that was already on screen when the task started. This keeps
-    // each task card in line with its own prompt/reply instead of piling
-    // every card at the bottom of the thread (user-reported disjointed
-    // scroll, session 248). Cards whose createdAt is unknown fall back to
-    // the bottom, oldest first.
-    const unrendered = [...latestPerTurn.entries()]
-      .filter(([k]) => !rendered.has(latestPerTurn.get(k)!.cardId))
-      .map(([, c]) => c)
-      .sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0))
-    for (const c of unrendered) {
-      const cardTs = c.createdAt ?? Number.MAX_SAFE_INTEGER
-      let insertAt = -1
-      for (let i = out.length - 1; i >= 0; i--) {
-        const e = out[i]
-        if (e.kind === "message" && e.ts <= cardTs) {
-          insertAt = i + 1
-          break
-        }
-      }
-      const entry: Entry = { kind: "card", ts: cardTs, card: c }
-      if (insertAt >= 0) {
-        out.splice(insertAt, 0, entry)
-      } else {
-        out.push(entry)
-      }
-    }
-    return out
-  }, [messages, taskProgress.cards])
+  const renderTimeline = useMemo(
+    () => buildChatTimeline(messages, taskProgress.cards),
+    [messages, taskProgress.cards],
+  )
 
   // REQ-3 AC2: elapsed running timer for the active Blueprint Matrix. Ticks
   // ONLY while a card is working (interval cleaned up on settle — bounded).

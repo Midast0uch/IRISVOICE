@@ -16,9 +16,13 @@
 - [ ] T2 (REQ-8): `logStructured` placement events (inline join + orphan fallback +
   predicate outcome) — same file, precedent `:944-957` — RIPPLE: logger only, no
   render path change; keep off the hot path (batch per turn).
-- [ ] T3 (REQ-1 AC4, REQ-2): 11:52 fixture (wire shapes: markdown 680ch render +
-  same-turn chat text) under `tests/contract/` + `tests/behavioral/` —
-  RIPPLE: shares fixture across CT-3/BT-1 (intertwined); no backend needed.
+- [x] T3 (REQ-1 AC4, REQ-2): **DONE 2026-09-04 — deterministic 11:52 fixture.**
+  Shared wire-shaped fixture at `__tests__/fixtures/chatviewTurn1152.ts` carries
+  `document:render` (markdown body + stable document_id), same-turn `chat_message`,
+  and matching TaskCard. Pure `buildChatTimeline` helper at
+  `lib/chatview-turn-timeline.ts` makes the join deterministic without a DOM or
+  backend. Shared by CT-1/CT-2/CT-3 now; BT-1 can consume the same fixture.
+  No backend contract changed.
 
 ## Wave 2 — Scroll contract (depends on T1 for timeline behavior)
 
