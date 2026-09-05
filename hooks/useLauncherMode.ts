@@ -59,7 +59,9 @@ export function useLauncherMode(): LauncherMode {
     if (urlModeRef.current) return
 
     // Try fetching from backend API as authoritative source
-    fetch("/api/mode")
+    // AbortSignal.timeout keeps live testing usable when the backend REST
+    // loop is wedged (WS still connects while /api/* socket-hang-ups).
+    fetch("/api/mode", { signal: AbortSignal.timeout(5000) })
       .then((res) => res.json())
       .then((data) => {
         if (data.mode === "developer" || data.mode === "personal") {

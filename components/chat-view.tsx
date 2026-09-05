@@ -398,7 +398,7 @@ export function ChatWing({
     return callConversationApi(
       "GET /api/conversations",
       async () => {
-        const res = await fetch("/api/conversations")
+        const res = await fetch("/api/conversations", { signal: AbortSignal.timeout(8000) })
         if (!res.ok) throw new Error(`GET /api/conversations returned ${res.status}`)
         return res.json()
       },
@@ -1905,6 +1905,7 @@ export function ChatWing({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ title: autoTitle }),
+          signal: AbortSignal.timeout(8000),
         })
         if (!createRes.ok) {
           throw new Error(`POST /api/conversations returned ${createRes.status}`)
@@ -1917,6 +1918,7 @@ export function ChatWing({
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ role: "user", text }),
+          signal: AbortSignal.timeout(8000),
         })
       } catch (err) {
         console.warn("[ConversationStore] Failed to create conversation:", err)
