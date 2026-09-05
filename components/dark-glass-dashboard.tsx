@@ -228,7 +228,7 @@ function getFieldCategory(field: any, sectionId: string): 'config' | 'visualizer
   return 'config';
 }
 
-const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, sectionId, updateField, fieldErrors, clearFieldError, sendMessage, audioInputDevices, audioOutputDevices, wakeWords, visionModelOptions }: { field: any; glowColor: string; fieldValues?: Record<string, Record<string, string | number | boolean>>; sectionId?: string; updateField?: (sectionId: string, fieldId: string, value: any) => void; fieldErrors?: Record<string, string>; clearFieldError?: (sectionId: string, fieldId: string) => void; sendMessage?: (type: string, payload?: any) => boolean; audioInputDevices?: string[]; audioOutputDevices?: string[]; wakeWords?: string[]; visionModelOptions?: { label: string; value: string }[] }) {
+const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, sectionId, updateField, fieldErrors, clearFieldError, sendMessage, audioInputDevices, audioOutputDevices, wakeWords, visionModelOptions, apiKeySaved }: { field: any; glowColor: string; fieldValues?: Record<string, Record<string, string | number | boolean>>; sectionId?: string; updateField?: (sectionId: string, fieldId: string, value: any) => void; fieldErrors?: Record<string, string>; clearFieldError?: (sectionId: string, fieldId: string) => void; sendMessage?: (type: string, payload?: any) => boolean; audioInputDevices?: string[]; audioOutputDevices?: string[]; wakeWords?: string[]; visionModelOptions?: { label: string; value: string }[]; apiKeySaved?: boolean }) {
   const [localValue, setLocalValue] = useState(field.defaultValue ?? '');
   const value = fieldValues && sectionId ? (fieldValues[sectionId]?.[field.id] ?? field.defaultValue ?? '') : localValue;
   const [btnFeedback, setBtnFeedback] = useState<string | null>(null);
@@ -437,19 +437,28 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
 
   if (field.type === 'text') {
     const isSecret = field.id.toLowerCase().includes('key') || field.id.toLowerCase().includes('secret') || field.id.toLowerCase().includes('password');
+    // A stored key is held in the OS keyring and never echoed to the client,
+    // so an EMPTY value here means "already saved", not "missing". Scoped to
+    // model_selection: that is the inference provider's key. desktop_control
+    // also has an `api_key` field (the UI-TARS provider's) which is NOT in the
+    // inference keyring, so it must not claim to be saved.
+    const keySaved = isSecret && sectionId === 'model_selection' && !!apiKeySaved && !value;
     return (
       <div className="py-1.5 px-1 col-span-full">
         <label className="text-[10px] font-medium tracking-wide text-white/50 block mb-1">{field.label}</label>
         <input
           type={isSecret ? 'password' : 'text'}
           value={String(value ?? '')}
-          placeholder={field.placeholder || field.label}
+          placeholder={keySaved ? '••••••••••••••••' : (field.placeholder || field.label)}
           onChange={(e) => setValue(e.target.value)}
           className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-[11px] text-white/90 placeholder:text-white/25 outline-none transition-all focus:border-white/25 focus:bg-white/8"
           style={{ fontFamily: field.id.includes('url') || field.id.includes('endpoint') || field.id.includes('key') ? "'JetBrains Mono', monospace" : 'inherit' }}
           onFocus={(e) => { e.currentTarget.style.borderColor = glowColor + '60'; }}
           onBlur={(e) => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.1)'; }}
         />
+        {keySaved && (
+          <p className="text-[9px] text-emerald-400/80 mt-1">Key saved — leave blank to keep it.</p>
+        )}
         {errorMessage && (
           <p className="text-[9px] text-red-400 mt-1">{errorMessage}</p>
         )}
@@ -505,6 +514,17 @@ export function DarkGlassDashboard({
     sendInferenceMode,
     model_catalog,
   } = useInferenceState();
+
+  // The generic "API Key" box (section model_selection) can never show a
+  // value: /api/config/save routes the key to the OS keyring and CLEARS the
+  // config field, and the snapshot crosses `has_key` as a boolean only — the
+  // secret itself never reaches the client (CT-S4). So the box rendered empty
+  // on every open and the user re-typed a key that was already stored. This
+  // resolves whether the ACTIVE provider already holds one, so the row can say
+  // so instead of implying it is missing. role_bindings[].instance_id is a
+  // ProviderInstance.id (router.py: "reasoning" -> "cerebras").
+  const activeProviderId = role_bindings?.find((b: any) => b.role === "reasoning")?.instance_id;
+  const apiKeySaved = !!providers?.find((p: any) => p.id === activeProviderId)?.has_key;
 
   // Persist active tab so the app restores to the last used panel on reopen
   const [activeTab, setActiveTab] = useState<string>(() => {
@@ -2021,7 +2041,7 @@ export function DarkGlassDashboard({
                       ) : (
                         <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-6 gap-y-1">
                           {sectionFields.map((field: any) => (
-                            <FieldRow key={field.id} field={field} glowColor={glowColor} fieldValues={fieldValues} sectionId={section.id} updateField={updateField} fieldErrors={fieldErrors} clearFieldError={clearFieldError} sendMessage={sendMessage} audioInputDevices={audioInputDevices} audioOutputDevices={audioOutputDevices} wakeWords={wakeWords} visionModelOptions={visionModelOptions} />
+                            <FieldRow key={field.id} field={field} glowColor={glowColor} fieldValues={fieldValues} sectionId={section.id} updateField={updateField} fieldErrors={fieldErrors} clearFieldError={clearFieldError} sendMessage={sendMessage} audioInputDevices={audioInputDevices} audioOutputDevices={audioOutputDevices} wakeWords={wakeWords} visionModelOptions={visionModelOptions} apiKeySaved={apiKeySaved} />
                           ))}
                         </div>
                       )}

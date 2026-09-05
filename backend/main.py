@@ -2822,15 +2822,24 @@ async def _on_wake_word_async(wake_word_name: str):
             f"(source={resolution_source})"
         )
 
-        # Notify ALL clients in the session that the wake word was detected —
+        # Notify ALL connected UI sessions that the wake word was detected —
         # triggers the same visual feedback as double-click (flash + listening
-        # state). Broadcasting (not a single client_id) guarantees the frontend
-        # reacts even if the session/client mapping was established late. (REQ-1)
+        # state). The turn itself runs under the resolved session, but the mic
+        # pipeline is singleton-global: a widget on any other session (e.g.
+        # session_iris while the turn resolved to session_files via
+        # last_active) must still animate, or the orb looks dead on every
+        # wake turn. Broadcasting (not a single client_id) guarantees the
+        # frontend reacts even if the session/client mapping was established
+        # late. (REQ-1; fan-out added 2026-09-05 for the cross-session orb.)
         try:
-            await ws_manager.broadcast_to_session(
-                session_id,
-                {"type": "wake_detected", "payload": {"keyword": wake_word_name}},
-            )
+            _wake_msg = {"type": "wake_detected", "payload": {"keyword": wake_word_name}}
+            await ws_manager.broadcast_to_session(session_id, _wake_msg)
+            try:
+                for _sid in ws_manager.get_active_session_ids():
+                    if _sid != session_id:
+                        await ws_manager.broadcast_to_session(_sid, _wake_msg)
+            except Exception:
+                pass
         except Exception as e:
             # Headless mode has no WS clients — this is expected, not an error.
             if resolution_source != "headless":

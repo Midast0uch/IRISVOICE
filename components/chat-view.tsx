@@ -780,15 +780,26 @@ export function ChatWing({
   // mid-run (REQ-12 AC3) instead of resetting when the user drags the widget.
   const { state: crawlState } = useCrawlContext()
   // Context-window usage (drives ContextPill)
+  // max: 0 means "no window known yet" — it is NOT a value, and the pill
+  // renders "—" for it. This was a hardcoded 128000, which was a lie: 128k is
+  // the PAID Cerebras tier and this install is on the free 64k tier (every
+  // request answers 402 payment required). Worse, the fallback also masked
+  // the real bug — with the pill pre-filled, a turn that never emitted (any
+  // failure path) left it showing 128k as if that were measured.
   const [contextUsage, setContextUsage] = useState<{ used: number; max: number }>({
     used: 0,
-    max: 128000,
+    max: 0,
   })
   useEffect(() => {
     const onUsage = (e: Event) => {
       const d = (e as CustomEvent).detail
       if (d && typeof d.used_tokens === "number") {
-        setContextUsage({ used: d.used_tokens, max: d.max_tokens ?? 128000 })
+        // Keep the previous denominator if this event somehow omits one —
+        // never overwrite a measured window with a placeholder.
+        setContextUsage((prev) => ({
+          used: d.used_tokens,
+          max: typeof d.max_tokens === "number" ? d.max_tokens : prev.max,
+        }))
       }
     }
     window.addEventListener("iris:context_usage", onUsage)

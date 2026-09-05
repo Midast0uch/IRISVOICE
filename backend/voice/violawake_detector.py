@@ -237,6 +237,12 @@ class ViolawakeWakeWordDetector:
         # AFTER a cold one means the sound never ended (dither) — reject.
         # Cold chunks before any hot recross hold the arm (gradual release).
         self._armed_saw_cold = False
+        # Hot re-crossings consumed by the current arm. "Hey Iris" is TWO
+        # words: hey [gap] IRIS is one phrase, so the FIRST recross continues
+        # the streak (inter-word gap, not dither). The second recross proves
+        # oscillation and rejects. Live 2026-09-05: true attempts re-crossed
+        # at 0.737/0.745 across the hey-IRIS gap and the old rule killed them.
+        self._arm_recrosses = 0
         # SDK adaptive-threshold profiler (K4). None when the installed SDK
         # predates it — the gate then runs on the fixed threshold exactly as
         # before, plus hysteresis and the re-arm gap.
@@ -445,6 +451,7 @@ class ViolawakeWakeWordDetector:
                             self._inhibit_arm = True
                             self._quiet_chunks = 0
                             self._armed_saw_cold = False
+                            self._arm_recrosses = 0
                             continue
                         self._last_detection_at = now
                         detected = True
@@ -457,6 +464,7 @@ class ViolawakeWakeWordDetector:
                         self._inhibit_arm = True
                         self._quiet_chunks = 0
                         self._armed_saw_cold = False
+                        self._arm_recrosses = 0
                         continue
                     # Idle blip, or an armed streak that outlived its window
                     # without releasing (sustained noise — reject quietly).
@@ -469,29 +477,39 @@ class ViolawakeWakeWordDetector:
                         self._inhibit_arm = True
                         self._quiet_chunks = 0
                         self._armed_saw_cold = False
+                        self._arm_recrosses = 0
                     self._consecutive_hits = 0
                     self._streak_peak = 0.0
                     continue
 
                 self._quiet_chunks = 0
-                # Hot chunk on an arm that already saw cold: the sound never
-                # ended — plateau dithering across the line. Reject BEFORE
-                # streak counting (the hold zeroes the counter, so this must
-                # come first or hot chunks just rebuild the streak).
+                # Hot chunk on an arm that already saw cold. First recross:
+                # the hey-IRIS inter-word gap — continue the streak (keep the
+                # ORIGINAL window deadline; a slow second lobe past 0.8 s
+                # still ages out). Second recross: genuine oscillation
+                # (dither) — reject. Checked BEFORE streak counting (the hold
+                # zeroes the counter, so this must come first or hot chunks
+                # just rebuild the streak).
                 if (
                     self._streak_armed_at is not None
                     and self._armed_saw_cold
                 ):
-                    logger.debug(
-                        "[ViolawakeDetector] dither rejected "
-                        f"(re-crossed threshold at score={s:.3f})"
-                    )
-                    self._streak_armed_at = None
-                    self._consecutive_hits = 0
-                    self._streak_peak = 0.0
-                    self._inhibit_arm = True
-                    self._quiet_chunks = 0
+                    if self._arm_recrosses >= 1:
+                        logger.debug(
+                            "[ViolawakeDetector] dither rejected "
+                            f"(second re-cross at score={s:.3f})"
+                        )
+                        self._streak_armed_at = None
+                        self._consecutive_hits = 0
+                        self._streak_peak = 0.0
+                        self._inhibit_arm = True
+                        self._quiet_chunks = 0
+                        self._armed_saw_cold = False
+                        self._arm_recrosses = 0
+                        continue
+                    self._arm_recrosses += 1
                     self._armed_saw_cold = False
+                    self._consecutive_hits = 0
                     continue
                 self._consecutive_hits += 1
                 if s > self._streak_peak:
@@ -512,6 +530,7 @@ class ViolawakeWakeWordDetector:
                         continue
                     self._streak_armed_at = now
                     self._armed_saw_cold = False
+                    self._arm_recrosses = 0
                     continue
                 if now - self._streak_armed_at > RELEASE_WINDOW_SEC:
                     logger.debug(
@@ -524,6 +543,7 @@ class ViolawakeWakeWordDetector:
                     self._inhibit_arm = True
                     self._quiet_chunks = 0
                     self._armed_saw_cold = False
+                    self._arm_recrosses = 0
                     continue
 
             # Bound the remainder buffer (should never exceed 319 samples).

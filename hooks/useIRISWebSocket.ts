@@ -1902,7 +1902,15 @@ export function useIRISWebSocket(
           (payload as any)?.message ??
           'Unknown backend error'
         if (process.env.NODE_ENV !== 'production') {
-          console.warn('[IRIS WebSocket] backend error:', msg)
+          // "No active category" is the backend's routine reply when settings
+          // are applied with no orbit category selected — persistence still
+          // succeeds via the HTTP fallback, so it stays out of the warning
+          // channel (it otherwise screams on every settings apply).
+          if (msg === 'No active category') {
+            console.debug('[IRIS WebSocket] backend note:', msg)
+          } else {
+            console.warn('[IRIS WebSocket] backend error:', msg)
+          }
         }
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('iris:error', { detail: { message: msg, raw: payload } }))

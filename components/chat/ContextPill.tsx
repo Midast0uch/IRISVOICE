@@ -58,8 +58,9 @@ const ACTION_CAP = 24
  *
  * The denominator is the REAL max_tokens reported by the backend
  * (resolve_context_window of the model in use) via the iris:context_usage
- * event — NOT a hardcoded 128k. The 128000 fallback below is only the
- * cold-start placeholder before the first event arrives.
+ * event — NOT a hardcoded 128k. Before the first event arrives maxTokens is
+ * 0, meaning "unknown", and the denominator renders as "—" rather than a
+ * number the backend never sent.
  */
 export default function ContextPill({
   usedTokens,
@@ -120,7 +121,7 @@ export default function ContextPill({
         className="text-[9px] font-mono tabular-nums tracking-wide whitespace-nowrap"
         style={{ color: "rgba(255,255,255,0.7)" }}
       >
-        {formatTokens(usedTokens)} / {formatTokens(maxTokens)}
+        {formatTokens(usedTokens)} / {maxTokens > 0 ? formatTokens(maxTokens) : "—"}
       </span>
       <span
         /* Sized to its content, NOT flex-1. Stretching it made the pill hold a

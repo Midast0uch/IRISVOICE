@@ -1161,12 +1161,21 @@ class AgentKernel:
         # prevent. Under-sizing is safe; over-sizing is the bug.
         ("cerebras", "gemma-4-31b", 256_000),
         # Qwen 3.8 27B replaces gemma as the Cerebras offering 2026-09-04.
-        # Catalog context is 64k free / 128k paid; using the paid tier
-        # (Cerebras billing in use) — drop to 64_000 if on the free tier.
+        # Catalog context is 64k free / 128k paid.
+        # CORRECTED 2026-09-05: this is 64_000, not the 128_000 paid tier.
+        # Evidence, not an assumption — api.cerebras.ai answers every request
+        # with 402 "Payment required to access this resource. Visit your
+        # billing tab." (type=payment_required_error), i.e. no paid plan is
+        # active, so only the 64k free-tier window is actually served.
+        # Direction of error matters: the budget is sized at window*0.9, so
+        # 128_000 provisions 115.2k against a 64k window and the overage is
+        # silently truncated mid-conversation. Under-sizing is safe;
+        # over-sizing is the bug (same rule as the gemma row above).
+        # Revert to 128_000 only if Cerebras billing is actually enabled.
         # The gemma row above stays: still-true model fact, pinned by the
         # ctx-budget contract tests. ClinePass models stay unlisted on
         # purpose (windows unverified) and take the safe 8k default.
-        ("cerebras", "qwen-3.8-27b", 128_000),
+        ("cerebras", "qwen-3.8-27b", 64_000),
         # OpenRouter: REMOVED 2026-07-29. ("openrouter", "", 32_000) was a
         # bare-substring provider-wide fallback â€” it matched EVERY model from
         # OpenRouter, which fronts models from 4k to 2M windows. A blanket
@@ -5320,6 +5329,117 @@ class AgentKernel:
                 _best = _obj
         return _best
 
+    @staticmethod
+    def _classify_provider_error(err_text: str) -> Optional[Tuple[object, str]]:
+        """Map a fatal provider failure to (ErrorCode, user message).
+
+        Billing (402) and auth (401) failures cannot heal inside the retry
+        loop — returning them immediately saves ~10 s of doomed retries and,
+        more importantly, tells the user the TRUE cause instead of the
+        generic "planner returned no valid plan" (observed live 2026-09-05:
+        Cerebras 402 surfaced as a planner failure on every prompt). Quota
+        errors (429) are NOT fatal — windows roll, retries stay. Returns None
+        when the error is not a recognized fatal provider failure. Codes come
+        from exceptions.ErrorCode (6000-range); the code name rides in the
+        user string so every failure is greppable end to end.
+        """
+        from backend.agent.exceptions import ErrorCode
+
+        t = (err_text or "").lower()
+        if ("402" in t and ("pay" in t or "bill" in t)) or "payment required" in t:
+            return (
+                ErrorCode.PROVIDER_BILLING,
+                "[IRIS error] The AI provider refused the request "
+                "(402 Payment Required) — the planner never ran, so no "
+                "prompt reached a model. Switch provider in Models "
+                "(local / ClinePass) or check billing, then retry. "
+                "(code E_PROVIDER_BILLING)",
+            )
+        if (
+            ("401" in t and ("unauth" in t or "invalid" in t or "key" in t or "auth" in t))
+            or "unauthorized" in t
+            or "invalid_api_key" in t
+            or "invalid api key" in t
+        ):
+            return (
+                ErrorCode.PROVIDER_AUTH,
+                "[IRIS error] The AI provider rejected the API key (401). "
+                "Check the key in settings (OS keyring), then retry. "
+                "(code E_PROVIDER_AUTH)",
+            )
+        return None
+
+    def _classify_plan_failure(self) -> Tuple[object, str, bool]:
+        """Map the recorded plan failure to (ErrorCode, user message, fatal).
+
+        Reads self._last_plan_failure as written by _plan_task. Fatal kinds
+        (billing/auth) must fail fast — retries cannot heal them. Everything
+        else retries and reports specifically at exhaustion, so logs and UI
+        always name the true cause instead of a vague planner error.
+        """
+        from backend.agent.exceptions import ErrorCode
+
+        failure = getattr(self, "_last_plan_failure", None) or {}
+        kind = failure.get("kind")
+        detail = (failure.get("detail") or "")
+        if kind == "router":
+            fatal = self._classify_provider_error(detail)
+            if fatal is not None:
+                return (fatal[0], fatal[1], True)
+            low = detail.lower()
+            if (
+                "429" in low
+                or "rate limit" in low
+                or "rate_limit" in low
+                or "quota" in low
+                or "too many requests" in low
+                or "overloaded" in low
+            ):
+                return (
+                    ErrorCode.PROVIDER_QUOTA,
+                    "[IRIS error] The AI provider is rate-limiting us (429) "
+                    "after 3 tries — wait a minute for the quota window, or "
+                    "switch provider. (code E_PROVIDER_QUOTA)",
+                    False,
+                )
+            if (
+                "timeout" in low
+                or "timed out" in low
+                or "connecterror" in low
+                or "connection refused" in low
+                or "connection reset" in low
+                or "unreachable" in low
+                or "dns" in low
+            ):
+                return (
+                    ErrorCode.PROVIDER_TIMEOUT,
+                    "[IRIS error] The AI provider request timed out or never "
+                    "connected after 3 tries — check network/VPN/firewall, or "
+                    "switch provider. (code E_PROVIDER_TIMEOUT)",
+                    False,
+                )
+            return (
+                ErrorCode.PROVIDER_ERROR,
+                "[IRIS error] The provider request failed 3 times (see "
+                "backend log for the status). Retry, or switch provider if "
+                "it persists. (code E_PROVIDER_ERROR)",
+                False,
+            )
+        if kind == "parse":
+            return (
+                ErrorCode.PLANNER_PARSE,
+                "[IRIS error] The model answered 3 times but never in usable "
+                "plan form. Switching models usually fixes this. "
+                "(code E_PLANNER_PARSE)",
+                False,
+            )
+        return (
+            ErrorCode.PLANNER_EMPTY,
+            "[IRIS error] The model returned no plan text 3 times. Retry, "
+            "or switch models if it persists. (code E_PLANNER_EMPTY)",
+            False,
+        )
+
     def _plan_task(
         self,
         text: str,
@@ -5503,6 +5623,13 @@ class AgentKernel:
                 logger.warning(
                     f"[AgentKernel._plan_task] router planning failed: {_rt_err}"
                 )
+                try:
+                    self._last_plan_failure = {
+                        "kind": "router",
+                        "detail": str(_rt_err),
+                    }
+                except Exception:
+                    pass
             if not plan_raw:
                 if self._is_openai_compat():
                     _lms = self._get_lmstudio_client()
@@ -5578,6 +5705,14 @@ class AgentKernel:
                     )
         except Exception as _parse_err:
             logger.warning(f"[AgentKernel._plan_task] parse failed: {_parse_err}")
+            try:
+                _raw_text = (plan_raw or "")
+                self._last_plan_failure = {
+                    "kind": "empty" if not _raw_text.strip() else "parse",
+                    "detail": _raw_text[:200],
+                }
+            except Exception:
+                pass
             # Only the LM Studio branch logged `plan_raw`, so on every other
             # provider a parse failure was unobservable -- the reason this bug
             # survived. Log what the model actually said, bounded.
@@ -5587,6 +5722,14 @@ class AgentKernel:
             )
 
         # Fallback: return None to signal plan error (REQ-2 â€” no silent self-do)
+        try:
+            if getattr(self, "_last_plan_failure", None) is None:
+                # No router error and no parse attempt recorded (e.g. no
+                # fallback configured and the router returned empty text):
+                # the model simply produced nothing.
+                self._last_plan_failure = {"kind": "empty", "detail": ""}
+        except Exception:
+            pass
         logger.warning(
             "[_plan_task] planner returned no valid plan for: %.150s",
             text,
@@ -6135,6 +6278,10 @@ class AgentKernel:
                         loud_error(_md_exc, "mode_detector.detect")
 
             _plan = None
+            try:
+                self._last_plan_failure = None
+            except Exception:
+                pass
             for _plan_attempt in range(3):
                 _plan = self._plan_task(
                     text=_task_clean,
@@ -6146,6 +6293,11 @@ class AgentKernel:
                     session_id=session_id or self.session_id,
                 )
                 if _plan is not None:
+                    break
+                # Billing/auth failures cannot heal in 5 s — fail fast with
+                # the true cause instead of burning retries on a dead key.
+                _classified = self._classify_plan_failure()
+                if _classified[2]:
                     break
                 if _plan_attempt < 2:
                     # Planner failure is almost always the provider quota: the
@@ -6163,10 +6315,23 @@ class AgentKernel:
 
                     _time_mod.sleep(5)
             if _plan is None:
-                # REQ-2: planner failure â†’ return ERROR, no silent self-do
-                msg = "[IRIS error] The planner returned no valid plan."
-                logger.warning("[process_text_message] %s", msg)
-                return msg
+                # REQ-2: planner failure → return ERROR, no silent self-do.
+                # The failure kind (recorded by _plan_task) decides the
+                # message, so billing/auth/quota/timeout/parse/empty each
+                # report distinctly instead of one vague planner error.
+                _code, _msg, _ = self._classify_plan_failure()
+                logger.warning("[process_text_message] %s code=%s", _msg, _code.name)
+                # Every other _emit_context_usage() site sits on a SUCCESS
+                # path, so a turn that died here emitted nothing and the
+                # ContextPill kept whatever it had — with the old hardcoded
+                # 128000 initial state that meant it displayed 128k forever on
+                # a Cerebras 402 (billing) loop, which is precisely the case
+                # that fails fast above. The denominator costs no model call:
+                # resolve_context_window() is a lookup. Emitted on the FAILURE
+                # path only, so a successful turn still emits exactly once
+                # (REQ-6 AC1, pinned by test_context_usage_on_direct_reply).
+                self._emit_context_usage()
+                return _msg
 
             # GAP 5 â€” strategy signal to Mycelium after planning
             try:

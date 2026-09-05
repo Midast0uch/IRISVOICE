@@ -2542,20 +2542,24 @@ class IRISGateway:
             if self._barge_in_stop is not None:
                 self._barge_in_stop.set()
 
-            # 5. Broadcast listening to the correct session via event loop
+            # 5. Broadcast listening to the turn session AND every other UI
+            # session (eager fan-out: the mock-observed primary call happens
+            # at scheduling time, mirrors follow live). Singleton pipeline —
+            # all orbs must track it.
             if self._main_loop and self._main_loop.is_running():
                 import asyncio as _asyncio
 
-                _asyncio.run_coroutine_threadsafe(
-                    self._ws_manager.broadcast_to_session(
-                        _sid,
-                        {
-                            "type": "listening_state",
-                            "payload": {"state": "listening"},
-                        },
-                    ),
-                    self._main_loop,
-                )
+                for _t in self._voice_indicator_targets(_sid):
+                    _asyncio.run_coroutine_threadsafe(
+                        self._ws_manager.broadcast_to_session(
+                            _t,
+                            {
+                                "type": "listening_state",
+                                "payload": {"state": "listening"},
+                            },
+                        ),
+                        self._main_loop,
+                    )
 
             # 6. Start a new recording on the correct session
             if self._voice_handler is not None:
@@ -2573,6 +2577,49 @@ class IRISGateway:
             self._logger.error(
                 f"[BargeIn] handler error: {_b_exc}", exc_info=True
             )
+
+    def _voice_indicator_targets(self, session_id: str) -> list:
+        """Primary session first, then every other active session.
+
+        Sync fan-out list for run_coroutine_threadsafe sites (barge-in, TTS
+        threads), where the broadcast mock must observe the primary call
+        eagerly at scheduling time. Never raises.
+        """
+        try:
+            return [session_id] + [
+                s
+                for s in self._ws_manager.get_active_session_ids()
+                if s != session_id
+            ]
+        except Exception:
+            return [session_id]
+
+    async def _broadcast_voice_state(self, session_id: str, message: dict) -> None:
+        """Voice-pipeline indicators reach EVERY connected UI session.
+
+        The mic pipeline is a singleton: listening/speaking/processing/idle
+        describe global truth, not per-session state. A wake-word turn can run
+        under a different session than the widget (last_active routing), and
+        session-scoped indicators then strand other UIs in stale states — the
+        orb frozen with no animation (reported 2026-09-05). Turn-specific
+        traffic (transcripts, chat_typing, cards) stays session-scoped; only
+        the lifecycle indicators fan out.
+
+        The primary session call is preserved verbatim (and first) so existing
+        behavioral contracts observing broadcast_to_session keep passing;
+        mirrors to the remaining active sessions follow. Never raises —
+        indicators must not break the voice path.
+        """
+        try:
+            await self._ws_manager.broadcast_to_session(session_id, message)
+        except Exception:
+            pass
+        try:
+            for _sid in self._ws_manager.get_active_session_ids():
+                if _sid != session_id:
+                    await self._ws_manager.broadcast_to_session(_sid, message)
+        except Exception:
+            pass
 
     async def _handle_voice(
         self,
@@ -2657,7 +2704,7 @@ class IRISGateway:
                     self._logger.warning(f"[Voice] TTS warm-up failed (non-fatal): {_warm_exc}")
 
                 # Broadcast LISTENING immediately so IrisOrb animates
-                await self._ws_manager.broadcast_to_session(
+                await self._broadcast_voice_state(
                     session_id,
                     {"type": "listening_state", "payload": {"state": "listening"}},
                 )
@@ -2676,7 +2723,7 @@ class IRISGateway:
                         self._logger.warning(
                             f"[Session: {session_id}] VoiceCommandHandler start_recording() failed â€” resetting orb to idle"
                         )
-                        await self._ws_manager.broadcast_to_session(
+                        await self._broadcast_voice_state(
                             session_id,
                             {"type": "listening_state", "payload": {"state": "idle"}},
                         )
@@ -2684,13 +2731,13 @@ class IRISGateway:
                     self._logger.error(
                         "[Voice] VoiceCommandHandler not wired â€” call set_voice_handler()"
                     )
-                    await self._ws_manager.broadcast_to_session(
+                    await self._broadcast_voice_state(
                         session_id,
                         {"type": "listening_state", "payload": {"state": "error"}},
                     )
                     # Auto-recover from error state after 2 s
                     await asyncio.sleep(2.0)
-                    await self._ws_manager.broadcast_to_session(
+                    await self._broadcast_voice_state(
                         session_id,
                         {"type": "listening_state", "payload": {"state": "idle"}},
                     )
@@ -2720,7 +2767,7 @@ class IRISGateway:
                 # _cancelled=True and skipped Whisper entirely â€” silently
                 # breaking the entire voice pipeline.
                 if has_audio:
-                    await self._ws_manager.broadcast_to_session(
+                    await self._broadcast_voice_state(
                         session_id,
                         {
                             "type": "listening_state",
@@ -2728,7 +2775,7 @@ class IRISGateway:
                         },
                     )
                 else:
-                    await self._ws_manager.broadcast_to_session(
+                    await self._broadcast_voice_state(
                         session_id,
                         {"type": "listening_state", "payload": {"state": "idle"}},
                     )
@@ -2755,7 +2802,7 @@ class IRISGateway:
                         engine.pipeline.interrupt()
                 except Exception:
                     pass
-                await self._ws_manager.broadcast_to_session(
+                await self._broadcast_voice_state(
                     session_id,
                     {"type": "listening_state", "payload": {"state": "idle"}},
                 )
@@ -2798,7 +2845,7 @@ class IRISGateway:
 
         except Exception as e:
             self._logger.error(f"[Voice] Error in _handle_voice: {e}", exc_info=True)
-            await self._ws_manager.broadcast_to_session(
+            await self._broadcast_voice_state(
                 session_id, {"type": "listening_state", "payload": {"state": "error"}}
             )
 
@@ -2871,7 +2918,7 @@ class IRISGateway:
             except Exception as _e:
                 self._logger.warning(f"[Voice] sleep cancel_recording error: {_e}")
         try:
-            await self._ws_manager.broadcast_to_session(
+            await self._broadcast_voice_state(
                 session_id,
                 {"type": "listening_state", "payload": {"state": "idle"}},
             )
@@ -3012,13 +3059,14 @@ class IRISGateway:
                 # Empty transcript during conversation mode relisten = user finished talking
                 # Clear conversation mode so we return to true idle
                 self._conversation_sessions.discard(session_id)
-                asyncio.run_coroutine_threadsafe(
-                    self._ws_manager.broadcast_to_session(
-                        session_id,
-                        {"type": "listening_state", "payload": {"state": "idle"}},
-                    ),
-                    loop,
-                )
+                for _t in self._voice_indicator_targets(session_id):
+                    asyncio.run_coroutine_threadsafe(
+                        self._ws_manager.broadcast_to_session(
+                            _t,
+                            {"type": "listening_state", "payload": {"state": "idle"}},
+                        ),
+                        loop,
+                    )
                 self._send_voice_typing(session_id, client_id, False)
                 return
 
@@ -3151,7 +3199,7 @@ class IRISGateway:
                 agent_kernel._tool_bridge = get_agent_tool_bridge()
 
             # â”€â”€ Orb: thinking while LLM runs â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-            await self._ws_manager.broadcast_to_session(
+            await self._broadcast_voice_state(
                 session_id,
                 {
                     "type": "listening_state",
@@ -3449,17 +3497,29 @@ class IRISGateway:
                     # Sending idle unconditionally would override conversation-mode
                     # auto-relisten and break back-and-forth flow.
                     if not _succeeded:
+                        # Error-path orb reset, fanned out like every other
+                        # lifecycle indicator: the turn client first, then all
+                        # other UIs (a widget elsewhere must not freeze on
+                        # "speaking" for a turn that died here).
+                        async def _fanout_error_idle() -> None:
+                            _msg = {
+                                "type": "listening_state",
+                                "payload": {"state": "idle"},
+                            }
+                            try:
+                                await self._ws_manager.send_to_client(cid, _msg)
+                            except Exception:
+                                pass
+                            try:
+                                await self._ws_manager.broadcast(
+                                    _msg, exclude_clients={cid}
+                                )
+                            except Exception:
+                                pass
+
                         try:
                             _l.call_soon_threadsafe(
-                                lambda: asyncio.ensure_future(
-                                    self._ws_manager.send_to_client(
-                                        cid,
-                                        {
-                                            "type": "listening_state",
-                                            "payload": {"state": "idle"},
-                                        },
-                                    )
-                                )
+                                lambda: asyncio.ensure_future(_fanout_error_idle())
                             )
                         except Exception:
                             pass
@@ -3541,11 +3601,11 @@ class IRISGateway:
             )
             if _sttproc_stop is not None:
                 _sttproc_stop.set()  # stop STTPROC immediately on error
-            await self._ws_manager.broadcast_to_session(
+            await self._broadcast_voice_state(
                 session_id, {"type": "listening_state", "payload": {"state": "error"}}
             )
             await asyncio.sleep(2.0)
-            await self._ws_manager.broadcast_to_session(
+            await self._broadcast_voice_state(
                 session_id, {"type": "listening_state", "payload": {"state": "idle"}}
             )
 
@@ -3736,13 +3796,14 @@ class IRISGateway:
         ):
             import asyncio as _asyncio
 
-            _asyncio.run_coroutine_threadsafe(
-                self._ws_manager.broadcast_to_session(
-                    session_id,
-                    {"type": "listening_state", "payload": {"state": "speaking"}},
-                ),
-                self._main_loop,
-            )
+            for _t in self._voice_indicator_targets(session_id):
+                _asyncio.run_coroutine_threadsafe(
+                    self._ws_manager.broadcast_to_session(
+                        _t,
+                        {"type": "listening_state", "payload": {"state": "speaking"}},
+                    ),
+                    self._main_loop,
+                )
 
         # â”€â”€ Native C++ audio fast-path (no asyncio.Queue, no polling) â”€â”€
         _native = (
@@ -4095,16 +4156,17 @@ class IRISGateway:
                                                         _mark("tts_started_event_sent")
                                                         try:
                                                             import asyncio as _asyncio
-                                                            _asyncio.run_coroutine_threadsafe(
-                                                                self._ws_manager.broadcast_to_session(
-                                                                    session_id,
-                                                                    {
-                                                                        "type": "listening_state",
-                                                                        "payload": {"state": "speaking"},
-                                                                    },
-                                                                ),
-                                                                self._main_loop,
-                                                            )
+                                                            for _t in self._voice_indicator_targets(session_id):
+                                                                _asyncio.run_coroutine_threadsafe(
+                                                                    self._ws_manager.broadcast_to_session(
+                                                                        _t,
+                                                                        {
+                                                                            "type": "listening_state",
+                                                                            "payload": {"state": "speaking"},
+                                                                        },
+                                                                    ),
+                                                                    self._main_loop,
+                                                                )
                                                             _asyncio.run_coroutine_threadsafe(
                                                                 self._ws_manager.broadcast_to_session(
                                                                     session_id,
@@ -4144,13 +4206,14 @@ class IRISGateway:
                                                     _mark("tts_started_event_sent")
                                                     try:
                                                         import asyncio as _asyncio
-                                                        _asyncio.run_coroutine_threadsafe(
-                                                            self._ws_manager.broadcast_to_session(
-                                                                session_id,
-                                                                {"type": "listening_state", "payload": {"state": "speaking"}},
-                                                            ),
-                                                            self._main_loop,
-                                                        )
+                                                        for _t in self._voice_indicator_targets(session_id):
+                                                            _asyncio.run_coroutine_threadsafe(
+                                                                self._ws_manager.broadcast_to_session(
+                                                                    _t,
+                                                                    {"type": "listening_state", "payload": {"state": "speaking"}},
+                                                                ),
+                                                                self._main_loop,
+                                                            )
                                                         _asyncio.run_coroutine_threadsafe(
                                                             self._ws_manager.broadcast_to_session(
                                                                 session_id,
@@ -4738,16 +4801,17 @@ class IRISGateway:
                     self._logger.info(
                         f"[Voice] Conversation mode: auto-resuming listen for session {session_id}"
                     )
-                    _asyncio.run_coroutine_threadsafe(
-                        self._ws_manager.broadcast_to_session(
-                            session_id,
-                            {
-                                "type": "listening_state",
-                                "payload": {"state": "listening"},
-                            },
-                        ),
-                        _main_loop,
-                    )
+                    for _t in self._voice_indicator_targets(session_id):
+                        _asyncio.run_coroutine_threadsafe(
+                            self._ws_manager.broadcast_to_session(
+                                _t,
+                                {
+                                    "type": "listening_state",
+                                    "payload": {"state": "listening"},
+                                },
+                            ),
+                            _main_loop,
+                        )
                     self._send_voice_typing(session_id, None, False)
                     # Give audio pipeline a moment to flush before recording
                     import time as _time
@@ -4768,13 +4832,14 @@ class IRISGateway:
                         f"[Voice] Conversation interrupted â€” state managed by voice_command_start"
                     )
                 else:
-                    _asyncio.run_coroutine_threadsafe(
-                        self._ws_manager.broadcast_to_session(
-                            session_id,
-                            {"type": "listening_state", "payload": {"state": "idle"}},
-                        ),
-                        _main_loop,
-                    )
+                    for _t in self._voice_indicator_targets(session_id):
+                        _asyncio.run_coroutine_threadsafe(
+                            self._ws_manager.broadcast_to_session(
+                                _t,
+                                {"type": "listening_state", "payload": {"state": "idle"}},
+                            ),
+                            _main_loop,
+                        )
                     self._send_voice_typing(session_id, None, False)
             elif _main_loop:
                 # Fallback: no session_id â†’ broadcast idle to ALL connected
@@ -5030,13 +5095,13 @@ class IRISGateway:
                 else "idle"
             )
             _root_log.info(f"[TTS] after play => {post_tts_state} (session_id={session_id})")
-            try:
-                await self._ws_manager.send_to_client(
-                    client_id,
-                    {"type": "listening_state", "payload": {"state": post_tts_state}},
-                )
-            except Exception as e:
-                _root_log.warning(f"[TTS] send {post_tts_state} state failed: {e}")
+            # Pipeline-global truth (mic hot or not), so every UI session
+            # tracks it — not just the turn session. A widget elsewhere would
+            # otherwise freeze on "speaking" with the pipeline already closed.
+            await self._broadcast_voice_state(
+                session_id,
+                {"type": "listening_state", "payload": {"state": post_tts_state}},
+            )
 
             # â”€â”€ Bug 2 fix: restart VAD recording when returning to conversation â”€â”€
             # Sending "listening" state alone is not enough â€” the orb shows the
@@ -5668,7 +5733,7 @@ class IRISGateway:
                 # the terminal idle here so any processing_* state set during
                 # the turn is cleared. Never fires for a disconnected session.
                 try:
-                    await self._ws_manager.broadcast_to_session(
+                    await self._broadcast_voice_state(
                         session_id,
                         {"type": "listening_state", "payload": {"state": "idle"}},
                     )
@@ -5869,7 +5934,7 @@ class IRISGateway:
                 # T36-FIX: also clear any processing_* listening_state set by
                 # tool_bridge mid-turn so the pill/orb don't stick on error.
                 try:
-                    await self._ws_manager.broadcast_to_session(
+                    await self._broadcast_voice_state(
                         session_id,
                         {"type": "listening_state", "payload": {"state": "idle"}},
                     )
@@ -10917,13 +10982,29 @@ class IRISGateway:
             try:
                 self._speak_response(text, sid, _client_id=cid, _turn_id=tid)
             finally:
+                # Fanned out like every other lifecycle indicator: the turn
+                # client first, then all other UIs (a widget elsewhere must
+                # not freeze on "speaking" for narration that ended here).
+                async def _fanout_idle() -> None:
+                    _msg = {
+                        "type": "listening_state",
+                        "payload": {"state": "idle"},
+                    }
+                    try:
+                        await self._ws_manager.send_to_client(cid, _msg)
+                    except Exception:
+                        pass
+                    try:
+                        await self._ws_manager.broadcast(
+                            _msg, exclude_clients={cid}
+                        )
+                    except Exception:
+                        pass
+
                 try:
                     _loop = self._main_loop or asyncio.get_event_loop()
                     asyncio.run_coroutine_threadsafe(
-                        self._ws_manager.send_to_client(
-                            cid,
-                            {"type": "listening_state", "payload": {"state": "idle"}},
-                        ),
+                        _fanout_idle(),
                         _loop,
                     )
                 except Exception:

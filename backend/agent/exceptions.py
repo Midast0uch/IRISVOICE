@@ -45,6 +45,20 @@ class ErrorCode(Enum):
     TOPOLOGY_VIOLATION = 5010
     COUPLING_VIOLATION = 5011
 
+    # Prompt-pipeline errors (6000-6099) — every reason a user prompt can die
+    # before producing an answer. User-facing strings carry the code name as
+    # "(code E_...)" so failures are greppable across UI, logs and reports;
+    # the "[IRIS error]" prefix convention is preserved. Add a code here
+    # instead of inventing a new ad-hoc string when a new failure mode gets
+    # its own user message.
+    PROVIDER_BILLING = 6001
+    PROVIDER_AUTH = 6002
+    PROVIDER_QUOTA = 6003
+    PLANNER_EMPTY = 6004
+    PROVIDER_TIMEOUT = 6005
+    PLANNER_PARSE = 6006
+    PROVIDER_ERROR = 6007
+
 
 class AgentException(Exception):
     """Base exception for agent system."""
