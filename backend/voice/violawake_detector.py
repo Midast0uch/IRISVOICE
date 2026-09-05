@@ -85,13 +85,18 @@ DEFAULT_THRESHOLD: float = 0.70
 #     (which the mic hears) cannot re-fire the detector.
 CONSECUTIVE_CHUNKS: int = 8
 COOLDOWN_SEC: float = 2.0
-#   RELEASE_FLOOR — the release chunk must score BELOW this, not merely below
-#     the (possibly adapted) threshold. A plateau dithering across the line
-#     (0.705, 0.699, 0.704, ...) released the old gate on every wobble.
-#     Measured 2026-09-05 through the real detector: a true "hey iris"
-#     collapses to 0.576-0.589 on its first below-threshold chunk (full and
-#     x0.3 gain alike), so 0.65 keeps true releases with ~0.06 margin while
-#     rejecting shallow dithers. A shallow release disarms as a reject.
+#   RELEASE_FLOOR — a release chunk BELOW this fires immediately (deep
+#     collapse). Synthetic speech collapses to 0.576-0.589 on its first
+#     below-threshold chunk (measured 2026-09-05, full and x0.3 gain).
+#     BUT a live voice in a real room releases GRADUALLY (reverb tail):
+#     observed live 2026-09-05, three true attempts released at
+#     0.684-0.693 and a strict floor rejected all three. So a shallow cold
+#     chunk (floor <= score <= threshold) does NOT disarm — it HOLDS the arm
+#     awaiting either a collapse below the floor (fire) or a re-cross above
+#     threshold (dither: the plateau never ended — reject). The 0.8 s window
+#     still bounds the hold. Floor 0.65 keeps abrupt releases fast while the
+#     hold covers gradual ones; dither is caught by the recross rule instead
+#     of by depth.
 RELEASE_FLOOR: float = 0.65
 #   REARM_QUIET_CHUNKS — after any fire or sustained-reject, this many
 #     consecutive below-threshold 320-sample chunks (~0.5 s) must pass before
@@ -228,6 +233,10 @@ class ViolawakeWakeWordDetector:
         # below-threshold audio, so bursty noise cannot re-arm on every pause.
         self._inhibit_arm = False
         self._quiet_chunks = 0
+        # Whether the armed streak has seen a cold chunk yet. A hot chunk
+        # AFTER a cold one means the sound never ended (dither) — reject.
+        # Cold chunks before any hot recross hold the arm (gradual release).
+        self._armed_saw_cold = False
         # SDK adaptive-threshold profiler (K4). None when the installed SDK
         # predates it — the gate then runs on the fixed threshold exactly as
         # before, plus hysteresis and the re-arm gap.
@@ -412,20 +421,20 @@ class ViolawakeWakeWordDetector:
                         self._streak_armed_at is not None
                         and now - self._streak_armed_at <= RELEASE_WINDOW_SEC
                     ):
+                        # Deep collapse: the phrase truly ended — fire (below).
+                        # Shallow cold (floor <= s <= threshold): HOLD the arm
+                        # (armed_at preserved), do not disarm. A live voice
+                        # releases gradually through reverb (observed
+                        # 0.684-0.693 first-cold on true attempts); only a
+                        # re-cross above threshold proves the sound never
+                        # ended (dither — rejected on the hot path). The
+                        # window still bounds the hold.
+                        if s >= RELEASE_FLOOR:
+                            self._armed_saw_cold = True
+                            self._consecutive_hits = 0
+                            continue
                         self._streak_armed_at = None
                         self._consecutive_hits = 0
-                        # Hysteresis: a plateau dithering across the line also
-                        # "releases" within the window. Only a collapse below
-                        # RELEASE_FLOOR counts (true phrase: 0.576-0.589).
-                        if s >= RELEASE_FLOOR:
-                            logger.debug(
-                                "[ViolawakeDetector] shallow release rejected "
-                                f"(score={s:.3f}, floor={RELEASE_FLOOR})"
-                            )
-                            self._streak_peak = 0.0
-                            self._inhibit_arm = True
-                            self._quiet_chunks = 0
-                            continue
                         # Refractory period (unchanged semantics).
                         if now - self._last_detection_at < COOLDOWN_SEC:
                             logger.debug(
@@ -435,6 +444,7 @@ class ViolawakeWakeWordDetector:
                             )
                             self._inhibit_arm = True
                             self._quiet_chunks = 0
+                            self._armed_saw_cold = False
                             continue
                         self._last_detection_at = now
                         detected = True
@@ -446,6 +456,7 @@ class ViolawakeWakeWordDetector:
                         self._streak_peak = 0.0
                         self._inhibit_arm = True
                         self._quiet_chunks = 0
+                        self._armed_saw_cold = False
                         continue
                     # Idle blip, or an armed streak that outlived its window
                     # without releasing (sustained noise — reject quietly).
@@ -457,11 +468,31 @@ class ViolawakeWakeWordDetector:
                         self._streak_armed_at = None
                         self._inhibit_arm = True
                         self._quiet_chunks = 0
+                        self._armed_saw_cold = False
                     self._consecutive_hits = 0
                     self._streak_peak = 0.0
                     continue
 
                 self._quiet_chunks = 0
+                # Hot chunk on an arm that already saw cold: the sound never
+                # ended — plateau dithering across the line. Reject BEFORE
+                # streak counting (the hold zeroes the counter, so this must
+                # come first or hot chunks just rebuild the streak).
+                if (
+                    self._streak_armed_at is not None
+                    and self._armed_saw_cold
+                ):
+                    logger.debug(
+                        "[ViolawakeDetector] dither rejected "
+                        f"(re-crossed threshold at score={s:.3f})"
+                    )
+                    self._streak_armed_at = None
+                    self._consecutive_hits = 0
+                    self._streak_peak = 0.0
+                    self._inhibit_arm = True
+                    self._quiet_chunks = 0
+                    self._armed_saw_cold = False
+                    continue
                 self._consecutive_hits += 1
                 if s > self._streak_peak:
                     self._streak_peak = s
@@ -480,6 +511,7 @@ class ViolawakeWakeWordDetector:
                         self._consecutive_hits = 0
                         continue
                     self._streak_armed_at = now
+                    self._armed_saw_cold = False
                     continue
                 if now - self._streak_armed_at > RELEASE_WINDOW_SEC:
                     logger.debug(
@@ -491,6 +523,7 @@ class ViolawakeWakeWordDetector:
                     self._streak_peak = 0.0
                     self._inhibit_arm = True
                     self._quiet_chunks = 0
+                    self._armed_saw_cold = False
                     continue
 
             # Bound the remainder buffer (should never exceed 319 samples).
