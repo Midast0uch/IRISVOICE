@@ -280,3 +280,64 @@ def _extract_chunk_text(chunk) -> str:
     if isinstance(chunk, str):
         return chunk
     return ""
+
+
+# ---------------------------------------------------------------------------
+# Vision capability detection + dynamic cost/latency tiering
+# (vision-goal-directed-search REQ-16/REQ-17, T6). Brain-managed routing:
+# Tier 0 (headless HTTP, ~100ms) -> Tier 1 (local VLM, ~400ms) ->
+# Tier 2 (cloud multimodal, ~1.5s). Detection is lazy and never raises.
+# ---------------------------------------------------------------------------
+
+from enum import Enum
+
+
+class VisionTier(str, Enum):
+    """Cost/latency tiers for vision + crawl execution (REQ-16 AC16.1)."""
+    TIER_0_HTTP      = "tier_0_http"
+    TIER_1_LOCAL_VLM = "tier_1_local_vlm"
+    TIER_2_CLOUD     = "tier_2_cloud"
+
+
+# Nominal per-tier latency budgets in ms (spec §8 tiering policy).
+VISION_TIER_LATENCY_MS = {
+    VisionTier.TIER_0_HTTP: 100,
+    VisionTier.TIER_1_LOCAL_VLM: 400,
+    VisionTier.TIER_2_CLOUD: 1500,
+}
+
+
+def has_vision_capability() -> bool:
+    """True when the local VLM path is usable (REQ-17 dual routing).
+
+    Probes the existing LFM2.5-VL provider health check (same pattern the
+    gateway uses); never spawns a server, never raises — unusable means
+    Tier 1 simply isn't offered.
+    """
+    try:
+        from backend.tools.lfm_vl_provider import get_lfm_vl_provider
+        return bool(get_lfm_vl_provider().health_check())
+    except Exception:
+        return False
+
+
+def route_vision_tier(
+    *,
+    needs_interaction: bool = False,
+    high_ambiguity: bool = False,
+    local_vision: Optional[bool] = None,
+) -> VisionTier:
+    """Pick the cheapest tier that can handle the work (REQ-16 AC16.1/16.2).
+
+    - Straightforward DOM structures -> Tier 0 (fastest, free).
+    - Bot walls / interactive pages -> Tier 1 (local VLM micro-actions);
+      falls back to Tier 2 when no local vision is available.
+    - High-ambiguity visual reasoning -> Tier 2 (cloud multimodal only).
+    """
+    if high_ambiguity:
+        return VisionTier.TIER_2_CLOUD
+    if needs_interaction:
+        if local_vision is None:
+            local_vision = has_vision_capability()
+        return VisionTier.TIER_1_LOCAL_VLM if local_vision else VisionTier.TIER_2_CLOUD
+    return VisionTier.TIER_0_HTTP

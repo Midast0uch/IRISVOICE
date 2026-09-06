@@ -3,10 +3,11 @@ IRIS Backend Core Data Models
 Core Pydantic models for type validation and serialization
 These models have no dependencies on other backend modules to avoid circular imports
 """
-from dataclasses import dataclass, field as dc_field
+from dataclasses import dataclass, field as dc_field, replace as dc_replace
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+import json
 import re
 
 
@@ -774,5 +775,209 @@ class ExecutionPlan:
             if step.result:
                 lines.append(f"      Result: {str(step.result)[:100]}")
             if step.failure_reason:
-                lines.append(f"      Failed: {step.failure_reason}")
+                lines.append(f"      Failed: {str(step.failure_reason)}")
         return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Goal-directed websearch models (vision-goal-directed-search REQ-1/REQ-14/REQ-18)
+# NOTE: ExecutionPlan.original_task and PlanStep.expected_output stay `str` —
+# GoalAnatomy duck-types as a string via __str__/to_prompt, so legacy callers
+# (f-strings, logging, to_context_string) work unchanged with zero migration.
+# ---------------------------------------------------------------------------
+
+class TaskType(str, Enum):
+    """Goal task shapes (REQ-1 AC1.1)."""
+    DATA_EXTRACTION    = "data_extraction"
+    FORM_FILLING       = "form_filling"
+    MULTI_STEP_WORKFLOW = "multi_step_workflow"
+    SEARCH_DISCOVERY   = "search_discovery"
+
+
+class TemplateKind(str, Enum):
+    """Canonical task-shape templates A-H (REQ-1 AC1.2)."""
+    A = "A"
+    B = "B"
+    C = "C"
+    D = "D"
+    E = "E"
+    F = "F"
+    G = "G"
+    H = "H"
+
+
+# Template specs: kind -> (display name, task type, extra guardrails, step skeleton).
+# Defaults always include the AC1.1 guardrail floor ["NO_PURCHASE", "DOMAIN_BOUND"].
+_TEMPLATE_SPECS: Dict[str, Any] = {
+    TemplateKind.A: ("Single-entity extraction", TaskType.DATA_EXTRACTION, [],
+                     ["Locate the canonical source page",
+                      "Extract the declared fields",
+                      "Verify critical fields across a second source"]),
+    TemplateKind.B: ("Comparison extraction", TaskType.DATA_EXTRACTION, [],
+                     ["Extract fields per entity from primary sources",
+                      "Normalize units/currency/condition across entities",
+                      "Record irreconcilable discrepancies with citations"]),
+    TemplateKind.C: ("Form filling", TaskType.FORM_FILLING, ["NO_EXTERNAL_AUTH"],
+                     ["Navigate to the target form",
+                      "Fill each field with instant input",
+                      "Verify filled values before submit"]),
+    TemplateKind.D: ("Multi-step workflow", TaskType.MULTI_STEP_WORKFLOW, ["MAX_DEPTH"],
+                     ["Decompose the request into ordered steps",
+                      "Execute each step, carrying memory anchors forward",
+                      "Confirm end state before reporting"]),
+    TemplateKind.E: ("Discovery sweep", TaskType.SEARCH_DISCOVERY, [],
+                     ["Synthesize 2-4 orthogonal query facets",
+                      "Fetch and rank candidate sources",
+                      "Merge findings, deduplicated by URL"]),
+    TemplateKind.F: ("Price/availability monitoring", TaskType.DATA_EXTRACTION, [],
+                     ["Fetch the current snapshot",
+                      "Diff against the stored snapshot",
+                      "Report natural-language deltas"]),
+    TemplateKind.G: ("Technical documentation lookup", TaskType.SEARCH_DISCOVERY, [],
+                     ["Prefer official docs and primary sources",
+                      "Extract the relevant section or signature",
+                      "Cite the exact source location"]),
+    TemplateKind.H: ("Issue/troubleshooting sweep", TaskType.SEARCH_DISCOVERY, [],
+                     ["Gather community-reported issues and fixes",
+                      "Corroborate across independent reports",
+                      "Summarize verified workarounds with citations"]),
+}
+
+_DEFAULT_GUARDRAILS: List[str] = ["NO_PURCHASE", "DOMAIN_BOUND"]
+
+
+@dataclass
+class GoalAnatomy:
+    """Structured 7-part task goal (REQ-1 AC1.1), revisable in real time (AC1.3)."""
+    objective: str
+    task_type: TaskType                        = TaskType.SEARCH_DISCOVERY
+    target: Optional[str]                      = None
+    target_anchor: Optional[str]               = None
+    fields: Optional[List[str]]                = None
+    schema: Optional[Dict[str, Any]]           = None
+    steps: Optional[List[str]]                 = None
+    guardrails: List[str]                      = dc_field(default_factory=lambda: list(_DEFAULT_GUARDRAILS))
+    edge_cases: Dict[str, str]                 = dc_field(default_factory=dict)
+    memory_anchors: Dict[str, Any]             = dc_field(default_factory=dict)
+
+    @classmethod
+    def from_template(cls, kind: TemplateKind, objective: str, **overrides: Any) -> "GoalAnatomy":
+        """Build a goal from a canonical template (REQ-1 AC1.2)."""
+        name, task_type, extra_guards, steps = _TEMPLATE_SPECS[kind]
+        guards = list(_DEFAULT_GUARDRAILS) + [g for g in extra_guards if g not in _DEFAULT_GUARDRAILS]
+        goal = cls(objective=objective, task_type=task_type,
+                   guardrails=guards, steps=list(steps),
+                   memory_anchors={"template": name})
+        if overrides:
+            goal.mutate(**overrides)
+        return goal
+
+    def mutate(self, **changes: Any) -> "GoalAnatomy":
+        """Revise the live goal in place; returns self for chaining (REQ-1 AC1.3)."""
+        for key, value in changes.items():
+            if not hasattr(self, key):
+                raise ValueError(
+                    f"Unknown GoalAnatomy field {key!r}; "
+                    f"valid: objective, task_type, target, target_anchor, fields, "
+                    f"schema, steps, guardrails, edge_cases, memory_anchors"
+                )
+            setattr(self, key, value)
+        return self
+
+    def branched(self, **changes: Any) -> "GoalAnatomy":
+        """Copy-on-write variant: revise a copy, leave this instance untouched."""
+        clone = dc_replace(
+            self,
+            fields=list(self.fields) if self.fields is not None else None,
+            schema=dict(self.schema) if self.schema is not None else None,
+            steps=list(self.steps) if self.steps is not None else None,
+            guardrails=list(self.guardrails),
+            edge_cases=dict(self.edge_cases),
+            memory_anchors=dict(self.memory_anchors),
+        )
+        if changes:
+            clone.mutate(**changes)
+        return clone
+
+    def to_prompt(self) -> str:
+        """Render the goal as model-ready text (REQ-1 AC1.4)."""
+        lines = [f"Objective: {self.objective}", f"Task type: {self.task_type.value}"]
+        if self.target:
+            anchor = f" (near {self.target_anchor!r})" if self.target_anchor else ""
+            lines.append(f"Target: {self.target}{anchor}")
+        elif self.target_anchor:
+            lines.append(f"Target anchor: {self.target_anchor}")
+        if self.fields:
+            lines.append("Fields: " + ", ".join(self.fields))
+        if self.schema:
+            required = (self.schema.get("required") or []) if isinstance(self.schema, dict) else []
+            lines.append("Schema required: " + (", ".join(required) if required else "(none)"))
+        if self.steps:
+            lines.append("Steps:")
+            lines.extend(f"  {i + 1}. {s}" for i, s in enumerate(self.steps))
+        lines.append("Guardrails: " + ", ".join(self.guardrails))
+        if self.edge_cases:
+            lines.append("Edge cases:")
+            lines.extend(f"  - if {cond}: {action}" for cond, action in self.edge_cases.items())
+        return "\n".join(lines)
+
+    def to_json(self) -> str:
+        """Serialize the goal (REQ-1 AC1.4)."""
+        from dataclasses import asdict
+        return json.dumps(asdict(self), default=str)
+
+    def __str__(self) -> str:
+        # String duck-typing: a GoalAnatomy stands in wherever legacy code
+        # expects original_task/expected_output strings (REQ-1 AC1.4).
+        return self.to_prompt()
+
+
+@dataclass
+class TemporalDelta:
+    """Semantic diff between two snapshots of one document (REQ-14 AC14.3/14.4)."""
+    document_id: str
+    revision: int                            = 0
+    delta_statements: List[str]              = dc_field(default_factory=list)
+    changed_fields: List[str]                = dc_field(default_factory=list)
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.delta_statements and not self.changed_fields
+
+
+@dataclass
+class BatchItemResult:
+    """Outcome of one item inside a batch tool call (REQ-18 AC18.3)."""
+    item_key: str
+    ok: bool
+    result: Any                     = None
+    error: Optional[str]            = None
+
+
+@dataclass
+class BatchToolCall:
+    """Composite batch node for the DER DAG: one tool, many independent items (REQ-18 AC18.1)."""
+    batch_id: str
+    tool: str
+    items: List[Dict[str, Any]]     = dc_field(default_factory=list)
+    parallel_safe: bool             = True
+    independent: bool               = True
+    max_concurrency: int            = 10
+
+    def __len__(self) -> int:
+        return len(self.items)
+
+
+@dataclass
+class BatchOutcome:
+    """Aggregated outcomes of a batch tool call (REQ-18 AC18.3)."""
+    batch_id: str
+    tool: str
+    results: List[BatchItemResult]  = dc_field(default_factory=list)
+
+    @property
+    def ok_count(self) -> int:
+        return sum(1 for r in self.results if r.ok)
+
+    def usable(self) -> List[BatchItemResult]:
+        return [r for r in self.results if r.ok]

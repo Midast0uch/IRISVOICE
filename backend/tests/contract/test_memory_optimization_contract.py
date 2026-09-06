@@ -58,7 +58,14 @@ def test_voice_command_init_does_not_eagerly_warm_up():
     # also contains ParakeetTranscriber.__init__ earlier, which is unrelated.
     cls_pos = src.find("class VoiceCommandHandler")
     assert cls_pos != -1, "VoiceCommandHandler class not found"
-    init_lines = src[src.find("def __init__", cls_pos):].splitlines()
+    init_start = src.find("def __init__", cls_pos)
+    assert init_start != -1, "VoiceCommandHandler.__init__ not found"
+    # Scope the scan to the __init__ BODY only: end at the next same-indent
+    # method. (A whole-file scan false-positives on the legitimate lazy
+    # first-utterance call in _start_recording_locked, REQ-1 AC1.3.)
+    init_end = src.find("\n    def ", init_start)
+    init_body = src[init_start:init_end if init_end != -1 else len(src)]
+    init_lines = init_body.splitlines()
     # Check for actual CALL statements (lines starting with the call), ignoring
     # comment lines that merely explain the removal.
     eager_calls = [

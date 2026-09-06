@@ -551,5 +551,37 @@ def initialise_mycelium_schema(conn) -> None:
     except Exception as _oc_exc:
         logger.warning("[db] mycelium_edges observation_count ALTER skipped: %s", _oc_exc)
 
+    # -------------------------------------------------------------------------
+    # Block 6 — Batch execution records (vision-goal-directed-search REQ-19, T5)
+    # -------------------------------------------------------------------------
+    # Parent BatchRecord + linked child NodeRecords for one atomic batch
+    # commit (written by save_batch_footprint, T16). New tables only, so
+    # CREATE TABLE IF NOT EXISTS covers live stores with no ALTER needed.
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS batch_records (
+            batch_id    TEXT PRIMARY KEY,
+            tool        TEXT NOT NULL,
+            session_id  TEXT NOT NULL DEFAULT '',
+            item_count  INTEGER NOT NULL DEFAULT 0,
+            ok_count    INTEGER NOT NULL DEFAULT 0,
+            created_at  REAL NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS batch_node_records (
+            node_id     TEXT PRIMARY KEY,
+            batch_id    TEXT NOT NULL REFERENCES batch_records(batch_id),
+            item_key    TEXT NOT NULL,
+            ok          INTEGER NOT NULL DEFAULT 0,
+            result_json TEXT DEFAULT '{}',
+            error       TEXT,
+            created_at  REAL NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_batch_session
+            ON batch_records(session_id);
+        CREATE INDEX IF NOT EXISTS idx_batch_nodes_batch
+            ON batch_node_records(batch_id);
+    """)
+
     conn.commit()
-    logger.info("[db] Mycelium schema initialised: 18 tables, 36 indexes")
+    logger.info("[db] Mycelium schema initialised: 20 tables, 38 indexes")

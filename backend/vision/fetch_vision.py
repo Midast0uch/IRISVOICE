@@ -20,7 +20,8 @@ import asyncio
 import logging
 import os
 import time
-from typing import Callable, Optional
+from dataclasses import dataclass, field as dc_field
+from typing import Any, Callable, Dict, List, Optional
 
 from backend.crawler.capabilities import FetchCapability, FetchOutcome, WallKind
 from backend.crawler.crawler_engine import PageData
@@ -44,6 +45,154 @@ logger = logging.getLogger(__name__)
 # Vision loops need a hard iteration cap independent of wall-clock: a model
 # that keeps suggesting actions must not loop forever even within budget.
 _MAX_LOOP_STEPS = int(os.environ.get("IRIS_VISION_MAX_LOOP_STEPS", "8"))
+
+
+# ---------------------------------------------------------------------------
+# Action trajectory + perceptual visual delta (goal-directed-search REQ-17, T7).
+# Intra-tool sliding window over the last actions, formatted into the action
+# suggestion prompt for whichever model drives (AC17.2); zero-progress loops
+# terminate into DOM settle (AC17.3). Pure data + pure functions: the live
+# loop wiring lives in BrowserSession (T8).
+# ---------------------------------------------------------------------------
+
+#: Below this perceptual delta an action counts as no visible progress (AC4.2).
+NO_PROGRESS_DELTA = 0.05
+#: Sliding window size for the suggestion prompt (AC17.2).
+TRAJECTORY_WINDOW = 3
+#: Consecutive no-progress actions before the loop terminates (AC17.3).
+NO_PROGRESS_LIMIT = 3
+
+
+def visual_delta(prev_png: Optional[bytes], cur_png: Optional[bytes]) -> float:
+    """Perceptual delta between two screenshots in [0.0, 1.0].
+
+    0.0 == identical. First frame (prev None) scores 1.0 (treated as changed).
+    Uses PIL grayscale 64x64 mean-absolute-difference when available;
+    otherwise falls back to exact-equality (0.0 vs 1.0, magnitude unknown).
+    Never raises: undecodable bytes score 1.0 (assume changed, keep going).
+    """
+    if prev_png is None:
+        return 1.0
+    if cur_png is None:
+        return 1.0
+    if prev_png == cur_png:
+        return 0.0
+    try:
+        from PIL import Image
+        import io as _io
+
+        def _signature(raw: bytes) -> list:
+            with Image.open(_io.BytesIO(raw)) as img:
+                flat = img.convert("L").resize((64, 64))
+                get_flat = getattr(flat, "get_flattened_data", None)
+                return list(get_flat() if callable(get_flat) else flat.getdata())
+
+        prev_px = _signature(prev_png)
+        cur_px = _signature(cur_png)
+        if len(prev_px) != len(cur_px) or not prev_px:
+            return 1.0
+        diff = sum(abs(a - b) for a, b in zip(prev_px, cur_px))
+        return min(1.0, diff / (len(prev_px) * 255.0))
+    except Exception:
+        return 1.0
+
+
+@dataclass
+class TrajectoryStep:
+    """One micro-step: action + target + parameters + outcome + delta."""
+    action: str
+    target: str = ""
+    params: Dict[str, Any] = dc_field(default_factory=dict)
+    outcome: str = ""
+    visual_delta: float = 1.0
+
+
+class ActionTrajectory:
+    """Sliding window (last N steps) with no-progress detection (REQ-17)."""
+
+    def __init__(self, window: int = TRAJECTORY_WINDOW):
+        self._window = max(1, int(window))
+        self._steps: List[TrajectoryStep] = []
+
+    def __len__(self) -> int:
+        return len(self._steps)
+
+    def record(
+        self,
+        action: str,
+        target: str = "",
+        params: Optional[Dict[str, Any]] = None,
+        outcome: str = "",
+        visual_delta: float = 1.0,
+    ) -> TrajectoryStep:
+        """Append a step, evicting the oldest beyond the window."""
+        step = TrajectoryStep(action=action, target=target,
+                              params=dict(params or {}), outcome=outcome,
+                              visual_delta=visual_delta)
+        self._steps.append(step)
+        del self._steps[: max(0, len(self._steps) - self._window)]
+        return step
+
+    def window_steps(self) -> List[TrajectoryStep]:
+        return list(self._steps)
+
+    def _step_is_no_progress(self, idx: int) -> bool:
+        """A step is no-progress when its own delta is negligible (AC4.2) OR
+        it retargets the same element as its predecessor twice in a row.
+        Steps are counted individually (not as transitions): three trailing
+        no-progress ACTIONS trip the AC17.3 limit."""
+        if idx < 0 or idx >= len(self._steps):
+            return False
+        step = self._steps[idx]
+        if step.visual_delta < NO_PROGRESS_DELTA:
+            return True
+        if idx == 0:
+            return False
+        prev = self._steps[idx - 1]
+        return bool(step.target) and step.target == prev.target
+
+    def no_progress_streak(self) -> int:
+        """Trailing count of consecutive no-progress actions."""
+        streak = 0
+        for idx in range(len(self._steps) - 1, -1, -1):
+            if self._step_is_no_progress(idx):
+                streak += 1
+            else:
+                break
+        return streak
+
+    @property
+    def should_terminate(self) -> bool:
+        """AC17.3: 3 consecutive no-progress actions end the action loop."""
+        return self.no_progress_streak() >= NO_PROGRESS_LIMIT
+
+    def format_prompt(self) -> str:
+        """Render the window for the action-suggestion prompt (AC17.2),
+        including the negative constraint when progress has stalled."""
+        if not self._steps:
+            return "No prior actions this session."
+        lines = []
+        for i, step in enumerate(self._steps, 1):
+            params = ", ".join(f"{k}={v}" for k, v in step.params.items())
+            lines.append(
+                f"{i}. {step.action} target={step.target!r}"
+                + (f" params=({params})" if params else "")
+                + f" -> {step.outcome or 'n/a'} "
+                f"(delta={step.visual_delta:.2f})"
+            )
+        streak = self.no_progress_streak()
+        if streak > 0:
+            last = self._steps[-1]
+            lines.append(
+                f"Negative constraint: do NOT repeat {last.action!r} on "
+                f"{last.target!r} — the last {streak} action(s) made no "
+                f"visible progress."
+            )
+        if self.should_terminate:
+            lines.append(
+                "TERMINATE the action loop and proceed to DOM settle."
+            )
+        return "\n".join(lines)
 
 
 def _make_session(session_cls, job_id, url, goal, bounds, page_offset: int):

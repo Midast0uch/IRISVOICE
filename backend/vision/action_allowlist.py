@@ -330,3 +330,161 @@ ACTION_TEMPLATES = {
         target_name="Menu Item"
     )
 }
+
+
+# ---------------------------------------------------------------------------
+# Task-level semantic guardrails (vision-goal-directed-search REQ-20, T4).
+# Evaluated BEFORE ActionAllowlist.validate_action (AC20.1): semantic
+# task constraints (don't buy things, stay on domain) outrank element-role
+# checks. Duck-typed inputs (Mappings or UIAction) — this module stays free
+# of backend imports; GoalAnatomy.guardrails plugs in as plain strings.
+# ---------------------------------------------------------------------------
+
+class TaskGuardrail(str, Enum):
+    """Declarative semantic guardrails (REQ-20 AC20.2)."""
+    NO_PURCHASE      = "NO_PURCHASE"
+    DOMAIN_BOUND     = "DOMAIN_BOUND"
+    MAX_DEPTH        = "MAX_DEPTH"
+    NO_EXTERNAL_AUTH = "NO_EXTERNAL_AUTH"
+
+
+@dataclass
+class GuardrailResult:
+    """Outcome of semantic guardrail evaluation (AC20.3)."""
+    allowed: bool
+    violated: Optional[str] = None
+    reason: str = ""
+
+
+# Substring signals, matched case-insensitively against target name / role / URL.
+_PURCHASE_SIGNALS = (
+    "buy", "purchase", "checkout", "check out", "pay now", "place order",
+    "add to cart", "add to bag", "add to basket", "subscribe", "billing",
+)
+_AUTH_SIGNALS = (
+    "login", "log in", "log-in", "sign in", "signin", "password",
+    "auth", "2fa", "two-factor", "otp", "one-time pass",
+)
+
+
+def _action_field(action: Any, name: str, default: Any = "") -> Any:
+    """Read a field from a Mapping or an object (UIAction); Enum -> value."""
+    if isinstance(action, dict):
+        value = action.get(name, default)
+    else:
+        value = getattr(action, name, default)
+    if isinstance(value, Enum):
+        return value.value
+    return value if value is not None else default
+
+
+def _host_of(url: str) -> str:
+    try:
+        from urllib.parse import urlparse
+        return (urlparse(url).netloc or "").lower()
+    except Exception:
+        return ""
+
+
+def _mentions(haystack: str, signals: tuple) -> Optional[str]:
+    lowered = (haystack or "").lower()
+    for signal in signals:
+        if signal in lowered:
+            return signal
+    return None
+
+
+def evaluate_task_guardrails(
+    guardrails: Any,
+    action: Any,
+    context: Optional[Dict[str, Any]] = None,
+) -> GuardrailResult:
+    """Evaluate semantic task guardrails for a proposed action (REQ-20 AC20.1/20.2).
+
+    `guardrails` is an iterable of guardrail NAME strings (e.g.
+    GoalAnatomy.guardrails). `action` is a UIAction or a mapping with
+    action_type / target_name / target_role / url. `context` carries
+    url, allowed_domains, depth, max_depth.
+
+    Unconfigured dimensions pass (nothing to enforce); UNKNOWN guardrail
+    names fail CLOSED — silently passing a security control is worse than
+    blocking on a typo, and the reason names the offender (AC20.3).
+    """
+    ctx = context or {}
+    names = list(guardrails or [])
+    target_name = str(_action_field(action, "target_name"))
+    target_role = str(_action_field(action, "target_role"))
+    action_type = str(_action_field(action, "action_type"))
+    # The action's own URL (the click target) governs when present;
+    # the context page URL is the fallback.
+    url = str(_action_field(action, "url") or ctx.get("url") or "")
+
+    for raw in names:
+        try:
+            guard = TaskGuardrail(str(raw))
+        except ValueError:
+            return GuardrailResult(
+                allowed=False, violated=str(raw),
+                reason=f"unknown task guardrail {raw!r}; failing closed",
+            )
+        if guard is TaskGuardrail.NO_PURCHASE:
+            hit = (_mentions(target_name, _PURCHASE_SIGNALS)
+                   or _mentions(url, _PURCHASE_SIGNALS))
+            if hit:
+                return GuardrailResult(
+                    allowed=False, violated=guard.value,
+                    reason=f"purchase signal {hit!r} in target/URL; NO_PURCHASE blocks it",
+                )
+        elif guard is TaskGuardrail.DOMAIN_BOUND:
+            allowed_domains = [d.lower() for d in (ctx.get("allowed_domains") or [])]
+            host = _host_of(url)
+            if allowed_domains and host and not any(
+                host == d or host.endswith("." + d) for d in allowed_domains
+            ):
+                return GuardrailResult(
+                    allowed=False, violated=guard.value,
+                    reason=f"host {host!r} outside DOMAIN_BOUND {allowed_domains}",
+                )
+        elif guard is TaskGuardrail.MAX_DEPTH:
+            max_depth = ctx.get("max_depth")
+            depth = ctx.get("depth")
+            if max_depth is not None and depth is not None and depth > max_depth:
+                return GuardrailResult(
+                    allowed=False, violated=guard.value,
+                    reason=f"depth {depth} exceeds MAX_DEPTH {max_depth}",
+                )
+        elif guard is TaskGuardrail.NO_EXTERNAL_AUTH:
+            hit = (_mentions(target_name, _AUTH_SIGNALS)
+                   or _mentions(target_role, _AUTH_SIGNALS)
+                   or _mentions(url, _AUTH_SIGNALS))
+            if hit is None and action_type == "type" and target_role.lower() == "password":
+                hit = "password field"
+            if hit:
+                return GuardrailResult(
+                    allowed=False, violated=guard.value,
+                    reason=f"auth signal {hit!r}; NO_EXTERNAL_AUTH blocks it",
+                )
+    return GuardrailResult(allowed=True, reason="task guardrails satisfied")
+
+
+def validate_with_guardrails(
+    allowlist: "ActionAllowlist",
+    guardrails: Any,
+    action: UIAction,
+    context: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Guardrails FIRST, element-role allowlist second (REQ-20 AC20.1).
+
+    Returns the allowlist-style result dict so callers keep one shape:
+    a guardrail block surfaces as rule_matched="task_guardrail:<NAME>"
+    (the trajectory hook records `rejected_guardrail`, AC20.3).
+    """
+    gate = evaluate_task_guardrails(guardrails, action, context)
+    if not gate.allowed:
+        return {
+            "allowed": False,
+            "rule_matched": f"task_guardrail:{gate.violated}",
+            "reason": gate.reason,
+            "warnings": [],
+        }
+    return allowlist.validate_action(action)

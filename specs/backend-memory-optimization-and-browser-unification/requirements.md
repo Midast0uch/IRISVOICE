@@ -12,6 +12,7 @@ These were resolved with the user on 2026-09-02. Do not re-litigate them.
 6. **Crawler unification into `browser_pool.py` with Fast-HTTP hybrid acceleration.** The separate resident crawl worker pool (`crawl_worker.py --serve`, burning ~700 MB) is eliminated. Crawling unifies with the existing `backend.vision.browser_pool.py`. Within the browser silo, Tier 1 uses lightweight async HTTP extraction (~150ms, 0 MB browser overhead) for static pages, and Tier 2 falls back to `browser_pool.py` for JavaScript, single-page apps, and challenge pages.
 7. **Pocket-TTS memory optimization.** Pocket-TTS is a CPU-only model; it masks CUDA (`CUDA_VISIBLE_DEVICES=""`) before torch initialization to avoid loading CUDA runtime DLLs, contexts, and caching allocators, and compacts its working set memory post-load.
 8. **Target idle memory baseline is $\le$ 2.5 GB.** Total private memory of all backend processes combined at idle must return from ~8.2 GB to $\le$ 2.5 GB (projected: ~1.8–2.0 GB).
+9. **TTS early-spawn supersedes lazy-load (2026-09-06, user decision — see Implementation Status addendum).** `d8941516` re-enabled boot-time TTS spawn on a daemon thread (existing spawn method, pytest skip, `IRIS_TTS_EARLY_SPAWN=0` escape hatch) because lazy load put a measured 238s cold start inside the first utterance, which never survived the gateway's 60s first-chunk budget. Working first replies outrank the 0-idle-RAM rule: the warm-idle gate is now $\le$ **4.0 GB** (measured 3.74 GB warm 2026-09-06: TTS worker 2.39 GB commit / 331 MB resident + main 1.46 GB). AC5.5 below is updated to match the as-built behavior; the ≤2.5 GB figure remains the historical record of the lazy-load achievement, not the current gate.
 
 ---
 
@@ -23,7 +24,7 @@ This specification defines the requirements to restore the backend idle footprin
 
 ### Success Criteria
 
-- Total private memory across all backend processes at idle (after startup complete) is **$\le$ 2.5 GB** (measured via OS process tracking).
+- Total private memory across all backend processes at warm idle (after startup complete, TTS early-spawned per decision 9) is **$\le$ 4.0 GB** (measured via OS process tracking; measured 3.74 GB on 2026-09-06). The original ≤2.5 GB figure was the lazy-load achievement (see Implementation Status); it no longer applies while early-spawn is on.
 - Parakeet ASR is retained and operational on GPU.
 - First voice command after boot is transcribed within **< 1.0s** via faster-whisper without hanging or throwing `VoiceState.ERROR`.
 - Subsequent voice commands automatically route to Parakeet GPU ASR once the worker reports ready.
@@ -120,7 +121,7 @@ This specification defines the requirements to restore the backend idle footprin
 - AC5.2: THE SYSTEM SHALL verify that `torch.cuda.is_available()` evaluates to `False` inside the TTS worker process.
 - AC5.3: WHEN model loading and voice-state extraction from `TOMV2.wav` complete, THE SYSTEM SHALL run garbage collection and invoke OS working set trimming via `ctypes.windll.psapi.EmptyWorkingSet`.
 - AC5.4: THE SYSTEM SHALL maintain TTS synthesis audio quality at 24 kHz and streaming chunk latency $< 300\text{ms}$.
-- AC5.5: THE SYSTEM SHALL NOT pre-load the TTS worker at backend boot (0 idle RAM for TTS). THE SYSTEM SHALL warm TTS on the first voice command (wake-word path) so the ~10s model load overlaps with the user speaking + agent thinking, avoiding a first-response delay.
+- AC5.5 (as-built `d8941516`, supersedes the lazy-load version per decision 9): THE SYSTEM SHALL spawn the TTS worker at backend boot on a daemon thread using the existing spawn method (NOT a separate warm-up path), so the ~10s warm load (up to minutes cold) never lands inside the first utterance. THE SYSTEM SHALL skip the early spawn under pytest (`"pytest" not in sys.modules`, no `PYTEST_CURRENT_TEST`) and behind `IRIS_TTS_EARLY_SPAWN=0`.
 
 **Edge Cases:**
 - *`TOMV2.wav` missing or corrupt:* Falls back to default catalog voice cleanly.
@@ -188,3 +189,11 @@ This specification defines the requirements to restore the backend idle footprin
 - TTS warm-up currently fires only on the **wake-word** path; the **double-click** voice path does not pre-warm TTS (first response would wait ~10s). Mirror the wake-word warm-up in the double-click path.
 - Full live end-to-end audio test (wake word → VAD → whisper → agent → TTS → playback) not yet run; only components were measured.
 - Cold Parakeet load (~265s) is disk-bound (HDD); an SSD would make it ~17s even cold.
+
+## Addendum (2026-09-06) — TTS early-spawn supersedes lazy-load
+
+**What changed:** `d8941516` ("recover TTS", 2026-09-05) re-enabled boot-time TTS spawn: lazy load put a measured 238s cold start (~151s torch/pocket_tts import under contention + 17.3s model load + 51s prompt encode + 68.5s voice state) inside the first utterance, which never survived the gateway's 60s first-chunk budget — TTS was silent for 26 min. First replies work now; the 0-idle-RAM rule (old AC5.5) is deliberately retired, see decision 9.
+
+**Worker health verified same day:** single TTS worker, 17h uptime, no growth (bit-identical samples 15 min apart, peak ≥ current); CUDA mask holds (zero IRIS processes in `nvidia-smi`); 2.39 GB commit == the documented load baseline (`tts_worker.py:100-103`), resident only 331 MB. No leak, no cache fault — a 2.28 GB "private" reading is committed-not-resident by design.
+
+**New gate:** warm-idle ≤4.0 GB (measured 3.74 GB: TTS 2.39 commit + main 1.46). `scripts/measure_memory.py` default updated to match. Main process 1.46 GB remains over its 1.0 GB REQ-6 target — open follow-up, not addressed here.

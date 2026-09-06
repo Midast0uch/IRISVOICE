@@ -2,7 +2,7 @@
 
 Usage:
     python scripts/measure_memory.py                 # print a per-process table
-    python scripts/measure_memory.py --assert-idle   # also assert total <= 2.5 GB
+    python scripts/measure_memory.py --assert-idle   # also assert total <= 4.0 GB
 
 Identifies IRIS processes by matching the command line of python processes for
 the known backend entry points (uvicorn/main.py, parakeet_worker, tts_worker,
@@ -11,7 +11,7 @@ crawl_worker, browser_pool). On Windows reports Private Bytes (psutil
 platforms falls back to RSS for both columns.
 
 Exit code is 0 when the idle assertion passes (or no assertion was requested),
-1 when the total exceeds the 2.5 GB idle baseline.
+1 when the total exceeds the 4.0 GB warm-idle baseline.
 """
 
 from __future__ import annotations
@@ -20,8 +20,9 @@ import argparse
 import os
 import sys
 
-# REQ-8: target idle memory baseline across all backend processes combined.
-IDLE_BUDGET_GB = float(os.environ.get("IRIS_IDLE_MEMORY_GB", "2.5"))
+# Warm-idle gate (decision 9, 2026-09-06): TTS early-spawns at boot, so the
+# baseline covers the warm state (measured 3.74 GB). Env override wins.
+IDLE_BUDGET_GB = float(os.environ.get("IRIS_IDLE_MEMORY_GB", "4.0"))
 
 # Command-line fragments that identify an IRIS backend process.
 _IRIS_MARKERS = (

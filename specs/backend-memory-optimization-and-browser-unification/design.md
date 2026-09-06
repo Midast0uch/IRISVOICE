@@ -149,6 +149,7 @@ sequenceDiagram
 - **Decision:** Inject `os.environ["CUDA_VISIBLE_DEVICES"] = ""` at the top of `backend/audio/tts_worker.py` and invoke `ctypes.windll.psapi.EmptyWorkingSet` after loading weights.
 - **Rationale:** Pocket-TTS is strictly CPU-bound. Probing and initializing CUDA contexts wasted ~1.4 GB of private memory. Trimming unreferenced safetensors heap allocations reduces footprint from 2.3 GB to ~0.9 GB.
 - **POST-SPEC CORRECTION (2026-09-03):** Live measurement showed the CUDA mask prevents GPU context creation (verified: TTS worker absent from `nvidia-smi`) but does NOT reduce host private memory — the 2.29 GB is the model weights + torch baseline, not a CUDA context. The `EmptyWorkingSet` trim drops the working set (2.3 → 1.17 GB resident) but not committed private memory. **The real fix is lazy loading**: TTS is no longer preloaded at boot (0 idle RAM) and is warmed on the first wake-word voice command so the ~10s load overlaps with the user speaking + agent thinking (REQ-5 AC5.5).
+- **SUPERSEDED (2026-09-06, decision 9):** lazy-load retired the 0-idle rule but put a measured 238s cold start inside the first utterance (gateway budget: 60s) — TTS went silent for 26 min. `d8941516` restored boot-time spawn on a daemon thread (user decision: working first replies outrank 0 idle RAM). Verified same day: single healthy worker, 2.39 GB commit == documented baseline, 331 MB resident, no leak. Warm-idle gate is now ≤4.0 GB (measured 3.74 GB).
 
 ### 5. Parakeet fp16 Cache (post-spec)
 - **Decision:** Pre-convert the Parakeet checkpoint to fp16 once (`scripts/convert_parakeet_fp16.py`) and cache it at `data/models/parakeet-fp16/` (~1.2 GB). The worker loads the fp16 safetensors directly when present, falling back to the 2.39 GB fp32 HF checkpoint otherwise. Also removed `low_cpu_mem_usage=True` (accelerate's slow mmap dispatch, ~13 min load).
@@ -261,4 +262,4 @@ Organized according to the project's contract-driven and behavioral testing stan
   3. Verify all `CRAWLER_PAGE_FETCHED` events land on client.
 
 ### 3. Standing CDD Harness / Scripts
-- `scripts/measure_memory.py`: Inspects system processes via `psutil`, calculates exact Private Bytes and Working Set across all IRIS processes, and asserts $\le 2.5\text{ GB}$ total at idle.
+- `scripts/measure_memory.py`: Inspects system processes via `psutil`, calculates exact Private Bytes and Working Set across all IRIS processes, and asserts $\le 4.0\text{ GB}$ total at warm idle (TTS early-spawned; decision 9, 2026-09-06).
