@@ -77,6 +77,35 @@ _ACTION_TIMEOUT_MS = int(os.environ.get("IRIS_VISION_ACTION_TIMEOUT_MS", "5000")
 # `_capture_action_point`).
 _ACTION_POINT_TIMEOUT_MS = int(os.environ.get("IRIS_VISION_ACTION_POINT_TIMEOUT_MS", "1500"))
 
+# ── Goal-directed machine-speed upgrades (vision-goal-directed-search T8) ──
+# Micro-settle after instant teleports: window.scrollBy applies synchronously,
+# but lazy-loaded DOM assets need a beat to hydrate (REQ-4 AC4.3). Bounded and
+# env-overridable; the session stays machine-speed (no animation loops).
+_MICRO_SETTLE_MS = int(os.environ.get("IRIS_VISION_MICRO_SETTLE_MS", "150"))
+# Overlay dismissal locators, tried in order after Escape (REQ-5 AC5.2).
+DISMISS_SELECTORS = (
+    "button:has-text('Accept')",
+    "button:has-text('I Agree')",
+    "button:has-text('Close')",
+    "[aria-label='Close']",
+    "[data-testid*='close']",
+)
+_DISMISS_CLICK_TIMEOUT_MS = 1500
+# Persistent-but-non-essential backdrop/cookie containers, hidden as a last
+# resort when no dismissal control answers (REQ-5 AC5.2 step 3).
+_OVERLAY_HIDE_JS = (
+    "document.querySelectorAll('.modal-backdrop, [class*=\"overlay\"],"
+    " [class*=\"cookie\"]').forEach(el => { el.style.display = 'none'; });"
+)
+# OS-keyring service + account scheme for session-cookie injection (REQ-12).
+_KEYRING_SERVICE = "iris_voice_sessions"
+# Playwright reports an intercepted click as an actionability TimeoutError
+# whose message names the interception (there is no dedicated
+# ElementClickInterceptedError type in the Python binding).
+_CLICK_INTERCEPTED_MARK = "intercepts pointer events"
+# Popup adoption settle budget (REQ-6 AC6.2): adopt fast, never stall the loop.
+_POPUP_SETTLE_TIMEOUT_MS = 5_000
+
 
 class SessionBudgetExceeded(RuntimeError):
     """Raised by ``act()`` when the session's action or wall-clock bound is hit.
@@ -206,6 +235,57 @@ def _parse_int(value: Optional[str], default: int) -> int:
         return default
 
 
+def _host_of(url: str) -> str:
+    """Lowercased netloc of a URL, "" when unparseable (never raises)."""
+    try:
+        from urllib.parse import urlparse
+        return (urlparse(url or "").netloc or "").lower()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+async def _inject_keyring_cookies(context: object, url: str, job_id: str) -> int:
+    """Inject OS-keyring session cookies into a fresh context (REQ-12 AC12.1/12.2).
+
+    Returns the injected cookie COUNT (never logs names, values, or the raw
+    JSON — session tokens must not appear in logs). Zero when keyring is
+    unavailable, holds nothing for the domain, or the payload is malformed.
+    Never raises: anonymous browsing is the safe fallback.
+    """
+    try:
+        import keyring as _keyring
+        import json as _json
+    except Exception:  # noqa: BLE001 — no keyring lib means anonymous
+        return 0
+    try:
+        host = _host_of(url)
+        if not host:
+            return 0
+        raw = _keyring.get_password(_KEYRING_SERVICE, host)
+        if not raw:
+            return 0
+        cookies = _json.loads(raw)
+        if not isinstance(cookies, list):
+            return 0
+        clean = [c for c in cookies
+                 if isinstance(c, dict) and c.get("name") and c.get("value")]
+        if not clean:
+            return 0
+        add = getattr(context, "add_cookies", None)
+        if not callable(add):
+            return 0
+        await add(clean)
+        logger.info(
+            "[browser_session] injected %d keyring cookies job=%s domain=%s",
+            len(clean), job_id, host,
+        )
+        return len(clean)
+    except Exception as exc:  # noqa: BLE001 — anonymous fallback, values never logged
+        logger.debug("[browser_session] keyring cookie injection skipped job=%s: %s",
+                     job_id, type(exc).__name__)
+        return 0
+
+
 class BrowserSession:
     """One persistent, bounded, server-side browser session for one URL.
 
@@ -260,6 +340,14 @@ class BrowserSession:
         # are reconstructed FROM the DOM target's bounding box, never fed back
         # into the crawl. See module docstring / CLAUDE.md safety note.
         self.last_action_point: Optional[dict] = None
+        # Overlay-dismissal record (REQ-5 AC5.3): description of the last
+        # auto-dismissed modal/banner, or None. The vision loop folds this
+        # into the ActionTrajectory as `dismissed_overlay`.
+        self.last_dismissal: Optional[str] = None
+        # Adopted popup URLs awaiting pickup (REQ-6 AC6.2 step 5): the session
+        # adopts the page + publishes its frame; the vision loop drains this
+        # queue to emit CRAWLER_PAGE_FETCHED (emission stays the loop's job).
+        self._adopted_popup_urls: list = []
 
     # ── availability / observability ───────────────────────────────────────
 
@@ -344,7 +432,22 @@ class BrowserSession:
         try:
             # Fresh context per session — isolation, never shared (see docstring).
             self._context = await browser.new_context()
+            # REQ-12: private session cookies from the OS keyring, injected
+            # before any navigation so authenticated pages settle signed-in.
+            # Best-effort: no keyring entry (or no keyring lib) means anonymous.
+            await _inject_keyring_cookies(self._context, self.url, self._job_id)
             self._page = await self._context.new_page()
+            # REQ-6: adopt popups/tabs opened by clicks (target="_blank").
+            # Guarded getattr: older fakes/pool shims without .on keep working.
+            _on_page = getattr(self._context, "on", None)
+            if callable(_on_page):
+                try:
+                    _on_page("page", self._handle_popup_page)
+                except Exception as exc:  # noqa: BLE001 — adoption is a bonus
+                    logger.debug(
+                        "[browser_session] popup listener not registered job=%s: %s",
+                        self._job_id, exc,
+                    )
             try:
                 await self._page.goto(
                     self.url, wait_until="domcontentloaded",
@@ -410,6 +513,75 @@ class BrowserSession:
                 lease.release()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[browser_session] lease release failed job=%s: %s", self._job_id, exc)
+
+    # ── popup auto-adoption (REQ-6 AC6.1/AC6.2) ─────────────────────────────
+
+    def pop_adopted_pages(self) -> list:
+        """Drain adopted popup URLs for CRAWLER_PAGE_FETCHED emission.
+
+        The session adopts + publishes; emitting stays the vision loop's job.
+        """
+        adopted, self._adopted_popup_urls = self._adopted_popup_urls, []
+        return adopted
+
+    def _handle_popup_page(self, new_page: object) -> None:
+        """Sync `context.on("page")` listener: schedule async adoption.
+
+        Playwright calls listeners synchronously, so this only schedules —
+        awaiting here would leave a dangling coroutine on real Chromium.
+        Never raises (a listener must not break the page that fired it).
+        """
+        try:
+            import asyncio as _asyncio
+            _asyncio.get_running_loop().create_task(self._adopt_popup(new_page))
+        except Exception as exc:  # noqa: BLE001 — no loop (tests) or closed loop
+            logger.debug(
+                "[browser_session] popup adopt not scheduled job=%s: %s",
+                self._job_id, exc,
+            )
+
+    async def _adopt_popup(self, new_page: object) -> None:
+        """Adopt a popup as the live page (REQ-6 AC6.2). Never raises."""
+        try:
+            if self._closed or new_page is None:
+                return
+            try:
+                await new_page.wait_for_load_state(
+                    "domcontentloaded", timeout=_POPUP_SETTLE_TIMEOUT_MS
+                )
+            except Exception:  # noqa: BLE001 — adopt whatever rendered
+                pass
+            try:
+                _new_url = str(getattr(new_page, "url", "") or "")
+            except Exception:  # noqa: BLE001
+                _new_url = ""
+            old_page = self._page
+            try:
+                _old_url = str(getattr(old_page, "url", "") or "") if old_page is not None else ""
+            except Exception:  # noqa: BLE001
+                _old_url = ""
+            # Close the prior tab only for external bounces/auth redirects;
+            # same-host popups stay open in the context (bounded by its close).
+            if old_page is not None and old_page is not new_page and _new_url:
+                if _host_of(_new_url) and _host_of(_new_url) != _host_of(_old_url or self.url):
+                    try:
+                        await old_page.close()
+                    except Exception:  # noqa: BLE001 — best effort
+                        pass
+            self._page = new_page
+            if _new_url:
+                self.url = _new_url
+                self._adopted_popup_urls.append(_new_url)
+            await self._publish_frame()
+            logger.info(
+                "[browser_session] adopted popup job=%s url=%s",
+                self._job_id, _new_url,
+            )
+        except Exception as exc:  # noqa: BLE001 — adoption never breaks the loop
+            logger.debug(
+                "[browser_session] popup adopt failed job=%s: %s",
+                self._job_id, exc,
+            )
 
     # ── action execution (REQ-7 AC2) ────────────────────────────────────────
 
@@ -523,25 +695,115 @@ class BrowserSession:
                 self.last_action_point["scroll_y"] = _abs_y
             if _doc_h:
                 self.last_action_point["scroll_height"] = _doc_h
+            # REQ-4 AC4.3: micro-settle so lazy-loaded DOM hydrates. Bounded,
+            # guarded (older fakes without wait_for_timeout keep working).
+            _sleeper = getattr(page, "wait_for_timeout", None)
+            if callable(_sleeper):
+                try:
+                    await _sleeper(_MICRO_SETTLE_MS)
+                except Exception:  # noqa: BLE001 — settle never costs a scroll
+                    pass
         elif kind == "click":
             if not action.target:
                 raise ValueError("click requires a target selector")
             locator = page.locator(action.target)
+            # REQ-4 AC4.3: instant teleport onto the element before acting.
+            await self._teleport_to(locator)
             # Best-effort BEFORE the click: capture where the cursor mirror
             # should land. Never allowed to slow or fail the click itself.
             await self._capture_action_point(page, locator)
-            await locator.click(timeout=_ACTION_TIMEOUT_MS)
+            try:
+                await locator.click(timeout=_ACTION_TIMEOUT_MS)
+            except Exception as exc:  # noqa: BLE001
+                # REQ-5: an intercepted click means a modal/banner is in the
+                # way — dismiss and retry ONCE, then let failure surface.
+                if _CLICK_INTERCEPTED_MARK not in str(exc):
+                    raise
+                if await self._dismiss_overlays(page):
+                    await locator.click(timeout=_ACTION_TIMEOUT_MS)
+                else:
+                    raise
         elif kind == "type":
             if not action.target:
                 raise ValueError("type requires a target selector")
             locator = page.locator(action.target)
+            await self._teleport_to(locator)
             await self._capture_action_point(page, locator)
+            # REQ-4 AC4.5: instant fill (native input/change events in ~1ms),
+            # never character-by-character typing.
             await locator.fill(action.value or "")
         elif kind == "wait":
             ms = _parse_int(action.value, default=500)
             await page.wait_for_timeout(ms)
         else:
             raise ValueError(f"unknown action kind: {kind}")
+
+    async def _teleport_to(self, locator: object) -> None:
+        """Instantly bring a target element into view (REQ-4 AC4.3).
+
+        `scroll_into_view_if_needed` aligns immediately with no animation
+        loop. Best-effort and guarded: a locator without the method (older
+        fakes) or a failure just skips — the click/type that follows raises
+        naturally if the element is truly unreachable.
+        """
+        try:
+            _scroll = getattr(locator, "scroll_into_view_if_needed", None)
+            if callable(_scroll):
+                await _scroll(timeout=_ACTION_TIMEOUT_MS)
+        except Exception as exc:  # noqa: BLE001 — teleport never costs the action
+            logger.debug(
+                "[browser_session] teleport skipped job=%s: %s",
+                self._job_id, exc,
+            )
+
+    async def _dismiss_overlays(self, page: object) -> bool:
+        """Auto-dismiss an intercepting modal/banner, then report (REQ-5).
+
+        Strict sequence per AC5.2: Escape, then each DISMISS_SELECTORS
+        control, then hiding persistent backdrops. Returns True when
+        something was dismissed (caller retries the action once) and records
+        `last_dismissal` for the ActionTrajectory (AC5.3). Never raises.
+        """
+        self.last_dismissal = None
+        try:
+            _keyboard = getattr(page, "keyboard", None)
+            _press = getattr(_keyboard, "press", None) if _keyboard is not None else None
+            if callable(_press):
+                try:
+                    await _press("Escape")
+                except Exception:  # noqa: BLE001 — Escape is step 1 of 3
+                    pass
+            for selector in DISMISS_SELECTORS:
+                try:
+                    _locator = page.locator(selector)
+                    _first = getattr(_locator, "first", _locator)
+                    await _first.click(timeout=_DISMISS_CLICK_TIMEOUT_MS)
+                    self.last_dismissal = f"dismissed via {selector!r}"
+                    logger.info(
+                        "[browser_session] overlay dismissed job=%s via=%s",
+                        self._job_id, selector,
+                    )
+                    return True
+                except Exception:  # noqa: BLE001 — next selector
+                    continue
+            try:
+                _evaluate = getattr(page, "evaluate", None)
+                if callable(_evaluate):
+                    await _evaluate(_OVERLAY_HIDE_JS)
+                    self.last_dismissal = "hid persistent overlay/backdrop via JS"
+                    logger.info(
+                        "[browser_session] overlay hidden via JS job=%s",
+                        self._job_id,
+                    )
+                    return True
+            except Exception:  # noqa: BLE001 — nothing worked
+                pass
+        except Exception as exc:  # noqa: BLE001 — dismissal never breaks the loop
+            logger.debug(
+                "[browser_session] overlay dismissal failed job=%s: %s",
+                self._job_id, exc,
+            )
+        return False
 
     async def _capture_action_point(self, page: object, locator: object) -> None:
         """Best-effort centre point of ``locator``, normalised to viewport
@@ -594,10 +856,15 @@ class BrowserSession:
             logger.warning("[browser_session] current_frame failed job=%s: %s", self._job_id, exc)
             return ""
 
-    async def screenshot(self) -> Optional[bytes]:
+    async def screenshot(self, target_selector: Optional[str] = None) -> Optional[bytes]:
         """PNG screenshot of the BROWSER page (REQ-9 AC2: browser-scoped frame
         capture, never the desktop). The vision loop feeds this to the VLM for
-        action suggestion / triage. None on a closed session — never raises."""
+        action suggestion / triage. None on a closed session — never raises.
+
+        REQ-4 AC4.1: when `target_selector` names a visual container, capture
+        ONLY that element's bounding box (cheaper tokens, sharper OCR).
+        Any element-capture failure falls back to the full viewport.
+        """
         if self._page is None:
             return None
         # Renew the pool lease on activity: a session that outlives its initial
@@ -611,6 +878,18 @@ class BrowserSession:
                 self._lease.renew(self._bounds.max_wall_ms + 30_000)
             except Exception:  # noqa: BLE001 — renewal must never fail a frame
                 pass
+        if target_selector:
+            try:
+                _locator = self._page.locator(target_selector)
+                _shot = getattr(_locator, "screenshot", None)
+                if callable(_shot):
+                    return await _shot(timeout=_ACTION_POINT_TIMEOUT_MS)
+            except Exception as exc:  # noqa: BLE001 — fall back to viewport
+                logger.debug(
+                    "[browser_session] element screenshot fell back to viewport "
+                    "job=%s target=%s: %s",
+                    self._job_id, target_selector, exc,
+                )
         try:
             return await self._page.screenshot(type="png")
         except Exception as exc:  # noqa: BLE001 — a lost frame degrades the loop, not the page
@@ -706,6 +985,7 @@ class BrowserSession:
 
 __all__ = [
     "BrowserSession",
+    "DISMISS_SELECTORS",
     "SessionBounds",
     "SessionBudgetExceeded",
     "VisionAction",

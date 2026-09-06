@@ -14,7 +14,7 @@
 ## Wave 2 — Resilient Machine-Speed Execution, Discovery & PDF
 - [x] T6 (REQ-16, REQ-17): Expose vision capability detection and dynamic cost tiering in `inference_router.py` — `backend/inference_router.py` — RIPPLE: Provides `has_vision_capability()` flag and Brain-managed routing logic across Tier 0 (HTTP ~100ms), Tier 1 (Local VLM ~400ms), and Tier 2 (Cloud Multimodal ~1.5s).
 - [x] T7 (REQ-4, REQ-17): Implement `ActionTrajectory` and visual delta calculation — `backend/vision/fetch_vision.py` — RIPPLE: Records micro-step entries; computes perceptual luminance/hash delta; formats sliding window of last 3 actions for next prompt; injects negative constraints on zero-progress loops.
-- [ ] T8 (REQ-4, REQ-5, REQ-6, REQ-12): Implement Human-Like Intent at Machine Speed, Modal Auto-Dismissal, Popup Adoption, and OS Keyring Session Injection in `BrowserSession` — `backend/vision/browser_session.py` — RIPPLE:
+- [x] T8 (REQ-4, REQ-5, REQ-6, REQ-12): Implement Human-Like Intent at Machine Speed, Modal Auto-Dismissal, Popup Adoption, and OS Keyring Session Injection in `BrowserSession` — `backend/vision/browser_session.py` — RIPPLE:
   - Instant teleport scrolling via `locator.scroll_into_view_if_needed()` and instant `window.scrollBy(0, delta)`.
   - Instant input filling via `locator.fill(value)` in 1ms with native event dispatches.
   - Pre-click bounding box center extraction $(cx / width, cy / height)$ for real-time cursor mirror emission.

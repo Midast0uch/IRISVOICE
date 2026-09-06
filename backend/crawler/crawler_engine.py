@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import random
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -173,18 +174,57 @@ def _write_har_file(job_id: str, entries: list) -> Optional[str]:
 
     Graceful (REQ-16): on any failure returns None and logs — the crawl result
     is still returned without a har_path so the caller never raises here.
+
+    REQ-12 AC12.3: entries are sanitized first — session tokens must never
+    reach HAR evidence on disk.
     """
     try:
         d = _har_dir()
         os.makedirs(d, exist_ok=True)
         path = os.path.join(d, f"{job_id}.har")
         with open(path, "w", encoding="utf-8") as fh:
-            json.dump(entries, fh, ensure_ascii=False)
+            json.dump(sanitize_har_entries(entries), fh, ensure_ascii=False)
         logger.info("HAR write job=%s entries=%d path=%s", job_id, len(entries), path)
         return path
     except Exception as exc:  # noqa: BLE001
         logger.warning("HAR write failed job=%s: %s", job_id, exc)
         return None
+
+
+# Header names whose values are session tokens (REQ-12 AC12.3). Matched
+# case-insensitively against request AND response header dicts.
+_SENSITIVE_HEADER_RE = re.compile(
+    r"^(cookie|set-cookie|authorization|x-auth-token|proxy-authorization)$",
+    re.IGNORECASE,
+)
+_REDACTED = "[REDACTED]"
+
+
+def sanitize_har_entries(entries: list) -> list:
+    """Return a copy of HAR entries with sensitive headers redacted.
+
+    Pure function (callers' in-memory entries are never mutated — the same
+    dicts feed penalty scoring). Any header dict found under a key ending in
+    "headers" (request_headers / response_headers, ...) is scrubbed.
+    """
+    clean: list = []
+    try:
+        items = list(entries or [])
+    except Exception:  # noqa: BLE001 — non-iterable input sanitizes to []
+        return clean
+    for entry in items:
+        if not isinstance(entry, dict):
+            clean.append(entry)
+            continue
+        scrubbed = dict(entry)
+        for key, value in entry.items():
+            if isinstance(value, dict) and key.lower().endswith("headers"):
+                scrubbed[key] = {
+                    h: (_REDACTED if _SENSITIVE_HEADER_RE.match(str(h)) else v)
+                    for h, v in value.items()
+                }
+        clean.append(scrubbed)
+    return clean
 
 
 class CrawlerUnavailable(RuntimeError):
