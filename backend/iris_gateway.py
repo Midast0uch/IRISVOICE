@@ -7089,6 +7089,24 @@ class IRISGateway:
             )
 
             if success:
+                # Persist the credential at the gateway boundary as well as in
+                # AgentKernel. The selection call has several early/provider
+                # registration paths; keeping this write here guarantees the
+                # exact key submitted by the UI is in the same per-provider
+                # keyring slot that inference state reads for `has_key`.
+                # Never put it in iris_config.json.
+                if api_key and model_provider:
+                    try:
+                        from backend.agent.inference.keyring import set_secret
+
+                        set_secret(model_provider, api_key)
+                    except Exception as _key_err:
+                        self._logger.error(
+                            "[Session: %s] Provider keyring write failed for '%s': %s",
+                            session_id,
+                            model_provider,
+                            _key_err,
+                        )
                 # Persist to disk via IRISConfig (single source of truth)
                 try:
                     from .iris_config import with_modify_config, RoutingMode
@@ -7173,11 +7191,17 @@ class IRISGateway:
                                     "keeping existing config value'",
                                     session_id, model_provider,
                                 )
-                        # Only write api_key when the frontend sends one
+                        # The credential is already stored in the OS keyring by
+                        # AgentKernel.set_model_selection. Never mirror it into
+                        # iris_config.json: config is a restart-safe seed and
+                        # must not become a plaintext secret store. The old
+                        # assignment here made the UI appear to save the key,
+                        # but restart validation removed/ignored it while the
+                        # provider keyring entry was not reliably observable.
                         if api_key:
-                            cfg.inference.api_key = api_key
+                            cfg.inference.api_key = ""
                             self._logger.info(
-                                "[Session: %s] API key updated for provider '%s'",
+                                "[Session: %s] API key stored via provider keyring for '%s'",
                                 session_id, model_provider,
                             )
                         # For cloud providers (not local), switch routing mode

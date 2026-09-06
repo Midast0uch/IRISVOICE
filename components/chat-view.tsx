@@ -216,6 +216,11 @@ interface Message {
   // component state to avoid re-serialising all conversations on every 200 ms tick.
   feedback?: 'positive' | 'negative' | null; // User feedback on AI responses
   thinking?: string; // Chain-of-thought from the model, shown in a collapsible block
+  // Backend turn identifier. Live messages use id === turn_id (the anchor
+  // rule below), but messages rehydrated from GET /api/conversations carry
+  // the DB row id as `id` and the turn as `turn_id` — inline prism cards
+  // join on EITHER so a history reload does not detach a card from its turn.
+  turn_id?: string;
 }
 
 // Thread-based conversation structure
@@ -1371,9 +1376,17 @@ export function ChatWing({
       } | undefined
       const docs = detail?.documents
       if (!docs || docs.length === 0) return
+      // Merge into the conversation the DOCUMENTS belong to, not whichever
+      // thread happens to be active when the response lands. A rapid A→B
+      // switch leaves A's get_documents response in flight; merging it into
+      // B (the old rule) put A's cards in B's thread (session 296: two
+      // get_documents 3 s apart, 19:25:46 / 19:25:49). Fall back to the
+      // active thread only when the payload does not say.
+      const targetConvId = docs.find((d) => d.conversation_id)?.conversation_id
+        || activeConversationIdRef.current
       setConversations((prev) =>
         prev.map((conv) => {
-          if (conv.id !== activeConversationIdRef.current) return conv
+          if (conv.id !== targetConvId) return conv
           return {
             ...conv,
             documents: mergeRenderedDocuments(conv.documents as any, docs) as DocRender[],
@@ -2655,7 +2668,26 @@ ${message.text}`;
     // after load (other window/client) never appeared. Re-fetch on every
     // panel open; do NOT touch activeConversationId here (never yank the
     // thread the user is reading just because they opened the list).
-    fetchConversations().then((convs) => setConversations(convs)).catch(() => {})
+    //
+    // Session 296: fetchConversations maps REST rows that carry NO renders,
+    // so it builds every Conversation with documents: [] — a blind replace
+    // here wiped every prism card in every thread. Cards only exist in
+    // memory (iris:document_render; get_documents rehydration is
+    // metadata-only by contract CT-DOC-1 and cannot restore a body), so the
+    // wipe was permanent for the session. Preserve the documents we already
+    // hold; fetched threads we have never seen keep their (empty) list.
+    fetchConversations()
+      .then((convs) => {
+        setConversations((prev) =>
+          convs.map((c) => {
+            const existing = prev.find((p) => p.id === c.id)
+            return existing && existing.documents.length > 0
+              ? { ...c, documents: existing.documents }
+              : c
+          }),
+        )
+      })
+      .catch(() => {})
   };
 
   const closeDropdowns = () => {
@@ -4120,8 +4152,19 @@ ${message.text}`;
                       {(() => {
                         const _allDocs = activeConversation?.documents || []
                         if (message.sender !== 'assistant') return null
+                        // Join on turn: live messages carry id === turn_id
+                        // (anchor rule in handleTextResponse), rehydrated
+                        // ones carry the DB row id and expose the turn via
+                        // message.turn_id. Matching BOTH keeps a prism card
+                        // attached to its turn after a history reload —
+                        // without this the card fell to the orphan pile the
+                        // moment openHistory() replaced the messages
+                        // (session 296: "cards vanish when I switch threads").
                         const _myTurnDocs = _allDocs.filter(
-                          (d) => d.turnId && d.turnId === message.id && (d.content || '').trim().length > 0,
+                          (d) =>
+                            d.turnId &&
+                            (d.turnId === message.id || d.turnId === message.turn_id) &&
+                            (d.content || '').trim().length > 0,
                         )
                         if (_myTurnDocs.length === 0) return null
                         // Empty-result websearch should NOT be a prism card — it is
@@ -4272,7 +4315,15 @@ ${message.text}`;
                   {(() => {
                     const _all = activeConversation?.documents || []
                     if (_all.length === 0) return null
-                    const _msgIds = new Set(renderTimeline.filter((e) => e.kind === 'message').map((e) => (e as Extract<(typeof renderTimeline)[number], { kind: 'message' }>).message.id))
+                    // Orphan = no message in this timeline owns its turn.
+                    // A turn can be owned via message.id (live anchor) OR
+                    // message.turn_id (rehydrated row) — both count, or an
+                    // inline-matched card would ALSO render here as a
+                    // duplicate.
+                    const _msgIds = new Set(renderTimeline.filter((e) => e.kind === 'message').flatMap((e) => {
+                      const m = (e as Extract<(typeof renderTimeline)[number], { kind: 'message' }>).message
+                      return m.turn_id ? [m.id, m.turn_id] : [m.id]
+                    }))
                     const _orphans = _all.filter((d) => (d.content || '').trim().length > 0 && d.turnId && !_msgIds.has(d.turnId))
                     if (_orphans.length === 0) return null
                     return _orphans.map((doc) => (

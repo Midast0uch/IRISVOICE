@@ -160,6 +160,18 @@ class TTSManager:
     _instance: Optional["TTSManager"] = None
     _initialized: bool = False
 
+    # Total time a worker may spend starting up, measured from spawn.
+    #
+    # NOT a per-waiter slice. A Pocket-TTS cold start measured 238 s on this
+    # box (2026-09-05 pid 8180, all CPU): ~151 s importing torch/pocket_tts
+    # while the Parakeet worker loaded alongside it, 17.3 s model load,
+    # 51.0 s audio-prompt encode, 68.5 s voice state. The old fixed 120 s
+    # wait expired mid-load, and every later caller only re-polled for 30 s
+    # at a time — so the manager declared "worker startup timeout" while the
+    # worker was still healthy and every synthesis returned ZERO audio until
+    # a request happened to arrive after the load finished (26 min later).
+    _WORKER_STARTUP_TIMEOUT: float = 300.0
+
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
@@ -189,11 +201,40 @@ class TTSManager:
         # mistaken for the new one's.
         self._lines: "queue.Queue" = queue.Queue()
 
+        # monotonic() timestamp of the current worker's spawn. The startup
+        # budget is measured from HERE, not per waiter — see
+        # ``_remaining_startup_budget``.
+        self._spawn_started_at: Optional[float] = None
+
         TTSManager._initialized = True
 
         threading.Thread(
             target=self._log_preflight, daemon=True, name="tts-preflight"
         ).start()
+        # Load the worker during boot instead of during the user's first
+        # sentence. A Pocket-TTS cold start measured 238 s end-to-end
+        # (2026-09-05: ~151 s of torch/pocket_tts import under CPU contention,
+        # 17.3 s model load, 51 s audio-prompt encode, 68.5 s voice state).
+        # Spawned lazily, that entire cost landed inside the first utterance,
+        # which never survived the gateway's 60 s first-chunk budget. Boot is
+        # comparatively idle (Parakeet is also lazy), so paying it here is
+        # free. This is the existing spawn method on a daemon thread — not a
+        # separate warm-up path.
+        #
+        # Skipped under pytest (test suites construct TTSManager() for unit
+        # checks — singleton/config — and must not each boot a real model
+        # subprocess) and behind IRIS_TTS_EARLY_SPAWN=0 for an escape hatch,
+        # matching the IRIS_* env convention used elsewhere in the backend.
+        _early_spawn = (
+            self.config.get("tts_enabled", True)
+            and "pytest" not in sys.modules
+            and "PYTEST_CURRENT_TEST" not in os.environ
+            and os.environ.get("IRIS_TTS_EARLY_SPAWN", "1") != "0"
+        )
+        if _early_spawn:
+            threading.Thread(
+                target=self._spawn_worker, daemon=True, name="tts-early-spawn"
+            ).start()
 
     # ------------------------------------------------------------------
     # Subprocess lifecycle
@@ -247,11 +288,23 @@ class TTSManager:
                     return  # already running and ready
                 # Alive but never became ready (startup timed out on another
                 # thread while holding no lock — the waiter gave up but the
-                # worker may still be loading). Wait briefly for the late
-                # ready instead of abandoning it: every later synthesize
-                # otherwise fails with ZERO audio forever (2026-09-04 log).
-                logger.info("[TTSManager] Worker alive but not ready — waiting 30s for late ready")
-                self._wait_ready(timeout=30)
+                # worker may still be loading). Wait out the REST of this
+                # worker's startup budget instead of abandoning it.
+                #
+                # It used to wait a fresh 30 s slice here. The cold start is
+                # ~238 s, so slice after slice expired, each one logging
+                # "Worker startup timed out" and leaving _ready False, and
+                # every later synthesize failed with ZERO audio forever
+                # (2026-09-05: TTS silent for 26 min because the only thing
+                # that ever re-polled was the next request, ~26 min later).
+                remaining = self._remaining_startup_budget()
+                if remaining <= 0:
+                    return  # budget genuinely exhausted — nothing more to wait for
+                logger.info(
+                    f"[TTSManager] Worker alive but not ready — waiting "
+                    f"{remaining:.0f}s more for late ready"
+                )
+                self._wait_ready(timeout=remaining)
                 return
 
             logger.info("[TTSManager] Spawning Pocket-TTS subprocess worker...")
@@ -277,6 +330,7 @@ class TTSManager:
                 return
 
             self._proc = proc
+            self._spawn_started_at = time.monotonic()
             self._lines = queue.Queue()
             threading.Thread(
                 target=self._read_stdout,
@@ -291,7 +345,21 @@ class TTSManager:
                 name="tts-stderr",
             ).start()
 
-            self._wait_ready(timeout=120)
+            self._wait_ready(timeout=self._WORKER_STARTUP_TIMEOUT)
+
+    def _remaining_startup_budget(self) -> float:
+        """Seconds left in the CURRENT worker's startup budget, never negative.
+
+        Measured from spawn, not from whichever caller happens to be waiting:
+        N callers polling a still-loading worker must together see the SAME
+        budget as one caller, otherwise each caller's private timeout silently
+        shortens the worker's remaining chance to finish loading (that is what
+        the old per-caller 30 s slices did).
+        """
+        if self._spawn_started_at is None:
+            return 0.0
+        elapsed = time.monotonic() - self._spawn_started_at
+        return max(0.0, self._WORKER_STARTUP_TIMEOUT - elapsed)
 
     def _wait_ready(self, timeout: float = 120.0) -> None:
         """Poll the worker until it reports ready or the timeout elapses.

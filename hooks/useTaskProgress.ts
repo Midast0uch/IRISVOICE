@@ -628,6 +628,9 @@ function resolveTargetCardId(conv: ConversationCardState, d: TaskUpdateDetail): 
   return newest
 }
 
+// Crawl-phase events are a separate legacy surface: REQ-12 explicitly allows
+// a crawl card before task:start, so keep that named identity distinct from
+// the removed generic `legacy_unknown` phantom.
 function blankCard(cardId: string, conversationId: string | null): TaskCard {
   return { cardId, conversationId, isWorking: false, currentStep: 0, totalSteps: 0, steps: [] }
 }
@@ -657,19 +660,20 @@ function applyToCard(
 
   const { byConversation, convTouchOrder } = touchConversation(prev, convId)
   let conv = byConversation[convId]
-  let fabricated = false
   if (!targetId) {
-    targetId = conv.legacyCardId || "legacy_unknown"
-    conv = { ...conv, legacyCardId: targetId }
-    if (!conv.byId[targetId]) {
-      conv = upsertCard(conv, targetId, blankCard(targetId, convId))
-      fabricated = true
-    }
+    // No task:start has established an identity yet. Do not fabricate a
+    // blank card just to display a card-less progress/lifecycle frame:
+    // `legacy_unknown` was observed live as an empty second TaskListCard
+    // (0 steps, 0 total) when a task:start arrived on the default
+    // conversation with no card_id. A card is created only by task:start;
+    // later card-less progress can attach to its legacy pointer or newest
+    // working card through resolveTargetCardId above.
+    return prev
   }
 
   const existing = conv.byId[targetId]
   const updated = updater(existing)
-  if (!fabricated && updated === existing) return prev
+  if (updated === existing) return prev
   const nextConv = upsertCard(conv, targetId, updated)
   return { ...prev, convTouchOrder, byConversation: { ...byConversation, [convId]: nextConv } }
 }
