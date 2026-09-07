@@ -832,3 +832,114 @@ class Reviewer:
             return ReviewVerdict.PASS, None
         except Exception:
             return ReviewVerdict.PASS, None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T14 (REQ-8 + REQ-11): StepFindingsAccumulator — per-run strict projection
+# with semantic cross-source verification.
+# ─────────────────────────────────────────────────────────────────────────────
+class StepFindingsAccumulator:
+    """Bounded aggregator for what the crawl actually LEARNED.
+
+    REQ-8: every page is projected down to the goal's declared fields. Raw
+    HTML, boilerplate or anything not declared is dropped at the gate.
+
+    REQ-11: any field marked "critical" by the task spec must appear on
+    >=2 independent hostnames before it counts as a proof. Condition-aware
+    (refurbished vs new) and bundle-vs-standalone aware so two "different
+    prices" for the same product don't merge into a falsely-verified finding.
+    Parked/walled sources NEVER corroborate.
+
+    Not thread-safe; concurrency is owned by the call sites (the
+    orchestrator dispatches under asyncio semaphores — the accumulator is
+    read/written only by the synthesis path).
+    """
+
+    def __init__(self, goal_fields: Optional[set] = None):
+        self._goal_fields: set = {str(f) for f in (goal_fields or set()) if str(f).strip()}
+        self._instance: dict = {}
+        self._field_votes: dict = {}
+        self._pages_seen: list = []
+        self._total_bytes = 0
+
+    def add(self, url: str, payload: dict, parked: bool = False) -> None:
+        if not isinstance(payload, dict):
+            return
+        host = ""
+        try:
+            from urllib.parse import urlparse
+            host = (urlparse(url).netloc or url).lower()
+        except Exception:  # noqa: BLE001 — tolerate malformed URLs
+            pass
+        self._pages_seen.append({"url": url, "host": host, "parked": parked})
+        # REQ-8 AC1: PROJECT to goal fields only — nothing outside the schema
+        # is persisted anywhere.
+        projection: dict = {}
+        for field_name in self._goal_fields:
+            v = payload.get(field_name)
+            if v is not None:
+                projection[field_name] = v
+        _bytes = sum(len(str(v).encode("utf-8", "ignore")) for v in projection.values())
+
+        # Per-source account of votes is what REQ-11 needs to verify.
+        # A parked source contributes no corroboration and no content — it is
+        # tracked only as seen (pages_seen) so review knows it was attempted.
+        # A parked source never corroborates: it is attached to pages_seen so
+        # reviews see it was attempted, but it is invisible to every
+        # verification vote. (Otherwise a walled-but-claimed page would mutate
+        # the quorum count.)
+        if parked:
+            return
+
+        cond = str(payload.get("_condition") or "").strip().lower() or "unspecified"
+        bundle = str(payload.get("_bundle") or payload.get("_bundle_kind") or "").strip().lower() or "unspecified"
+        for field_name, v in projection.items():
+            entry = self._field_votes.setdefault(field_name, {"sources": set(), "conditions": {}})
+            entry["sources"].add(host)
+            # Condition key is the discriminating axis: new vs refurbished must
+            # NOT merge (two different prices for one SKU are two data points).
+            entry["conditions"][cond] = entry["conditions"].get(cond, 0) + 1
+            entry["bundles"] = entry.get("bundles", {})
+            entry["bundles"][bundle] = entry["bundles"].get(bundle, 0) + 1
+        for k, v in projection.items():
+            self._instance[k] = v
+        self._total_bytes += _bytes
+
+        # REQ-8 AC3 (hierarchical summarization): anything over the bound
+        # gets a compressed view of the repr; we never store raw dumps.
+        if self._total_bytes > 32_000:
+            for k, v in list(self._instance.items()):
+                self._instance[k] = self._collapse(str(v), limit=256)
+            self._total_bytes = sum(len(str(x)) for x in self._instance.values())
+
+    def _collapse(self, s: str, limit: int = 256) -> str:
+        if len(s) <= limit:
+            return s
+        return s[: limit - 64] + "…" + s[-64:]
+
+    def snapshot(self) -> dict:
+        verified = {}
+        for field, votes in self._field_votes.items():
+            conditions = votes.get("conditions", {}) or {}
+            bundles = votes.get("bundles", {}) or {}
+            sources = votes.get("sources", set()) or set()
+            verified[field] = {
+                "verified": (
+                    len(sources) >= 2
+                    and len(conditions) <= 1
+                    and len(bundles) <= 1
+                ),
+                "corroborations": len(sources),
+                "unit_count": sum(conditions.values()) if conditions else 0,
+                "condition_distribution": dict(conditions),
+                "bundle_distribution": dict(bundles),
+            }
+        return {
+            "instance": self._instance,
+            "verified": verified,
+            "total_bytes": self._total_bytes,
+        }
+
+    def total_bytes(self) -> int:
+        return self._total_bytes
+

@@ -240,6 +240,109 @@ class DocumentDataStore:
             )
             return None
 
+    def store_json_atomic(
+        self,
+        document_id: str,
+        fmt: str,
+        content: str,
+        conversation_id: Optional[str] = None,
+        variants: Optional[dict] = None,
+        alternatives: Optional[list] = None,
+        trust: Optional[str] = None,
+        turn_id: Optional[str] = None,
+        source_document_id: Optional[str] = None,
+        sources: Optional[list] = None,
+        har_path: Optional[str] = None,
+    ) -> None:
+        """REQ-14 AC4: bump revision by +1 when the SAME document_id gets a
+        new payload, and record the revision transition. Never silently fail —
+        a failed upsert here is a contract break.
+        """
+        existing = self.get(document_id)
+        next_revision = (existing["revision"] + 1) if existing else 1
+        try:
+            from backend.crawler.temporal_diff import compute_temporal_delta
+
+            prior_content = (existing or {}).get("content") or "{}"
+            prior_dict = json.loads(prior_content) if prior_content else {}
+            current_dict = json.loads(content) if content else {}
+            delta = compute_temporal_delta(prior_dict, current_dict)
+            _v = dict(variants or {})
+            _v["_temporal_delta"] = {
+                "changed_fields": delta.changed_fields,
+                "delta_statements": delta.delta_statements,
+                "prior_revision": existing["revision"] if existing else 0,
+                "current_revision": next_revision,
+            }
+        except Exception:
+            _v = dict(variants or {})
+        try:
+            self._conn.execute(
+                "INSERT INTO document_data "
+                "(document_id, conversation_id, fmt, content, variants, alternatives, trust, revision, "
+                " source_document_id, sources, har_path, turn_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(document_id) DO UPDATE SET "
+                "conversation_id=excluded.conversation_id, fmt=excluded.fmt, "
+                "content=excluded.content, variants=excluded.variants, "
+                "alternatives=excluded.alternatives, trust=excluded.trust, "
+                # atomic path writes revision explicitly — the plain store()
+                # unexpectedly keeps the original so this path is the only
+                # reentrant way a re-crawl can show "Updated".
+                "revision=excluded.revision, "
+                "source_document_id=excluded.source_document_id, "
+                "sources=excluded.sources, har_path=excluded.har_path, "
+                "turn_id=COALESCE(excluded.turn_id, document_data.turn_id)",
+                (
+                    document_id,
+                    conversation_id or (existing["conversation_id"] if existing else ""),
+                    fmt,
+                    content,
+                    json.dumps(_v, ensure_ascii=False),
+                    json.dumps(alternatives or [], ensure_ascii=False),
+                    trust or "",
+                    next_revision,
+                    source_document_id,
+                    json.dumps(sources or [], ensure_ascii=False) if sources is not None else None,
+                    har_path,
+                    turn_id,
+                ),
+            )
+            self._conn.commit()
+        except Exception as exc:
+            logger.warning(
+                "[DocumentDataStore] store_json_atomic failed id=%s: %s",
+                document_id, exc,
+            )
+
+    def get_with_delta(self, document_id: str) -> Optional[tuple]:
+        """Return (dict, revision, delta) — the full record + revision +
+        the TemporalDelta the store captured on the last write, or None if
+        not found.
+
+        Shape mirrors the frontend's card rehydration: `sources` from JSON,
+        `temporal_delta` variants-computed, `content` canonical.
+        """
+        row = self.get(document_id)
+        if row is None:
+            return None
+        content = row.get("content") or ""
+        try:
+            current_dict = json.loads(content) if content else {}
+        except Exception:
+            current_dict = {}
+        v = row.get("variants") or {}
+        delta_payload = v.get("_temporal_delta") or {}
+        return (
+            {
+                "sources": row.get("sources") or [],
+                "json": current_dict,
+                "fmt": row.get("fmt"),
+            },
+            row.get("revision") or 0,
+            delta_payload if delta_payload else None,
+        )
+
     def get(self, document_id: str) -> Optional[Dict[str, Any]]:
         """Return the full document record, or None if not found."""
         try:

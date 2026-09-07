@@ -120,3 +120,73 @@ def get_card_footprint(memory: MemoryInterface, card_id: str) -> Optional[Dict[s
             "[card_footprint] get_card_footprint failed card_id=%s: %s", card_id, exc
         )
         return None
+
+
+def save_batch_footprint(
+    db,
+    batch_id: str,
+    tool: str,
+    session_id: str,
+    items: list,
+    fail_on_child: bool = False,
+) -> bool:
+    """T16 (REQ-19): atomic batch persistence — one transaction, never
+    half-committed.
+
+    Idempotent on ``batch_id``: a re-save is a no-op (returns True), so a
+    circuit-retry or replay can never duplicate the footprint. Never raises —
+    a failed write must never break the turn.
+    """
+    if not batch_id:
+        return False
+    now = time.time()
+    # Accepts either a Database/Manager object (.conn) or a raw
+    # sqlite3.Connection — they share the execute/with driver shape.
+    conn = getattr(db, "conn", db)
+    if not hasattr(conn, "execute"):
+        logger.warning("[card_footprint] no usable db handle; skipping")
+        return False
+    try:
+        cur = conn.execute(
+            "SELECT 1 FROM batch_records WHERE batch_id = ?", (batch_id,)
+        )
+        if cur.fetchone() is not None:
+            return True  # idempotent — already written
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[card_footprint] idempotence check failed: %s", exc)
+        return False
+
+    children = [item for item in (items or []) if isinstance(item, dict)]
+    ok_count = sum(1 for c in children if c.get("ok"))
+
+    # One transaction — all children land or none do. `with conn:` commits
+    # on success, ROLLBACKS on any exception (the atomicity guarantee T16
+    # needs: partial batches never leave an orphan behind).
+    with conn:
+        conn.execute(
+            "INSERT INTO batch_records (batch_id, tool, session_id, item_count, "
+            "ok_count, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                batch_id, str(tool), str(session_id), len(children),
+                ok_count, now,
+            ),
+        )
+        for i, child in enumerate(children):
+            if fail_on_child and i == 0:
+                # Test seam: forces a mid-transaction failure to prove the
+                # whole batch rolls back atomically.
+                raise RuntimeError("simulated child persistence failure")
+            conn.execute(
+                "INSERT INTO batch_node_records (node_id, batch_id, item_key, "
+                "ok, result_json, error, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    f"{batch_id}::{i}",
+                    batch_id,
+                    str(child.get("item_key") or "") or f"item-{i}",
+                    1 if child.get("ok") else 0,
+                    json.dumps(child.get("result"), ensure_ascii=False),
+                    str(child.get("error") or "")[:256],
+                    now,
+                ),
+            )
+    return True

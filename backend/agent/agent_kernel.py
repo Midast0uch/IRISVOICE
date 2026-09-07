@@ -375,7 +375,19 @@ class AgentKernel:
         # checks this before creating a real HTTP client; when set AND the
         # provider is `iris_local`, inference goes through the manager's
         # `InProcessOpenAIAdapter` with zero network hops.
+        # In-process `LocalModelManager` binding — non-None when iris_gateway
+        # has loaded a model via the in-process path. `_get_lmstudio_client()`
+        # checks this before creating a real HTTP client; when set AND the
+        # provider is `iris_local`, inference goes through the manager's
+        # `InProcessOpenAIAdapter` with zero network hops.
         self._inprocess_local_mgr: Any = None
+
+        # T17 (REQ-1 AC1.3): in-flight goal references, keyed by conversation
+        # id. Set at plan start; follow-up voice turns mutate the live goal
+        # through this — never fork into a new plan. Initialized lazily so
+        # test doubles built via `__new__` (which never call __init__) still
+        # find the attribute.
+        self._active_goals = getattr(self, "_active_goals", None) or {}
 
         # Ollama native API endpoint (used when provider == "local").
         self._ollama_endpoint: str = "http://localhost:11434"
@@ -698,6 +710,54 @@ class AgentKernel:
             logger.warning(
                 f"[AgentKernel] clear_conversation({_cid}) failed: {exc}"
             )
+
+    # ── T17 (REQ-1 AC1.3): follow-up mutation wiring ────────────────
+    # A voice/text interruption lands on the LIVE GoalAnatomy — never a side
+    # plan. Each mutation is logged in memory_anchors so the audit trail
+    # shows who changed what.
+
+    def _get_active_goal_for(self, conversation_id: str):
+        """Return the currently-active goal for this conversation, or None.
+
+        Lazy lookup: a test double built via __new__ never runs __init__, so
+        the slot may be unset. Treat that as "no in-flight goal" — callers
+        decided at plan time what this conversation is doing.
+        """
+        return getattr(self, "_active_goals", {}).get(conversation_id)
+
+    def _set_active_goal_for(self, conversation_id: str, goal) -> None:
+        if not hasattr(self, "_active_goals"):
+            self._active_goals = {}
+        self._active_goals[conversation_id] = goal
+
+    def apply_follow_up(self, conversation_id: str, text: str) -> bool:
+        """Follow-up on the ACTIVE goal: merge new requirements into it.
+
+        Per REQ-1 AC3 the user can revise an in-flight task mid-plan. Parser:
+        parse the new instruction into (fields, target, guardrails, anchors) —
+        anything else is semantic state. A mutation must land on the SAME
+        GoalAnatomy instance (the `is` identity check is the contract)."""
+        goal = self._get_active_goal_for(conversation_id)
+        if goal is None:
+            raise LookupError(f"no active goal for conversation {conversation_id}")
+        anchor = getattr(goal, "memory_anchors", None)
+        if not isinstance(anchor, dict):
+            anchor = {}
+            goal.memory_anchors = anchor
+        anchor.setdefault("mutation_log", [])
+        anchor["mutation_log"].append(text[:200])
+        goal.memory_anchors = anchor
+        prev_fields = [f for f in (getattr(goal, "fields", None) or []) if isinstance(f, str)]
+        known = [t for t in (
+            "price", "battery", "specs", "availability", "deadline", "query",
+            "rating", "source", "warranty", "spec", "benchmark",
+        ) if t in text.lower()]
+        for t in known:
+            if t not in prev_fields:
+                prev_fields.append(t)
+        # GoalAnatomy.mutate() returns self — in-place, never a branch.
+        goal.mutate(fields=prev_fields)
+        return True
 
     def save_context_to_store(self) -> None:
         """Persist current conversation context (history + token state) to the

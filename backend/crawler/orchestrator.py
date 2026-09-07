@@ -869,6 +869,43 @@ class CrawlOrchestrator:
         sem = asyncio.Semaphore(max(1, concurrency_limit))
         # Ordered slots preserve plan order in the result pages.
         slots: list[Optional[PageData]] = [None] * len(capped)
+        # REQ-7 AC1 (T12): per-host semaphore — at most 2 concurrent fetches
+        # against the same netloc regardless of the global batch limit. With
+        # the global semaphore alone, three same-host URLs could run in
+        # parallel and trip the site's rate limiter together — hence the
+        # additional gate. Lazy-created per hostname; lives ONLY for this
+        # dispatch call (no cross-run leakage, REQ-16 AC4 pattern).
+        host_semaphores: dict[str, asyncio.Semaphore] = {}
+        # REQ-7 AC2 (T12): consecutive 429/503 on one host trips a circuit
+        # breaker for THIS RUN — the remaining same-host URLs are marked
+        # rate_limited and never sent, so we never hammer. Cleared on exit;
+        # the run ends, the host gets a fresh chance next run.
+        host_429_streak: dict[str, int] = {}
+
+        def _host_of(u: str) -> str:
+            try:
+                from urllib.parse import urlparse
+                return (urlparse(u).netloc or u).lower()
+            except Exception:  # noqa: BLE001 — fall through, never fail a fetch
+                return u.lower()
+
+        def _host_semaphore(host: str) -> asyncio.Semaphore:
+            s = host_semaphores.get(host)
+            if s is None:
+                s = host_semaphores[host] = asyncio.Semaphore(2)
+            return s
+
+        def _outcome_transport_status(o) -> Optional[int]:
+            """429/503 from the HAR block the capability recorded for this URL."""
+            for e in (getattr(o, "har_entries", None) or []):
+                try:
+                    s = e.get("status")
+                except Exception:
+                    continue
+                if s in (429, 503):
+                    return s
+            return None
+
         # T12c (REQ-18 AC1): light HAR entries for EVERY dispatched outcome so
         # `_apply_har_penalties` scores vision-visited domains on the same
         # basis as crawl domains (AC5: no forked paths).
@@ -882,83 +919,102 @@ class CrawlOrchestrator:
             # 404'd pages 2..N, the second served ANOTHER url's bytes.
             _slot_offset = slot_capture_offset(idx)
             async with sem:  # AC1: bounded concurrency
-                # T13 (specs/dag-node-execution-model): the race gate is
-                # advertisement-driven. A domain's recorded failure history
-                # names a reason; the router races fetch.vision only when a
-                # node ADVERTISES recovery for that reason (REQ-4 AC1). The
-                # history gate itself (REQ-10 AC3/AC4) still applies — a
-                # first-time failure reaches vision via the fresh-failure
-                # escalation below, not here.
-                history = await self._domain_failure_history(url, query)
-                if history and vision_avail and _router_recovery_node(
-                    history, race_rollback=True, step_id=f"race:{url}",
-                ) == "fetch.vision":
-                    outcome = await self._race_url(
-                        url, query, job_id, crawl_cap, _emit,
-                        page_offset=_slot_offset,
+                host = _host_of(url)
+                # T12 / REQ-7 AC1: per-host run gate. Bypassed entirely if a
+                # capability races fetch.vision — the overlay sees both crawl
+                # and vision states, and per-host contract governance only
+                # makes sense against a crawl that's actually dispatched.
+                if host_429_streak.get(host, 0) >= 2:
+                    # Two consecutive 429/503 on this host already — don't send;
+                    # the breaker is the honest outcome, never a crawl.
+                    logger.warning(
+                        "[CrawlOrchestrator] host circuit open job_id=%s host=%s — marking "
+                        "%s rate_limited (no fetch)", job_id, host, url,
                     )
-                else:
-                    if history and not vision_avail:
-                        logger.info(
-                            "[CrawlOrchestrator] dispatch job_id=%s url=%s history=%s "
-                            "vision=unavailable -> crawl only (REQ-10 AC3 degraded)",
-                            job_id, url, history,
-                        )
-                    # Forward this run's emitter into the capability so per-URL
-                    # CRAWLER_PAGE_FETCHED events reach the panel — the nav
-                    # overlay's progressive animation advances on exactly those
-                    # events. The inner orchestrator re-wraps it, so hand it a
-                    # CrawlProgress consumer that feeds our (event, payload)
-                    # emitter. Optional kwarg, tolerated if a capability
-                    # implements only the bare 3-arg protocol (REQ-6 AC1).
-                    # FILTER, don't forward wholesale. fetch_url runs a
-                    # single-URL research of its own and emits its OWN lifecycle
-                    # events — CRAWLER_STARTED with url_count=1, plus COMPLETE /
-                    # OPEN_TAB / ERROR. Forwarding those let each per-URL fetch
-                    # restart the outer run in the UI: the overlay reset to
-                    # `loading` (killing the shutter animation and wiping the
-                    # cursor), pagesDone reset to 0, and pagesTotal became 1 —
-                    # which is what rendered as "3/1" live on 2026-08-11 09:18.
-                    # The OUTER run owns the lifecycle; only the per-page signal
-                    # belongs to it, renumbered to this URL's real slot.
-                    #
-                    # page_number/total are the OUTER run's counter and are
-                    # rewritten here (the inner single-URL run only knows 1/1).
-                    # capture_page is NOT rewritten: the inner run already
-                    # reported the address it actually saved under, and
-                    # overwriting it with the counter is exactly what made the
-                    # iframe request /capture/<job>/3 when only /1 existed.
-                    def _forward(p, _i=idx):
-                        if p.event != "CRAWLER_PAGE_FETCHED":
-                            return
-                        payload = dict(p.payload or {})
-                        payload["page_number"] = _i + 1
-                        payload["total"] = len(capped)
-                        _emit("CRAWLER_PAGE_FETCHED", payload)
-
-                    outcome = await _call_fetch_one(
-                        crawl_cap, url, query, job_id,
-                        on_progress=_forward, page_offset=_slot_offset,
+                    slots[idx] = PageData(
+                        url=url,
+                        title="",
+                        markdown="",
+                        html=None,
+                        metadata={"rate_limited": True, "host": host},
+                        error="rate_limited",
                     )
-                    # T13 (specs/dag-node-execution-model): the fresh-failure
-                    # escalation branch is REPLACED by an advertisement
-                    # consultation — fetch.vision's NodeSpec declares it
-                    # recovers CHALLENGE/EMPTY/TOO_SHORT, and the router picks
-                    # it (REQ-4 AC1, design D4). No branch lives in this
-                    # module anymore; BT-12 still passes because the
-                    # advertisement encodes the same set. TRANSPORT_ERROR is
-                    # deliberately NOT advertised (robots/DNS must never be
-                    # routed around — REQ-5 AC3 / REQ-8 AC3).
-                    usable = outcome.page is not None and outcome.verdict.usable
-                    if vision_avail and not usable:
-                        _recovery = _router_recovery_node(
-                            outcome.verdict.reason.value, step_id=f"esc:{url}",
+                    return
+                async with _host_semaphore(host):
+                    history = await self._domain_failure_history(url, query)
+                    if history and vision_avail and _router_recovery_node(
+                        history, race_rollback=True, step_id=f"race:{url}",
+                    ) == "fetch.vision":
+                        outcome = await self._race_url(
+                            url, query, job_id, crawl_cap, _emit,
+                            page_offset=_slot_offset,
                         )
-                        if _recovery == "fetch.vision":
-                            outcome = await self._escalate_to_vision(
-                                url, query, job_id, outcome, _emit,
-                                page_offset=_slot_offset,
+                    else:
+                        if history and not vision_avail:
+                            logger.info(
+                                "[CrawlOrchestrator] dispatch job_id=%s url=%s history=%s "
+                                "vision=unavailable -> crawl only (REQ-10 AC3 degraded)",
+                                job_id, url, history,
                             )
+                        # Forward this run's emitter into the capability so per-URL
+                        # CRAWLER_PAGE_FETCHED events reach the panel — the nav
+                        # overlay's progressive animation advances on exactly those
+                        # events. The inner orchestrator re-wraps it, so hand it a
+                        # CrawlProgress consumer that feeds our (event, payload)
+                        # emitter. Optional kwarg, tolerated if a capability
+                        # implements only the bare 3-arg protocol (REQ-6 AC1).
+                        # FILTER, don't forward wholesale. fetch_url runs a
+                        # single-URL research of its own and emits its OWN lifecycle
+                        # events — CRAWLER_STARTED with url_count=1, plus COMPLETE /
+                        # OPEN_TAB / ERROR. Forwarding those let each per-URL fetch
+                        # restart the outer run in the UI: the overlay reset to
+                        # `loading` (killing the shutter animation and wiping the
+                        # cursor), pagesDone reset to 0, and pagesTotal became 1 —
+                        # which is what rendered as "3/1" live on 2026-08-11 09:18.
+                        # The OUTER run owns the lifecycle; only the per-page signal
+                        # belongs to it, renumbered to this URL's real slot.
+                        #
+                        # page_number/total are the OUTER run's counter and are
+                        # rewritten here (the inner single-URL run only knows 1/1).
+                        # capture_page is NOT rewritten: the inner run already
+                        # reported the address it actually saved under, and
+                        # overwriting it with the counter is exactly what made the
+                        # iframe request /capture/<job>/3 when only /1 existed.
+                        def _forward(p, _i=idx):
+                            if p.event != "CRAWLER_PAGE_FETCHED":
+                                return
+                            payload = dict(p.payload or {})
+                            payload["page_number"] = _i + 1
+                            payload["total"] = len(capped)
+                            _emit("CRAWLER_PAGE_FETCHED", payload)
+
+                        outcome = await _call_fetch_one(
+                            crawl_cap, url, query, job_id,
+                            on_progress=_forward, page_offset=_slot_offset,
+                        )
+                        # CONFLICT-FLAG (stash pop): stashed side called
+                        # crawl_cap.fetch_one with wholesale forwarding + TypeError
+                        # fallback; kept upstream filtered _forward (fixes "3/1"
+                        # overlay reset + wrong capture slot of 2026-08-11).
+                        # T13 (specs/dag-node-execution-model): the fresh-failure
+                        # escalation branch is REPLACED by an advertisement
+                        # consultation — fetch.vision's NodeSpec declares it
+                        # recovers CHALLENGE/EMPTY/TOO_SHORT, and the router picks
+                        # it (REQ-4 AC1, design D4). No branch lives in this
+                        # module anymore; BT-12 still passes because the
+                        # advertisement encodes the same set. TRANSPORT_ERROR is
+                        # deliberately NOT advertised (robots/DNS must never be
+                        # routed around — REQ-5 AC3 / REQ-8 AC3).
+                        usable = outcome.page is not None and outcome.verdict.usable
+                        if vision_avail and not usable:
+                            _recovery = _router_recovery_node(
+                                outcome.verdict.reason.value, step_id=f"esc:{url}",
+                            )
+                            if _recovery == "fetch.vision":
+                                outcome = await self._escalate_to_vision(
+                                    url, query, job_id, outcome, _emit,
+                                    page_offset=_slot_offset,
+                                )
                 # T12c (REQ-18 AC1): one HAR entry per vision/crawl outcome.
                 # A walled URL records error="challenge" so the existing
                 # _apply_har_penalties path penalizes the domain exactly like a
@@ -983,6 +1039,20 @@ class CrawlOrchestrator:
                         "error": "challenge" if wall is not None else "",
                         "capability": getattr(outcome, "capability", "fetch.crawl"),
                     })
+                # T12 (REQ-7 AC2): count consecutive 429/503 on this host. Two
+                # in a row opens the breaker for the REST of this run's calls
+                # on that host; the streak resets on any clean outcome.
+                _st = _outcome_transport_status(outcome)
+                if _st in (429, 503):
+                    host_429_streak[host] = host_429_streak.get(host, 0) + 1
+                    if host_429_streak[host] == 2:
+                        logger.warning(
+                            "[CrawlOrchestrator] host circuit OPEN job_id=%s host=%s "
+                            "after 2 consecutive %s — remaining same-host URLs "
+                            "will be rate_limited", job_id, host, _st,
+                        )
+                else:
+                    host_429_streak[host] = 0
                 if outcome.page is not None and outcome.verdict.usable:
                     # T12c (REQ-18 AC2): stamp provenance on the page so the
                     # document-store path (which consumes PageData) knows the
