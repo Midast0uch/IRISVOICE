@@ -1,6 +1,6 @@
 # IRIS Voice — Full Audio Pipeline Architecture
 
-> **DEFINITIVE REFERENCE** — Last updated 2026-09-07 (TTS worker lifecycle REQ-28: lazy boot, connect pre-warm, idle unload/respawn, voice-state cache, post-synthesis compact).
+> **DEFINITIVE REFERENCE** — Last updated 2026-09-07 (session-306: AC28.2 TTS worker leak fixed via MKL fast-MM off + Known-Issues entry; TTS worker lifecycle REQ-28: lazy boot, connect pre-warm, idle unload/respawn, voice-state cache, post-synthesis compact).
 > This document is the single source of truth for the audio pipeline. If the
 > code and this document ever disagree, treat this as a bug and update both.
 > All values below are verified against `backend/audio/voice_command.py`,
@@ -65,7 +65,7 @@ WebSocket broadcasts.
 | **AudioPipeline** | `backend/audio/pipeline.py` | PortAudio I/O streams, native C++ player, device enumeration | Callback + main |
 | **ViolawakeWakeWordDetector** | `backend/voice/violawake_detector.py` | Custom ONNX wake head + OpenWakeWord backbone, 320-sample frames, CPU-first | Audio callback |
 | **TTSManager (proxy)** | `backend/agent/tts.py` | Proxy to the Pocket-TTS subprocess worker; lazy at boot, pre-warms on WS connect, unloads worker after `IRIS_TTS_IDLE_TIMEOUT_S` quiet (default 600s), respawns on demand (singleflight); sends JSONL, yields audio | Proxy (main) + reaper daemon |
-| **TTS Worker (subprocess)** | `backend/audio/tts_worker.py` | Pocket-TTS model + hash-guarded voice-state disk cache (`data/tts_voice_cache/`, 10.7s encode → ~0s load) + streaming synthesis + post-synthesis heap compact (gc → `_heapmin` → trim) in a SEPARATE PROCESS | Subprocess |
+| **TTS Worker (subprocess)** | `backend/audio/tts_worker.py` | Pocket-TTS model + hash-guarded voice-state disk cache (`data/tts_voice_cache/`, 10.7s encode → ~0s load) + streaming synthesis + post-synthesis heap compact (gc → `_heapmin` → trim) in a SEPARATE PROCESS. Spawn env sets `MKL_DISABLE_FAST_MM=1` (operator override respected) — without it Intel MKL retains ~18MB per synthesis forever (see Known Issues, session-306) | Subprocess |
 | **VoiceCommandHandler** | `backend/audio/voice_command.py` | VAD, recording, STT orchestration, cadence detection, activation beep | Multi-threaded (VAD + STT + beep) |
 | **ParakeetTranscriber** | `backend/audio/voice_command.py` | sherpa-onnx Parakeet TDT 0.6B v3 int8 in a worker SUBPROCESS (`parakeet_sherpa_worker.py`, JSONL): lazy first-speech spawn (~2 s) + build (~4–13 s cold), CUDA default (`IRIS_PARAKEET_PROVIDER`), word timestamps | Spawner thread + reader thread (bounded round-trip) |
 | **parakeet_sherpa** | `backend/audio/parakeet_sherpa.py` | Model-dir resolution, cuDNN DLL path (via torch bundle), recognizer factory with CPU fallback | Import-time only |
@@ -274,6 +274,13 @@ Floor effect: idle total 3350.7 → 1302.8 MB (−2047.9 MB returned, harness
 measured). Voice-state cache: TOMV2 encode (10.7 s) runs once ever, then
 `voice_state_<sha>.pt` (3.5 MB) loads in ~0 s. Post-synthesis compact runs
 after every request (success or failure) and can never fail the synthesis.
+Worker spawn env sets `MKL_DISABLE_FAST_MM=1` (session-306, AC28.2): without
+it the worker grows ~25MB per synthesis, linear with no plateau (Intel MKL
+fast-MM retains per-call scratch; invisible to all TTS logging, which only
+reports speed/events). With it: ~7MB/synth residual CRT fragmentation, same
+RTF (~1.9x), same audio. Pinned by `test_worker_spawn_disables_mkl_fast_mm`
+(+ override test) — see Known Issues for the full story and the re-check
+procedure.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -974,7 +981,7 @@ the fixed audio-pipeline costs:
 | Violawake (ONNX + OWW) | 0 | ~50 MB | Always (wake word) |
 | sherpa-onnx runtime | 0 | (included above) | No torch at STT runtime; cuDNN via torch bundle |
 | Native C++ player | 0 | ~1 MB | During TTS playback |
-| Pocket-TTS worker (subprocess) | 0 | **~2.05–2.3 GB commit** (~1.1 GB resident fresh, decaying toward ~0.3 GB over idle hours; 438 MB weights on disk) — live only; **0 at rest** (idle-unload, REQ-28) | On first speech after boot/connect; unloaded after quiet timeout |
+| Pocket-TTS worker (subprocess) | 0 | **~2.05–2.3 GB commit** (~1.1 GB resident fresh, decaying toward ~0.3 GB over idle hours; 438 MB weights on disk) — live only; **0 at rest** (idle-unload, REQ-28). Spawn env MUST carry `MKL_DISABLE_FAST_MM=1` (else +25MB/synth leak, session-306) | On first speech after boot/connect; unloaded after quiet timeout |
 | **Total (audio pipeline, parakeet, TTS live)** | **~1 GB** | **~2.5 GB commit** | measured 2026-09-07: backend 1.30 + worker 2.05 GB |
 | **Total (audio pipeline, parakeet, TTS idle)** | **~1 GB** | **~1.3 GB commit** | measured 2026-09-07 post-unload (was 3.35–3.59 GB before REQ-28) |
 | **Total (audio pipeline, whisper)** | **0** | **~95 MB** | — |
@@ -1031,7 +1038,7 @@ LLM provider memory (separate, user-selected):
 - `backend/tests/test_conversation_kernel.py` — 12 tests
 - `backend/tests/test_voice_pipeline.py::TestStopListening` — 21 tests (phrase match incl. fillers/negatives, pipeline interception skips LLM/TTS, auto-relisten suppression, sleep entry, wake-word re-entry)
 - `backend/tests/test_narration_broadcast.py` — 4 tests (narration speaking→idle order, serialization via `_NARRATION_PLAYBACK_LOCK`, no-broadcast unwired, gateway wires broadcaster)
-- `backend/tests/unit/test_tts_lifecycle.py` — 10 tests (REQ-28: lazy boot, once-per-process prewarm, unload decision matrix, graceful reap + active sparing, respawn after reap, voice-state cache hit, post-synthesis compact hook)
+- `backend/tests/unit/test_tts_lifecycle.py` — 16 tests (REQ-28: lazy boot, once-per-process prewarm, unload decision matrix, graceful reap + active sparing, respawn after reap, voice-state cache hit, post-synthesis compact hook, 2000-char split guard, worker spawn sets `MKL_DISABLE_FAST_MM=1` + respects operator override)
 - `backend/tests/contract/test_tts_subprocess_contract.py` — worker JSONL protocol (ping/synthesize/shutdown), float32 chunks at 24 kHz, crash recovery (spawns a REAL worker)
 - `backend/tests/unit/test_tts_pocket_load.py` — model-load contract; 1 test stale at HEAD (`test_tts_manager_uses_language_not_variant` pins the pre-split in-process loader — reported, not modified)
 
@@ -1324,6 +1331,13 @@ system under test. Pilots must run backend-like from now on.
 
 ### Session 302 (2026-09-07) — TTS lifecycle rework + leak verdict (REQ-28)
 
+> AMENDED session-306: the "flat, retained arenas not a leak" verdict below
+> was overturned by deeper probing (4 syntheses are not enough to see a
+> +25MB/synth slope through ±30MB noise — 30 syntheses showed it linear, no
+> plateau). See "Session 306 — TTS worker memory leak (Intel MKL fast-MM)"
+> for the corrected root cause, fix, and guards. The lifecycle mechanics in
+> this section (lazy/prewarm/unload/cache/compact) stand as written.
+
 **RESOLVED** (the 2.3 GB idle worker):
 - Leak probe (own worker, 3 syntheses + 60 s idle): 2307.5 → 2275.5 / 2304.2 /
   2277.5 → 2277.4 MB — flat within ±30 MB noise. Verdict: **retained arenas,
@@ -1343,6 +1357,55 @@ system under test. Pilots must run backend-like from now on.
 - `test_tts_pocket_load` repointed at the worker's `_load_model` (same
   language-not-variant requirement, correct address — was pinning the
   pre-split in-process proxy).
+
+### Session 306 (2026-09-07) — TTS worker memory leak, fixed (Intel MKL fast-MM)
+
+**SYMPTOM**: TTS worker private bytes grew ~25MB per synthesis, linear over
+30 syntheses (+745MB), no plateau — two independent workers reproduced it.
+The old Session-302 probe (4 syntheses) read it as flat noise.
+
+**WHY NO LOG CAUGHT IT (blind spot, read this first)**: every line the TTS
+stack logs describes *speed and events* — synthesis time, real-time factor,
+chunks, ready/reap transitions. All of those looked perfect (RTF stayed
+~1.9x). Nothing anywhere in the pipeline logs *native memory*, and Python's
+garbage collector cannot see the hoard (below). A leak that costs speed
+would have paged us; a leak that costs only bytes is silent. Any future
+native-memory suspicion must be answered with private-bytes measurement
+(`scripts/measure_memory.py` pattern), never with log inspection.
+
+**ROOT CAUSE**: Intel MKL (the math library torch uses for CPU number
+crunching) runs its own private memory manager that keeps per-call scratch
+"in case it's needed again" — and never gives it back. Each sentence filed
+~18MB into that private cabinet. Python-side forensics proved the negative:
+threads flat at 1, Python object count flat, shared voice state flat at 3MB,
+`copy_state=False` corrupts audio (the per-call deepcopy is load-bearing —
+never touch it), torch profiler names only already-freed transients,
+single-threaded run changes nothing, KV-cache sizing is proportional to text.
+The ~19MB of per-call torch temporaries is freed correctly; MKL kept its cut.
+
+**FIX** (`backend/agent/tts.py`, worker spawn env — 12 lines, zero behavior
+change): `MKL_DISABLE_FAST_MM=1` (operator override respected; ignored on
+non-MKL builds). MKL then allocates through plain malloc so freed blocks are
+reused. Measured through the real spawn path: slope 25 → 7MB/synth, warm
+first-audio still 0.2s, same voice, same RTF. Pinned by
+`test_worker_spawn_disables_mkl_fast_mm` (+ override test) in
+`test_tts_lifecycle.py` — deleting the flag fails the suite.
+
+**RESIDUAL (known, bounded, not silently dropped)**: ~7MB/synth linear
+through 40 syntheses — CRT-heap fragmentation from torch transient churn,
+no code retainer, no plateau. No fix exists that doesn't trade something
+away (periodic respawn costs latency churn, fewer threads costs speed, a
+custom allocator is platform-fragile). Bounded in practice by the existing
+600 s idle-unload. AC28.2's literal ≤50MB/10 gate stays red (+75/10);
+revisit only with a library-side allocator fix or an accepted recycle design.
+
+**RE-CHECK PROCEDURE (if memory suspicion returns)**: 1) sample worker
+private bytes across ≥10 real syntheses (first-synth arena setup excluded
+from slope math); 2) compare threads / gc-object count / shared-state bytes
+across the run — if all flat, suspect native allocator, not code; 3) test
+`MKL_DISABLE_FAST_MM` and thread-count variants in-process before touching
+any call path; 4) never "fix" by buffering streaming calls (regresses
+first-audio latency) or by weakening the gate.
 
 ### Session 302b (2026-09-07) — test-harness reconciliation (no production change)
 
