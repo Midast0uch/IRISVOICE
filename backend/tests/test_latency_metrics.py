@@ -94,6 +94,13 @@ class TestSTTLatencyLogging:
         handler.sample_rate = 16000
         handler._parakeet = MagicMock()
         handler._parakeet.transcribe = MagicMock(return_value="")
+        # Mock-fidelity (branch drift, fixed 2026-09-07): the code now
+        # distinguishes still-loading (→ 'parakeet_loading') from genuinely
+        # broken (→ 'parakeet_failed'). A bare MagicMock is truthy for
+        # _loading, so it exercised the wrong branch. This test names the
+        # FAILED path: not loading, load error present.
+        handler._parakeet._loading = False
+        handler._parakeet._load_error = "CUDA unavailable (test)"
 
         result = handler._transcribe_via_parakeet(np.zeros(16000, dtype=np.float32))
         assert result == ""
@@ -125,6 +132,10 @@ class TestSTTLatencyLogLine:
             gw = IRISGateway.__new__(IRISGateway)
             gw._logger = logging.getLogger("irisvoice")
             gw._active_voice_client = {}
+            # Mock-fidelity (gateway drift, fixed 2026-09-07): _on_voice_result
+            # reads _active_conversation_id (set by the real __init__). Without
+            # it the mock dies before any assertion. Plain {} mirrors __init__.
+            gw._active_conversation_id = {}
             gw._main_loop = None  # Will early-return before using the loop
             gw._conversation_sessions = set()
 
@@ -160,6 +171,10 @@ class TestSTTLatencyLogLine:
             gw = IRISGateway.__new__(IRISGateway)
             gw._logger = logging.getLogger("irisvoice")
             gw._active_voice_client = {}
+            # Mock-fidelity (gateway drift, fixed 2026-09-07): _on_voice_result
+            # reads _active_conversation_id (set by the real __init__). Without
+            # it the mock dies before any assertion. Plain {} mirrors __init__.
+            gw._active_conversation_id = {}
             gw._main_loop = None
             gw._conversation_sessions = set()
 
@@ -188,6 +203,10 @@ class TestSTTLatencyLogLine:
             gw = IRISGateway.__new__(IRISGateway)
             gw._logger = logging.getLogger("irisvoice")
             gw._active_voice_client = {}
+            # Mock-fidelity (gateway drift, fixed 2026-09-07): _on_voice_result
+            # reads _active_conversation_id (set by the real __init__). Without
+            # it the mock dies before any assertion. Plain {} mirrors __init__.
+            gw._active_conversation_id = {}
             gw._main_loop = None
             gw._conversation_sessions = set()
 
@@ -318,6 +337,10 @@ class TestLiveLatencyMetricsDemo:
             gw = IRISGateway.__new__(IRISGateway)
             gw._logger = logging.getLogger("irisvoice")
             gw._active_voice_client = {}
+            # Mock-fidelity (gateway drift, fixed 2026-09-07): _on_voice_result
+            # reads _active_conversation_id (set by the real __init__). Without
+            # it the mock dies before any assertion. Plain {} mirrors __init__.
+            gw._active_conversation_id = {}
             gw._main_loop = None
             gw._conversation_sessions = set()
             gw._on_voice_result({

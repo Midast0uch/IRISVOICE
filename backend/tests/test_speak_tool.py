@@ -11,6 +11,8 @@ The speak tool lets the agent proactively speak via TTS.  Contracts:
 import os
 import sys
 
+import pytest
+
 sys.path.insert(
     0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
@@ -23,6 +25,21 @@ def _capture(bus, event):
     captured = []
     bus.subscribe(event, lambda p: captured.append(p))
     return captured
+
+
+@pytest.fixture(autouse=True)
+def _isolated_kernel_registry():
+    """Save/restore the process-wide kernel registry (pollution fix,
+    2026-09-07): test_resolves_active_kernel_without_creating_one seeds a
+    _FakeKernel here; without restore it leaks into every later test in the
+    process (contract test_speak_tool + voice_command suites failed with
+    phantom kernels). No assertion touched."""
+    import backend.agent.agent_kernel as _ak
+
+    saved = dict(_ak._agent_kernel_instances)
+    yield
+    _ak._agent_kernel_instances.clear()
+    _ak._agent_kernel_instances.update(saved)
 
 
 def test_emits_utterance_event():

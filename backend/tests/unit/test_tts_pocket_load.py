@@ -18,21 +18,30 @@ import inspect
 import importlib
 
 
-def test_tts_manager_uses_language_not_variant():
-    """Backend TTSManager must call load_model with `language=`, not `variant=`."""
-    from backend.agent.tts import TTSManager
+def test_tts_worker_uses_language_not_variant():
+    """TTS worker must call load_model with `language=`, not `variant=`.
 
-    src = inspect.getsource(TTSManager._load_pocket_tts)
+    Provenance (read before changing): this test previously inspected
+    `TTSManager._load_pocket_tts`, which has been a 2-line spawn proxy
+    since the worker-subprocess split — so it failed at HEAD asserting
+    `language=` in a method that never calls load_model. The requirement
+    (v2.x renamed `variant` → `language`; the old kwarg raises TypeError
+    that load swallows) is unchanged; only its address moved with the
+    code, to the worker's `_load_model`. Same strength, correct target.
+    """
+    import backend.audio.tts_worker as wmod
+
+    src = inspect.getsource(wmod._load_model)
     assert "variant=" not in src, (
-        "backend/agent/tts.py still passes `variant=` to TTSModel.load_model(). "
-        "This kwarg was renamed to `language=` in Pocket-TTS v2.x. "
-        "Fix: replace `variant=os.environ.get(...)` with "
-        "`language=os.environ.get('POCKET_TTS_LANGUAGE', 'english')`."
+        "backend/audio/tts_worker.py still passes `variant=` to "
+        "TTSModel.load_model(). This kwarg was renamed to `language=` in "
+        "Pocket-TTS v2.x."
     )
     assert "language=" in src, (
-        "backend/agent/tts.py should pass `language=` to TTSModel.load_model()."
+        "backend/audio/tts_worker.py should pass `language=` to "
+        "TTSModel.load_model()."
     )
-    print("test_tts_manager_uses_language_not_variant passed")
+    print("test_tts_worker_uses_language_not_variant passed")
 
 
 def test_load_model_accepts_language_kwarg():

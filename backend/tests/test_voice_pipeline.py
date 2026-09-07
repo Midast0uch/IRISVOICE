@@ -777,8 +777,17 @@ class TestVoiceFirstDERMode:
 # Each test proves the specific change works as intended.
 
 class TestVADSilenceThreshold:
-    """Verify VAD_SILENCE_SEC=0.6 produces faster turn-end
-    (was 0.8 → 0.6 for this session; old 0.5 was too aggressive)."""
+    """VAD tuning pins (current contract, NOT historical values).
+
+    Live history: 0.5 cut mid-sentence pauses → 0.6 (this file's old pin) →
+    0.8 covers breaths (230ce06f, live 2026-09-04 — the value in force).
+    The 1.2s figure elsewhere in history is now the ADAPTIVE cap
+    (VAD_SILENCE_SEC_MAX), not the base threshold. The loop itself changed
+    under these tests (230ce06f): CALIBRATE phase (~0.5s ambient sampling),
+    adaptive noise floor, 3.0x/1.5x hysteresis — so stimulus must lead with
+    quiet calibration frames; speech-from-frame-0 is BY DESIGN treated as
+    room noise (see test_constant_drone_never_triggers_speech).
+    """
 
     def _make_handler(self):
         from backend.audio.voice_command import VoiceCommandHandler
@@ -801,30 +810,38 @@ class TestVADSilenceThreshold:
         handler._start_lock = threading.Lock()
         return handler
 
-    def test_vad_silence_constant_is_075(self):
-        """VAD_SILENCE_SEC must be 1.2 (tuned for natural speech pauses)."""
+    def test_vad_silence_constants_pinned(self):
+        """Base 0.8 / min-speech 0.3 / adaptive cap 1.2 (live-tuned 2026-09-04:
+        0.5 cut mid-sentence pauses, 0.8 covers breaths — 230ce06f)."""
         from backend.audio.voice_command import VoiceCommandHandler
-        assert VoiceCommandHandler.VAD_SILENCE_SEC == 1.2, (
-            f"VAD_SILENCE_SEC is {VoiceCommandHandler.VAD_SILENCE_SEC}, expected 1.2"
+        assert VoiceCommandHandler.VAD_SILENCE_SEC == 0.8, (
+            f"VAD_SILENCE_SEC is {VoiceCommandHandler.VAD_SILENCE_SEC}, expected 0.8"
         )
+        assert VoiceCommandHandler.VAD_MIN_SPEECH_SEC == 0.3
+        assert VoiceCommandHandler.VAD_SILENCE_SEC_MAX == 1.2
 
     def test_speech_plus_05s_silence_does_not_end_speech(self):
         """
-        With VAD_SILENCE_SEC=0.6, feeding speech + only 0.5s of silence
-        must NOT trigger end-of-speech. 0.5 < 0.6, so the VAD loop should
+        With VAD_SILENCE_SEC=0.8, feeding speech + only 0.5s of silence
+        must NOT trigger end-of-speech. 0.5 < 0.8, so the VAD loop should
         still be blocked waiting for more silence frames.
+
+        Stimulus leads with quiet calibration frames (the loop's CALIBRATE
+        phase consumes the first ~0.5s as ambient — see class docstring).
         """
         from backend.audio.voice_command import VoiceCommandHandler
 
         handler = self._make_handler()
         frame_sec = 512 / handler.sample_rate  # 0.032s
 
+        for _ in range(int(0.6 / frame_sec)):  # calibration: quiet room
+            handler._raw_frames.append(np.zeros(512, dtype=np.float32) + 0.001)
         speech_needed = int(VoiceCommandHandler.VAD_MIN_SPEECH_SEC / frame_sec)
         speech_frame = np.full(512, 0.05, dtype=np.float32)
         for _ in range(speech_needed + 2):
             handler._raw_frames.append(speech_frame)
 
-        # 0.5s of silence (15 frames) — still less than 0.6s threshold
+        # 0.5s of silence (15 frames) — still less than 0.8s threshold
         silence_05_frames = int(0.5 / frame_sec)
         silence_frame = np.zeros(512, dtype=np.float32)
         for _ in range(silence_05_frames):
@@ -841,19 +858,21 @@ class TestVADSilenceThreshold:
 
         assert not result["returned"], (
             "VAD returned after only 0.5s of silence — "
-            "threshold is {VoiceCommandHandler.VAD_SILENCE_SEC}, expected 0.6"
+            "threshold is {VoiceCommandHandler.VAD_SILENCE_SEC}, expected 0.8"
         )
 
     def test_vad_silence_sec_frames_ends_speech(self):
         """
-        Feeding speech + VAD_SILENCE_SEC worth of silence frames
-        (+ 1 extra) MUST trigger end-of-speech.
+        Feeding quiet calibration + speech + VAD_SILENCE_SEC worth of
+        silence frames (+ 1 extra) MUST trigger end-of-speech.
         """
         from backend.audio.voice_command import VoiceCommandHandler
 
         handler = self._make_handler()
         frame_sec = 512 / handler.sample_rate
 
+        for _ in range(int(0.6 / frame_sec)):  # calibration: quiet room
+            handler._raw_frames.append(np.zeros(512, dtype=np.float32) + 0.001)
         speech_needed = int(VoiceCommandHandler.VAD_MIN_SPEECH_SEC / frame_sec)
         speech_frame = np.full(512, 0.05, dtype=np.float32)
         for _ in range(speech_needed + 2):
@@ -866,16 +885,43 @@ class TestVADSilenceThreshold:
 
         result = {"returned": False}
         def run_vad():
-            handler._vad_wait_for_speech_then_silence()
+            assert handler._vad_wait_for_speech_then_silence() is True
             result["returned"] = True
 
         t = threading.Thread(target=run_vad, daemon=True)
         t.start()
-        t.join(timeout=2.0)
+        t.join(timeout=5.0)
 
         assert result["returned"], (
             f"VAD did NOT return after {VoiceCommandHandler.VAD_SILENCE_SEC}s of silence — "
             "end-of-speech detection is broken. Check VAD_SILENCE_SEC and frame counting."
+        )
+
+    def test_constant_drone_never_triggers_speech(self):
+        """
+        A constant mid-level drone from frame 0 is ambient noise, NOT speech:
+        the CALIBRATE phase folds it into the noise floor (3x hysteresis puts
+        onset above it), so the loop must run dry and return False — never
+        trigger a transcription. Instance-scoped short max duration keeps
+        this fast; production constants untouched.
+        """
+        handler = self._make_handler()
+        handler.VAD_MAX_DURATION_SEC = 2.0  # instance shadow, not a global change
+        for _ in range(int(2.0 / (512 / handler.sample_rate))):
+            handler._raw_frames.append(np.full(512, 0.05, dtype=np.float32))
+
+        result = {"done": False, "value": None}
+        def run_vad():
+            result["value"] = handler._vad_wait_for_speech_then_silence()
+            result["done"] = True
+
+        t = threading.Thread(target=run_vad, daemon=True)
+        t.start()
+        t.join(timeout=10.0)
+
+        assert result["done"] and result["value"] is False, (
+            "constant drone must NOT count as speech (calibration floor) — "
+            "false triggers would transcribe room noise"
         )
 
 
@@ -1649,6 +1695,14 @@ class TestTTSWordEventIntegration:
         gw._state_manager = MagicMock()
         gw._agent_kernels = {}
         gw._conversation_sessions = set()
+        # Mock-fidelity (gateway drift, fixed 2026-09-07): the current
+        # _handle_tts_play finally-block reads _voice_handler and
+        # _on_voice_result reads _active_conversation_id — both set by the
+        # real __init__. A mock without them tests nothing (AttributeError
+        # before any assertion). Values mirror TestStopListening's mock.
+        gw._voice_handler = None
+        gw._sleeping_sessions = set()
+        gw._active_conversation_id = {}
         gw._active_voice_client = {}
         gw._relisten_pre_speech_timeout = 8.0
         gw._tts_prewarmed = True

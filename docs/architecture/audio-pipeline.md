@@ -608,29 +608,42 @@ iris_gateway._speak_response()
 ## VAD State Machine
 
 The VAD runs in `VoiceCommandHandler._vad_wait_for_speech_then_silence()`.
-It is a two-state machine with a return value indicating whether speech
-was actually detected.
+It is a four-state machine with adaptive noise-floor calibration (retuned
+live over 0.5 → 0.6 → **0.8**; see history below).
 
 ### Parameters (from `backend/audio/voice_command.py`)
 
 ```python
-VAD_ENERGY_THRESHOLD: float = 0.006  # RMS level that counts as speech
-VAD_MIN_SPEECH_SEC: float = 0.15     # ignore blips shorter than this
-VAD_SILENCE_SEC: float = 1.2         # silence after speech → end of utterance
+VAD_ENERGY_THRESHOLD: float = 0.006  # fallback floor when no frames yet
+VAD_MIN_SPEECH_SEC: float = 0.3      # ignore blips shorter than this
+VAD_SILENCE_SEC: float = 0.8         # base end-of-speech silence (live 2026-09-04: 0.5 cut mid-sentence pauses, 0.8 covers breaths)
+VAD_SILENCE_SEC_MAX: float = 1.2     # hard cap on adaptive silence (long utterances)
 VAD_MAX_DURATION_SEC: float = 30.0   # hard cap on recording length
 VAD_POLL_INTERVAL_SEC: float = 0.015 # how often VAD loop checks for new frames
 ```
 
+### Tuning history (why 0.8, not 1.2)
+
+Session 155 set 1.2 for natural pauses; a later session moved 0.5 → 0.6;
+commit `230ce06f` (live 2026-09-04) moved 0.5 → **0.8** because 0.5 cut
+mid-sentence pauses, with 0.8 covering breaths. 1.2 survives as the adaptive
+cap, not the base. Tests pin 0.8 / 0.3 / 1.2-max (`TestVADSilenceThreshold`).
+
 ### State Transitions
 
 ```
+CALIBRATE
+  │ first ~0.5s of frames sampled as ambient (median, RMS >= 0.1 excluded
+  │ so beep echo can't poison it); constant drone from frame 0 becomes the
+  │ floor and NEVER triggers speech (anti-false-trigger by design)
+  ▼
 PRE_SPEECH
-  │ rms >= VAD_ENERGY_THRESHOLD
-  │ AND speech_count >= speech_needed (5 frames at 0.15s)
+  │ rms >= 3.0x floor (hysteresis; floor-adaptive, 0.006 fallback)
+  │ sustained for VAD_MIN_SPEECH_SEC (0.3s)
   ▼
 IN_SPEECH
-  │ rms < VAD_ENERGY_THRESHOLD
-  │ AND silence_count >= silence_needed (37 frames at 1.2s)
+  │ rms < 1.5x floor sustained for VAD_SILENCE_SEC (0.8s)
+  │ (long utterances > 5s speech stretch the allowance up to 1.2s cap)
   ▼
 DONE → return True (speech detected and ended naturally)
 ```
@@ -1327,10 +1340,36 @@ system under test. Pilots must run backend-like from now on.
   a completed synthesis.
 - Doc honesty: `tts.py` claimed "~100 MB RAM" (weights-only figure) for a
   2.3 GB process — corrected to measured commit/resident figures.
-- Stale test noted (not modified): `test_tts_pocket_load.py::
-  test_tts_manager_uses_language_not_variant` pins the pre-split in-process
-  `_load_pocket_tts` (fails identically at HEAD — same stale class as the
-  `fetch_url` mocks; the `language=` call lives in the worker's `_load_model`).
+- `test_tts_pocket_load` repointed at the worker's `_load_model` (same
+  language-not-variant requirement, correct address — was pinning the
+  pre-split in-process proxy).
+
+### Session 302b (2026-09-07) — test-harness reconciliation (no production change)
+
+**RESOLVED** — pre-existing reds triaged, harness repaired, assertions intact:
+- VAD drift: `VAD_SILENCE_SEC` 0.8 (live-tuned `230ce06f`) vs tests/doc
+  pinning 0.6/1.2, plus the loop's CALIBRATE mechanics the old stimulus
+  never fed. Tests re-pinned to 0.8/0.3/1.2-max with cited evidence; frames
+  tests now lead with quiet calibration; new drone test pins the
+  calibration floor (constant noise never triggers). Doc §VAD rewritten.
+- Mock drift: `test_voice_pipeline` gateway mock + `test_latency_metrics`
+  gateways gained the `_voice_handler` / `_active_conversation_id` attrs
+  the real `__init__` sets; parakeet mock fixed to the failed branch
+  (`_loading=False` + `_load_error`, the path the test names — a bare
+  MagicMock is truthy for `_loading` and took the wrong branch).
+- Global pollution: both `test_speak_tool.py` files save/restore
+  `agent_kernel._agent_kernel_instances` around each test — this alone
+  healed the switch_conversation + voice_command contract failures (their
+  logic was fine; phantom `_FakeKernel`s were the cause).
+- `test_tts_pocket_load` repointed at the worker's `_load_model` (same
+  language-not-variant requirement, correct address).
+- Audio sweep after fixes: **250 passed, 0 failed** (integration
+  voice file excluded — needs a physical mic; hangs headless regardless
+  of code).
+- Long-text repro (2500 chars, own worker): 61.7 s → 3,019,200 samples,
+  worker alive — the "dies on long text" OPEN row did NOT reproduce;
+  commit +477 MB retained on the long job (short-job deltas remain flat).
+  Row left OPEN pending a second reproduction, not closed on one datapoint.
 
 ---
 
