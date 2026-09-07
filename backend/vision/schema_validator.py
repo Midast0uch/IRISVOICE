@@ -105,6 +105,99 @@ def is_supported_keyword(keyword: str) -> bool:
     return keyword in ALLOWED_KEYWORDS
 
 
+def validate_instance(payload: Any, schema: Any) -> List[str]:
+    """Validate an extracted payload against an allowlisted output_schema.
+
+    Covers exactly the 12 allowlist keywords (REQ-25 AC25.1, T38). Unknown
+    payload keys are IGNORED here — strict projection drops them upstream
+    (der_loop.StepFindingsAccumulator.add keeps goal fields only), so this
+    checker judges declared fields only. ``propertyOrdering`` is schema-level
+    display metadata with no instance semantics — accepted, never constrains.
+    Never raises: returns violation strings (empty == valid). Stdlib only.
+    """
+    errors: List[str] = []
+    _check_instance(payload, schema, "root", errors)
+    return errors
+
+
+def _check_instance(value: Any, schema: Any, path: str, errors: List[str]) -> None:
+    """Recursive instance check; ``$path`` tracks location like _walk."""
+    if not isinstance(schema, dict):
+        return  # schema already validated upstream; nothing to check against
+    if value is None:
+        if schema.get("nullable") is True:
+            return
+        errors.append(f"{path}: null value but schema is not nullable")
+        return
+    _type = schema.get("type")
+    if _type is not None:
+        if not _matches_type(value, _type):
+            errors.append(
+                f"{path}: expected type {_type!r}, got {type(value).__name__}"
+            )
+            return  # wrong-typed: deeper keywords cannot meaningfully apply
+    if "enum" in schema and isinstance(schema["enum"], list):
+        if value not in schema["enum"]:
+            errors.append(f"{path}: {value!r} not in enum {schema['enum']!r}")
+    if "format" in schema and not isinstance(value, str):
+        errors.append(f"{path}: format {schema['format']!r} requires a string")
+    if isinstance(value, dict):
+        _props = schema.get("properties")
+        if isinstance(_props, dict):
+            for field_name, subschema in _props.items():
+                if field_name in value:
+                    _check_instance(value[field_name], subschema,
+                                    f"{path}.{field_name}", errors)
+        for req in schema.get("required") or []:
+            if req not in value:
+                errors.append(f"{path}: required field {req!r} is missing")
+    if isinstance(value, list):
+        _items = schema.get("items")
+        if _items is not None:
+            for i, element in enumerate(value):
+                _check_instance(element, _items, f"{path}[{i}]", errors)
+        _min_items = schema.get("minItems")
+        if isinstance(_min_items, int) and len(value) < _min_items:
+            errors.append(
+                f"{path}: {len(value)} items < minItems {_min_items}"
+            )
+        _max_items = schema.get("maxItems")
+        if isinstance(_max_items, int) and len(value) > _max_items:
+            errors.append(
+                f"{path}: {len(value)} items > maxItems {_max_items}"
+            )
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        _minimum = schema.get("minimum")
+        if isinstance(_minimum, (int, float)) and value < _minimum:
+            errors.append(f"{path}: {value!r} < minimum {_minimum!r}")
+        _maximum = schema.get("maximum")
+        if isinstance(_maximum, (int, float)) and value > _maximum:
+            errors.append(f"{path}: {value!r} > maximum {_maximum!r}")
+
+
+def _matches_type(value: Any, type_name: Any) -> bool:
+    """JSON-schema type test with Python gotchas handled (bool is not a number)."""
+    if type_name == "string":
+        return isinstance(value, str)
+    if type_name == "boolean":
+        return isinstance(value, bool)
+    if type_name == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if type_name == "integer":
+        if isinstance(value, bool):
+            return False
+        if isinstance(value, int):
+            return True
+        return isinstance(value, float) and value.is_integer()
+    if type_name == "array":
+        return isinstance(value, list)
+    if type_name == "object":
+        return isinstance(value, dict)
+    if type_name == "null":
+        return value is None
+    return True  # unknown type name: schema validated upstream; stay lenient
+
+
 def rejected_keyword_names() -> Tuple[str, ...]:
     """The explicitly-rejected keywords named by AC21.2 (documentation aid)."""
     return _EXPLICITLY_REJECTED

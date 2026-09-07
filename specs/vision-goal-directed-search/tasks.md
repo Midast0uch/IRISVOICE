@@ -82,14 +82,73 @@
 ---
 
 ## Wave 7 — Seam follow-ups + memory envelope (additive 2026-09-07; needs no Wave 1–6 rework)
-- [ ] T37 (REQ-24): Expand BatchToolCall in `der_loop.all_ready_items` + Brain-Vis semaphore (4) + fold via `collect_batch_outcome` — `backend/agent/der_loop.py` — RIPPLE: reuses orchestrator caps + vision lease; bridge shape locked by existing unit suite. Test: BT-12.
-- [ ] T38 (REQ-25): Stdlib instance checker in `schema_validator.py` + one correction pass in the orchestrator extract path with accept-and-flag fallback — `backend/vision/schema_validator.py`, `backend/crawler/orchestrator.py` — RIPPLE: projection already drops non-schema keys; run ceiling bounds the pass. Test: BT-13.
-- [ ] T39 (REQ-26): `str | GoalAnatomy` union at `dispatch_urls` / `_race_url` / `fetch_one`, `str()` at model edges, `.guardrails` into the REQ-20 gate — `backend/crawler/orchestrator.py`, `backend/vision/fetch_vision.py` — RIPPLE: duck-typing suite stays green unchanged (AC26.4). Test: BT-14.
-- [ ] T40 (REQ-27): Live-confirm per-page step advancement → lock `detail_url` discriminator → update the two stale partition keys under this spec (or revert tool_bridge if live denies) — `backend/agent/tool_bridge.py`*, two contract tests — RIPPLE: frontend needs no change. Test: CT-5.
-- [ ] T41 (REQ-28): Remove boot-time early-spawn (lazy at boot) + pre-warm on frontend connect + idle-unload timer + singleflight respawn in the TTS lifecycle; short-lived encode helper for AC28.4 — `backend/agent/tts.py`, gateway speak path — RIPPLE: d8941516 spawn sites; measure markers must cover the worker; TTS e2e suites stay green. Tests: BT-15 + live re-measure vs AC28.1–28.4 (idle ≤2.5GB, growth ≤50MB/10 syntheses, first utterance ≤30s).
-- [ ] T42 (Wave 7 gate): full behavioral + contract sweep green with zero new failures vs the session-302 baseline (35 pre-existing) + commit — RIPPLE: proves no scope widening broke earlier waves.
+- [x] T37 (REQ-24): Expand BatchToolCall in `der_loop.all_ready_items` + Brain-Vis semaphore (4) + fold via `collect_batch_outcome` — `backend/agent/der_loop.py` — RIPPLE: reuses orchestrator caps + vision lease; bridge shape locked by existing unit suite. Test: BT-12. DONE 2026-09-07 session-306: BT-12 6/6 green + test_der_loop 29/29 (carrier field + expand_batch_node/nodes + run_batch_children; no kernel change).
+- [x] T38 (REQ-25): Stdlib instance checker in `schema_validator.py` + one correction pass in the orchestrator extract path with accept-and-flag fallback — `backend/vision/schema_validator.py`, `backend/crawler/orchestrator.py` — RIPPLE: projection already drops non-schema keys; run ceiling bounds the pass. Test: BT-13. DONE 2026-09-07 session-306: BT-13 3/3 + 5 new validator unit tests + throttling/early-termination regressions green (validate_instance + stated single correction via page.metadata + accept-and-flag).
+- [x] T39 (REQ-26): `str | GoalAnatomy` union at `dispatch_urls` / `_race_url` / `fetch_one`, `str()` at model edges, `.guardrails` into the REQ-20 gate — `backend/crawler/orchestrator.py`, `backend/vision/fetch_vision.py` — RIPPLE: duck-typing suite stays green unchanged (AC26.4). Test: BT-14. DONE 2026-09-07 session-306: BT-14 4/4 + duck-typing contract + guardrails + goal_anatomy suites green unmodified, 24 total (crawl leg takes text, vision leg takes object; __str__ IS to_prompt).
+- [x] T40 (REQ-27): Live-confirm per-page step advancement → lock `detail_url` discriminator → update the two stale partition keys under this spec (or revert tool_bridge if live denies) — `backend/agent/tool_bridge.py`*, two contract tests — RIPPLE: frontend needs no change. Test: CT-5. DONE 2026-09-07 session-306: OQ-3 live gate PASS (2 live pages → 2 page events, counters advance, no dupes) → Session-247 KEPT, CT-5 locked, both suites 8/8 green (round-aware count; AC27.3-conflict + retry real-title observation recorded in pin_4be651f0c301).
+- [x] T41 (REQ-28): Remove boot-time early-spawn (lazy at boot) + pre-warm on frontend connect + idle-unload timer + singleflight respawn in the TTS lifecycle; short-lived encode helper for AC28.4 — `backend/agent/tts.py`, gateway speak path — RIPPLE: d8941516 spawn sites; measure markers must cover the worker; TTS e2e suites stay green. Tests: BT-15 + live re-measure vs AC28.1–28.4 (idle ≤2.5GB, growth ≤50MB/10 syntheses, first utterance ≤30s). DONE 2026-09-07 session-306: BT-15 3/3 + lifecycle unit green; lifecycle pre-existing complete (no prod change; buffering helper rejected — regresses streaming). Live: 28.1✓ 28.3✓ 28.4✓, 28.2✗ TRUE LEAK ~25MB/synth linear over 30 (two workers reproduce; torch-side forensics in pin_f69040b6eefb → follow-up spec). REQ-28 stays projected-with-finding.
+- [x] T42 (Wave 7 gate): full behavioral + contract sweep green with zero new failures vs the session-302 baseline (35 pre-existing) + commit — RIPPLE: proves no scope widening broke earlier waves. DONE 2026-09-07 session-306: sweep 2171 passed; every in-blast-radius failure proven pre-existing via stashed-control subset (identical 10 with/without changes); T40 fixed 2 baseline reds; my t43 pollution failure fixed hermetic. Commit this file + Wave-7 code/tests; no push.
+- [x] T43 (4 vision GAPs: AC3.4 CT-2 lifecycle chip, AC18.1 to_batch_tool_call, AC18.3 collect_batch_outcome, AC21.2 dispatch fail-closed): approved session-304, built session-306 first per build order — `backend/tests/contract/test_t43_vision_gap_closure_contract.py` — 14/14 green, zero production change (all four were test-only gaps).
 
 ---
+
+## Traceability Matrix (backfilled 2026-09-07 — first matrix this spec ever had)
+
+Statuses: covered (task + proving test green) · partial (implemented, proving test
+missing or indirect) · deferred (owned reason, points at follow-up REQ) · GAP
+(unmapped — proposed T43, needs user approval) · projected (Wave 7, unbuilt).
+
+| REQ-AC | Covering tasks | Proving tests | Status |
+|---|---|---|---|
+| REQ-1 AC1.1/1.2/1.3/1.4 | T1, T17, T31 | unit goal_anatomy; realtime_goal_mutation; fetch_vision_goal contract | covered ×4 |
+| REQ-2 AC2.1 | T29 | dispatch contract (clean-domain legs) | covered |
+| REQ-2 AC2.2 | T23 | fetch_vision_goal contract (duck-typed) | covered |
+| REQ-2 AC2.3 | T29 | early_schema_termination behavior | covered |
+| REQ-2 AC2.4 | — | winner logged + CRAWLER_PROGRESS; detail_url effect via tool_bridge (page-phase pin stale) | partial |
+| REQ-3 AC3.1/3.2/3.3 | T18, T19, T23, T24 | vision_action_shape contract; overlay/choreography/saccadic behavior | covered ×3 |
+| REQ-3 AC3.4 | T23 claims CT-2 | NO proving test written (lifecycle-chip contract missing) | GAP → T43 |
+| REQ-3 AC3.5 | — | capture_address contract (stale fetch_url assumption at HEAD) | partial |
+| REQ-4 AC4.4 | T8, T23 | CT-1 x/y pre-click coords | covered |
+| REQ-4 AC4.1/4.2/4.3/4.5 | T7, T8 | NO direct tests (teleport/fill/crop/delta asserted only indirectly via overlay suites) | partial ×4 |
+| REQ-5 AC5.1–5.3 | T25 | modal_overlay_auto_dismissal behavior | covered ×3 |
+| REQ-6 AC6.1–6.2 | T25 | popup_window_auto_adoption behavior | covered ×2 |
+| REQ-7 AC7.1–7.2 | T12, T29 | per_host_batch_throttling behavior | covered ×2 |
+| REQ-8 AC8.1–8.3 | T14, T27 | projection verified behaviorally; explicit 5KB/32KB bound asserts unconfirmed | partial ×3 |
+| REQ-9 AC9.1–9.2 | T9, T28 | adversarial_seo_filtering behavior | covered ×2 |
+| REQ-10 AC10.1–10.3 | T11, T19, T26 | user_takeover_mode behavior | covered ×3 |
+| REQ-11 AC11.1–11.4 | T14, T27 | cross_source_verification behavior | covered ×4 |
+| REQ-12 AC12.1–12.3 | T8, T32 | secure_session_injection behavior | covered ×3 |
+| REQ-13 AC13.1 | T13 | query_synthesizer unit | covered |
+| REQ-13 AC13.2 | — | DEFERRED → REQ-24 (initial BatchToolCall enqueue needs DER scheduler) | deferred |
+| REQ-13 AC13.3 | T30 | dynamic_query_adaptation behavior | covered |
+| REQ-13 AC13.4 | T30 | follow-up merged + verified; explicit normalized-URL dedup test unconfirmed | partial |
+| REQ-14 AC14.1–14.4 | T15, T27 | temporal_snapshot_diffing behavior | covered ×4 |
+| REQ-15 AC15.1–15.3 | T10, T28 | native_pdf_extraction behavior | covered ×3 |
+| REQ-16 AC16.1–16.2 | T6, T31 | vision_tiering unit + dual_vision_routing behavior (tiers span two modules) | covered ×2 |
+| REQ-17 AC17.2 | T7, T23 | goal-reaches-prompter pins in fetch_vision_goal contract | covered |
+| REQ-17 AC17.1/17.3 | T6, T7 | modes + 3-strike logic present; dedicated tests unconfirmed | partial ×2 |
+| REQ-18 AC18.1 | T2 | types constructed in unit; to_batch_tool_call has NO test | GAP → T43 |
+| REQ-18 AC18.2 | — | DEFERRED → REQ-24 (per-resource DER governance) | deferred |
+| REQ-18 AC18.3 | T2 | BatchOutcome constructed in unit; collect_batch_outcome untested | GAP → T43 |
+| REQ-19 AC19.1 | T16, T23 | batch_memory_atomic contract | covered |
+| REQ-19 AC19.2 | — | mycelium registration of batch records unconfirmed | partial |
+| REQ-19 AC19.3 | T16 | card_footprint contract suite | covered |
+| REQ-20 AC20.1–20.3 | T4, T31 | task_guardrails behavior + unit | covered ×3 |
+| REQ-21 AC21.1 | T3 | schema_validator unit | covered |
+| REQ-21 AC21.2 | session-302 entry check | NO fail-closed test written | GAP → T43 |
+| REQ-21 AC21.3 | — | DEFERRED → REQ-25 (no instance validator exists yet) | deferred |
+| REQ-22 AC22.1–22.4 | T18–T22, T24 | Wave-4 suites (128/128 cited) + overlay choreography | covered ×4 |
+| REQ-23 AC23.1–23.5 | T34–T36 | websearch_memory_baseline behavior + LIVE --assert-websearch PASS | covered ×5 |
+| REQ-24 AC24.1–24.4 | T37 | BT-12 der_batch_expansion (6/6) + der_loop unit (29/29) | covered ×4 |
+| REQ-25 AC25.1–25.4 | T38 | BT-13 extraction_self_correction (3/3) + 5 validator unit | covered ×4 |
+| REQ-26 AC26.1–26.4 | T39 | BT-14 goal_object_plumbing (4/4) + duck-typing suite unchanged | covered ×4 |
+| REQ-27 AC27.1–27.3 | T40 | CT-5: progress_event_shape + crawler_task_progress (8/8) + OQ-3 live gate | covered ×3 |
+| REQ-28 AC28.1/28.3/28.4 | T41 | BT-15 tts_memory_envelope (3/3) + live re-measure PASS | covered ×3 |
+| REQ-28 AC28.2 | T41 live | TRUE LEAK ~25MB/synth over 30, no plateau (pin_f69040b6eefb) | FINDING → follow-up spec |
+| GAP AC3.4/AC18.1-test/AC18.3-test/AC21.2-test | T43 | t43 gap-closure contract (14/14) | covered ×4 |
+
+Traceability verdict (updated session-306 Wave-7 closeout): 96 ACs — 79 proven-covered (57 + REQ-24×4 + REQ-25×4 + REQ-26×4 + REQ-27×3 + REQ-28×3 + T43 GAP×4), 13 partial, 3 deferred (owned:
+AC13.2→REQ-24, AC18.2→REQ-24, AC21.3→REQ-25), 0 GAP, 1 FINDING (AC28.2 TTS leak ~25MB/synth → follow-up spec). Unmapped-silent: 0 (every gap is named; the 4 GAPs are closed by T43, approved session-304). Partial rows are honest tech debt, not coverage claims. Original backfill note 2026-09-07 retained below for history.
 
 ## Dependency / Parallelization Notes
 

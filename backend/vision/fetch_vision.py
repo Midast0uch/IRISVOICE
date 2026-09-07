@@ -21,7 +21,10 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field as dc_field
-from typing import Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
+
+if TYPE_CHECKING:  # pragma: no cover — typing only, zero runtime cost
+    from backend.core_models import GoalAnatomy
 
 from backend.crawler.capabilities import FetchCapability, FetchOutcome, WallKind
 from backend.crawler.crawler_engine import PageData
@@ -258,7 +261,7 @@ class FetchVisionCapability(FetchCapability):
     async def fetch_one(
         self,
         url: str,
-        goal: str,
+        goal: str | GoalAnatomy,
         job_id: str,
         on_action: Optional[Callable[[dict], None]] = None,
         page_offset: int = 0,
@@ -285,9 +288,24 @@ class FetchVisionCapability(FetchCapability):
         """
         t0 = time.monotonic()
         bounds = self._bounds
+        # REQ-26 AC26.1–26.3 (T39): structured goals ride the union. Text edges
+        # keep the string protocol (GoalAnatomy.__str__ IS to_prompt); the
+        # REQ-20 gate evaluates the goal's own guardrails (defaults for str).
+        if isinstance(goal, str):
+            _goal_text = goal
+            _guards = ["NO_PURCHASE", "DOMAIN_BOUND"]
+        else:
+            try:
+                _render = getattr(goal, "to_prompt", None)
+                _goal_text = _render() if callable(_render) else str(goal)
+            except Exception:  # noqa: BLE001 — rendering never breaks the loop
+                _goal_text = ""
+            _guards = list(getattr(goal, "guardrails", None) or []) or [
+                "NO_PURCHASE", "DOMAIN_BOUND",
+            ]
         # T9: hold the vision server for the whole loop; release on exit.
         lease = acquire_vision_lease(max_ms=bounds.max_wall_ms)
-        session = _make_session(self._session_cls, job_id, url, goal, bounds, page_offset)
+        session = _make_session(self._session_cls, job_id, url, _goal_text, bounds, page_offset)
         wall: Optional[WallKind] = None
         actions = 0
         try:
@@ -335,7 +353,7 @@ class FetchVisionCapability(FetchCapability):
                         continue
                     break
 
-                suggestion = await self._suggest_action(session, goal)
+                suggestion = await self._suggest_action(session, _goal_text)
                 action = self._map_action(suggestion)
                 if action is None:
                     # Model said error/unknown or the loop would repeat itself
@@ -346,15 +364,14 @@ class FetchVisionCapability(FetchCapability):
                     )
                     break
 
-                # REQ-20 AC20.1/AC20.3 (T31): task guardrails gate BEFORE any
-                # act. Defaults mirror GoalAnatomy.guardrails — the goal here
-                # is duck-typed str so per-task lists cannot flow through yet
-                # (follow-up: thread the object orchestrator -> fetch_vision).
-                # A block settles the page and hands back (bounded, no extra
-                # VLM rounds); the rejection is recorded on the trajectory.
+                # REQ-20 AC20.1/AC20.3 (T31 + T39): task guardrails gate BEFORE
+                # any act. A structured goal's own guardrails are evaluated;
+                # a plain string keeps the defaults. A block settles the page
+                # and hands back (bounded, no extra VLM rounds); the rejection
+                # is recorded on the trajectory.
                 try:
                     _gate = evaluate_task_guardrails(
-                        ["NO_PURCHASE", "DOMAIN_BOUND"],
+                        _guards,
                         {"action_type": action.kind,
                          "target_name": action.target or "",
                          "url": url},
@@ -443,7 +460,7 @@ class FetchVisionCapability(FetchCapability):
             if provider is not None:
                 try:
                     adapter = SessionVisionAdapter(session, provider)
-                    frames = await extract_page_frames(adapter, goal, bounds)
+                    frames = await extract_page_frames(adapter, _goal_text, bounds)
                 except Exception as exc:  # noqa: BLE001 — non-fatal: the
                     # session still returns its settled DOM below. WARNING
                     # (not info) + url/job_id: this exact failure ran silent
@@ -506,7 +523,7 @@ class FetchVisionCapability(FetchCapability):
                 self._provider_singleton = None
         return self._provider_singleton
 
-    async def _suggest_action(self, session: BrowserSession, goal: str) -> dict:
+    async def _suggest_action(self, session: BrowserSession, goal: str | GoalAnatomy) -> dict:
         """Ask the VLM for the next action, feeding a BROWSER screenshot
         (REQ-9 AC2: never the desktop). Graceful when vision is down."""
         provider = self._get_provider()

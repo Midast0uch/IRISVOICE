@@ -121,20 +121,26 @@ class TestProgressEventShape:
         assert payload.get("detail_progress"), f"'detail_progress' missing/empty in {payload}"
         assert payload.get("update_step") is True, f"'update_step' not True in {payload}"
 
-    def test_page_event_does_not_carry_a_phase_key(self):
-        """The discriminator invariant, asserted from the page side.
+    def test_page_event_carries_detail_url_and_phase_keys(self):
+        """CT-5 page side (REQ-27 AC27.2, locked by the T40 live gate).
 
-        `test_crawler_task_progress.py` splits a mixed stream into page vs phase
-        events on `"phase" in payload`. If a page event ever gained that key the
-        split would silently misclassify it, so pin it here rather than leaving
-        the invariant implicit in another file's filter.
+        Session-247 behavior KEPT: page reads own a progressive step node, so a
+        page event carries BOTH the page discriminator (`detail_url`) AND the
+        phase attribution (`phase`/`phase_sequence`) the card uses to file the
+        update on that phase's row (useTaskProgress.ts update_step branch).
+        Live-confirmed T40 (2 live pages → 2 page events, counters advance, no
+        duplicates): the old `phase`-absence pin was stale, not the code.
         """
         captured, result = _capture_progress_event()
         assert captured, f"no TASK_PROGRESS event captured; tool returned {result!r}"
         payload = captured[-1]
-        assert "phase" not in payload, (
-            f"a page-fetch progress event gained a 'phase' key, which breaks the "
-            f"page/phase partition in test_crawler_task_progress.py: {payload}"
+        assert payload.get("detail_url"), (
+            f"a page-fetch progress event lost its 'detail_url' discriminator, "
+            f"which breaks the CT-5 page/phase partition: {payload}"
+        )
+        assert "phase" in payload and "phase_sequence" in payload, (
+            f"a page-fetch progress event lost per-page phase attribution, "
+            f"so the card cannot file it on its phase row: {payload}"
         )
 
     def test_phase_transition_event_carries_phase_fields(self):

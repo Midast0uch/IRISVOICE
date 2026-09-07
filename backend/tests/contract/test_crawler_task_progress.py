@@ -176,13 +176,13 @@ def test_crawler_query_emits_progress_and_listening_state():
     before — the page events, and their COUNT is not deterministic (throttled
     to >=0.5s apart, see tool_bridge._PHASE_EMIT_MIN_INTERVAL_S, so how many
     land depends on wall-clock timing between orchestrator steps).
-    This test therefore partitions the stream by the presence of the `phase`
-    key (phase events carry `phase`/`phase_sequence`; page events never do —
-    the old `_phase_cache` merge that used to stamp `phase` onto page events
-    was removed when dedicated phase emission landed) and checks each kind on
-    its own filtered list:
-      - exactly 2 page events, in fetch order (unchanged coverage — still
-        guarantees one event per page, no duplicates)
+    CT-5 (REQ-27 AC27.2, locked by the T40 live gate): the stream partitions
+    on `detail_url`-presence — page events carry it (plus per-page phase
+    attribution); phase events never do. Session-247 kept and live-confirmed.
+    This test therefore checks each kind on its own filtered list:
+      - every page round emits the 2 planned pages in fetch order with
+        advancing counters (the one-event-per-page, no-duplicates contract,
+        per round — research retries re-emit whole rounds, never single pages)
       - at least 1 phase event fired (new coverage for REQ-4 AC1)
 
     INPUT SEAM (2026-09-06): the fake capability now registers via
@@ -234,16 +234,33 @@ def test_crawler_query_emits_progress_and_listening_state():
     assert ls[-1][1]["state"] == "processing_conversation"
 
     progresses = [e for e in events if e[0] == IRISStreamEvent.TASK_PROGRESS]
-    # Phase events carry `phase`; page events never do (confirmed empirically —
-    # the removed `_phase_cache` merge is what used to put `phase` on page
-    # events, and it is gone). Partition on that, not on `detail`, since
-    # `detail` is present on BOTH kinds and cannot discriminate them.
-    phase_events = [e for e in progresses if "phase" in e[1]]
-    page_events = [e for e in progresses if "phase" not in e[1]]
+    # CT-5 discriminator: `detail_url`-presence. Page events carry it (with
+    # per-page phase attribution); phase events never do.
+    phase_events = [e for e in progresses if "detail_url" not in e[1]]
+    page_events = [e for e in progresses if "detail_url" in e[1]]
 
-    assert len(page_events) == 2
-    assert page_events[0][1]["detail"] == "example.com"
-    assert page_events[1][1]["detail"] == "example.org"
+    # Round structure (T40 finding): research may retry a low-scoring round
+    # (rerank broadening), and each round re-emits its pages once, in fetch
+    # order, with counters restarted — so the stream can hold N complete
+    # rounds, not exactly one. The contract strength is per-round: every round
+    # emits each planned page exactly once, in order, with advancing counters
+    # (no within-round duplicates), and phase events fire. Split rounds at
+    # progress resets (a `1/N` following a completed run starts a new round).
+    rounds: list = []
+    for e in page_events:
+        if not rounds or str(e[1].get("detail_progress", "")).startswith("1/"):
+            rounds.append([])
+        rounds[-1].append(e)
+    assert rounds, "expected at least one page round"
+    for r in rounds:
+        assert [e[1]["detail_url"] for e in r] == _Plan.urls, (
+            f"a round must emit each planned page once, in fetch order: "
+            f"{[e[1].get('detail_url') for e in r]}"
+        )
+        assert [e[1]["detail_progress"] for e in r] == ["1/2", "2/2"], (
+            f"a round's counters must advance 1/2 → 2/2: "
+            f"{[e[1].get('detail_progress') for e in r]}"
+        )
 
     # REQ-4 AC1: at least one phase-transition event fired (new coverage —
     # a crawl now moves the card during planning/reranking/citing, not only

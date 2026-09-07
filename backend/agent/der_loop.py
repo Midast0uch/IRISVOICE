@@ -16,13 +16,17 @@ Gate 1 Step 1.1
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
+
+if TYPE_CHECKING:  # pragma: no cover — typing only, zero runtime cost
+    from backend.core_models import BatchOutcome, BatchToolCall
 
 from .der_constants import (
     DER_EMERGENCY_STOP,
@@ -220,6 +224,7 @@ class QueueItem:
     expected_output: Optional[str] = None  # DER Phase 0: explicit success criterion; consumed by TrailingDirector.analyze_gaps
     is_subloop: bool = False  # DER Phase 2: child of a growth-width split; collapses to parent as one COMPRESS
     independent: bool = False  # Wave 4 / REQ-18 AC1: safe to batch with siblings
+    batch: Optional["BatchToolCall"] = None  # REQ-24 (T37): composite batch node this item carries; materialized by expand_batch_nodes()
     # REQ-21 (T40): compressed context for sub-loop children — survives DCP
     # pruning, carries Understanding/Awareness/Direction + coordinate_ref.
     # Defaults to None for non-split-created steps (every existing call site
@@ -639,6 +644,37 @@ class DirectorQueue:
     def add_item(self, item: QueueItem) -> None:
         self.items.append(item)
 
+    def expand_batch_nodes(self) -> int:
+        """REQ-24 AC24.1 (T37): materialize READY batch-carrying nodes into children.
+
+        Only nodes whose deps are satisfied expand (a batch behind a dep waits).
+        Parents are marked complete — they are groupings, not work — so this is
+        idempotent (completed parents never re-expand) and children flow through
+        all_ready_items like any other item. Returns children materialized.
+        """
+        completed = set(self.completed_ids)
+        materialized = 0
+        for item in list(self.items):
+            if getattr(item, "batch", None) is None:
+                continue
+            if item.step_id in self.completed_ids:
+                continue
+            if item.step_id in self.vetoed_ids or item.step_id in self.failed_ids:
+                continue
+            if not all(dep in completed for dep in item.depends_on):
+                continue
+            children = expand_batch_node(item)
+            self.items.extend(children)
+            materialized += len(children)
+            self.mark_complete(item.step_id)
+            logger.debug(
+                "[DER] batch expand batch_id=%s children=%d parallel=%s",
+                getattr(item.batch, "batch_id", "?"), len(children),
+                bool(getattr(item.batch, "parallel_safe", False)
+                     and getattr(item.batch, "independent", False)),
+            )
+        return materialized
+
     def resolve_dependent_params(
         self,
         completed_item: "QueueItem",
@@ -706,6 +742,110 @@ class DirectorQueue:
 
     def hit_cycle_limit(self) -> bool:
         return self.cycle_count >= self.max_cycles
+
+
+# ── REQ-24 (T37): DER-native batch expansion & per-resource governance ─────
+
+BRAIN_VIS_TOOL = "brain.vis"  # DER batch tool key for direct Brain-vision batches
+BRAIN_VIS_MAX_CONCURRENCY = 4  # AC24.2: DER-owned Brain-Vis cap (Crawl reuses the orchestrator caps; VLM reuses the lease)
+
+_brain_vis_sem: Optional["asyncio.Semaphore"] = None
+
+
+def brain_vis_semaphore() -> "asyncio.Semaphore":
+    """Process-wide DER-owned Brain-Vis semaphore (AC24.2). Lazy: no loop binding at import."""
+    global _brain_vis_sem
+    if _brain_vis_sem is None:
+        _brain_vis_sem = asyncio.Semaphore(BRAIN_VIS_MAX_CONCURRENCY)
+    return _brain_vis_sem
+
+
+def reset_brain_vis_semaphore_for_testing() -> None:
+    """Drop the cached semaphore so tests start from a clean permit pool."""
+    global _brain_vis_sem
+    _brain_vis_sem = None
+
+
+def expand_batch_node(item: "QueueItem") -> List["QueueItem"]:
+    """REQ-24 AC24.1/AC24.4 (T37): expand a batch-carrying node into releasable items.
+
+    - No batch → [item] unchanged.
+    - parallel_safe + independent → one child per batch item, all sharing the
+      parent's deps (released together through all_ready_items).
+    - Otherwise (AC24.4) → children chained in declared order (child[i] depends
+      on child[i-1]) so existing readiness releases them sequentially; children
+      are NOT parallel_safe so the concurrent filter skips them.
+    - Empty items → [] (parent completes immediately; the fold yields an empty outcome).
+    Pure: never touches the queue.
+    """
+    batch = getattr(item, "batch", None)
+    if batch is None:
+        return [item]
+    payloads = list(getattr(batch, "items", None) or [])
+    if not payloads:
+        return []
+    parallel = bool(getattr(batch, "parallel_safe", False)) and bool(
+        getattr(batch, "independent", False)
+    )
+    children: List["QueueItem"] = []
+    prev: Optional[str] = None
+    for i, payload in enumerate(payloads):
+        params = dict(payload) if isinstance(payload, dict) else {"value": payload}
+        params.setdefault("_batch_id", getattr(batch, "batch_id", ""))
+        params.setdefault("_batch_index", i)
+        deps = list(getattr(item, "depends_on", None) or [])
+        if not parallel and prev is not None:
+            deps = deps + [prev]
+        children.append(QueueItem(
+            step_id=f"{item.step_id}#{i}",
+            step_number=item.step_number,
+            description=f"{item.description} [batch {i + 1}/{len(payloads)}]",
+            tool=getattr(batch, "tool", None) or item.tool,
+            params=params,
+            depends_on=deps,
+            critical=item.critical,
+            parallel_safe=parallel,
+            objective_anchor=item.objective_anchor,
+            coordinate_signal=item.coordinate_signal,
+            independent=parallel,
+            node_record=item.node_record,
+        ))
+        prev = children[-1].step_id
+    return children
+
+
+async def run_batch_children(batch, children: List["QueueItem"], executor) -> "BatchOutcome":
+    """REQ-24 AC24.2/AC24.3 (T37): execute expanded children under per-tool caps; fold ONE BatchOutcome.
+
+    - brain.vis children run under the DER-owned semaphore(4); every other tool
+      is governed by its own layer (orchestrator caps, VLM lease) — DER adds nothing.
+    - executor(child) returns an (item_key, ok, result, error) tuple or a
+      BatchItemResult (both shapes collect_batch_outcome accepts). An executor
+      raise becomes THAT item's failure only — the node still completes
+      (DAG abort rules unchanged).
+    - Outcomes fold via collect_batch_outcome (AC24.3; lazy import keeps this
+      module's import graph unchanged).
+    """
+    from backend.agent.query_synthesizer import collect_batch_outcome
+
+    async def _guarded(child):
+        try:
+            return await executor(child)
+        except Exception as exc:  # noqa: BLE001 — one item's death is that item's failure
+            return (getattr(child, "step_id", "?"), False, None,
+                    f"{type(exc).__name__}: {exc}")
+
+    if children and (getattr(children[0], "tool", None) == BRAIN_VIS_TOOL):
+        sem = brain_vis_semaphore()
+
+        async def _gated(child):
+            async with sem:
+                return await _guarded(child)
+
+        results = await asyncio.gather(*(_gated(c) for c in children))
+    else:
+        results = await asyncio.gather(*(_guarded(c) for c in children))
+    return collect_batch_outcome(batch, list(results))
 
 
 # ── Reviewer ────────────────────────────────────────────────────────────────

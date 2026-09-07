@@ -28,7 +28,10 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Callable, Literal, Optional
+from typing import TYPE_CHECKING, Callable, Literal, Optional
+
+if TYPE_CHECKING:  # pragma: no cover — typing only, zero runtime cost
+    from backend.core_models import GoalAnatomy
 
 from .crawler_engine import CrawlResult, PageData
 from .crawl_planner import CrawlPlan, get_crawl_planner
@@ -835,7 +838,7 @@ class CrawlOrchestrator:
         self,
         urls: list[str],
         *,
-        query: str,
+        query: str | GoalAnatomy,
         job_id: str,
         session_id: str = "",
         on_progress: Optional[Callable[[CrawlProgress], None]] = None,
@@ -877,6 +880,14 @@ class CrawlOrchestrator:
 
         t_start = time.monotonic()
         _emit = self._make_emitter(on_progress, session_id)
+        # REQ-26 AC26.1–26.2 (T39): a structured goal rides the union. Text edges
+        # (result shape, registry, crawl-only leg) render via str() — the string
+        # protocol holds end to end; goal edges (_race_url, escalation,
+        # follow-up dispatch) carry the object so guardrails survive.
+        try:
+            _query_text = query if isinstance(query, str) else str(query)
+        except Exception:  # noqa: BLE001 — rendering never breaks dispatch
+            _query_text = ""
         # REQ-21 AC21.2 (T31): strict 12-keyword allowlist on output_schema
         # BEFORE any fetch burns. Fail closed with an explicit CrawlResult
         # error (this funnel never raises) so a bad contract surfaces
@@ -894,7 +905,7 @@ class CrawlOrchestrator:
                     job_id, _msg,
                 )
                 return CrawlResult(
-                    query=query,
+                    query=_query_text,
                     pages=[],
                     duration_ms=int((time.monotonic() - t_start) * 1000),
                     crawled_at=datetime.now(timezone.utc).isoformat(),
@@ -1018,7 +1029,7 @@ class CrawlOrchestrator:
                     )
                     return
                 async with _host_semaphore(host):
-                    history = await self._domain_failure_history(url, query)
+                    history = await self._domain_failure_history(url, _query_text)
                     if history and vision_avail and _router_recovery_node(
                         history, race_rollback=True, step_id=f"race:{url}",
                     ) == "fetch.vision":
@@ -1066,7 +1077,7 @@ class CrawlOrchestrator:
                             _emit("CRAWLER_PAGE_FETCHED", payload)
 
                         outcome = await _call_fetch_one(
-                            crawl_cap, url, query, job_id,
+                            crawl_cap, url, _query_text, job_id,
                             on_progress=_forward, page_offset=_slot_offset,
                         )
                         # CONFLICT-FLAG (stash pop): stashed side called
@@ -1151,6 +1162,70 @@ class CrawlOrchestrator:
                             )
                         except Exception:  # noqa: BLE001 — projection never fails the page
                             _payload = None
+                        # REQ-25 AC25.1–25.3 (T38): ONE self-correction pass on the
+                        # extracted payload. Only when BOTH schema and hook are
+                        # declared (AC25.4: the unprojected path costs nothing).
+                        # The error is stated on page.metadata so hooks keep their
+                        # 1-arg shape; still-invalid accepts-and-flags on the page.
+                        if (
+                            output_schema is not None
+                            and extract is not None
+                            and isinstance(_payload, dict)
+                        ):
+                            try:
+                                from backend.vision.schema_validator import (
+                                    validate_instance as _validate_instance,
+                                )
+                                _violations = _validate_instance(
+                                    _payload, output_schema
+                                )
+                            except Exception:  # noqa: BLE001 — validator never breaks dispatch
+                                _violations = []
+                            if _violations:
+                                try:
+                                    outcome.page.metadata = dict(
+                                        outcome.page.metadata or {}
+                                    )
+                                    outcome.page.metadata["_validation_error"] = (
+                                        "; ".join(_violations)
+                                    )
+                                    _payload = extract(outcome.page)
+                                except Exception:  # noqa: BLE001 — re-extract never fails the page
+                                    _payload = None
+                                if isinstance(_payload, dict):
+                                    try:
+                                        _violations = _validate_instance(
+                                            _payload, output_schema
+                                        )
+                                    except Exception:  # noqa: BLE001
+                                        _violations = []
+                                else:
+                                    _violations = []
+                                try:
+                                    outcome.page.metadata = dict(
+                                        outcome.page.metadata or {}
+                                    )
+                                    outcome.page.metadata.pop(
+                                        "_validation_error", None
+                                    )
+                                    if _violations:
+                                        outcome.page.metadata["unvalidated"] = True
+                                        outcome.page.metadata["_validation_errors"] = (
+                                            list(_violations)
+                                        )
+                                        logger.warning(
+                                            "[CrawlOrchestrator] extract accept-and-flag "
+                                            "job_id=%s url=%s errors=%s",
+                                            job_id, url, "; ".join(_violations),
+                                        )
+                                    else:
+                                        logger.info(
+                                            "[CrawlOrchestrator] extract self-corrected "
+                                            "job_id=%s url=%s",
+                                            job_id, url,
+                                        )
+                                except Exception:  # noqa: BLE001 — flagging never fails the page
+                                    pass
                     else:
                         _payload = None
                     # REQ-8 AC1 strict projection: only schema fields reach the
@@ -1381,7 +1456,7 @@ class CrawlOrchestrator:
             except Exception as exc:  # noqa: BLE001 — best-effort, logged
                 logger.debug("[CrawlOrchestrator] findings snapshot failed job_id=%s: %s", job_id, exc)
         return CrawlResult(
-            query=query,
+            query=_query_text,
             pages=pages,
             duration_ms=int((time.monotonic() - t_start) * 1000),
             crawled_at=datetime.now(timezone.utc).isoformat(),
@@ -1644,7 +1719,7 @@ class CrawlOrchestrator:
             logger.debug("[CrawlOrchestrator] evidence stamp failed: %s", exc)
 
     @staticmethod
-    async def _vision_fetch(vision_cap, url: str, goal: str, job_id: str, _emit, page_offset: int = 0, escalated: bool = False):
+    async def _vision_fetch(vision_cap, url: str, goal: str | GoalAnatomy, job_id: str, _emit, page_offset: int = 0, escalated: bool = False):
         """Call fetch.vision, passing the REQ-11 AC4 action emitter when the
         capability supports it. Capabilities implementing only the bare
         3-positional-arg protocol are called unchanged (REQ-6 AC1).
@@ -1670,7 +1745,7 @@ class CrawlOrchestrator:
             # Capability does not accept on_action — protocol-only implementation.
             return await vision_cap.fetch_one(url, goal, job_id)
 
-    async def _escalate_to_vision(self, url: str, query: str, job_id: str, crawl_outcome, _emit, page_offset: int = 0) -> "FetchOutcome":
+    async def _escalate_to_vision(self, url: str, query: str | GoalAnatomy, job_id: str, crawl_outcome, _emit, page_offset: int = 0) -> "FetchOutcome":
         """Problem 1 fix: escalate a FRESH crawl-only failure to fetch.vision.
 
         Unlike `_race_url` (which fires only when `source_registry` already
@@ -1737,20 +1812,28 @@ class CrawlOrchestrator:
         self._stamp_evidence(vision_outcome, [crawl_outcome, vision_outcome], url, job_id)
         return vision_outcome
 
-    async def _race_url(self, url: str, goal: str, job_id: str, crawl_cap, _emit, page_offset: int = 0) -> "FetchOutcome":
+    async def _race_url(self, url: str, goal: str | GoalAnatomy, job_id: str, crawl_cap, _emit, page_offset: int = 0) -> "FetchOutcome":
         """Race fetch.crawl vs fetch.vision; first usable wins (REQ-10 AC3/AC5).
 
         Loser is cancelled. Both usable -> crawl wins (cheaper), race logged.
+
+        REQ-26 (T39): the crawl leg takes rendered text (no guardrail consumer
+        there); the vision leg takes the object so its REQ-20 gate sees the
+        goal's own guardrails.
         """
         from .capabilities import FetchOutcome, get_capability
 
+        try:
+            _goal_text = goal if isinstance(goal, str) else str(goal)
+        except Exception:  # noqa: BLE001 — rendering never breaks dispatch
+            _goal_text = ""
         vision_cap = get_capability("fetch.vision")
         t0 = time.monotonic()
         # Both racers write into this URL's reserved capture block: crawl takes
         # offset+1, vision frames take offset+2 onward, so the loser can never
         # clobber the winner's bytes or a neighbouring URL's.
         crawl_task = asyncio.create_task(
-            _call_fetch_one(crawl_cap, url, goal, job_id, page_offset=page_offset)
+            _call_fetch_one(crawl_cap, url, _goal_text, job_id, page_offset=page_offset)
         )
         # REQ-11 AC4: thread a per-action emitter into the vision capability so
         # each browser action reaches the panel. Passed only when the capability

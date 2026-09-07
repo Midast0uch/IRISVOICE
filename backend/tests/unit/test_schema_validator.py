@@ -6,6 +6,7 @@ from backend.vision.schema_validator import (
     ALLOWED_KEYWORDS,
     SchemaValidationError,
     is_supported_keyword,
+    validate_instance,
     validate_schema,
     validate_schema_strict,
 )
@@ -60,3 +61,67 @@ def test_top_level_must_be_object():
     assert any("top-level" in e for e in errors)
     assert validate_schema("price") == ["output_schema must be an object, got str"]
     assert validate_schema(None) != []
+
+
+# --- REQ-25 AC25.1 (T38): stdlib instance checker ---------------------------
+
+_INSTANCE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "price": {"type": "number", "minimum": 0, "nullable": True},
+        "sizes": {"type": "array", "items": {"type": "string"},
+                  "minItems": 1, "maxItems": 3},
+        "condition": {"type": "string", "enum": ["new", "refurbished"]},
+    },
+    "required": ["price"],
+}
+
+
+def test_valid_instance_passes():
+    assert validate_instance(
+        {"price": 99, "sizes": ["16GB"], "condition": "new"},
+        _INSTANCE_SCHEMA,
+    ) == []
+
+
+def test_instance_type_and_minimum_violations_reported():
+    errors = validate_instance({"price": "free"}, _INSTANCE_SCHEMA)
+    assert any("price" in e and "number" in e for e in errors), errors
+    errors = validate_instance({"price": -5}, _INSTANCE_SCHEMA)
+    assert any("minimum" in e for e in errors), errors
+
+
+def test_instance_required_missing_and_nullable():
+    errors = validate_instance({"sizes": []}, _INSTANCE_SCHEMA)
+    assert any("required" in e and "price" in e for e in errors), errors
+    assert validate_instance({"price": None}, _INSTANCE_SCHEMA) == []
+    errors = validate_instance(
+        {"price": None, "sizes": ["x"]},
+        {"type": "object",
+         "properties": {"price": {"type": "number"},
+                          "sizes": {"type": "array", "items": {"type": "string"}}},
+         "required": ["price", "sizes"]},
+    )
+    assert any("null" in e for e in errors), errors
+
+
+def test_instance_enum_and_array_bounds():
+    errors = validate_instance(
+        {"price": 1, "condition": "used"}, _INSTANCE_SCHEMA
+    )
+    assert any("enum" in e for e in errors), errors
+    errors = validate_instance({"price": 1, "sizes": []}, _INSTANCE_SCHEMA)
+    assert any("minItems" in e for e in errors), errors
+    errors = validate_instance(
+        {"price": 1, "sizes": ["a", "b", "c", "d"]}, _INSTANCE_SCHEMA
+    )
+    assert any("maxItems" in e for e in errors), errors
+
+
+def test_instance_bool_is_not_a_number_and_unknown_keys_ignored():
+    errors = validate_instance({"price": True}, _INSTANCE_SCHEMA)
+    assert any("number" in e for e in errors), errors
+    # Unknown payload keys are projection's job, not the checker's.
+    assert validate_instance(
+        {"price": 5, "raw_dom": "<html>"}, _INSTANCE_SCHEMA
+    ) == []
