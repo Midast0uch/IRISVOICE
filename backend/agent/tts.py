@@ -349,6 +349,16 @@ class TTSManager:
                         "PYTHONPATH": str(_PROJECT_DIR)
                         + os.pathsep
                         + os.environ.get("PYTHONPATH", ""),
+                        # REQ-28 AC28.2 (T41-fix): MKL's fast memory manager
+                        # retains ~10-25MB of per-synthesis scratch forever
+                        # (measured linear over 30, no plateau; threads, python
+                        # objects and shared voice state all flat). Disabling
+                        # routes MKL through plain malloc so freed blocks are
+                        # reused — growth flat over repeats at the same RTF
+                        # (~1.9x). Operator override respected.
+                        "MKL_DISABLE_FAST_MM": os.environ.get(
+                            "MKL_DISABLE_FAST_MM", "1"
+                        ),
                     },
                 )
             except Exception as exc:

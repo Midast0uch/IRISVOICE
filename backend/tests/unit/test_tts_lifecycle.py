@@ -60,6 +60,51 @@ def test_no_worker_spawned_at_boot(_isolated_manager):
     assert _isolated_manager._ready is False
 
 
+# ── AC28.2 leak fix: worker env disables MKL fast-MM ───────────────────
+
+def test_worker_spawn_disables_mkl_fast_mm(_isolated_manager, monkeypatch):
+    """REQ-28 AC28.2 (T41-fix): the worker subprocess env sets
+    MKL_DISABLE_FAST_MM=1 (measured ~10-25MB retained per synthesis with it
+    on, flat with it off at the same RTF). Operator override respected."""
+    import subprocess as _sp
+
+    seen: dict = {}
+
+    class _P:
+        def __init__(self, *a, **k):
+            seen.update(k.get("env", {}))
+            self.stdout = iter(['{"status": "ready"}\n'])
+            self.stderr = iter([])
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(_sp, "Popen", _P)
+    _isolated_manager._spawn_worker()
+    assert seen.get("MKL_DISABLE_FAST_MM") == "1"
+    assert _isolated_manager._ready is True
+
+
+def test_worker_spawn_respects_mkl_override(_isolated_manager, monkeypatch):
+    import subprocess as _sp
+
+    seen: dict = {}
+
+    class _P:
+        def __init__(self, *a, **k):
+            seen.update(k.get("env", {}))
+            self.stdout = iter(['{"status": "ready"}\n'])
+            self.stderr = iter([])
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(_sp, "Popen", _P)
+    monkeypatch.setenv("MKL_DISABLE_FAST_MM", "0")
+    _isolated_manager._spawn_worker()
+    assert seen.get("MKL_DISABLE_FAST_MM") == "0"
+
+
 def test_reaper_thread_starts_once_per_process():
     import threading
 
