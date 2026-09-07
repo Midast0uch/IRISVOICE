@@ -145,7 +145,11 @@ class TTSManager:
 
     Engine: Pocket-TTS (sole engine), running in `backend/audio/tts_worker.py`.
       - Zero-shot voice cloning from TOMV2.wav
-      - CPU-based, int8 quantized, ~100 MB RAM (lazy load in subprocess)
+      - CPU-based, int8 quantized. Measured worker commit ~2.3 GB
+        (torch CPU runtime + weights + retained encode arenas; resident
+        decays toward ~0.3 GB over idle hours) — see REQ-28. The old
+        "~100 MB" figure described the quantized weights alone, not the
+        process, and is kept here only as a warning against repeating it.
       - True streaming inference (yields chunk-by-chunk)
       - 24 kHz native output
 
@@ -159,6 +163,11 @@ class TTSManager:
 
     _instance: Optional["TTSManager"] = None
     _initialized: bool = False
+    # One reaper per process: test doubles reset the singleton (fresh
+    # _proc/_ready per test), but a second 30 s-sleep daemon per reset is
+    # pure thread litter — the loop only ever reaps the CURRENT singleton's
+    # worker via direct calls in tests, so one thread is enough forever.
+    _reaper_started: bool = False
 
     # Total time a worker may spend starting up, measured from spawn.
     #
@@ -206,30 +215,49 @@ class TTSManager:
         # ``_remaining_startup_budget``.
         self._spawn_started_at: Optional[float] = None
 
+        # REQ-28 lifecycle: lazy at boot, pre-warm on connect, unload when
+        # quiet. ``_last_activity`` is stamped when the worker becomes ready
+        # and on every terminal synthesis event; the reaper unloads the
+        # worker once it has been quiet longer than ``_idle_timeout_s``.
+        # ``_connect_prewarm_done`` keeps the connect hook once-per-process
+        # (on-demand spawn in the synthesize path covers everything after).
+        self._last_activity: Optional[float] = None
+        self._connect_prewarm_done: bool = False
+        try:
+            self._idle_timeout_s: float = float(
+                os.environ.get("IRIS_TTS_IDLE_TIMEOUT_S", "600") or 600
+            )
+        except ValueError:
+            self._idle_timeout_s = 600.0
+
         TTSManager._initialized = True
 
         threading.Thread(
             target=self._log_preflight, daemon=True, name="tts-preflight"
         ).start()
-        # Load the worker during boot instead of during the user's first
-        # sentence. A Pocket-TTS cold start measured 238 s end-to-end
-        # (2026-09-05: ~151 s of torch/pocket_tts import under CPU contention,
-        # 17.3 s model load, 51 s audio-prompt encode, 68.5 s voice state).
-        # Spawned lazily, that entire cost landed inside the first utterance,
-        # which never survived the gateway's 60 s first-chunk budget. Boot is
-        # comparatively idle (Parakeet is also lazy), so paying it here is
-        # free. This is the existing spawn method on a daemon thread — not a
-        # separate warm-up path.
+        if not TTSManager._reaper_started:
+            TTSManager._reaper_started = True
+            threading.Thread(
+                target=self._reaper_loop, daemon=True, name="tts-idle-reaper"
+            ).start()
+        # Lazy at boot (REQ-28): no worker is spawned here, so a fresh
+        # backend idles without the ~2.3 GB commit. Warmth comes from two
+        # cheaper points: pre-warm on frontend connect (``prewarm()``,
+        # called from the WS endpoint — the user is present but not yet
+        # speaking) and on-demand spawn inside ``synthesize_stream``.
+        # Either path still pays one cold load (~20 s measured); a 300 s
+        # startup budget covers pathological contention (2026-09-05: 238 s
+        # with Parakeet loading alongside). Set IRIS_TTS_EARLY_SPAWN=1 to
+        # restore the old boot-time spawn.
         #
         # Skipped under pytest (test suites construct TTSManager() for unit
         # checks — singleton/config — and must not each boot a real model
-        # subprocess) and behind IRIS_TTS_EARLY_SPAWN=0 for an escape hatch,
-        # matching the IRIS_* env convention used elsewhere in the backend.
+        # subprocess), matching the IRIS_* env convention used elsewhere.
         _early_spawn = (
             self.config.get("tts_enabled", True)
             and "pytest" not in sys.modules
             and "PYTEST_CURRENT_TEST" not in os.environ
-            and os.environ.get("IRIS_TTS_EARLY_SPAWN", "1") != "0"
+            and os.environ.get("IRIS_TTS_EARLY_SPAWN", "0") == "1"
         )
         if _early_spawn:
             threading.Thread(
@@ -385,6 +413,7 @@ class TTSManager:
             if status.get("status") == "ready":
                 self._ready = True
                 self._load_error = None
+                self._note_activity()
                 logger.info("[TTSManager] Worker ready")
                 return
             if status.get("status") == "error":
@@ -434,6 +463,89 @@ class TTSManager:
             return json.loads(line.strip())
         except json.JSONDecodeError:
             return None
+
+    def _note_activity(self) -> None:
+        """Stamp the last-use clock (REQ-28: the idle reaper's input)."""
+        self._last_activity = time.monotonic()
+
+    def prewarm(self) -> None:
+        """Start worker load without blocking the caller (connect hook).
+
+        Once per process; on-demand spawn in the synthesize path covers
+        everything after. Never raises — warmth is an optimization, and an
+        exception here must never break a client connect.
+        """
+        try:
+            if self._connect_prewarm_done:
+                return
+            self._connect_prewarm_done = True
+            threading.Thread(
+                target=self._load_pocket_tts,
+                daemon=True,
+                name="tts-connect-prewarm",
+            ).start()
+        except Exception:  # noqa: BLE001 — prewarm never breaks the caller
+            pass
+
+    def _should_unload(self, now: float) -> bool:
+        """Pure decision: is the live worker quiet past its timeout?"""
+        if self._idle_timeout_s <= 0:
+            return False  # escape hatch: no idle unload
+        if not self._ready or self._proc is None or self._proc.poll() is not None:
+            return False  # nothing live to unload (startup/crash paths own it)
+        if self._last_activity is None:
+            return False
+        return (now - self._last_activity) >= self._idle_timeout_s
+
+    def _reap_if_idle(self) -> bool:
+        """Gracefully shut down a quiet-past-timeout worker. Returns True
+        when a worker was unloaded. Best-effort: never raises, never reaps a
+        worker with a synthesis in flight (non-blocking lock check)."""
+        now = time.monotonic()
+        if not self._should_unload(now):
+            return False
+        if not self._synthesis_lock.acquire(blocking=False):
+            return False  # mid-synthesis — skip this cycle
+        try:
+            with self._proc_lock:
+                proc = self._proc
+                if proc is None or proc.poll() is not None or not self._ready:
+                    return False
+                logger.info(
+                    "[TTSManager] Idle %.0fs > %.0fs — unloading TTS worker",
+                    now - (self._last_activity or now),
+                    self._idle_timeout_s,
+                )
+                try:
+                    self._send({"action": "shutdown"})
+                except Exception:  # noqa: BLE001 — pipes may already be gone
+                    pass
+                try:
+                    proc.wait(timeout=10)
+                except Exception:  # noqa: BLE001 — graceful failed; force it
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                for stream in (proc.stdin, proc.stdout, proc.stderr):
+                    try:
+                        stream.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                self._proc = None
+                self._ready = False
+                return True
+        finally:
+            self._synthesis_lock.release()
+
+    def _reaper_loop(self) -> None:
+        """Daemon: sweep for a quiet worker every 30 s (REQ-28)."""
+        while True:
+            time.sleep(30)
+            try:
+                self._reap_if_idle()
+            except Exception as exc:  # noqa: BLE001 — reaper never dies loudly
+                logger.debug("[TTSManager] Idle sweep skipped: %s", exc)
 
     def _restart_worker(self) -> None:
         """Kill and respawn the worker after a crash."""
@@ -601,6 +713,7 @@ class TTSManager:
                 self._send({"action": "synthesize", "text": text, "id": req_id})
             except Exception as exc:
                 _root_log.error(f"[TTSManager] Failed to send synthesize: {exc}")
+                self._note_activity()
                 self._restart_worker()
                 return
 
@@ -615,6 +728,7 @@ class TTSManager:
                         + len(text) * self._SYNTHESIS_PER_CHAR_TIMEOUT,
                         len(text),
                     )
+                    self._note_activity()
                     self._restart_worker()
                     return
                 msg = self._read_line(timeout=min(30.0, remaining))
@@ -623,12 +737,14 @@ class TTSManager:
                         "[TTSManager] Worker produced nothing for 30s "
                         "mid-synthesis — restarting"
                     )
+                    self._note_activity()
                     self._restart_worker()
                     return
                 if msg is _WORKER_EOF:
                     _root_log.error(
                         "[TTSManager] Worker died mid-synthesis — restarting"
                     )
+                    self._note_activity()
                     self._restart_worker()
                     return
                 mtype = msg.get("type")
@@ -647,11 +763,13 @@ class TTSManager:
                         f"[TTSManager] Synthesis done: {msg.get('total_samples')} "
                         f"samples in {msg.get('duration_s')}s"
                     )
+                    self._note_activity()
                     return
                 elif mtype == "error":
                     _root_log.error(
                         f"[TTSManager] Worker synthesis error: {msg.get('error')}"
                     )
+                    self._note_activity()
                     return
 
     # ------------------------------------------------------------------

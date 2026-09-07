@@ -5733,6 +5733,10 @@ class IRISGateway:
                 # the terminal idle here so any processing_* state set during
                 # the turn is cleared. Never fires for a disconnected session.
                 try:
+                    # CONFLICT-FLAG (stash pop): stashed side called
+                    # broadcast_to_session (session-scoped); kept upstream
+                    # _broadcast_voice_state (fans out to all UI sessions;
+                    # calls broadcast_to_session for the primary first).
                     await self._broadcast_voice_state(
                         session_id,
                         {"type": "listening_state", "payload": {"state": "idle"}},
@@ -5892,6 +5896,10 @@ class IRISGateway:
                             name="spoken-brief-gen",
                         ).start()
                     elif _spoken_text and _spoken_text.strip():
+                    # CONFLICT-FLAG (stash pop): stashed side recomputed
+                    # _spoken_text via prepare_spoken_text(response, text);
+                    # kept upstream _spoken_line + REQ-28 brief streaming
+                    # (spoken_brief_needed/stream_spoken_brief exist).
                         self._logger.info(
                             "[D2-TEXT-TTS] speaking final answer (%d chars) for "
                             "session=%s",
@@ -5934,6 +5942,10 @@ class IRISGateway:
                 # T36-FIX: also clear any processing_* listening_state set by
                 # tool_bridge mid-turn so the pill/orb don't stick on error.
                 try:
+                    # CONFLICT-FLAG (stash pop): stashed side called
+                    # broadcast_to_session (session-scoped); kept upstream
+                    # _broadcast_voice_state (fans out to all UI sessions;
+                    # calls broadcast_to_session for the primary first).
                     await self._broadcast_voice_state(
                         session_id,
                         {"type": "listening_state", "payload": {"state": "idle"}},
@@ -10939,12 +10951,10 @@ class IRISGateway:
                 # viewport_h; scroll: scroll_dx/scroll_dy). Copied over only
                 # when present so an action with no point (navigate/wait/a
                 # failed bounding_box) sends no stray nulls.
-                # scroll_y / scroll_height are what let the panel MIRROR the
-                # scroll into the iframe the user is watching; capture_page is
-                # which captured frame the session is on. This whitelist is the
-                # second place a new field can silently die (the other is
-                # tool_bridge's _UI_EVENT_DEFAULTS, which forwards wholesale) —
-                # anything added to last_action_point must be listed here too.
+                # CONFLICT-FLAG (stash pop): stashed 6-key tuple subsumed —
+                # all six keys survive below, plus scroll_y/scroll_height/
+                # capture_page/escalated (escalated drives the overlay
+                # one-shot "notice" beat; without it the field dies here).
                 for _coord_key in (
                     "x", "y", "viewport_w", "viewport_h",
                     "scroll_dx", "scroll_dy", "scroll_y", "scroll_height",

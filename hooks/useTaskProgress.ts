@@ -14,6 +14,63 @@ export type TaskStepStatus =
   | "error"
   | "fail"
 
+/**
+ * T20 (REQ-22): cross-source verification result for one extracted field.
+ * Mirrors the backend `StepFindingsAccumulator.snapshot()["verified"]`
+ * shape: `verified` holds ONLY when the value is corroborated across >= 2
+ * authoritative hosts; `discrepancy` marks irreconcilable numbers (kept with
+ * source context notes, per REQ-11 AC11.4).
+ */
+export interface VerifiedField {
+  verified: boolean
+  corroborations?: number
+  discrepancy?: boolean
+  note?: string
+}
+
+/**
+ * T20 (REQ-22): batch pool counters for a DAG batch execution (`BatchOutcome`).
+ */
+export interface BatchMetrics {
+  total?: number
+  done?: number
+  failed?: number
+  inFlight?: number
+  rateLimited?: number
+}
+
+/**
+ * T20 (REQ-14/REQ-22): a temporal diff between the current page snapshot and
+ * the prior revision in `document_store` — natural LANGUAGE statements
+ * ("Price dropped 10%") plus the revision pair they were computed between.
+ */
+export interface TemporalDeltaInfo {
+  statements: string[]
+  changedFields?: string[]
+  priorRevision?: number
+  currentRevision?: number
+}
+
+/**
+ * T20 (REQ-22): the `temporal_delta` WIRE shape — the backend's
+ * TemporalDelta (core_models.py: `delta_statements`/`changed_fields`), a
+ * bare statements list, or the already-normalized shape. Not exported to
+ * consumers: `normalizeTemporalDelta` is the single door in.
+ */
+export type TemporalDeltaWire =
+  | string[]
+  | TemporalDeltaInfo
+  | {
+      statements?: string[]
+      delta_statements?: string[]
+      changed_fields?: string[]
+      prior_revision?: number
+      current_revision?: number
+      changedFields?: string[]
+      priorRevision?: number
+      currentRevision?: number
+    }
+
 export interface TaskStep {
   id: string
   /**
@@ -71,6 +128,24 @@ export interface TaskStep {
    * "search" rendered SEARCH for its whole life.
    */
   phase?: string
+  /**
+   * T20 (REQ-22, wave-4): enriched goal-directed extraction payloads. These
+   * arrive ONLY on task:progress/tool:result frames that carry them —
+   * absence means "no enrichment this frame", never a fabricated empty
+   * badge. The renderers (TaskListCard / terminalScrollback) consume them
+   * conditional-on-presence, exactly like `resultPreview`.
+   */
+  /** The 7-part GoalAnatomy objective as a one-line snippet. */
+  goalSnippet?: string
+  /** The (12-keyword) schema this step is extracting into — the JSON object
+   *  the pass targets, or the projected partial result. */
+  extractedSchema?: Record<string, unknown>
+  /** DAG batch pool counters for a composite step (REQ-18). */
+  batchMetrics?: BatchMetrics
+  /** Semantic deltas vs the prior stored snapshot (REQ-14). */
+  temporalDelta?: TemporalDeltaInfo
+  /** Per-field cross-source verification state (REQ-11). */
+  verifiedFields?: Record<string, VerifiedField>
 }
 
 /**
@@ -183,8 +258,21 @@ export interface TaskCard {
    */
   terminalState?: string
   /** Session 246: total wall-clock seconds the run took (rehydrated cards
-   * only — derived from the persisted created_at/updated_at pair). */
+   *  only — derived from the persisted created_at/updated_at pair). */
   durationSec?: number
+  /**
+   * T20 (REQ-22, wave-4): card-level goal/schema/verification aggregates.
+   * goalSnippet = the goal the whole card is serving; extractedSchema = the
+   * declared output contract; batchMetrics = aggregate batch pool counters
+   * across steps; temporalDelta = semantic deltas vs the prior snapshot;
+   * verifiedFields = cross-source verification per extracted field
+   * (REQ-11 ≥2-domain quorum). All optional, all render-if-present.
+   */
+  goalSnippet?: string
+  extractedSchema?: Record<string, unknown>
+  batchMetrics?: BatchMetrics
+  temporalDelta?: TemporalDeltaInfo
+  verifiedFields?: Record<string, VerifiedField>
 }
 
 export interface TaskProgress {
@@ -299,6 +387,13 @@ interface TaskUpdateDetail {
    * the frontend can render the card INLINE with its response. Absent on
    * legacy payloads; consumers fall back to bottom-stacking. */
   turn_id?: string
+  /** T20 (REQ-22): goal-direct enrichment fields (wave 4). Absent on events
+   *  that carry nothing to enrich; NEVER an empty placeholder. */
+  goal_snippet?: string
+  extracted_schema?: Record<string, unknown>
+  batch_metrics?: BatchMetrics
+  temporal_delta?: TemporalDeltaWire
+  verified_fields?: Record<string, VerifiedField>
 }
 
 // Maps a tool name to a short, human-readable action title for the plan card.
@@ -480,6 +575,50 @@ export function boundedSummary(text?: string): string | undefined {
   return t.length <= RETAINED_SUMMARY_MAX ? t : t.slice(0, RETAINED_SUMMARY_MAX - 1) + "…"
 }
 
+/** T20 (REQ-22): normalize the `temporal_delta` wire payload into
+ *  TemporalDeltaInfo. The backend's TemporalDelta (core_models.py) carries
+ *  `delta_statements`/`changed_fields`; a bare list of statements from a
+ *  lighter emitter is accepted too. Unknown shapes return undefined so a bad
+ *  frame never fabricates a pill. Bounded: statements are capped so a
+ *  degenerate payload cannot bloat the store. */
+const TEMPORAL_STATEMENT_CAP = 8
+export function normalizeTemporalDelta(
+  raw: TemporalDeltaWire | undefined,
+): TemporalDeltaInfo | undefined {
+  if (!raw) return undefined
+  let statements: string[] | undefined
+  let changedFields: string[] | undefined
+  let priorRevision: number | undefined
+  let currentRevision: number | undefined
+  if (Array.isArray(raw)) {
+    statements = raw.filter((s): s is string => typeof s === "string" && !!s)
+  } else if (typeof raw === "object") {
+    const loose = raw as {
+      statements?: string[]
+      delta_statements?: string[]
+      changed_fields?: string[]
+      prior_revision?: number
+      current_revision?: number
+      changedFields?: string[]
+      priorRevision?: number
+      currentRevision?: number
+    }
+    statements = (loose.statements ?? loose.delta_statements)?.filter(
+      (s): s is string => typeof s === "string" && !!s,
+    )
+    changedFields = loose.changedFields ?? loose.changed_fields
+    priorRevision = loose.priorRevision ?? loose.prior_revision
+    currentRevision = loose.currentRevision ?? loose.current_revision
+  }
+  if (!statements || statements.length === 0) return undefined
+  return {
+    statements: statements.slice(0, TEMPORAL_STATEMENT_CAP),
+    changedFields,
+    priorRevision,
+    currentRevision,
+  }
+}
+
 function sortSteps(steps: TaskStep[]): TaskStep[] {
   return sortRows(steps)
 }
@@ -503,6 +642,9 @@ function freshStart(
     turnId: d.task_id,
     planTitle: d.plan_title,
     responseTurnId: d.turn_id,
+    // T20 (REQ-22): the goal the whole card serves, when the backend declares it.
+    ...(d.goal_snippet ? { goalSnippet: d.goal_snippet } : null),
+    ...(d.extracted_schema ? { extractedSchema: d.extracted_schema } : null),
   }
 }
 
@@ -543,6 +685,10 @@ function mergeStart(existing: TaskCard, incoming: TaskStep[], d: TaskUpdateDetai
     // Session 244: keep the ORIGINAL response join — a revision (task:start
     // on the same card) belongs to the turn that created the card.
     responseTurnId: existing.responseTurnId ?? d.turn_id,
+    // T20 (REQ-22): a revised plan may redeclare the goal; absent fields keep
+    // the previously declared one (same reconcile rule as planTitle).
+    goalSnippet: d.goal_snippet || existing.goalSnippet,
+    extractedSchema: d.extracted_schema || existing.extractedSchema,
   }
 }
 
@@ -843,6 +989,7 @@ function reduceTaskUpdate(prev: CardsState, d: TaskUpdateDetail): CardsState {
 
     case "tool:result": {
       if (d.step_number == null) return prev
+      const td = normalizeTemporalDelta(d.temporal_delta)
       return applyToCard(prev, d, (card) => {
         const idx = d.step_number! - 1
         if (!card.steps[idx]) return card
@@ -855,8 +1002,29 @@ function reduceTaskUpdate(prev: CardsState, d: TaskUpdateDetail): CardsState {
           activeDetail: undefined,
           url: undefined,
           activeProgress: undefined,
+          // T20 (REQ-22): a finished step RETAINS its extraction record —
+          // the schema projection, verification tally and any temporal delta
+          // it produced. Only written when the frame carries them.
+          ...(d.extracted_schema ? { extractedSchema: d.extracted_schema } : null),
+          ...(d.verified_fields ? { verifiedFields: d.verified_fields } : null),
+          ...(td ? { temporalDelta: td } : null),
         }
-        return { ...card, steps, currentStep: deriveCurrentStep(steps), isWorking: true }
+        // Card-level aggregates: verification merges across steps; batch
+        // counters and schema adopt the newest declared values.
+        return {
+          ...card,
+          steps,
+          currentStep: deriveCurrentStep(steps),
+          isWorking: true,
+          ...(d.verified_fields
+            ? { verifiedFields: { ...card.verifiedFields, ...d.verified_fields } }
+            : null),
+          ...(d.extracted_schema ? { extractedSchema: d.extracted_schema } : null),
+          ...(d.batch_metrics
+            ? { batchMetrics: { ...card.batchMetrics, ...d.batch_metrics } }
+            : null),
+          ...(td ? { temporalDelta: td } : null),
+        }
       })
     }
 
@@ -1017,6 +1185,7 @@ function reduceTaskUpdate(prev: CardsState, d: TaskUpdateDetail): CardsState {
           })()
           if (workingIdx >= 0) {
             const s = steps.slice()
+            const stepTd = normalizeTemporalDelta(d.temporal_delta)
             s[workingIdx] = {
               ...s[workingIdx],
               // Prefer the structured field; fall back to the sentence for
@@ -1026,6 +1195,16 @@ function reduceTaskUpdate(prev: CardsState, d: TaskUpdateDetail): CardsState {
               // pin_517dfcbda150 (F1): the crawler streams the source URL on
               // every page event; surface it on the card (subtitle/hover).
               url: d.detail_url,
+              // T20 (REQ-22): live enrichment on the step doing the work —
+              // merge verified/batch state, never replace with a blank.
+              ...(d.verified_fields
+                ? { verifiedFields: { ...s[workingIdx].verifiedFields, ...d.verified_fields } }
+                : null),
+              ...(stepTd ? { temporalDelta: stepTd } : null),
+              ...(d.batch_metrics
+                ? { batchMetrics: { ...s[workingIdx].batchMetrics, ...d.batch_metrics } }
+                : null),
+              ...(d.goal_snippet ? { goalSnippet: d.goal_snippet } : null),
             }
             steps = s
           }
@@ -1051,6 +1230,18 @@ function reduceTaskUpdate(prev: CardsState, d: TaskUpdateDetail): CardsState {
           next.phase = d.phase
           next.phaseSequence = d.phase_sequence ?? card.phaseSequence ?? 0
         }
+        // T20 (REQ-22): card-level enrichment aggregates — merge so a
+        // frame that adds one field does not clear the others.
+        if (d.goal_snippet) next.goalSnippet = d.goal_snippet
+        if (d.extracted_schema) next.extractedSchema = d.extracted_schema
+        if (d.verified_fields) {
+          next.verifiedFields = { ...card.verifiedFields, ...d.verified_fields }
+        }
+        if (d.batch_metrics) {
+          next.batchMetrics = { ...card.batchMetrics, ...d.batch_metrics }
+        }
+        const td = normalizeTemporalDelta(d.temporal_delta)
+        if (td) next.temporalDelta = td
         return { ...card, ...next }
       })
     }
@@ -1266,6 +1457,16 @@ function setCardsState(updater: (prev: CardsState) => CardsState): void {
 function _subscribe(fn: () => void): () => void {
   _subscribers.add(fn)
   return () => { _subscribers.delete(fn) }
+}
+
+/** Test-only seam: reset the module store to EMPTY between cases. The store
+ * is session-persistent by DESIGN (REQ-38), which means every baseline/
+ * event/cards test that spins up a fresh renderHook would otherwise see
+ * cards dispatched by the previous test. Tests call this in beforeEach.
+ * Production must never call it. */
+export function __resetTaskProgressForTests(): void {
+  _cardsState = EMPTY_CARDS_STATE
+  _snapshot = EMPTY_PROGRESS
 }
 
 /** Install the session-lifetime listeners exactly once. Guarded for SSR and

@@ -25,6 +25,51 @@ import pytest
 from backend.agent.event_bus import IRISStreamEvent
 
 
+class _FakeCrawlCap:
+    """Stands in for FetchCrawlCapability on the seam the orchestrator
+    ACTUALLY uses: register_capability -> dispatch_urls -> _call_fetch_one.
+
+    INPUT CHANGE (2026-09-06): after the capability registry landed, the
+    crawler's page-fetched events flow through the capability's on_progress
+    channel (via orchestrator._forward), not through crawl_runner's
+    run_crawl_subprocess. The tests used to patch `run_crawl_subprocess`,
+    which mutated a seam that's no longer on the path — the events the
+    harness pins (CRAWLER_PAGE_FETCHED per page, in order, phase events
+    untouched) now come from this fake. Assertions are IDENTICAL."""
+
+    name = "fetch.crawl"
+
+    def __init__(self, pages: list[str]):
+        self.pages = pages
+
+    async def available(self) -> bool:
+        return True
+
+    async def fetch_one(self, url, goal, job_id, on_progress=None, page_offset=0):
+        from backend.crawler.orchestrator import CrawlProgress
+        idx = self.pages.index(url) if url in self.pages else 0
+        if on_progress is not None:
+            on_progress(CrawlProgress(
+                "CRAWLER_PAGE_FETCHED",
+                {"url": url, "title": f"T{idx}", "page_number": idx + 1,
+                 "total": len(self.pages), "host": url.split("//")[1].split("/")[0],
+                 "job_id": job_id},
+            ))
+        from backend.crawler.capabilities import FetchOutcome
+        from backend.crawler.crawler_engine import PageData
+        from backend.crawler.usability import UsabilityReason, UsabilityVerdict
+        page = PageData(
+            url=url, title=f"T{idx}",
+            markdown=f"Example content for {url}", html=None,
+            metadata={}, error=None, html_bytes=4,
+        )
+        return FetchOutcome(
+            url=url, capability="fetch.crawl", page=page,
+            verdict=UsabilityVerdict(usable=True, reason=UsabilityReason.OK),
+            duration_ms=1, har_entries=[],
+        )
+
+
 class _Plan:
     """Fake plan returned by the planner mock."""
     urls = ["https://example.com/a", "https://example.org/b"]
@@ -139,7 +184,17 @@ def test_crawler_query_emits_progress_and_listening_state():
       - exactly 2 page events, in fetch order (unchanged coverage — still
         guarantees one event per page, no duplicates)
       - at least 1 phase event fired (new coverage for REQ-4 AC1)
+
+    INPUT SEAM (2026-09-06): the fake capability now registers via
+    `register_capability`, exercising the orchestrator's T12 dispatch path
+    (`_dispatch_one` -> `_call_fetch_one`) instead of the old
+    `run_crawl_subprocess` monkeypatch. Assertions unchanged.
     """
+    from backend.crawler.capabilities import CAPABILITIES, register_capability
+    # Capability-registry isolation so this file's fake does not leak into
+    # tests that expect the production stack.
+    CAPABILITIES.clear()
+
     from backend.agent.event_bus import get_event_bus
     from backend.agent.tool_bridge import AgentToolBridge
 
@@ -152,15 +207,18 @@ def test_crawler_query_emits_progress_and_listening_state():
     bus.subscribe(IRISStreamEvent.TASK_PROGRESS, _collect)
     bus.subscribe(IRISStreamEvent.LISTENING_STATE, _collect)
 
+    from backend.crawler.capabilities import register_capability
+
     bridge = AgentToolBridge.__new__(AgentToolBridge)
 
     from backend.crawler.orchestrator import CrawlOrchestrator
     with patch.object(CrawlOrchestrator, "_plan") as plan_mock, patch(
-        "backend.crawler.crawl_runner.run_crawl_subprocess", _fake_run
-    ), patch("backend.crawler.data_extractor.get_data_extractor") as gde, patch(
+        "backend.crawler.data_extractor.get_data_extractor"
+    ) as gde, patch(
         "backend.agent.tools.speak_tool.get_speak_tool"
     ) as gst:
         plan_mock.return_value = _Plan()
+        register_capability(_FakeCrawlCap(_Plan.urls))
         gde.return_value.extract = AsyncMock(
             # extract_and_cite expects dashboard_data as a dict, not a list
             return_value={"title": "Test", "summary": "Test summary", "key_findings": [], "sources": [{"url": "https://example.com/a"}]}

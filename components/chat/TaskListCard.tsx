@@ -6,7 +6,14 @@ import { ChevronDown, Copy, Check, Sparkles } from "lucide-react"
 import { Xur } from "@/components/Xur"
 import { useBrandColor } from "@/contexts/BrandColorContext"
 import { deriveCurrentStep } from "@/hooks/useTaskProgress"
-import type { TaskStep, TaskStepStatus, MemoryEvent } from "@/hooks/useTaskProgress"
+import type {
+  TaskStep,
+  TaskStepStatus,
+  MemoryEvent,
+  BatchMetrics,
+  TemporalDeltaInfo,
+  VerifiedField,
+} from "@/hooks/useTaskProgress"
 import { toolLabel, MODE_NON_TOOLS } from "@/hooks/useTaskProgress"
 import { resolveVerb } from "@/lib/cards/verbRegistry"
 import {
@@ -52,6 +59,22 @@ export interface TaskListCardProps {
    * chrome (`<id>/memory.db`) with a one-click copy, so users can reference
    * it via @taskcard:<id> from ANY conversation thread. */
   cardId?: string
+  /**
+   * T21 (REQ-22): goal-directed enrichment — the card-level aggregates
+   * reduced by useTaskProgress (T20). All optional; each renders ONLY when
+   * present, never as a placeholder (phantom UI = fabrication).
+   * - `goalSnippet`: one-line goal this card serves.
+   * - `extractedSchema`: the declared 12-keyword output contract.
+   * - `batchMetrics`: DAG batch pool counters (total/done/failed/inFlight/
+   *   rateLimited).
+   * - `temporalDelta`: natural-language deltas vs the prior snapshot pill row.
+   * - `verifiedFields`: cross-source verification per extracted field.
+   */
+  goalSnippet?: string
+  extractedSchema?: Record<string, unknown>
+  batchMetrics?: BatchMetrics
+  temporalDelta?: TemporalDeltaInfo
+  verifiedFields?: Record<string, VerifiedField>
 }
 
 const STATUS_META: Record<TaskStepStatus, { color: string; label: string }> = {
@@ -168,6 +191,11 @@ export default function TaskListCard({
   durationSec,
   cardActive,
   cardId,
+  goalSnippet,
+  extractedSchema,
+  batchMetrics,
+  temporalDelta,
+  verifiedFields,
 }: TaskListCardProps) {
   const { getThemeConfig } = useBrandColor()
   const theme = getThemeConfig()
@@ -237,6 +265,24 @@ export default function TaskListCard({
     steps.every((s) => s.status === "done" || s.status === "skipped")
   const veinState: ChassisVeinState = learningSignal === "crystallized" ? "crystallized" : isWorking ? "thinking" : "idle"
   const veinColor = VEIN_COLOR_BY_STATE[veinState]
+
+  // ── T21 (REQ-22, wave 4): goal-directed enrichment derivations ────────
+  // Everything in this block renders ONLY from payloads the backend actually
+  // emitted (reduced by useTaskProgress). Absent fields render NOTHING — a
+  // phantom badge is a fabricated claim.
+  const schemaKeys = extractedSchema?.properties
+    ? Object.keys(extractedSchema.properties as Record<string, unknown>).slice(0, 6)
+    : []
+  const verifiedEntries = verifiedFields ? Object.entries(verifiedFields) : []
+  const verifiedOk = verifiedEntries.filter(([, v]) => v?.verified)
+  const discrepancies = verifiedEntries.filter(([, v]) => v?.discrepancy)
+  const hasEnrichment =
+    !!goalSnippet ||
+    schemaKeys.length > 0 ||
+    !!batchMetrics ||
+    !!temporalDelta?.statements.length ||
+    verifiedOk.length > 0 ||
+    discrepancies.length > 0
 
   // Elapsed running timer — ticks ONLY while a step is working and freezes
   // when the run settles. Rendered in the FOOTER (variant anatomy), never
@@ -624,6 +670,103 @@ export default function TaskListCard({
                 }}
               />
             )}
+            {/* T21 (REQ-22): goal-directed enrichment strip — the goal this
+                card serves, its extraction contract (schema field chips),
+                aggregate batch progress, cross-source verification tally and
+                temporal-diff pills. Renders ONLY when the backend emitted the
+                fields; nothing here is synthesized client-side. */}
+            {hasEnrichment && (
+              <div className="flex flex-col gap-1 mb-1.5 px-1.5" data-testid="taskcard-enrichment">
+                {goalSnippet ? (
+                  <div
+                    className="text-[9.5px] font-mono truncate"
+                    style={{ color: "rgba(255,255,255,0.45)" }}
+                    title={goalSnippet}
+                  >
+                    {goalSnippet}
+                  </div>
+                ) : null}
+                {schemaKeys.length > 0 ? (
+                  <div className="flex flex-wrap gap-1">
+                    {schemaKeys.map((k) => (
+                      <span
+                        key={k}
+                        className="px-1 rounded text-[8px] font-mono leading-[14px]"
+                        style={{
+                          border: "1px solid rgba(255,255,255,0.10)",
+                          color: "rgba(255,255,255,0.5)",
+                          background: "rgba(255,255,255,0.03)",
+                        }}
+                      >
+                        {k}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+                {batchMetrics?.total ? (
+                  <div className="text-[9px] font-mono tabular-nums" style={{ color: "rgba(255,255,255,0.5)" }}>
+                    batch {Math.min(batchMetrics.done ?? 0, batchMetrics.total)}/{batchMetrics.total}
+                    {batchMetrics.inFlight ? ` · ${batchMetrics.inFlight} in flight` : ""}
+                    {batchMetrics.rateLimited ? (
+                      <span style={{ color: "#fbbf24" }}> · {batchMetrics.rateLimited} rate-limited</span>
+                    ) : null}
+                  </div>
+                ) : null}
+                {verifiedOk.length > 0 || discrepancies.length > 0 ? (
+                  <div className="flex flex-wrap items-center gap-1" aria-label="cross-source verification">
+                    {verifiedOk.map(([field, v]) => (
+                      <span
+                        key={field}
+                        className="inline-flex items-center gap-0.5 px-1 rounded text-[8px] font-mono leading-[14px]"
+                        style={{
+                          border: "1px solid rgba(52,211,153,0.25)",
+                          color: "#34d399",
+                          background: "rgba(52,211,153,0.06)",
+                        }}
+                        title={`${field}: corroborated across ${v.corroborations ?? "≥2"} sources`}
+                      >
+                        <Check size={7} aria-hidden /> {field}
+                      </span>
+                    ))}
+                    {/* REQ-11 AC4: irreconcilable numbers stay visible with
+                        their source context — a discrepancy is a FINDING, not
+                        a state to hide. */}
+                    {discrepancies.map(([field, v]) => (
+                      <span
+                        key={field}
+                        className="inline-flex items-center gap-0.5 px-1 rounded text-[8px] font-mono leading-[14px]"
+                        style={{
+                          border: "1px solid rgba(251,191,36,0.30)",
+                          color: "#fbbf24",
+                          background: "rgba(251,191,36,0.06)",
+                        }}
+                        title={`${field}: sources disagree${v.note ? ` — ${v.note}` : ""}`}
+                      >
+                        ⚠ {field}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+                {temporalDelta?.statements.length ? (
+                  <div className="flex flex-wrap gap-1" aria-label="temporal changes">
+                    {temporalDelta.statements.map((s, i) => (
+                      <span
+                        key={`${i}-${s.slice(0, 16)}`}
+                        className="px-1 rounded text-[8px] font-mono leading-[14px]"
+                        style={{
+                          border: `1px solid ${glowColor}38`,
+                          color: glowColor,
+                          background: `${glowColor}0d`,
+                        }}
+                        title={s}
+                      >
+                        {s}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+            )}
             <div className="flex flex-col gap-1">
               {displaySteps.map((step, i) => {
                 // Session 246: guard against backend-native statuses that
@@ -687,6 +830,33 @@ export default function TaskListCard({
                           · {step.resultPreview}
                         </span>
                       ) : null}
+                      {/* T21 (REQ-22): per-step verification state — ✓ the
+                          count of cross-source-verified fields this step
+                          produced; ⚠ the fields whose sources disagree. */}
+                      {step.verifiedFields && Object.values(step.verifiedFields).some((v) => v?.verified) ? (
+                        <span
+                          className="shrink-0 text-[9px] font-mono"
+                          style={{ color: "#34d399" }}
+                          title={Object.entries(step.verifiedFields)
+                            .filter(([, v]) => v?.verified)
+                            .map(([f]) => f)
+                            .join(", ")}
+                        >
+                          ✓{Object.values(step.verifiedFields).filter((v) => v?.verified).length}
+                        </span>
+                      ) : null}
+                      {step.verifiedFields && Object.values(step.verifiedFields).some((v) => v?.discrepancy) ? (
+                        <span
+                          className="shrink-0 text-[9px] font-mono"
+                          style={{ color: "#fbbf24" }}
+                          title={Object.entries(step.verifiedFields)
+                            .filter(([, v]) => v?.discrepancy)
+                            .map(([f]) => f)
+                            .join(", ")}
+                        >
+                          ⚠
+                        </span>
+                      ) : null}
                     </button>
                     {/* Live-crawl under-row: ONLY while this step is
                         working — rotating host detail + source URL stream
@@ -730,6 +900,26 @@ export default function TaskListCard({
                             {step.url}
                           </span>
                         ) : null}
+                      </span>
+                    ) : null}
+                    {/* T21 (REQ-22/REQ-14): temporal-diff pills for THIS step —
+                        visible on done rows too (the change outlives the read). */}
+                    {step.temporalDelta?.statements.length ? (
+                      <span className="flex flex-wrap gap-1 pl-[88px] min-w-0 pb-1">
+                        {step.temporalDelta.statements.map((s, i) => (
+                          <span
+                            key={`${step.id}-td-${i}`}
+                            className="px-1 rounded text-[8px] font-mono leading-[14px]"
+                            style={{
+                              border: `1px solid ${glowColor}38`,
+                              color: glowColor,
+                              background: `${glowColor}0d`,
+                            }}
+                            title={s}
+                          >
+                            {s}
+                          </span>
+                        ))}
                       </span>
                     ) : null}
                     {/* Expanded summary — boxed panel (variant tokens):

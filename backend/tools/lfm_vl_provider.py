@@ -1,3 +1,8 @@
+# CONFLICT-FLAG (stash pop 2026-09-06, resolved session-299): this file had a
+# whole-file conflict — upstream side (2268 lines, port 18181, leases,
+# borrowed servers) kept; stashed side (662 lines, port 8081, ancestral)
+# dropped. Upstream == HEAD modulo em-dash encoding fixes. Stash entries
+# (git stash list) remain for archaeology.
 """
 LFM2.5-VL Vision Provider
 HTTP client wrapping llama-server on the configured vision port (default 18181).

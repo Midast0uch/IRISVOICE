@@ -1,10 +1,12 @@
 # IRIS Voice — Full Audio Pipeline Architecture
 
-> **DEFINITIVE REFERENCE** — Last updated 2026-09-03 (Parakeet-first STT, lazy-load on wake word, whisper loading flag).
+> **DEFINITIVE REFERENCE** — Last updated 2026-09-07 (TTS worker lifecycle REQ-28: lazy boot, connect pre-warm, idle unload/respawn, voice-state cache, post-synthesis compact).
 > This document is the single source of truth for the audio pipeline. If the
 > code and this document ever disagree, treat this as a bug and update both.
-> All values below are verified against `backend/audio/voice_command.py` and
-> `backend/iris_gateway.py` at commit `106a271e`.
+> All values below are verified against `backend/audio/voice_command.py`,
+> `backend/iris_gateway.py`, `backend/agent/tts.py` and
+> `backend/audio/tts_worker.py` (pre-REQ-28 sections last verified at commit
+> `106a271e`; TTS lifecycle sections verified live 2026-09-07, Session 302).
 
 ---
 
@@ -62,8 +64,8 @@ WebSocket broadcasts.
 | **AudioEngine** | `backend/audio/engine.py` | Manages mic input stream, frame listeners, half-duplex gate (`_tts_active`) | Single-threaded callback |
 | **AudioPipeline** | `backend/audio/pipeline.py` | PortAudio I/O streams, native C++ player, device enumeration | Callback + main |
 | **ViolawakeWakeWordDetector** | `backend/voice/violawake_detector.py` | Custom ONNX wake head + OpenWakeWord backbone, 320-sample frames, CPU-first | Audio callback |
-| **TTSManager (proxy)** | `backend/agent/tts.py` | Proxy to the Pocket-TTS subprocess worker; spawns it, sends JSONL, yields audio | Proxy (main) |
-| **TTS Worker (subprocess)** | `backend/audio/tts_worker.py` | Pocket-TTS model + voice state + streaming synthesis in a SEPARATE PROCESS | Subprocess |
+| **TTSManager (proxy)** | `backend/agent/tts.py` | Proxy to the Pocket-TTS subprocess worker; lazy at boot, pre-warms on WS connect, unloads worker after `IRIS_TTS_IDLE_TIMEOUT_S` quiet (default 600s), respawns on demand (singleflight); sends JSONL, yields audio | Proxy (main) + reaper daemon |
+| **TTS Worker (subprocess)** | `backend/audio/tts_worker.py` | Pocket-TTS model + hash-guarded voice-state disk cache (`data/tts_voice_cache/`, 10.7s encode → ~0s load) + streaming synthesis + post-synthesis heap compact (gc → `_heapmin` → trim) in a SEPARATE PROCESS | Subprocess |
 | **VoiceCommandHandler** | `backend/audio/voice_command.py` | VAD, recording, STT orchestration, cadence detection, activation beep | Multi-threaded (VAD + STT + beep) |
 | **ParakeetTranscriber** | `backend/audio/voice_command.py` | sherpa-onnx Parakeet TDT 0.6B v3 int8 in a worker SUBPROCESS (`parakeet_sherpa_worker.py`, JSONL): lazy first-speech spawn (~2 s) + build (~4–13 s cold), CUDA default (`IRIS_PARAKEET_PROVIDER`), word timestamps | Spawner thread + reader thread (bounded round-trip) |
 | **parakeet_sherpa** | `backend/audio/parakeet_sherpa.py` | Model-dir resolution, cuDNN DLL path (via torch bundle), recognizer factory with CPU fallback | Import-time only |
@@ -256,6 +258,23 @@ TTS echo from the interrupted playback decay before VAD speech detection begins.
 ```
 
 ### Phase 5: Text-to-Speech (TTS) — Streaming
+
+**Worker lifecycle (REQ-28, verified live 2026-09-07):** the worker does NOT
+start with the backend. `TTSManager` boots with no subprocess
+(`IRIS_TTS_EARLY_SPAWN=1` restores the old boot-time spawn); the first
+frontend WS connect fires `prewarm()` (once per process, non-blocking), and
+any synthesis path spawns on demand via `_ensure_worker` (300 s startup
+budget). After `IRIS_TTS_IDLE_TIMEOUT_S` seconds with no terminal synthesis
+event (default 600 s), the reaper daemon sends graceful `shutdown`, waits
+10 s, kills if needed, and detaches — the next request respawns transparently
+(singleflight via the existing locks; crash recovery unchanged). Measured
+live: boot→no worker; connect→worker in ~7 s; first speech 54,720 samples in
+1.22 s; idle 97 s → process gone; next request → ready in 6 s, 52,800 samples.
+Floor effect: idle total 3350.7 → 1302.8 MB (−2047.9 MB returned, harness
+measured). Voice-state cache: TOMV2 encode (10.7 s) runs once ever, then
+`voice_state_<sha>.pt` (3.5 MB) loads in ~0 s. Post-synthesis compact runs
+after every request (success or failure) and can never fail the synthesis.
+
 ```
 ┌──────────────────────────────────────────────────────────┐
 │  iris_gateway._speak_response()                          │
@@ -942,8 +961,9 @@ the fixed audio-pipeline costs:
 | Violawake (ONNX + OWW) | 0 | ~50 MB | Always (wake word) |
 | sherpa-onnx runtime | 0 | (included above) | No torch at STT runtime; cuDNN via torch bundle |
 | Native C++ player | 0 | ~1 MB | During TTS playback |
-| Pocket-TTS (subprocess) | 0 | ~100 MB | During TTS synthesis (separate process) |
-| **Total (audio pipeline, parakeet)** | **~1 GB** | **~150 MB** | idle backend measured 0.39 GB (2026-09-03) |
+| Pocket-TTS worker (subprocess) | 0 | **~2.05–2.3 GB commit** (~1.1 GB resident fresh, decaying toward ~0.3 GB over idle hours; 438 MB weights on disk) — live only; **0 at rest** (idle-unload, REQ-28) | On first speech after boot/connect; unloaded after quiet timeout |
+| **Total (audio pipeline, parakeet, TTS live)** | **~1 GB** | **~2.5 GB commit** | measured 2026-09-07: backend 1.30 + worker 2.05 GB |
+| **Total (audio pipeline, parakeet, TTS idle)** | **~1 GB** | **~1.3 GB commit** | measured 2026-09-07 post-unload (was 3.35–3.59 GB before REQ-28) |
 | **Total (audio pipeline, whisper)** | **0** | **~95 MB** | — |
 
 **Watchdog thresholds** (in `backend/core/memory_watchdog.py`):
@@ -998,6 +1018,9 @@ LLM provider memory (separate, user-selected):
 - `backend/tests/test_conversation_kernel.py` — 12 tests
 - `backend/tests/test_voice_pipeline.py::TestStopListening` — 21 tests (phrase match incl. fillers/negatives, pipeline interception skips LLM/TTS, auto-relisten suppression, sleep entry, wake-word re-entry)
 - `backend/tests/test_narration_broadcast.py` — 4 tests (narration speaking→idle order, serialization via `_NARRATION_PLAYBACK_LOCK`, no-broadcast unwired, gateway wires broadcaster)
+- `backend/tests/unit/test_tts_lifecycle.py` — 10 tests (REQ-28: lazy boot, once-per-process prewarm, unload decision matrix, graceful reap + active sparing, respawn after reap, voice-state cache hit, post-synthesis compact hook)
+- `backend/tests/contract/test_tts_subprocess_contract.py` — worker JSONL protocol (ping/synthesize/shutdown), float32 chunks at 24 kHz, crash recovery (spawns a REAL worker)
+- `backend/tests/unit/test_tts_pocket_load.py` — model-load contract; 1 test stale at HEAD (`test_tts_manager_uses_language_not_variant` pins the pre-split in-process loader — reported, not modified)
 
 ### TestWordMonitorCharacterProportional (6 unit tests)
 
@@ -1285,6 +1308,29 @@ frames. If "Hey Iris" is spoken during that load window, it is silently dropped.
 **Lesson recorded**: component benchmarks are not system verification — the
 process environment (preloaded modules, cold disk, real audio) IS part of the
 system under test. Pilots must run backend-like from now on.
+
+### Session 302 (2026-09-07) — TTS lifecycle rework + leak verdict (REQ-28)
+
+**RESOLVED** (the 2.3 GB idle worker):
+- Leak probe (own worker, 3 syntheses + 60 s idle): 2307.5 → 2275.5 / 2304.2 /
+  2277.5 → 2277.4 MB — flat within ±30 MB noise. Verdict: **retained arenas,
+  not a leak** (no per-use growth; freed native memory stays committed).
+- Lifecycle now: lazy at boot (`IRIS_TTS_EARLY_SPAWN=1` restores old spawn),
+  pre-warm on WS connect (`main.py` endpoint, non-blocking, once per process),
+  idle unload after `IRIS_TTS_IDLE_TIMEOUT_S` (default 600 s, graceful
+  `shutdown` → 10 s wait → kill), transparent respawn on next synthesis.
+  All five transitions proven live against the real backend (see Phase 5).
+- Voice-state disk cache (`data/tts_voice_cache/voice_state_<sha>.pt`, 3.5 MB):
+  10.7 s TOMV2 encode → ~0 s load; respawn ready in 6 s (was ~19 s+).
+- Post-synthesis compact in the worker after every request: `gc.collect()` →
+  ucrt `_heapmin` decommit → working-set trim. Best-effort, can never fail
+  a completed synthesis.
+- Doc honesty: `tts.py` claimed "~100 MB RAM" (weights-only figure) for a
+  2.3 GB process — corrected to measured commit/resident figures.
+- Stale test noted (not modified): `test_tts_pocket_load.py::
+  test_tts_manager_uses_language_not_variant` pins the pre-split in-process
+  `_load_pocket_tts` (fails identically at HEAD — same stale class as the
+  `fetch_url` mocks; the `language=` call lives in the worker's `_load_model`).
 
 ---
 

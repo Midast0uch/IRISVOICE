@@ -85,6 +85,9 @@ class TestEmbeddingServiceLazyLoading:
         assert "hash" in service.available_backends()
         assert "lfm25-emb-350m" not in service.available_backends(), \
             "No neural model should be loaded on instantiation"
+        # (stash pop, kept): qwen3 backend removed upstream — never loads.
+        assert "qwen3" not in service.available_backends(), \
+            "No neural model should be loaded on instantiation"
 
         # Trigger lazy loading
         embedding = service.encode("Hello world")
@@ -92,6 +95,8 @@ class TestEmbeddingServiceLazyLoading:
         # The neural backend should now be loaded
         assert "lfm25-emb-350m" in service.available_backends(), \
             "Model should be loaded after encode()"
+        # CONFLICT-FLAG (stash pop): stashed side asserted "qwen3" here;
+        # dropped — qwen3 backend removed upstream, only one backend loads.
         assert len(embedding) == EmbeddingService.EMBEDDING_DIM, \
             "Should return embedding_dim vector"
 
@@ -280,6 +285,9 @@ class TestLfmBackend:
         service = EmbeddingService()
         emb = service.encode_with_backend("test query about waterfalls", "lfm25-emb-350m")
         assert emb is not None, "lfm backend should load from the local HF cache"
+        # (stash pop: TestQwen3Backend dropped — qwen3 backend removed upstream.
+        # The shared tail below (dim assert + reset) now completes the LFM test,
+        # which previously lacked both.)
         assert len(emb) == EmbeddingService.EMBEDDING_DIM
         EmbeddingService.reset_instance()
 

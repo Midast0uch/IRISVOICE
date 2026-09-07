@@ -112,6 +112,9 @@ def test_ct9_batch_dispatch_uses_role_binding():
     # binding and the staged condition is unrepresentable. The assertion below
     # (the call must be keyed on the "reasoning" role) is unchanged, but note it
     # can no longer fail the specific way it was written to catch.
+    # CONFLICT-FLAG (stash pop): stashed side set the legacy field directly;
+    # dropped — it is a read-only property (agent_kernel.py:1315), the set
+    # would raise AttributeError. No assertion changed.
     k._der_turn_calls = 0
     k._live_ctx = None
     k._memory_interface = None

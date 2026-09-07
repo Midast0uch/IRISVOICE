@@ -28,6 +28,21 @@ def _silence_logs():
 # sounddevice/torch (which hang or are slow on import in the test env).
 # We load voice_command.py directly via importlib, bypassing the package
 # __init__ (which imports the real engine). Relative imports resolve to stubs.
+# Save the real modules so we can restore them after loading voice_command
+# (mirrors contract/test_vad_reliability.py: without this, the stubs below
+# poison sys.modules for every test file collected after this one — e.g.
+# backend/tests/unit/test_vision_tiering.py imports backend.inference_router
+# and dies with ModuleNotFoundError when collected in the same session).
+_orig_modules = {
+    name: sys.modules.get(name) for name in (
+        "backend",
+        "backend.audio",
+        "backend.audio.engine",
+        "backend.audio.cadence_detector",
+        "backend.audio.voice_command",
+    )
+}
+
 _stub_backend = types.ModuleType("backend")
 _stub_backend.__path__ = []
 sys.modules["backend"] = _stub_backend
@@ -53,6 +68,16 @@ _voice_mod = importlib.util.module_from_spec(_spec)
 sys.modules["backend.audio.voice_command"] = _voice_mod
 _spec.loader.exec_module(_voice_mod)
 VoiceCommandHandler = _voice_mod.VoiceCommandHandler
+
+# Restore the real package tree in sys.modules. VoiceCommandHandler is already
+# captured above, so later-collected test files can import the real
+# backend.* modules again (module-level stubbing leaking is exactly the bug
+# the contract variant of this file already fixes).
+for _name, _mod in _orig_modules.items():
+    if _mod is None:
+        sys.modules.pop(_name, None)
+    else:
+        sys.modules[_name] = _mod
 
 
 def _make_frames(rms_values):

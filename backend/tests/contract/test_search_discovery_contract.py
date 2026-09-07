@@ -21,10 +21,11 @@ import asyncio
 
 import pytest
 
-from backend.crawler.capabilities import CAPABILITIES, FetchCrawlCapability, register_capability
+from backend.crawler.capabilities import CAPABILITIES, FetchCrawlCapability, FetchOutcome, register_capability
 from backend.crawler.crawl_planner import CrawlPlan
 from backend.crawler.crawler_engine import CrawlResult, PageData
 from backend.crawler.orchestrator import CrawlOrchestrator
+from backend.crawler.usability import UsabilityReason, UsabilityVerdict
 from backend.vision.browser_session import SessionBounds, VisionAction, WallKind
 from backend.vision.search_discovery import (
     DiscoveryResult,
@@ -269,27 +270,39 @@ def _page(url, markdown="", error=None):
 
 def test_discovered_urls_reach_the_real_fetch_crawl_capability(monkeypatch):
     """REQ-19 AC3: discovered URLs are dispatched through the REAL
-    `FetchCrawlCapability` — the exact call site
-    (`CrawlOrchestrator.fetch_url`) test_stealth_contract.py's
-    `test_robots_gate_still_consulted_before_every_fetch` pins as
-    robots-checked on every call. No second/bypassing fetch path exists for
-    discovered URLs (design D2/D4) — proven by construction: the SAME
-    capability instance planned URLs would use is the one invoked here.
+    `FetchCrawlCapability` — the same registry instance planned URLs use.
+    No second/bypassing fetch path exists for discovered URLs (design D2/D4)
+    — proven by construction: dispatch reads the capability from the
+    registry, and the spy below records the REAL registered instance
+    receiving each URL (the fetch itself is faked for hermeticity — no live
+    web — while the dispatch is fully production).
+
+    MECHANISM NOTE (2026-09-06, session-299): this test used to pin the
+    `CrawlOrchestrator.fetch_url` call site. The T12 capability dispatch
+    (browser-pool unification) moved per-URL fetching onto
+    `FetchCrawlCapability.fetch_one`, which `fetch_url` no longer fronts —
+    asserting that call site pinned a dead seam (it recorded zero calls
+    while both URLs demonstrably flowed through the capability). The
+    assertion below pins the CURRENT single path with equal strength:
+    every discovered URL must reach the registered real capability.
+    Nothing about the invariant was weakened — same URLs, same must-reach.
+    The robots-checked half of AC3 is pinned separately by
+    test_capability_path_consults_robots_before_fetching below.
     """
     register_capability(FetchCrawlCapability())  # the REAL capability, not a fake
 
-    fetch_url_calls: list[str] = []
+    fetch_one_calls: list[str] = []
 
-    import backend.crawler.orchestrator as orch_mod
-
-    async def _fake_fetch_url(self_or_none, url, **kwargs):
-        fetch_url_calls.append(url)
-        return CrawlResult(
-            query=url, pages=[_page(url, "")],  # unusable -> still proves reach
-            duration_ms=1, crawled_at="", error=None,
+    async def _spy_fetch_one(self_or_none, url, goal="", job_id="", **kwargs):
+        fetch_one_calls.append(url)
+        return FetchOutcome(
+            url=url, capability="fetch.crawl",
+            page=_page(url, "spy content proves reach"),
+            verdict=UsabilityVerdict(usable=True, reason=UsabilityReason.OK),
+            duration_ms=1,
         )
 
-    monkeypatch.setattr(orch_mod.CrawlOrchestrator, "fetch_url", _fake_fetch_url)
+    monkeypatch.setattr(FetchCrawlCapability, "fetch_one", _spy_fetch_one)
 
     orch = CrawlOrchestrator()
     orch._backend_override = None  # force the T12 capability dispatch path
@@ -316,9 +329,47 @@ def test_discovered_urls_reach_the_real_fetch_crawl_capability(monkeypatch):
 
     result = asyncio.run(orch.research("obscure niche query", mode="agent"))
 
-    assert set(fetch_url_calls) == {
+    assert set(fetch_one_calls) == {
         "https://real-source.example/one", "https://real-source.example/two",
-    }, "discovered URLs never reached the real fetch.crawl -> fetch_url call site"
+    }, "discovered URLs never reached the real fetch.crawl -> fetch_one call site"
+
+
+def test_capability_path_consults_robots_before_fetching(monkeypatch):
+    """REQ-5 AC3 on the capability path: Tier-1's raw httpx fetch must not
+    route around robots compliance (the gate previously lived only in
+    crawler_engine.crawl() — CT-8). A refused URL returns TRANSPORT_ERROR
+    with engine-identical evidence and NO network attempt whatsoever."""
+    gate_seen: list[tuple] = []
+
+    class _RefusingChecker:
+        async def is_allowed(self, url, ua=""):
+            gate_seen.append((url, ua))
+            return False
+
+    monkeypatch.setattr(
+        "backend.crawler.capabilities.get_robots_checker",
+        lambda: _RefusingChecker(),
+    )
+
+    def _no_network(*a, **k):
+        raise AssertionError("Tier-1 attempted network for a robots-refused URL")
+
+    monkeypatch.setattr("httpx.AsyncClient", _no_network)
+
+    from backend.crawler.capabilities import FetchCrawlCapability as _RealCap
+    outcome = asyncio.run(_RealCap().fetch_one(
+        "https://refused.example/page", "goal", "job-robots",
+    ))
+
+    assert gate_seen, "robots gate never consulted before fetching"
+    assert gate_seen[0][1].startswith("Mozilla"), (
+        "gate checked a different identity than the fetch presents"
+    )
+    assert outcome.page is None
+    assert outcome.verdict.usable is False
+    assert outcome.verdict.reason == UsabilityReason.TRANSPORT_ERROR
+    assert "robots" in outcome.verdict.detail
+    assert outcome.har_entries and outcome.har_entries[0]["status"] == "robots_blocked"
 
 
 def test_stamp_discovery_provenance_marks_only_discovered_urls():

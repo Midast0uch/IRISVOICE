@@ -11,7 +11,7 @@ Backends (provenance values stored with every persisted vector):
                        zero-shot mean-pooled vectors were weakly discriminative
                        (pin_2d6c410018e7).
   - "bge-m3"          BAAI/bge-m3 via sentence-transformers (1024-dim, ~2.3GB).
-                       Optional alternate, only if the weights are cached.
+                        Optional alternate, only if the weights are cached.
   - "hash"            Dependency-free hash-projection fallback. Always available.
 
 The swap is INTERNAL: ``get_embedding_service()`` and the ``EmbeddingService``
@@ -68,6 +68,11 @@ BACKEND_NEURAL = (BACKEND_BGE, BACKEND_LFM)
 #   512 tokens x ~2 chars/token (pessimistic, safe for symbol-dense text).
 EMBED_MAX_CHARS = 1024
 EMBED_OVERLAP_CHARS = 128
+# CONFLICT-FLAG (stash pop): BACKEND_QWEN kept as a compat constant only —
+# referenced by _resolve_selected_backend/_window_for/the BGE+QWEN branch
+# below. The qwen3 backend is NOT registered (absent from BACKEND_NEURAL, no
+# loader entry); default remains lfm25-emb-350m per the upstream removal.
+BACKEND_QWEN = "qwen3"
 
 # Chunking defaults (OQ-1: start 480 / 64; tune against REQ-8 AC1).
 DEFAULT_CHUNK_TOKENS = 480
@@ -377,6 +382,10 @@ class EmbeddingService:
     # LFM backend = LFM2.5-Embedding-350M bi-encoder, loaded as a GGUF via
     # llama_cpp (see _load_gguf). Source repo for provenance / re-download.
     LFM_GGUF_REPO = "LiquidAI/LFM2.5-Embedding-350M-GGUF"
+    # CONFLICT-FLAG (stash pop): MODEL_NAME_QWEN retained for the
+    # (unregistered, unreachable) _load_qwen below; qwen3 backend removed
+    # upstream — default is LFM.
+    MODEL_NAME_QWEN = "Qwen/Qwen3-Embedding-0.6B"
     EMBEDDING_DIM = 1024
 
     # Sentinel: True when sentence-transformers is confirmed unavailable.
@@ -427,7 +436,7 @@ class EmbeddingService:
             cfg = get_config()
             vec = getattr(cfg, "embedding", None)
             b = getattr(vec, "backend", None) if vec else None
-            if b in (BACKEND_BGE, BACKEND_LFM, BACKEND_HASH):
+            if b in (BACKEND_BGE, BACKEND_LFM, BACKEND_HASH, BACKEND_QWEN):
                 return b
         except Exception as exc:  # pragma: no cover - config optional at import
             logger.debug("[EmbeddingService] backend config read failed: %s", exc)
@@ -439,6 +448,8 @@ class EmbeddingService:
             return 512
         if backend == BACKEND_BGE:
             return 8192
+        if backend == BACKEND_QWEN:
+            return 32768
         return 10 ** 9  # hash: effectively unbounded
 
     def _chunker_for(self, backend: str) -> Chunker:
@@ -530,6 +541,19 @@ class EmbeddingService:
         Encoder-350M backbone was removed: its zero-shot mean-pooled vectors
         are weakly discriminative (pin_2d6c410018e7)."""
         return self._load_gguf()
+    # CONFLICT-FLAG (stash pop): _load_qwen retained verbatim below but
+    # unreachable — qwen3 is not in BACKEND_NEURAL and load_fn has no QWEN
+    # key (upstream removal). Kept, not deleted.
+    def _load_qwen(self):
+        try:
+            from sentence_transformers import SentenceTransformer
+            logger.info("[EmbeddingService] Loading %s model (CPU)...", self.MODEL_NAME_QWEN)
+            # Pinned to CPU (2026-08-09): the embedding models run on system
+            # RAM, keeping the GPU free for audio/STT workloads.
+            return SentenceTransformer(self.MODEL_NAME_QWEN, device="cpu")
+        except Exception as exc:  # ImportError or load failure
+            logger.info("[EmbeddingService] Qwen3 not available: %s", exc)
+            return None
 
     @staticmethod
     def _hf_cached(model_name: str) -> bool:
@@ -712,7 +736,7 @@ class EmbeddingService:
         what turned an intermittent crash into a reproducible one.
         """
         model = self._models.get(backend)
-        if backend == BACKEND_BGE and model is not None:
+        if backend in (BACKEND_BGE, BACKEND_QWEN) and model is not None:
             emb = model.encode(text, convert_to_numpy=True)
             return emb.tolist()
         if backend == BACKEND_LFM and model is not None:

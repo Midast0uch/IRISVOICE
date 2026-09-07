@@ -33,7 +33,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from typing import Callable, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlparse
 
 from backend.vision.browser_session import BrowserSession, SessionBounds, VisionAction
 
@@ -73,6 +73,163 @@ _EXCLUDED_DOMAIN_FRAGMENTS = (
 
 _HREF_RE = re.compile(r'href=["\'](https?://[^"\'#]+)["\']', re.IGNORECASE)
 _BARE_URL_RE = re.compile(r'https?://[^\s\'"<>)]+')
+
+# T9 (REQ-9 AC9.1–AC9.2): Hybrid Adversarial SEO & Affiliate Trap Filtering.
+# Tier A is a pure-URL fast reject (no network, no model): affiliate tracking
+# params, redirector paths, spam TLDs. Tier B is title/snippet semantic
+# (keyword-stuffing density > 0.35, coupon-aggregator parasite hosting
+# reviews). Authority re-rank is a stable sort so equal-score URLs keep SERP
+# order (CT-12 existing contract asserts exact order for clean URLs).
+_AFFILIATE_QUERY_PARAMS = frozenset({
+    "aff_id", "tag", "click_id", "ref", "subid", "afftrack",
+})
+_REDIRECT_PATH_RES = (
+    re.compile(r"/out\.php", re.IGNORECASE),
+    re.compile(r"(^|/)go(/|$)", re.IGNORECASE),
+)
+_SPAM_TLDS = frozenset({
+    ".xyz", ".top", ".click", ".loan", ".win", ".bid", ".cricket",
+    ".party", ".gq", ".ml", ".cf", ".tk", ".pw", ".stream",
+})
+_KEYWORD_DENSITY_LIMIT = 0.35
+_PARASITE_HOST_FRAGMENTS = (
+    "coupon", "coupons", "deal", "deals", "promo", "voucher",
+    "cashback", "reward", "giftcard",
+)
+_PARASITE_CONTENT_HINTS = (
+    "review", "reviews", "best", "top 10", "top-10", "vpn", "vs ",
+)
+_WORD_RE = re.compile(r"[a-z0-9]+")
+_TRUSTED_TLD_SUFFIXES = (".gov", ".edu", ".ac.", ".mil")
+_DOCS_HOST_PREFIXES = ("docs.", "developer.", "developers.", "support.")
+
+
+def _is_affiliate_trap(url: str) -> bool:
+    """Tier A (REQ-9 AC9.1): True if the URL is an affiliate/redirector trap.
+
+    Never raises — an unparsable URL is treated as a trap (dropped), which is
+    the safe direction for a pre-crawl filter.
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:  # noqa: BLE001
+        return True
+    netloc = (parsed.netloc or "").lower()
+    if not netloc:
+        return True
+    if any(netloc == tld[1:] or netloc.endswith(tld) for tld in _SPAM_TLDS):
+        return True
+    path = parsed.path or ""
+    if any(rx.search(path) for rx in _REDIRECT_PATH_RES):
+        return True
+    try:
+        for key, _val in parse_qsl(parsed.query or "", keep_blank_values=True):
+            if key.lower() in _AFFILIATE_QUERY_PARAMS:
+                return True
+    except Exception:  # noqa: BLE001 — malformed query string drops the URL
+        return True
+    return False
+
+
+def _keyword_density(text: str) -> float:
+    """Max single-token frequency / total tokens (Tier B stuffing signal)."""
+    tokens = _WORD_RE.findall((text or "").lower())
+    if not tokens:
+        return 0.0
+    counts: dict[str, int] = {}
+    top = 0
+    for tok in tokens:
+        counts[tok] = counts.get(tok, 0) + 1
+        if counts[tok] > top:
+            top = counts[tok]
+    return top / len(tokens)
+
+
+def _is_parasite_candidate(url: str, title: str = "", snippet: str = "") -> bool:
+    """Tier B parasite check: coupon/deal aggregator host carrying review-style
+    content (title/snippet/path hints) or a keyword-stuffed title+snippet."""
+    try:
+        netloc = (urlparse(url).netloc or "").lower()
+    except Exception:  # noqa: BLE001
+        return True
+    blob = f"{title} {snippet} {url}".lower()
+    if any(frag in netloc for frag in _PARASITE_HOST_FRAGMENTS) and any(
+        hint in blob for hint in _PARASITE_CONTENT_HINTS
+    ):
+        return True
+    # Density check needs enough tokens to be meaningful — short titles like
+    # "os docs / official docs" (4 tokens, one repeat) would false-positive
+    # at 0.50, so only evaluate snippets of >= 10 tokens.
+    joined = f"{title} {snippet}"
+    if len(_WORD_RE.findall(joined.lower())) >= 10 and _keyword_density(joined) > _KEYWORD_DENSITY_LIMIT:
+        return True
+    return False
+
+
+def _authority_score(url: str) -> int:
+    """AC9.2 re-rank signal: official/primary sources first, farms last."""
+    try:
+        netloc = (urlparse(url).netloc or "").lower()
+    except Exception:  # noqa: BLE001
+        return -10
+    if any(frag in netloc for frag in _PARASITE_HOST_FRAGMENTS):
+        return -2
+    score = 0
+    if any(sfx in netloc for sfx in _TRUSTED_TLD_SUFFIXES):
+        score += 3
+    if netloc.startswith(_DOCS_HOST_PREFIXES):
+        score += 2
+    if netloc.startswith("www."):
+        score += 0  # neutral: keep SERP order among ordinary hosts
+    return score
+
+
+def filter_adversarial_candidates(
+    candidates: list[tuple[str, str, str]],
+    *,
+    job_id: str = "",
+) -> list[str]:
+    """Full Tier A+B filter + authority re-rank over (url, title, snippet).
+
+    Pure function (no I/O): Tier A drops traps, Tier B drops parasite/stuffed
+    entries, survivors stable-sort by authority score. Never raises.
+    """
+    scored: list[tuple[int, int, str]] = []
+    dropped_a = 0
+    dropped_b = 0
+    try:
+        for idx, cand in enumerate(candidates or []):
+            try:
+                url, title, snippet = cand
+            except Exception:  # noqa: BLE001 — malformed tuple drops
+                dropped_a += 1
+                continue
+            if _is_affiliate_trap(url):
+                dropped_a += 1
+                continue
+            if _is_parasite_candidate(url, title or "", snippet or ""):
+                dropped_b += 1
+                continue
+            scored.append((_authority_score(url), idx, url))
+    except Exception:  # noqa: BLE001 — filter must never break discovery
+        logger.info("[search_discovery] job_id=%s seo filter error (REQ-9)", job_id)
+        return [c[0] for c in (candidates or []) if c and c[0]]
+    scored.sort(key=lambda row: (-row[0], row[1]))
+    if dropped_a or dropped_b:
+        logger.info(
+            "[search_discovery] job_id=%s seo filter dropped_a=%d dropped_b=%d kept=%d (REQ-9)",
+            job_id, dropped_a, dropped_b, len(scored),
+        )
+    return [url for _score, _idx, url in scored]
+
+
+def filter_adversarial_urls(urls: list[str], *, job_id: str = "") -> list[str]:
+    """URL-only fast path for the harvest flow (no titles yet): Tier A +
+    authority re-rank. Tier B needs titles/snippets, applied by the caller
+    when SERP metadata is available."""
+    return filter_adversarial_candidates(
+        [(u, "", "") for u in (urls or [])], job_id=job_id
+    )
 
 
 @dataclass
@@ -226,7 +383,7 @@ async def discover_urls_via_vision(
             )
             return DiscoveryResult(wall=wall.value, engine_url=_SEARCH_ENGINE_URL)
 
-        urls = _extract_urls_from_html(html, max_results)
+        urls = _extract_urls_from_html(html, max_results * 3 + 10)
         used_fallback = False
         if not urls:
             # REQ-19 AC2 fallback: vision reads the rendered frame when DOM
@@ -243,19 +400,24 @@ async def discover_urls_via_vision(
                                 "List the URLs or article titles of the search "
                                 "results visible on this page.",
                             ) or ""
-                        urls = _extract_urls_from_text(text, max_results)
+                        urls = _extract_urls_from_text(text, max_results * 3 + 10)
                         used_fallback = bool(urls)
                 except Exception as exc:  # noqa: BLE001 — fallback is best-effort
                     logger.info(
                         "[search_discovery] job_id=%s vision fallback failed: %s",
                         job_id, exc,
                     )
+        # T9 (REQ-9): Hybrid Adversarial SEO filter runs BEFORE crawl/vision
+        # resources are spent. URL-only Tier A here; Tier B applies when the
+        # caller supplies titles/snippets via filter_adversarial_candidates.
+        raw_count = len(urls)
+        urls = filter_adversarial_urls(urls, job_id=job_id)[:max_results]
         logger.info(
             "[search_discovery] job_id=%s query=%s discovered=%d fallback=%s "
-            "(REQ-19 AC1/AC2/AC4, REQ-16)",
-            job_id, query[:60], len(urls), used_fallback,
+            "(REQ-19 AC1/AC2/AC4, REQ-16; REQ-9 raw=%d kept=%d)",
+            job_id, query[:60], len(urls), used_fallback, raw_count, len(urls),
         )
-        return DiscoveryResult(urls=urls[:max_results], used_vision_fallback=used_fallback)
+        return DiscoveryResult(urls=urls, used_vision_fallback=used_fallback)
     except Exception as exc:  # noqa: BLE001 — REQ-19 must never fail the run
         logger.warning("[search_discovery] job_id=%s error=%s (REQ-19 AC8)", job_id, exc)
         return DiscoveryResult(unavailable=True)
@@ -284,4 +446,6 @@ __all__ = [
     "DiscoveryResult",
     "click_discovered_result",
     "discover_urls_via_vision",
+    "filter_adversarial_candidates",
+    "filter_adversarial_urls",
 ]

@@ -2082,7 +2082,7 @@ export function DarkGlassDashboard({
                chromeInset={browserChromeInset}
                // REQ-11 AC4: the centre orb becomes the vision cursor. Passed
                // straight through — the overlay owns the motion, this site only
-               // supplies the live action.
+                // supplies the live action.
                 visionAction={navOverlay.visionAction}
                 visionX={navOverlay.visionX}
                 visionY={navOverlay.visionY}
@@ -2092,6 +2092,10 @@ export function DarkGlassDashboard({
                 visionViewportH={navOverlay.visionViewportH}
                 // REQ-8: escalation provenance drives the "notice" beat.
                 visionEscalated={navOverlay.visionEscalated}
+                // T19 (REQ-3 AC3): saccadic burst flag — §...
+                visionSaccadic={navOverlay.visionSaccadic}
+                // T19 (REQ-10 AC10.1): current takeover, if one is open.
+                takeover={navOverlay.takeover}
               />
 
              {/* ── Tab bar ─────────────────────────────────────────────────── */}

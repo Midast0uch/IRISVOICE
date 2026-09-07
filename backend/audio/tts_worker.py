@@ -69,6 +69,96 @@ _load_error = None
 _voice_name = "Cloned Voice"
 
 
+# ── Voice-state disk cache (REQ-28: kill the ~10s per-boot re-encode) ────
+# The TOMV2 reference encode is deterministic for a given (audio bytes,
+# language): same bytes in → same state out. Cache the computed state with
+# torch.save keyed by sha256(ref_bytes + language); on a hash hit the load
+# path skips the encode entirely. Any failure (missing torch, corrupt file,
+# unserializable state) falls back to computing fresh — the cache can never
+# break a load.
+_VOICE_CACHE_DIR = _PROJECT_DIR / "data" / "tts_voice_cache"
+
+
+def _voice_cache_key(ref_path: Path, language: str) -> str:
+    import hashlib
+
+    h = hashlib.sha256()
+    h.update(ref_path.read_bytes())
+    h.update(b"\0" + language.encode("utf-8"))
+    return h.hexdigest()[:16]
+
+
+def _load_cached_voice_state(key: str):
+    try:
+        import torch
+
+        path = _VOICE_CACHE_DIR / f"voice_state_{key}.pt"
+        if not path.exists():
+            return None
+        t0 = time.monotonic()
+        state = torch.load(str(path), map_location="cpu", weights_only=True)
+        logger.info(
+            "Voice state loaded from cache in %.1fs", time.monotonic() - t0
+        )
+        return state
+    except Exception as exc:  # noqa: BLE001 — stale/corrupt cache recomputes
+        logger.info(
+            "Voice cache miss/invalid (%s); recomputing", type(exc).__name__
+        )
+        try:
+            (_VOICE_CACHE_DIR / f"voice_state_{key}.pt").unlink(missing_ok=True)
+        except Exception:
+            pass
+        return None
+
+
+def _save_cached_voice_state(key: str, state) -> None:
+    try:
+        import torch
+
+        _VOICE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = _VOICE_CACHE_DIR / f"voice_state_{key}.pt.tmp"
+        torch.save(state, str(tmp))
+        os.replace(tmp, _VOICE_CACHE_DIR / f"voice_state_{key}.pt")
+        logger.info("Voice state cached for next boot")
+    except Exception as exc:  # noqa: BLE001 — cache is best-effort only
+        logger.debug("Voice cache save skipped: %s", exc)
+
+
+def _compact_heap() -> None:
+    """Return post-synthesis scratch to the OS (REQ-28 AC28.2/AC28.4).
+
+    The encode spike lives in native (malloc) arenas that the allocator
+    retains after free — committed bytes that are never touched again. Order
+    matters: collect Python garbage first (releases the malloc blocks it
+    held), then ask the CRT to decommit fully-free heap segments
+    (``_heapmin`` — the call Windows itself provides for this), then trim
+    the working set so resident pages follow. Best-effort throughout: a
+    compact failure must never fail a synthesis that already succeeded.
+    """
+    try:
+        import gc
+
+        gc.collect()
+    except Exception:
+        pass
+    try:
+        import ctypes
+
+        _heapmin = ctypes.CDLL("ucrtbase.dll")._heapmin
+        _heapmin.restype = ctypes.c_int
+        _heapmin.argtypes = []
+        logger.debug("ucrt _heapmin -> %s", _heapmin())
+    except Exception as exc:  # noqa: BLE001 — e.g. non-Windows CRT
+        logger.debug("Heap decommit skipped: %s", exc)
+    try:
+        from backend.utils.memory_trim import trim_working_set
+
+        trim_working_set()
+    except Exception:
+        pass
+
+
 def _load_model(language: str = "english") -> None:
     """Load Pocket-TTS model + voice state. Called once at startup."""
     global _model, _voice_state, _load_error
@@ -131,10 +221,18 @@ def _load_voice_state() -> None:
     ref_path = REFERENCE_AUDIO
     if _model.has_voice_cloning and ref_path.exists():
         try:
+            key = _voice_cache_key(
+                ref_path, os.environ.get("POCKET_TTS_LANGUAGE", "english")
+            )
+            cached = _load_cached_voice_state(key)
+            if cached is not None:
+                _voice_state = cached
+                return
             t0 = time.monotonic()
             _voice_state = _model.get_state_for_audio_prompt(str(ref_path))
             dt = time.monotonic() - t0
             logger.info("Voice state from %s in %.1fs", ref_path.name, dt)
+            _save_cached_voice_state(key, _voice_state)
             return
         except Exception as exc:
             logger.error(
@@ -359,6 +457,9 @@ def _synthesize(text: str, req_id: int) -> None:
             ),
             flush=True,
         )
+    # The request is over (success or failure): hand back whatever scratch
+    # the encode spike left behind before the next request arrives.
+    _compact_heap()
 
 
 def _pre_synthesize_fillers() -> None:

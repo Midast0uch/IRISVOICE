@@ -108,6 +108,8 @@ class PrivacyConfig:
 class VectorSearchConfig:
     """Configuration for vector search."""
 
+    # CONFLICT-FLAG (stash pop): stashed default was "Qwen/Qwen3-Embedding-0.6B";
+    # kept upstream LFM default to match the implemented backend (embedding.py).
     model_name: str = "LiquidAI/LFM2.5-Embedding-350M"
     embedding_dim: int = 1024
     similarity_threshold: float = 0.6
@@ -120,6 +122,9 @@ class VectorSearchConfig:
     # or "bge-m3" (BAAI/bge-m3, sentence-transformers, if cached).
     # Reversible from config.
     backend: str = "lfm25-emb-350m"
+    # CONFLICT-FLAG (stash pop): stashed side defaulted backend to "qwen3";
+    # dropped — qwen3 backend removed upstream (embedding.py), and
+    # test_default_backend_is_lfm pins "lfm25-emb-350m".
     # Explicit path to the Embedding-350M GGUF. When None, discovered from the
     # user's local model folder (REQ-7 AC1). Never silently downloaded.
     model_path: Optional[str] = None

@@ -7,7 +7,13 @@
  */
 import "@testing-library/jest-dom"
 import { renderHook, act } from "@testing-library/react"
-import { useTaskProgress } from "@/hooks/useTaskProgress"
+import { useTaskProgress, __resetTaskProgressForTests } from "@/hooks/useTaskProgress"
+
+// REQ-38's module-level store survives across tests in this file; reset it
+// before each case so prior dispatches never leak into the next assertion.
+beforeEach(() => {
+  __resetTaskProgressForTests()
+})
 
 function dispatch(detail: Record<string, unknown>) {
   act(() => {

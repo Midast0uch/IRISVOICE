@@ -79,6 +79,15 @@ const CURSOR_SIZE = 40
  */
 const CURSOR_TRAVEL_MS = 620
 
+/**
+ * T19 (REQ-3 AC3): saccadic transit ceiling. When vision actions arrive at
+ * ≥3/sec, the glide compresses from 620ms to this — fast enough to stay
+ * locked to a machine-speed agent, slow enough to still read as motion
+ * (a 0ms teleport reads as a rendering bug). ~180ms is the ~saccadic latency
+ * of the human oculomotor system.
+ */
+const SACCADIC_TRAVEL_MS = 180
+
 /** How many decaying afterimages trail the cursor. */
 const CURSOR_TRAIL_LEN = 5
 
@@ -358,6 +367,27 @@ export interface BrowserNavigationOverlayProps {
    * A new escalated action fires the one-shot "notice" beat (throttled 5s).
    */
   visionEscalated?: boolean
+  /**
+   * T19 (REQ-3 AC3): saccadic acceleration — the hook measured a burst of
+   * ≥3 vision actions/sec; the cursor glide compresses from CURSOR_TRAVEL_MS
+   * (620ms) to SACCADIC_TRAVEL_MS (≤180ms) while this holds, keeping the
+   * particle cursor locked to a machine-speed agent rather than queueing
+   * behind 620ms glides. False/absent restores the default travel.
+   */
+  visionSaccadic?: boolean
+  /**
+   * T19 (REQ-10 AC10.1): a live takeover requested by the backend
+   * (`iris:browser_takeover_requested`). While set, the overlay renders the
+   * takeover banner as its ONLY clickable child (pointer-events auto); the
+   * root stays pointer-events:none so the panel below remains interactive
+   * for the user (the panel iframe is the working surface — the overlay is
+   * its choreography). Clears on the matching question resolution (AC10.3).
+   */
+  takeover?: {
+    questionId?: string
+    url?: string
+    reason?: string
+  } | null
 }
 
 /**
@@ -435,6 +465,8 @@ export const BrowserNavigationOverlay = React.memo(function BrowserNavigationOve
   visionViewportW,
   visionViewportH,
   visionEscalated = false,
+  visionSaccadic = false,
+  takeover = null,
 }: BrowserNavigationOverlayProps) {
   const prefersReducedMotion = useReducedMotion()
   const rootRef = useRef<HTMLDivElement>(null)
@@ -1739,6 +1771,41 @@ export const BrowserNavigationOverlay = React.memo(function BrowserNavigationOve
         />
       )}
 
+      {/* Takeover banner — T19 (REQ-10 AC10.1/AC10.3): while a
+          browser_takeover question is open, the overlay surfaces WHY the
+          agent paused and whom the panel belongs to. This is the overlay's
+          ONLY interactive element (pointerEvents: auto) — the root stays
+          pointer-events-none so the panel iframe below remains the working
+          surface. It clears the moment the matching question resolves
+          (answered or timed out); nothing carries over into the next run. */}
+      {takeover ? (
+        <div
+          role="alert"
+          aria-live="assertive"
+          className="absolute left-1/2 z-40"
+          style={{
+            top: `calc(${chromeInset}px + 8px)`,
+            transform: "translateX(-50%)",
+            pointerEvents: "auto",
+            background: "rgba(4,8,12,0.72)",
+            border: `1px solid rgba(255,255,255,0.22)`,
+            backdropFilter: "blur(6px)",
+          }}
+        >
+          <div className="flex items-center gap-2 px-2.5 py-1 rounded-[10px]">
+            <span
+              className="inline-block w-1.5 h-1.5 rounded-full"
+              style={{ background: NOTICE_SOFT_WHITE }}
+              aria-hidden
+            />
+            <span className="text-[10px] font-mono tracking-wide text-white/90 max-w-[46ch] truncate">
+              TAKEOVER — {takeover.reason ? takeover.reason.replace(/_/g, " ") : "needs you"}
+              {takeover.url ? ` · ${(() => { try { return new URL(takeover.url).hostname } catch { return takeover.url } })()}` : ""}
+            </span>
+          </div>
+        </div>
+      ) : null}
+
       {showOrb && !prefersReducedMotion && (
         <div
           className={isCursor ? "absolute" : "absolute left-1/2"}
@@ -1759,9 +1826,16 @@ export const BrowserNavigationOverlay = React.memo(function BrowserNavigationOve
             // settles into the target, which is what makes it read as the orb
             // ARRIVING somewhere rather than sliding on rails. Width is on the
             // same curve so the shrink and the journey are one gesture.
-            transition: `left ${CURSOR_TRAVEL_MS}ms cubic-bezier(0.22, 1, 0.36, 1), `
-              + `top ${CURSOR_TRAVEL_MS}ms cubic-bezier(0.22, 1, 0.36, 1), `
-              + `width ${CURSOR_TRAVEL_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`,
+            //
+            // T19 (REQ-3 AC3): SACCADIC ACCELERATION. The hook's 1s-window
+            // burst counter drives saccadic instead of a fixed 620ms: at
+            // ≥3 actions/sec the transit compresses to ≤180ms so a
+            // machine-speed vision loop does not queue its own cursor
+            // behind back-to-back 620ms glides. Single actions keep the
+            // deliberate 620ms read.
+            transition: `left ${visionSaccadic ? SACCADIC_TRAVEL_MS : CURSOR_TRAVEL_MS}ms cubic-bezier(0.22, 1, 0.36, 1), `
+              + `top ${visionSaccadic ? SACCADIC_TRAVEL_MS : CURSOR_TRAVEL_MS}ms cubic-bezier(0.22, 1, 0.36, 1), `
+              + `width ${visionSaccadic ? SACCADIC_TRAVEL_MS : CURSOR_TRAVEL_MS}ms cubic-bezier(0.22, 1, 0.36, 1)`,
           }}
           aria-hidden="true"
         >

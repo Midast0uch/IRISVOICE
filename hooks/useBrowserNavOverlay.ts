@@ -84,6 +84,29 @@ export interface NavOverlayStatus {
    * "notice" beat. False for raced sessions.
    */
   visionEscalated: boolean
+  /**
+   * REQ-3 AC3 (vision-goal-directed-search T19): saccadic acceleration flag.
+   * True while vision actions arrive at ≥3/sec — signals the overlay to
+   * compress the cursor glide from CURSOR_TRAVEL_MS (620ms) down to
+   * SACCADIC_TRAVEL_MS (≤180ms) so the particle cursor stays locked to a
+   * machine-speed agent's live action point instead of queueing behind it.
+   * Set by counting action arrivals in a 1s trailing window; cleared when the
+   * burst subsides or the run flips state.
+   */
+  visionSaccadic: boolean
+  /**
+   * REQ-10 AC10.1 (T19): a live browser_takeover request from
+   * `ask_user_tool.ask_browser_takeover`. While set, the overlay renders the
+   * takeover banner as the ONLY clickable element (pointer-events auto) and
+   * the panel stays open for the user. Cleared the moment the matching
+   * question resolves (answer OR timeout) — pointer-events re-arm to none
+   * (AC10.3).
+   */
+  takeover: {
+    questionId?: string
+    url?: string
+    reason?: string
+  } | null
 }
 
 export interface NavOverlaySeed {
@@ -102,6 +125,8 @@ const IDLE: NavOverlayStatus = {
   visionScrollY: undefined, visionScrollHeight: undefined, visionScrollSeq: 0,
   visionViewportW: undefined, visionViewportH: undefined,
   visionEscalated: false,
+  visionSaccadic: false,
+  takeover: null,
 }
 
 export function useBrowserNavOverlay(seed?: NavOverlaySeed) {
@@ -132,6 +157,10 @@ export function useBrowserNavOverlay(seed?: NavOverlaySeed) {
     }
   }, [status, emitTrace])
 
+  // T19 (REQ-3 AC3): trailing 1s window of vision-action arrival times —
+  // one ref per hook instance, bounded by the 1s filter on every event.
+  const actionTimesRef = useRef<number[]>([])
+
   useEffect(() => {
     const onOpenTab = () => setStatus(p => ({ ...p, state: "loading", pagesDone: 0 }))
     const onCrawlerStarted = (e: Event) => {
@@ -156,6 +185,10 @@ export function useBrowserNavOverlay(seed?: NavOverlaySeed) {
         visionViewportW: undefined,
         visionViewportH: undefined,
         visionEscalated: false,
+        // T19 (REQ-3 AC3): a burst from a PREVIOUS run must not bleed into
+        // this one's cadence.
+        visionSaccadic: false,
+        takeover: null,
       }))
     }
     const onPageFetched = (e: Event) => {
@@ -191,6 +224,12 @@ export function useBrowserNavOverlay(seed?: NavOverlaySeed) {
         viewport_w?: number; viewport_h?: number
         escalated?: boolean
       }>).detail ?? {}
+      // T19 (REQ-3 AC3): saccadic burst detection — count arrivals in the
+      // trailing 1s window; ≥3 actions/sec engages the compressed transit
+      // (≤180ms) until the burst subsides (the next event re-counts).
+      const now = Date.now()
+      actionTimesRef.current = [...actionTimesRef.current.filter((t) => now - t <= 1000), now]
+      const saccadic = actionTimesRef.current.length >= 3
       setStatus(p => {
         // Never revive a finished run: a late action arriving after complete
         // or error must not restart the animation.
@@ -216,6 +255,9 @@ export function useBrowserNavOverlay(seed?: NavOverlaySeed) {
           visionScrollHeight: d.scroll_height ?? p.visionScrollHeight,
           visionScrollSeq:
             typeof d.scroll_y === "number" ? p.visionScrollSeq + 1 : p.visionScrollSeq,
+          // T19: the burst flag travels with the action cadence — the overlay
+          // reads it once per transit instead of deriving its own timing.
+          visionSaccadic: saccadic,
         }
       })
     }
@@ -227,6 +269,36 @@ export function useBrowserNavOverlay(seed?: NavOverlaySeed) {
     window.addEventListener("iris:crawler_error", onCrawlerError)
     window.addEventListener("iris:crawler_vision_action", onVisionAction)
 
+    // T19 (REQ-10 AC10.1/AC10.3): takeover requested → the overlay's takeover
+    // banner unlocks (its OWN pointer-events go auto — the overlay root stays
+    // pointer-events:none so the panel below remains interactive); the
+    // matching question_answered / question_timeout re-arms it to none. An
+    // answered question with no takeover record is left alone entirely.
+    const onTakeoverRequested = (e: Event) => {
+      const d = (e as CustomEvent<{
+        question_id?: string
+        takeover_url?: string
+        reason?: string
+      }>).detail
+      if (!d) return
+      setStatus(p => ({
+        ...p,
+        takeover: { questionId: d.question_id, url: d.takeover_url, reason: d.reason },
+      }))
+    }
+    const onQuestionResolved = (e: Event) => {
+      const d = (e as CustomEvent<{ question_id?: string }>).detail
+      if (!d) return
+      setStatus(p => {
+        if (!p.takeover) return p
+        if (p.takeover.questionId && d.question_id && p.takeover.questionId !== d.question_id) return p
+        return { ...p, takeover: null }
+      })
+    }
+    window.addEventListener("iris:browser_takeover_requested", onTakeoverRequested)
+    window.addEventListener("iris:question_answered", onQuestionResolved)
+    window.addEventListener("iris:question_timeout", onQuestionResolved)
+
     return () => {
       window.removeEventListener("iris:open_tab", onOpenTab)
       window.removeEventListener("iris:crawler_started", onCrawlerStarted)
@@ -234,6 +306,9 @@ export function useBrowserNavOverlay(seed?: NavOverlaySeed) {
       window.removeEventListener("iris:crawler_complete", onCrawlerComplete)
       window.removeEventListener("iris:crawler_error", onCrawlerError)
       window.removeEventListener("iris:crawler_vision_action", onVisionAction)
+      window.removeEventListener("iris:browser_takeover_requested", onTakeoverRequested)
+      window.removeEventListener("iris:question_answered", onQuestionResolved)
+      window.removeEventListener("iris:question_timeout", onQuestionResolved)
     }
   }, [])
 

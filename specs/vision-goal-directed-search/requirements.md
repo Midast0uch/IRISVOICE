@@ -28,7 +28,9 @@ These are grounded in the actual codebase (`hooks/useTaskProgress.ts`, `hooks/us
 9. **DAG-Native Batch Tool Execution & Atomic Persistence:** Batch tool execution is a first-class citizen of the DER DAG execution framework across all tools. Concurrency is governed per resource (Crawl: 10, Vision-VLM: 1-2, Brain-Vis: 4). Batch outcomes commit atomically to SQLCipher `memory.db` (WAL mode) and the Mycelium coordinate graph under a single parent `BatchRecord`.
 10. **Task-Level Guardrails Execute BEFORE Allowlist Checks:** Semantic negative constraints (e.g., `NO_PURCHASE`, `DOMAIN_BOUND`, `MAX_DEPTH`) evaluate prior to `ActionAllowlist` role checks.
 11. **12-Keyword Schema Contract:** Structured output conforms to the 12-keyword allowlist (`type`, `properties`, `required`, `items`, `enum`, `format`, `minItems`, `maxItems`, `minimum`, `maximum`, `nullable`, `propertyOrdering`), utilizing sample values to anchor extraction formatting.
-12. **Websearch Perf Baseline Scope (2026-09-06, REQ-23):** Strictly additive — REQ-1..REQ-22 objectives, success criteria, and UX contracts are untouched. The numeric spike bound is measure-first (UNVERIFIED until the T34 live run pins real numbers). Diagnosis precedes any fix (profile orchestrator / browser_pool / capture_store / findings accumulator before bounding). The harness reuses the `scripts/measure_memory.py` psutil pattern from the memory-optimization spec.
+12. **Websearch Perf Baseline Scope (2026-09-06, REQ-23):** Strictly additive
+13. **Wave-7 seam follow-ups (2026-09-07, REQ-24–REQ-27):** Strictly additive — deferred for scope discipline, not uncertainty; each names its thin seam and its rejected widening (scheduler service, new dependency, hard type switch, test weakening). REQ-27 defaults to keeping Session-247 per-page step behavior pending live confirmation (OQ-3).
+14. **Memory envelope (2026-09-07, REQ-28, LOCKED by user):** Idle ≤2.5GB committed with zero per-task growth and first-utterance ≤30s. Strategy = lazy at boot (no boot-time worker) + pre-warm on frontend connect + idle-unload after quiet period + singleflight respawn. Pure-lazy-without-prewarm was rejected (238s cold start); keep-early-spawn + amend-gate was rejected (user wants smallest idle). — REQ-1..REQ-22 objectives, success criteria, and UX contracts are untouched. The numeric spike bound is measure-first (UNVERIFIED until the T34 live run pins real numbers). Diagnosis precedes any fix (profile orchestrator / browser_pool / capture_store / findings accumulator before bounding). The harness reuses the `scripts/measure_memory.py` psutil pattern from the memory-optimization spec.
 
 ---
 
@@ -390,6 +392,90 @@ This feature establishes an intelligent, adaptive goal-directed execution framew
 
 ---
 
+## Wave 7 — Seam follow-ups (additive 2026-09-07)
+
+Strictly additive: REQ-1..REQ-23 objectives, success criteria, and UX contracts are untouched. Each item below was found modeled-but-unwired during Wave 5 and deliberately deferred — building any of them inside Wave 5 would have widened scope (a scheduler framework, a new dependency, a signature migration, or a test weakening). Each carries file:line grounding.
+
+### REQ-24: DER-Native BatchToolCall Expansion & Per-Resource Governance
+**User Story:** As the DER execution engine, I want composite batch nodes to expand into releasable items under per-resource caps, so that multi-URL/multi-entity work runs concurrently without overloading any single resource.
+
+**Verified:** BatchToolCall/BatchOutcome dataclasses at `backend/core_models.py:958-983`; bridge `to_batch_tool_call` / `collect_batch_outcome` at `backend/agent/query_synthesizer.py` (session-302); `all_ready_items` at `backend/agent/der_loop.py:546-591` (batch-agnostic today); per-host cap exists in orchestrator dispatch; vision lease exists (`acquire_vision_lease`).
+
+**Acceptance Criteria:**
+- AC24.1: WHEN a DER node carries a `BatchToolCall` with `parallel_safe=True` and `independent=True`, THE SYSTEM SHALL expand it into releasable items through the existing `all_ready_items` path (no new scheduler service).
+- AC24.2: WHILE batch items execute, THE SYSTEM SHALL enforce per-tool concurrency caps (Crawl global 10 + per-host 2, Vision-VLM 1-2 via the existing lease, Brain-Vis 4 via a new DER-owned semaphore).
+- AC24.3: WHEN all items of a batch node settle, THE SYSTEM SHALL fold outcomes via `collect_batch_outcome` into one `BatchOutcome` on the node.
+- AC24.4: IF a batch node is NOT parallel_safe, THE SYSTEM SHALL execute its items sequentially in declared order.
+
+**Edge Cases:**
+- Empty `items` → node completes immediately with an empty `BatchOutcome` (never hangs the DAG).
+- A single item failure marks that item only; the node completes with partial results (DAG abort rules unchanged).
+- Caps are re-entrant across nested dispatches (no self-deadlock: semaphores are per-tool, never per-node).
+
+### REQ-25: Extracted-Payload Validation With One Self-Correction Pass
+**User Story:** As an extraction client, I want a malformed extraction to get exactly one automatic fix attempt, so that output data needs no post-hoc parsing in the common case but can never loop forever.
+
+**Verified:** Allowlist `validate_schema` at `backend/vision/schema_validator.py:76-91` (shape of the contract only — no instance checking); fail-closed entry check at `backend/crawler/orchestrator.py` dispatch (session-302); `extract` projection hook consumed per page in dispatch.
+
+**Acceptance Criteria:**
+- AC25.1: THE SYSTEM SHALL validate each extracted payload against `output_schema` with a stdlib-only instance checker covering exactly the 12 allowlisted keywords (no new dependency).
+- AC25.2: WHEN a payload fails validation, THE SYSTEM SHALL run at most ONE correction pass that re-invokes extraction with the validation error stated in the prompt.
+- AC25.3: IF the correction still fails validation, THE SYSTEM SHALL accept the payload as-is, flag the field set as unvalidated on the result, and continue the run (never raise, never retry again).
+- AC25.4: WHERE no `output_schema` or no `extract` hook is declared, THE SYSTEM SHALL skip validation entirely (zero cost on the unprojected path).
+
+**Edge Cases:**
+- `extract` returns None → treated as missing payload, counted toward coverage as absent (consistent with AC2.3).
+- Correction pass is bounded by the existing run ceiling (no separate budget, no new timeout surface).
+- Unknown/extra payload keys are dropped by the existing strict projection before validation (validator never sees raw DOM).
+
+### REQ-26: Structured Goal Plumbing (Union Type, Backward Compatible)
+**User Story:** As the Brain agent, I want my structured goal (including custom guardrails) to reach the fetcher intact, so that per-task constraints are enforced rather than silently replaced by defaults.
+
+**Verified:** `fetch_one(url, goal: str, ...)` at `backend/vision/fetch_vision.py:258-264`; `dispatch_urls(..., query: str, ...)` and `_race_url(url, goal: str, ...)` in orchestrator; guardrail gate with `["NO_PURCHASE", "DOMAIN_BOUND"]` defaults (session-302); duck-typing contract `backend/tests/contract/test_fetch_vision_goal_contract.py` (GoalAnatomy renders via `__str__`).
+
+**Acceptance Criteria:**
+- AC26.1: THE SYSTEM SHALL accept `goal: str | GoalAnatomy` (union) at `dispatch_urls`, `_race_url`, and `fetch_one` without breaking any existing string caller or fake.
+- AC26.2: WHEN a `GoalAnatomy` arrives, THE SYSTEM SHALL render it via `__str__`/`to_prompt()` at every edge that speaks to a model or capability (string protocol preserved end to end).
+- AC26.3: WHEN a `GoalAnatomy` arrives, THE SYSTEM SHALL feed `goal.guardrails` (not the defaults) into the REQ-20 gate; WHEN a plain string arrives, THE SYSTEM SHALL keep the current defaults.
+- AC26.4: THE SYSTEM SHALL pass the existing duck-typing contract suite unchanged (no test modified to accommodate the union).
+
+**Edge Cases:**
+- `goal.guardrails` empty/None → defaults apply (fail safe, never fail open).
+- Unknown guardrail name → existing fail-closed evaluation already rejects it (no new handling).
+- Fakes implementing the bare 3-arg protocol keep working (union is accepted, never required).
+
+### REQ-27: Page/Phase Progress Contract Reconciliation
+**User Story:** As a user watching a crawl, I want each fetched page to advance its own progress step, so that cards never sit frozen while pages land.
+
+**Verified:** Page events carry `phase`/`phase_sequence` at `backend/agent/tool_bridge.py:2602-2603` (Session-247 intent: per-page READ nodes); `test_progress_event_shape.py:124-138` asserts the key is ABSENT; `test_crawler_task_progress.py:186` partitions on absence and fails `0 == 2` at HEAD `c5b13352` (proven via detached-worktree rerun, session-302).
+
+**Acceptance Criteria:**
+- AC27.1: THE SYSTEM SHALL preserve the Session-247 behavior (page events advance their own step) unless live testing shows a regression, in which case the behavior reverts and the tests stand as written.
+- AC27.2: WHEN live testing confirms per-page advancement, THE SYSTEM SHALL lock `detail_url`-presence as the page/phase discriminator (page events carry `detail_url`; phase events never do — already asserted at `test_progress_event_shape.py:167-170`) and update the two stale partition keys to the locked contract.
+- AC27.3: THE SYSTEM SHALL keep both tests' strength after the update (page-count and phase-presence assertions unchanged — only the discriminator expression changes, under this spec's authority, not as a silent weakening).
+
+**Edge Cases:**
+- Live testing shows frozen/duplicated steps → REQ-27 resolves to Option B (strip `phase` from page events); the tests then pass unmodified and this REQ records the revert instead.
+- Mixed streams with takeover/parks keep partitioning correctly under the locked discriminator (covered by the updated suites).
+
+### REQ-28: Application Memory Envelope (idle low, zero per-task growth, functionality preserved)
+**User Story:** As an operator, I want the app's idle footprint small and per-task memory flat, so that the assistant can sit in the tray all day without bloating the machine — while first-use responsiveness never regresses.
+
+**Verified:** Backend main ~1.46GB + tts_worker ~2.3GB commit (~331MB resident) + llama-server ~345MB RSS ≈ 3.74GB idle floor (session-296/299 pins) vs the 2.5GB idle gate it breaches; warm-idle gate `IDLE_BUDGET_GB = 4.0` at `scripts/measure_memory.py:24`; websearch incremental ~0MB proven twice (T34 baseline + session-302 rerun: driver +297MB one-time import commit, ~0MB per repeat); TTS ~900MB transient native spike at encode finalization with ~0.9GB reclaim potential via short-lived helpers (session-300 pin); ~238s first-utterance cold start is what forced boot-time early-spawn (`d8941516`).
+
+**Acceptance Criteria:**
+- AC28.1: WHILE the app is idle (no active turn, no playback), THE SYSTEM SHALL hold total committed memory ≤2.5GB (restores the breached gate; measured floor today ≈3.7GB).
+- AC28.2: WHILE synthesizing speech repeatedly, THE SYSTEM SHALL show no monotonic growth: 10 consecutive syntheses SHALL grow worker private bytes by ≤50MB (leak gate).
+- AC28.3: WHEN the user requests the first utterance of a session, THE SYSTEM SHALL begin audible playback within 30s (functionality floor — the 238s failure must never return).
+- AC28.4: THE SYSTEM SHALL keep the encode-finalization transient spike ≤500MB (down from ~900MB) or document with measurements why the native side cannot be moved.
+
+**Edge Cases:**
+- Respawn race (two speaks while worker is down) → singleflight spawn: exactly one worker, both speaks queue behind readiness.
+- Respawn failure → explicit TTS-degraded error; chat and all other tools unaffected.
+- Measurement reuses the `measure_memory.py` pattern (Private Bytes on win32) plus worker-log markers, so the gate runs the same way in CI and live.
+
+---
+
 ## Non-Requirements (Out of Scope)
 
 - **Automated CAPTCHA / Bot-Challenge Solving:** In compliance with REQ-19 AC5 of `vision-browser-websearch`, challenges are detected, parked, and reported to the user (or routed to User Takeover Mode via `AskUserQuestion`), never bypassed with black-hat solvers.
@@ -403,3 +489,5 @@ This feature establishes an intelligent, adaptive goal-directed execution framew
 
 - *OQ-1: Should batch execution support dynamic speculative pre-fetching for discovered candidate links?* (Recommendation: Deferred to follow-up; keep batch execution deterministic based on DAG plan nodes first).
 - *OQ-2: Should Developer Mode allow inline editing of `GoalAnatomy` parameters during paused/breakpoint states?* (Recommendation: Yes, planned for Dev Mode Phase 2).
+- *OQ-3 (REQ-27, resolves during live testing):* Do per-page progress steps render correctly (advance once per page, no duplicates)? YES → lock the `detail_url` discriminator and update the two stale tests under REQ-27 authority. NO → revert tool_bridge to phase-less page events; the tests stand as written.
+- *OQ-4 (REQ-28, RESOLVED 2026-09-07):* User locked lazy-at-boot + pre-warm-on-connect + idle-unload/respawn for smallest idle. Amending the gate upward was rejected.

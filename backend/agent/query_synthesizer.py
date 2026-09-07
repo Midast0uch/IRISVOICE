@@ -106,6 +106,57 @@ class QuerySynthesizer:
         return synthesize_for_task(task, **kw)
 
 
+def to_batch_tool_call(
+    batch: QueryBatch,
+    *,
+    tool: str = "crawler.dispatch",
+    batch_id: str = "",
+) -> object:
+    """REQ-13 AC13.2 + REQ-18 AC18.1: bridge a synthesized facet set into a
+    composite DER batch node (``BatchToolCall``).
+
+    One item per facet (axis preserved as item metadata); items stay
+    ``independent`` + ``parallel_safe`` so the DAG may release them together
+    under the caller's concurrency governance. ``core_models`` is imported
+    lazily — this module stays stdlib-only at import time.
+    """
+    from backend.core_models import BatchToolCall
+
+    return BatchToolCall(
+        batch_id=batch_id or f"qbatch-{abs(hash(batch.task)) % 10**8}",
+        tool=tool,
+        items=[
+            {"query": f.query, "axis": f.axis, "task": batch.task}
+            for f in (batch.queries or [])
+        ],
+        parallel_safe=True,
+        independent=True,
+    )
+
+
+def collect_batch_outcome(batch: object, item_results: list) -> object:
+    """REQ-18 AC18.3: fold per-item ``(item_key, ok, result, error)`` tuples
+    (or ``BatchItemResult``s) into one ``BatchOutcome`` for the batch node.
+    """
+    from backend.core_models import BatchItemResult, BatchOutcome
+
+    results = []
+    for r in item_results or []:
+        if isinstance(r, BatchItemResult):
+            results.append(r)
+            continue
+        try:
+            key, ok, value, err = r
+        except Exception:  # noqa: BLE001 — malformed entry, keep it visible
+            results.append(BatchItemResult(item_key=str(r), ok=False,
+                                           error="malformed item result"))
+            continue
+        results.append(BatchItemResult(item_key=str(key), ok=bool(ok),
+                                       result=value, error=err))
+    return BatchOutcome(batch_id=getattr(batch, "batch_id", ""),
+                        tool=getattr(batch, "tool", ""), results=results)
+
+
 def _norm(url: str) -> str:
     """Normalize a URL for dedup: lowercase, strip trailing slash."""
     return (url or "").rstrip("/").lower()

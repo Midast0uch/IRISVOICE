@@ -71,6 +71,9 @@ class WebSocketManager:
         # Pending undelivered messages per session, replayed by flush_pending
         # on (re)connect (guaranteed delivery; see buffer_message).
         self._pending: Dict[str, deque] = {}
+        # CONFLICT-FLAG (stash pop): stashed side used a per-client
+        # Dict[str, Lock]; kept upstream per-(client, loop) locks + pending
+        # buffer — flush_pending/_get_send_lock below require them.
         self._session_manager = session_manager or get_session_manager()
         self._state_manager = state_manager or get_state_manager()
         self._heartbeat_tasks: Dict[str, asyncio.Task] = {}

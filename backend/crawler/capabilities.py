@@ -14,11 +14,14 @@ backend. No agent_kernel edits are required here.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, Protocol
+
+from backend.crawler.robots_checker import get_robots_checker
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +62,12 @@ class FetchOutcome:
     # dispatch_urls can score actual transport facts instead of a synthesized light
     # entry. Empty when a capability produced none (e.g. vision).
     har_entries: list = field(default_factory=list)
+
+
+# Identity Tier-1 presents when fetching (REQ-5 AC3: the robots gate below
+# checks the SAME identity the fetch would present — checking any other UA
+# would be compliance theatre).
+_TIER1_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 
 
 class FetchCrawlCapability:
@@ -102,7 +111,48 @@ class FetchCrawlCapability:
         of the job's capture address space so concurrent single-URL fetches do not
         overwrite each other's captured bytes.
         """
+        # REQ-5 AC3 (CT-8): robots gate FIRST — Tier-1's raw httpx fetch must
+        # not route around robots compliance. crawler_engine.crawl() gates
+        # every URL the same way; the capability path consults the same
+        # checker before spending any fetch resource. A refusal returns
+        # TRANSPORT_ERROR with engine-identical evidence and is never
+        # escalated to Tier 2 (the orchestrator excludes transport_error
+        # wholesale — the guard covers all of it, not only robots detail).
+        try:
+            _robots_allowed = await get_robots_checker().is_allowed(url, _TIER1_USER_AGENT)
+        except Exception:  # noqa: BLE001 — checker failure fails OPEN;
+            # a broken checker must never break a fetch (the checker itself
+            # already fails open for unreachable robots.txt; this covers
+            # malformed URLs and checker bugs). fetch_one never raises.
+            _robots_allowed = True
+        if not _robots_allowed:
+            logger.info(
+                "[capabilities][job_id=%s] robots.txt refused %s — no fetch "
+                "(REQ-5 AC3)", job_id, url,
+            )
+            return FetchOutcome(
+                url=url,
+                capability="fetch.crawl",
+                page=None,
+                verdict=_unusable_verdict(detail="error=blocked by robots.txt"),
+                duration_ms=0,
+                har_entries=[{
+                    "url": url, "method": "GET", "status": "robots_blocked",
+                    "response_headers": {}, "duration_ms": 0,
+                    "content_length": 0, "body_sha256": "",
+                    "error": "blocked by robots.txt",
+                    "capability": "fetch.crawl",
+                }],
+            )
         # ── Tier 1: Fast-HTTP (REQ-3 AC3.2) ───────────────────────────────
+        # REQ-15 AC15.1: .pdf URLs route to fetch.pdf BEFORE the HTML path —
+        # a browser/HTML parse of binary PDF bytes is never usable.
+        if url.lower().split("?")[0].split("#")[0].endswith(".pdf") and (
+            "fetch.pdf" in CAPABILITIES
+        ):
+            return await get_capability("fetch.pdf").fetch_one(
+                url, goal, job_id, on_progress=on_progress, page_offset=page_offset,
+            )
         outcome = await _fast_http_fetch_one(url, goal, job_id, page_offset, on_progress)
         if outcome.verdict.usable:
             # REQ-3 AC3.3: usable static content — capture stored + page event
@@ -115,6 +165,10 @@ class FetchCrawlCapability:
             "escalating to pooled browser: %s",
             job_id, outcome.verdict.reason.value, url,
         )
+        # CONFLICT-FLAG (stash pop): stashed side gave fetch_one a 3-arg body
+        # delegating to CrawlOrchestrator().fetch_url (no page_offset); kept
+        # upstream Tier1/Tier2 hybrid — line 143's _browser_pool_fetch_one
+        # needs page_offset, so the stashed body would NameError here.
         return await _browser_pool_fetch_one(url, goal, job_id, page_offset, on_progress)
 
 
@@ -179,6 +233,129 @@ def _extract_title(html: str, fallback: str) -> str:
     return m.group(1).strip() if m else fallback
 
 
+class FetchPDFCapability:
+    """``fetch.pdf`` — native PDF/technical-document extraction (REQ-15).
+
+    Download + parse with PyMuPDF (``fitz``) directly — no Chromium, ~<1.5 s
+    for ≤100 pages. Robots-gated exactly like fetch.crawl (REQ-5 AC3) BEFORE
+    any bytes move. fitz is imported lazily inside the methods (its import
+    pulls numpy/the fitz chain, which is the +315 MB first-touch commit the
+    REQ-23 baseline is currently attributing; it must not load here).
+    """
+
+    name = "fetch.pdf"
+
+    async def available(self) -> bool:
+        try:
+            import fitz  # noqa: F401
+        except ImportError:
+            return False
+        return True
+
+    async def fetch_one(
+        self,
+        url: str,
+        goal: str,
+        job_id: str,
+        on_progress=None,
+        page_offset: int = 0,
+    ) -> FetchOutcome:
+        try:
+            _allowed = await get_robots_checker().is_allowed(url, _TIER1_USER_AGENT)
+        except Exception:  # noqa: BLE001 — fail open, as in fetch.crawl
+            _allowed = True
+        if not _allowed:
+            logger.info(
+                "[capabilities][job_id=%s] robots.txt refused %s — no download "
+                "(REQ-5 AC3)", job_id, url,
+            )
+            return FetchOutcome(
+                url=url, capability=self.name, page=None,
+                verdict=_unusable_verdict(detail="error=blocked by robots.txt"),
+                duration_ms=0,
+                har_entries=[{
+                    "url": url, "method": "GET", "status": "robots_blocked",
+                    "response_headers": {}, "duration_ms": 0,
+                    "content_length": 0, "body_sha256": "",
+                    "error": "blocked by robots.txt", "capability": self.name,
+                }],
+            )
+
+        import hashlib
+
+        import httpx
+
+        from backend.crawler.crawler_engine import PageData
+        from backend.crawler.usability import page_is_usable
+
+        t0 = time.monotonic()
+        try:
+            async with httpx.AsyncClient(follow_redirects=True, timeout=60.0) as client:
+                resp = await client.get(
+                    url, headers={"User-Agent": _TIER1_USER_AGENT}
+                )
+                resp.raise_for_status()
+                pdf_bytes = resp.content
+            markdown = await asyncio.to_thread(self._extract_text, pdf_bytes)
+            page = PageData(
+                url=url, title=url.rsplit("/", 1)[-1] or url,
+                markdown=markdown, html=None, metadata={"content_type": "application/pdf"},
+                error=None, html_bytes=len(pdf_bytes),
+            )
+            verdict = page_is_usable(page)
+            return FetchOutcome(
+                url=url, capability=self.name,
+                page=page if verdict.usable else None, verdict=verdict,
+                duration_ms=int((time.monotonic() - t0) * 1000),
+                har_entries=[{
+                    "url": url, "method": "GET", "status": resp.status_code,
+                    "response_headers": dict(resp.headers),
+                    "duration_ms": int((time.monotonic() - t0) * 1000),
+                    "content_length": len(pdf_bytes),
+                    "body_sha256": hashlib.sha256(pdf_bytes).hexdigest(),
+                    "error": None, "capability": self.name,
+                }],
+            )
+        except Exception as exc:  # noqa: BLE001 — capability never raises
+            logger.info(
+                "[capabilities][job_id=%s] fetch.pdf failed %s: %s", job_id, url, exc
+            )
+            return FetchOutcome(
+                url=url, capability=self.name, page=None,
+                verdict=_unusable_verdict(detail=str(exc)[:120]),
+                duration_ms=int((time.monotonic() - t0) * 1000),
+                har_entries=[],
+            )
+
+    @staticmethod
+    def _extract_text(pdf_bytes: bytes) -> str:
+        """Lazy fitz import + parse — kept off the async caller thread."""
+        import fitz
+
+        parts: list[str] = []
+        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+            for page in doc:
+                text = page.get_text("text")
+                if text.strip():
+                    parts.append(text.strip())
+        return "\n\n".join(parts)
+
+    async def render_target_page_png(self, pdf_bytes: bytes, page_index: int) -> Optional[bytes]:
+        """REQ-15 AC15.3: render ONLY the requested page (0-based) as PNG for
+        the VLM's chart/diagram inspection path. Bytes are bounded (single page
+        at 150 DPI ≈ 1–2 MB). Never raises."""
+        import fitz
+
+        try:
+            with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+                if not (0 <= page_index < len(doc)):
+                    return None
+                pix = doc[page_index].get_pixmap(matrix=fitz.Matrix(150 / 72, 150 / 72))
+                return pix.tobytes("png")
+        except Exception:  # noqa: BLE001
+            return None
+
+
 async def _fast_http_fetch_one(url, goal, job_id, page_offset, on_progress) -> FetchOutcome:
     """Tier 1: async HTTP retrieval (httpx) + readable-text extraction.
 
@@ -200,10 +377,19 @@ async def _fast_http_fetch_one(url, goal, job_id, page_offset, on_progress) -> F
         async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
             resp = await client.get(
                 url,
-                headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+                headers={"User-Agent": _TIER1_USER_AGENT},
             )
         html = resp.text
         status = resp.status_code
+        # REQ-15 AC15.1: content-type routing — a server that answers
+        # application/pdf on a non-.pdf URL hands off to fetch.pdf (which
+        # downloads and parses the bytes natively; the HTML path that follows
+        # would only garble the binary).
+        if "application/pdf" in (resp.headers.get("content-type") or "").lower():
+            if "fetch.pdf" in CAPABILITIES:
+                return await get_capability("fetch.pdf").fetch_one(
+                    url, goal, job_id, on_progress=on_progress, page_offset=page_offset,
+                )
         text = _strip_html_to_text(html)
         title = _extract_title(html, url)
 
@@ -530,6 +716,11 @@ def register_default_capabilities() -> dict[str, FetchCapability]:
             register_capability(FetchVisionCapability())
         except Exception as exc:  # noqa: BLE001 — optional capability
             logger.warning("[capabilities] fetch.vision unavailable: %s", exc)
+    if "fetch.pdf" not in CAPABILITIES:
+        try:
+            register_capability(FetchPDFCapability())
+        except Exception as exc:  # noqa: BLE001 — optional capability
+            logger.warning("[capabilities] fetch.pdf unavailable: %s", exc)
     _register_search_discovery_node()
     _register_crawler_query_composite()
     return CAPABILITIES
@@ -635,10 +826,10 @@ def _register_search_discovery_node() -> None:
         logger.warning("[capabilities] search_discovery node declaration failed: %s", _sd_exc)
 
 
-def _unusable_verdict():
+def _unusable_verdict(detail: str = ""):
     from backend.crawler.usability import UsabilityReason, UsabilityVerdict
 
-    return UsabilityVerdict(usable=False, reason=UsabilityReason.TRANSPORT_ERROR)
+    return UsabilityVerdict(usable=False, reason=UsabilityReason.TRANSPORT_ERROR, detail=detail)
 
 
 # module-level convenience (REQ-6 AC3): importing the crawler package registers

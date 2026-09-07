@@ -1,3 +1,9 @@
+# CONFLICT-FLAG (stash pop 2026-09-06, resolved session-299): this file had a
+# THREE-WAY generation skew, not a true two-way conflict — HEAD (4569 lines)
+# vs working-tree "upstream" block (HEAD truncated at 3897 + encoding fixes)
+# vs "stashed" block (2735-line ancestral version, .mcm paths, old parser).
+# Restored to HEAD verbatim (last committed, complete); the 672-line tail the
+# working copy had lost is back. Stash entries (git stash list) remain.
 """
 LocalModelManager — GGUF model lifecycle manager for IRISVOICE v.3.
 

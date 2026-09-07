@@ -23,7 +23,16 @@
  */
 import "@testing-library/jest-dom"
 import { renderHook, act } from "@testing-library/react"
-import { useTaskProgress } from "@/hooks/useTaskProgress"
+import { useTaskProgress, __resetTaskProgressForTests } from "@/hooks/useTaskProgress"
+
+// The card store is module-level by design (REQ-38) so state survives
+// component unmounts. In a test file, each `renderHook` is a NEW mount but the
+// store is the SAME module object across tests — the previous case's cards
+// would leak in and break assertions (pre-existing, made visible by the
+// T6-vs-legacy tests running back-to-back). Reset it per test.
+beforeEach(() => {
+  __resetTaskProgressForTests()
+})
 
 // Reuses the established harness from __tests__/hooks/useTaskProgress.test.tsx —
 // renderHook + window.dispatchEvent of the CustomEvent.

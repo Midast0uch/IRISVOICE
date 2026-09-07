@@ -134,8 +134,10 @@ def save_batch_footprint(
     half-committed.
 
     Idempotent on ``batch_id``: a re-save is a no-op (returns True), so a
-    circuit-retry or replay can never duplicate the footprint. Never raises —
-    a failed write must never break the turn.
+    circuit-retry or replay can never duplicate the footprint. On an internal
+    write failure the transaction ROLLS BACK and the exception RE-RAISES —
+    pinned by test_batch_write_is_atomic_on_mid_failure: no partial rows, and
+    the abort is loud, never silent.
     """
     if not batch_id:
         return False
@@ -160,8 +162,11 @@ def save_batch_footprint(
     ok_count = sum(1 for c in children if c.get("ok"))
 
     # One transaction — all children land or none do. `with conn:` commits
-    # on success, ROLLBACKS on any exception (the atomicity guarantee T16
-    # needs: partial batches never leave an orphan behind).
+    # on success, ROLLS BACK on failure AND RE-RAISES: the atomic-write
+    # contract pinned by test_batch_write_is_atomic_on_mid_failure is
+    # "raise after rollback", not "never raises". Callers wrap in their own
+    # try — a caller that aborts on the raise is exactly as safe as the
+    # rollback leaves the database.
     with conn:
         conn.execute(
             "INSERT INTO batch_records (batch_id, tool, session_id, item_count, "

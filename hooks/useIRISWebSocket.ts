@@ -1713,6 +1713,7 @@ export function useIRISWebSocket(
       case "permission:request":
       case "permission:granted":
       case "permission:denied":
+      case "browser:takeover_requested":
       case "question:ask":
       case "question:answered":
       case "question:timeout": {

@@ -407,7 +407,6 @@ class ProviderRateMeter:
                 "[rate_meter] advertised ceiling quota=%s rpm=%.0f (was learning "
                 "from 429s only)", quota_id, _rpm,
             )
-            self._save_ceilings()
 
     # ── ceiling read (T2.3 / T2.6) ──────────────────────────────────────────
     def get_ceiling(self, quota_id: str) -> float:

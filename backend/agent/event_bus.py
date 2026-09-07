@@ -143,6 +143,12 @@ class IRISStreamEvent(enum.Enum):
     QUESTION_ASK = "question:ask"
     QUESTION_ANSWERED = "question:answered"
     QUESTION_TIMEOUT = "question:timeout"
+    # T11 (REQ-10 AC1, design §3 step 4): browser takeover requested. Fires
+    # alongside QUESTION_ASK so the browser panel's pointer-events unlock
+    # subscribes to its OWN event instead of listening to every question.
+    # Wire name keeps the colon convention; the frontend normalizes it to
+    # `iris:browser_takeover_requested` (design's name).
+    BROWSER_TAKEOVER_REQUESTED = "browser:takeover_requested"
 
     # ── Mode change ─────────────────────────────────────────────────────
     MODE_CHANGED = "mode:changed"

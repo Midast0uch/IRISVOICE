@@ -260,21 +260,28 @@ class DocumentDataStore:
         """
         existing = self.get(document_id)
         next_revision = (existing["revision"] + 1) if existing else 1
-        try:
-            from backend.crawler.temporal_diff import compute_temporal_delta
+        # AC14.2 boundary: a delta only exists against a REAL prior snapshot.
+        # On a first-ever write there is nothing to compare — computing the
+        # diff against {} would fabricate "changed from —" statements for
+        # every field. (Found by BT-7 test_first_snapshot_creates_revision_1.)
+        if existing is not None:
+            try:
+                from backend.crawler.temporal_diff import compute_temporal_delta
 
-            prior_content = (existing or {}).get("content") or "{}"
-            prior_dict = json.loads(prior_content) if prior_content else {}
-            current_dict = json.loads(content) if content else {}
-            delta = compute_temporal_delta(prior_dict, current_dict)
-            _v = dict(variants or {})
-            _v["_temporal_delta"] = {
-                "changed_fields": delta.changed_fields,
-                "delta_statements": delta.delta_statements,
-                "prior_revision": existing["revision"] if existing else 0,
-                "current_revision": next_revision,
-            }
-        except Exception:
+                prior_content = existing.get("content") or "{}"
+                prior_dict = json.loads(prior_content) if prior_content else {}
+                current_dict = json.loads(content) if content else {}
+                delta = compute_temporal_delta(prior_dict, current_dict)
+                _v = dict(variants or {})
+                _v["_temporal_delta"] = {
+                    "changed_fields": delta.changed_fields,
+                    "delta_statements": delta.delta_statements,
+                    "prior_revision": existing["revision"],
+                    "current_revision": next_revision,
+                }
+            except Exception:
+                _v = dict(variants or {})
+        else:
             _v = dict(variants or {})
         try:
             self._conn.execute(

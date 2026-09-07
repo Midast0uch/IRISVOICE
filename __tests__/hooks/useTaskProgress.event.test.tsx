@@ -13,9 +13,15 @@
  */
 import "@testing-library/jest-dom";
 import { renderHook, act } from "@testing-library/react";
-import { useTaskProgress } from "@/hooks/useTaskProgress";
+import { useTaskProgress, __resetTaskProgressForTests } from "@/hooks/useTaskProgress";
 
 const TASK_LEARNING = "task:learning";
+
+// REQ-38's module-level store survives across tests in this file; reset it
+// before each case so prior dispatches never leak into the next assertion.
+beforeEach(() => {
+  __resetTaskProgressForTests();
+});
 
 function fireTaskLearning(payload: Record<string, unknown>) {
   // The contract: useIRISWebSocket translates a backend `task:learning`
@@ -72,6 +78,22 @@ describe("task:learning event shape (REQ-8 / T17b)", () => {
   it("surfaces learningSignal (discrete string) through useTaskProgress", () => {
     const { result } = renderHook(() => useTaskProgress());
     act(() => {
+      // INPUTS (sanctioned change, 2026-09-06): dispatch a task:start first.
+      // Production ALWAYS has a task running when task:learning fires —
+      // the pre-REQ-38 code used to fabricate an empty `legacy_unknown` card
+      // for a bare learning event, which was removed by the phantom-card fix
+      // (prior events could materialize 0-step cards). This setup mirrors the
+      // real sequence; the assertions below are unchanged.
+      window.dispatchEvent(
+        new CustomEvent("iris:task_update", {
+          detail: {
+            type: "task:start",
+            task_id: "t-learn",
+            steps: [{ id: "s1", description: "learnable step", status: "working" }],
+            total_steps: 1,
+          },
+        }),
+      );
       fireTaskLearning({
         signal: "crystallized",
         verified_label: "VERIFIED",

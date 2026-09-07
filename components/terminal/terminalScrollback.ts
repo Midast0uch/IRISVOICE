@@ -25,7 +25,14 @@
  */
 
 import { visibleWidth } from "@/lib/cli/CLITaskProgressRenderer"
-import { deriveCurrentStep, type TaskStepStatus } from "@/hooks/useTaskProgress"
+import {
+  deriveCurrentStep,
+  normalizeTemporalDelta,
+  type BatchMetrics,
+  type TaskStepStatus,
+  type TemporalDeltaInfo,
+  type VerifiedField,
+} from "@/hooks/useTaskProgress"
 
 // ── Public types ────────────────────────────────────────────────────────────
 
@@ -53,6 +60,9 @@ export interface TerminalTaskStep {
   toolName?: string
   activeDetail?: string
   activeProgress?: string
+  goalSnippet?: string
+  temporalDelta?: TemporalDeltaInfo
+  verifiedFields?: Record<string, VerifiedField>
 }
 
 export interface TerminalTaskBlock {
@@ -64,6 +74,27 @@ export interface TerminalTaskBlock {
   currentStep: number
   totalSteps: number
   updatedAt: number
+  /**
+   * T22 (REQ-22, wave 4): goal anatomy + batch/verification enrichment for
+   * the Developer Mode Blueprint Matrix. Renders ONLY when reduced from real
+   * events — absent fields draw no walls at all.
+   */
+  /** One-line goal the block serves (`goal_snippet` on task frames). */
+  goalSnippet?: string
+  /** Declared 12-keyword output contract (schema field names are drawn). */
+  goalSchema?: Record<string, unknown>
+  /** DAG batch pool counters (batch_metrics). */
+  batchMetrics?: BatchMetrics
+  /** Live ActionTrajectory sliding window (last 3 vision actions,
+   *  newest last) — fed by iris:crawler_vision_action. */
+  trajectory?: string[]
+  /** Cross-source verification matrix (verified_fields). */
+  verificationMatrix?: Record<string, VerifiedField>
+  /** Natural-language temporal deltas vs the prior snapshot (temporal_delta). */
+  temporalDelta?: TemporalDeltaInfo
+  /** In-flight dynamic query adaptations (`adapted_query` frames).
+   *  Bounded to the last 6 entries. */
+  adaptationLog?: string[]
 }
 
 export interface TerminalQuestion {
@@ -345,6 +376,14 @@ interface TaskUpdateDetail {
   card_id?: string
   card_relation?: "new" | "continues"
   conversation_id?: string
+  /** T22 (REQ-22, wave 4): goal-directed enrichment wire fields. */
+  goal_snippet?: string
+  extracted_schema?: Record<string, unknown>
+  batch_metrics?: BatchMetrics
+  temporal_delta?: Parameters<typeof normalizeTemporalDelta>[0]
+  verified_fields?: Record<string, VerifiedField>
+  /** In-flight query adaptation notice (a synthesized follow-up query). */
+  adapted_query?: string
 }
 
 function upsertTaskBlock(block: TerminalTaskBlock): void {
@@ -409,6 +448,10 @@ function handleTaskStart(detail: TaskUpdateDetail): void {
       steps: merged,
       totalSteps: Math.max(merged.length, existing.currentStep),
       planTitle: detail.plan_title || existing.planTitle,
+      // T22 (REQ-22): a revised start may redeclare the goal/schema; absent
+      // payloads keep the previously declared one.
+      goalSnippet: detail.goal_snippet || existing.goalSnippet,
+      goalSchema: detail.extracted_schema || existing.goalSchema,
       updatedAt: Date.now(),
     })
     return
@@ -422,6 +465,9 @@ function handleTaskStart(detail: TaskUpdateDetail): void {
     steps: incoming,
     currentStep: 0,
     totalSteps: detail.total_steps ?? incoming.length,
+    // T22 (REQ-22): goal anatomy hangs off the block from task:start.
+    ...(detail.goal_snippet ? { goalSnippet: detail.goal_snippet } : null),
+    ...(detail.extracted_schema ? { goalSchema: detail.extracted_schema } : null),
     updatedAt: Date.now(),
   })
 }
@@ -459,13 +505,30 @@ function handleTaskUpdate(detail: TaskUpdateDetail): void {
         const idx = detail.step_number! - 1
         if (!b.steps[idx]) return b
         const steps = b.steps.slice()
+        const td = normalizeTemporalDelta(detail.temporal_delta)
         steps[idx] = {
           ...steps[idx],
           status: "done",
           activeDetail: undefined,
           activeProgress: undefined,
+          // T22 (REQ-22): a finished step retains its extraction/verification
+          // record for the matrix rows.
+          ...(detail.verified_fields ? { verifiedFields: detail.verified_fields } : null),
+          ...(td ? { temporalDelta: td } : null),
         }
-        return { ...b, steps, currentStep: deriveCurrentStep(steps), isWorking: true, updatedAt: Date.now() }
+        return {
+          ...b,
+          steps,
+          currentStep: deriveCurrentStep(steps),
+          isWorking: true,
+          ...(detail.verified_fields
+            ? { verificationMatrix: { ...b.verificationMatrix, ...detail.verified_fields } }
+            : null),
+          ...(detail.extracted_schema ? { goalSchema: detail.extracted_schema } : null),
+          ...(detail.batch_metrics ? { batchMetrics: { ...b.batchMetrics, ...detail.batch_metrics } } : null),
+          ...(td ? { temporalDelta: td } : null),
+          updatedAt: Date.now(),
+        }
       })
       break
     }
@@ -522,22 +585,56 @@ function handleTaskUpdate(detail: TaskUpdateDetail): void {
             updatedAt: Date.now(),
           }
         }
-        const action = detail.description || detail.action
-        if (!action) return b
-        let steps = b.steps
-        if (detail.update_step) {
-          const workingIdx = steps.findIndex((s) => s.status === "working")
-          if (workingIdx >= 0) {
-            const s = steps.slice()
-            s[workingIdx] = {
-              ...s[workingIdx],
-              activeDetail: detail.detail || action,
-              activeProgress: detail.detail_progress,
-            }
-            steps = s
-          }
+        // T22 (REQ-22): enrichment frames may carry NO action/description —
+        // fold them in BEFORE the action gate so they never drop. `changed`
+        // keeps the store referentially stable when a frame enriches nothing
+        // (quality check: no unnecessary renders on the event hot path).
+        let changed = false
+        const preEnriched: typeof b = { ...b }
+        if (detail.goal_snippet && detail.goal_snippet !== b.goalSnippet) {
+          preEnriched.goalSnippet = detail.goal_snippet; changed = true
         }
-        return { ...b, steps, currentAction: action, isWorking: true, updatedAt: Date.now() }
+        if (detail.extracted_schema) { preEnriched.goalSchema = detail.extracted_schema; changed = true }
+        if (detail.batch_metrics) {
+          preEnriched.batchMetrics = { ...b.batchMetrics, ...detail.batch_metrics }; changed = true
+        }
+        if (detail.verified_fields) {
+          preEnriched.verificationMatrix = { ...b.verificationMatrix, ...detail.verified_fields }
+          changed = true
+        }
+        if (detail.adapted_query) {
+          preEnriched.adaptationLog = [...(b.adaptationLog ?? []), detail.adapted_query].slice(-6)
+          changed = true
+        }
+        const preTd = normalizeTemporalDelta(detail.temporal_delta)
+        if (preTd) { preEnriched.temporalDelta = preTd; changed = true }
+        let updated = preEnriched
+        const action = detail.description || detail.action
+        if (action) {
+          changed = true
+          let steps = preEnriched.steps
+          if (detail.update_step) {
+            const workingIdx = steps.findIndex((s) => s.status === "working")
+            if (workingIdx >= 0) {
+              const s = steps.slice()
+              s[workingIdx] = {
+                ...s[workingIdx],
+                activeDetail: detail.detail || action,
+                activeProgress: detail.detail_progress,
+                // T22 (REQ-22): per-step verification/delta enrichment when the
+                // frame carries it; merges, never blanks.
+                ...(detail.verified_fields
+                  ? { verifiedFields: { ...s[workingIdx].verifiedFields, ...detail.verified_fields } }
+                  : null),
+                ...(preTd ? { temporalDelta: preTd } : null),
+              }
+              steps = s
+            }
+          }
+          updated = { ...preEnriched, steps, currentAction: action, isWorking: true }
+        }
+        if (!changed) return b
+        return { ...updated, updatedAt: Date.now() }
       })
       break
 
@@ -724,8 +821,41 @@ function ensureInit(): void {
     }
   }
 
+  // T22 (REQ-22): vision ActionTrajectory entries — attach the live action
+  // to the working block's sliding window (last 3, newest last). These events
+  // are emitted once per vision action (tool_bridge forwarder) with no
+  // buffering, so the terminal mirror stays at machine speed too.
+  const onVisionAction = (e: Event) => {
+    const d = (e as CustomEvent<{
+      kind?: string
+      action_index?: number
+      total?: number
+      x?: number
+      y?: number
+      escalated?: boolean
+    }>).detail
+    if (!d) return
+    const target = [...taskBlocks].reverse().find((b) => b.isWorking)
+    if (!target) return
+    const coord =
+      typeof d.x === "number" && typeof d.y === "number"
+        ? ` (${d.x.toFixed(2)},${d.y.toFixed(2)})`
+        : ""
+    const entry =
+      `${d.kind ?? "act"}${coord}` +
+      (typeof d.action_index === "number" && typeof d.total === "number"
+        ? ` [${d.action_index}/${d.total}]`
+        : "") +
+      (d.escalated ? " !escalated" : "")
+    applyToBlock(
+      { type: "task:progress", card_id: target.cardId },
+      (b) => ({ ...b, trajectory: [...(b.trajectory ?? []), entry].slice(-3) }),
+    )
+  }
+
   window.addEventListener("iris:task_update", onTaskUpdate)
   window.addEventListener("iris:task:event", onTaskEvent)
+  window.addEventListener("iris:crawler_vision_action", onVisionAction)
   window.addEventListener("iris:question_ask", (e) => {
     onQuestionAsk(e)
     onQuestionAskState()
@@ -799,11 +929,35 @@ const STEP_MARKERS: Record<TaskStepStatus, string> = {
 
 /** Compact ASCII task block: plan title, step list with the working step
  *  marked, and the current action line. */
+/** Compact ASCII task block: plan title, step list with the working step
+ *  marked, and the current action line. T22 (REQ-22) adds the goal-anatomy
+ *  inspector, live ActionTrajectory window, batch pool status, verification
+ *  matrix and adaptation log — each section renders ONLY when the reduced
+ *  block carries it (no phantom walls). */
 export function renderTaskBlockAscii(block: TerminalTaskBlock): string[] {
   const out: string[] = []
   const title = block.planTitle || "Task"
   out.push(boxTop())
   out.push(boxRow(`TASK: ${truncateTo(title, BOX_INNER - 6)}`))
+  // T22: goal anatomy inspector — the block's declared goal + its extraction
+  // contract's field names.
+  if (block.goalSnippet) {
+    out.push(boxRow(`GOAL: ${truncateTo(block.goalSnippet, BOX_INNER - 6)}`))
+  }
+  if (block.goalSchema?.properties) {
+    const keys = Object.keys(block.goalSchema.properties as Record<string, unknown>)
+    if (keys.length > 0) {
+      out.push(boxRow(`FIELDS: ${truncateTo(keys.slice(0, 8).join(" "), BOX_INNER - 8)}`))
+    }
+  }
+  // T22: batch pool status — one row, only for the DAG batch shape.
+  if (block.batchMetrics?.total) {
+    const m = block.batchMetrics
+    out.push(boxRow(`POOL ${Math.min(m.done ?? 0, m.total)}/${m.total}`
+      + (m.inFlight ? ` +${m.inFlight} inflight` : "")
+      + (m.failed ? ` !${m.failed} failed` : "")
+      + (m.rateLimited ? ` ⏸${m.rateLimited} throttled` : "")))
+  }
   if (block.steps.length > 0) {
     out.push(boxSep())
     for (const s of block.steps) {
@@ -812,6 +966,50 @@ export function renderTaskBlockAscii(block: TerminalTaskBlock): string[] {
         ? ` — ${s.activeDetail}${s.activeProgress ? ` (${s.activeProgress})` : ""}`
         : ""
       out.push(boxRow(`${marker} ${truncateTo(s.description + detail, BOX_INNER - 4)}`))
+      // T22: per-step verification + temporal delta sub-lines.
+      if (s.verifiedFields && Object.keys(s.verifiedFields).length > 0) {
+        const line = Object.entries(s.verifiedFields)
+          .map(([f, v]) => (v?.discrepancy ? `⚠${f}` : v?.verified ? `✓${f}` : `·${f}`))
+          .join(" ")
+        out.push(boxRow(`  ├ ${truncateTo(line, BOX_INNER - 5)}`))
+      }
+      if (s.temporalDelta?.statements.length) {
+        for (const stmt of s.temporalDelta.statements.slice(0, 2)) {
+          out.push(boxRow(`  ├ Δ ${truncateTo(stmt, BOX_INNER - 7)}`))
+        }
+      }
+    }
+  }
+  // T22: cross-source verification matrix (block-level quorum, REQ-11).
+  if (block.verificationMatrix && Object.keys(block.verificationMatrix).length > 0) {
+    out.push(boxSep())
+    out.push(boxRow("VERIFY MATRIX"))
+    for (const [f, v] of Object.entries(block.verificationMatrix)) {
+      const mark = v?.discrepancy ? "⚠" : v?.verified ? "✓" : "·"
+      out.push(boxRow(` ${mark} ${truncateTo(f, BOX_INNER - 12)} ${
+        v?.corroborations ? `${v.corroborations} src` : ""
+      }${v?.discrepancy ? " disagree" : ""}`))
+    }
+  }
+  // T22: semantic temporal deltas for the block as a whole (REQ-14).
+  if (block.temporalDelta?.statements.length) {
+    out.push(boxSep())
+    for (const stmt of block.temporalDelta.statements.slice(0, 3)) {
+      out.push(boxRow(`Δ ${truncateTo(stmt, BOX_INNER - 4)}`))
+    }
+  }
+  // T22: live ActionTrajectory sliding window (last 3 vision actions).
+  if (block.trajectory && block.trajectory.length > 0) {
+    out.push(boxSep())
+    for (const t of block.trajectory.slice(-3)) {
+      out.push(boxRow(`→ ${truncateTo(t, BOX_INNER - 4)}`))
+    }
+  }
+  // T22: in-flight dynamic query adaptation log.
+  if (block.adaptationLog && block.adaptationLog.length > 0) {
+    out.push(boxSep())
+    for (const q of block.adaptationLog.slice(-3)) {
+      out.push(boxRow(`↻ ${truncateTo(q, BOX_INNER - 4)}`))
     }
   }
   if (block.currentAction) {

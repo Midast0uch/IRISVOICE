@@ -3544,6 +3544,15 @@ ${message.text}`;
                           phase={card.phase}
                           durationSec={card.durationSec}
                           cardActive={card.isWorking}
+                          // T21 (REQ-22, wave 4): goal-directed enrichment —
+                          // the card's reduced goal/snippet/schema/verification
+                          // aggregate fields. All optional; the card renders
+                          // nothing for absent payloads.
+                          goalSnippet={card.goalSnippet}
+                          extractedSchema={card.extractedSchema}
+                          batchMetrics={card.batchMetrics}
+                          temporalDelta={card.temporalDelta}
+                          verifiedFields={card.verifiedFields}
                           thoughtStream={card.isWorking ? (card.actionStream ?? undefined) : undefined}
                         />
                       )
@@ -5146,6 +5155,13 @@ ${message.text}`;
                       to a uniform gap, which is part of why the spacing stopped
                       reading as a designed rhythm. */}
                   <div className="flex-shrink-0 rounded-full ml-[12px]" style={{ width: '1px', height: '20px', background: glowColor, opacity: 0.3 }} />
+
+                  {/* Model switcher — Phase 5 REQ-2. Sibling of ContextPill
+                      (D-2), never a new ContextPill prop (CT-S1). Reads
+                      useInferenceState and writes through its existing
+                      sendRoleBinding — no new backend surface (D-3).
+                      Rendered on the LEFT per layout order. */}
+                  <ModelSwitcher glowColor={glowColor} fontColor={fontColor} />
 
                   {/* Conversation chips pill — its own fixed 32x32 icon
                       button, sits BETWEEN the ModelSwitcher and ContextPill

@@ -46,6 +46,7 @@ class _FakeSession:
         self.suggestions: list = []  # suggest_action results, consumed in order
         self.dom = "<html><body><p>useful quantum verification content here for the model</p></body></html>"
         self.screenshot_calls = 0
+        self.takeover_outcome = False  # T11: set True to simulate "user cleared it"
 
     # BrowserSession surface (subset the capability drives)
     async def open(self):
@@ -71,6 +72,11 @@ class _FakeSession:
 
     async def close(self):
         self.closed = True
+
+    async def request_takeover(self, wall, **kwargs):
+        """T11: reachable takeover surface. Default False (old behavior —
+        park); takeover tests override with True to prove the loop resumes."""
+        return self.takeover_outcome
 
 
 class _FakeProvider:
@@ -194,6 +200,38 @@ def test_fetch_vision_wall_detected_after_actions():
 
     assert outcome.wall == WallKind.LOGIN
     assert len(sess.acts) == 1  # one action before the wall appeared
+
+
+# ── T11 (REQ-10): takeover clears the wall and resumes the loop ─────────────
+
+def test_fetch_vision_takeover_resume_on_clear():
+    """REQ-10 AC10.3: user clears the wall -> loop continues, wall is None
+    in the outcome, actions after the gap are allowed."""
+    sess = _FakeSession("j", "https://a.example/", "read")
+    sess.takeover_outcome = True
+    # Walls: 1st detect -> CAPTCHA (triggers takeover), cleared afterwards.
+    sess.walls = [WallKind.CAPTCHA, None, None, None, None]
+    cap = FetchVisionCapability(provider=_FakeProvider(), session_cls=lambda *a, **k: sess)
+
+    outcome = asyncio.run(cap.fetch_one("https://a.example/", "read", "j5"))
+
+    assert outcome.wall is None, f"wall leaked into outcome: {outcome.wall}"
+    assert outcome.verdict.usable is True
+    assert sess.acts, "after takeover the loop never acted again"
+
+
+def test_fetch_vision_takeover_not_completed_keeps_wall():
+    """REQ-10 AC10.3: answer != "completed" (timed out) -> wall preserved,
+    parking still happens exactly as before T11."""
+    sess = _FakeSession("j", "https://a.example/", "read")
+    sess.walls = [WallKind.CAPTCHA]
+    sess.takeover_outcome = False  # user never clicked through
+    cap = FetchVisionCapability(provider=_FakeProvider(), session_cls=lambda *a, **k: sess)
+
+    outcome = asyncio.run(cap.fetch_one("https://a.example/", "read", "j6"))
+
+    assert outcome.wall == WallKind.CAPTCHA
+    assert sess.acts == []
 
 
 # ── stuck-loop prevention ──────────────────────────────────────────────────

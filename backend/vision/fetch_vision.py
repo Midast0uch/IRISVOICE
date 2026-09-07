@@ -32,6 +32,7 @@ from backend.crawler.usability import (
     page_is_usable,
 )
 from backend.tools.lfm_vl_provider import acquire_vision_lease
+from backend.vision.action_allowlist import evaluate_task_guardrails
 from backend.vision.browser_session import (
     BrowserSession,
     SessionBounds,
@@ -302,8 +303,9 @@ class FetchVisionCapability(FetchCapability):
                     duration_ms=int((time.monotonic() - t0) * 1000),
                 )
 
-            # ── action loop (REQ-7): suggest -> act -> wall check ──
+            # ── action loop (REQ-7): suggest -> guard -> act -> wall check ──
             repeats: list[str] = []
+            trajectory = ActionTrajectory()
             for step in range(_MAX_LOOP_STEPS):
                 # Wall check first (cheap DOM heuristics, no VLM).
                 try:
@@ -316,6 +318,21 @@ class FetchVisionCapability(FetchCapability):
                         "[fetch.vision] job_id=%s url=%s wall=%s (REQ-7)",
                         job_id, url, wall.value,
                     )
+                    # T11 (REQ-10 AC1): a user-solvable wall (CAPTCHA/login)
+                    # is offered to the panel BEFORE parking. request_takeover
+                    # is a no-op (returns False) for paywalls, missing ask
+                    # tooling, timeouts, and unresolved walls — so the old
+                    # park path still handles everything it used to.
+                    try:
+                        _cleared = await session.request_takeover(wall)
+                    except Exception as _tk_exc:  # noqa: BLE001 — takeover must
+                        # never break the loop; fall through to the old park.
+                        logger.info("[fetch.vision] takeover failed: %s", _tk_exc)
+                        _cleared = False
+                    if _cleared:
+                        # AC3: wall verified gone; resume the action loop.
+                        wall = None
+                        continue
                     break
 
                 suggestion = await self._suggest_action(session, goal)
@@ -326,6 +343,33 @@ class FetchVisionCapability(FetchCapability):
                     logger.info(
                         "[fetch.vision] job_id=%s url=%s stop-loop step=%d suggestion=%r (REQ-7)",
                         job_id, url, step, suggestion,
+                    )
+                    break
+
+                # REQ-20 AC20.1/AC20.3 (T31): task guardrails gate BEFORE any
+                # act. Defaults mirror GoalAnatomy.guardrails — the goal here
+                # is duck-typed str so per-task lists cannot flow through yet
+                # (follow-up: thread the object orchestrator -> fetch_vision).
+                # A block settles the page and hands back (bounded, no extra
+                # VLM rounds); the rejection is recorded on the trajectory.
+                try:
+                    _gate = evaluate_task_guardrails(
+                        ["NO_PURCHASE", "DOMAIN_BOUND"],
+                        {"action_type": action.kind,
+                         "target_name": action.target or "",
+                         "url": url},
+                        {"url": url},
+                    )
+                except Exception:  # noqa: BLE001 — gate never breaks the loop
+                    _gate = None
+                if _gate is not None and not _gate.allowed:
+                    trajectory.record(
+                        action.kind, target=action.target or "",
+                        outcome=f"rejected_guardrail:{_gate.violated}",
+                    )
+                    logger.warning(
+                        "[fetch.vision] job_id=%s url=%s blocked %s: %s (REQ-20)",
+                        job_id, url, _gate.violated, _gate.reason,
                     )
                     break
 

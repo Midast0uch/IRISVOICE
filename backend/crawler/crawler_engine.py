@@ -267,6 +267,12 @@ class CrawlResult:
     # None when nothing was parked. Consumed by tool_bridge to emit the typed
     # `sources_parked` error so DER's reviewer can branch instead of blind-retry.
     park_summary: Optional[str] = None
+    # --- vision-goal-directed-search REQ-8/REQ-11 (T27): when dispatch_urls ran
+    # with an output_schema, this carries the StepFindingsAccumulator snapshot —
+    # strict-projected instance + per-field verification (verified, claims,
+    # discrepancy, corroborations, condition/bundle splits). None when no schema
+    # journey ran. The card's verified ✓/⚠ pills read THIS, never re-derived.
+    verification: Optional[dict] = None
 
 
 class CrawlerEngine:

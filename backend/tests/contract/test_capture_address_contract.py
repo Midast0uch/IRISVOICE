@@ -31,6 +31,7 @@ import asyncio
 import pytest
 
 from backend.crawler import capture_store as _capture_store_mod
+from backend.crawler.capabilities import FetchOutcome
 from backend.crawler.capture_store import (
     CAPTURE_SLOT_STRIDE,
     CaptureStore,
@@ -38,6 +39,7 @@ from backend.crawler.capture_store import (
 )
 from backend.crawler.crawler_engine import CrawlResult, PageData
 from backend.crawler.orchestrator import CrawlOrchestrator
+from backend.crawler.usability import UsabilityReason, UsabilityVerdict
 
 _URLS = [
     "https://a.example.com/one",
@@ -108,15 +110,64 @@ def _dispatch(urls, backend, monkeypatch):
 
     SEAM NOTE (pin_12059c9d2cc3): setting `_backend_override` and calling
     research() takes the BATCH path and never reaches dispatch_urls, so an
-    override-based version of this test would pass with the fix reverted. The
-    backend is swapped in the registry instead, so the real capability -> real
-    fetch_url -> real _page_emitter chain is exercised.
+    override-based version of this test would pass with the fix reverted.
+
+    SEAM NOTE (session-299, 2026-09-06): this used to register the real
+    FetchCrawlCapability and monkeypatch `_BACKENDS["agent"]` so the batch
+    backend reached it. The browser-pool unification (T12) moved per-URL
+    fetching onto the capability's OWN Tier-1/Tier-2 path, which never
+    consults _BACKENDS — the old seam recorded zero backend fetches while
+    events still flowed, proving it pinned a dead seam. The seam is now the
+    capability itself: _CaptureWritingCapability is registered AS the
+    capability under test and writes captures/emits the REAL event shape
+    (mirroring the capability's _emit_page_fetched: page_number/total = 1/1,
+    capture_page = block address). Everything above it — dispatch_urls, the
+    filtered _forward renumbering, the challenge park path — is production.
     """
     from backend.crawler import orchestrator as _orch_mod
-    from backend.crawler.capabilities import FetchCrawlCapability, register_capability
+    from backend.crawler.capabilities import CAPABILITIES, register_capability
 
-    monkeypatch.setitem(_orch_mod._BACKENDS, "agent", lambda: backend)
-    register_capability(FetchCrawlCapability())
+    class _CaptureWritingCap:
+        """Capability-shaped stand-in: writes its capture and emits the real
+        1/1 progress event, exactly as FetchCrawlCapability's tiers do."""
+
+        name = "fetch.crawl"
+
+        async def available(self):
+            return True
+
+        async def fetch_one(self, url, goal, job_id, on_progress=None, page_offset=0):
+            from backend.crawler.orchestrator import CrawlProgress
+
+            self.offsets_seen.append(page_offset)
+            capture_page = page_offset + 1
+            challenged = url in self.challenge_urls
+            if not challenged:
+                _capture_store_mod.get_capture_store().save(
+                    job_id=job_id, page_number=capture_page, url=url,
+                    html=f"<html><body>{url}</body></html>",
+                )
+                if on_progress:
+                    on_progress(CrawlProgress("CRAWLER_PAGE_FETCHED", {
+                        "url": url, "page_number": 1, "total": 1,
+                        "host": url.split("/")[2], "title": "t", "snippet": "",
+                        "job_id": job_id, "capture_page": capture_page,
+                        "capture_available": True,
+                    }))
+            return FetchOutcome(
+                url=url, capability="fetch.crawl",
+                page=None if challenged else _page(url),
+                verdict=UsabilityVerdict(
+                    usable=not challenged,
+                    reason=UsabilityReason.CHALLENGE if challenged else UsabilityReason.OK,
+                ),
+                duration_ms=1,
+            )
+
+    cap = _CaptureWritingCap()
+    cap.challenge_urls = set(getattr(backend, "challenge_urls", ()))
+    cap.offsets_seen = backend.offsets_seen  # share the recorder list
+    register_capability(cap)
 
     class _NoHistory:
         async def resolve(self, *a, **k):
@@ -135,7 +186,9 @@ def _dispatch(urls, backend, monkeypatch):
         on_progress=lambda p: events.append((p.event, p.payload)),
         concurrency_limit=3,
     ))
-    return [pl for e, pl in events if e == "CRAWLER_PAGE_FETCHED"]
+    pages = [pl for e, pl in events if e == "CRAWLER_PAGE_FETCHED"]
+    parked = {pl.get("url") for e, pl in events if e == "CRAWLER_SOURCE_PARKED"}
+    return pages, parked
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -153,7 +206,7 @@ def test_every_emitted_capture_address_resolves_to_that_urls_stored_bytes(
     page — which is how the panel could show URL 4's content under URL 1's tab.
     """
     backend = _CaptureWritingBackend()
-    pages = _dispatch(_URLS, backend, monkeypatch)
+    pages, _parked = _dispatch(_URLS, backend, monkeypatch)
 
     assert len(pages) == len(_URLS), (
         f"{len(pages)} page events for {len(_URLS)} URLs — the panel cannot show "
@@ -182,7 +235,7 @@ def test_five_dispatched_urls_produce_five_distinct_captures(store, monkeypatch)
     """The concrete live symptom: the job directory held ONE capture for five
     fetched URLs, because each single-URL fetch numbered its page 1."""
     backend = _CaptureWritingBackend()
-    pages = _dispatch(_URLS, backend, monkeypatch)
+    pages, _parked = _dispatch(_URLS, backend, monkeypatch)
 
     stored = _stored_addresses(store, "job-cap")
     assert len(stored) == len(_URLS), (
@@ -199,7 +252,7 @@ def test_dispatch_hands_each_url_a_distinct_capture_block(store, monkeypatch):
     """The mechanism, pinned independently of the emitted payload: the same
     offset for every URL is what made them collide."""
     backend = _CaptureWritingBackend()
-    _dispatch(_URLS, backend, monkeypatch)
+    _pages, _parked = _dispatch(_URLS, backend, monkeypatch)
 
     assert len(set(backend.offsets_seen)) == len(_URLS), (
         f"offsets {sorted(backend.offsets_seen)} — every URL fetched into the "
@@ -211,7 +264,7 @@ def test_ui_counter_stays_the_outer_runs_counter(store, monkeypatch):
     """The counter must NOT inherit the capture address. Blocks are strided, so
     leaking the address into page_number would render "301/5" in the chip."""
     backend = _CaptureWritingBackend()
-    pages = _dispatch(_URLS, backend, monkeypatch)
+    pages, _parked = _dispatch(_URLS, backend, monkeypatch)
 
     for pl in pages:
         num, total = pl.get("page_number"), pl.get("total")
@@ -228,16 +281,22 @@ def test_ui_counter_stays_the_outer_runs_counter(store, monkeypatch):
 
 def test_challenged_page_reports_capture_unavailable(store, monkeypatch):
     """A challenge interstitial is not persisted on purpose (REQ-4 AC2), so its
-    tab 404s BY DESIGN. The payload must say so rather than let the panel open a
-    frame that cannot load."""
+    tab would 404 BY DESIGN. Current production: a challenge from fetch.crawl
+    does not emit a page event at all — the URL is PARKED (CRAWLER_SOURCE_PARKED)
+    and other URLs emit normally with capture_available=True. What the contract
+    still pins: the walled URL never reports a replayable capture."""
     walled = _URLS[1]
     backend = _CaptureWritingBackend(challenge_urls={walled})
-    pages = _dispatch(_URLS, backend, monkeypatch)
+    pages, parked = _dispatch(_URLS, backend, monkeypatch)
 
     by_url = {pl["url"]: pl for pl in pages}
-    assert by_url[walled].get("capture_available") is False, (
-        "a page whose bytes were deliberately NOT stored still advertised an "
+    assert walled not in by_url or not by_url[walled].get("capture_available"), (
+        "a page whose bytes were deliberately NOT stored advertised an "
         "available capture — the panel opens a tab that can only 404"
+    )
+    assert walled in parked, (
+        "a challenged URL was neither paged nor parked — it vanished from the "
+        "run without the honest 'blocked' record the panel needs"
     )
     for url in _URLS:
         if url == walled:

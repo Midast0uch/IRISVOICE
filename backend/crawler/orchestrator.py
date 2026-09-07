@@ -842,6 +842,13 @@ class CrawlOrchestrator:
         max_pages: int = _DEFAULT_MAX_PAGES,
         timeout_s: float = _DEFAULT_TIMEOUT_S,
         concurrency_limit: int = _DEFAULT_CONCURRENCY,
+        output_schema: Optional[dict] = None,
+        extract: Optional[Callable[["PageData"], Optional[dict]]] = None,
+        on_missing_fields: Optional[Callable[[list], list]] = None,
+        _followup_depth: int = 0,
+        _shared_findings=None,
+        _shared_covered: Optional[dict] = None,
+        _base_offset: int = 0,
     ) -> CrawlResult:
         """Concurrent per-URL dispatch through the capability registry (REQ-10).
 
@@ -853,6 +860,13 @@ class CrawlOrchestrator:
         - AC5: when one raced capability returns first, the loser is cancelled.
         - Edge: both raced results usable -> crawl (cheaper) wins, the
           unnecessary race is logged for tuning.
+        - AC2.3 (REQ-2, T29): when ``output_schema`` declares required fields,
+          completeness is evaluated after EVERY page outcome — the moment all
+          required fields hold a non-None value the remaining queued and
+          in-flight fetches are CANCELLED (early termination). ``extract`` is
+          the caller's projection hook (structured extraction per page); when
+          absent, page.metadata keys are the projection. Sparse and honest:
+          no schema -> no gate, no cost.
 
         Always returns a CrawlResult (never raises). The source_registry read
         is best-effort and LOGGED (pin V2: registry reuse is unverified — we
@@ -863,6 +877,29 @@ class CrawlOrchestrator:
 
         t_start = time.monotonic()
         _emit = self._make_emitter(on_progress, session_id)
+        # REQ-21 AC21.2 (T31): strict 12-keyword allowlist on output_schema
+        # BEFORE any fetch burns. Fail closed with an explicit CrawlResult
+        # error (this funnel never raises) so a bad contract surfaces
+        # instead of silently degrading to unprojected metadata.
+        if output_schema is not None:
+            try:
+                from backend.vision.schema_validator import validate_schema
+                _schema_errors = validate_schema(output_schema)
+            except Exception:  # noqa: BLE001 — validator never breaks dispatch
+                _schema_errors = []
+            if _schema_errors:
+                _msg = "; ".join(_schema_errors)
+                logger.warning(
+                    "[CrawlOrchestrator] schema_validation job_id=%s: %s",
+                    job_id, _msg,
+                )
+                return CrawlResult(
+                    query=query,
+                    pages=[],
+                    duration_ms=int((time.monotonic() - t_start) * 1000),
+                    crawled_at=datetime.now(timezone.utc).isoformat(),
+                    error=f"schema_validation: {_msg}",
+                )
         crawl_cap = get_capability("fetch.crawl")
         vision_avail = "fetch.vision" in CAPABILITIES
         capped = urls[:max_pages]
@@ -911,13 +948,53 @@ class CrawlOrchestrator:
         # basis as crawl domains (AC5: no forked paths).
         har_entries: list[dict] = []
 
+        # REQ-2 AC2.3 (T29): early schema termination state. Empty when no
+        # output_schema is declared — the gate then costs nothing per page.
+        _required_fields: list[str] = []
+        if output_schema:
+            try:
+                _req = (output_schema.get("required") or []) or list(
+                    (output_schema.get("properties") or {}).keys()
+                )
+                _required_fields = [str(k) for k in _req if str(k).strip()]
+            except Exception:  # noqa: BLE001 — a bad schema never breaks dispatch
+                _required_fields = []
+        _covered: dict[str, object] = {}
+        _early_terminator: Optional["asyncio.Event"] = (
+            asyncio.Event() if _required_fields else None
+        )
+        # REQ-8/REQ-11 (T27): when a schema journey runs, every usable page
+        # feeds the StepFindingsAccumulator so the CrawlResult carries a
+        # cross-source verification snapshot (the card's ✓/⚠ pills). Same
+        # projection the AC2.3 gate uses — no second extract pass.
+        # When this dispatch IS a follow-up dispatch (REQ-13 in-flight
+        # adaptation), the parent's accumulator and coverage are SHARED so
+        # follow-up pages extend the quorum of the run that triggered them.
+        if _shared_findings is not None:
+            _findings = _shared_findings
+        elif _required_fields:
+            try:
+                from backend.agent.der_loop import StepFindingsAccumulator
+
+                _findings = StepFindingsAccumulator(goal_fields=set(_required_fields))
+            except Exception as exc:  # noqa: BLE001 — verification is best-effort
+                logger.debug("[CrawlOrchestrator] findings accumulator unavailable: %s", exc)
+                _findings = None
+        else:
+            _findings = None
+        if _shared_covered is not None:
+            _covered = _shared_covered
+
         async def _dispatch_one(idx: int, url: str) -> None:
             # Each URL owns a reserved block of the job's capture address space:
             # its crawl page takes offset+1 and any vision frames take offset+2
             # onward. Without this every single-URL fetch wrote <job>/1.html and
             # every vision session restarted at 1 on top of it — the first
             # 404'd pages 2..N, the second served ANOTHER url's bytes.
-            _slot_offset = slot_capture_offset(idx)
+            # _base_offset continues the block for follow-up (REQ-13) child
+            # dispatches sharing this job_id, so a child slot never collides
+            # with a parent slot.
+            _slot_offset = _base_offset + slot_capture_offset(idx)
             async with sem:  # AC1: bounded concurrency
                 host = _host_of(url)
                 # T12 / REQ-7 AC1: per-host run gate. Bypassed entirely if a
@@ -1061,6 +1138,36 @@ class CrawlOrchestrator:
                         outcome.page.metadata = dict(outcome.page.metadata or {})
                         outcome.page.metadata["origin"] = "vision"
                     slots[idx] = outcome.page
+                    # REQ-2 AC2.3 (T29): schema completeness is re-evaluated
+                    # after EVERY page outcome. The moment every required field
+                    # holds a non-None value the batch signals early terminate;
+                    # the terminator task below cancels the rest of the queue.
+                    if _required_fields:
+                        try:
+                            _payload = (
+                                extract(outcome.page)
+                                if extract is not None
+                                else dict(outcome.page.metadata or {})
+                            )
+                        except Exception:  # noqa: BLE001 — projection never fails the page
+                            _payload = None
+                    else:
+                        _payload = None
+                    # REQ-8 AC1 strict projection: only schema fields reach the
+                    # accumulator; the page's raw body never does.
+                    if _findings is not None and isinstance(_payload, dict):
+                        _findings.add(outcome.page.url, _payload)
+                    if _required_fields and _early_terminator is not None and not _early_terminator.is_set():
+                        if isinstance(_payload, dict):
+                            for _k in _required_fields:
+                                if _payload.get(_k) is not None and _k not in _covered:
+                                    _covered[_k] = _payload[_k]
+                        if all(k in _covered for k in _required_fields):
+                            _early_terminator.set()
+                            logger.info(
+                                "[CrawlOrchestrator] dispatch early terminate job_id=%s "
+                                "fields=%s (AC2.3)", job_id, sorted(_covered),
+                            )
                 else:
                     # T14 (REQ-13): a wall in the outcome (CAPTCHA/login/paywall
                     # from fetch.vision) parks the source — one question per
@@ -1147,7 +1254,27 @@ class CrawlOrchestrator:
             asyncio.create_task(_dispatch_with_defer_log(i, u))
             for i, u in enumerate(capped)
         ]
+        # REQ-2 AC2.3: the terminator watches for schema satisfaction and
+        # cancels UNFINISHED per-URL tasks. Cancellation of an in-flight
+        # fetch surfaces as CancelledError inside the task — asyncio.gather
+        # with return_exceptions=True collects it (it is NOT an Exception
+        # subclass and never lands in the failure log below).
+        async def _terminate_on_satisfied() -> None:
+            if _early_terminator is None:
+                return
+            await _early_terminator.wait()
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+
+        _terminator = asyncio.create_task(_terminate_on_satisfied()) if _early_terminator else None
         results = await asyncio.gather(*tasks, return_exceptions=True)
+        if _terminator is not None:
+            _terminator.cancel()
+            try:
+                await _terminator
+            except BaseException:  # noqa: BLE001 — CancelledError
+                pass
         for i, exc in enumerate(results):
             if isinstance(exc, Exception):
                 logger.warning(
@@ -1181,6 +1308,78 @@ class CrawlOrchestrator:
             "[CrawlOrchestrator] dispatch job_id=%s urls=%d usable=%d concurrency=%d (REQ-10)",
             job_id, len(capped), len(pages), concurrency_limit,
         )
+        # REQ-13 AC13.3 (T30): in-flight dynamic query adaptation. When a
+        # schema journey ended with required fields STILL uncovered and the
+        # caller supplied a Brain hook (`on_missing_fields`), the Brain
+        # synthesizes targeted follow-up URLs and they're fetched IN THE SAME
+        # RUN — the active DAG grows; nothing restarts, nothing replans.
+        # Bounded: at most one follow-up round per depth level, and the child
+        # dispatch shares the parent's accumulator + coverage so its pages
+        # extend the quorum rather than reset it.
+        if (
+            on_missing_fields is not None
+            and _required_fields
+            and _followup_depth == 0
+        ):
+            _missing = [k for k in _required_fields if k not in _covered]
+            if _missing:
+                try:
+                    _more = [u for u in (on_missing_fields(list(_missing)) or [])
+                             if isinstance(u, str) and u.strip()]
+                except Exception as exc:  # noqa: BLE001 — adaptation never kills the run
+                    logger.info(
+                        "[CrawlOrchestrator] follow-up synthesis failed job_id=%s: %s",
+                        job_id, exc,
+                    )
+                    _more = []
+                # Deduplicate against URLs already attempted in this run;
+                # the same normalized URL must never be re-fetched once.
+                seen = {u.strip() for u in capped}
+                fresh: list[str] = []
+                for u in _more:
+                    u2 = u.strip()
+                    if u2 not in seen and u2 not in fresh:
+                        fresh.append(u2)
+                if fresh:
+                    logger.info(
+                        "[CrawlOrchestrator] in-flight query adaptation job_id=%s missing=%s followups=%d (REQ-13 AC3)",
+                        job_id, _missing, len(fresh),
+                    )
+                    _child_depth = _followup_depth + 1
+                    _follow = await self.dispatch_urls(
+                        fresh[: max(1, len(fresh))],
+                        query=query,
+                        job_id=job_id,
+                        session_id=session_id,
+                        on_progress=on_progress,
+                        max_pages=max(max_pages, len(fresh)),
+                        timeout_s=timeout_s,
+                        concurrency_limit=concurrency_limit,
+                        output_schema=output_schema,
+                        extract=extract,
+                        on_missing_fields=on_missing_fields,
+                        _followup_depth=_child_depth,
+                        _shared_findings=_findings,
+                        _shared_covered=_covered,
+                        _base_offset=_base_offset + slot_capture_offset(len(capped)),
+                    )
+                    pages = pages + [p for p in _follow.pages if isinstance(p, PageData)]
+                    # Follow-up pages joined the accumulator; slots for the
+                    # brief persist path live on _follow.har_entries. Merge
+                    # (harmless when empty) so _apply_har_penalties sees them.
+                    har_entries = har_entries + list(_follow.har_entries or [])
+
+        # REQ-8/REQ-11 (T27): the run's cross-source verification snapshot
+        # rides the result when a schema journey ran. Follow-up child runs
+        # share the parent's accumulator and do NOT snapshot their own (the
+        # parent's commit point is below — a child snapshot would read the
+        # accumulator mid-merge).
+        verification: Optional[dict] = None
+        if _findings is not None and _shared_findings is None:
+            try:
+                verification = _findings.snapshot()
+            except Exception as exc:  # noqa: BLE001 — best-effort, logged
+                logger.debug("[CrawlOrchestrator] findings snapshot failed job_id=%s: %s", job_id, exc)
         return CrawlResult(
             query=query,
             pages=pages,
@@ -1191,6 +1390,7 @@ class CrawlOrchestrator:
             # _apply_har_penalties + _learn_from_crawl consume them unchanged.
             har_entries=har_entries,
             har_path=_har_path,
+            verification=verification,
         )
 
     async def _domain_failure_history(self, url: str, query: str) -> str:

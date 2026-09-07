@@ -46,6 +46,7 @@ Failure semantics:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -922,6 +923,90 @@ class BrowserSession:
         if not html:
             return None
         return _detect_wall_from_html(html)
+
+    # ── T11 (REQ-10): interactive takeover ─────────────────────────────────
+
+    async def request_takeover(
+        self,
+        wall: WallKind,
+        *,
+        site_name: Optional[str] = None,
+        timeout_seconds: int = 180,
+    ) -> bool:
+        """REQ-10 AC1/AC3: hand this page to the user in the browser panel.
+
+        Emits the takeover question (kind="browser_takeover") with contextual
+        guidance, waits for "I've Completed It", verifies the wall really is
+        gone on the CURRENT page (a user can mis-click or the wall can
+        persist — trust nothing), publishes the cleared frame, and returns
+        True so the caller RESUMES the action loop instead of parking.
+
+        PAYWALLs are excluded BY DESIGN (Non-Goals: never solve what the user
+        cannot solve). False on timeout, on any error, or if the wall
+        survives — the caller keeps the wall and parks as before; never
+        raises (a takeover failure must not add a second failure mode).
+
+        ``wait_for_answer`` is synchronous (time.sleep), so it runs on a
+        thread — calling it inline on the event loop would freeze every
+        concurrent crawl and the WebSocket for the full timeout."""
+        if wall == WallKind.PAYWALL:
+            return False
+        try:
+            from backend.agent.tools.ask_user_tool import get_ask_user_tool
+        except Exception as exc:  # noqa: BLE001 — tooling unavailable
+            logger.info(
+                "[browser_session] takeover unavailable (ask tool) job=%s: %s",
+                self._job_id, exc,
+            )
+            return False
+        url = getattr(self._page, "url", None) or self.url
+        try:
+            tool = get_ask_user_tool()
+            question = tool.ask_browser_takeover(
+                takeover_url=url,
+                reason=wall.value,
+                site_name=site_name,
+                job_id=self._job_id,
+                timeout_seconds=timeout_seconds,
+            )
+        except Exception as exc:  # noqa: BLE001 — a broken takeover ask must
+            # never kill the session; the caller still has the wall.
+            logger.warning(
+                "[browser_session] takeover ask failed job=%s: %s", self._job_id, exc
+            )
+            return False
+        try:
+            answered = await asyncio.to_thread(tool.wait_for_answer, question)
+        except Exception as exc:  # noqa: BLE001
+            logger.info(
+                "[browser_session] takeover wait failed job=%s: %s", self._job_id, exc
+            )
+            return False
+        if getattr(answered, "answer", None) != "completed":
+            logger.info(
+                "[browser_session] takeover not completed job=%s status=%s",
+                self._job_id, getattr(answered, "status", "?"),
+            )
+            return False
+        # AC3: confirm the obstacle is actually cleared before continuing.
+        cleared_wall = await self.detect_wall()
+        if cleared_wall is not None:
+            logger.info(
+                "[browser_session] takeover claimed completed but wall persists "
+                "job=%s wall=%s — treating as unresolved",
+                self._job_id, cleared_wall.value,
+            )
+            return False
+        try:
+            # AC3: capture the settled frame so the panel shows post-takeover.
+            await self._publish_frame()
+        except Exception as exc:  # noqa: BLE001 — capture failure doesn't veto
+            logger.debug("[browser_session] post-takeover frame failed: %s", exc)
+        logger.info(
+            "[browser_session] takeover cleared the wall job=%s wall=%s (REQ-10 AC3)",
+            self._job_id, wall.value,
+        )
+        return True
 
     # ── frame publishing (REQ-11 AC1 / AC5) ────────────────────────────────
 

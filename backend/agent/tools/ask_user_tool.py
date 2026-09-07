@@ -61,6 +61,13 @@ class Question:
     set_id: Optional[str] = None  # REQ-5: the QuestionSet this belongs to, if any
     header: str = ""              # REQ-5 AC4: per-question label
     multi_select: bool = False    # REQ-5 AC3
+    # T11 (REQ-10): takeover fields. Additive and inert for every other
+    # question — the DEFAULT is "choice", exactly how the tool used to
+    # behave. A browser_takeover question carries the URL to unlock in the
+    # panel and the reason the session stalled.
+    kind: str = "choice"  # "choice" | "browser_takeover"
+    takeover_url: Optional[str] = None
+    reason: Optional[str] = None
 
 
 @dataclass
@@ -475,6 +482,105 @@ class AskUserTool:
             self._IRISStreamEvent.QUESTION_TIMEOUT,
             data={"question_id": question.question_id},
             turn_id=question.turn_id,
+        )
+        return question
+
+    # ── T11 (REQ-10): contextual browser takeover ────────────────────────
+
+    _TAKEOVER_REASON_LABELS = {
+        "cloudflare_turnstile": "a Cloudflare verification challenge",
+        "captcha": "a CAPTCHA",
+        "two_factor": "a two-factor authentication step",
+        "login_wall": "a login wall",
+        "age_gate": "an age-verification gate",
+        "consent_wall": "a consent banner",
+    }
+
+    def ask_browser_takeover(
+        self,
+        *,
+        takeover_url: str,
+        reason: str,
+        site_name: Optional[str] = None,
+        job_id: Optional[str] = None,
+        timeout_seconds: int = 180,
+        turn_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+    ) -> Question:
+        """Park a browser session on an unresolvable wall and ask the user
+        to complete it in the panel (REQ-10, design §3). NEVER raises —
+        a lure to the user must never kill the run that preceded it.
+
+        AC10.1: builds contextual guidance from the page state; AC10.2:
+        options carries the one action the card shows ("I've Completed It");
+        AC10.3: the caller (BrowserSession) waits on `wait_for_answer` and
+        resumes only when answer == "completed".
+        """
+        from urllib.parse import urlparse
+
+        if not site_name:
+            try:
+                site_name = urlparse(takeover_url).hostname or takeover_url
+            except Exception:  # noqa: BLE001 — guidance must never raise
+                site_name = takeover_url
+        what = self._TAKEOVER_REASON_LABELS.get(reason, f"a {reason.replace('_', ' ')}")
+        text = (
+            f"{site_name} is asking for {what}. Please solve it in the "
+            f"browser panel — I'll continue automatically once you're done."
+        )
+        question = Question(
+            text=text,
+            options=["I've Completed It"],
+            allow_other=False,
+            timeout_seconds=timeout_seconds,
+            turn_id=turn_id,
+            kind="browser_takeover",
+            takeover_url=takeover_url,
+            reason=reason,
+        )
+        if conversation_id:
+            question.conversation_id = conversation_id
+        self._pending[question.question_id] = question
+
+        try:
+            self._bus.emit(
+                self._IRISStreamEvent.QUESTION_ASK,
+                data={
+                    "question_id": question.question_id,
+                    "text": text,
+                    "options": question.options,
+                    "allow_other": False,
+                    "timeout_seconds": timeout_seconds,
+                    "kind": "browser_takeover",
+                    "takeover_url": takeover_url,
+                    "reason": reason,
+                    **({"conversation_id": conversation_id} if conversation_id else {}),
+                },
+                turn_id=turn_id,
+                conversation_id=conversation_id or "default",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[AskUser] takeover QUESTION_ASK emit failed: %s", exc)
+        try:
+            # AC10.1 (design §3 step 4): a dedicated channel for the panel's
+            # pointer-events unlock, so it does not have to filter question
+            # events by kind.
+            self._bus.emit(
+                self._IRISStreamEvent.BROWSER_TAKEOVER_REQUESTED,
+                data={
+                    "takeover_url": takeover_url,
+                    "reason": reason,
+                    "job_id": job_id or "",
+                    "question_id": question.question_id,
+                },
+                turn_id=turn_id,
+                conversation_id=conversation_id or "default",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[AskUser] BROWSER_TAKEOVER_REQUESTED emit failed: %s", exc)
+        logger.info(
+            "[AskUser] browser takeover asked url=%s reason=%s site=%r qid=%s (REQ-10)",
+            takeover_url, reason, site_name, question.question_id,
         )
         return question
 

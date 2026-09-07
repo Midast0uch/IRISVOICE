@@ -838,6 +838,28 @@ class Reviewer:
 # T14 (REQ-8 + REQ-11): StepFindingsAccumulator — per-run strict projection
 # with semantic cross-source verification.
 # ─────────────────────────────────────────────────────────────────────────────
+def _values_equivalent(a, b) -> bool:
+    """REQ-11 AC3 semantic reconciliation for the discrepancy gate.
+
+    Numerics reconcile within a tolerance — pinned by the T14 unit suite
+    (899 vs 900 is ONE claim: USD-only, fx reconciliation deferred) while a
+    real spread (1999 vs 2499) is FALSE. The boundary is deliberately simple:
+    1.0 absolute OR 1% relative, whichever is larger, so cent drift and
+    rounding noise never fabricate a discrepancy and a scalper's price never
+    disguises as the MSRP. Non-numerics compare by equality; object payloads
+    are never "equivalent" when they differ in identity.
+    """
+    if a is b:
+        return True
+    if isinstance(a, bool) or isinstance(b, bool):
+        return a == b
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return abs(a - b) <= max(1.0, 0.01 * max(abs(a), abs(b)))
+    if isinstance(a, (dict, list)) or isinstance(b, (dict, list)):
+        return a == b
+    return a == b
+
+
 class StepFindingsAccumulator:
     """Bounded aggregator for what the crawl actually LEARNED.
 
@@ -901,6 +923,16 @@ class StepFindingsAccumulator:
             entry["conditions"][cond] = entry["conditions"].get(cond, 0) + 1
             entry["bundles"] = entry.get("bundles", {})
             entry["bundles"][bundle] = entry["bundles"].get(bundle, 0) + 1
+            # REQ-11 AC11.4 (T27): keep the CLAIMS — field value per source —
+            # so an irreconcilable spread (official 1999 vs scalper 2499 in
+            # the SAME condition) surfaces as a recorded discrepancy instead
+            # of silently reducing to the last write. A source re-voting for
+            # the same field REPLACES its prior claim (idempotent re-add).
+            claims = entry.setdefault("claims", [])
+            claims[:] = [c for c in claims if c.get("host") != host]
+            claims.append({
+                "host": host, "value": v, "condition": cond, "bundle": bundle,
+            })
         for k, v in projection.items():
             self._instance[k] = v
         self._total_bytes += _bytes
@@ -923,12 +955,35 @@ class StepFindingsAccumulator:
             conditions = votes.get("conditions", {}) or {}
             bundles = votes.get("bundles", {}) or {}
             sources = votes.get("sources", set()) or set()
+            claims = votes.get("claims", []) or []
+            # REQ-11 AC11.4: within ONE (condition, bundle) bucket, two
+            # semantically DISTINCT values = an irreconcilable spread —
+            # flagged with all claims kept. SEMANTIC NORMALIZATION (AC11.3):
+            # numerics reconcile within a tolerance (USD-only here — fx
+            # reconciliation is deferred per the REQ-11 note), so $899 vs
+            # $900 is ONE claim while $1999 vs $2499 is a discrepancy.
+            bucket_values: dict[tuple, list] = {}
+            for c in claims:
+                bucket_values.setdefault(
+                    (c.get("condition") or "", c.get("bundle") or ""), []
+                ).append(c.get("value"))
+            discrepancy = False
+            for vals in bucket_values.values():
+                for i in range(1, len(vals)):
+                    if not _values_equivalent(vals[0], vals[i]):
+                        discrepancy = True
+                        break
+                if discrepancy:
+                    break
             verified[field] = {
                 "verified": (
                     len(sources) >= 2
                     and len(conditions) <= 1
                     and len(bundles) <= 1
+                    and not discrepancy
                 ),
+                "discrepancy": discrepancy,
+                "claims": claims,
                 "corroborations": len(sources),
                 "unit_count": sum(conditions.values()) if conditions else 0,
                 "condition_distribution": dict(conditions),

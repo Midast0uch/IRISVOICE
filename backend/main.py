@@ -2942,6 +2942,17 @@ async def websocket_endpoint(
         logger.warning(f"Failed to establish connection for client {client_id}")
         return
 
+    # REQ-28: a connected frontend means a user is present (TTS lazy at
+    # boot, so no worker exists yet). Pre-warm without blocking the
+    # connect: by the time the user speaks, the ~20 s cold load is done.
+    # Once-per-process; on-demand spawn covers the rest. Never breaks connect.
+    try:
+        from backend.agent.tts import get_tts_manager
+
+        get_tts_manager().prewarm()
+    except Exception:
+        pass  # warmth is an optimization — connect must never fail for it
+
     # Ensure ordering lock exists for this session
     if active_session_id not in _session_message_locks:
         _session_message_locks[active_session_id] = asyncio.Lock()
@@ -3055,6 +3066,9 @@ async def websocket_endpoint(
                                 "[WS] steer acknowledgement speak skipped: %s",
                                 _spk_exc,
                             )
+                    # CONFLICT-FLAG (stash pop): stashed side pushed top-level
+                    # text/message_id only; kept upstream dual-shape read +
+                    # REQ-26 voice ack (fixes UI steer arriving with text="").
                     # AC5: an unacknowledged steering message SHALL be re-sent.
                     resend_stale_acks(active_session_id)
                     logger.info(

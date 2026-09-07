@@ -920,6 +920,11 @@ async def _run_oneshot_spawn(
             )
 
         return result, error_msg
+        # CONFLICT-FLAG (stash pop): stashed side replaced this return with a
+        # REQ-1/REQ-16 per-URL logging + plain-HTTP merge block ending in a
+        # single-value `return result`; dropped — the caller unpacks two values
+        # (line 745) and the merge/fallback now lives in _finalize_crawl_result
+        # below. Relocated, not deleted.
 
 
 async def _finalize_crawl_result(

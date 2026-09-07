@@ -74,6 +74,9 @@ _BRIDGED_EVENTS: Tuple[IRISStreamEvent, ...] = (
     # No VL fallback candidate fit free VRAM — surfaced as a chat system
     # message the same way BUDGET_EXHAUSTED/VALIDATION_FAILED are.
     IRISStreamEvent.VISION_UNAVAILABLE,
+    # ── T11 (REQ-10): browser takeover — the overlay panel unlocks itself
+    # on this event, never on the question channel (design §3 step 4).
+    IRISStreamEvent.BROWSER_TAKEOVER_REQUESTED,
 )
 
 # Events added at runtime (e.g. future additions) so the tuple above stays
