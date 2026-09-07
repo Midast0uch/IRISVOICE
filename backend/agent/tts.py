@@ -671,11 +671,58 @@ class TTSManager:
     _SYNTHESIS_BASE_TIMEOUT: float = 30.0
     _SYNTHESIS_PER_CHAR_TIMEOUT: float = 0.10
 
+    # Long-text guard (measured 2026-09-07): one synthesis retains
+    # ~0.15–0.19 MB per char in native arenas (+477 MB for 2500 chars,
+    # +1082 MB for 7500). Past ~10k chars a single request can plausibly
+    # exhaust commit and get OOM-killed — presenting as "died on long
+    # text" (the 2026-09-03 deaths were the stderr-pipe incident, fixed
+    # since, but the scaling risk is real and measured). Requests longer
+    # than this are split at sentence boundaries into sequential worker
+    # requests: identical audio, bounded growth per request, compact runs
+    # between them.
+    _MAX_SINGLE_SYNTH_CHARS: int = 2000
+
     def _synthesis_deadline(self, text: str) -> float:
         """Monotonic deadline for one call to synthesize_stream(*text*)."""
         return time.monotonic() + (
             self._SYNTHESIS_BASE_TIMEOUT + len(text) * self._SYNTHESIS_PER_CHAR_TIMEOUT
         )
+
+    @staticmethod
+    def _split_synthesis_text(text: str, max_chars: int = 2000) -> list:
+        """Split a long request at sentence boundaries into bounded pieces.
+
+        Hard-splits pathological no-punctuation runs so no piece can exceed
+        the cap (see _MAX_SINGLE_SYNTH_CHARS). Pure string ops, never raises
+        on strange input — worst case returns [text].
+        """
+        import re
+
+        try:
+            sentences = [
+                s for s in re.split(r"(?<=[.!?])\s+", (text or "").strip()) if s
+            ]
+            slices: list = []
+            for s in sentences:
+                while len(s) > max_chars:
+                    slices.append(s[:max_chars])
+                    s = s[max_chars:]
+                if s:
+                    slices.append(s)
+            pieces: list = []
+            buf = ""
+            for s in slices:
+                if len(buf) + len(s) + 1 <= max_chars:
+                    buf = (buf + " " + s).strip()
+                else:
+                    if buf:
+                        pieces.append(buf)
+                    buf = s
+            if buf:
+                pieces.append(buf)
+            return pieces or [text]
+        except Exception:  # noqa: BLE001 — splitting never breaks synthesis
+            return [text]
 
     def synthesize_stream(self, text: str) -> Generator[np.ndarray, None, None]:
         """Stream synthesis — yields float32 arrays at OUTPUT_SAMPLE_RATE Hz.
@@ -708,69 +755,78 @@ class TTSManager:
         # Serialize synthesis requests (one at a time, same as single-model).
         with self._synthesis_lock:
             deadline = self._synthesis_deadline(text)
-            req_id = int(time.time() * 1000) % 100000
-            try:
-                self._send({"action": "synthesize", "text": text, "id": req_id})
-            except Exception as exc:
-                _root_log.error(f"[TTSManager] Failed to send synthesize: {exc}")
-                self._note_activity()
-                self._restart_worker()
-                return
+            req_base = int(time.time() * 1000) % 100000
+            # Sequential bounded pieces (long-text guard): identical audio,
+            # one worker request each, so per-request arena growth stays
+            # capped and the post-synthesis compact runs between pieces.
+            pieces = self._split_synthesis_text(
+                text, max_chars=self._MAX_SINGLE_SYNTH_CHARS
+            )
+            for piece_idx, piece in enumerate(pieces):
+                req_id = req_base + piece_idx
+                try:
+                    self._send({"action": "synthesize", "text": piece, "id": req_id})
+                except Exception as exc:
+                    _root_log.error(f"[TTSManager] Failed to send synthesize: {exc}")
+                    self._note_activity()
+                    self._restart_worker()
+                    return
 
-            # Read chunks until done/error.
-            while True:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    _root_log.error(
-                        "[TTSManager] Synthesis exceeded its %.0fs budget for %d "
-                        "chars — worker is wedged, restarting",
-                        self._SYNTHESIS_BASE_TIMEOUT
-                        + len(text) * self._SYNTHESIS_PER_CHAR_TIMEOUT,
-                        len(text),
-                    )
-                    self._note_activity()
-                    self._restart_worker()
-                    return
-                msg = self._read_line(timeout=min(30.0, remaining))
-                if msg is None:
-                    _root_log.error(
-                        "[TTSManager] Worker produced nothing for 30s "
-                        "mid-synthesis — restarting"
-                    )
-                    self._note_activity()
-                    self._restart_worker()
-                    return
-                if msg is _WORKER_EOF:
-                    _root_log.error(
-                        "[TTSManager] Worker died mid-synthesis — restarting"
-                    )
-                    self._note_activity()
-                    self._restart_worker()
-                    return
-                mtype = msg.get("type")
-                if mtype == "chunk":
-                    try:
-                        data = base64.b64decode(msg.get("data", ""))
-                        audio = np.frombuffer(data, dtype=np.float32)
-                        if len(audio) > 0:
-                            yield audio
-                    except Exception as exc:
-                        _root_log.warning(
-                            f"[TTSManager] Chunk decode failed: {exc}"
+                # Read chunks until done/error.
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        _root_log.error(
+                            "[TTSManager] Synthesis exceeded its %.0fs budget for %d "
+                            "chars — worker is wedged, restarting",
+                            self._SYNTHESIS_BASE_TIMEOUT
+                            + len(text) * self._SYNTHESIS_PER_CHAR_TIMEOUT,
+                            len(text),
                         )
-                elif mtype == "done":
-                    _root_log.info(
-                        f"[TTSManager] Synthesis done: {msg.get('total_samples')} "
-                        f"samples in {msg.get('duration_s')}s"
-                    )
-                    self._note_activity()
-                    return
-                elif mtype == "error":
-                    _root_log.error(
-                        f"[TTSManager] Worker synthesis error: {msg.get('error')}"
-                    )
-                    self._note_activity()
-                    return
+                        self._note_activity()
+                        self._restart_worker()
+                        return
+                    msg = self._read_line(timeout=min(30.0, remaining))
+                    if msg is None:
+                        _root_log.error(
+                            "[TTSManager] Worker produced nothing for 30s "
+                            "mid-synthesis — restarting"
+                        )
+                        self._note_activity()
+                        self._restart_worker()
+                        return
+                    if msg is _WORKER_EOF:
+                        _root_log.error(
+                            "[TTSManager] Worker died mid-synthesis — restarting"
+                        )
+                        self._note_activity()
+                        self._restart_worker()
+                        return
+                    mtype = msg.get("type")
+                    if mtype == "chunk":
+                        try:
+                            data = base64.b64decode(msg.get("data", ""))
+                            audio = np.frombuffer(data, dtype=np.float32)
+                            if len(audio) > 0:
+                                yield audio
+                        except Exception as exc:
+                            _root_log.warning(
+                                f"[TTSManager] Chunk decode failed: {exc}"
+                            )
+                    elif mtype == "done":
+                        _root_log.info(
+                            f"[TTSManager] Synthesis done: {msg.get('total_samples')} "
+                            f"samples in {msg.get('duration_s')}s"
+                        )
+                        self._note_activity()
+                        break  # next piece (long-text guard), if any
+                    elif mtype == "error":
+                        _root_log.error(
+                            f"[TTSManager] Worker synthesis error: {msg.get('error')}"
+                        )
+                        self._note_activity()
+                        return
+            return
 
     # ------------------------------------------------------------------
     # Filler phrases

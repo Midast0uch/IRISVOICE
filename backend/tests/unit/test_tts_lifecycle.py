@@ -235,3 +235,86 @@ def test_synthesize_compacts_heap_after_done(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert '"type": "done"' in out
     assert len(compacts) == 1
+
+
+# ── long-text request splitting ──────────────────────────────────────
+
+def _chunk_msg(n=8):
+    import base64
+
+    import numpy as np
+
+    return {"type": "chunk",
+            "data": base64.b64encode(np.zeros(n, dtype=np.float32).tobytes()).decode()}
+
+
+def _scripted_manager(_isolated_manager, monkeypatch, script):
+    """Drive synthesize_stream against canned worker replies.
+
+    script: list of reply-lists, one per expected synthesize action;
+    each reply-list is drained (chunk… then done) before the next action.
+    """
+    import json as _json
+
+    sent: list = []
+    pending = [list(replies) for replies in script]
+
+    monkeypatch.setattr(_isolated_manager, "_ensure_worker", lambda: True)
+
+    def _send(payload):
+        sent.append(_json.loads(_json.dumps(payload)))
+
+    def _read_line(timeout=30.0):
+        assert pending, "worker spoke with no scripted action left"
+        if not pending[0]:
+            pending.pop(0)
+            assert pending, "worker spoke with no scripted action left"
+        if not pending[0]:
+            raise AssertionError("empty scripted reply-list")
+        msg = pending[0].pop(0)
+        if not pending[0]:
+            pending.pop(0)
+        if isinstance(msg, dict) and msg.get("type") == "chunk":
+            return dict(msg, id=0)
+        if isinstance(msg, dict) and msg.get("type") == "done":
+            return dict(msg, id=0, total_samples=8, duration_s=0.1)
+        return msg
+
+    monkeypatch.setattr(_isolated_manager, "_send", _send)
+    monkeypatch.setattr(_isolated_manager, "_read_line", _read_line)
+    return sent
+
+
+def test_long_text_splits_into_bounded_sequential_requests(
+    _isolated_manager, monkeypatch,
+):
+    text = " ".join(f"Sentence number {i} ends here." for i in range(90))
+    assert len(text) > 2000
+    sent = _scripted_manager(
+        _isolated_manager, monkeypatch,
+        [[_chunk_msg(), {"type": "done"}], [_chunk_msg(), {"type": "done"}]],
+    )
+    chunks = list(_isolated_manager.synthesize_stream(text))
+    actions = [p.get("action") for p in sent]
+    assert actions == ["synthesize", "synthesize"]
+    assert all(len(p.get("text", "")) <= 2000 for p in sent)
+    assert len(chunks) == 2  # one chunk per piece, same audio end to end
+
+
+def test_short_text_sends_exactly_one_request(_isolated_manager, monkeypatch):
+    sent = _scripted_manager(
+        _isolated_manager, monkeypatch, [[_chunk_msg(), {"type": "done"}]]
+    )
+    chunks = list(_isolated_manager.synthesize_stream("Hello world"))
+    assert [p.get("action") for p in sent] == ["synthesize"]
+    assert sent[0].get("text") == "Hello world"
+    assert len(chunks) == 1
+
+
+def test_splitter_caps_punctuation_free_runs():
+    from backend.agent.tts import TTSManager
+
+    pieces = TTSManager._split_synthesis_text("x" * 2500)
+    assert len(pieces) == 2
+    assert all(len(p) <= 2000 for p in pieces)
+    assert "".join(pieces) == "x" * 2500
