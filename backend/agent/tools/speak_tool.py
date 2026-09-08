@@ -23,6 +23,7 @@ from typing import Any, Dict, Optional
 
 from backend.agent.call_context import CallClass, set_call_class, reset_call_class
 from backend.agent.event_bus import EventBus, IRISStreamEvent, get_event_bus
+from backend.agent.speech_lanes import emit_speech_intent
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +156,21 @@ class SpeakTool:
             uid,
             text[:80],
         )
+        # Shadow-mode speech intent (REQ-9 AC9.3): logs would-lane, changes
+        # nothing. Removable in one task. Agent-initiated speech is narration
+        # by default (ephemeral, subsumable); high-priority interrupt speech is
+        # a reply.
+        try:
+            emit_speech_intent(
+                source="speak_tool",
+                turn_id=turn_id,
+                session_id=conversation_id,
+                trigger_label="reply" if (priority == "high" and interrupt) else None,
+                content_shape="conversation" if (priority == "high" and interrupt) else None,
+                actual_lane="reply" if (priority == "high" and interrupt) else "narration",
+            )
+        except Exception:  # noqa: BLE001 — shadow must never break speech
+            logger.debug("[SpeakTool] shadow intent emit failed", exc_info=True)
         try:
             self._bus.emit(
                 self._IRISStreamEvent.UTTERANCE_START,

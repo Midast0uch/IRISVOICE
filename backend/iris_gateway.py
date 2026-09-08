@@ -32,6 +32,7 @@ from backend.utils.ssl_context import get_ssl_context
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List, Union, Iterator, Callable
 from backend.utils.observability import get_turn_id, loud_error
+from backend.agent.speech_lanes import emit_speech_intent
 
 # ---------------------------------------------------------------------------
 # REQ-8 AC2 (T26): spoken-text normalization for the streaming TTS path.
@@ -3485,6 +3486,15 @@ class IRISGateway:
                 _log_timing("tts_thread_start")
                 _succeeded = False
                 try:
+                    # Shadow-mode speech intent (REQ-9 AC9.3): logs would-lane,
+                    # changes nothing. Removable in one task.
+                    emit_speech_intent(
+                        source="voice_turn",
+                        turn_id=_turn_id,
+                        session_id=sid,
+                        trigger_label="reply",
+                        actual_lane="reply",
+                    )
                     self._logger.info("[TTS] _wrap_tts_streaming started â€” calling _speak_response")
                     self._speak_response(q, sid, _sttproc_stop=_sttproc_stop, _client_id=cid, _turn_id=_turn_id)
                     self._logger.info("[TTS] _speak_response completed")
@@ -3562,6 +3572,15 @@ class IRISGateway:
                         f"[Voice] Friendly fallback display failed: {_disp_exc}"
                     )
                 try:
+                    # Shadow-mode speech intent (REQ-9 AC9.3): logs would-lane,
+                    # changes nothing. Removable in one task.
+                    emit_speech_intent(
+                        source="voice_fallback",
+                        turn_id=_turn_id,
+                        session_id=session_id,
+                        trigger_label="reply",
+                        actual_lane="reply",
+                    )
                     threading.Thread(
                         target=self._speak_response,
                         args=(_friendly, session_id),
@@ -5890,6 +5909,15 @@ class IRISGateway:
                             daemon=True,
                             name="text-path-tts-brief",
                         ).start()
+                        # Shadow-mode speech intent (REQ-9 AC9.3): logs
+                        # would-lane, changes nothing. Removable in one task.
+                        emit_speech_intent(
+                            source="agent_dag_brief",
+                            turn_id=turn_id,
+                            session_id=session_id,
+                            trigger_label="reply",
+                            actual_lane="reply",
+                        )
                         threading.Thread(
                             target=_produce_brief,
                             daemon=True,
@@ -5916,6 +5944,15 @@ class IRISGateway:
                             daemon=True,
                             name="text-path-tts",
                         ).start()
+                        # Shadow-mode speech intent (REQ-9 AC9.3): logs
+                        # would-lane, changes nothing. Removable in one task.
+                        emit_speech_intent(
+                            source="agent_dag_answer",
+                            turn_id=turn_id,
+                            session_id=session_id,
+                            trigger_label="reply",
+                            actual_lane="reply",
+                        )
                     else:
                         # Say why, rather than going quiet with no trace — a
                         # silent turn with no log line is what made this cost
@@ -11014,6 +11051,15 @@ class IRISGateway:
         # (e.g. no engine.pipeline), so the orb can never get stuck.
         def _speak_then_idle(text, sid, cid, tid):
             try:
+                # Shadow-mode speech intent (REQ-9 AC9.3): logs would-lane,
+                # changes nothing. Removable in one task.
+                emit_speech_intent(
+                    source="dashboard_summary",
+                    turn_id=tid,
+                    session_id=sid,
+                    trigger_label="reply",
+                    actual_lane="reply",
+                )
                 self._speak_response(text, sid, _client_id=cid, _turn_id=tid)
             finally:
                 # Fanned out like every other lifecycle indicator: the turn
