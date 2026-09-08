@@ -145,10 +145,13 @@ def test_no_duplicate_vad():
         "filter_speech",
         # Speech lane engine (T4/T6/T7): the kernel owns the lane scheduler and
         # exposes the reply-subsumption entry point + playback-dispatch callbacks.
+        # T15 (REQ-10 AC10.14): the narration-toggle entry point wired from
+        # settings_sync — the kernel owns the toggle predicate.
         "scheduler",
         "subsume_narration",
         "set_reply_play_callback",
         "set_beep_play_callback",
+        "set_narration_enabled",
     }
     actual = {
         m

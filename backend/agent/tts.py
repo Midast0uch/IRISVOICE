@@ -207,6 +207,10 @@ class TTSManager:
         self._held: Dict[str, "np.ndarray"] = {}
         self._held_turn_counts: Dict[str, int] = {}
         self._dead_hold_keys: set = set()  # free raced ahead of completion
+        # Narration toggle (REQ-10 AC10.14, T15): when False, presynthesis
+        # refuses and completions discard (in-flight aborted); free_all_held
+        # sweeps stored buffers. Guarded by _synthesis_lock discipline.
+        self._holds_accepted: bool = True
 
         # Worker stdout lines. One persistent reader thread feeds this queue
         # (see ``_read_stdout``); ``_read_line`` drains it with a timeout.
@@ -951,6 +955,8 @@ class TTSManager:
                 and self._ready
             ):
                 return None  # never spawn for background work
+            if not self._holds_accepted:
+                return None  # narration toggled off (AC10.14)
             if not self._synthesis_lock.acquire(blocking=False):
                 return None  # lane synthesis first, always
             try:
@@ -990,8 +996,9 @@ class TTSManager:
         import logging as _logging
 
         key = self._hold_key(turn_id)
-        if key in self._dead_hold_keys:
-            # Free arrived while synthesis ran: discard + count waste (AC10.7).
+        if key in self._dead_hold_keys or not self._holds_accepted:
+            # Free (or toggle-off) arrived while synthesis ran: discard +
+            # count waste (AC10.7). Toggle-off also clears the dead set below.
             self._dead_hold_keys.discard(key)
             _logging.getLogger().info(
                 "[TTSManager] hold waste (freed mid-synthesis): %s", key
@@ -1029,6 +1036,29 @@ class TTSManager:
         while len(self._dead_hold_keys) > self.DEAD_HOLD_KEYS_MAX:
             self._dead_hold_keys.pop()
         return False
+
+    def set_holds_accepted(self, accepted: bool) -> None:
+        """Toggle-off/on for pre-synthesis (REQ-10 AC10.14, T15).
+
+        Off refuses new holds and discards in-flight completions; callers
+        sweep stored buffers via free_all_held(). Session scope matches the
+        narration toggle (single-user desktop: process-wide).
+        """
+        self._holds_accepted = bool(accepted)
+
+    def free_all_held(self) -> int:
+        """Free every held buffer (narration toggle-off, T15)."""
+        import logging as _logging
+
+        n = len(self._held)
+        self._held.clear()
+        self._held_turn_counts.clear()
+        self._dead_hold_keys.clear()
+        if n:
+            _logging.getLogger().info(
+                "[TTSManager] hold waste (toggle off): %d buffers", n
+            )
+        return n
 
     def free_turn_held(self, turn_id: str) -> int:
         """Free every held buffer for a turn (barge/turn-end/toggle/session)."""

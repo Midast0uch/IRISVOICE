@@ -1037,7 +1037,7 @@ LLM provider memory (separate, user-selected):
 - `backend/tests/test_barge_in.py` — 40+ tests
 - `backend/tests/test_conversation_kernel.py` — 12 tests
 - `backend/tests/test_voice_pipeline.py::TestStopListening` — 21 tests (phrase match incl. fillers/negatives, pipeline interception skips LLM/TTS, auto-relisten suppression, sleep entry, wake-word re-entry)
-- `backend/tests/test_narration_broadcast.py` — 4 tests (narration speaking→idle order, serialization via `_NARRATION_PLAYBACK_LOCK`, no-broadcast unwired, gateway wires broadcaster)
+- `backend/tests/contract/test_narration_broadcast.py` — 4 tests (narration speaking→idle order, serialization via the lane scheduler's single worker (REQ-7 AC7.1; the narration lock is removed), no-broadcast unwired, gateway wires broadcaster). Session-309 deduplicated the stale root twin into this file.
 - `backend/tests/unit/test_tts_lifecycle.py` — 16 tests (REQ-28: lazy boot, once-per-process prewarm, unload decision matrix, graceful reap + active sparing, respawn after reap, voice-state cache hit, post-synthesis compact hook, 2000-char split guard, worker spawn sets `MKL_DISABLE_FAST_MM=1` + respects operator override)
 - `backend/tests/contract/test_tts_subprocess_contract.py` — worker JSONL protocol (ping/synthesize/shutdown), float32 chunks at 24 kHz, crash recovery (spawns a REAL worker)
 - `backend/tests/unit/test_tts_pocket_load.py` — model-load contract; 1 test stale at HEAD (`test_tts_manager_uses_language_not_variant` pins the pre-split in-process loader — reported, not modified)

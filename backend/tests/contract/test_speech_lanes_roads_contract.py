@@ -267,6 +267,188 @@ class TestNodeLifecycleStates:
             sched.stop()
 
 
+# ── CT-S7: narration toggle (REQ-10 AC10.14, T15) ─────────────────────────
+class TestNarrationToggle:
+    """The settings path drops narration at admission (logged + counted);
+    replies and alerts are unaffected; toggle-off purges queued narration
+    and aborts holds; toggle-on resumes."""
+
+    @staticmethod
+    def _node(lane, text="line"):
+        import time as _time
+
+        return UtteranceNode(
+            id=f"utt_{lane}_{_time.time_ns()}",
+            lane=lane,
+            trigger={"source": "test", "label": lane, "rule_fired": "L1:test"},
+            turn_id="t1",
+            session_id="s1",
+            content={"kind": "text", "text": text},
+        )
+
+    def test_off_drops_narration_at_admission_counted(self):
+        import threading as _threading
+
+        from backend.agent.speech_lanes import SpeechObservability
+
+        played: list = []
+        lock = _threading.Lock()
+
+        def _play(node):
+            from backend.agent.speech_lanes import _node_text
+
+            with lock:
+                played.append(_node_text(node))
+
+        obs = SpeechObservability()
+        sched = SpeechScheduler(play=_play, observability=obs, auto_start=True)
+        try:
+            sched.set_narration_enabled_callback(lambda: False)
+            sched.admit(self._node(NARRATION, text="beat one"))
+            import time as _time
+
+            _time.sleep(0.3)
+            assert sched.pending_count() == 0
+            with lock:
+                assert played == []
+            assert obs.counters.get("beat:narration_dropped") == 1
+        finally:
+            sched.stop()
+
+    def test_off_leaves_replies_and_alerts_untouched(self):
+        import threading as _threading
+        import time as _time
+
+        from backend.agent.speech_lanes import SpeechObservability
+
+        played: list = []
+        lock = _threading.Lock()
+
+        def _play(node):
+            from backend.agent.speech_lanes import _node_text
+
+            with lock:
+                played.append(_node_text(node))
+
+        obs = SpeechObservability()
+        sched = SpeechScheduler(play=_play, observability=obs, auto_start=True)
+        try:
+            sched.set_narration_enabled_callback(lambda: False)
+            sched.admit(self._node(REPLY, text="answer"))
+            sched.admit(self._node(ALERT_CRITICAL, text="urgent"))
+            assert _wait_until(lambda: len(played) == 2, timeout=10.0)
+            with lock:
+                # Lane priority intact with the toggle off (critical first).
+                assert played == ["urgent", "answer"]
+            assert obs.counters.snapshot().get("beat:narration_dropped", 0) == 0
+        finally:
+            sched.stop()
+
+    def test_on_again_resumes_narration(self):
+        import threading as _threading
+        import time as _time
+
+        from backend.agent.speech_lanes import SpeechObservability
+
+        played: list = []
+        lock = _threading.Lock()
+
+        def _play(node):
+            from backend.agent.speech_lanes import _node_text
+
+            with lock:
+                played.append(_node_text(node))
+
+        state = {"on": False}
+        obs = SpeechObservability()
+        sched = SpeechScheduler(play=_play, observability=obs, auto_start=True)
+        try:
+            sched.set_narration_enabled_callback(lambda: state["on"])
+            sched.admit(self._node(NARRATION, text="dropped"))
+            _time.sleep(0.3)
+            state["on"] = True
+            sched.admit(self._node(NARRATION, text="spoken"))
+            assert _wait_until(lambda: played == ["spoken"], timeout=10.0)
+        finally:
+            sched.stop()
+
+    def test_kernel_toggle_purges_and_aborts_holds(self):
+        """set_narration_enabled(False) purges queued narration and aborts
+        pre-synthesis; True resumes. Replies/alerts never consulted."""
+        import threading as _threading
+        from unittest.mock import MagicMock
+
+        from backend.agent.conversation_kernel import ConversationKernel
+
+        gate = _threading.Event()
+        kernel = ConversationKernel(
+            voice_handler=MagicMock(),
+            tts_manager=MagicMock(),
+            audio_pipeline=MagicMock(),
+            session_id_getter=lambda: "sess-1",
+            broadcast_event=None,
+        )
+        hold = _threading.Event()
+        kernel.scheduler._play_fn = lambda node: hold.wait(timeout=30.0)
+        try:
+            kernel.scheduler.admit(self._node(NARRATION, text="playing"))
+            assert _wait_until(lambda: kernel.scheduler.is_playing())
+            kernel.scheduler.admit(self._node(NARRATION, text="queued"))
+            kernel.set_narration_enabled(False)
+            assert kernel.scheduler.narration_on() is False
+            # Queued narration purges; the playing node finishes its sentence.
+            assert kernel.scheduler.pending_count() == 0
+            kernel.set_narration_enabled(True)
+            assert kernel.scheduler.narration_on() is True
+        finally:
+            hold.set()
+            kernel.scheduler.stop()
+            try:
+                from backend.agent.tts import get_tts_manager
+
+                get_tts_manager().set_holds_accepted(True)
+            except Exception:
+                pass
+
+    def test_settings_sync_routes_narration_key(self):
+        """The existing settings_sync WS shape carries the toggle — no new
+        message types (AC10.14 ripple)."""
+        import asyncio as _asyncio
+        from unittest.mock import MagicMock
+
+        from backend.iris_gateway import IRISGateway
+
+        applied: list = []
+        fake_kernel = MagicMock()
+        fake_kernel.set_narration_enabled = applied.append
+        gw = IRISGateway.__new__(IRISGateway)
+        gw._logger = MagicMock()
+        with patch(
+            "backend.agent.conversation_kernel.get_conversation_kernel",
+            return_value=fake_kernel,
+        ):
+            _asyncio.run(
+                gw._handle_chat(
+                    "sess-1",
+                    "cli-1",
+                    {"type": "settings_sync",
+                     "payload": {"settings": {"narration_enabled": False}}},
+                )
+            )
+        assert applied == [False]
+
+
+def _wait_until(pred, timeout=10.0):
+    import time as _time
+
+    end = _time.time() + timeout
+    while _time.time() < end:
+        if pred():
+            return True
+        _time.sleep(0.01)
+    return False
+
+
 # ── CT-S2: event shapes unchanged ──────────────────────────────────────────
 class TestNoNewEventShapes:
     def test_lane_engine_emits_no_ws_events(self):

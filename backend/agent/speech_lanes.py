@@ -446,10 +446,10 @@ class SpeechObservability:
     def record_beat_event(
         self, kind: str, *, turn_id: str, session_id: str, detail: str = ""
     ) -> None:
-        """Count a beat-store / wait event (REQ-10 tuning feed, T13).
+        """Count a beat-store / wait event (REQ-10 tuning feed, T13/T15).
 
         Kinds: beat_revision, beat_replace_rejected, beat_merged,
-        beat_bounced, wait_entry, wait_miss, wait_exit.
+        beat_bounced, narration_dropped, wait_entry, wait_miss, wait_exit.
         """
         self._counters.incr(f"beat:{kind}")
         logger.info(
@@ -628,6 +628,10 @@ class SpeechScheduler:
         self._play_fn = play
         self._obs = observability or get_observability()
         self._gate = gate
+        # Narration toggle (REQ-10 AC10.14, T15): predicate owning the flag
+        # lives on the conversation kernel (session scope); None = always on.
+        # Replies and alerts never consult it.
+        self._narration_enabled: Optional[Callable[[], bool]] = None
         self._queue: list[UtteranceNode] = []
         self._lock = threading.Lock()
         self._wake = threading.Event()
@@ -660,6 +664,19 @@ class SpeechScheduler:
         """Register the held-buffer free callback (T14, AC10.7)."""
         self._audio_free = cb
 
+    def set_narration_enabled_callback(self, cb) -> None:
+        """Register the narration-toggle predicate (REQ-10 AC10.14, T15)."""
+        self._narration_enabled = cb
+
+    def narration_on(self) -> bool:
+        """Whether narration beats are currently admitted (toggle state)."""
+        if self._narration_enabled is None:
+            return True
+        try:
+            return bool(self._narration_enabled())
+        except Exception:  # noqa: BLE001 — a broken predicate never silences speech
+            return True
+
     def _free_node_audio(self, node: UtteranceNode) -> None:
         """Free a node's held buffer, if any (all non-play exits)."""
         ref = getattr(node, "audio_ref", None)
@@ -688,6 +705,17 @@ class SpeechScheduler:
     # ── admission (REQ-4) ────────────────────────────────────────────
     def admit(self, node: UtteranceNode) -> None:
         """Admit a node, applying subsumption/preemption, then enqueue."""
+        # Narration toggle (REQ-10 AC10.14): beats dropped at admission when
+        # off — logged + counted, replies/alerts unaffected. In-flight
+        # (already playing) narration finishes; it was admitted while on.
+        if node.lane == NARRATION and not self.narration_on():
+            node.state = STATE_CANCELLED
+            self._free_node_audio(node)
+            self._obs.record_beat_event(
+                "narration_dropped", turn_id=node.turn_id,
+                session_id=node.session_id, detail="toggle off",
+            )
+            return
         with self._lock:
             # Subsumption: REPLY / ALERT_AWAITING cancel pending NARRATION.
             if node.lane in (REPLY, ALERT_AWAITING):
@@ -739,6 +767,32 @@ class SpeechScheduler:
         # idempotently.
         self._set_gate(False)
         self._wake.set()
+
+    def purge_narration(self, *, detail: str = "purged") -> int:
+        """Cancel all QUEUED narration across turns (toggle-off, T15).
+
+        Playing narration finishes its sentence (AC10.10); replies and
+        alerts are untouched. Returns the count purged.
+        """
+        with self._lock:
+            kept: list[UtteranceNode] = []
+            purged = 0
+            for n in self._queue:
+                if n.lane == NARRATION:
+                    n.state = STATE_CANCELLED
+                    purged += 1
+                else:
+                    kept.append(n)
+            dropped = [n for n in self._queue if n.lane == NARRATION]
+            self._queue = kept
+        for n in dropped:
+            self._free_node_audio(n)
+            self._obs.record_node_outcome(n, detail=detail)
+            self._obs.record_beat_event(
+                "narration_dropped", turn_id=n.turn_id,
+                session_id=n.session_id, detail=detail,
+            )
+        return purged
 
     def cancel_turn(self, turn_id: str) -> None:
         """Cancel NARRATION nodes for a turn (REQ-5 AC5.1). Replies/alerts survive."""

@@ -150,9 +150,12 @@ def test_no_duplicate_vad():
             "subsume_narration",
             # T7 (REQ-7): playback-dispatch callbacks registered by the gateway
             # (reply/alert -> _speak_response) and the voice handler (wake-word
-            # activation chime). Legitimate lane-engine API extension.
+            # activation chime). T15 (REQ-10 AC10.14): the narration-toggle
+            # entry point wired from settings_sync. Legitimate lane-engine API
+            # extension (same sanction as the T7 callback registration).
             "set_reply_play_callback",
             "set_beep_play_callback",
+            "set_narration_enabled",
         }
     actual = {
         m

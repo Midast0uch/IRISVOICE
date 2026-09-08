@@ -172,6 +172,12 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
           max: 2,
           step: 0.1,
           defaultValue: 1
+        },
+        {
+          id: 'narration_enabled',
+          type: 'toggle',
+          label: 'Narration',
+          defaultValue: true
         }
       ]
     }

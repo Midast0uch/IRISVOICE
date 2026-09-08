@@ -1229,6 +1229,27 @@ class IRISGateway:
                     except Exception as exc:
                         logger.warning("[SearchConfig] failed to save Exa key to .env: %s", exc)
 
+                # T15 (REQ-10 AC10.14): apply narration toggle immediately
+                # (not deferred to confirm_card) so the user hears the effect
+                # the moment they flip the switch in the dashboard.
+                if field_id == "narration_enabled":
+                    try:
+                        from backend.agent.conversation_kernel import (
+                            get_conversation_kernel,
+                        )
+
+                        _ck = get_conversation_kernel()
+                        if _ck is not None and hasattr(_ck, "set_narration_enabled"):
+                            _ck.set_narration_enabled(bool(value))
+                            self._logger.info(
+                                "[Chat] narration_enabled applied immediately: %s",
+                                bool(value),
+                            )
+                    except Exception as _narr_exc:  # noqa: BLE001
+                        self._logger.debug(
+                            "[Chat] narration toggle apply skipped: %s", _narr_exc
+                        )
+
                 # Clear provider cache when provider selection changes.
                 if field_id == "provider" and value:
                     from backend.crawler.search_providers import clear_search_provider_cache
@@ -1368,6 +1389,24 @@ class IRISGateway:
                         kwargs["tts_voice"] = values["tts_voice"]
                     if "speaking_rate" in values:
                         kwargs["speaking_rate"] = float(values["speaking_rate"])
+                    # T15 (REQ-10 AC10.14): narration toggle applied on confirm
+                    # as well as on field_update (belt-and-suspenders).
+                    if "narration_enabled" in values:
+                        try:
+                            from backend.agent.conversation_kernel import (
+                                get_conversation_kernel,
+                            )
+
+                            _ck = get_conversation_kernel()
+                            if _ck is not None and hasattr(_ck, "set_narration_enabled"):
+                                _ck.set_narration_enabled(
+                                    bool(values["narration_enabled"])
+                                )
+                        except Exception as _narr_exc:  # noqa: BLE001
+                            self._logger.debug(
+                                "[Chat] narration toggle on confirm skipped: %s",
+                                _narr_exc,
+                            )
                     if kwargs:
                         tts.update_config(**kwargs)
                         # Persist TTS settings to data/iris_config.json
@@ -5469,6 +5508,27 @@ class IRISGateway:
             # Re-apply settings to the agent kernel
             for key, value in settings_data.items():
                 # Settings are re-applied on the next process_text_message call
+                if key == "narration_enabled":
+                    # T15 (REQ-10 AC10.14): narration toggle. Applies
+                    # immediately (not next-turn): the kernel flips the lane
+                    # admission predicate, purges queued narration, and frees
+                    # held pre-synthesis buffers. Other keys: not yet wired.
+                    try:
+                        from backend.agent.conversation_kernel import (
+                            get_conversation_kernel,
+                        )
+
+                        _ck = get_conversation_kernel()
+                        if _ck is not None and hasattr(_ck, "set_narration_enabled"):
+                            _ck.set_narration_enabled(bool(value))
+                            self._logger.info(
+                                "[Chat] narration_enabled applied: %s", bool(value)
+                            )
+                    except Exception as _narr_exc:  # noqa: BLE001
+                        self._logger.debug(
+                            "[Chat] narration toggle apply skipped: %s", _narr_exc
+                        )
+                    continue
                 pass
             return
 

@@ -131,6 +131,13 @@ class ConversationKernel:
             auto_start=True,
             gate=self._set_tts_gate,
         )
+        # T15 (REQ-10 AC10.14): narration toggle, session-scoped (the kernel
+        # is process-wide; single-user desktop makes that session scope).
+        # Default ON. Replies and alerts never consult it.
+        self._narration_enabled = True
+        self._scheduler.set_narration_enabled_callback(
+            lambda: self._narration_enabled
+        )
         # T14 (REQ-10 AC10.7): every non-play exit of a node carrying a
         # pre-synthesized buffer frees it through the TTS manager. Never
         # raises; a missing manager just leaves buffers to the turn caps.
@@ -654,6 +661,40 @@ class ConversationKernel:
         half-duplex mic gate derives from scheduler state. Pass None to clear.
         """
         self._beep_play_cb = cb
+
+    def set_narration_enabled(self, enabled: bool) -> None:
+        """Flip the narration toggle (REQ-10 AC10.14, T15).
+
+        Off: pending beats drop at admission (logged + counted), queued
+        narration purges, in-flight pre-synthesis aborts (completions
+        discard), held buffers freed. Playing narration finishes its
+        sentence; replies and alerts are untouched. Never raises.
+        """
+        try:
+            self._narration_enabled = bool(enabled)
+            if not enabled:
+                try:
+                    self._scheduler.purge_narration(detail="toggle-off")
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[ConversationKernel] narration purge: %s", exc)
+                try:
+                    from backend.agent.tts import get_tts_manager
+
+                    _tts = get_tts_manager()
+                    _tts.set_holds_accepted(False)
+                    _tts.free_all_held()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[ConversationKernel] hold abort: %s", exc)
+            else:
+                try:
+                    from backend.agent.tts import get_tts_manager
+
+                    get_tts_manager().set_holds_accepted(True)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[ConversationKernel] hold resume: %s", exc)
+            logger.info("[ConversationKernel] narration_enabled=%s", enabled)
+        except Exception as exc:  # noqa: BLE001 — a toggle never breaks turns
+            logger.debug("[ConversationKernel] set_narration_enabled: %s", exc)
 
     @property
     def scheduler(self) -> SpeechScheduler:
