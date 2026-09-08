@@ -741,6 +741,11 @@ class ExecutionPlan:
     steps: List[PlanStep]           = dc_field(default_factory=list)
     outcome: str                    = "success"
     plan_title: str                 = ""
+    # Planned narration beats authored by the planning call (REQ-10 AC10.2,
+    # T12): direction + time/scale expectation lines, one per plan segment.
+    # Empty for single-segment plans (duration gate, AC10.10). The first beat
+    # speaks immediately on authoring; the rest ride the scheduler queue (T13).
+    beats: List[str]                = dc_field(default_factory=list)
 
     def has_failed(self) -> bool:
         return self.outcome == "failure"

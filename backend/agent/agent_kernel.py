@@ -5390,6 +5390,27 @@ class AgentKernel:
         return _best
 
     @staticmethod
+    def _planned_beats(data: dict, n_steps: int) -> list:
+        """Clean the planner's `beats` + apply the duration gate (T12).
+
+        Strips blanks; then the duration gate (REQ-10 AC10.10): narration
+        earns airtime only when the task outlives the reply, so plans with
+        fewer than 2 segments keep no beats (their reply voices everything).
+        The 2-segment threshold is tunable via REQ-9 counters, not the model.
+        """
+        beats = [
+            str(b).strip() for b in (data.get("beats", None) or [])
+            if str(b or "").strip()
+        ]
+        if beats and n_steps < 2:
+            logger.info(
+                "[AgentKernel._plan_task] dropping %d beats "
+                "(single-segment plan, duration gate)", len(beats)
+            )
+            return []
+        return beats
+
+    @staticmethod
     def _classify_provider_error(err_text: str) -> Optional[Tuple[object, str]]:
         """Map a fatal provider failure to (ErrorCode, user message).
 
@@ -5637,9 +5658,25 @@ class AgentKernel:
             '{"strategy":"do_it_myself|spawn_children|delegate_external",'
             '"plan_title":"short 2-3 word summary of what the plan does (e.g. \\"Search web for AI news\\")",'
             '"reasoning":"one sentence explaining the approach",'
+            '"beats":["one-line direction statement","one-line time expectation"],'
             '"steps":[{"step_id":"s1","step_number":1,"description":"Search the web for the user request","depends_on":[],"critical":true}]}'
             "\n\n"
         "RULES:\n"
+        # T12 (REQ-10 AC10.1/AC10.2/AC10.10/AC10.12): planned-beat authoring.
+        # Beats are short spoken lines (direction + time/scale expectations)
+        # for MULTI-SEGMENT tasks only — emit [] for single-step/trivial work.
+        # Kept to six lines by the session-260 sizing discipline: the parser
+        # reads exactly these keys, nothing decorative.
+        '- "beats": 1-3 one-line narration lines (why this direction, how long '
+        'it takes). NEVER narrate mechanics (subtask splitting, tool names, '
+        'file-by-file). Omit entirely ([]) for single-step tasks.\n'
+        "- Vary phrasing, never the same opening twice. Good: "
+        '"Checking current sources — usually about half a minute." / '
+        '"Comparing the two options, then reporting back." Bad: '
+        '"I will now split this into subtasks."\n'
+        "- Findings near completion belong in the reply, not beats. Name "
+        "artifacts naturally (never identifiers/paths). Failure lines state "
+        "the cause at direction level plus the next step.\n"
         # SIZED DOWN 2026-08-26 (session 260): the schema used to demand
         # "tool" and "params" on every step, with three RULES lines telling
         # the model how to fill them. The parser has discarded BOTH since
@@ -5762,6 +5799,7 @@ class AgentKernel:
                         reasoning=data.get("reasoning", ""),
                         plan_title=data.get("plan_title", ""),
                         steps=steps,
+                        beats=self._planned_beats(data, len(steps)),
                     )
         except Exception as _parse_err:
             logger.warning(f"[AgentKernel._plan_task] parse failed: {_parse_err}")
@@ -5795,6 +5833,56 @@ class AgentKernel:
             text,
         )
         return None
+
+    def _admit_first_beat(self, plan, *, turn_id=None, session_id=None) -> None:
+        """Speak the first planned beat immediately (REQ-10 AC10.10, T12).
+
+        The planning call authors direction + time beats; the first speaks
+        the moment authoring completes through the narration lane. Remaining
+        beats stay on the plan for the T13 beat store (pending narration is
+        subsumable, so they coalesce rather than stack). Never raises: beats
+        are companion speech, never load-bearing for the turn.
+        """
+        try:
+            beats = list(getattr(plan, "beats", None) or [])
+            if not beats:
+                return
+            text = (beats[0] or "").strip()
+            if not text:
+                return
+            from backend.agent.conversation_kernel import get_conversation_kernel
+            from backend.agent.speech_lanes import (
+                KIND_PLANNED,
+                NARRATION,
+                Situation,
+                build_node,
+                route,
+            )
+
+            kernel = get_conversation_kernel()
+            scheduler = getattr(kernel, "scheduler", None) if kernel else None
+            if scheduler is None:
+                logger.debug("[AgentKernel] first beat dropped (no lane scheduler)")
+                return
+            situation = Situation(
+                trigger_label=NARRATION,
+                source="planned-beat",
+                content_shape="prose",
+            )
+            node = build_node(
+                situation,
+                route(situation),
+                turn_id=turn_id or "unknown",
+                session_id=session_id or "unknown",
+                content={"kind": "text", "text": text},
+                kind=KIND_PLANNED,
+            )
+            scheduler.admit(node)
+            logger.info(
+                "[AgentKernel] first planned beat admitted (turn=%s)", turn_id
+            )
+        except Exception as exc:  # noqa: BLE001 — narration never blocks the turn
+            logger.debug("[AgentKernel] first beat admit skipped: %s", exc)
 
     def _is_web_search_request(self, text: str) -> bool:
         """Quick heuristic: does the user message explicitly request a web search?
@@ -6500,6 +6588,18 @@ class AgentKernel:
                         )
                         _der_response = ""
                 else:
+                    # T12 (REQ-10 AC10.10): planning completed and the turn
+                    # proceeds to DER — the first planned beat speaks now.
+                    # (Skipped entirely on the trivial-plan path above: short
+                    # work stays fully voiced via the reply lane.)
+                    try:
+                        self._admit_first_beat(
+                            _plan,
+                            turn_id=getattr(self, "_current_turn_id", None),
+                            session_id=session_id or self.session_id,
+                        )
+                    except Exception:
+                        pass
                     try:
                         from backend.agent.event_bus import get_event_bus, IRISStreamEvent
 
