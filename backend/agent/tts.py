@@ -203,6 +203,10 @@ class TTSManager:
         self._proc_lock = threading.Lock()  # guards spawn/restart
         self._synthesis_lock = threading.Lock()  # serializes synthesis requests
         self._filler_cache: Dict[str, tuple] = {}  # phrase → (audio_array, sample_rate)
+        # Pre-synthesis hold store (REQ-10 AC10.6/AC10.7, T14): key → audio.
+        self._held: Dict[str, "np.ndarray"] = {}
+        self._held_turn_counts: Dict[str, int] = {}
+        self._dead_hold_keys: set = set()  # free raced ahead of completion
 
         # Worker stdout lines. One persistent reader thread feeds this queue
         # (see ``_read_stdout``); ``_read_line`` drains it with a timeout.
@@ -895,6 +899,155 @@ class TTSManager:
 
         phrase = _rand.choice(list(self._filler_cache.keys()))
         return self._filler_cache[phrase]
+
+    # ------------------------------------------------------------------
+    # Pre-synthesis hold (REQ-10 AC10.6/AC10.7, T14)
+    # ------------------------------------------------------------------
+    # Hybrid pre-synthesis: planned beats 2..N are synthesized at authoring
+    # time (latency hides in segment waits) and held here; playback consumes
+    # via take_held(), every other exit frees via free_held()/free_turn_held().
+    # Lowest-priority invariant: hold jobs NEVER queue ahead of lane
+    # synthesis — presynthesize_hold takes _synthesis_lock non-blocking and
+    # requires a ready worker, so a hold either runs in a true idle window
+    # or refuses (fallback to on-admission synthesis). Residual bound: one
+    # already-running sentence-capped hold job ahead of a reply, worst case.
+
+    MAX_HOLD_CHARS = 300  # sentence-capped buffers only; longer refused
+    MAX_HELD_PER_TURN = 6  # per-task held-buffer cap
+    DEAD_HOLD_KEYS_MAX = 256  # race-set cap (free arriving before completion)
+
+    def _hold_key(self, turn_id: str) -> str:
+        n = self._held_turn_counts.get(turn_id, 0)
+        self._held_turn_counts[turn_id] = n + 1
+        return f"hold:{turn_id}:{n}"
+
+    def presynthesize_hold(self, turn_id: str, text: str) -> Optional[str]:
+        """Synthesize a beat now, hold the buffer. Returns key or None.
+
+        Returns None (caller falls back to on-admission synthesis) when: the
+        text is empty/over the sentence cap, the per-turn cap is reached, the
+        worker is not ready (never spawns here), the synthesis lock is busy
+        (lane work first, always), or the worker errors. Never raises.
+        """
+        import logging as _logging
+
+        _root_log = _logging.getLogger()
+        try:
+            cleaned = (text or "").strip()
+            if not cleaned:
+                return None
+            if len(cleaned) > self.MAX_HOLD_CHARS:
+                _root_log.info(
+                    "[TTSManager] hold refused (over sentence cap): %d chars",
+                    len(cleaned),
+                )
+                return None
+            if self._held_turn_counts.get(turn_id or "unknown", 0) >= self.MAX_HELD_PER_TURN:
+                _root_log.info("[TTSManager] hold refused (per-turn cap)")
+                return None
+            if not (
+                self._proc is not None
+                and self._proc.poll() is None
+                and self._ready
+            ):
+                return None  # never spawn for background work
+            if not self._synthesis_lock.acquire(blocking=False):
+                return None  # lane synthesis first, always
+            try:
+                req_id = int(time.time() * 1000) % 100000
+                self._send(
+                    {"action": "synthesize_and_hold", "text": cleaned, "id": req_id}
+                )
+                deadline = self._synthesis_deadline(cleaned)
+                key: Optional[str] = None
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        _root_log.warning("[TTSManager] hold timed out, dropping")
+                        return None
+                    msg = self._read_line(timeout=min(30.0, remaining))
+                    if msg is None or msg is _WORKER_EOF:
+                        return None
+                    if msg.get("type") == "held" and msg.get("id") == req_id:
+                        data = base64.b64decode(msg.get("data", ""))
+                        audio = np.frombuffer(data, dtype=np.float32)
+                        key = self._store_hold(turn_id or "unknown", cleaned, audio)
+                        return key
+                    if msg.get("type") == "error":
+                        _root_log.info(
+                            "[TTSManager] hold failed: %s", msg.get("error")
+                        )
+                        return None
+                    # No other message type is legal here; ignore and continue.
+            finally:
+                self._synthesis_lock.release()
+        except Exception as exc:  # noqa: BLE001 — presynth never breaks turns
+            _root_log.debug("[TTSManager] hold skipped: %s", exc)
+            return None
+
+    def _store_hold(self, turn_id: str, text: str, audio: "np.ndarray") -> str:
+        """Store a completed hold buffer; discards races with free (waste)."""
+        import logging as _logging
+
+        key = self._hold_key(turn_id)
+        if key in self._dead_hold_keys:
+            # Free arrived while synthesis ran: discard + count waste (AC10.7).
+            self._dead_hold_keys.discard(key)
+            _logging.getLogger().info(
+                "[TTSManager] hold waste (freed mid-synthesis): %s", key
+            )
+            return key
+        self._held[key] = audio
+        _logging.getLogger().info(
+            "[TTSManager] hold stored: %s (%d samples)", key, len(audio)
+        )
+        return key
+
+    def take_held(self, key: Optional[str]) -> Optional["np.ndarray"]:
+        """Consume a held buffer for playback (played-from-hold, AC10.6)."""
+        import logging as _logging
+
+        if not key:
+            return None
+        audio = self._held.pop(key, None)
+        if audio is None:
+            return None
+        _logging.getLogger().info("[TTSManager] hold hit: %s", key)
+        return audio
+
+    def free_held(self, key: Optional[str]) -> bool:
+        """Free a held buffer on a non-play exit. True = waste counted."""
+        if not key:
+            return False
+        if key in self._held:
+            self._held.pop(key, None)
+            import logging as _logging
+
+            _logging.getLogger().info("[TTSManager] hold waste (freed): %s", key)
+            return True
+        self._dead_hold_keys.add(key)
+        while len(self._dead_hold_keys) > self.DEAD_HOLD_KEYS_MAX:
+            self._dead_hold_keys.pop()
+        return False
+
+    def free_turn_held(self, turn_id: str) -> int:
+        """Free every held buffer for a turn (barge/turn-end/toggle/session)."""
+        if not turn_id:
+            return 0
+        prefix = f"hold:{turn_id}:"
+        doomed = [k for k in self._held if k.startswith(prefix)]
+        for key in doomed:
+            self._held.pop(key, None)
+        for key in [k for k in self._dead_hold_keys if k.startswith(prefix)]:
+            self._dead_hold_keys.discard(key)
+        self._held_turn_counts.pop(turn_id, None)
+        if doomed:
+            import logging as _logging
+
+            _logging.getLogger().info(
+                "[TTSManager] hold waste (turn end): %d buffers", len(doomed)
+            )
+        return len(doomed)
 
     # ------------------------------------------------------------------
     # Text normalization (kept in main process — cheap string ops)

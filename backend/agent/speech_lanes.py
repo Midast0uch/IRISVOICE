@@ -649,8 +649,25 @@ class SpeechScheduler:
         self._recent_openings: deque = deque(maxlen=BEAT_RECENT_OPENINGS)
         self._bounced_openings: Dict[str, None] = {}
         self._waits: Dict[str, dict] = {}
+        # Held-audio free callback (REQ-10 AC10.7, T14): wired by the kernel
+        # to TTSManager.free_held. Every non-play exit of a node carrying an
+        # audio_ref frees its held buffer through here (None in tests).
+        self._audio_free = None
         if auto_start:
             self.start()
+
+    def set_audio_free_callback(self, cb) -> None:
+        """Register the held-buffer free callback (T14, AC10.7)."""
+        self._audio_free = cb
+
+    def _free_node_audio(self, node: UtteranceNode) -> None:
+        """Free a node's held buffer, if any (all non-play exits)."""
+        ref = getattr(node, "audio_ref", None)
+        if ref and self._audio_free is not None:
+            try:
+                self._audio_free(ref)
+            except Exception as exc:  # noqa: BLE001 — freeing never blocks lanes
+                logger.debug("[speech_lanes] audio free skipped: %s", exc)
 
     # ── lifecycle ────────────────────────────────────────────────────
     def start(self) -> None:
@@ -684,6 +701,7 @@ class SpeechScheduler:
                     detail=f"critical preempts running {self._running.id}",
                 )
                 self._running.state = STATE_CANCELLED
+                self._free_node_audio(self._running)
                 self._obs.record_node_outcome(self._running, detail="preempted")
                 self._running = None
             node.state = STATE_QUEUED
@@ -697,10 +715,12 @@ class SpeechScheduler:
         with self._lock:
             if self._running is not None:
                 self._running.state = STATE_CANCELLED
+                self._free_node_audio(self._running)
                 self._obs.record_node_outcome(self._running, detail="barge-in")
                 self._running = None
             for n in self._queue:
                 n.state = STATE_CANCELLED
+                self._free_node_audio(n)
                 self._obs.record_node_outcome(n, detail="barge-in")
             self._queue.clear()
             self._obs.record_preemption(
@@ -727,6 +747,7 @@ class SpeechScheduler:
             for n in self._queue:
                 if n.lane == NARRATION and n.turn_id == turn_id:
                     n.state = STATE_CANCELLED
+                    self._free_node_audio(n)
                     self._obs.record_node_outcome(n, detail="turn-end")
                 else:
                     kept.append(n)
@@ -757,6 +778,7 @@ class SpeechScheduler:
             for n in self._queue:
                 if n.lane == NARRATION:
                     n.state = STATE_CANCELLED
+                    self._free_node_audio(n)
                     self._obs.record_subsumption(
                         lane=n.lane,
                         turn_id=n.turn_id,
@@ -797,7 +819,8 @@ class SpeechScheduler:
         )
 
     def add_beat(
-        self, text: str, *, turn_id: str, session_id: str, kind: str = KIND_PLANNED
+        self, text: str, *, turn_id: str, session_id: str, kind: str = KIND_PLANNED,
+        audio_ref: Optional[str] = None,
     ) -> str:
         """ADD a narration beat (atomic: lands fully or not at all)."""
         text = (text or "").strip()
@@ -812,11 +835,13 @@ class SpeechScheduler:
             session_id=session_id or "unknown",
             content={"kind": "text", "text": text}, kind=kind,
         )
+        node.audio_ref = audio_ref  # pre-synthesized hold key, if any (T14)
         self.admit(node)
         return node.id
 
     def admit_reactive(
-        self, text: str, *, turn_id: str, session_id: str, pivot: bool = False
+        self, text: str, *, turn_id: str, session_id: str, pivot: bool = False,
+        audio_ref: Optional[str] = None,
     ) -> str:
         """Admit a live reactive line with burst merge (REQ-10 AC10.9).
 
@@ -855,6 +880,7 @@ class SpeechScheduler:
             session_id=session_id or "unknown",
             content={"kind": "text", "text": text}, kind=KIND_REACTIVE,
         )
+        node.audio_ref = audio_ref  # pre-synthesized hold key, if any (T14)
         self.admit(node)
         return node.id
 
@@ -917,6 +943,7 @@ class SpeechScheduler:
                 return None
             kind = node.kind or KIND_REACTIVE
             node.state = STATE_CANCELLED
+            self._free_node_audio(node)
             self._obs.record_node_outcome(node, detail="replaced")
             self._queue = [n for n in self._queue if n is not node]
         self._obs.record_beat_event(
@@ -944,6 +971,7 @@ class SpeechScheduler:
                 )
                 return False
             node.state = STATE_CANCELLED
+            self._free_node_audio(node)
             self._obs.record_node_outcome(node, detail="beat-cancelled")
             self._queue = [n for n in self._queue if n is not node]
             return True
@@ -1049,6 +1077,7 @@ class SpeechScheduler:
         for n in self._queue:
             if n.lane == NARRATION:
                 n.state = STATE_CANCELLED
+                self._free_node_audio(n)
                 self._obs.record_subsumption(
                     lane=n.lane,
                     turn_id=n.turn_id,
@@ -1188,6 +1217,7 @@ class SpeechScheduler:
         """
         node.state = STATE_FAILED
         self._set_gate(False)
+        self._free_node_audio(node)
         with self._lock:
             if self._running is node:
                 self._running = None
@@ -1237,6 +1267,7 @@ class SpeechScheduler:
             for n in self._queue:
                 if n.turn_id == turn_id:
                     n.state = STATE_CANCELLED
+                    self._free_node_audio(n)
                     self._obs.record_node_outcome(n, detail="turn-drained")
                 else:
                     kept.append(n)

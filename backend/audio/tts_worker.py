@@ -14,6 +14,12 @@ Protocol (stdin/stdout JSONL, one JSON object per line):
   → {"action": "set_voice", "voice": "alba"}
   ← {"status": "voice_loaded", "voice": "alba", "duration_s": 3.1}
 
+  → {"action": "synthesize_and_hold", "text": "Short beat", "id": 7}
+  ← {"type": "held", "id": 7, "data": "<base64 f32>", "samples": N,
+     "duration_s": s}
+  (same audio "synthesize" would stream, one message; the parent holds the
+  buffer and frees it on every exit path)
+
   → {"action": "pre_synthesize_fillers"}
   ← {"status": "fillers_ready", "count": 5}
 
@@ -337,87 +343,69 @@ def _split_into_chunks(text: str, max_chars: int = 200):
     return chunks if chunks else [text.strip()]
 
 
-def _synthesize(text: str, req_id: int) -> None:
-    """Synthesize text and stream base64 audio chunks to stdout."""
+class _SynthFailed(Exception):
+    """Internal control flow: synthesis cannot run (model not ready / empty).
+
+    Caught by the request handlers, which emit the protocol `error` message —
+    never propagates to the command loop.
+    """
+
+
+def _iter_synth_arrays(text: str, req_id: int):
+    """Yield float32 audio arrays for text (shared synthesis core, T14).
+
+    Identical audio to what "synthesize" streams (chunks + inter-sentence and
+    trailing silence included). Raises _SynthFailed when synthesis cannot run.
+    """
     global _model, _voice_state
     if _model is None or _voice_state is None:
-        print(
-            json.dumps(
-                {"type": "error", "id": req_id, "error": "model not ready"}
-            ),
-            flush=True,
-        )
-        return
+        raise _SynthFailed("model not ready")
 
     normalized = _normalize(text)
     if not normalized:
-        print(
-            json.dumps(
-                {"type": "error", "id": req_id, "error": "empty text"}
-            ),
-            flush=True,
-        )
-        return
+        raise _SynthFailed("empty text")
 
     sentences = _split_into_chunks(normalized, max_chars=200)
     silence_gap = int(0.50 * OUTPUT_SAMPLE_RATE)
     trailing = int(0.60 * OUTPUT_SAMPLE_RATE)
+
+    for idx, sentence in enumerate(sentences):
+        for chunk_tensor in _model.generate_audio_stream(
+            _voice_state,
+            sentence,
+            frames_after_eos=0,
+        ):
+            audio = chunk_tensor.cpu().numpy().astype(np.float32)
+            if len(audio) == 0:
+                continue
+            # Clamp NaN/Inf
+            if np.isnan(audio).any() or np.isinf(audio).any():
+                audio = np.nan_to_num(
+                    audio, nan=0.0, posinf=0.0, neginf=0.0
+                )
+            # Skip near-silent lead-in chunks
+            if np.max(np.abs(audio)) < 0.01:
+                continue
+            yield audio
+
+        # Inter-sentence silence
+        if idx < len(sentences) - 1 and silence_gap > 0:
+            yield np.zeros(silence_gap, dtype=np.float32)
+
+    # Trailing silence
+    if trailing > 0:
+        yield np.zeros(trailing, dtype=np.float32)
+
+
+def _synthesize(text: str, req_id: int) -> None:
+    """Synthesize text and stream base64 audio chunks to stdout."""
     total_samples = 0
     t0 = time.monotonic()
 
     try:
-        for idx, sentence in enumerate(sentences):
-            for chunk_tensor in _model.generate_audio_stream(
-                _voice_state,
-                sentence,
-                frames_after_eos=0,
-            ):
-                audio = chunk_tensor.cpu().numpy().astype(np.float32)
-                if len(audio) == 0:
-                    continue
-                # Clamp NaN/Inf
-                if np.isnan(audio).any() or np.isinf(audio).any():
-                    audio = np.nan_to_num(
-                        audio, nan=0.0, posinf=0.0, neginf=0.0
-                    )
-                # Skip near-silent lead-in chunks
-                if np.max(np.abs(audio)) < 0.01:
-                    continue
-                total_samples += len(audio)
-                b64 = base64.b64encode(audio.tobytes()).decode("ascii")
-                print(
-                    json.dumps(
-                        {
-                            "type": "chunk",
-                            "id": req_id,
-                            "data": b64,
-                            "sample_rate": OUTPUT_SAMPLE_RATE,
-                        }
-                    ),
-                    flush=True,
-                )
-
-            # Inter-sentence silence
-            if idx < len(sentences) - 1 and silence_gap > 0:
-                silence = np.zeros(silence_gap, dtype=np.float32)
-                b64 = base64.b64encode(silence.tobytes()).decode("ascii")
-                print(
-                    json.dumps(
-                        {
-                            "type": "chunk",
-                            "id": req_id,
-                            "data": b64,
-                            "sample_rate": OUTPUT_SAMPLE_RATE,
-                        }
-                    ),
-                    flush=True,
-                )
-                total_samples += silence_gap
-
-        # Trailing silence
-        if trailing > 0:
-            silence = np.zeros(trailing, dtype=np.float32)
-            b64 = base64.b64encode(silence.tobytes()).decode("ascii")
+        for audio in _iter_synth_arrays(text, req_id):
+            total_samples += len(audio)
+            b64 = base64.b64encode(audio.tobytes()).decode("ascii")
             print(
                 json.dumps(
                     {
@@ -429,7 +417,6 @@ def _synthesize(text: str, req_id: int) -> None:
                 ),
                 flush=True,
             )
-            total_samples += trailing
 
         duration = time.monotonic() - t0
         print(
@@ -449,16 +436,71 @@ def _synthesize(text: str, req_id: int) -> None:
             total_samples / OUTPUT_SAMPLE_RATE,
             duration,
         )
+    except _SynthFailed as exc:
+        print(
+            json.dumps({"type": "error", "id": req_id, "error": str(exc)}),
+            flush=True,
+        )
     except Exception as exc:
         logger.error("Synthesis error: %s", exc)
         print(
-            json.dumps(
-                {"type": "error", "id": req_id, "error": str(exc)}
-            ),
+            json.dumps({"type": "error", "id": req_id, "error": str(exc)}),
             flush=True,
         )
     # The request is over (success or failure): hand back whatever scratch
     # the encode spike left behind before the next request arrives.
+    _compact_heap()
+
+
+def _synthesize_and_hold(text: str, req_id: int) -> None:
+    """Synthesize text and return it in ONE held message (REQ-10 AC10.6, T14).
+
+    Lowest-priority beat audio: the parent only issues this while no lane
+    synthesis runs, holds the buffer, and frees it on every exit path. Same
+    audio bytes "synthesize" would have streamed.
+    """
+    t0 = time.monotonic()
+    try:
+        parts = list(_iter_synth_arrays(text, req_id))
+        if not parts:
+            print(
+                json.dumps(
+                    {"type": "error", "id": req_id, "error": "empty audio"}
+                ),
+                flush=True,
+            )
+            return
+        held = np.concatenate(parts)
+        duration = time.monotonic() - t0
+        print(
+            json.dumps(
+                {
+                    "type": "held",
+                    "id": req_id,
+                    "data": base64.b64encode(held.tobytes()).decode("ascii"),
+                    "samples": len(held),
+                    "duration_s": round(duration, 2),
+                }
+            ),
+            flush=True,
+        )
+        logger.info(
+            "Held %d samples (%.1fs audio) in %.2fs",
+            len(held),
+            len(held) / OUTPUT_SAMPLE_RATE,
+            duration,
+        )
+    except _SynthFailed as exc:
+        print(
+            json.dumps({"type": "error", "id": req_id, "error": str(exc)}),
+            flush=True,
+        )
+    except Exception as exc:
+        logger.error("Hold synthesis error: %s", exc)
+        print(
+            json.dumps({"type": "error", "id": req_id, "error": str(exc)}),
+            flush=True,
+        )
     _compact_heap()
 
 
@@ -555,6 +597,11 @@ def main() -> None:
             text = request.get("text", "")
             req_id = request.get("id", 0)
             _synthesize(text, req_id)
+
+        elif action == "synthesize_and_hold":
+            text = request.get("text", "")
+            req_id = request.get("id", 0)
+            _synthesize_and_hold(text, req_id)
 
         elif action == "set_voice":
             global _voice_name

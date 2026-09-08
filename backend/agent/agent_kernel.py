@@ -5879,6 +5879,66 @@ class AgentKernel:
         except Exception:  # noqa: BLE001
             pass
 
+    def _admit_planned_beats(self, plan, *, turn_id=None, session_id=None) -> None:
+        """Admit beats 2..N as pending narration + pre-synthesize them (T14).
+
+        Hybrid pre-synthesis (REQ-10 AC10.6/AC10.7): each beat is admitted to
+        the lane scheduler (pending, subsumable) and, while the lane is idle,
+        synthesized immediately with the buffer held by the TTS manager.
+        Playback consumes via take_held(); every other exit frees. Any skip
+        or failure degrades to on-admission synthesis — a beat never dies
+        for pre-synthesis. Never raises.
+        """
+        try:
+            beats = list(getattr(plan, "beats", None) or [])[1:]
+            if not beats:
+                return
+            from backend.agent.conversation_kernel import get_conversation_kernel
+            from backend.agent.tts import get_tts_manager
+
+            kernel = get_conversation_kernel()
+            scheduler = getattr(kernel, "scheduler", None) if kernel else None
+            if scheduler is None:
+                return
+            try:
+                tts = get_tts_manager()
+            except Exception:
+                tts = None
+            tid = turn_id or "unknown"
+            sid = session_id or "unknown"
+            lane_busy = False
+            try:
+                lane_busy = bool(scheduler.is_playing())
+            except Exception:
+                lane_busy = False
+            for text in beats:
+                text = (text or "").strip()
+                if not text:
+                    continue
+                ref = None
+                # Lowest-priority invariant: pre-synthesize only while the
+                # lane is idle; the manager additionally try-locks, so lane
+                # synthesis can never queue behind a hold job.
+                if not lane_busy and tts is not None and hasattr(tts, "presynthesize_hold"):
+                    try:
+                        ref = tts.presynthesize_hold(tid, text)
+                    except Exception:
+                        ref = None
+                try:
+                    scheduler.add_beat(
+                        text, turn_id=tid, session_id=sid,
+                        kind="planned", audio_ref=ref,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[AgentKernel] planned beat admit skipped: %s", exc)
+                    if ref is not None and hasattr(tts, "free_held"):
+                        try:
+                            tts.free_held(ref)
+                        except Exception:
+                            pass
+        except Exception:  # noqa: BLE001 — narration never blocks the turn
+            pass
+
     def _admit_first_beat(self, plan, *, turn_id=None, session_id=None) -> None:
         """Speak the first planned beat immediately (REQ-10 AC10.10, T12).
 
@@ -6639,6 +6699,13 @@ class AgentKernel:
                     # work stays fully voiced via the reply lane.)
                     try:
                         self._admit_first_beat(
+                            _plan,
+                            turn_id=getattr(self, "_current_turn_id", None),
+                            session_id=session_id or self.session_id,
+                        )
+                        # T14: beats 2..N admit as pending narration with
+                        # pre-synthesized buffers (degrades to on-admission).
+                        self._admit_planned_beats(
                             _plan,
                             turn_id=getattr(self, "_current_turn_id", None),
                             session_id=session_id or self.session_id,

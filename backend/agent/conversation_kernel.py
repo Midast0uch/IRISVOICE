@@ -131,6 +131,18 @@ class ConversationKernel:
             auto_start=True,
             gate=self._set_tts_gate,
         )
+        # T14 (REQ-10 AC10.7): every non-play exit of a node carrying a
+        # pre-synthesized buffer frees it through the TTS manager. Never
+        # raises; a missing manager just leaves buffers to the turn caps.
+        try:
+            from backend.agent.tts import get_tts_manager
+
+            _tts_manager = get_tts_manager()
+            self._scheduler.set_audio_free_callback(_tts_manager.free_held)
+        except Exception as exc:  # noqa: BLE001 — lanes work without holds
+            logger.debug(
+                "[ConversationKernel] audio free callback unwired: %s", exc
+            )
         # T7 (REQ-7): reply/alert playback callback, registered by iris_gateway
         # so the scheduler's play fn can dispatch REPLY/ALERT nodes to the
         # contract-locked `_speak_response` path. None until the gateway wires it.
@@ -471,7 +483,9 @@ class ConversationKernel:
         except Exception as exc:  # noqa: BLE001
             logger.debug("[ConversationKernel] narration broadcast failed: %s", exc)
 
-    def _speak_utterance(self, text: str, interrupt: bool) -> None:
+    def _speak_utterance(
+        self, text: str, interrupt: bool, audio_ref: Optional[str] = None
+    ) -> None:
         """Synthesize + play a single utterance (runs in a worker thread).
 
         Broadcasts the SAME narration contract the main response path uses
@@ -480,6 +494,11 @@ class ConversationKernel:
         Playback is serialized via the shared narration lock so this utterance
         can never be cut off by — or cut off — another utterance or the response
         stream.
+
+        When audio_ref names a pre-synthesized held buffer (REQ-10 AC10.6,
+        T14), the held audio plays instead of synthesizing — first-audio
+        latency hides in the segment wait. Anything else (no ref, missing or
+        foreign buffer) falls back to on-admission synthesis.
         """
         tts = getattr(self, "_tts_manager", None)
         pipeline = self._resolve_audio_pipeline()
@@ -517,11 +536,26 @@ class ConversationKernel:
 
             from backend.agent.tts import OUTPUT_SAMPLE_RATE
 
+            # T14 (REQ-10 AC10.6): played-from-hold when a pre-synthesized
+            # buffer exists, otherwise on-admission synthesis (the fallback).
+            import numpy as _np
+
+            held = None
+            if audio_ref and hasattr(tts, "take_held"):
+                try:
+                    held = tts.take_held(audio_ref)
+                except Exception as exc:  # noqa: BLE001 — fallback covers it
+                    logger.debug("[ConversationKernel] take_held failed: %s", exc)
+                    held = None
+            if held is not None and isinstance(held, _np.ndarray) and len(held):
+                audio_stream = iter([held])
+            else:
+                audio_stream = tts.synthesize_stream(text)
             # Playback is serialized by the lane scheduler's single worker
             # (REQ-7 AC7.1) — the narration lock is removed; the scheduler is
             # the one mouth.
             pipeline.play_stream(
-                tts.synthesize_stream(text), sample_rate=OUTPUT_SAMPLE_RATE
+                audio_stream, sample_rate=OUTPUT_SAMPLE_RATE
             )
 
             # Mark speaking end on the frontend.
@@ -596,7 +630,9 @@ class ConversationKernel:
             return
         text = content.get("text", "")
         if node.lane == NARRATION:
-            self._speak_utterance(text, interrupt=False)
+            self._speak_utterance(
+                text, interrupt=False, audio_ref=getattr(node, "audio_ref", None)
+            )
         elif self._reply_play_cb is not None:
             self._reply_play_cb(node)
         else:
