@@ -64,17 +64,9 @@ TTS_CHUNK_MAX = 200
 CHUNK_MIN = 80     # oscillating/split state — smaller chunks, more frequent TTS
 CHUNK_MAX = 200    # converged state — larger chunks
 
-# Serializes all TTS playback (agent-initiated utterances AND the main
-# response stream) so concurrent speech can never overlap or cut another
-# utterance off mid-word.  Acquired for the full duration of a playback in
-# ConversationKernel._speak_utterance and waited-on by iris_gateway before
-# the response starts playing.
-_NARRATION_PLAYBACK_LOCK = threading.Lock()
-
-
-def narration_playback_lock() -> threading.Lock:
-    """Shared lock serializing all TTS playback (agent speech + response)."""
-    return _NARRATION_PLAYBACK_LOCK
+# Serialization of all TTS playback is owned by the lane scheduler's single
+# worker (REQ-7 AC7.1) — the former `_NARRATION_PLAYBACK_LOCK` was removed in
+# T7 once its last caller (the reply path) migrated to the scheduler.
 
 
 class ConversationKernel:
@@ -137,7 +129,16 @@ class ConversationKernel:
         self._scheduler = SpeechScheduler(
             play=self._play_lane_node,
             auto_start=True,
+            gate=self._set_tts_gate,
         )
+        # T7 (REQ-7): reply/alert playback callback, registered by iris_gateway
+        # so the scheduler's play fn can dispatch REPLY/ALERT nodes to the
+        # contract-locked `_speak_response` path. None until the gateway wires it.
+        self._reply_play_cb = None
+        # T7 (REQ-7): wake-word activation-chime playback callback, registered
+        # by the voice handler so the scheduler can play the beep through the
+        # lane engine (gate derives from scheduler state).
+        self._beep_play_cb = None
 
     # ── v2: Caducean-driven voice logic ──────────────────────────────
 
@@ -516,12 +517,12 @@ class ConversationKernel:
 
             from backend.agent.tts import OUTPUT_SAMPLE_RATE
 
-            # Serialize playback so this utterance can't be cut off by (or cut
-            # off) another utterance or the response stream.
-            with _NARRATION_PLAYBACK_LOCK:
-                pipeline.play_stream(
-                    tts.synthesize_stream(text), sample_rate=OUTPUT_SAMPLE_RATE
-                )
+            # Playback is serialized by the lane scheduler's single worker
+            # (REQ-7 AC7.1) — the narration lock is removed; the scheduler is
+            # the one mouth.
+            pipeline.play_stream(
+                tts.synthesize_stream(text), sample_rate=OUTPUT_SAMPLE_RATE
+            )
 
             # Mark speaking end on the frontend.
             self._broadcast_narration(
@@ -555,17 +556,68 @@ class ConversationKernel:
             except Exception:  # noqa: BLE001
                 pass
 
+    def _set_tts_gate(self, active: bool) -> None:
+        """Drive the half-duplex mic gate (REQ-7 AC7.2) from scheduler state.
+
+        Called by the scheduler when a play-node starts (active=True) or stops
+        (active=False). Resolves the audio engine from the voice handler and
+        propagates to `AudioEngine.set_tts_active`, which also closes the
+        pipeline's STT gate and suppresses wake-word detection. A failure is
+        logged and swallowed — the pipeline's stall backstop still self-releases
+        a wedged gate.
+        """
+        try:
+            vh = getattr(self, "_voice_handler", None)
+            engine = getattr(vh, "audio_engine", None)
+            if engine is not None:
+                engine.set_tts_active(active)
+        except Exception as exc:  # noqa: BLE001 — never wedge speech on a gate error
+            logger.debug("[ConversationKernel] set_tts_active(%s) failed: %s", active, exc)
+
     def _play_lane_node(self, node: UtteranceNode) -> None:
         """Play a lane node (called by the scheduler's worker thread).
 
-        Delegates to the existing `_speak_utterance` path (which serializes
-        via the narration lock and broadcasts the narration contract), so the
-        lane engine reuses the proven playback machinery. The node's text is
-        the shaped spoken line.
+        Dispatches by lane (REQ-7 AC7.1 — all playback serializes through the
+        scheduler's single worker):
+          * NARRATION → the ephemeral `_speak_utterance` path (subsumable,
+            turn-bounded, never persisted).
+          * REPLY / ALERT_CRITICAL / ALERT_AWAITING → the contract-locked
+            `_speak_response` path via the gateway-registered reply callback
+            (persisted, chaptered, survives turn boundary). Falls back to
+            `_speak_utterance` if no callback is wired (e.g. tests).
+          * content kind "beep" → the gateway-registered beep callback (the
+            wake-word activation chime, played through the scheduler so the
+            mic gate derives from scheduler state).
         """
-        text = (node.content or {}).get("text", "")
-        interrupt = node.lane == ALERT_CRITICAL
-        self._speak_utterance(text, interrupt)
+        content = node.content or {}
+        if content.get("kind") == "beep":
+            if self._beep_play_cb is not None:
+                self._beep_play_cb(node)
+            return
+        text = content.get("text", "")
+        if node.lane == NARRATION:
+            self._speak_utterance(text, interrupt=False)
+        elif self._reply_play_cb is not None:
+            self._reply_play_cb(node)
+        else:
+            self._speak_utterance(text, interrupt=node.lane == ALERT_CRITICAL)
+
+    def set_reply_play_callback(self, cb: Optional[Callable[[UtteranceNode], None]]) -> None:
+        """Register the gateway's reply/alert playback callback (T7).
+
+        The callback receives the REPLY/ALERT node and plays it through the
+        contract-locked `_speak_response` path. Pass None to clear.
+        """
+        self._reply_play_cb = cb
+
+    def set_beep_play_callback(self, cb: Optional[Callable[[UtteranceNode], None]]) -> None:
+        """Register the wake-word activation-chime playback callback (T7).
+
+        The callback receives a NARRATION node whose content carries the beep
+        (sound/sample_rate/device) and plays it through the scheduler so the
+        half-duplex mic gate derives from scheduler state. Pass None to clear.
+        """
+        self._beep_play_cb = cb
 
     @property
     def scheduler(self) -> SpeechScheduler:

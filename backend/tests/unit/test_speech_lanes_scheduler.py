@@ -95,6 +95,57 @@ class TestSerialization:
         sched.stop()
 
 
+# ── REQ-7 AC7.2: derived half-duplex mic gate ───────────────────────────────
+class TestDerivedGate:
+    def test_gate_follows_running_state(self):
+        """The half-duplex mic gate derives from scheduler state (REQ-7 AC7.2):
+        closed (True) while a play-node runs, reopened (False) when idle."""
+        rec = _Recorder()
+        gate = threading.Event()
+        rec.set_gate(gate)
+        calls: list = []
+        sched = SpeechScheduler(
+            play=rec.play, auto_start=True, gate=lambda a: calls.append(a)
+        )
+        sched.admit(_node(NARRATION))
+        assert _wait_until(lambda: sched.is_playing())
+        assert calls and calls[-1] is True  # gate closed while playing
+        gate.set()  # release
+        assert _wait_until(lambda: not sched.is_playing())
+        assert calls[-1] is False  # gate reopened when idle
+        sched.stop()
+
+    def test_barge_in_reopens_gate_immediately(self):
+        """Barge-in reopens the mic gate synchronously (REQ-7 AC7.2) so the new
+        turn's recording starts capturing without waiting for the worker."""
+        rec = _Recorder()
+        gate = threading.Event()
+        rec.set_gate(gate)
+        calls: list = []
+        sched = SpeechScheduler(
+            play=rec.play, auto_start=True, gate=lambda a: calls.append(a)
+        )
+        sched.admit(_node(NARRATION))
+        assert _wait_until(lambda: sched.is_playing())
+        sched.barge_in(turn_id="t2", session_id="s1")
+        assert calls[-1] is False  # gate reopened immediately on barge-in
+        gate.set()
+        sched.stop()
+
+    def test_gate_failure_never_wedges_scheduler(self):
+        """A gate callback that raises must not block the scheduler worker."""
+        rec = _Recorder()
+        sched = SpeechScheduler(
+            play=rec.play,
+            auto_start=True,
+            gate=lambda a: (_ for _ in ()).throw(RuntimeError("gate boom")),
+        )
+        sched.admit(_node(NARRATION))
+        assert _wait_until(lambda: len(rec.played) >= 1)
+        assert _wait_until(lambda: not sched.is_playing())
+        sched.stop()
+
+
 # ── REQ-4 AC4.2: subsumption ──────────────────────────────────────────────
 class TestSubsumption:
     def test_reply_cancels_pending_narration(self):

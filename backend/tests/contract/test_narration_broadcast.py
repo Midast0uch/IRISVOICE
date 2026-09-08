@@ -86,9 +86,10 @@ def test_speak_utterance_broadcasts_speaking_then_idle():
     kernel._audio_pipeline.play_stream.assert_called_once()
 
 
-def test_speak_utterance_serializes_playback():
-    """The shared narration lock must prevent two utterances from playing
-    concurrently — this is the actual cut-off fix.  If playback overlapped,
+def test_scheduler_serializes_playback():
+    """The lane scheduler's single worker must prevent two utterances from
+    playing concurrently (REQ-7 AC7.1) — this is the cut-off fix, now owned by
+    the scheduler instead of the removed narration lock. If playback overlapped,
     the orb/audio would glitch and one utterance could be truncated.
     """
     kernel = _make_kernel(None)
@@ -107,16 +108,25 @@ def test_speak_utterance_serializes_playback():
 
     kernel._audio_pipeline.play_stream = play_stream
 
-    t1 = threading.Thread(target=kernel._speak_utterance, args=("one", False))
-    t2 = threading.Thread(target=kernel._speak_utterance, args=("two", False))
-    t1.start()
-    t2.start()
-    t1.join()
-    t2.join()
+    # Enqueue two narration nodes; the scheduler's single worker serializes them.
+    from backend.agent.speech_lanes import NARRATION, Situation, build_node, route
+    for text in ("one", "two"):
+        situation = Situation(
+            trigger_label=NARRATION, source="test", content_shape="conversation"
+        )
+        node = build_node(
+            situation, route(situation),
+            turn_id="t1", session_id="s1",
+            content={"kind": "text", "text": text},
+        )
+        kernel.scheduler.admit(node)
+
+    # Allow both nodes to play sequentially (each ~0.1s).
+    time.sleep(0.5)
 
     assert max_concurrent["n"] == 1, (
         f"play_stream ran concurrently (max={max_concurrent['n']}) — "
-        f"narration lock is not serializing playback"
+        f"scheduler is not serializing playback"
     )
 
 

@@ -143,12 +143,17 @@ def test_no_duplicate_vad():
         "should_halt_on_violation",
         "subscribe_to_event_bus",
         "filter_speech",
-        # Speech lane engine (T4/T6): the kernel owns the lane scheduler and
-        # exposes the reply-subsumption entry point. Not VAD/TTS duplication —
-        # these are the lane-engine API surface.
-        "scheduler",
-        "subsume_narration",
-    }
+# Speech lane engine (T4/T6): the kernel owns the lane scheduler and
+            # exposes the reply-subsumption entry point. Not VAD/TTS duplication —
+            # these are the lane-engine API surface.
+            "scheduler",
+            "subsume_narration",
+            # T7 (REQ-7): playback-dispatch callbacks registered by the gateway
+            # (reply/alert -> _speak_response) and the voice handler (wake-word
+            # activation chime). Legitimate lane-engine API extension.
+            "set_reply_play_callback",
+            "set_beep_play_callback",
+        }
     actual = {
         m
         for m in dir(ConversationKernel)

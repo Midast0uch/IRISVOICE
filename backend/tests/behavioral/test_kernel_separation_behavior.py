@@ -124,37 +124,24 @@ class TestConversationKernelSpeechGate:
         kernel._current_caducean_phase = "EXPAND"
         kernel._tts_manager = MagicMock()
 
-        # Dispatch is now threaded (off the EventBus thread); run the utterance
-        # thread synchronously so the assertion is deterministic (T4.2: dispatch
-        # is threaded, not sync).
-        import threading as _threading
-
-        _real = _threading.Thread
-
-        class _SyncThread:
-            def __init__(self, target=None, args=(), kwargs=None, **_kw):
-                self._target = target
-                self._args = args or ()
-
-            def start(self):
-                if self._target:
-                    self._target(*self._args)
-
-            def join(self, *a, **k):
-                pass
-
-        _threading.Thread = _SyncThread
-        try:
-            kernel._on_utterance_start(
-                EventPayload(
-                    event=IRISStreamEvent.UTTERANCE_START,
-                    data={"text": "Here's what I found..."},
-                )
+        kernel._on_utterance_start(
+            EventPayload(
+                event=IRISStreamEvent.UTTERANCE_START,
+                data={"text": "Here's what I found..."},
             )
-        finally:
-            _threading.Thread = _real
+        )
 
-        # T4.2: dispatch is now threaded — _speak_utterance calls synthesize_stream
+        # T7: the utterance is enqueued to the lane scheduler, whose worker
+        # thread calls _play_lane_node -> _speak_utterance -> synthesize_stream.
+        # Wait for the worker to process the node (dispatch is async).
+        import time as _time
+        _end = _time.time() + 2.0
+        while (
+            _time.time() < _end
+            and kernel._tts_manager.synthesize_stream.call_count == 0
+        ):
+            _time.sleep(0.01)
+
         kernel._tts_manager.synthesize_stream.assert_called_once_with("Here's what I found...")
 
 

@@ -1735,47 +1735,95 @@ class VoiceCommandHandler:
                 if isinstance(_dev, str) and _dev.lower() in ("default", ""):
                     _dev = None
                 try:
-                    # Engage the half-duplex gate BEFORE playback (the
-                    # docstring has always claimed this; the set-True was
-                    # missing and only the releases existed). Without it the
-                    # mic captures the chime straight into VAD calibration —
-                    # observed 2026-09-05: bubble-chime floor 0.04089 ->
-                    # speech_th 0.12 -> every turn deaf for 8 s. Refresh the
-                    # stall clock too: the 10 s stall-grace would otherwise
-                    # report the gate open whenever the last TTS audio is
-                    # older than 10 s. Playback below is blocking and far
-                    # shorter than the grace, so one refresh covers the beep.
-                    try:
-                        self.audio_engine.set_tts_active(True)
-                    except Exception:
-                        pass
-                    try:
-                        self.audio_engine.note_tts_audio()
-                    except Exception:
-                        pass
-                    _sd.play(sound, sr, device=_dev, blocking=True)
+                    # T7 (REQ-7 AC7.2): route the beep through the lane
+                    # scheduler so the half-duplex mic gate derives from
+                    # scheduler state. The scheduler's worker plays it via the
+                    # registered beep callback (gate already closed).
+                    from backend.agent.conversation_kernel import get_conversation_kernel
+                    _ck = get_conversation_kernel()
+                    if _ck is not None and getattr(_ck, "scheduler", None) is not None:
+                        _ck.set_beep_play_callback(self._play_beep_node)
+                        from backend.agent.speech_lanes import NARRATION, Situation, build_node, route
+                        _situation = Situation(
+                            trigger_label=NARRATION,
+                            source="voice",
+                            content_shape="conversation",
+                        )
+                        _node = build_node(
+                            _situation,
+                            route(_situation),
+                            turn_id="unknown",
+                            session_id="default",
+                            content={
+                                "kind": "beep",
+                                "sound": sound,
+                                "sample_rate": sr,
+                                "device": _dev,
+                            },
+                        )
+                        _ck.scheduler.admit(_node)
+                    else:
+                        # No scheduler wired — fall back to direct playback.
+                        self._play_beep_direct(sound, sr, _dev)
                 except Exception as _beep_err:
-                    # Fallback: play through pipeline's fallback path
-                    logger.warning(f"[VoiceCommand] Direct sd.play failed ({_beep_err}), using pipeline")
-                    self.audio_engine.pipeline.play_audio(sound, sample_rate=sr)
-                finally:
-                    # ALWAYS release the half-duplex gate after playback,
-                    # whether it succeeded or fell back.  If skipped on the
-                    # happy path, _tts_active stays True and _input_callback
-                    # drops every frame forever — STT captures nothing until
-                    # the pipeline is closed/restarted (VAD never sees speech).
-                    try:
-                        self.audio_engine.set_tts_active(False)
-                    except Exception:
-                        pass
+                    logger.warning(f"[VoiceCommand] Activation sound failed: {_beep_err}")
         except Exception as e:
-            # Always release the gate even if playback raised â€” otherwise the
-            # pipeline stays muted and the real recording captures nothing.
+            logger.warning(f"[VoiceCommand] Activation sound failed: {e}")
+
+    def _play_beep_node(self, node) -> None:
+        """Play a beep node (called by the lane scheduler's worker thread).
+
+        The half-duplex mic gate is already closed by the scheduler while this
+        node plays (REQ-7 AC7.2).
+        """
+        content = node.content or {}
+        sound = content.get("sound")
+        sr = content.get("sample_rate") or 24000
+        _dev = content.get("device")
+        if sound is None:
+            return
+        import sounddevice as _sd
+        try:
+            _sd.play(sound, sr, device=_dev, blocking=True)
+        except Exception as _beep_err:
+            logger.warning(
+                f"[VoiceCommand] Direct sd.play failed ({_beep_err}), using pipeline"
+            )
+            try:
+                self.audio_engine.pipeline.play_audio(sound, sample_rate=sr)
+            except Exception:
+                pass
+
+    def _play_beep_direct(self, sound, sr, _dev) -> None:
+        """Fallback direct beep playback when no lane scheduler is wired.
+
+        Engages the half-duplex gate around playback so the just-opened mic
+        doesn't capture the activation sound (the pre-scheduler behavior).
+        """
+        import sounddevice as _sd
+        try:
+            self.audio_engine.set_tts_active(True)
+        except Exception:
+            pass
+        try:
+            self.audio_engine.note_tts_audio()
+        except Exception:
+            pass
+        try:
+            _sd.play(sound, sr, device=_dev, blocking=True)
+        except Exception as _beep_err:
+            logger.warning(
+                f"[VoiceCommand] Direct sd.play failed ({_beep_err}), using pipeline"
+            )
+            try:
+                self.audio_engine.pipeline.play_audio(sound, sample_rate=sr)
+            except Exception:
+                pass
+        finally:
             try:
                 self.audio_engine.set_tts_active(False)
             except Exception:
                 pass
-            logger.warning(f"[VoiceCommand] Activation sound failed: {e}")
 
     def _set_state(self, new_state: VoiceState, message: str = "") -> None:
         """Update internal state and fire the state-change callback."""

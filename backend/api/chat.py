@@ -236,6 +236,38 @@ async def _fire_tts_background(text: str, session_id: str) -> None:
 def _sync_tts_playback(text: str) -> None:
     """Synchronous TTS synthesis + playback (runs in thread pool).
 
+    Routes through the lane scheduler (REQ-7 AC7.1): the scheduler's single
+    worker serializes playback and derives the half-duplex mic gate. Falls
+    back to direct playback if no scheduler is wired.
+    """
+    try:
+        from backend.agent.speech_lanes import REPLY, Situation, build_node, route
+        from backend.agent.conversation_kernel import get_conversation_kernel
+
+        _ck = get_conversation_kernel()
+        if _ck is None or getattr(_ck, "scheduler", None) is None:
+            _direct_tts_playback(text)
+            return
+        situation = Situation(
+            trigger_label=REPLY,
+            source="chat_rest",
+            content_shape="conversation",
+        )
+        node = build_node(
+            situation,
+            route(situation),
+            turn_id="unknown",
+            session_id="default",
+            content={"kind": "reply", "text": text},
+        )
+        _ck.scheduler.admit(node)
+    except Exception as exc:
+        logger.warning("[ChatREST] TTS background playback error: %s", exc)
+
+
+def _direct_tts_playback(text: str) -> None:
+    """Fallback direct TTS playback when no lane scheduler is wired.
+
     Sequence: suppress Porcupine → synthesize → play → release.
     """
     engine = None

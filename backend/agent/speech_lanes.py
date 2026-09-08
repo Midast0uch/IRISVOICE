@@ -545,9 +545,11 @@ class SpeechScheduler:
         observability: Optional[SpeechObservability] = None,
         *,
         auto_start: bool = True,
+        gate: Optional[Callable[[bool], None]] = None,
     ) -> None:
         self._play_fn = play
         self._obs = observability or get_observability()
+        self._gate = gate
         self._queue: list[UtteranceNode] = []
         self._lock = threading.Lock()
         self._wake = threading.Event()
@@ -610,6 +612,11 @@ class SpeechScheduler:
             self._obs.record_preemption(
                 lane="*", turn_id=turn_id, session_id=session_id, detail="barge-in"
             )
+        # Reopen the half-duplex mic gate immediately (REQ-7 AC7.2) so the new
+        # turn's recording starts capturing without waiting for the worker to
+        # observe the cancellation. The worker's finally block re-closes it
+        # idempotently.
+        self._set_gate(False)
         self._wake.set()
 
     def cancel_turn(self, turn_id: str) -> None:
@@ -653,6 +660,23 @@ class SpeechScheduler:
         self._wake.set()
 
     # ── derived gates (REQ-7 AC7.2) ──────────────────────────────────
+    def _set_gate(self, active: bool) -> None:
+        """Drive the half-duplex mic gate from scheduler state (REQ-7 AC7.2).
+
+        The gate is DERIVED from the scheduler's running state: it is closed
+        (active=True) while any play-node runs and reopened (active=False) when
+        playback stops or barge-in kills the turn. The `gate` callable is wired
+        by the kernel to `AudioEngine.set_tts_active`; a failure never blocks
+        the scheduler worker (the pipeline's stall backstop still self-releases
+        a wedged gate after _TTS_GATE_STALL_GRACE).
+        """
+        if self._gate is None:
+            return
+        try:
+            self._gate(active)
+        except Exception as exc:  # noqa: BLE001 — a gate failure never wedges speech
+            logger.debug("[speech_lanes] gate(%s) failed: %s", active, exc)
+
     def is_playing(self) -> bool:
         with self._lock:
             return self._running is not None
@@ -701,6 +725,10 @@ class SpeechScheduler:
             with self._lock:
                 self._running = node
                 node.state = STATE_PLAYING
+            # Close the half-duplex mic gate while any play-node runs (REQ-7
+            # AC7.2). The gate is derived from scheduler state, not manual
+            # open/close calls at call sites.
+            self._set_gate(True)
             try:
                 self._play_fn(node)
                 node.state = STATE_DONE
@@ -708,6 +736,7 @@ class SpeechScheduler:
                 logger.warning("[speech_lanes] node %s failed: %s", node.id, exc)
                 node.state = STATE_FAILED
             finally:
+                self._set_gate(False)
                 with self._lock:
                     self._running = None
                 self._obs.record_node_outcome(node)

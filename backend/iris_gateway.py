@@ -2438,6 +2438,11 @@ class IRISGateway:
             )
             kernel.register_callbacks()
             set_conversation_kernel(kernel)
+            # T7 (REQ-7 AC7.1): route REPLY/ALERT playback through the lane
+            # scheduler. The kernel dispatches reply nodes to this callback,
+            # which plays them through the contract-locked `_speak_response`
+            # path — the scheduler's single worker serializes all playback.
+            kernel.set_reply_play_callback(self._play_reply_node)
             # Wire the kernel to the EventBus so speak-tool Utterance events reach
             # local TTS. This was never called in production, leaving narration mute.
             kernel.subscribe_to_event_bus()
@@ -2533,8 +2538,18 @@ class IRISGateway:
             # 1. Ensure conversation mode so TTS response auto-relistens
             self._conversation_sessions.add(_sid)
 
-            # 2. Reopen half-duplex gate immediately â€” don't wait for finally
-            _engine.set_tts_active(False)
+            # 2. Kill running + pending speech via the lane scheduler (REQ-7 AC7.2):
+            # cancels nodes AND reopens the half-duplex mic gate immediately
+            # (the scheduler's barge_in() drives the gate open synchronously).
+            try:
+                from backend.agent.conversation_kernel import get_conversation_kernel
+                _ck = get_conversation_kernel()
+                if _ck is not None and getattr(_ck, "scheduler", None) is not None:
+                    _ck.scheduler.barge_in(turn_id="unknown", session_id=_sid)
+                else:
+                    _engine.set_tts_active(False)
+            except Exception:
+                _engine.set_tts_active(False)
 
             # 3. Stop TTS synthesis + native player
             _engine.interrupt_speech()
@@ -3495,14 +3510,18 @@ class IRISGateway:
                         trigger_label="reply",
                         actual_lane="reply",
                     )
-                    # T6 (REQ-4 AC4.2): a reply silences pending narration.
-                    from backend.agent.conversation_kernel import get_conversation_kernel
-                    _ck = get_conversation_kernel()
-                    if _ck is not None:
-                        _ck.subsume_narration(turn_id=_turn_id or "unknown", session_id=sid)
-                    self._logger.info("[TTS] _wrap_tts_streaming started â€” calling _speak_response")
-                    self._speak_response(q, sid, _sttproc_stop=_sttproc_stop, _client_id=cid, _turn_id=_turn_id)
-                    self._logger.info("[TTS] _speak_response completed")
+                    # T7 (REQ-7 AC7.1): route the reply through the lane
+                    # scheduler (subsumption of pending narration is applied by
+                    # the scheduler's admit()).
+                    self._logger.info("[TTS] _wrap_tts_streaming started â€” reply enqueued to lane scheduler")
+                    self._enqueue_reply(
+                        queue=q,
+                        session_id=sid,
+                        turn_id=_turn_id,
+                        client_id=cid,
+                        sttproc_stop=_sttproc_stop,
+                    )
+                    self._logger.info("[TTS] reply playback completed")
                     _succeeded = True
                 except Exception as _tts_err:
                     self._logger.error(f"[TTS] streaming fatal: {_tts_err}", exc_info=True)
@@ -3586,22 +3605,15 @@ class IRISGateway:
                         trigger_label="reply",
                         actual_lane="reply",
                     )
-                    # T6 (REQ-4 AC4.2): a reply silences pending narration.
-                    from backend.agent.conversation_kernel import get_conversation_kernel
-                    _ck = get_conversation_kernel()
-                    if _ck is not None:
-                        _ck.subsume_narration(turn_id=_turn_id or "unknown", session_id=session_id)
-                    threading.Thread(
-                        target=self._speak_response,
-                        args=(_friendly, session_id),
-                        kwargs={
-                            "_sttproc_stop": _sttproc_stop,
-                            "_client_id": client_id,
-                            "_turn_id": _turn_id,
-                        },
-                        daemon=True,
-                        name="voice-llm-fallback",
-                    ).start()
+                    # T7 (REQ-7 AC7.1): route the fallback reply through the lane
+                    # scheduler.
+                    self._enqueue_reply(
+                        text=_friendly,
+                        session_id=session_id,
+                        turn_id=_turn_id,
+                        client_id=client_id,
+                        sttproc_stop=_sttproc_stop,
+                    )
                 except Exception as _spk_exc:
                     self._logger.warning(
                         f"[Voice] Friendly fallback speak failed: {_spk_exc}"
@@ -3731,6 +3743,74 @@ class IRISGateway:
         text = _RE_MULTI_SPACE.sub(" ", text)
         text = _RE_MULTI_NL.sub("\n", text)
         return text.strip()
+
+    def _play_reply_node(self, node) -> None:
+        """Play a REPLY/ALERT node through the contract-locked `_speak_response`
+        path (T7, REQ-7 AC7.1). Called by the lane scheduler's worker thread.
+
+        The node's content carries the reply context: `text` (or a `queue` for
+        the streaming voice-turn path), plus `client_id` and `sttproc_stop`.
+        """
+        content = node.content or {}
+        input_source = content.get("queue") or content.get("text", "")
+        self._speak_response(
+            input_source,
+            node.session_id,
+            _client_id=content.get("client_id"),
+            _turn_id=node.turn_id,
+            _sttproc_stop=content.get("sttproc_stop"),
+        )
+
+    def _enqueue_reply(
+        self,
+        *,
+        text: str = "",
+        queue=None,
+        session_id: str,
+        turn_id: Optional[str] = None,
+        client_id: Optional[str] = None,
+        sttproc_stop=None,
+    ) -> None:
+        """Route a REPLY utterance through the lane scheduler (T7, REQ-7 AC7.1).
+
+        Enqueues a REPLY node whose content carries the reply context (text or
+        streaming queue + client_id + sttproc_stop). The scheduler's single
+        worker serializes it against narration and derives the mic gate. Falls
+        back to direct `_speak_response` playback if no kernel/scheduler is
+        wired (should not happen in production).
+        """
+        from backend.agent.speech_lanes import REPLY, Situation, build_node, route
+        from backend.agent.conversation_kernel import get_conversation_kernel
+
+        _ck = get_conversation_kernel()
+        if _ck is None or getattr(_ck, "scheduler", None) is None:
+            self._speak_response(
+                queue if queue is not None else text,
+                session_id,
+                _client_id=client_id,
+                _turn_id=turn_id,
+                _sttproc_stop=sttproc_stop,
+            )
+            return
+        situation = Situation(
+            trigger_label=REPLY,
+            source="reply",
+            content_shape="conversation",
+        )
+        node = build_node(
+            situation,
+            route(situation),
+            turn_id=turn_id or "unknown",
+            session_id=session_id or "unknown",
+            content={
+                "kind": "reply",
+                "text": text or "",
+                "queue": queue,
+                "client_id": client_id,
+                "sttproc_stop": sttproc_stop,
+            },
+        )
+        _ck.scheduler.admit(node)
 
     def _speak_response(
         self,
@@ -3873,20 +3953,10 @@ class IRISGateway:
         _playback_event = self._playback_event
 
         def _producer():
-            # Wait for any in-flight agent-initiated utterance (SpeakTool /
-            # fillers) to finish before we start playing the response, so the
-            # response stream can't cut the agent's narration off mid-word
-            # (e.g. web-search "Searching…").  Non-holding wait: we block until
-            # the shared narration lock is free, then release — we do NOT hold it
-            # for the whole response, so the agent can still speak during a long
-            # response if needed.
-            try:
-                from backend.agent.conversation_kernel import narration_playback_lock
-
-                with narration_playback_lock():
-                    pass
-            except Exception:  # noqa: BLE001
-                pass
+            # Playback is serialized by the lane scheduler's single worker
+            # (REQ-7 AC7.1) — the former narration-lock wait is removed; the
+            # scheduler already ensures narration finished or was subsumed
+            # before this reply node started playing.
 
             # Helper: push chunk to native player with auto-fallback to queue
             _last_level_time = [0.0]  # mutable for closure; throttle to ~10 Hz
@@ -4309,7 +4379,8 @@ class IRISGateway:
         engine._speech_interrupted = False
         # Note: STTPROC.wav stop moved into producer thread â€” stops on first
         # TTS audio chunk to avoid the "talking into silence" gap.
-        engine.set_tts_active(True)
+        # The half-duplex mic gate is owned by the lane scheduler (REQ-7
+        # AC7.2) — it is already closed while this node plays.
 
         try:
             producer_thread = threading.Thread(
@@ -4799,7 +4870,8 @@ class IRISGateway:
                     engine.pipeline._native_player.close()
                 except Exception:
                     pass
-            engine.set_tts_active(False)
+            # The half-duplex mic gate is owned by the lane scheduler (REQ-7
+            # AC7.2) — it reopens when the scheduler's worker finishes this node.
             try:
                 import torch
 
@@ -5923,17 +5995,14 @@ class IRISGateway:
                             "answer, session=%s",
                             len(response or ""), session_id,
                         )
-                        threading.Thread(
-                            target=self._speak_response,
-                            args=(_brief_q,),
-                            kwargs={
-                                "session_id": session_id,
-                                "_client_id": client_id,
-                                "_turn_id": turn_id,
-                            },
-                            daemon=True,
-                            name="text-path-tts-brief",
-                        ).start()
+                        # T7 (REQ-7 AC7.1): route the brief through the lane
+                        # scheduler (its worker consumes _brief_q).
+                        self._enqueue_reply(
+                            queue=_brief_q,
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            client_id=client_id,
+                        )
                         # Shadow-mode speech intent (REQ-9 AC9.3): logs
                         # would-lane, changes nothing. Removable in one task.
                         emit_speech_intent(
@@ -5943,11 +6012,6 @@ class IRISGateway:
                             trigger_label="reply",
                             actual_lane="reply",
                         )
-                        # T6 (REQ-4 AC4.2): a reply silences pending narration.
-                        from backend.agent.conversation_kernel import get_conversation_kernel
-                        _ck = get_conversation_kernel()
-                        if _ck is not None:
-                            _ck.subsume_narration(turn_id=turn_id or "unknown", session_id=session_id)
                         threading.Thread(
                             target=_produce_brief,
                             daemon=True,
@@ -5963,17 +6027,14 @@ class IRISGateway:
                             "session=%s",
                             len(_spoken_text), session_id,
                         )
-                        threading.Thread(
-                            target=self._speak_response,
-                            args=(_spoken_text,),
-                            kwargs={
-                                "session_id": session_id,
-                                "_client_id": client_id,
-                                "_turn_id": turn_id,
-                            },
-                            daemon=True,
-                            name="text-path-tts",
-                        ).start()
+                        # T7 (REQ-7 AC7.1): route the final answer through the
+                        # lane scheduler.
+                        self._enqueue_reply(
+                            text=_spoken_text,
+                            session_id=session_id,
+                            turn_id=turn_id,
+                            client_id=client_id,
+                        )
                         # Shadow-mode speech intent (REQ-9 AC9.3): logs
                         # would-lane, changes nothing. Removable in one task.
                         emit_speech_intent(
@@ -5983,11 +6044,6 @@ class IRISGateway:
                             trigger_label="reply",
                             actual_lane="reply",
                         )
-                        # T6 (REQ-4 AC4.2): a reply silences pending narration.
-                        from backend.agent.conversation_kernel import get_conversation_kernel
-                        _ck = get_conversation_kernel()
-                        if _ck is not None:
-                            _ck.subsume_narration(turn_id=turn_id or "unknown", session_id=session_id)
                     else:
                         # Say why, rather than going quiet with no trace — a
                         # silent turn with no log line is what made this cost
@@ -11095,12 +11151,14 @@ class IRISGateway:
                     trigger_label="reply",
                     actual_lane="reply",
                 )
-                # T6 (REQ-4 AC4.2): a reply silences pending narration.
-                from backend.agent.conversation_kernel import get_conversation_kernel
-                _ck = get_conversation_kernel()
-                if _ck is not None:
-                    _ck.subsume_narration(turn_id=tid or "unknown", session_id=sid)
-                self._speak_response(text, sid, _client_id=cid, _turn_id=tid)
+                # T7 (REQ-7 AC7.1): route the dashboard summary through the lane
+                # scheduler.
+                self._enqueue_reply(
+                    text=text,
+                    session_id=sid,
+                    turn_id=tid,
+                    client_id=cid,
+                )
             finally:
                 # Fanned out like every other lifecycle indicator: the turn
                 # client first, then all other UIs (a widget elsewhere must
