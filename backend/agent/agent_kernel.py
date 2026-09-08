@@ -6425,20 +6425,20 @@ class AgentKernel:
 
         # â”€â”€ Thinking feedback: emit a filler utterance so the user hears â”€â”€
         # audio feedback while the agent is "thinking" (DER/ReAct path).
+        # Gap-filler exception (REQ-10 AC10.13, T16): fires ONLY when speech
+        # would otherwise be silent AND no beat is ready; never the same
+        # phrase twice consecutively; subsumed the moment a real beat arrives
+        # (scheduler.admit cancels queued speak_tool-sourced narration).
         # Fire-and-forget via the speak tool; ConversationKernel drives TTS
         # (phase defaults to EXPAND in production, so it is never suppressed).
-        # Fixes the reported "no utterance during thinking" gap. See plan Issue E.
         try:
             from backend.agent.tools.speak_tool import get_speak_tool
-            import random as _random
+            from backend.agent.speech_lanes import filler_allowed, pick_filler
+            from backend.agent.conversation_kernel import get_conversation_kernel
 
-            _fillers = (
-                "Let me check that for you.",
-                "One moment.",
-                "Just a second.",
-                "Working on it.",
-            )
-            get_speak_tool().speak(_random.choice(_fillers), priority="low")
+            _sched = getattr(get_conversation_kernel(), "scheduler", None)
+            if filler_allowed(_sched):
+                get_speak_tool().speak(pick_filler(), priority="low")
         except Exception as _filler_err:
             logger.debug("[AgentKernel] thinking filler emit skipped: %s", _filler_err)
 

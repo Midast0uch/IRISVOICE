@@ -555,9 +555,87 @@ def get_shadow_observer() -> ShadowObserver:
 
 def reset_speech_lanes_for_testing() -> None:
     """Reset singletons — used by tests to get a fresh instance."""
-    global _observability, _shadow_observer
+    global _observability, _shadow_observer, _last_filler_idx
     _observability = None
     _shadow_observer = None
+    _last_filler_idx = None
+
+
+# ── Filler gap-filler exception (REQ-10 AC10.13, T16) ─────────────────────
+# The canned filler tables (agent_kernel DER entry; tts.py pre-synth cache)
+# survive ONLY as an exception path: fired when speech would otherwise be
+# silent AND no beat is ready, never the same phrase twice consecutively,
+# and subsumed the moment a real beat arrives (see SpeechScheduler.admit —
+# real-beat sources cancel queued "speak_tool" narration, the filler road).
+FILLER_PHRASES = (
+    "Let me check that for you.",
+    "One moment.",
+    "Just a second.",
+    "Working on it.",
+)
+_last_filler_idx: Optional[int] = None
+
+
+def pick_filler(rng=None) -> str:
+    """Pick a filler phrase — never the same one twice consecutively.
+
+    AC10.13 clause 2. Exclusion by index (not rejection sampling) so the
+    property is deterministic, not probabilistic.
+    """
+    global _last_filler_idx
+    import random as _random
+
+    rng = rng or _random
+    if len(FILLER_PHRASES) < 2:
+        return FILLER_PHRASES[0]
+    idx = rng.randrange(len(FILLER_PHRASES) - 1)
+    if _last_filler_idx is not None and idx >= _last_filler_idx:
+        idx += 1  # skip past the previous pick
+    _last_filler_idx = idx
+    return FILLER_PHRASES[idx]
+
+
+def filler_allowed(scheduler) -> bool:
+    """True only in the silent gap (AC10.13 clause 1): nothing playing AND
+    nothing pending. A pending utterance means speech would NOT otherwise
+    be silent — and a pending narration beat means the first beat is ready,
+    so no filler is needed. No lane engine (scheduler=None) → legacy path
+    decides (True)."""
+    if scheduler is None:
+        return True
+    try:
+        if scheduler.is_playing():
+            return False
+        return scheduler.pending_count() == 0
+    except Exception:  # noqa: BLE001 — a broken gate never blocks speech
+        return True
+
+
+# Sources that author REAL narration content (beats). The utterance path
+# (SpeakTool → ConversationKernel._on_utterance_start) is source
+# "speak_tool" — the filler/agent-speech road that beats subsume.
+_REAL_BEAT_SOURCES = ("beat", "reactive", "planned-beat")
+_SPEAK_TOOL_SOURCE = "speak_tool"
+# AC10.5: narration keeps the AC2.1 sentence cap. Budget matches the
+# resolver's first-sentence fallback (_first_sentence default).
+NARRATION_CAP_WORDS = 60
+
+
+def _cap_narration_text(node: "UtteranceNode") -> None:
+    """Enforce the narration sentence cap on a node's text in place.
+
+    spoken ⊆ authored (AC10.5/AC6.3): the capped text is a sentence-boundary
+    prefix of the authored beat — never an invention, never a mid-sentence
+    clip. Short beats pass through untouched (authoring guidance T12 keeps
+    them one-line; this is the engine backstop for a runaway line).
+    """
+    text = _node_text(node)
+    if not text:
+        return
+    capped = _first_sentence(text, max_words=NARRATION_CAP_WORDS)
+    if capped and capped != text:
+        node.content = dict(node.content or {})
+        node.content["text"] = capped
 
 
 def emit_speech_intent(
@@ -720,6 +798,20 @@ class SpeechScheduler:
             # Subsumption: REPLY / ALERT_AWAITING cancel pending NARRATION.
             if node.lane in (REPLY, ALERT_AWAITING):
                 self._cancel_pending_narration(node.turn_id)
+            # AC10.13 clause 3: a real beat arriving cancels queued fillers —
+            # the gap-filler exception ends the moment real content exists.
+            # The PLAYING filler finishes its sentence (AC4.4): only queued
+            # nodes die here.
+            if (
+                node.lane == NARRATION
+                and (node.trigger.get("source") or "") in _REAL_BEAT_SOURCES
+            ):
+                self._cancel_pending_fillers(node.turn_id)
+            # AC10.5: the narration sentence cap, enforced once at the single
+            # admission point (covers first-beat, planned, reactive, and the
+            # utterance road alike).
+            if node.lane == NARRATION:
+                _cap_narration_text(node)
             # Preemption: ALERT_CRITICAL stops the running utterance.
             if node.lane == ALERT_CRITICAL and self._running is not None:
                 self._obs.record_preemption(
@@ -950,6 +1042,11 @@ class SpeechScheduler:
                     or n.turn_id != turn_id
                     or n.state != STATE_QUEUED
                     or n.kind != KIND_REACTIVE
+                    # A queued FILLER (utterance road) is never a merge
+                    # target (AC10.13): a finding must not fold into
+                    # "One moment.; <finding>" — the beat's admission
+                    # cancels the filler instead.
+                    or (n.trigger.get("source") or "") == _SPEAK_TOOL_SOURCE
                 ):
                     continue
                 if now - n.enqueued_at > BEAT_MERGE_DEBOUNCE_S:
@@ -1137,6 +1234,33 @@ class SpeechScheduler:
                     turn_id=n.turn_id,
                     session_id=n.session_id,
                     detail=f"subsumed by reply (turn {turn_id})",
+                )
+                self._obs.record_node_outcome(n, detail="subsumed")
+            else:
+                kept.append(n)
+        self._queue = kept
+
+    def _cancel_pending_fillers(self, turn_id: str) -> None:
+        """Cancel queued filler utterances of the turn (AC10.13 clause 3).
+
+        Fillers are the "speak_tool"-sourced narration road. A real beat
+        arriving subsumes them (they existed only to cover silence); the
+        playing filler finishes its sentence — only queued nodes die here.
+        Caller holds the lock."""
+        kept: list[UtteranceNode] = []
+        for n in self._queue:
+            if (
+                n.lane == NARRATION
+                and n.turn_id == turn_id
+                and (n.trigger.get("source") or "") == _SPEAK_TOOL_SOURCE
+            ):
+                n.state = STATE_CANCELLED
+                self._free_node_audio(n)
+                self._obs.record_subsumption(
+                    lane=n.lane,
+                    turn_id=n.turn_id,
+                    session_id=n.session_id,
+                    detail=f"filler subsumed by beat (turn {turn_id})",
                 )
                 self._obs.record_node_outcome(n, detail="subsumed")
             else:

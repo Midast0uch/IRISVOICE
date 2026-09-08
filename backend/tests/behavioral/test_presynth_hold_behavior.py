@@ -116,6 +116,11 @@ def _make_manager():
     mgr._proc.poll.return_value = None
     mgr._ready = True
     mgr._synthesis_lock = threading.Lock()
+    # T15 (AC10.14) added the narration-toggle gate on holds — the real
+    # __init__ sets it True (tts.py:213). This fixture bypasses __init__, so
+    # it must carry the same default or every hold is refused for the wrong
+    # reason (AttributeError swallowed → None).
+    mgr._holds_accepted = True
     mgr._held = {}
     mgr._held_turn_counts = {}
     mgr._dead_hold_keys = set()
