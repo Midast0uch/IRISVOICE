@@ -1,19 +1,23 @@
-"""Speech lane engine — deterministic lane router + observability (Wave 1).
+"""Speech lane engine — deterministic lane router + scheduler + observability.
 
-Replaces flag/lock coordination of speech with a deterministic lane router:
+Replaces flag/lock coordination of speech with a deterministic lane engine:
 every utterance enters exactly one lane (NARRATION / REPLY / ALERT_CRITICAL /
 ALERT_AWAITING) via a pure function of (trigger label, turn phase, content
 shape, lane occupancy). No model call in the routing path (REQ-1 AC1.1).
 
-Wave 1 scope (foundation, NO behavior change):
+Wave 1 (foundation, NO behavior change):
   * UtteranceNode model (design.md Data Models)
   * deterministic router + hierarchy table as data (REQ-1, REQ-3)
   * per-turn observability + tuning counters (REQ-9)
   * shadow-mode observer (REQ-9 AC9.3) — logs would-order, changes nothing
 
-The scheduler (serialize/preempt/subsume), derived gates, and cutover live in
-later waves. This module imports nothing from phase_manager (vocabulary only)
-and nothing heavy — pure stdlib, off the audio path.
+Wave 2 (cutover, strangler order):
+  * SpeechScheduler — serialize/preempt/subsume via lane priority (REQ-2,
+    REQ-4, REQ-5, REQ-7). One mouth: a single worker drains the priority
+    queue; gates derive from running play-nodes.
+
+This module imports nothing from phase_manager (vocabulary only) and nothing
+heavy — pure stdlib, off the audio path.
 """
 
 from __future__ import annotations
@@ -506,3 +510,350 @@ def emit_speech_intent(
         session_id=session_id or "unknown",
         actual_lane=actual_lane,
     )
+
+
+# ── Scheduler (REQ-2, REQ-4, REQ-5, REQ-7) ────────────────────────────────
+class SpeechScheduler:
+    """Serialize / preempt / subsume speech through lane priority (one mouth).
+
+    A single worker thread drains a priority queue of UtteranceNodes ordered
+    by lane priority (LANE_PRIORITY) then FIFO within equal priority (REQ-2
+    AC2.2). Admission applies the lane contracts:
+
+      * REPLY / ALERT_AWAITING admitted  -> cancel pending NARRATION unspoken
+        (subsumption, REQ-4 AC4.2).
+      * ALERT_CRITICAL admitted          -> preempt the running utterance
+        immediately (REQ-4 AC4.3).
+      * barge_in()                       -> cancel running + all pending, fresh
+        turn (REQ-4 AC4.1).
+      * cancel_turn(turn_id)             -> cancel NARRATION nodes for a turn
+        (REQ-5 AC5.1); REPLY/ALERT_AWAITING survive (AC5.2/AC5.3).
+
+    Gates derive from scheduler state (REQ-7 AC7.2): `is_playing()` is True
+    while any play-node runs. The scheduler adds zero latency to first-audio
+    (REQ-7 AC7.4): admission is O(1) queue ops off the synthesis path; the
+    worker only pops when a node is ready.
+
+    The scheduler is deliberately decoupled from TTS internals: it calls a
+    `play` callable (synthesize+play) supplied by the caller, so tests inject
+    a fake and the real path stays the existing tts_play machinery.
+    """
+
+    def __init__(
+        self,
+        play: Callable[[UtteranceNode], None],
+        observability: Optional[SpeechObservability] = None,
+        *,
+        auto_start: bool = True,
+    ) -> None:
+        self._play_fn = play
+        self._obs = observability or get_observability()
+        self._queue: list[UtteranceNode] = []
+        self._lock = threading.Lock()
+        self._wake = threading.Event()
+        self._stop = threading.Event()
+        self._worker: Optional[threading.Thread] = None
+        self._running: Optional[UtteranceNode] = None
+        if auto_start:
+            self.start()
+
+    # ── lifecycle ────────────────────────────────────────────────────
+    def start(self) -> None:
+        if self._worker is not None and self._worker.is_alive():
+            return
+        self._stop.clear()
+        self._worker = threading.Thread(
+            target=self._run, daemon=True, name="speech-lane-scheduler"
+        )
+        self._worker.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._wake.set()
+        if self._worker is not None:
+            self._worker.join(timeout=2.0)
+
+    # ── admission (REQ-4) ────────────────────────────────────────────
+    def admit(self, node: UtteranceNode) -> None:
+        """Admit a node, applying subsumption/preemption, then enqueue."""
+        with self._lock:
+            # Subsumption: REPLY / ALERT_AWAITING cancel pending NARRATION.
+            if node.lane in (REPLY, ALERT_AWAITING):
+                self._cancel_pending_narration(node.turn_id)
+            # Preemption: ALERT_CRITICAL stops the running utterance.
+            if node.lane == ALERT_CRITICAL and self._running is not None:
+                self._obs.record_preemption(
+                    lane=node.lane,
+                    turn_id=node.turn_id,
+                    session_id=node.session_id,
+                    detail=f"critical preempts running {self._running.id}",
+                )
+                self._running.state = STATE_CANCELLED
+                self._obs.record_node_outcome(self._running, detail="preempted")
+                self._running = None
+            node.state = STATE_QUEUED
+            self._queue.append(node)
+            self._queue.sort(key=lambda n: (LANE_PRIORITY[n.lane], n.enqueued_at))
+        self._wake.set()
+
+    def barge_in(self, *, turn_id: str, session_id: str) -> None:
+        """Kill running + all pending; fresh turn (REQ-4 AC4.1)."""
+        with self._lock:
+            if self._running is not None:
+                self._running.state = STATE_CANCELLED
+                self._obs.record_node_outcome(self._running, detail="barge-in")
+                self._running = None
+            for n in self._queue:
+                n.state = STATE_CANCELLED
+                self._obs.record_node_outcome(n, detail="barge-in")
+            self._queue.clear()
+            self._obs.record_preemption(
+                lane="*", turn_id=turn_id, session_id=session_id, detail="barge-in"
+            )
+        self._wake.set()
+
+    def cancel_turn(self, turn_id: str) -> None:
+        """Cancel NARRATION nodes for a turn (REQ-5 AC5.1). Replies/alerts survive."""
+        with self._lock:
+            kept: list[UtteranceNode] = []
+            for n in self._queue:
+                if n.lane == NARRATION and n.turn_id == turn_id:
+                    n.state = STATE_CANCELLED
+                    self._obs.record_node_outcome(n, detail="turn-end")
+                else:
+                    kept.append(n)
+            self._queue = kept
+        self._wake.set()
+
+    def subsume_narration(self, *, turn_id: str, session_id: str) -> None:
+        """Cancel pending NARRATION (REQ-4 AC4.2) — the subsumption side-effect
+        of admitting a REPLY/ALERT_AWAITING, without enqueuing a node.
+
+        Used by the reply paths (voice turn, agent DAG, dashboard) which keep
+        their own contract-locked playback in `_speak_response` but must still
+        silence pending narration the moment a reply is admitted. The running
+        narration finishes its current sentence (AC4.4); only queued narration
+        dies unspoken.
+        """
+        with self._lock:
+            kept: list[UtteranceNode] = []
+            for n in self._queue:
+                if n.lane == NARRATION:
+                    n.state = STATE_CANCELLED
+                    self._obs.record_subsumption(
+                        lane=n.lane,
+                        turn_id=n.turn_id,
+                        session_id=n.session_id,
+                        detail=f"subsumed by reply (turn {turn_id})",
+                    )
+                    self._obs.record_node_outcome(n, detail="subsumed")
+                else:
+                    kept.append(n)
+            self._queue = kept
+        self._wake.set()
+
+    # ── derived gates (REQ-7 AC7.2) ──────────────────────────────────
+    def is_playing(self) -> bool:
+        with self._lock:
+            return self._running is not None
+
+    def running_lane(self) -> Optional[str]:
+        with self._lock:
+            return self._running.lane if self._running is not None else None
+
+    def pending_count(self) -> int:
+        with self._lock:
+            return len(self._queue)
+
+    # ── internals ────────────────────────────────────────────────────
+    def _cancel_pending_narration(self, turn_id: str) -> None:
+        """Cancel all queued NARRATION nodes (subsumption, REQ-4 AC4.2)."""
+        kept: list[UtteranceNode] = []
+        for n in self._queue:
+            if n.lane == NARRATION:
+                n.state = STATE_CANCELLED
+                self._obs.record_subsumption(
+                    lane=n.lane,
+                    turn_id=n.turn_id,
+                    session_id=n.session_id,
+                    detail=f"subsumed by reply (turn {turn_id})",
+                )
+                self._obs.record_node_outcome(n, detail="subsumed")
+            else:
+                kept.append(n)
+        self._queue = kept
+
+    def _pop_next(self) -> Optional[UtteranceNode]:
+        with self._lock:
+            if not self._queue:
+                return None
+            return self._queue.pop(0)
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            self._wake.wait(timeout=0.5)
+            self._wake.clear()
+            if self._stop.is_set():
+                break
+            node = self._pop_next()
+            if node is None:
+                continue
+            with self._lock:
+                self._running = node
+                node.state = STATE_PLAYING
+            try:
+                self._play_fn(node)
+                node.state = STATE_DONE
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[speech_lanes] node %s failed: %s", node.id, exc)
+                node.state = STATE_FAILED
+            finally:
+                with self._lock:
+                    self._running = None
+                self._obs.record_node_outcome(node)
+
+
+# ── Content-aware spoken shaping (REQ-6) ──────────────────────────────────
+# One resolver with fixed precedence (design.md D5): agent `speak` line >
+# type-aware shaping > first-sentence fallback. Guarantees spoken ⊆ visible
+# (AC6.3): every spoken utterance is derived from shown content — nothing
+# invented, no raw full-text marathons, no mid-sentence clips.
+#
+# The type table is DATA (AC6.4): unlisted types fall back to describe-don't-
+# recite and are logged for table extension.
+
+# Content types the resolver understands (REQ-6 AC6.1).
+TYPE_PROSE = "prose"
+TYPE_TABLE = "table"
+TYPE_DIAGRAM = "diagram"
+TYPE_CODE = "code"
+TYPE_HTML = "html"
+TYPE_MARKDOWN = "markdown"
+TYPE_TEXT = "text"
+
+# Type-aware shaping: how each content type is spoken (AC6.1). Tables,
+# diagrams, and code are described, never recited cell-by-cell / line-by-line.
+_TYPE_SHAPING: Dict[str, str] = {
+    TYPE_PROSE: "speak_generously",
+    TYPE_TABLE: "describe",
+    TYPE_DIAGRAM: "describe",
+    TYPE_CODE: "describe",
+    TYPE_HTML: "describe",
+    TYPE_MARKDOWN: "speak_generously",
+    TYPE_TEXT: "speak_generously",
+}
+
+# Sentence-boundary regex for the first-sentence fallback (AC6.3: no
+# mid-sentence clips).
+_SENTENCE_BOUNDARY = ".!?"
+
+
+def _classify_content_type(show_format: Optional[str]) -> str:
+    """Map a `show.format` value to a resolver content type (AC6.1).
+
+    `show.format` carries markdown/table/diagram/html/text (REQ-6 Verified).
+    Returns the canonical type; unknown formats fall through to the unlisted
+    path (AC6.4).
+    """
+    f = (show_format or "").strip().lower()
+    if f in ("table",):
+        return TYPE_TABLE
+    if f in ("diagram", "mermaid", "graph"):
+        return TYPE_DIAGRAM
+    if f in ("code", "python", "javascript", "json", "yaml", "bash", "sql"):
+        return TYPE_CODE
+    if f in ("html",):
+        return TYPE_HTML
+    if f in ("markdown", "md"):
+        return TYPE_MARKDOWN
+    if f in ("text", "plain", "prose"):
+        return TYPE_PROSE
+    return f or TYPE_TEXT
+
+
+def _first_sentence(text: str, max_words: int = 60) -> str:
+    """First sentence(s) up to max_words, respecting sentence boundaries."""
+    import re as _re
+
+    cleaned = _re.sub(r"```[\s\S]*?```", "", text)
+    cleaned = _re.sub(r"`[^`]+`", "", cleaned)
+    cleaned = _re.sub(r"^#{1,6}\s+", "", cleaned, flags=_re.MULTILINE)
+    cleaned = _re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", cleaned)
+    cleaned = _re.sub(r"^\s*[-*•]\s+", "", cleaned, flags=_re.MULTILINE)
+    cleaned = " ".join(cleaned.split())
+    words = cleaned.split()
+    if not words:
+        return ""
+    if len(words) <= max_words:
+        return cleaned
+    truncated = " ".join(words[:max_words])
+    last_boundary = max(
+        truncated.rfind(". "),
+        truncated.rfind("! "),
+        truncated.rfind("? "),
+    )
+    if last_boundary > 25:
+        truncated = truncated[: last_boundary + 1]
+    return truncated
+
+
+def _describe_artifact(text: str) -> str:
+    """Describe a table/diagram/code artifact without reciting it (AC6.1).
+
+    Strips table pipes, code fences, and markdown, then takes the first
+    sentence (≤ 40 words). The result is a SHORT summary derived from the
+    shown content — never the full body, never raw cells/lines.
+    """
+    import re as _re
+
+    cleaned = _re.sub(r"```[\s\S]*?```", "", text)
+    cleaned = _re.sub(r"`[^`]+`", "", cleaned)
+    # Strip table pipes and separators so cells aren't recited.
+    cleaned = _re.sub(r"\|", " ", cleaned)
+    cleaned = _re.sub(r"^[\s\-:]+$", "", cleaned, flags=_re.MULTILINE)
+    cleaned = _re.sub(r"^#{1,6}\s+", "", cleaned, flags=_re.MULTILINE)
+    cleaned = _re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", cleaned)
+    cleaned = " ".join(cleaned.split())
+    if not cleaned:
+        return ""
+    return _first_sentence(cleaned, max_words=40)
+
+
+def resolve_spoken_text(
+    *,
+    shown_text: str,
+    agent_speak: Optional[str] = None,
+    show_format: Optional[str] = None,
+    override_recite: bool = False,
+    observability: Optional[SpeechObservability] = None,
+) -> str:
+    """Resolve the spoken line for shown content (REQ-6 AC6.2).
+
+    Precedence (design.md D5):
+      1. agent `speak` line — the agent's own TTS line wins (AC6.2).
+      2. type-aware shaping — prose speaks generously; table/diagram/code are
+         described, never recited (AC6.1).
+      3. first-sentence fallback — short prose spoken verbatim; long content
+         reduced to the first sentence(s) (AC6.3).
+
+    `override_recite` (the "read it to me" override) beats the type table and
+    recites the full shown text (AC6.4 edge case).
+
+    Guarantees spoken ⊆ visible: the returned line is always derived from
+    `shown_text` (or the agent's own line, which is itself shown content).
+    """
+    obs = observability or get_observability()
+    if override_recite:
+        return shown_text or ""
+    if agent_speak and agent_speak.strip():
+        return agent_speak.strip()
+    content_type = _classify_content_type(show_format)
+    if content_type not in _TYPE_SHAPING:
+        # Unlisted type (AC6.4): describe-don't-recite + log for extension.
+        obs.record_unlisted_type(content_type, turn_id="unknown", session_id="unknown")
+        return _describe_artifact(shown_text)
+    mode = _TYPE_SHAPING[content_type]
+    if mode == "describe":
+        return _describe_artifact(shown_text)
+    # speak_generously: prose/markdown/text — first-sentence fallback.
+    return _first_sentence(shown_text)

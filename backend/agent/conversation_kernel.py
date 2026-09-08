@@ -45,6 +45,15 @@ from backend.gateway.iris_ffi import (
 )
 from backend.agent.param_homeostasis import get_param_homeostasis
 from backend.agent.der_constants import U_SPLIT, U_CONVERGED
+from backend.agent.speech_lanes import (
+    ALERT_CRITICAL,
+    NARRATION,
+    SpeechScheduler,
+    UtteranceNode,
+    build_node,
+    route,
+    Situation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +130,14 @@ class ConversationKernel:
         # from the TTS loop). The lock is fine-grained: only around the
         # _was_speaking and _current_audio_level flags.
         self._lock = threading.Lock()
+        # T4 (REQ-2/REQ-4/REQ-5): lane scheduler for agent-initiated speech.
+        # Narration utterances route through lanes (ephemeral, subsumable,
+        # turn-bounded) instead of playing directly. The narration lock stays
+        # until T8; the scheduler's play fn still serializes via it.
+        self._scheduler = SpeechScheduler(
+            play=self._play_lane_node,
+            auto_start=True,
+        )
 
     # ── v2: Caducean-driven voice logic ──────────────────────────────
 
@@ -410,14 +427,30 @@ class ConversationKernel:
                 pipeline is not None,
             )
             return
-        # Run synthesis + playback off the EventBus dispatch thread so a
-        # multi-second utterance doesn't block other subscribers.
-        threading.Thread(
-            target=self._speak_utterance,
-            args=(text, bool((payload.data or {}).get("interrupt"))),
-            daemon=True,
-            name="ck-utterance",
-        ).start()
+        # T4 (REQ-2/REQ-4/REQ-5): route the narration utterance through the
+        # lane scheduler as an ephemeral, subsumable, turn-bounded NARRATION
+        # node instead of playing directly. The scheduler serializes playback
+        # and applies subsumption/preemption/turn-boundary rules.
+        session_id = (
+            self._session_id_getter()
+            or getattr(self._voice_handler, "_active_session_id", None)
+            or "default"
+        )
+        turn_id = (payload.data or {}).get("turn_id") or "unknown"
+        situation = Situation(
+            trigger_label=NARRATION,
+            source="speak_tool",
+            content_shape="conversation",
+        )
+        node = build_node(
+            situation,
+            route(situation),
+            turn_id=turn_id,
+            session_id=session_id,
+            content={"kind": "text", "text": text},
+            kind="reactive",
+        )
+        self._scheduler.admit(node)
 
     def _broadcast_narration(self, session_id: str, msg: dict) -> None:
         """Broadcast a WS event for agent speech (audio_envelope / listening_state).
@@ -521,6 +554,32 @@ class ConversationKernel:
                 )
             except Exception:  # noqa: BLE001
                 pass
+
+    def _play_lane_node(self, node: UtteranceNode) -> None:
+        """Play a lane node (called by the scheduler's worker thread).
+
+        Delegates to the existing `_speak_utterance` path (which serializes
+        via the narration lock and broadcasts the narration contract), so the
+        lane engine reuses the proven playback machinery. The node's text is
+        the shaped spoken line.
+        """
+        text = (node.content or {}).get("text", "")
+        interrupt = node.lane == ALERT_CRITICAL
+        self._speak_utterance(text, interrupt)
+
+    @property
+    def scheduler(self) -> SpeechScheduler:
+        """The lane scheduler for this kernel (T5: play path routes through it)."""
+        return self._scheduler
+
+    def subsume_narration(self, *, turn_id: str, session_id: str) -> None:
+        """Cancel pending narration when a reply is admitted (REQ-4 AC4.2).
+
+        Called by the reply paths (voice turn, agent DAG, dashboard) before
+        they play through `_speak_response`. The reply's own playback is
+        contract-locked and untouched; this only silences queued narration.
+        """
+        self._scheduler.subsume_narration(turn_id=turn_id, session_id=session_id)
 
     def _on_utterance_chunk(self, payload) -> None:
         """Handle an utterance:chunk event.

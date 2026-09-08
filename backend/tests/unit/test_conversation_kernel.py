@@ -143,6 +143,11 @@ def test_no_duplicate_vad():
         "should_halt_on_violation",
         "subscribe_to_event_bus",
         "filter_speech",
+        # Speech lane engine (T4/T6): the kernel owns the lane scheduler and
+        # exposes the reply-subsumption entry point. Not VAD/TTS duplication —
+        # these are the lane-engine API surface.
+        "scheduler",
+        "subsume_narration",
     }
     actual = {
         m

@@ -3495,6 +3495,11 @@ class IRISGateway:
                         trigger_label="reply",
                         actual_lane="reply",
                     )
+                    # T6 (REQ-4 AC4.2): a reply silences pending narration.
+                    from backend.agent.conversation_kernel import get_conversation_kernel
+                    _ck = get_conversation_kernel()
+                    if _ck is not None:
+                        _ck.subsume_narration(turn_id=_turn_id or "unknown", session_id=sid)
                     self._logger.info("[TTS] _wrap_tts_streaming started â€” calling _speak_response")
                     self._speak_response(q, sid, _sttproc_stop=_sttproc_stop, _client_id=cid, _turn_id=_turn_id)
                     self._logger.info("[TTS] _speak_response completed")
@@ -3581,6 +3586,11 @@ class IRISGateway:
                         trigger_label="reply",
                         actual_lane="reply",
                     )
+                    # T6 (REQ-4 AC4.2): a reply silences pending narration.
+                    from backend.agent.conversation_kernel import get_conversation_kernel
+                    _ck = get_conversation_kernel()
+                    if _ck is not None:
+                        _ck.subsume_narration(turn_id=_turn_id or "unknown", session_id=session_id)
                     threading.Thread(
                         target=self._speak_response,
                         args=(_friendly, session_id),
@@ -4903,6 +4913,21 @@ class IRISGateway:
             _root_log.warning("[TTS] tts_play received with empty text")
             return
 
+        # T5 (REQ-6): route the play text through the single content-aware
+        # resolver. The play button is an explicit "read it to me" override
+        # (AC6.4), so full recitation is allowed — but it still flows through
+        # the ONE resolver (AC6.2) so spoken ⊆ visible holds on this road too.
+        from backend.agent.speech_lanes import resolve_spoken_text
+
+        text = resolve_spoken_text(
+            shown_text=text,
+            show_format=(message.get("payload") or {}).get("format"),
+            override_recite=True,
+        )
+        if not text:
+            _root_log.warning("[TTS] tts_play resolved to empty text")
+            return
+
         _root_log.info(f"[TTS] tts_play requested ({len(text)} chars)")
 
         # Track active TTS session for barge-in handler
@@ -5918,6 +5943,11 @@ class IRISGateway:
                             trigger_label="reply",
                             actual_lane="reply",
                         )
+                        # T6 (REQ-4 AC4.2): a reply silences pending narration.
+                        from backend.agent.conversation_kernel import get_conversation_kernel
+                        _ck = get_conversation_kernel()
+                        if _ck is not None:
+                            _ck.subsume_narration(turn_id=turn_id or "unknown", session_id=session_id)
                         threading.Thread(
                             target=_produce_brief,
                             daemon=True,
@@ -5953,6 +5983,11 @@ class IRISGateway:
                             trigger_label="reply",
                             actual_lane="reply",
                         )
+                        # T6 (REQ-4 AC4.2): a reply silences pending narration.
+                        from backend.agent.conversation_kernel import get_conversation_kernel
+                        _ck = get_conversation_kernel()
+                        if _ck is not None:
+                            _ck.subsume_narration(turn_id=turn_id or "unknown", session_id=session_id)
                     else:
                         # Say why, rather than going quiet with no trace — a
                         # silent turn with no log line is what made this cost
@@ -11060,6 +11095,11 @@ class IRISGateway:
                     trigger_label="reply",
                     actual_lane="reply",
                 )
+                # T6 (REQ-4 AC4.2): a reply silences pending narration.
+                from backend.agent.conversation_kernel import get_conversation_kernel
+                _ck = get_conversation_kernel()
+                if _ck is not None:
+                    _ck.subsume_narration(turn_id=tid or "unknown", session_id=sid)
                 self._speak_response(text, sid, _client_id=cid, _turn_id=tid)
             finally:
                 # Fanned out like every other lifecycle indicator: the turn
