@@ -5834,6 +5834,51 @@ class AgentKernel:
         )
         return None
 
+    def _note_tool_wait(
+        self, *, tool_name: str, wait_id: str, turn_id=None, session_id=None
+    ) -> None:
+        """Open a narratable tool wait (REQ-10 AC10.11, T13). Never raises.
+
+        Entry lines speak only for known-long waits; every wait carries its
+        stated budget so an expectation-miss line fires if crossed with no
+        result. Exit (TOOL_RESULT/ERROR site) stays silent — results voice
+        via the reply path.
+        """
+        try:
+            from backend.agent.conversation_kernel import get_conversation_kernel
+
+            kernel = get_conversation_kernel()
+            scheduler = getattr(kernel, "scheduler", None) if kernel else None
+            if scheduler is None:
+                return
+            name = (tool_name or "").lower()
+            # Budgets mirror tool_bridge.py:933 (60s vision/gui_automation,
+            # else 30s). Entry lines are for known-long waits: the 60s class
+            # plus crawl (multi-fetch runs long in practice).
+            long_wait = ("vision" in name) or ("gui" in name) or ("crawl" in name)
+            budget = 60.0 if (("vision" in name) or ("gui" in name)) else 30.0
+            scheduler.note_wait(
+                wait_id,
+                turn_id=turn_id or "unknown",
+                session_id=session_id or "unknown",
+                budget_s=budget,
+                long_wait=long_wait,
+            )
+        except Exception:  # noqa: BLE001 — narration never blocks tool runs
+            pass
+
+    def _end_tool_wait(self, wait_id: str) -> None:
+        """Close a narratable tool wait (REQ-10 AC10.11, T13). Never raises."""
+        try:
+            from backend.agent.conversation_kernel import get_conversation_kernel
+
+            kernel = get_conversation_kernel()
+            scheduler = getattr(kernel, "scheduler", None) if kernel else None
+            if scheduler is not None and wait_id:
+                scheduler.end_wait(wait_id)
+        except Exception:  # noqa: BLE001
+            pass
+
     def _admit_first_beat(self, plan, *, turn_id=None, session_id=None) -> None:
         """Speak the first planned beat immediately (REQ-10 AC10.10, T12).
 
@@ -8275,6 +8320,18 @@ Respond with a JSON object:
                     },
                     turn_id=_turn_id,
                     conversation_id=self.conversation_id,
+                )
+            except Exception:
+                pass
+            # T13 (REQ-10 AC10.11): the tool started — open its narratable
+            # wait (entry line only for known-long waits; miss fires from
+            # the scheduler worker if the stated budget is crossed).
+            try:
+                self._note_tool_wait(
+                    tool_name=item.tool or "direct",
+                    wait_id=_lifecycle_task_id,
+                    turn_id=_turn_id,
+                    session_id=_session,
                 )
             except Exception:
                 pass
@@ -12916,6 +12973,12 @@ Respond with a JSON object:
                     conversation_id=self.conversation_id,
                     session_id=_session,
                 )
+        except Exception:
+            pass
+        # T13 (REQ-10 AC10.11): the tool finished — close its narratable wait.
+        # Results voice via the reply path; exit itself stays silent.
+        try:
+            self._end_tool_wait(_lifecycle_task_id)
         except Exception:
             pass
 

@@ -26,7 +26,7 @@ import logging
 import threading
 import time
 import uuid
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional, Tuple
 
@@ -86,9 +86,39 @@ TURN_FAILURE_TRIP_COUNT = 3
 FAILURE_NOTICE_KIND = "failure_notice"
 FAILURE_NOTICE_TEXT = "Sorry — that reply didn't play. Continuing."
 
+# ── Beat store (REQ-10, T13; design.md D10/D12) ────────────────────────────
+# The scheduler queue IS the beat store: beats are immutable UtteranceNodes
+# (kind planned|reactive); the agent amends via atomic ADD / REPLACE /
+# CANCEL, each landing fully or rejected with a logged reason. Pending
+# narration coalesces (burst merge); playing narration always finishes its
+# sentence (AC10.10) — spacing is emergent, never timer-driven.
+BEAT_MERGE_DEBOUNCE_S = 2.0  # burst window (UNVERIFIED — tune live via REQ-9)
+BEAT_RECENT_OPENINGS = 8     # spoken-opening ring for the bounce check
+BEAT_OPENING_WORDS = 5       # normalized opening = first N alnum words
+NODE_REGISTRY_MAX = 128      # settled-node registry cap (replace reasons)
+BOUNCED_OPENINGS_MAX = 64    # bounced-opening set cap
+# Fixed companion vocabulary for wait narration (direction-level, no tool
+# names, no mechanics — same class as the AC8.2 failure notice).
+WAIT_ENTRY_TEXT = "This step takes a while — still working."
+WAIT_MISS_TEXT = "Still on it — taking longer than expected."
+
 # Narration-beat kinds (session-305): immutable nodes.
 KIND_PLANNED = "planned"
 KIND_REACTIVE = "reactive"
+
+
+def _node_text(node: "UtteranceNode") -> str:
+    """Spoken text carried by a node ("" for streaming queues)."""
+    content = node.content or {}
+    text = content.get("text", "")
+    return text if isinstance(text, str) else ""
+
+
+def _normalized_opening(text: str) -> str:
+    """First BEAT_OPENING_WORDS alnum words, lowercased (AC10.12 matching)."""
+    import re as _re
+
+    return " ".join(_re.findall(r"[a-z0-9]+", text.lower())[:BEAT_OPENING_WORDS])
 
 
 # ── Situation (router input) ───────────────────────────────────────────────
@@ -413,6 +443,26 @@ class SpeechObservability:
             },
         )
 
+    def record_beat_event(
+        self, kind: str, *, turn_id: str, session_id: str, detail: str = ""
+    ) -> None:
+        """Count a beat-store / wait event (REQ-10 tuning feed, T13).
+
+        Kinds: beat_revision, beat_replace_rejected, beat_merged,
+        beat_bounced, wait_entry, wait_miss, wait_exit.
+        """
+        self._counters.incr(f"beat:{kind}")
+        logger.info(
+            "SpeechLane beat",
+            extra={
+                "context": "speech_lanes",
+                "event": kind,
+                "turn_id": turn_id or "unknown",
+                "session_id": session_id or "unknown",
+                "detail": detail,
+            },
+        )
+
 
 # ── Shadow-mode observer (REQ-9 AC9.3) ─────────────────────────────────────
 class ShadowObserver:
@@ -591,6 +641,14 @@ class SpeechScheduler:
         self._turn_failed_nodes: Dict[str, set] = defaultdict(set)
         self._failure_notice_turns: set = set()
         self._drained_turns: set = set()
+        # Beat store (REQ-10, T13 — the queue IS the store, design.md D10):
+        # node registry for replace/cancel reasons (bounded), recent spoken
+        # openings for the anti-repetition bounce (bounded ring), bounced
+        # openings (one bounce each, bounded), live waits for miss detection.
+        self._nodes: Dict[str, UtteranceNode] = {}
+        self._recent_openings: deque = deque(maxlen=BEAT_RECENT_OPENINGS)
+        self._bounced_openings: Dict[str, None] = {}
+        self._waits: Dict[str, dict] = {}
         if auto_start:
             self.start()
 
@@ -631,6 +689,7 @@ class SpeechScheduler:
             node.state = STATE_QUEUED
             self._queue.append(node)
             self._queue.sort(key=lambda n: (LANE_PRIORITY[n.lane], n.enqueued_at))
+            self._register_node(node)
         self._wake.set()
 
     def barge_in(self, *, turn_id: str, session_id: str) -> None:
@@ -651,6 +710,9 @@ class SpeechScheduler:
             self._turn_failed_nodes.clear()
             self._failure_notice_turns.clear()
             self._drained_turns.clear()
+            # ...and their waits (REQ-10): a fresh turn re-announces its own.
+            self._waits.clear()
+            self._bounced_openings.clear()
         # Reopen the half-duplex mic gate immediately (REQ-7 AC7.2) so the new
         # turn's recording starts capturing without waiting for the worker to
         # observe the cancellation. The worker's finally block re-closes it
@@ -673,6 +735,11 @@ class SpeechScheduler:
             self._turn_failed_nodes.pop(turn_id, None)
             self._failure_notice_turns.discard(turn_id)
             self._drained_turns.discard(turn_id)
+            # ...and its waits (REQ-10, T13).
+            self._waits = {
+                wid: w for wid, w in self._waits.items()
+                if w.get("turn_id") != turn_id
+            }
         self._wake.set()
 
     def subsume_narration(self, *, turn_id: str, session_id: str) -> None:
@@ -701,6 +768,249 @@ class SpeechScheduler:
                     kept.append(n)
             self._queue = kept
         self._wake.set()
+
+    # ── beat store: ADD / REPLACE / CANCEL (REQ-10, T13, design.md D10) ──
+    def _register_node(self, node: UtteranceNode) -> None:
+        """Track a node for replace/cancel reasons (bounded registry)."""
+        self._nodes[node.id] = node
+        while len(self._nodes) > NODE_REGISTRY_MAX:
+            self._nodes.pop(next(iter(self._nodes)))
+
+    def _check_bounce(self, text: str, *, turn_id: str, session_id: str) -> None:
+        """Anti-repetition bounce (REQ-10 AC10.12): a newly authored beat whose
+        normalized opening exactly matches a recently spoken beat is bounced
+        back exactly once — then it speaks regardless (admission below always
+        proceeds; the bounce is the logged signal, never a block)."""
+        opening = _normalized_opening(text)
+        if not opening or opening in self._bounced_openings:
+            return
+        with self._lock:
+            recent = opening in self._recent_openings
+        if not recent:
+            return
+        self._bounced_openings[opening] = None
+        while len(self._bounced_openings) > BOUNCED_OPENINGS_MAX:
+            self._bounced_openings.pop(next(iter(self._bounced_openings)))
+        self._obs.record_beat_event(
+            "beat_bounced", turn_id=turn_id, session_id=session_id,
+            detail=f"opening {opening!r} repeats recent speech; admitted once",
+        )
+
+    def add_beat(
+        self, text: str, *, turn_id: str, session_id: str, kind: str = KIND_PLANNED
+    ) -> str:
+        """ADD a narration beat (atomic: lands fully or not at all)."""
+        text = (text or "").strip()
+        if not text:
+            raise ValueError("beat text must not be empty")
+        self._check_bounce(text, turn_id=turn_id, session_id=session_id)
+        situation = Situation(
+            trigger_label=NARRATION, source="beat", content_shape="prose"
+        )
+        node = build_node(
+            situation, route(situation), turn_id=turn_id or "unknown",
+            session_id=session_id or "unknown",
+            content={"kind": "text", "text": text}, kind=kind,
+        )
+        self.admit(node)
+        return node.id
+
+    def admit_reactive(
+        self, text: str, *, turn_id: str, session_id: str, pivot: bool = False
+    ) -> str:
+        """Admit a live reactive line with burst merge (REQ-10 AC10.9).
+
+        Findings arriving while the turn's youngest queued reactive is still
+        inside the debounce window fold into ONE merged line (never N
+        back-to-back utterances). Pivot-grade findings bypass the merge and
+        admit immediately — still behind any playing node (AC10.10/D12).
+        """
+        text = (text or "").strip()
+        if not text:
+            raise ValueError("reactive text must not be empty")
+        self._check_bounce(text, turn_id=turn_id, session_id=session_id)
+        if not pivot:
+            # Helper locks internally; a race (target played/cancelled
+            # between lookup and replace) falls through to a fresh admit.
+            target = self._youngest_pending_reactive(turn_id)
+            if target is not None:
+                merged = f"{_node_text(target)}; {text}"
+                target_id = target.id
+            if target is not None:
+                new_id = self.replace_beat(
+                    target_id, merged, turn_id=turn_id, session_id=session_id,
+                )
+                if new_id is not None:
+                    self._obs.record_beat_event(
+                        "beat_merged", turn_id=turn_id, session_id=session_id,
+                        detail=f"folded into {target_id}",
+                    )
+                    return new_id
+                # Target raced away (played/cancelled) — fall through to admit.
+        situation = Situation(
+            trigger_label=NARRATION, source="reactive", content_shape="prose"
+        )
+        node = build_node(
+            situation, route(situation), turn_id=turn_id or "unknown",
+            session_id=session_id or "unknown",
+            content={"kind": "text", "text": text}, kind=KIND_REACTIVE,
+        )
+        self.admit(node)
+        return node.id
+
+    def _youngest_pending_reactive(self, turn_id: str) -> Optional[UtteranceNode]:
+        """Youngest QUEUED reactive narration node of the turn inside the
+        debounce window, or None. Caller must hold no lock (takes it)."""
+        now = time.time()
+        with self._lock:
+            best: Optional[UtteranceNode] = None
+            for n in self._queue:
+                if (
+                    n.lane != NARRATION
+                    or n.turn_id != turn_id
+                    or n.state != STATE_QUEUED
+                    or n.kind != KIND_REACTIVE
+                ):
+                    continue
+                if now - n.enqueued_at > BEAT_MERGE_DEBOUNCE_S:
+                    continue
+                if best is None or n.enqueued_at > best.enqueued_at:
+                    best = n
+            return best
+
+    def replace_beat(
+        self, beat_id: str, new_text: str, *, turn_id: str, session_id: str
+    ) -> Optional[str]:
+        """REPLACE = atomic cancel + add (design.md D10).
+
+        Returns the new node id, or None with a logged reason when the target
+        is already playing/spoken/dead (stale beats die; they are never
+        resurrected or rewritten — engine transitions state, agent writes
+        content).
+        """
+        new_text = (new_text or "").strip()
+        if not new_text:
+            raise ValueError("replacement text must not be empty")
+        with self._lock:
+            node = self._nodes.get(beat_id)
+            queued = (
+                node is not None
+                and node.state == STATE_QUEUED
+                and any(n is node for n in self._queue)
+            )
+            if node is not None and not queued:
+                reason = (
+                    "already playing" if node.state == STATE_PLAYING
+                    else "already spoken" if node.state in (STATE_DONE, STATE_FAILED)
+                    else "turn dead"
+                )
+                self._obs.record_beat_event(
+                    "beat_replace_rejected", turn_id=turn_id,
+                    session_id=session_id, detail=f"{beat_id}: {reason}",
+                )
+                return None
+            if node is None:
+                self._obs.record_beat_event(
+                    "beat_replace_rejected", turn_id=turn_id,
+                    session_id=session_id, detail=f"{beat_id}: unknown beat",
+                )
+                return None
+            kind = node.kind or KIND_REACTIVE
+            node.state = STATE_CANCELLED
+            self._obs.record_node_outcome(node, detail="replaced")
+            self._queue = [n for n in self._queue if n is not node]
+        self._obs.record_beat_event(
+            "beat_revision", turn_id=turn_id, session_id=session_id,
+            detail=f"{beat_id} replaced",
+        )
+        return self.add_beat(new_text, turn_id=turn_id, session_id=session_id, kind=kind)
+
+    def cancel_beat(self, beat_id: str, *, turn_id: str, session_id: str) -> bool:
+        """CANCEL a pending beat. False + logged reason when already gone."""
+        with self._lock:
+            node = self._nodes.get(beat_id)
+            if (
+                node is None
+                or node.state != STATE_QUEUED
+                or not any(n is node for n in self._queue)
+            ):
+                reason = "unknown beat" if node is None else (
+                    "already playing" if node and node.state == STATE_PLAYING
+                    else "already settled"
+                )
+                self._obs.record_beat_event(
+                    "beat_replace_rejected", turn_id=turn_id,
+                    session_id=session_id, detail=f"{beat_id}: {reason}",
+                )
+                return False
+            node.state = STATE_CANCELLED
+            self._obs.record_node_outcome(node, detail="beat-cancelled")
+            self._queue = [n for n in self._queue if n is not node]
+            return True
+
+    # ── wait-state triggers (REQ-10 AC10.11, T13) ─────────────────────
+    def note_wait(
+        self, wait_id: str, *, turn_id: str, session_id: str,
+        budget_s: float, long_wait: bool,
+    ) -> None:
+        """Record a tool wait; known-long waits speak one entry line.
+
+        Expectation-miss fires from the worker loop when the wait crosses its
+        stated budget with no result (no timers — the existing 0.5s wake
+        drives the check). Exit is silent (results voice via the reply path).
+        """
+        with self._lock:
+            self._waits[wait_id] = {
+                "deadline": time.time() + max(budget_s, 0.1),
+                "turn_id": turn_id,
+                "session_id": session_id,
+                "missed": False,
+            }
+        self._obs.record_beat_event(
+            "wait_entry", turn_id=turn_id, session_id=session_id,
+            detail=f"{wait_id} budget={budget_s:g}s",
+        )
+        if long_wait:
+            try:
+                self.admit_reactive(
+                    WAIT_ENTRY_TEXT, turn_id=turn_id, session_id=session_id,
+                )
+            except Exception as exc:  # noqa: BLE001 — narration never blocks waits
+                logger.debug("[speech_lanes] wait entry line skipped: %s", exc)
+
+    def end_wait(self, wait_id: str) -> None:
+        """Close a wait (result arrived — results voice via the reply path)."""
+        with self._lock:
+            wait = self._waits.pop(wait_id, None)
+        if wait is not None:
+            self._obs.record_beat_event(
+                "wait_exit", turn_id=wait.get("turn_id", ""),
+                session_id=wait.get("session_id", ""),
+                detail=wait_id,
+            )
+
+    def _check_waits(self) -> None:
+        """Fire expectation-miss lines for waits past budget (worker loop)."""
+        now = time.time()
+        due: list = []
+        with self._lock:
+            for wait_id, wait in self._waits.items():
+                if not wait.get("missed") and now >= wait.get("deadline", now):
+                    wait["missed"] = True
+                    due.append((wait_id, wait))
+        for wait_id, wait in due:
+            self._obs.record_beat_event(
+                "wait_miss", turn_id=wait.get("turn_id", ""),
+                session_id=wait.get("session_id", ""),
+                detail=f"{wait_id} crossed stated budget",
+            )
+            try:
+                self.admit_reactive(
+                    WAIT_MISS_TEXT, turn_id=wait.get("turn_id", ""),
+                    session_id=wait.get("session_id", ""),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[speech_lanes] wait miss line skipped: %s", exc)
 
     # ── derived gates (REQ-7 AC7.2) ──────────────────────────────────
     def _set_gate(self, active: bool) -> None:
@@ -762,6 +1072,9 @@ class SpeechScheduler:
             self._wake.clear()
             if self._stop.is_set():
                 break
+            # Wait expectation-miss check rides the existing wake (REQ-10
+            # AC10.11, T13) — no timers, no extra threads.
+            self._check_waits()
             node = self._pop_next()
             if node is None:
                 continue
@@ -860,6 +1173,9 @@ class SpeechScheduler:
         with self._lock:
             if self._running is node:
                 self._running = None
+            if node.state == STATE_DONE and node.lane == NARRATION:
+                # Feed the anti-repetition ring (AC10.12) with spoken beats.
+                self._recent_openings.append(_normalized_opening(_node_text(node)))
         self._obs.record_node_outcome(node)
 
     def _handle_node_failure(self, node: UtteranceNode, *, detail: str) -> None:
