@@ -64,6 +64,28 @@ STATE_FAILED = "failed"
 NODE_STATES = (STATE_QUEUED, STATE_READY, STATE_PLAYING, STATE_DONE,
                STATE_CANCELLED, STATE_FAILED)
 
+# ── Watchdog + failure semantics (REQ-8, REQ-7 AC7.3) ──────────────────────
+# Per-node play budget. Rationale (physical, not tuned-to-green): the longest
+# legitimate per-node synthesis measured ~62 s (2500 chars on the real worker,
+# pre-split-guard); the 2000-char sequential-split guard bounds nodes further.
+# 120 s is ~2x headroom — a play call exceeding it is wedged, not slow.
+NODE_WATCHDOG_TIMEOUT_S = 120.0
+# A node whose queue wait already consumed its deadline still gets this floor,
+# so queue wait alone can never wedge-fail a healthy node on the spot (it
+# retries with a fresh deadline if it trips).
+WATCHDOG_STALE_FLOOR_S = 0.2
+# Watchdog poll granularity: how fast barge-in / preemption / stop preempts a
+# play wait, and how soon past-deadline is noticed.
+WATCHDOG_POLL_S = 0.05
+# Cascading-failure trip: distinct dead nodes in one turn that drains the turn.
+# Counts DISTINCT nodes, not attempts — one flaky node retrying once must not
+# trip the drain by itself; three independently dead nodes means the lane is
+# broken for this turn.
+TURN_FAILURE_TRIP_COUNT = 3
+# Failure-notice content kind — notices never retry and never raise notices.
+FAILURE_NOTICE_KIND = "failure_notice"
+FAILURE_NOTICE_TEXT = "Sorry — that reply didn't play. Continuing."
+
 # Narration-beat kinds (session-305): immutable nodes.
 KIND_PLANNED = "planned"
 KIND_REACTIVE = "reactive"
@@ -212,6 +234,7 @@ class UtteranceNode:
     priority: int = 0            # lane-derived
     enqueued_at: float = 0.0
     deadline: float = 0.0        # node watchdog (stuck detection, Wave 3)
+    attempts: int = 0            # play tries so far (AC8.3: at most one retry)
     kind: Optional[str] = None   # "planned" | "reactive" (narration only)
     audio_ref: Optional[str] = None  # synthesize-and-hold buffer ref (Wave 4)
 
@@ -242,7 +265,7 @@ def build_node(
     Records the routing decision (inputs + chosen lane) on the node's trigger
     provenance for observability.
     """
-    return UtteranceNode(
+    node = UtteranceNode(
         id=f"utt_{uuid.uuid4().hex[:8]}",
         lane=decision.lane,
         trigger={
@@ -256,6 +279,11 @@ def build_node(
         content=content or {"kind": "text", "text": ""},
         kind=kind,
     )
+    # Wire the node watchdog (REQ-8, REQ-7 AC7.3): the play phase must finish
+    # before enqueued_at + budget, or the scheduler fails the node and frees
+    # the derived gates.
+    node.deadline = node.enqueued_at + NODE_WATCHDOG_TIMEOUT_S
+    return node
 
 
 # ── Observability (REQ-9) ──────────────────────────────────────────────────
@@ -556,6 +584,13 @@ class SpeechScheduler:
         self._stop = threading.Event()
         self._worker: Optional[threading.Thread] = None
         self._running: Optional[UtteranceNode] = None
+        # Failure semantics (REQ-8): per-turn distinct dead-node ids (cascade
+        # trip), turns that already got their one-breath notice (AC8.2 cap),
+        # turns drained by the cascade trip. Scoped by turn and cleaned on
+        # turn end / barge-in, so the footprint stays bounded.
+        self._turn_failed_nodes: Dict[str, set] = defaultdict(set)
+        self._failure_notice_turns: set = set()
+        self._drained_turns: set = set()
         if auto_start:
             self.start()
 
@@ -612,6 +647,10 @@ class SpeechScheduler:
             self._obs.record_preemption(
                 lane="*", turn_id=turn_id, session_id=session_id, detail="barge-in"
             )
+            # Old turns are dead — drop their failure bookkeeping (REQ-8).
+            self._turn_failed_nodes.clear()
+            self._failure_notice_turns.clear()
+            self._drained_turns.clear()
         # Reopen the half-duplex mic gate immediately (REQ-7 AC7.2) so the new
         # turn's recording starts capturing without waiting for the worker to
         # observe the cancellation. The worker's finally block re-closes it
@@ -630,6 +669,10 @@ class SpeechScheduler:
                 else:
                     kept.append(n)
             self._queue = kept
+            # The turn is over — drop its failure bookkeeping (REQ-8).
+            self._turn_failed_nodes.pop(turn_id, None)
+            self._failure_notice_turns.discard(turn_id)
+            self._drained_turns.discard(turn_id)
         self._wake.set()
 
     def subsume_narration(self, *, turn_id: str, session_id: str) -> None:
@@ -725,21 +768,179 @@ class SpeechScheduler:
             with self._lock:
                 self._running = node
                 node.state = STATE_PLAYING
+                node.attempts += 1
             # Close the half-duplex mic gate while any play-node runs (REQ-7
             # AC7.2). The gate is derived from scheduler state, not manual
             # open/close calls at call sites.
             self._set_gate(True)
+            outcome = self._play_with_watchdog(node)
+            if outcome == "ok":
+                node.state = STATE_DONE
+                self._finish_node(node)
+            elif outcome == "abandoned":
+                # Barge-in / preemption / stop claimed the node mid-play and
+                # already recorded its outcome — just clear the slot. The
+                # orphaned play thread is a daemon: it dies with the process
+                # and never touches node state again.
+                with self._lock:
+                    if self._running is node:
+                        self._running = None
+                self._set_gate(False)
+            else:  # "failed" (raised) or "wedged" (past deadline)
+                self._handle_node_failure(node, detail=outcome)
+
+    def _play_with_watchdog(self, node: UtteranceNode) -> str:
+        """Run the play callable with stuck detection (REQ-7 AC7.3, REQ-8).
+
+        The play call runs in a daemon thread so a wedged call cannot pin the
+        scheduler worker. Returns "ok" (played), "failed" (raised), "wedged"
+        (past deadline), or "abandoned" (barge-in / preemption / stop claimed
+        the node first — the claimer already recorded the outcome).
+        """
+        errors: list = []
+
+        def _target() -> None:
             try:
                 self._play_fn(node)
-                node.state = STATE_DONE
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("[speech_lanes] node %s failed: %s", node.id, exc)
-                node.state = STATE_FAILED
-            finally:
-                self._set_gate(False)
-                with self._lock:
-                    self._running = None
-                self._obs.record_node_outcome(node)
+            except BaseException as exc:  # noqa: BLE001 — captured, handled below
+                errors.append(exc)
+
+        play_thread = threading.Thread(
+            target=_target, daemon=True, name=f"speech-lane-play-{node.id}"
+        )
+        start = time.time()
+        if node.deadline > 0:
+            budget = node.deadline - start
+        else:
+            # Hand-built nodes predate the watchdog: full budget, not zero.
+            budget = NODE_WATCHDOG_TIMEOUT_S
+        budget = max(budget, WATCHDOG_STALE_FLOOR_S)
+        play_thread.start()
+        deadline = start + budget
+        while play_thread.is_alive():
+            if self._stop.is_set():
+                return "abandoned"
+            with self._lock:
+                claimed = node.state != STATE_PLAYING
+            if claimed:
+                return "abandoned"
+            if time.time() >= deadline:
+                logger.warning(
+                    "[speech_lanes] node %s wedged past watchdog (%.1fs); "
+                    "failing node, freeing gates",
+                    node.id,
+                    budget,
+                    extra={
+                        "context": "speech_lanes",
+                        "node_id": node.id,
+                        "turn_id": node.turn_id,
+                        "session_id": node.session_id,
+                    },
+                )
+                return "wedged"
+            play_thread.join(timeout=WATCHDOG_POLL_S)
+        if errors:
+            logger.warning(
+                "[speech_lanes] node %s failed: %s",
+                node.id,
+                errors[0],
+                extra={
+                    "context": "speech_lanes",
+                    "node_id": node.id,
+                    "turn_id": node.turn_id,
+                    "session_id": node.session_id,
+                },
+            )
+            return "failed"
+        return "ok"
+
+    def _finish_node(self, node: UtteranceNode) -> None:
+        """Clear a done node: free the derived gate, record the outcome."""
+        self._set_gate(False)
+        with self._lock:
+            if self._running is node:
+                self._running = None
+        self._obs.record_node_outcome(node)
+
+    def _handle_node_failure(self, node: UtteranceNode, *, detail: str) -> None:
+        """Fail a node, free gates, keep the turn going (REQ-8 AC8.1).
+
+        Marks the node failed, frees the derived gates, then applies the
+        failure semantics in order: cascade trip → retry-once → one-breath
+        notice. The worker loop continues with the next node either way, so
+        the turn proceeds visibly without the dead utterance.
+        """
+        node.state = STATE_FAILED
+        self._set_gate(False)
+        with self._lock:
+            if self._running is node:
+                self._running = None
+        self._obs.record_node_outcome(node, detail=detail)
+        turn_id = node.turn_id
+        with self._lock:
+            self._turn_failed_nodes[turn_id].add(node.id)
+            distinct_failures = len(self._turn_failed_nodes[turn_id])
+        # Cascading failures (REQ-8 edge): 3+ DISTINCT dead nodes in one turn
+        # drains the turn — it completes silently-visible, error logged once.
+        if distinct_failures >= TURN_FAILURE_TRIP_COUNT:
+            if turn_id not in self._drained_turns:
+                self._drained_turns.add(turn_id)
+                logger.warning(
+                    "[speech_lanes] turn %s drained after %d distinct node failures",
+                    turn_id,
+                    distinct_failures,
+                    extra={"context": "speech_lanes", "turn_id": turn_id},
+                )
+            self._drain_turn(turn_id)
+            return
+        # Retry-once (REQ-8 AC8.3): requeue on the next scheduler pass with a
+        # fresh deadline, then drop. A wedged node costs at most one more
+        # budget head-of-line before it drops. Failure notices never retry.
+        if node.attempts <= 1 and node.content.get("kind") != FAILURE_NOTICE_KIND:
+            node.state = STATE_QUEUED
+            node.deadline = time.time() + NODE_WATCHDOG_TIMEOUT_S
+            with self._lock:
+                self._queue.append(node)
+                self._queue.sort(key=lambda n: (LANE_PRIORITY[n.lane], n.enqueued_at))
+            self._obs.record_node_outcome(node, detail="retrying")
+            self._wake.set()
+        # One-breath Critical cap (REQ-8 AC8.2): a REPLY/ALERT death speaks a
+        # single short notice per turn — never a loop of failure announcements.
+        if (
+            node.lane in (REPLY, ALERT_CRITICAL, ALERT_AWAITING)
+            and node.content.get("kind") != FAILURE_NOTICE_KIND
+            and turn_id not in self._failure_notice_turns
+        ):
+            self._failure_notice_turns.add(turn_id)
+            self.admit(self._build_failure_notice(node))
+
+    def _drain_turn(self, turn_id: str) -> None:
+        """Cancel all queued nodes for a turn (cascading-failure trip)."""
+        with self._lock:
+            kept: list[UtteranceNode] = []
+            for n in self._queue:
+                if n.turn_id == turn_id:
+                    n.state = STATE_CANCELLED
+                    self._obs.record_node_outcome(n, detail="turn-drained")
+                else:
+                    kept.append(n)
+            self._queue = kept
+        self._wake.set()
+
+    def _build_failure_notice(self, node: UtteranceNode) -> UtteranceNode:
+        """One-breath Critical notice for a dead REPLY/ALERT (REQ-8 AC8.2)."""
+        return UtteranceNode(
+            id=f"utt_failnotice_{uuid.uuid4().hex[:8]}",
+            lane=ALERT_CRITICAL,
+            trigger={
+                "source": "scheduler",
+                "label": ALERT_CRITICAL,
+                "rule_fired": "watchdog:failure-notice",
+            },
+            turn_id=node.turn_id,
+            session_id=node.session_id,
+            content={"kind": FAILURE_NOTICE_KIND, "text": FAILURE_NOTICE_TEXT},
+        )
 
 
 # ── Content-aware spoken shaping (REQ-6) ──────────────────────────────────
