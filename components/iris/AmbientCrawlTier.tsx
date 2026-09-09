@@ -558,7 +558,11 @@ export function AmbientCrawlTier({
           style={{
             color: "rgba(255,255,255,0.95)",
             textShadow: "0 1px 3px rgba(0,0,0,0.6)",
-            maxWidth: "40vw",
+            // The pill has no width of its own, so a viewport-relative cap
+            // alone lets long crawl queries stretch it across lanes (live
+            // 2026-09-09: status text spilled into the DashboardWing). Bound
+            // the text absolutely; ellipsis does the rest.
+            maxWidth: "min(320px, 60vw)",
           }}
         >
           {statusLine}

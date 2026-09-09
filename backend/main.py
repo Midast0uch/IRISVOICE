@@ -2445,7 +2445,12 @@ async def api_config_save(body: dict = {}):
             # uses — and clear the legacy field so the fallback can never serve
             # an outdated credential.
             if "api_key" in values:
-                if provider:
+                # Empty submission = the password field was blank (the
+                # frontend never echoes the stored key) — NOT a delete. A
+                # missing key must never clear the keyring's copy (same rule
+                # as the WS confirm_card path): dashboard auto-saves were
+                # blanking live credentials on every wing open.
+                if provider and values["api_key"]:
                     from backend.agent.inference.keyring import set_secret
 
                     set_secret(provider, values["api_key"])

@@ -138,6 +138,27 @@ def test_format_tool_result_json_fallback_for_unknown_dict():
     assert "'foo'" not in out
 
 
+def test_format_tool_result_summarizes_document_envelope():
+    # get_rendered_documents envelope (no content key) must render human
+    # text, never the raw payload (live 2026-09-09 card leak).
+    out = AgentKernel._format_tool_result(
+        {
+            "success": True,
+            "conversation_id": "conv-96",
+            "documents": [
+                {"document_id": "a", "title": "Piper"},
+                {"document_id": "b", "title": "Coqui TTS"},
+            ],
+        }
+    )
+    assert out == "2 document(s) retrieved: Piper, Coqui TTS"
+    assert "conversation_id" not in out
+    out_empty = AgentKernel._format_tool_result(
+        {"success": True, "conversation_id": "c", "documents": []}
+    )
+    assert out_empty == "0 document(s) retrieved"
+
+
 def test_format_tool_result_non_string_value_jsonified():
     # A content key holding structured data -> jsonified, not str(repr)
     out = AgentKernel._format_tool_result(

@@ -11776,6 +11776,27 @@ Respond with a JSON object:
                     if isinstance(_val, str):
                         return _val
                     return json.dumps(_val, ensure_ascii=False, default=str)
+                # Document envelopes (e.g. get_rendered_documents) carry no
+                # content key — without this they fell to compact JSON and the
+                # raw payload (success/conversation_id/documents) rendered
+                # verbatim on task-card rows (live 2026-09-09). Summarize
+                # human-side; full data stays in the document store.
+                _docs = raw.get("documents")
+                if isinstance(_docs, list):
+                    _titles = [
+                        d.get("title") or d.get("document_id") or ""
+                        for d in _docs
+                        if isinstance(d, dict)
+                    ]
+                    _titles = [t for t in _titles if t][:3]
+                    _base = (
+                        f"{len(_docs)} document(s) retrieved"
+                    )
+                    return (
+                        f"{_base}: {', '.join(_titles)}"
+                        if _titles
+                        else _base
+                    )
                 return json.dumps(raw, ensure_ascii=False, default=str)
             except Exception:
                 return str(raw)

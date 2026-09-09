@@ -2037,8 +2037,19 @@ export function useIRISWebSocket(
     }
 
     // ── Browser path: send via raw WebSocket ─────────────────────────────
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(message)
+    // Prefer this instance's ref, but fall back to the SHARED socket: instances
+    // that adopted an already-open socket (connect() early-return) never got
+    // wsRef assigned, so their sends queued forever with no reconnect to flush
+    // them — observed live as Brain/Tool dropdown selections never reaching the
+    // backend (zero set_role_binding server-side) while chat-view sends worked.
+    const liveWs =
+      wsRef.current?.readyState === WebSocket.OPEN
+        ? wsRef.current
+        : _sharedWs?.readyState === WebSocket.OPEN
+          ? _sharedWs
+          : null
+    if (liveWs) {
+      liveWs.send(message)
       return true
     }
 

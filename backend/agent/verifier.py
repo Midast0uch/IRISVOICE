@@ -31,7 +31,9 @@ trust/channel assignment (REQ-11 AC6, REQ-22) — this module returns only
 
 from __future__ import annotations
 
+import importlib.util
 import logging
+import os
 import re
 from typing import Callable, Optional, Tuple
 
