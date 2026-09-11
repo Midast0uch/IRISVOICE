@@ -133,8 +133,11 @@ class DocumentDataStore:
     ) -> None:
         """Upsert a document's canonical data + variants (idempotent by id)."""
         try:
-            self._conn.execute(
-                "INSERT INTO document_data "
+            from backend.memory.db import locked_retry as _locked_retry326
+
+            def _write326() -> None:
+                self._conn.execute(
+                    "INSERT INTO document_data "
                 "(document_id, conversation_id, fmt, content, variants, alternatives, trust, revision, "
                 " source_document_id, sources, har_path, turn_id) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
@@ -164,7 +167,9 @@ class DocumentDataStore:
                     turn_id,
                 ),
             )
-            self._conn.commit()
+                self._conn.commit()
+
+            _locked_retry326(_write326, label="document_data.store")
             self._evict_if_needed()
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("[DocumentDataStore] store failed: %s", exc)
@@ -176,12 +181,18 @@ class DocumentDataStore:
         later recall sees the latest version.  Returns False if the id is unknown.
         """
         try:
-            cur = self._conn.execute(
-                "UPDATE document_data SET content=?, fmt=?, variants=?, trust=?, revision=revision+1 "
-                "WHERE document_id=?",
-                (content, fmt, json.dumps(variants or {}, ensure_ascii=False), trust, document_id),
-            )
-            self._conn.commit()
+            from backend.memory.db import locked_retry as _locked_retry326
+
+            def _write326():
+                cur326 = self._conn.execute(
+                    "UPDATE document_data SET content=?, fmt=?, variants=?, trust=?, revision=revision+1 "
+                    "WHERE document_id=?",
+                    (content, fmt, json.dumps(variants or {}, ensure_ascii=False), trust, document_id),
+                )
+                self._conn.commit()
+                return cur326
+
+            cur = _locked_retry326(_write326, label="document_data.update")
             return cur.rowcount > 0
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("[DocumentDataStore] update failed: %s", exc)

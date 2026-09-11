@@ -815,6 +815,10 @@ def _register_search_discovery_node() -> None:
                 category="web",
                 permission_tier="read_only",
                 executor="crawler",
+                # Session-326: internal recovery node — the node router
+                # consults it, but the LLM must never see it: the bridge
+                # cannot execute it (was: "Unknown tool: search_discovery").
+                hidden=True,
             ))
         register_node(NodeSpec(
             tool=resolve_tool("search_discovery"),

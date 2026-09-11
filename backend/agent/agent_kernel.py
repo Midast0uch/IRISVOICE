@@ -9214,9 +9214,14 @@ Respond with a JSON object:
         # "[STEP ERROR" substring. hit (>=0.8) / partial (0.3-0.8) / miss (<0.3).
         _joined = "\n".join(step_outputs)
         _frac = self._verified_fraction(item.expected_output, _joined) if step_outputs else 0.0
-        if queue.failed_ids:
-            outcome = "failure"
-        elif _frac >= 0.8:
+        # Session-326: verdict from the FINAL ANSWER, not step colors. A
+        # failed step used to force "failure" even when the answer carried
+        # verified content (7-min stall: partial answer, red-X card).
+        # success = clean run plus verified answer; partial = the answer
+        # carries verified content despite failed steps; failure = nothing
+        # verified. failed_steps still ride the terminal event, so per-step
+        # honesty never moves — only the run verdict does.
+        if _frac >= 0.8 and not queue.failed_ids:
             outcome = "success"
         elif _frac >= 0.3:
             outcome = "partial"
@@ -9297,7 +9302,7 @@ Respond with a JSON object:
                 from backend.agent.event_bus import get_event_bus, IRISStreamEvent
                 _lifecycle_task_id = _turn_id or plan.original_task[:40]
                 get_event_bus().emit(
-                    IRISStreamEvent.TASK_DONE if outcome == "success" else IRISStreamEvent.TASK_FAIL,
+                    IRISStreamEvent.TASK_DONE if outcome in ("success", "partial") else IRISStreamEvent.TASK_FAIL,
                     data={
                         "task_id": _lifecycle_task_id,
                         "outcome": outcome,
@@ -12701,13 +12706,29 @@ Respond with a JSON object:
                 f"STEPS THAT FAILED:\n{_failed}\n\n"
                 "Provide a friendly, user-facing summary of what was accomplished, "
                 "what failed, and what to do next.\n\n"
+                "Cover every part of the user's request. If the results lack "
+                "some asked part, say which part is missing in one line — "
+                "never skip it in silence.\n\n"
                 + _READABLE_FORMAT_RULES
             )
             # The user-facing outcome summary is THINKING -> Brain (2026-08-16).
             _res = self.infer(_prompt, role="reasoning",
                               max_tokens=self.response_max_tokens(floor=400),
                               temperature=self.response_temperature())
-            return _res.raw_text or ""
+            _out = _res.raw_text or ""
+            # Session-326 shield 3, failure side: same stub rule as the
+            # success path — a stub falls through to the deterministic
+            # failure close, which names every failed step by shape.
+            if _out and _out.strip():
+                _stub_floor = max(80, 40 * (len(completed_items) + len(queue.failed_ids)))
+                if len(_out.strip()) < _stub_floor:
+                    logger.warning(
+                        "[DER] failure synthesis stub (%d chars < %d floor) "
+                        "— deterministic fallback",
+                        len(_out.strip()), _stub_floor,
+                    )
+                    return ""
+            return _out
         except Exception as _e:
             logger.warning("[DER] outcome synthesis failed: %s", _e)
             return ""
@@ -12782,11 +12803,25 @@ Respond with a JSON object:
             )
             _syn = self._synthesize_response(_task, _step_results)
             if _syn and _syn.strip():
+                # Session-326 shield 3 (owner: understudy rule): a stub turn
+                # ("Let's attempt that.") counts as a failed synthesis — the
+                # caller then serves the deterministic per-step close, which
+                # covers every step by shape. Floor scales with steps so a
+                # true one-liner on a one-step ask still airs.
+                _syn_text = _syn.strip()
+                _syn_floor = max(80, 40 * len(completed_items))
+                if len(_syn_text) < _syn_floor:
+                    logger.warning(
+                        "[DER] success synthesis stub (%d chars < %d floor) "
+                        "— deterministic fallback",
+                        len(_syn_text), _syn_floor,
+                    )
+                    return ""
                 logger.info(
-                    "[DER] success synthesis ran (REQ-12 AC1) â€” steps=%d",
+                    "[DER] success synthesis ran (REQ-12 AC1) — steps=%d",
                     len(completed_items),
                 )
-                return _syn.strip()
+                return _syn_text
             return ""
         except Exception as _e:
             logger.warning("[DER] success synthesis failed: %s", _e)
@@ -16557,6 +16592,7 @@ Tool execution results:
 
 Based on the tool results above, provide a natural response to the user's request.
 If any tools failed, address those issues in your response.
+Cover every part of the user's request. If the results lack some asked part, say which part is missing in one line — never skip it in silence.
 
 {_READABLE_FORMAT_RULES}
 """

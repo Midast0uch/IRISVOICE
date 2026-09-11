@@ -12,7 +12,9 @@ absent. Set IRIS_MEMORY_ENCRYPTION=1 to force an error instead of falling back.
 
 import logging
 import os
+import random
 import sqlite3
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -38,6 +40,57 @@ DEFAULT_KDF_ITERATIONS = 64000
 # 5s covers the write path here (single INSERT/UPDATE statements, not long
 # scans) without risking a hung request.
 DEFAULT_BUSY_TIMEOUT_MS = 5000
+
+# Session-326: shared "database is locked" retry. busy_timeout (5s) covers
+# brief contention, but a burst of concurrent DER writers (26x locked in the
+# 7-min stall) outlasts it. Retries LOCKED errors only, jittered backoff
+# (~2s worst case) so a thundering herd does not wake in lock-step, then
+# re-raises so each call site keeps its own failure semantics
+# (warn-and-continue at fragment/doc writes). Non-locked errors never retry.
+# sqlcipher3 raises its own OperationalError type, so the check matches by
+# class name, not by sqlite3 identity.
+_LOCKED_RETRY_ATTEMPTS = 6
+_LOCKED_RETRY_BASE_S = 0.05
+_LOCKED_RETRY_MAX_S = 1.0
+
+
+def is_locked_error(exc: BaseException) -> bool:
+    """True when *exc* is a SQLite 'database is locked' failure."""
+    try:
+        return (
+            type(exc).__name__ == "OperationalError"
+            and "locked" in str(exc).lower()
+        )
+    except Exception:
+        return False
+
+
+def locked_retry(fn, *, label: str = "db-write"):
+    """Run zero-arg ``fn``; retry a locked DB with bounded backoff.
+
+    Returns ``fn()``'s value. Re-raises the last locked error after the
+    attempts run out, and any non-locked error at once. Never raises
+    anything ``fn`` did not raise itself."""
+    _last: Optional[BaseException] = None
+    for _attempt in range(_LOCKED_RETRY_ATTEMPTS):
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001 — classified below
+            if not is_locked_error(exc):
+                raise
+            _last = exc
+            if _attempt < _LOCKED_RETRY_ATTEMPTS - 1:
+                _sleep = min(
+                    _LOCKED_RETRY_MAX_S,
+                    _LOCKED_RETRY_BASE_S * (2 ** _attempt) * (0.5 + random.random()),
+                )
+                logger.info(
+                    "[db] %s locked (try %d/%d) — backing off %.2fs",
+                    label, _attempt + 1, _LOCKED_RETRY_ATTEMPTS, _sleep,
+                )
+                time.sleep(_sleep)
+    assert _last is not None
+    raise _last
 
 # Set IRIS_MEMORY_ENCRYPTION=1 to disable fallback and require sqlcipher3.
 _REQUIRE_ENCRYPTION = os.environ.get("IRIS_MEMORY_ENCRYPTION", "0") == "1"

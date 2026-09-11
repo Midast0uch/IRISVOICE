@@ -14,7 +14,7 @@ import struct
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 
-from backend.memory.db import open_encrypted_memory, Connection
+from backend.memory.db import open_encrypted_memory, Connection, locked_retry
 from backend.memory.embedding import (
     EmbeddingService,
     compare_embeddings,
@@ -848,8 +848,11 @@ class EpisodicStore:
             stored_ids.append(chunk_id)
 
         # Batch insert all non-duplicate chunks
+        # Session-326: locked-DB retry — a burst of concurrent DER writers
+        # outlasts busy_timeout, so the batch and each fallback row retry
+        # a locked DB instead of dropping chunks on the first clash.
         if batch_rows:
-            try:
+            def _batch326() -> None:
                 with self.db:
                     self.db.executemany(
                         """INSERT INTO context_chunks
@@ -857,18 +860,24 @@ class EpisodicStore:
                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                         batch_rows
                     )
+
+            try:
+                locked_retry(_batch326, label="episodic.fragment_batch")
             except Exception as e:
                 logger.warning(f"[EpisodicStore] batch chunk store error: {e}")
                 # Fallback: store individually
                 for row in batch_rows:
-                    try:
+                    def _row326(_r=row):
                         self.db.execute(
                             """INSERT INTO context_chunks
                                (id, session_id, chunk_type, zone, content, embedding, embedding_backend, tool_name)
                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                            row
+                            _r
                         )
                         self.db.commit()
+
+                    try:
+                        locked_retry(_row326, label="episodic.fragment_row")
                     except Exception as e2:
                         logger.warning(f"[EpisodicStore] individual chunk store error: {e2}")
 

@@ -68,6 +68,11 @@ class ToolSpec:
     # mode check — the DER operator reads it uniformly (blueprint: no mode-driven
     # fan-out; all behavior collapses into the one operator). See pin_9e97e21340e7.
     long_running: bool = False
+    # Session-326: internal recovery nodes (e.g. search_discovery) keep a
+    # ToolSpec so NodeSpec registration stays loud, but the LLM must never
+    # see them — the bridge cannot execute them. get_registry_tools skips
+    # hidden specs; the node router still consults them.
+    hidden: bool = False
 
 
 # ── Registry storage ────────────────────────────────────────────────────────
@@ -417,6 +422,8 @@ def get_registry_tools() -> List[Dict[str, Any]]:
     """
     out: List[Dict[str, Any]] = []
     for spec in _REGISTRY.values():
+        if getattr(spec, "hidden", False):
+            continue  # Session-326: internal recovery node, never LLM-facing
         if not capability_allowed(spec):
             continue
         # [13.3] Runtime capability gate — developer-only tools blocked in personal mode

@@ -11,7 +11,8 @@ measured cold-launch cost on the sibling crawl path).
   2. Two CONCURRENT sessions share the browser but get DIFFERENT contexts.
   3. Cookie/storage set in session A's context is NOT visible in session B's
      context (isolation — REQ-5 AC2 run-scoped cookie semantics).
-  4. A held lease prevents idle-stop; releasing the last lease permits it.
+  4. A held lease prevents idle-stop; releasing the last lease permits it
+     (opt-in IRIS_BROWSER_HOLD_OPEN=1 path; 60s idle grace is the default).
   5. A lease with an expired hard deadline does not block idle-stop forever
      (crash-leak guard).
   6. The pool never closes a browser it did not start (ownership guard).
@@ -247,9 +248,13 @@ async def test_cookie_set_in_session_a_not_visible_in_session_b():
         await s2.close()
 
 
-# ── 4. Held lease prevents idle-stop; release permits it ───────────────────
+# ── 4. Held lease prevents idle-stop; release permits it (HOLD_OPEN=0) ────
+# Session-326: 60s idle grace is the default, so this test pins the plain
+# idle path directly and then pins the opt-in hold-open (release never
+# permits a stop).
 
-async def test_held_lease_prevents_idle_stop_and_release_permits_it():
+async def test_held_lease_prevents_idle_stop_and_release_permits_it(monkeypatch):
+    monkeypatch.setattr(browser_pool, "_HOLD_OPEN", False)
     fake_pw = FakePlaywright()
     with patch("playwright.async_api.async_playwright", return_value=fake_pw):
         session = _session("job-lease")
@@ -263,11 +268,17 @@ async def test_held_lease_prevents_idle_stop_and_release_permits_it():
 
         assert browser_pool.has_active_browser_lease() is False
         assert browser_pool.should_idle_stop_browser() is True
+        # Opt-in hold-open: the same released state never permits a stop.
+        monkeypatch.setattr(browser_pool, "_HOLD_OPEN", True)
+        assert browser_pool.should_idle_stop_browser() is False
 
 
-# ── 5. Expired hard deadline does not block idle-stop forever ──────────────
+# ── 5. Expired hard deadline does not block idle-stop forever (HOLD_OPEN=0) ─
+# Session-326: pins the plain idle path directly, then the opt-in hold-open
+# (an expired lease still never permits a stop).
 
-async def test_expired_lease_does_not_block_idle_stop_forever():
+async def test_expired_lease_does_not_block_idle_stop_forever(monkeypatch):
+    monkeypatch.setattr(browser_pool, "_HOLD_OPEN", False)
     fake_pw = FakePlaywright()
     with patch("playwright.async_api.async_playwright", return_value=fake_pw):
         await browser_pool.acquire_browser(max_lease_ms=1)  # 1 ms hard expiry
@@ -278,6 +289,9 @@ async def test_expired_lease_does_not_block_idle_stop_forever():
 
         assert browser_pool.has_active_browser_lease() is False  # lazily pruned
         assert browser_pool.should_idle_stop_browser() is True
+        # Opt-in hold-open: the same expired state never permits a stop.
+        monkeypatch.setattr(browser_pool, "_HOLD_OPEN", True)
+        assert browser_pool.should_idle_stop_browser() is False
 
 
 # ── 6. Pool never closes a browser it did not start ────────────────────────

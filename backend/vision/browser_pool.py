@@ -48,11 +48,15 @@ logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Idle timeout — env-configurable, mirrors IRIS_VISION_IDLE_TIMEOUT's shape.
-# Default is longer than the vision server's (180s vs 120s) because a
-# websearch escalation can drive several sequential URL sessions through the
-# same job; a short timeout would cold-start again between them.
+# Session-326 default is 60s idle grace: back-to-back runs stay warm, idle
+# RAM frees on its own. Raise it if a short gap cold-starts twice in a row.
 # ---------------------------------------------------------------------------
-_IDLE_TIMEOUT: float = float(os.environ.get("IRIS_BROWSER_IDLE_TIMEOUT", "180"))
+_IDLE_TIMEOUT: float = float(os.environ.get("IRIS_BROWSER_IDLE_TIMEOUT", "60"))
+
+# Session-326 (owner: 60s idle grace). The shell closes after 60s with no
+# live lease — back-to-back runs stay warm, idle RAM frees on its own.
+# Set IRIS_BROWSER_HOLD_OPEN=1 to keep one Chromium for backend lifetime.
+_HOLD_OPEN: bool = os.environ.get("IRIS_BROWSER_HOLD_OPEN", "0") == "1"
 
 # Shared Chromium process state. None until the first acquire_browser().
 _pw = None  # Playwright driver instance (opaque; typed loosely — lazy import)
@@ -86,6 +90,8 @@ def _touch_browser_use() -> None:
     """
     global _last_browser_use, _idle_task
     _last_browser_use = time.monotonic()
+    if _HOLD_OPEN:
+        return  # held open for the backend lifetime — no watchdog to schedule
     with _idle_task_lock:
         if _idle_task is not None:
             _idle_task.cancel()
@@ -121,6 +127,8 @@ async def _idle_watch() -> None:
 
 def should_idle_stop_browser() -> bool:
     """Pure predicate: is the owned browser idle past the timeout?"""
+    if _HOLD_OPEN:
+        return False  # Session-326: held open — the watchdog never fires
     if not _owned:
         return False
     if has_active_browser_lease():

@@ -407,13 +407,44 @@ class CrawlOrchestrator:
         min_pages: int = _DEFAULT_MIN_PAGES,
         timeout_s: float = _DEFAULT_TIMEOUT_S,
         job_id: Optional[str] = None,
+        excluded_urls: Optional[list] = None,
+        seed_urls: Optional[list] = None,
     ) -> CrawlResult:
         """Run the full funnel. Never raises for crawl failures (REQ-17 AC1)."""
         t_start = time.monotonic()
         if not job_id:
             job_id = uuid.uuid4().hex
+        # Session-326 shield 2 (owner: no dark gaps): the funnel speaks at
+        # every gate — entry here, plan answer inside the planner, dispatch
+        # below. A stall then shows its last station in the log tail.
+        logger.info(
+            "[CrawlOrchestrator] research start job_id=%s mode=%s query=%r",
+            job_id, mode, query[:60],
+        )
+        # Session-318 (REQ-9 AC9.1/AC9.2): turn visited set for seed
+        # exclusion. Arrives per-call (the orchestrator is a shared
+        # singleton — REQ-16: no shared mutable state); empty = no-op.
+        _excluded: set = set()
+        try:
+            _excluded = {
+                str(u).strip() for u in (excluded_urls or [])
+                if isinstance(u, str) and str(u).strip().startswith("http")
+            }
+        except Exception:
+            _excluded = set()
         _emit = self._make_emitter(on_progress, session_id)
 
+        # Session-326 (owner: warm at plan, only when the brain lacks sight).
+        # Fire-and-forget browser prewarm during LLM planning so a later
+        # vision discovery finds a warm pool. Skipped when the live brain
+        # already sees. Chromium and the model loader are separate resources;
+        # this warms Chromium only. Never raises into research; undetermined
+        # means warm (the safe direction — one launch beats a cold stall).
+        try:
+            _ploop = asyncio.get_running_loop()
+            _ploop.create_task(self._maybe_prewarm_browser_for_discovery(job_id))
+        except Exception:
+            pass
 
         # Session 247: zero-yield cutoff. When this session's last N jobs ALL
         # returned zero usable pages inside the window, the environment is not
@@ -434,8 +465,38 @@ class CrawlOrchestrator:
             await self._drain_log_tasks()
             return self._empty(query, t_start, "recent crawls yielded no usable content")
 
-        # 1) PLAN (REQ-2)
-        plan: CrawlPlan = await self._plan(query)
+        # 1) PLAN (REQ-2) — or recovery seeds, which re-enter the funnel as
+        # an ordinary CrawlPlan (REQ-19 AC3 precedent): planner/discovery
+        # skipped, exclusions still enforced, broaden retry still available.
+        _seed_urls = [
+            u for u in (seed_urls or [])
+            if isinstance(u, str) and u.startswith("http")
+        ]
+        if _seed_urls:
+            _seed_fresh = self._exclude_visited(
+                _seed_urls, _excluded, job_id, "recovery-seeds"
+            )
+            if not _seed_fresh:
+                _emit("CRAWLER_ERROR", {"message": "recovery seeds already visited this turn"})
+                try:
+                    from backend.agent.write_counters import bump as _bump_sref
+                    _bump_sref("crawler.seeds_refused")
+                except Exception:
+                    pass
+                await self._drain_log_tasks()
+                return self._empty(query, t_start, "recovery seeds already visited this turn")
+            plan = CrawlPlan(
+                urls=_seed_fresh,
+                instructions="Extract the page content relevant to the query.",
+                result_type="mixed",
+                title=query[:60],
+            )
+            logger.info(
+                "[CrawlOrchestrator] recovery seeds job_id=%s urls=%d",
+                job_id, len(_seed_fresh),
+            )
+        else:
+            plan: CrawlPlan = await self._plan(query)
         # REQ-19 AC7: discovery attempts at most once per research run. Local
         # to this call (not instance state) — the orchestrator is a shared
         # singleton across concurrent runs (REQ-16: no shared mutable state).
@@ -471,6 +532,19 @@ class CrawlOrchestrator:
                 await self._drain_log_tasks()
                 return self._empty(query, t_start, "no candidate urls")
 
+        # Session-318 (REQ-9 AC9.1/AC9.2): filter planner/discovered seeds
+        # against the turn visited set BEFORE paying. Empty → the same
+        # honest-empty the no-candidate path returns (never a forced crawl).
+        plan.urls = self._exclude_visited(plan.urls, _excluded, job_id, "plan")
+        if not plan.urls:
+            _emit("CRAWLER_ERROR", {"message": "all planned urls already visited this turn"})
+            try:
+                from backend.agent.write_counters import bump as _bump_ref
+                _bump_ref("crawler.seeds_refused")
+            except Exception:
+                pass
+            await self._drain_log_tasks()
+            return self._empty(query, t_start, "all planned urls already visited this turn")
         # `urls` is the PLANNED SET, not just its size. The plan card shows the
         # user which sources the agent intends to read BEFORE it reads them, and
         # url_count alone cannot express that — the panel could only ever count.
@@ -509,6 +583,7 @@ class CrawlOrchestrator:
                 on_progress=on_progress,
                 max_pages=max_pages,
                 timeout_s=timeout_s,
+                excluded_urls=sorted(_excluded),
             )
         else:
             fetched = await backend.fetch(
@@ -611,6 +686,9 @@ class CrawlOrchestrator:
                         result_type=plan.result_type or "mixed",
                         title=plan.title or broader_query[:60],
                     )
+            plan.urls = self._exclude_visited(
+                plan.urls, _excluded, f"{job_id}_retry", "broaden"
+            )
             if plan.urls:
                 # The broadened re-plan (and any vision discovery inside it) is
                 # where the source set GROWS mid-run — a fresh Exa plan for the
@@ -687,6 +765,9 @@ class CrawlOrchestrator:
                 _emit("CRAWLER_PROGRESS", {"stage": "narrowing", "message": "Refining results…"})
                 _emit("CRAWLER_PHASE", {"phase": "searching", "phase_sequence": PHASE_SEARCHING})
                 plan = await self._plan(broader_query)
+                plan.urls = self._exclude_visited(
+                    plan.urls, _excluded, f"{job_id}_requery", "escalate"
+                )
                 if plan.urls:
                     fetched = await backend.fetch(
                         query=broader_query, urls=plan.urls, instructions=plan.instructions,
@@ -852,6 +933,7 @@ class CrawlOrchestrator:
         _shared_findings=None,
         _shared_covered: Optional[dict] = None,
         _base_offset: int = 0,
+        excluded_urls: Optional[list] = None,
     ) -> CrawlResult:
         """Concurrent per-URL dispatch through the capability registry (REQ-10).
 
@@ -913,7 +995,31 @@ class CrawlOrchestrator:
                 )
         crawl_cap = get_capability("fetch.crawl")
         vision_avail = "fetch.vision" in CAPABILITIES
-        capped = urls[:max_pages]
+        # Session-318 (REQ-9 AC9.2): queue-time choke point — resolved seeds
+        # checked against the turn visited set here too, so direct callers
+        # and follow-up rounds are covered, not just research().
+        _dq_excluded: set = set()
+        try:
+            _dq_excluded = {
+                str(u).strip() for u in (excluded_urls or [])
+                if isinstance(u, str) and str(u).strip().startswith("http")
+            }
+        except Exception:
+            _dq_excluded = set()
+        _urls_in = [u for u in (urls or []) if u not in _dq_excluded]
+        _dq_n = len(urls or []) - len(_urls_in)
+        if _dq_n:
+            logger.info(
+                "[CrawlOrchestrator] exclusion filtered %d/%d (turn-visited) "
+                "job_id=%s where=queue",
+                _dq_n, len(urls or []), job_id,
+            )
+            try:
+                from backend.agent.write_counters import bump as _bump_q
+                _bump_q("crawler.exclusions_applied", _dq_n)
+            except Exception:
+                pass
+        capped = _urls_in[:max_pages]
         sem = asyncio.Semaphore(max(1, concurrency_limit))
         # Ordered slots preserve plan order in the result pages.
         slots: list[Optional[PageData]] = [None] * len(capped)
@@ -1437,6 +1543,7 @@ class CrawlOrchestrator:
                         _shared_findings=_findings,
                         _shared_covered=_covered,
                         _base_offset=_base_offset + slot_capture_offset(len(capped)),
+                        excluded_urls=list(_dq_excluded),
                     )
                     pages = pages + [p for p in _follow.pages if isinstance(p, PageData)]
                     # Follow-up pages joined the accumulator; slots for the
@@ -1444,6 +1551,23 @@ class CrawlOrchestrator:
                     # (harmless when empty) so _apply_har_penalties sees them.
                     har_entries = har_entries + list(_follow.har_entries or [])
 
+        # Session-318 T17 (REQ-10 AC10.2): collect per-URL deaths before
+        # the result is built (slots/exc/results all in scope here).
+        _dead_urls: list = []
+        try:
+            for _di, _du in enumerate(capped or []):
+                _slot = slots[_di] if _di < len(slots or []) else None
+                _exc = results[_di] if _di < len(results or []) else None
+                _dead = _slot is None or isinstance(_exc, Exception)
+                if not _dead and _slot is not None:
+                    try:
+                        _dead = not page_is_usable(_slot).usable
+                    except Exception:
+                        _dead = False
+                if _dead and _du and _du not in _dead_urls:
+                    _dead_urls.append(_du)
+        except Exception:
+            _dead_urls = []
         # REQ-8/REQ-11 (T27): the run's cross-source verification snapshot
         # rides the result when a schema journey ran. Follow-up child runs
         # share the parent's accumulator and do NOT snapshot their own (the
@@ -1460,6 +1584,11 @@ class CrawlOrchestrator:
             pages=pages,
             duration_ms=int((time.monotonic() - t_start) * 1000),
             crawled_at=datetime.now(timezone.utc).isoformat(),
+            # Session-318 T17 (REQ-10 AC10.2): dead-address memory. Per-URL
+            # outcomes (slot None, exception, unusable body) land here even
+            # when zero usable pages come back — the Attempted line
+            # downstream only covers pages that produced PageData.
+            dead_urls=_dead_urls,
             # T12c (REQ-18 AC1): vision/crawl HAR entries ride the same
             # CrawlResult field the batch path uses, so research()'s
             # _apply_har_penalties + _learn_from_crawl consume them unchanged.
@@ -1614,6 +1743,64 @@ class CrawlOrchestrator:
             )
         except Exception as exc:  # noqa: BLE001 — parking must never break dispatch
             logger.warning("[CrawlOrchestrator] park failed url=%s: %s", url, exc)
+
+    async def _maybe_prewarm_browser_for_discovery(self, job_id: str = "") -> None:
+        """Session-326: warm the pooled browser at plan time, conditionally.
+
+        Fires only when the live brain lacks sight (owner choice): a seeing
+        brain already covers the vision-fallback read, so warming Chromium
+        would spend a launch for nothing. Undetermined => warm (safe
+        direction). Acquires then releases at once — the browser stays warm
+        under the idle watchdog without pinning a lease. Never raises."""
+        try:
+            _has_sight = False
+            try:
+                from backend.agent import get_agent_kernel as _gak326
+                from backend.agent.inference.router import (
+                    supports_vision as _sv326,
+                )
+                _k326 = _gak326("crawl_prewarm")
+                _router326 = getattr(_k326, "_router", None)
+                if _router326 is not None and hasattr(_router326, "resolve"):
+                    try:
+                        _inst326 = _router326.resolve("reasoning")
+                    except Exception:
+                        _inst326 = None
+                    if _inst326 is not None:
+                        _has_sight = bool(_sv326(_inst326))
+            except Exception:
+                _has_sight = False
+            if _has_sight:
+                logger.info(
+                    "[CrawlOrchestrator] brain sees — skipping browser prewarm job_id=%s",
+                    job_id,
+                )
+                return
+            from backend.vision import browser_pool as _bp326
+            try:
+                # Session-326 hardening: a wedged Chromium launch must never
+                # pin this background task (or the pool start lock) forever —
+                # fail open and let discovery cold-start on demand instead.
+                _b326, _lease326 = await asyncio.wait_for(
+                    _bp326.acquire_browser(), timeout=90.0
+                )
+            except Exception as _pxc326:
+                logger.info(
+                    "[CrawlOrchestrator] browser prewarm failed open job_id=%s: %s",
+                    job_id,
+                    _pxc326,
+                )
+                return
+            try:
+                _lease326.release()
+            except Exception:
+                pass
+            logger.info(
+                "[CrawlOrchestrator] browser prewarmed at plan job_id=%s (brain lacks sight)",
+                job_id,
+            )
+        except Exception:
+            pass
 
     async def _discover_urls_via_vision(self, query: str, job_id: str, _emit) -> list[str]:
         """REQ-19: when the planner yields zero URLs, ask vision to drive a
@@ -1894,6 +2081,41 @@ class CrawlOrchestrator:
         )
 
     # -- helpers ----------------------------------------------------------
+    def _exclude_visited(self, urls, excluded, job_id, where):
+        """Session-318 (REQ-9 AC9.1/AC9.2): filter resolved seeds against
+        the turn visited set BEFORE paying for the fetch. Callers already
+        treat an empty seed set as honest-empty — never a forced crawl.
+        Compares NORMALIZED addresses (tool_envelope.normalize_url) so a
+        trailing slash or fragment drift cannot re-open a visited page.
+        Never raises."""
+        try:
+            from backend.agent.tool_envelope import normalize_url as _norm_url
+            _in = list(urls or [])
+            _excl_norm = set()
+            try:
+                for _e in (excluded or set()):
+                    _n = _norm_url(str(_e))
+                    if _n:
+                        _excl_norm.add(_n)
+            except Exception:
+                _excl_norm = set()
+            _fresh = [u for u in _in if _norm_url(str(u)) not in _excl_norm]
+            _n = len(_in) - len(_fresh)
+            if _n:
+                logger.info(
+                    "[CrawlOrchestrator] exclusion filtered %d/%d "
+                    "(turn-visited) job_id=%s where=%s",
+                    _n, len(_in), job_id, where,
+                )
+                try:
+                    from backend.agent.write_counters import bump as _bump_excl
+                    _bump_excl("crawler.exclusions_applied", _n)
+                except Exception:
+                    pass
+            return _fresh
+        except Exception:
+            return list(urls or [])
+
     async def _plan(self, query: str) -> CrawlPlan:
         planner = self._planner or get_crawl_planner()
         try:

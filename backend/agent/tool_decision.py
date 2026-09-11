@@ -258,7 +258,7 @@ class ToolDecisionBox:
         self._permanent_failed_args: Dict[tuple, int] = {}
 
     @staticmethod
-    def _run_async(coro):
+    def _run_async(coro, timeout_s: Optional[float] = None):
         """
         Run an async tool coroutine to completion from (possibly) sync context.
 
@@ -268,6 +268,12 @@ class ToolDecisionBox:
         (a loop is already running on this thread), asyncio.run() would raise
         "cannot be called from a running event loop" — so we schedule the
         coroutine on a fresh loop in a worker thread via run_coroutine_threadsafe.
+
+        Session-318 T18 (REQ-11 AC11.1/AC11.3): `timeout_s` bounds the wait.
+        Thread path: future.result(timeout) (pre-existing 120s default kept
+        when unset). Loop path: wait_for around the coroutine so expiry
+        CANCELS it instead of orphaning it. TimeoutError propagates — the
+        caller settles the honest timeout envelope.
         """
         try:
             loop = asyncio.get_event_loop()
@@ -275,9 +281,13 @@ class ToolDecisionBox:
                 import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                     future = asyncio.run_coroutine_threadsafe(coro, asyncio.new_event_loop())
-                    return future.result(timeout=120)
+                    return future.result(timeout=timeout_s or 120)
         except RuntimeError:
             pass
+        if timeout_s is not None:
+            async def _bounded():
+                return await asyncio.wait_for(coro, timeout_s)
+            return asyncio.run(_bounded())
         return asyncio.run(coro)
 
     # ── Public API ──────────────────────────────────────────────────────────
@@ -683,6 +693,7 @@ class ToolDecisionBox:
         conversation_id: str = "",
         reasoning_prompt: str = "",
         turn_id: str = "",  # for idempotency (REQ-11)
+        timeout_s: Optional[float] = None,  # Session-318 T18 (REQ-11 AC11.1)
     ) -> DispatchResult:
         """Execute a resolved decision.
 
@@ -881,7 +892,8 @@ class ToolDecisionBox:
                 result = self._run_async(
                     self._tool_bridge.execute_tool(
                         decision.tool, decision.params, session_id=session_id,
-                    )
+                    ),
+                    timeout_s=timeout_s,
                 )
 
                 if not isinstance(result, dict):
@@ -1004,15 +1016,22 @@ class ToolDecisionBox:
 
         except Exception as exc:
             ms = int((time.perf_counter() - start) * 1000)
+            # Session-326 (owner: name the killer): a timeout/cancel death
+            # carries a blank message (CancelledError str is ''), which is
+            # how the 162s D7 stall reported error=''. Fall back to the
+            # exception type so the line always names the death.
+            _exc_text = (str(exc) or "").strip()[:200] or (
+                "%s (no message)" % type(exc).__name__
+            )
             logger.error(
                 "[TOOL_DISPATCH] kind=%s tool=%s CRASHED error='%s' duration_ms=%d conv=%s",
                 decision.kind.value,
                 decision.tool or "null",
-                str(exc)[:200],
+                _exc_text,
                 ms,
                 conversation_id,
             )
-            _err = str(exc)[:500]
+            _err = _exc_text[:500]
             return DispatchResult(success=False, error=_err, duration_ms=ms,
                                   error_type=_classify_error(_err))
 

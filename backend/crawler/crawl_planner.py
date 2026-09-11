@@ -118,6 +118,9 @@ class CrawlPlanner:
         2. On MISS, call the LLM to generate URLs.
         3. Learn from the result so the next similar query hits the cache.
         """
+        # Session-326 shield 2 (owner: no dark gaps): plan entry speaks, so
+        # a stall between research-start and here is locatable, not silent.
+        logger.info("[CrawlPlanner] plan start q=%r", query[:60])
         # ── Step 1: SourceRegistry check ───────────────────────────────
         from backend.crawler.source_registry import get_source_registry
 

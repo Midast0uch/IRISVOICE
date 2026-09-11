@@ -54,7 +54,11 @@ _SEARCH_SUBMIT_SELECTOR = os.environ.get(
 _DEFAULT_MAX_RESULTS = int(os.environ.get("IRIS_VISION_DISCOVERY_MAX_URLS", "5"))
 # REQ-19 AC4: bounded by SessionBounds — discovery is a handful of actions
 # (open, type, submit, maybe one scroll), not a multi-page interactive read.
-_DEFAULT_BOUNDS = SessionBounds(max_actions=6, max_wall_ms=30_000, max_extractions=2)
+# Session-326 (owner: no wall): the wall clock no longer kills a discovery
+# mid-run — the 6-action count is the real bound, each goto still holds its
+# own nav timeout, and cold launch already sits outside this clock. The wide
+# wall value keeps the lease (wall + 30s) valid while the acts finish.
+_DEFAULT_BOUNDS = SessionBounds(max_actions=6, max_wall_ms=300_000, max_extractions=2)
 
 # Search-engine own domain + common ad/redirect hosts filtered from results
 # (REQ-19 AC2: "filter out the search engine's own domain, ads, and obvious

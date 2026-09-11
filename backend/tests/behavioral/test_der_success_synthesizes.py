@@ -156,7 +156,14 @@ def test_success_path_synthesizes_not_raw_concat(caplog):
     def _syn(task, results):
         captured["task"] = task
         captured["results"] = results
-        return "SYNTHESIZED_ANSWER"
+        # Session-326: the stub must read like a real synthesis (above the
+        # stub-guard floor) — an 18-char placeholder now routes to the
+        # deterministic fallback by design, which is not what this test pins.
+        return (
+            "SYNTHESIZED_ANSWER: quantum pricing starts near $10 per "
+            "compute-hour, with volume tiers dropping below $6 past one "
+            "hundred hours."
+        )
 
     kernel._synthesize_response = _syn
 
@@ -164,7 +171,7 @@ def test_success_path_synthesizes_not_raw_concat(caplog):
         out = _run(kernel)
 
     # AC1: synthesized answer, NOT the raw concatenation of step outputs.
-    assert out == "SYNTHESIZED_ANSWER", out
+    assert out.startswith("SYNTHESIZED_ANSWER"), out
     assert out != "RESULT_EVIDENCE_OK"
 
     # AC3: _synthesize_response was actually called on the success path.

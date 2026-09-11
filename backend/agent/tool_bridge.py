@@ -85,6 +85,55 @@ DESKTOP_CONTROL_TOOLS = frozenset({
 })
 
 
+def _plain_permission_description(tool_name, params, tier_value):
+    """Session-326: human-readable permission headline (owner: the live card
+    read "Execute 'run_command' with 1 params" — machine speak no non-coder
+    can judge). Names what happens and what changes, in plain words. The raw
+    params still render below it, so nothing hides — the headline is the
+    verdict aid, the rows stay the evidence. Never raises; falls back to a
+    plain generic line."""
+    try:
+        _p = params or {}
+        _tier = str(tier_value or "")
+        _risk = ""
+        if "destructive" in _tier:
+            _risk = " This can delete or overwrite things. Check twice."
+        elif "side_effect" in _tier:
+            _risk = " This can change things on your computer."
+        _path = str(_p.get("path") or "").strip()
+        _query = str(_p.get("query") or "").strip()
+        if tool_name == "run_command":
+            return (
+                "Run a command on your computer. The command is shown "
+                "below. A command can change files, so allow it only if "
+                "you trust this step."
+            )
+        if tool_name in ("write_file", "edit_file"):
+            return (
+                "Change the file %s. Its old content is replaced." % (_path or "shown below")
+            ) + _risk
+        if tool_name == "delete_file":
+            return (
+                "Permanently delete %s. This cannot be undone." % (_path or "the item shown below")
+            )
+        if tool_name == "create_directory":
+            return (
+                "Create a new folder %s." % (_path or "shown below")
+            ) + _risk
+        if tool_name in ("search", "crawler_query", "web_search"):
+            return (
+                "Search the web for '%s'. Nothing on your computer "
+                "changes." % (_query or "your question")
+            )
+        if tool_name == "take_screenshot":
+            return "Take a picture of your screen. Nothing changes."
+        return (
+            "Use the '%s' tool.%s" % (tool_name, _risk or " It only looks — nothing changes.")
+        )
+    except Exception:
+        return "The assistant wants to do something that needs your OK."
+
+
 class AgentToolBridge:
     """
     Bridges all IRIS capabilities to the agent system.
@@ -1285,8 +1334,9 @@ class AgentToolBridge:
                     tool_name=tool_name,
                     tier=tier,
                     params=params,
-                    description=(
-                        f"Execute '{tool_name}' with {len(params)} params"
+                    description=_plain_permission_description(
+                        tool_name, params,
+                        getattr(tier, "value", tier),
                     ),
                 level=level,
                 session_id=session_id,
@@ -2631,7 +2681,31 @@ class AgentToolBridge:
         # browser panel stayed inert. Forward the panel's events too.
         _ui_emit = _crawl_ui_emitter(session_id)
 
+        # Session-326 shields 1+2 (owner: know ASAP + name the death).
+        # Stall heartbeat: every funnel event stamps the clock + stage. The
+        # waiter on research() cancels past _STALL_S of silence with the
+        # last stage named. 120s clears legit quiets (45s nav, ~60s cloud
+        # wobble); past it the step fails and recovers instead of burning
+        # the full tool budget blind (the blank 162s D7 death).
+        _STALL_S = 120.0
+        _stall_at = [time.monotonic()]
+        _stall_stage = ["research-start"]
+
         def _on_progress(progress: CrawlProgress) -> None:
+            try:
+                _stall_at[0] = time.monotonic()
+                _ev0 = getattr(progress, "event", "") or ""
+                if _ev0 == "CRAWLER_PHASE":
+                    try:
+                        _ph0 = (getattr(progress, "payload", None) or {}).get("phase", "")
+                    except Exception:
+                        _ph0 = ""
+                    if _ph0:
+                        _stall_stage[0] = str(_ph0)
+                elif _ev0:
+                    _stall_stage[0] = str(_ev0).lower().replace("crawler_", "")
+            except Exception:
+                pass  # heartbeat must never disturb the crawl
             try:
                 _ui_emit(progress)
             except Exception:
@@ -2683,11 +2757,47 @@ class AgentToolBridge:
                     _rec_kwargs["max_pages"] = max(int(params["max_pages"]), 1)
                 except Exception:
                     pass
-            result = await get_crawl_orchestrator().research(
-                query, mode="agent", session_id=session_id, on_progress=_on_progress,
-                excluded_urls=_excluded,
-                **_rec_kwargs,
+            result = None
+            _research_task = asyncio.ensure_future(
+                get_crawl_orchestrator().research(
+                    query, mode="agent", session_id=session_id, on_progress=_on_progress,
+                    excluded_urls=_excluded,
+                    **_rec_kwargs,
+                )
             )
+            try:
+                while True:
+                    try:
+                        result = await asyncio.wait_for(
+                            asyncio.shield(_research_task), timeout=_STALL_S,
+                        )
+                        break
+                    except asyncio.TimeoutError:
+                        # Shield keeps the task alive across checks; only a
+                        # truly quiet window cancels. Progress resets the
+                        # clock, so a slow-but-moving crawl never trips this.
+                        # A result that landed mid-check wins over the stall.
+                        if _research_task.done():
+                            result = _research_task.result()
+                            break
+                        _quiet = time.monotonic() - _stall_at[0]
+                        if _quiet < _STALL_S:
+                            continue
+                        _stage = _stall_stage[0]
+                        logger.warning(
+                            "[crawler_query] stalled: no progress for %.0fs "
+                            "at stage '%s' job=%s — cancelling",
+                            _quiet, _stage, job_id,
+                        )
+                        _research_task.cancel()
+                        raise TimeoutError(
+                            "crawler_query stalled: no progress for %.0fs "
+                            "at stage '%s'" % (_quiet, _stage)
+                        )
+            except BaseException:
+                if not _research_task.done():
+                    _research_task.cancel()
+                raise
         except Exception as exc:
             logger.exception("[crawler_query] research failed: %s", exc)
             if _registry is not None:
