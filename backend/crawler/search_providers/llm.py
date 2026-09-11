@@ -89,6 +89,12 @@ class LLMSearchProvider(SearchProvider):
 
         Strips markdown fences, searches for {…} JSON, extracts urls.
         Returns empty ``SearchResult`` on any parse failure.
+
+        Session-325: tool-capable models (gpt-oss) may answer the plan
+        prompt with a TOOL CALL ({"tool": ..., "arguments": {"query": ...}})
+        instead of the urls array — the planner prompt now suppresses
+        function-calling, but a model that still emits the shape must fail
+        FAST with a named log, never silently flow into vision discovery.
         """
         raw = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
         match = re.search(r"\{.*\}", raw, re.DOTALL)
@@ -100,6 +106,15 @@ class LLMSearchProvider(SearchProvider):
             data = json.loads(match.group())
         except json.JSONDecodeError as exc:
             logger.warning("[LLMSearchProvider] JSON parse error: %s", exc)
+            return self._fallback(query)
+
+        if not data.get("urls") and isinstance(data.get("arguments"), dict):
+            logger.warning(
+                "[LLMSearchProvider] model emitted a tool call (%s) instead of "
+                "urls for %r — planner must suppress function-calling; "
+                "failing fast",
+                data.get("tool"), query[:60],
+            )
             return self._fallback(query)
 
         urls = [u for u in data.get("urls", []) if isinstance(u, str)][:max_results]

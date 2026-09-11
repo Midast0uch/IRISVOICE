@@ -115,6 +115,15 @@ logger = logging.getLogger(__name__)
 _update_counters: Dict[str, int] = {}
 _update_counters_lock = threading.Lock()
 
+# Session-319: guards the per-host-per-turn recovery budget
+# (`_der_recovery_opened`). Parallel_safe steps run concurrently (Phase 4,
+# agent_kernel.py "run multiple parallel_safe steps concurrently"), so the
+# check-and-claim of that budget MUST be atomic. Without this lock two steps
+# that hit the same dead host at the same moment can both read "not yet
+# opened" and each enqueue a recovery — two crews for one broken door, though
+# the rule allows one. Module-level so it is shared by every kernel instance.
+_der_recovery_lock = threading.Lock()
+
 # â”€â”€ DER Loop constants (spec: agent_loop_requirements.md Gap 11) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 # Canonical values live in der_constants.py â€” re-exported here for spec
 # compliance so module-level code that imports from agent_kernel finds them.
@@ -293,6 +302,167 @@ _READABLE_FORMAT_RULES = """FORMATTING (your reply is rendered as markdown in a 
 - Structure only where it aids reading. Do not pad a short answer to fill it.
 - Report what the tools actually returned. If something was not returned, say
   so plainly rather than filling the gap."""
+
+
+def _remember_turn_urls(kernel, step_result, _where: str = "") -> int:
+    """AC2.1 / AC9.3 / AC10.2 (session-319 fix): harvest every URL a step
+    touched into turn memory, on ANY path.
+
+    Turn URL memory used to be written ONLY inside `_der_finalize_step`, which
+    the step loop skips entirely for a failed step (the loop branches to
+    `_der_handle_step_failure` and `continue`s before finalize). So a crawl that
+    came back with partial results and was then judged FAILED recorded nothing,
+    and the next step re-fetched the same addresses -- the owner's "it still
+    recrawls the same URLs if there's an error" report. Calling this from the
+    failure path as well closes that hole: the refusal set learns from failures,
+    not just successes.
+
+    Deliberately MODULE-LEVEL, not a method: `_der_finalize_step` is driven by
+    hand-rolled kernel doubles in the behavioral suite, and a new method on the
+    instance would not exist on those doubles. Taking the kernel as an argument
+    keeps one implementation usable from both call sites without touching tests.
+
+    NOTE (honest limit): a TOTAL crash whose result text carries no
+    `--- Source:`/`--- Attempted:`/`--- Dead:` lines yields nothing here -- the
+    addresses are simply not knowable, because `crawler_query` resolves its seeds
+    inside the crawler. That residual case can only be closed by recording the
+    dispatch itself; tracked separately.
+
+    Best-effort: URL memory is advisory and must never break the loop.
+    Returns the number of addresses now held for this conversation.
+    """
+    try:
+        import re as _re_urls
+        from backend.agent.tool_envelope import normalize_url as _norm_url
+        _conv = getattr(kernel, "conversation_id", None) or ""
+        _fetched = set(getattr(kernel, "_der_crawled_urls", {}).get(_conv, set()))
+        _text = str(step_result or "")
+        for _m in _re_urls.findall(
+            r"---\s*Source:\s*(https?://[^\s]+)", _text
+        ):
+            _n = _norm_url(_m.strip().rstrip(".,;)]"))
+            if _n:
+                _fetched.add(_n)
+        # Attempted seeds count too: re-paying a parked/failed fetch in-turn is
+        # exactly the futile-retry loop we are closing (AC9.3).
+        for _tail in _re_urls.findall(r"---\s*Attempted:\s*([^\n]+)", _text):
+            for _u in _tail.split():
+                _u = _u.strip().rstrip(".,;)]")
+                if _u.startswith("http"):
+                    _n = _norm_url(_u)
+                    if _n:
+                        _fetched.add(_n)
+        # Explicit dead-address memory (AC10.2): zero-page deaths the Attempted
+        # line cannot see. Dead joins the refusal set AND its own set.
+        for _tail in _re_urls.findall(r"---\s*Dead:\s*([^\n]+)", _text):
+            for _u in _tail.split():
+                _u = _u.strip().rstrip(".,;)]")
+                if not _u.startswith("http"):
+                    continue
+                _n = _norm_url(_u)
+                if not _n:
+                    continue
+                _fetched.add(_n)
+                try:
+                    from backend.agent.write_counters import bump as _bump_dead
+                    _bump_dead("envelope.dead_hits")
+                except Exception:
+                    pass
+                try:
+                    _du = dict(getattr(kernel, "_der_dead_urls", {}))
+                    _dub = set(_du.get(_conv, set()))
+                    _dub.add(_n)
+                    while len(_dub) > 500:
+                        _dub.pop()
+                    _du[_conv] = _dub
+                    kernel._der_dead_urls = _du
+                except Exception:
+                    pass
+        if _fetched:
+            _cu = dict(getattr(kernel, "_der_crawled_urls", {}))
+            _cu[_conv] = _fetched
+            kernel._der_crawled_urls = _cu
+        return len(_fetched)
+    except Exception:
+        return 0  # URL memory is advisory — never block the loop
+
+
+def _recovery_candidates(step_result, env_sources, visited):
+    """Session-319: shared candidate extraction for the recovery lane.
+
+    Returns ``(dead, hosts, cands)``:
+
+      ``dead``  — addresses the step attempted but did not fetch successfully
+      ``hosts`` — the distinct hosts those dead addresses belong to
+      ``cands`` — unvisited, same-host recovery targets: the page's outlinks
+                  plus the parent directory of each dead address
+
+    PURE: no state, no side effects, no I/O. Extracted deliberately so the
+    bespoke lane and the router-driven producer compute the SAME candidate set
+    while they converge into one lane. Two copies of this logic would drift, and
+    a drift here means one lane recovers pages the other thinks are already done.
+
+    Returns empty values when nothing is recoverable — callers must treat that as
+    "no recovery", never as an error.
+    """
+    import re as _re_c
+    from urllib.parse import urlparse as _up
+    _attempted = []
+    for _tail in _re_c.findall(
+        r"---\s*Attempted:\s*([^\n]+)", str(step_result or "")
+    ):
+        for _u in _tail.split():
+            _u = _u.strip().rstrip(".,;)]")
+            if _u.startswith("http") and _u not in _attempted:
+                _attempted.append(_u)
+    _fetched = set(env_sources or [])
+    _dead = [u for u in _attempted if u not in _fetched]
+    if not _dead:
+        return [], set(), []
+    _outlinks = []
+    _m = _re_c.search(
+        r"--- Outlinks[^\n]*\n((?:  - [^\n]+\n?)*)", str(step_result or "")
+    )
+    if _m:
+        for _ln in _m.group(1).splitlines():
+            _ln = _ln.strip()
+            if _ln.startswith("- "):
+                _u = _ln[2:].strip()
+                if _u.startswith("http") and _u not in _outlinks:
+                    _outlinks.append(_u)
+    _hosts = set()
+    for _d in _dead:
+        try:
+            _hosts.add(_up(_d).hostname or "")
+        except Exception:
+            continue
+    _hosts.discard("")
+    if not _hosts:
+        return _dead, set(), []
+    _visited = set(visited or [])
+    _cands = []
+    for _u in _outlinks:
+        try:
+            _h = _up(_u).hostname or ""
+        except Exception:
+            continue
+        if (_h in _hosts and _u not in _visited
+                and _u not in _attempted and _u not in _cands):
+            _cands.append(_u)
+    for _d in _dead:
+        try:
+            _p = _up(_d)
+            if not _p.netloc:
+                continue
+            _segs = (_p.path or "/").rstrip("/").rsplit("/", 1)
+            _pdir = (_segs[0] or "/") if len(_segs) > 1 else "/"
+            _parent = f"{_p.scheme}://{_p.netloc}{_pdir}"
+            if (_parent not in _visited and _parent not in _attempted
+                    and _parent not in _cands and _parent != _d):
+                _cands.append(_parent)
+        except Exception:
+            continue
+    return _dead, _hosts, _cands
 
 
 class AgentKernel:
@@ -2637,18 +2807,47 @@ class AgentKernel:
                 and hasattr(self._memory_interface, "episodic")
                 and hasattr(self._memory_interface.episodic, "retrieve_context_chunks")
             ):
+                _ctx_budget323 = int(self.resolve_context_window() * 0.6)
                 _chunks = self._memory_interface.episodic.retrieve_context_chunks(
                     query=text,
                     session_id=getattr(self, "session_id", None),
                     limit=6,
                     min_similarity=0.25,
+                    zones=["trusted", "tool"],
                     # Token-aware: cap retrieved chunks to fit the model's real
                     # context window (reserve ~40% for prompt + response so the
                     # agent's own reasoning space isn't crowded out by memory).
-                    max_context_tokens=int(self.resolve_context_window() * 0.6),
+                    max_context_tokens=_ctx_budget323,
                 )
+                # Session-323 (PACMAN membrane): reference-zone chunks carry
+                # external web text — pulled separately and wrapped in an
+                # explicit <reference_memory> tag so the reasoning prompt can
+                # tell untrusted recall from trusted/tool recall. The DIRECT
+                # read path (get_rendered_documents by conversation_id) stays
+                # UNFILTERED — a read is a fetch, not a recall.
+                _ref_chunks323: List[str] = []
+                try:
+                    _ref_chunks323 = self._memory_interface.episodic.retrieve_context_chunks(
+                        query=text,
+                        session_id=getattr(self, "session_id", None),
+                        limit=3,
+                        min_similarity=0.25,
+                        zones=["reference"],
+                        max_context_tokens=max(1, _ctx_budget323 // 3),
+                    ) or []
+                except Exception:
+                    _ref_chunks323 = []
+                _blocks323: List[str] = []
                 if _chunks:
-                    chunk_text = "\n---\n".join(_chunks)
+                    _blocks323.append("\n---\n".join(_chunks))
+                if _ref_chunks323:
+                    _blocks323.append(
+                        "<reference_memory>\n"
+                        + "\n---\n".join(_ref_chunks323)
+                        + "\n</reference_memory>"
+                    )
+                if _blocks323:
+                    chunk_text = "\n---\n".join(_blocks323)
                     # Inject as a pseudo-exchange so role alternation stays valid
                     chunk_prefix = [
                         {
@@ -5254,7 +5453,263 @@ class AgentKernel:
                 f"RECALLED EPISODIC CONTEXT (PACMAN):\n{episodic_context}"
             )
 
+        # REQ-8 AC8.2: visited-ledger block (pointers only).
+        # Degrades to no-block on any failure — never break planning
+        # (design.md Error Handling: ledger render failure degrades).
+        try:
+            _visited = self._der_visited_block()
+        except Exception:
+            _visited = ""
+        if _visited:
+            sections.append(_visited)
+
         return "\n\n".join(sections)
+
+    def _der_visited_block(self) -> str:
+        """REQ-8 AC8.2: bounded VISITED ledger block for planning and
+        continuation prompts. Pointers only — URLs with the step that
+        fetched them (AC8.4 join keys); page bodies never enter prompts
+        (AC8.3). Empty ledger renders as "" (callers omit the block).
+        Most-recent-first with an explicit +N marker; refusal/exclusion
+        logic always uses the FULL in-memory set, never this view."""
+        try:
+            from backend.agent.der_constants import LEDGER_PROMPT_MAX
+            _cap = max(int(LEDGER_PROMPT_MAX), 1)
+        except Exception:
+            _cap = 20
+        try:
+            _conv = self.conversation_id or ""
+            _crawled = set(
+                getattr(self, "_der_crawled_urls", {}).get(_conv, set())
+            )
+            if not _crawled:
+                return ""
+            # Insertion-ordered step map (most-recent last) first, then
+            # any ledger-only remainder sorted for determinism.
+            _stepmap = dict(
+                getattr(self, "_der_crawled_steps", {}).get(_conv, {})
+            )
+            _ordered = [_u for _u in _stepmap if _u in _crawled]
+            _ordered += sorted(_crawled - set(_stepmap))
+            _ordered = _ordered[::-1][: _cap]
+            _lines = [
+                "VISITED THIS TURN (do not re-fetch — known-only "
+                "discovery = pivot: propose a different approach instead):"
+            ]
+            for _u in _ordered:
+                _sid = _stepmap.get(_u, "")
+                _lines.append(
+                    f"  - {_u}" + (f" (step {_sid})" if _sid else "")
+                )
+            try:
+                from backend.agent.write_counters import bump as _bump_ledger
+                _bump_ledger("envelope.ledger_renders")
+            except Exception:
+                pass
+            if len(_crawled) > len(_ordered):
+                _lines.append(f"  (+{len(_crawled) - len(_ordered)} more)")
+            return "\n".join(_lines)
+        except Exception:
+            return ""
+
+    def _der_maybe_open_recovery(self, item, step_result, completed_items, queue):
+        """Session-318 T16 (REQ-9 AC9.5): open a VLM in-site recovery step
+        when a gather step's fetch died but unvisited same-site candidates
+        exist. Returns a QueueItem or None. Rules: parent must carry an
+        envelope with ZERO stamped sources (nothing usable came back);
+        parent must not itself be a recovery (no chains); one recovery per
+        dead host per turn; candidates = same-host outlinks + parent-dir of
+        dead URLs, minus visited and minus dead, capped by
+        RECOVERY_PAGE_BUDGET. Never raises."""
+        try:
+            from backend.agent.tool_envelope import tool_family
+            from backend.agent.der_loop import QueueItem
+            try:
+                from backend.agent.der_constants import RECOVERY_PAGE_BUDGET
+                _budget = max(int(RECOVERY_PAGE_BUDGET), 1)
+            except Exception:
+                _budget = 5
+            if getattr(item, "recovery_of", ""):
+                return None  # no chains
+            if tool_family(getattr(item, "tool", None)) != "gather":
+                return None
+            _env = getattr(item, "envelope", None)
+            if _env is None or list(getattr(_env, "sources", []) or []):
+                return None  # something usable came back — no recovery
+            _conv = self.conversation_id or ""
+            _visited = set(
+                getattr(self, "_der_crawled_urls", {}).get(_conv, set())
+            )
+            # Session-319: candidate extraction is now SHARED with the
+            # router-driven producer (_recovery_candidates), so the two lanes
+            # cannot drift apart while they converge into one.
+            #
+            # Do NOT claim the per-host budget here: the claim is made ATOMICALLY
+            # below, after candidates are computed, so a concurrent step cannot
+            # also pass this check. Claiming early and then returning None (no
+            # candidates) would wrongly burn the host's one recovery for the turn.
+            _dead, _hosts, _cands = _recovery_candidates(
+                step_result, getattr(_env, "sources", []), _visited
+            )
+            if not _dead or not _hosts:
+                return None
+            _cands = _cands[:_budget]
+            if not _cands:
+                return None
+            # Session-319: ATOMIC check-and-claim of the per-host-per-turn
+            # budget. The old code read this ledger near the top of this method
+            # and wrote it here, with no lock in between — so under concurrent
+            # parallel_safe steps two of them could both see "not yet opened"
+            # and each enqueue a recovery for the SAME host. Owner decision
+            # (session-319): ONE CREW PER BUILDING. The claim happens only now,
+            # when we know an item will be returned, so a no-candidate path
+            # never burns the host's recovery for the turn.
+            try:
+                with _der_recovery_lock:
+                    _ro = dict(getattr(self, "_der_recovery_opened", {}))
+                    _opened = set(_ro.get(_conv, set()))
+                    _claim = {h for h in _hosts if h not in _opened}
+                    if not _claim:
+                        # Another step claimed every host first — this step must
+                        # not open a second crew for the same building.
+                        return None
+                    _ro[_conv] = _opened | _claim
+                    self._der_recovery_opened = _ro
+                    _hosts = _claim
+            except Exception:
+                pass
+            _host0 = sorted(_hosts)[0]
+            _rec = QueueItem(
+                step_id=f"recovery_{getattr(item, 'step_id', 's')}",
+                step_number=len(completed_items or []) + 1,
+                description=(
+                    f"Recover dead fetch from {_host0}: crawl "
+                    f"{len(_cands)} unvisited in-site page(s) instead "
+                    f"({', '.join(sorted(_hosts))})."
+                ),
+                tool=None,  # resolver keeps authority (F6); seeds enrich post-resolve
+                params={},
+                parallel_safe=False,
+                objective_anchor=getattr(item, "objective_anchor", "") or "",
+                expected_output=(
+                    f"Usable content from {_host0} covering: "
+                    f"{(getattr(item, 'expected_output', '') or '')[:120]}"
+                ),
+                declared_criticality=(
+                    getattr(item, "declared_criticality", "supporting")
+                    or "supporting"
+                ),
+                recovery_of=getattr(item, "step_id", ""),
+                recovery_seeds=_cands,
+            )
+            logger.info(
+                "[DER:recovery] trigger: parent=%s dead=%d host=%s seeds=%d",
+                getattr(item, "step_id", "?"), len(_dead), _host0, len(_cands),
+            )
+            return _rec
+        except Exception as _rec_exc:
+            logger.debug("[DER] recovery trigger failed: %s", _rec_exc)
+            return None
+
+    def _der_tool_deadline(self, tool: Optional[str]) -> float:
+        """Session-318 T18 (REQ-11 AC11.1): per-family dispatch deadline in
+        seconds. Gather covers the 90s crawler ceilings with margin;
+        everything else takes the default. Constants-only tuning (REQ-12).
+        Never raises."""
+        try:
+            from backend.agent.tool_envelope import tool_family as _tf
+            from backend.agent.der_constants import (
+                DEADLINE_CRAWL_S, DEADLINE_READ_S, DEADLINE_DEFAULT_S,
+            )
+            _fam = _tf(tool)
+            if _fam == "gather":
+                return max(float(DEADLINE_CRAWL_S), 1.0)
+            if _fam == "read":
+                return max(float(DEADLINE_READ_S), 1.0)
+            return max(float(DEADLINE_DEFAULT_S), 1.0)
+        except Exception:
+            return 90.0
+
+    def _der_warm_vision_browser(self, _why: str = "") -> None:
+        """AC9.6 (session-319): fire-and-forget warm of the pooled vision browser
+        when a websearch is requested.
+
+        WHY: the recovery lane is useless if the browser is cold. The pool stops
+        the shared browser after ``_IDLE_TIMEOUT`` (180s, browser_pool.py:55) and
+        the next vision use then pays a full cold start — the live log records
+        ``[browser_session] browser acquired in 32918ms (cold pool)``. Boot-time
+        warming (main.py:777) only covers the first search after a restart, so
+        every later search went cold again. Starting the warm AT DISPATCH means
+        the ~33s overlaps the 85-100s crawl instead of blocking recovery.
+
+        Best-effort and non-blocking by design: the crawl must never wait on
+        Chromium, and a machine without Playwright degrades on its own terms
+        (browser_session.available() == False). Never raises.
+        """
+        try:
+            from backend.vision.browser_pool import acquire_browser
+        except Exception:
+            return  # vision not installed — nothing to warm
+
+        async def _warm() -> None:
+            try:
+                # Returns (browser, lease) — NOT a context manager. The lease
+                # must be released on every path or the pool's idle watchdog
+                # defers forever and the browser is never reclaimed.
+                _browser, lease = await acquire_browser()
+                try:
+                    logger.debug("[DER] vision browser warmed (%s)", _why)
+                finally:
+                    lease.release()
+            except Exception as _wexc:  # noqa: BLE001 — best effort by design
+                logger.debug("[DER] vision browser warm skipped: %s", _wexc)
+
+        try:
+            import asyncio as _aio_warm
+            _loop = getattr(self, "_broadcast_loop", None)
+            if _loop is not None and not _loop.is_closed():
+                _aio_warm.run_coroutine_threadsafe(_warm(), _loop)
+                return
+            # No captured loop (e.g. a sync test context): only safe to schedule
+            # if THIS thread already owns a running loop.
+            _aio_warm.get_running_loop().create_task(_warm())
+        except Exception:
+            pass  # no loop available — recovery simply pays the cold start
+
+    def _der_report_run_grade(self, completed_items, _turn_id, _where):
+        """Session-318 T19 (AC5.6 defect fix): done+GRADE reported once per
+        turn at completion, on EVERY terminal path — not just the
+        continuation-done branch (conv-102 proved queue-exhaustion ends
+        never take it: zero grade lines). Deduplicated by turn_id so the
+        finalize-complete site and the continuation site never double-log.
+        Deterministic O(n) over envelopes; zero LLM. Never raises."""
+        try:
+            _last = getattr(self, "_der_last_run_grade", None) or {}
+            if _last.get("turn_id") == (_turn_id or "") and _last.get("turn_id"):
+                return _last.get("grade", "")
+            from backend.agent.tool_envelope import evaluate_run_grade
+            from backend.agent.der_constants import LOAD_BEARING_VETO
+            _envs = [
+                getattr(i, "envelope", None) for i in (completed_items or [])
+            ]
+            _grade, _reasons = evaluate_run_grade(
+                [e for e in _envs if e is not None],
+                load_bearing_veto=LOAD_BEARING_VETO,
+            )
+            self._der_last_run_grade = {
+                "turn_id": _turn_id or "", "grade": _grade,
+                "reasons": list(_reasons or []),
+            }
+            logger.info(
+                "[DER] run grade: %s%s (%s)",
+                _grade,
+                ("; reasons: " + "; ".join(_reasons)) if _reasons else "",
+                _where,
+            )
+            return _grade
+        except Exception as _grade_exc:
+            logger.debug("[DER] run grade computation failed: %s", _grade_exc)
+            return ""
 
     def _get_failure_warnings(self, task: str) -> str:
         """
@@ -5659,7 +6114,7 @@ class AgentKernel:
             '"plan_title":"short 2-3 word summary of what the plan does (e.g. \\"Search web for AI news\\")",'
             '"reasoning":"one sentence explaining the approach",'
             '"beats":["one-line direction statement","one-line time expectation"],'
-            '"steps":[{"step_id":"s1","step_number":1,"description":"Search the web for the user request","depends_on":[],"critical":true}]}'
+            '"steps":[{"step_id":"s1","step_number":1,"description":"Search the web for the user request","depends_on":[],"critical":true,"criticality":"load-bearing|supporting|cosmetic"}]}'
             "\n\n"
         "RULES:\n"
         # T12 (REQ-10 AC10.1/AC10.2/AC10.10/AC10.12): planned-beat authoring.
@@ -5692,6 +6147,13 @@ class AgentKernel:
         "- In 'depends_on', provide a list of step_ids that this step depends on. "
         "If there are no dependencies, provide an empty array []. A step will not "
         "start until all steps it depends on have completed.\n"
+        # T5 (specs/tool-result-envelope, KD-9): planner declares per-step
+        # criticality. One word per step — intent only, consumption confirms
+        # it at finalize (option C). Defaults to "supporting" when omitted.
+        "- In 'criticality', state how load-bearing the step is: "
+        '"load-bearing" (the task fails without it), "supporting" (helps but '
+        'alternatives exist), or "cosmetic" (nice to have). Omit for '
+        '"supporting".\n'
     )
 
         plan_raw: Optional[str] = None
@@ -5790,6 +6252,14 @@ class AgentKernel:
                                 params={},
                                 critical=bool(raw_step.get("critical", True)),
                                 depends_on=list(raw_step.get("depends_on", []) or []),
+                                # T5 (KD-9): planner-declared criticality,
+                                # validated to the locked vocabulary.
+                                criticality=(
+                                    str(raw_step.get("criticality", "supporting")).lower()
+                                    if str(raw_step.get("criticality", "supporting")).lower()
+                                    in ("load-bearing", "supporting", "cosmetic")
+                                    else "supporting"
+                                ),
                             )
                         )
                     return ExecutionPlan(
@@ -7768,6 +8238,10 @@ Respond with a JSON object:
                 depends_on=list(step.depends_on or []),
                 parallel_safe=is_parallel_safe(step.tool),
                 objective_anchor=plan.original_task,
+                # T5 (specs/tool-result-envelope): planner-declared
+                # criticality rides the queue item — intent only until the
+                # finalize site confirms it (AC1.6).
+                declared_criticality=getattr(step, "criticality", "supporting") or "supporting",
                 coordinate_signal=(
                     getattr(context_package, "topology_position", "") or ""
                     if context_package
@@ -8367,6 +8841,27 @@ Respond with a JSON object:
                     item.refined_description = feedback
                     item.description = feedback
                     logger.info(f"[DER] Step {item.step_number} REFINED")
+                    # Session-321 (Reviewer claim-coverage): a REFINE whose
+                    # text steers to read/compose sets the read tool
+                    # directly — the same reroute shape the T6B guard uses.
+                    # Clearing the tool and hoping the resolver picks read
+                    # is words-only; an explicit tool set is enforcement.
+                    # get_rendered_documents is idempotent and side-effect
+                    # free, so it cannot recrawl by construction.
+                    _fb = str(feedback or "").lower()
+                    if "do not dispatch another crawl" in _fb or (
+                        "read the gathered" in _fb
+                        and (item.tool or "") in ("crawler_query", "web_search",
+                                                  "search", "search_discovery")
+                    ):
+                        item.tool = "get_rendered_documents"
+                        item.params = {
+                            "conversation_id": self.conversation_id or "",
+                        }
+                        logger.info(
+                            f"[DER] Step {item.step_number} rerouted by "
+                            f"Reviewer REFINE to get_rendered_documents",
+                        )
 
             # â”€â”€ EXPLORER PHASE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             # Emit TOOL_CALL event for the frontend / TaskKernel
@@ -8562,7 +9057,7 @@ Respond with a JSON object:
                 # failing node; a recovered step finalizes normally below
                 # (no branch was written in the failing node's module).
                 _recovered = self._der_route_step_failure(
-                    item, step_result, _session, _turn_id, plan,
+                    item, step_result, _session, _turn_id, plan, queue=queue,
                 )
                 if _recovered is not None:
                     step_result = _recovered
@@ -8592,6 +9087,32 @@ Respond with a JSON object:
                         item, queue, plan, _session, _turn_id, context_package,
                         step_result=step_result,
                     )
+                    # AC5.6 (session-319 fix): the failure/abort path never
+                    # reached the completion grade site — `_der_report_run_grade`
+                    # is only called from finalize-complete (which needs
+                    # queue.is_complete()) and continuation-done, so a run that
+                    # died on a failed step reported NO grade at all (conv-102
+                    # and the T21 probe both logged zero "run grade" lines).
+                    # Grade here when no PENDING work remains: failed, aborted
+                    # and vetoed steps all count as settled — that is the honest
+                    # reading of "this run is over". Deduped by turn inside the
+                    # helper, so the normal completion path cannot double-report.
+                    try:
+                        _pending_after_fail = [
+                            _pi for _pi in (getattr(queue, "items", []) or [])
+                            if _pi.step_id not in queue.completed_ids
+                            and _pi.step_id not in queue.failed_ids
+                            and _pi.step_id not in queue.vetoed_ids
+                        ]
+                        if (
+                            not _pending_after_fail
+                            and (getattr(queue, "items", []) or [])
+                        ):
+                            self._der_report_run_grade(
+                                completed_items, _turn_id, "failure-settled"
+                            )
+                    except Exception:
+                        pass
                     continue  # re-enter loop; grafted steps are now in the queue
 
             # â”€â”€ Phase 4: finalize this step via the shared helper â”€â”€
@@ -9252,6 +9773,20 @@ Respond with a JSON object:
                         else "pending"
                     ),
                     "toolName": it.tool,
+                    # Session 312 (conv-98 smoke): persist the distilled
+                    # outcome so a revisited card shows what each step found,
+                    # not just its status. Same envelope as live rows (C3/F9)
+                    # so stored and live can never drift; excerpted so a
+                    # crawl dump can't bloat the store.
+                    "result_summary": (
+                        AgentKernel._smart_excerpt(
+                            AgentKernel._format_tool_result(
+                                getattr(it, "result", "") or ""
+                            ),
+                            300,
+                        )
+                        or None
+                    ),
                 }
                 for it in queue.items
             ]
@@ -9404,6 +9939,16 @@ Respond with a JSON object:
                 budget_deadline=budget_deadline,
             )
 
+        # ── T9 (specs/tool-result-envelope REQ-5): stuck-streak gate at the
+        # step boundary, in front of the same replan machinery. Skipped when
+        # the user just steered (a fresh revision replaced the plan — the
+        # gate re-evaluates at the NEXT boundary) or when stopping.
+        if not stop and not revised:
+            if self._der_streak_gate(
+                plan, queue, _session, budget_deadline=budget_deadline
+            ):
+                revised = True
+
         # AC5: every consumed record is acknowledged as "considered".
         for rec in records:
             self._emit_steering_ack(rec.channel, rec.message_id, "considered", _session)
@@ -9432,6 +9977,467 @@ Respond with a JSON object:
             "steer": steer_text,
             "revised": revised,
         }
+
+    def _der_build_step_envelope(
+        self,
+        item: "QueueItem",
+        step_result: str,
+        step_success: bool,
+        outcome: str,
+        completed_items: list,
+        _session: str,
+        _turn_id: Optional[str],
+        coords_from: Optional[str],
+        coords_to: Optional[str],
+    ) -> None:
+        """specs/tool-result-envelope T6 (REQ-1 AC1.2): build the envelope
+        ONCE at the finalize site, alongside the node-record stamping
+        (outcome/expected_output/fraction/coords all in scope). raw_ref =
+        doc-store id ONLY (AC1.3 — Pacman chunk ids are async and never
+        waited on); criticality confirmed from consumption (AC1.6); coords
+        pass through VERBATIM (AC1.5); per-envelope debug log (AC7.1).
+        Never raises into the caller: any failure degrades to the minimal
+        envelope (AC1.4)."""
+        _coords_from = coords_from
+        _coords_to = coords_to
+        try:
+            from backend.agent.tool_envelope import (
+                build_envelope, minimal_envelope, params_digest,
+                classify_exception_from_message, extract_sources,
+                body_hashes_of,
+            )
+            from backend.agent.tool_errors import resolve_label
+
+            _raw_doc_id = getattr(item, "captured_doc_id", None) or ""
+            _env_frac = getattr(
+                getattr(item, "node_record", None), "verified_fraction", None
+            )
+            _prev_frac = None
+            if completed_items:
+                _prev_rec = getattr(
+                    completed_items[-1], "node_record", None
+                )
+                if _prev_rec is not None:
+                    _prev_frac = getattr(
+                        _prev_rec, "verified_fraction", None
+                    )
+            # Turn memory (AC3.1): envelopes + tool/params digests of
+            # PRIOR completed steps this run — derived from in-scope
+            # state, no new store.
+            _seen_params: Dict[str, str] = {}
+            _step_summaries: List[str] = []
+            for _pit in completed_items:
+                _pd = params_digest(
+                    getattr(_pit, "tool", None),
+                    getattr(_pit, "params", None),
+                )
+                if _pd:
+                    _seen_params.setdefault(_pd, getattr(_pit, "step_id", ""))
+                _pe = getattr(_pit, "envelope", None)
+                if _pe is not None:
+                    _step_summaries.append(_pe.summary)
+            # Session-323: exclude THIS step's own URLs from the novelty
+            # comparison. _remember_turn_urls ran earlier in finalize (and at
+            # dispatch for seeds), so _der_crawled_urls already holds the
+            # current step's addresses — comparing the result against a set
+            # containing itself makes every first gather read as
+            # "repeat_of_gather" (live b323_web1 s1: fresh crawl, zero priors,
+            # envelope still stamped repeat/circling). Novelty is vs PRIOR
+            # steps only; the step's own URLs rejoin the refusal set after.
+            _own_urls323: set = set()
+            try:
+                import re as _re_own323
+                from backend.agent.tool_envelope import normalize_url as _norm_own323
+                for _m323 in _re_own323.findall(r"https?://[^\s\"')\]]+", str(step_result or "")):
+                    try:
+                        _n323 = _norm_own323(str(_m323).rstrip(".,;)]"))
+                    except Exception:
+                        _n323 = ""
+                    if _n323:
+                        _own_urls323.add(_n323)
+            except Exception:
+                _own_urls323 = set()
+            _turn_memory = {
+                "crawled_urls": set(
+                    getattr(self, "_der_crawled_urls", {}).get(
+                        self.conversation_id or "", set()
+                    )
+                ) - _own_urls323,
+                "tool_params": _seen_params,
+                "step_summaries": _step_summaries,
+                "last_gather_step_id": (
+                    completed_items[-1].step_id if completed_items else ""
+                ),
+            }
+            # Session-318 T17 (REQ-10 AC10.1): exact body-identity vs turn.
+            # Prior hashes ride turn_memory; current hashes join the map
+            # after the build (same order as seen-dispatches). A hit is
+            # logged here (T19 counts it) and derive_novelty independently
+            # reaches the same repeat_of verdict from the same map.
+            _turn_memory["body_hashes"] = dict(
+                getattr(self, "_der_body_hashes", {}).get(
+                    self.conversation_id or "", {}
+                )
+            )
+            _cur_hashes = body_hashes_of(str(step_result or ""))
+            _hash_hit = next(
+                (_h for _h in _cur_hashes
+                 if _h in _turn_memory["body_hashes"]),
+                "",
+            )
+            if _hash_hit:
+                logger.info(
+                    "[envelope] content-hash hit: step %s repeats %s "
+                    "(identical body)",
+                    item.step_id,
+                    _turn_memory["body_hashes"][_hash_hit],
+                )
+                try:
+                    from backend.agent.write_counters import bump as _bump_hash
+                    _bump_hash("envelope.hash_hits")
+                except Exception:
+                    pass
+            # Structured error shape (CT-4 lock): error_type from the
+            # tool_errors taxonomy when the step failed.
+            _env_error = None
+            if not step_success:
+                _etype = classify_exception_from_message(
+                    str(step_result or "")
+                )
+                _label = resolve_label(_etype)
+                _env_error = {
+                    "error_type": _etype,
+                    "recovery_hint": (
+                        _label.description[:120] if _label else ""
+                    ),
+                }
+            # AC3.4: the Caducean recommendation is read at the SAME
+            # finalize point so a TOPO_VIOLATION (rec==3) forces
+            # suggestion=stop on the envelope (physics first, KD-4).
+            _topo_rec = 2
+            try:
+                from backend.gateway.iris_ffi import ffi_caducean_recommend
+
+                _topo_rec = ffi_caducean_recommend(_session)
+            except Exception:
+                _topo_rec = 2
+            # REQ-8 AC8.1: the step->URL map for VISITED join keys. The
+            # envelope stamps its own (capped, marked) copy inside
+            # build_envelope; refusal/exclusion logic always uses the FULL
+            # in-memory crawled set — caps bound views, never decisions.
+            _sources: List[str] = []
+            try:
+                _sources, _ = extract_sources(str(step_result or ""))
+            except Exception:
+                _sources = []
+            # Session-318 T18 (REQ-11 AC11.2/AC12.2): elapsed vs deadline.
+            # Slow completion logs a stall warning (advisory only — the
+            # deadline alone aborts). In-flight visibility rides the tools'
+            # own progress emissions (e.g. crawl phases); this closes the
+            # accounting side so every slow step is undeniable in logs.
+            _elapsed = 0.0
+            try:
+                _t0 = float(getattr(item, "dispatch_started_at", 0.0) or 0.0)
+                if _t0 > 0:
+                    import time as _time_elapsed
+                    _elapsed = max(0.0, _time_elapsed.monotonic() - _t0)
+                from backend.agent.der_constants import STALL_WARN_S
+                if _elapsed > max(float(STALL_WARN_S), 1.0):
+                    logger.warning(
+                        "[DER] step %s slow: %.1fs elapsed (stall threshold "
+                        "%.0fs) — advisory; deadline aborts, not this line",
+                        getattr(item, "step_id", "?"), _elapsed,
+                        float(STALL_WARN_S),
+                    )
+                    try:
+                        from backend.agent.write_counters import bump as _bump_stall
+                        _bump_stall("envelope.stalls")
+                    except Exception:
+                        pass
+            except Exception:
+                _elapsed = 0.0
+            item.envelope = build_envelope(
+                result_text=str(step_result or ""),
+                step_success=step_success,
+                outcome=outcome,
+                expected_output=str(
+                    getattr(item, "expected_output", None)
+                    or item.description
+                    or ""
+                ),
+                tool=getattr(item, "tool", None),
+                params_digest=params_digest(
+                    getattr(item, "tool", None),
+                    getattr(item, "params", None),
+                ),
+                verified_fraction=_env_frac,
+                prev_verified_fraction=_prev_frac,
+                raw_doc_id=_raw_doc_id,
+                coords_from=_coords_from,
+                coords_to=_coords_to,
+                turn_memory=_turn_memory,
+                error=_env_error,
+                recovery_of=getattr(item, "recovery_of", "") or "",
+                elapsed_s=_elapsed,
+                timeout=bool(getattr(item, "timed_out", False)),
+                declared_criticality=getattr(
+                    item, "declared_criticality", "supporting"
+                )
+                or "supporting",
+                capture_skipped=bool(getattr(item, "tool", None))
+                and not _raw_doc_id,
+                topo_violation=(_topo_rec == 3),
+                card_id=self._card_envelope(
+                    _turn_id or item.step_id
+                ).get("card_id", ""),
+                step_id=item.step_id,
+                session_id=_session or "",
+                turn_id=_turn_id or "",
+            )
+            # AC7.1: scoped per-envelope log line — enough to
+            # reconstruct a run's stuck trajectory from logs alone.
+            logger.debug(
+                "[envelope] conv=%s step=%s status=%s match=%s "
+                "novelty=%s suggestion=%s shape=%s crit=%s/%s "
+                "summary_len=%d",
+                self.conversation_id or "?",
+                item.step_id,
+                item.envelope.status,
+                item.envelope.match,
+                item.envelope.novelty,
+                item.envelope.suggestion,
+                item.envelope.stuck_shape,
+                item.envelope.criticality,
+                item.envelope.criticality_source,
+                len(item.envelope.summary),
+            )
+            if getattr(item.envelope, "criticality_source", "") == "confirmed":
+                logger.info(
+                    "[envelope] criticality divergence: step %s declared "
+                    "%s but consumption confirmed load-bearing (tuning "
+                    "signal)",
+                    item.step_id,
+                    getattr(item, "declared_criticality", "supporting"),
+                )
+            # AC7.2 counters — bounded, per-kernel, advisory.
+            try:
+                _counters = getattr(self, "_envelope_counters", None)
+                if _counters is None:
+                    _counters = {
+                        "written": 0, "raw_ref_fetches": 0,
+                        "crit_confirmed": 0, "gate_fired": 0,
+                        "gate_blocked": 0, "hard_blocks": 0,
+                        "suggest_overrides": 0,
+                    }
+                    self._envelope_counters = _counters
+                _counters["written"] += 1
+                if item.envelope.criticality_source == "confirmed":
+                    _counters["crit_confirmed"] += 1
+            except Exception:
+                pass
+            # Session-318 T19 (REQ-12): recovery outcome on the envelope
+            # that just settled (recovered = brought usable sources home).
+            try:
+                if getattr(item, "recovery_of", ""):
+                    from backend.agent.write_counters import bump as _bump_rec
+                    if list(getattr(item.envelope, "sources", []) or []):
+                        _bump_rec("envelope.recovery_recovered")
+                    else:
+                        _bump_rec("envelope.recovery_empty")
+            except Exception:
+                pass
+            # Join registry for the retroactive criticality confirm and
+            # pre-dispatch reroute reads (KD-10: reporter stamps, graph
+            # layers read). FIFO-capped — memory bounded.
+            try:
+                _reg = dict(
+                    getattr(self, "_der_envelope_registry", {})
+                )
+                _conv = self.conversation_id or ""
+                _bucket = dict(_reg.get(_conv, {}))
+                _bucket[item.envelope.raw_ref.get("doc_id") or f"noref:{item.step_id}"] = item.envelope
+                while len(_bucket) > 200:
+                    _bucket.pop(next(iter(_bucket)))
+                _reg[_conv] = _bucket
+                self._der_envelope_registry = _reg
+                # Turn dispatch memory for the T6B repeat guard: digest
+                # -> first step that ran it. FIFO-capped likewise.
+                _sd = dict(getattr(self, "_der_seen_dispatches", {}))
+                _sdb = dict(_sd.get(_conv, {}))
+                _pd_self = params_digest(
+                    getattr(item, "tool", None),
+                    getattr(item, "params", None),
+                )
+                _sdb.setdefault(_pd_self, item.step_id)
+                while len(_sdb) > 200:
+                    _sdb.pop(next(iter(_sdb)))
+                _sd[_conv] = _sdb
+                self._der_seen_dispatches = _sd
+                # Session-318 T17 (REQ-10 AC10.1): turn body-hash map for
+                # exact-identity detection (hash -> first step). FIFO-capped.
+                try:
+                    _bh = dict(getattr(self, "_der_body_hashes", {}))
+                    _bhb = dict(_bh.get(_conv, {}))
+                    for _h in _cur_hashes:
+                        _bhb.setdefault(_h, item.step_id)
+                    while len(_bhb) > 500:
+                        _bhb.pop(next(iter(_bhb)))
+                    _bh[_conv] = _bhb
+                    self._der_body_hashes = _bh
+                except Exception:
+                    pass
+                # REQ-8 AC8.2 join keys: url -> step that fetched it.
+                # Additive only — `_der_crawled_urls` stays the refusal
+                # authority and is never reshaped here. FIFO-capped.
+                try:
+                    _csm = dict(getattr(self, "_der_crawled_steps", {}))
+                    _csb = dict(_csm.get(_conv, {}))
+                    for _u in _sources:
+                        _csb.setdefault(_u, item.step_id)
+                    while len(_csb) > 500:
+                        _csb.pop(next(iter(_csb)))
+                    _csm[_conv] = _csb
+                    self._der_crawled_steps = _csm
+                except Exception:
+                    pass
+            except Exception:
+                pass
+        except Exception as _env_exc:
+            # AC1.4: degrade to the minimal envelope — never break the
+            # DER loop for shaping.
+            logger.warning(
+                "[envelope] build failed for step %s: %s",
+                getattr(item, "step_id", "?"), _env_exc,
+            )
+            try:
+                item.envelope = minimal_envelope(
+                    outcome=outcome,
+                    content_summary=str(
+                        getattr(
+                            getattr(item, "node_record", None),
+                            "content_summary",
+                            "",
+                        )
+                        or step_result
+                        or ""
+                    ),
+                    raw_doc_id=getattr(item, "captured_doc_id", None) or "",
+                    coords_from=_coords_from if "_coords_from" in dir() else None,
+                    coords_to=_coords_to if "_coords_to" in dir() else None,
+                    step_id=getattr(item, "step_id", ""),
+                    session_id=_session or "",
+                    turn_id=_turn_id or "",
+                )
+            except Exception:
+                pass
+
+
+
+    def _der_streak_gate(
+        self,
+        plan,
+        queue,
+        _session: str,
+        budget_deadline: Optional[float] = None,
+    ) -> bool:
+        """T9 (specs/tool-result-envelope REQ-5 AC5.1–AC5.5): the stuck-streak
+        gate, evaluated at the step boundary IN FRONT of the existing replan
+        machinery. O(envelope count) arithmetic (AC5.5) — the LLM replan
+        inside ``_der_apply_steering`` is paid ONLY when the gate fires.
+
+        Detector: pure evaluate_streak over the settled envelopes' wrappers
+        (consecutive repeat/empty/mismatch, or an idling run), with the
+        existing Caducean TOPO_VIOLATION recommendation as the authoritative
+        override (AC5.3 — reuse the existing physics detection, KD-4).
+
+        Advisory-gate principle: any failure in here is treated as
+        "below threshold" — a broken gate must not change loop semantics.
+
+        Returns True when a replan revision was applied.
+        """
+        try:
+            from backend.agent.tool_envelope import evaluate_streak
+            from backend.agent.der_constants import (
+                STUCK_STREAK_N, IDLE_STREAK_N,
+            )
+
+            _counters = getattr(self, "_envelope_counters", None)
+            if _counters is None:
+                _counters = {
+                    "written": 0, "raw_ref_fetches": 0,
+                    "crit_confirmed": 0, "gate_fired": 0,
+                    "gate_blocked": 0, "hard_blocks": 0,
+                    "suggest_overrides": 0,
+                }
+                self._envelope_counters = _counters
+
+            # Settled envelopes for THIS run: completed (+vetoed) queue items.
+            _done_ids = set(queue.completed_ids) | set(queue.vetoed_ids)
+            _envs = [
+                getattr(_it, "envelope", None)
+                for _it in getattr(queue, "items", [])
+                if getattr(_it, "step_id", "") in _done_ids
+            ]
+            _wrappers = [e.wrapper_dict() for e in _envs if e is not None]
+
+            # AC5.3: TOPO_VIOLATION rec forces the gate regardless of
+            # streak arithmetic (existing physics detection, zero new code
+            # on the detection side).
+            _topo = False
+            try:
+                from backend.gateway.iris_ffi import ffi_caducean_recommend
+
+                _topo = ffi_caducean_recommend(_session) == 3
+            except Exception:
+                _topo = False
+
+            fire, reason = evaluate_streak(
+                _wrappers, STUCK_STREAK_N, IDLE_STREAK_N,
+                topo_violation=_topo,
+            )
+            if not fire:
+                _counters["gate_blocked"] += 1
+                # AC3.3/AC7.2: a stop-suggestion the loop does NOT act on is
+                # a suggestion override — logged with its reason, counted.
+                if _wrappers and _wrappers[-1].get("suggestion") == "stop":
+                    _counters["suggest_overrides"] += 1
+                    logger.info(
+                        "[DER:streak-gate] suggestion override: step %s "
+                        "suggested stop but streak arithmetic is below "
+                        "threshold — continuing current plan",
+                        _wrappers[-1].get("step_id", "?"),
+                    )
+                return False
+
+            _counters["gate_fired"] += 1
+            # AC5.4: audit — the triggering envelopes (step ids + wrapper
+            # labels) are logged so the trigger is auditable post-run.
+            _tail = _wrappers[-max(STUCK_STREAK_N, IDLE_STREAK_N, 1):]
+            _audit = "; ".join(
+                f"{w.get('step_id', '?')}: novelty={w.get('novelty')} "
+                f"match={w.get('match')} shape={w.get('stuck_shape')}"
+                for w in _tail
+            )
+            logger.info(
+                "[DER:streak-gate] FIRED (%s) — triggering envelopes: %s",
+                reason, _audit,
+            )
+            _directive = (
+                f"Replan required: the run is stuck ({reason}). "
+                f"Triggering steps: {_audit}. Revise the remaining plan to "
+                "break the streak — do NOT repeat a completed step; read "
+                "the already-gathered documents instead."
+            )
+            return self._der_apply_steering(
+                _directive, _session, plan, queue,
+                budget_deadline=budget_deadline,
+            )
+        except Exception as _gate_exc:
+            logger.debug(
+                "[DER:streak-gate] evaluation failed — treated as below "
+                "threshold (advisory gate): %s", _gate_exc,
+            )
+            return False
 
     def _der_apply_steering(
         self, text, _session, plan, queue, budget_deadline: Optional[float] = None
@@ -9944,6 +10950,130 @@ Respond with a JSON object:
     # step result on success, None when routing is disabled / declined / no
     # candidate â€” in which case the caller proceeds exactly as today (REQ-7
     # AC4/AC5 kill-switch parity).
+    def _der_enqueue_recovery(
+        self, item, recovery, step_result, _session, _turn_id, outcome, tool, queue,
+    ) -> Optional[str]:
+        """Session-319 (owner decision: "the job board"): enqueue a recovery step
+        instead of running it inline.
+
+        Returns ``None`` ALWAYS. The failing step must settle honestly — it really
+        did fail — and the recovery then runs later as its OWN step, carrying its
+        own envelope. That is what AC9.5/AC9.6 require: recovery is a separate
+        step, and the brain never waits on it.
+
+        Why this replaced the inline form: inline blocked the failing step for the
+        whole recovery (including a measured ~33 s Chromium cold start) and built
+        no envelope, so the recovery was invisible to the ledger.
+
+        Never raises: a recovery that cannot be queued degrades to the normal
+        failure path rather than breaking the DER loop.
+        """
+        try:
+            from backend.agent.der_loop import QueueItem
+            from backend.agent.nodes.telemetry import log_routing_decision
+
+            try:
+                from backend.agent.der_constants import RECOVERY_PAGE_BUDGET
+                _budget = max(int(RECOVERY_PAGE_BUDGET), 1)
+            except Exception:
+                _budget = 25
+
+            _env = getattr(item, "envelope", None)
+            _conv = self.conversation_id or ""
+            _visited = set(
+                getattr(self, "_der_crawled_urls", {}).get(_conv, set())
+            )
+            _dead, _hosts, _cands = _recovery_candidates(
+                step_result, list(getattr(_env, "sources", []) or []), _visited,
+            )
+            if not _hosts:
+                return None
+
+            # ONE CREW PER BUILDING (owner, session-319): claim the host
+            # ATOMICALLY. Same budget the bespoke lane uses, so the two lanes can
+            # never both open a crew for one host.
+            with _der_recovery_lock:
+                _ro = dict(getattr(self, "_der_recovery_opened", {}))
+                _opened = set(_ro.get(_conv, set()))
+                _claim = {h for h in _hosts if h not in _opened}
+                if not _claim:
+                    return None
+                _ro[_conv] = _opened | _claim
+                self._der_recovery_opened = _ro
+
+            _host0 = sorted(_claim)[0]
+            _rec_item = QueueItem(
+                step_id=f"recovery_{getattr(item, 'step_id', 's')}",
+                step_number=int(getattr(item, "step_number", 1) or 1) + 1,
+                description=(
+                    f"Recover dead fetch from {_host0}: crawl "
+                    f"{len(_cands)} unvisited in-site page(s) via "
+                    f"{recovery.name} ({', '.join(sorted(_claim))})."
+                ),
+                # The ROUTER chose the node, so no resolver pass is needed and
+                # `tool` is known at build time.
+                tool=recovery.name,
+                params={
+                    "seed_urls": list(_cands)[:_budget],
+                    "max_pages": _budget,
+                    "recovery_of": getattr(item, "step_id", ""),
+                },
+                parallel_safe=False,
+                objective_anchor=getattr(item, "objective_anchor", "") or "",
+                expected_output=(
+                    f"Usable content from {_host0} covering: "
+                    f"{(getattr(item, 'expected_output', '') or '')[:120]}"
+                ),
+                declared_criticality=(
+                    getattr(item, "declared_criticality", "supporting")
+                    or "supporting"
+                ),
+                recovery_of=getattr(item, "step_id", ""),
+                recovery_seeds=list(_cands),
+            )
+            queue.add_item(_rec_item)
+            logger.info(
+                "[DER:recovery] ENQUEUED (job board): parent=%s node=%s dead=%d "
+                "host=%s seeds=%d",
+                getattr(item, "step_id", "?"), recovery.name,
+                len(_dead), _host0, len(_cands),
+            )
+            try:
+                from backend.agent.write_counters import bump as _bump_ropen
+                _bump_ropen("envelope.recovery_opens")
+            except Exception:
+                pass
+            try:
+                from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+                get_event_bus().emit(
+                    IRISStreamEvent.TASK_PROGRESS,
+                    data={
+                        "add_step": True,
+                        "step_id": _rec_item.step_id,
+                        "step_number": _rec_item.step_number,
+                        "description": _rec_item.description[:200],
+                        "tool_name": recovery.name,
+                        **self._card_envelope(_turn_id),
+                    },
+                    turn_id=_turn_id,
+                    conversation_id=self.conversation_id,
+                )
+            except Exception:
+                pass
+            log_routing_decision(
+                task_id=self.conversation_id or _session,
+                step_id=item.step_id, node=tool,
+                reason=outcome.reason.value,
+                candidates=[recovery.name],
+                selected=recovery.name,
+            )
+        except Exception as _enq_exc:  # noqa: BLE001 — must never break the loop
+            logger.warning(
+                "[DER:recovery] enqueue failed for %s: %s",
+                getattr(item, "step_id", "?"), _enq_exc,
+            )
+        return None
+
     def _der_route_step_failure(
         self,
         item: "QueueItem",
@@ -9951,6 +11081,7 @@ Respond with a JSON object:
         _session: str,
         _turn_id: Optional[str],
         plan,
+        queue=None,
     ) -> Optional[str]:
         try:
             from backend.agent.nodes.outcome import NodeOutcome, NodeStatus, Reason
@@ -10003,6 +11134,24 @@ Respond with a JSON object:
                 return None
 
             recovery = decision.selected
+            # ── Session-319 (owner decision: "the job board") ───────────────
+            # ENQUEUE the recovery as its OWN STEP instead of running it inline.
+            #
+            # WHY: the inline form below blocks the failing step for the whole
+            # recovery — including a measured ~33 s Chromium cold start — which
+            # violates AC9.6 ("the brain never waits on the recovery lane"), and
+            # it builds no envelope of its own, so the recovery is invisible to
+            # the ledger. Queuing fixes both: the failing step settles honestly
+            # and the recovery runs as its own step with its own envelope.
+            #
+            # The legacy inline path is left untouched below and is used only when
+            # no queue is passed (an older caller or a unit test), so this change
+            # cannot break a caller that does not supply one.
+            if queue is not None:
+                return self._der_enqueue_recovery(
+                    item, recovery, step_result, _session, _turn_id,
+                    outcome, tool, queue,
+                )
             # Run the recovery node through the node RUNNER (CT-4 caller
             # existence) with the tool_bridge as its executor â€” the SAME
             # dispatch path the failing node used, with the same params: the
@@ -10093,6 +11242,21 @@ Respond with a JSON object:
         """
         queue.mark_failed(item.step_id)
         aborted = queue.abort_descendants(item.step_id)
+        # AC2.1/AC9.3 (session-319 fix): a failed step must still teach turn
+        # memory the addresses it touched. Finalize (which used to be the only
+        # writer) is skipped on this path, so without this call a partially
+        # successful crawl that was then judged FAILED contributed nothing and
+        # the next step re-fetched the same URLs — the owner's reported symptom.
+        try:
+            _n_urls = _remember_turn_urls(self, step_result, "step-failure")
+            if _n_urls:
+                logger.info(
+                    "[DER] failure path recorded URLs for %s "
+                    "(turn memory now holds %d address(es))",
+                    item.step_id, _n_urls,
+                )
+        except Exception:
+            pass
         if aborted:
             logger.info(
                 "[DER] Aborted %d downstream step(s) after failure of %s: %s",
@@ -11357,11 +12521,26 @@ Respond with a JSON object:
     # (:10623). This changes the evidence WINDOW only, which is the defect.
     _DER_SEARCH_TOOLS = {"grep_files", "glob_files"}
 
+    # Session-323: stored-read tools deliver the SAME gathered bytes through
+    # the document store instead of a fresh fetch. A rerouted read that keeps
+    # the 400-char generic cap starves every downstream consumer — live
+    # B3-repeat: guard rerouted to get_rendered_documents, step result held
+    # only "1 document(s) retrieved", synthesis honestly reported IDs-only.
+    # Kept as a SEPARATE set (same reason as _DER_SEARCH_TOOLS): this set
+    # widens the evidence WINDOW only and must not alter the sufficiency
+    # gate or graft decision that key off _DER_GATHER_TOOLS.
+    _DER_READ_TOOLS = {
+        "get_rendered_documents", "get_document", "read_document",
+        "get_rendered_document",
+    }
+
     @staticmethod
     def _der_evidence_cap(tool: Optional[str]) -> int:
         """Evidence window for a step result, by tool kind."""
         _t = (tool or "").lower()
         if _t in AgentKernel._DER_GATHER_TOOLS or _t in AgentKernel._DER_SEARCH_TOOLS:
+            return 8000
+        if _t in AgentKernel._DER_READ_TOOLS:
             return 8000
         return 400
 
@@ -11446,7 +12625,12 @@ Respond with a JSON object:
         """
         try:
             # Gather tools: raw payload window (head+tail), compression OFF.
-            if (getattr(item, "tool", None) or "").lower() in AgentKernel._DER_GATHER_TOOLS:
+            # Session-323: stored-read tools join the wide path — a rerouted
+            # read delivers the SAME gathered bytes through the document
+            # store, and compressing them to a node-record summary re-starves
+            # the synthesis the wide gather window was built to feed.
+            _tool323 = (getattr(item, "tool", None) or "").lower()
+            if _tool323 in AgentKernel._DER_GATHER_TOOLS or _tool323 in AgentKernel._DER_READ_TOOLS:
                 _raw_gather = getattr(item, "result", "") or ""
                 if _raw_gather:
                     return AgentKernel._smart_excerpt(
@@ -11609,6 +12793,19 @@ Respond with a JSON object:
             return ""
 
     @staticmethod
+    def _der_user_facing_evidence(item) -> str:
+        """T8 / fix 7 (specs/tool-result-envelope REQ-2 AC2.3): user-facing
+        evidence is the ENVELOPE LINE when the step carries one — raw gather
+        text MUST NOT be user-visible. Legacy edge (pre-envelope item): the
+        node-record evidence capped to 400 chars, never the 8000-char gather
+        window."""
+        _env = getattr(item, "envelope", None)
+        if _env is not None:
+            return _env.line()
+        _ev = AgentKernel._der_node_record_evidence(item)
+        return AgentKernel._smart_excerpt(_ev, 400) if _ev else ""
+
+    @staticmethod
     def _der_deterministic_failure_summary(plan, completed_items: list, queue) -> str:
         """User-facing 'task incomplete' message that needs NO LLM call (Part B).
 
@@ -11627,8 +12824,8 @@ Respond with a JSON object:
                 for _it in queue.items:
                     if _it.step_id == _fi:
                         _desc = _it.description or _fi
-                        # REQ-8 AC1 (T26): compressed node-record evidence, not raw.
-                        _reason = AgentKernel._der_node_record_evidence(_it)
+                        # T8/fix 7 (AC2.3): envelope line, never raw gather.
+                        _reason = AgentKernel._der_user_facing_evidence(_it)
                         break
                 _failed.append(f"- {_desc}" + (f": {_reason}" if _reason else ""))
             _failed_txt = "\n".join(_failed) or "(unknown step)"
@@ -11659,8 +12856,9 @@ Respond with a JSON object:
         try:
             _done_lines = []
             for _ci in completed_items:
-                # REQ-8 AC1 (T26): compressed node-record evidence, not raw.
-                _res = AgentKernel._der_node_record_evidence(_ci)
+                # T8/fix 7 (AC2.3): envelope line + run grade honesty, never
+                # the raw gather window.
+                _res = AgentKernel._der_user_facing_evidence(_ci)
                 _done_lines.append(
                     f"- {getattr(_ci, 'description', '') or _ci}"
                     + (f": {_res}" if _res else "")
@@ -11668,9 +12866,33 @@ Respond with a JSON object:
             _done_txt = "\n".join(_done_lines) or "(no step output)"
             _done = len(completed_items)
             _total = len(getattr(plan, "steps", []) or [])
+            # AC5.6: report done + grade — recomputed statelessly from the
+            # envelopes (this is a @staticmethod; no instance state, no
+            # shared mutable state). A load-bearing mismatch caps the run
+            # below full pass, honestly, in the user-facing fallback too.
+            _grade_line = ""
+            try:
+                from backend.agent.tool_envelope import evaluate_run_grade
+                from backend.agent.der_constants import LOAD_BEARING_VETO
+
+                _envs = [
+                    getattr(_ci, "envelope", None) for _ci in completed_items
+                ]
+                _grade, _reasons = evaluate_run_grade(
+                    [e for e in _envs if e is not None],
+                    load_bearing_veto=LOAD_BEARING_VETO,
+                )
+                if _grade == "capped":
+                    _grade_line = (
+                        "\nRun grade: capped below full pass — "
+                        + "; ".join(_reasons or [])
+                        + "\n"
+                    )
+            except Exception:
+                pass
             return (
                 f"I've completed the task. {_done}/{_total} steps finished.\n"
-                f"{_done_txt}\n\n"
+                f"{_done_txt}\n{_grade_line}\n"
                 f"What would you like to do next?"
             )
         except Exception as _e:
@@ -11797,6 +13019,32 @@ Respond with a JSON object:
                         if _titles
                         else _base
                     )
+                # Conversation index (e.g. list_conversations) carries no
+                # content key either — without this it fell to compact JSON
+                # and the raw index rendered verbatim on task-card rows AND
+                # entered working memory with no next-action pointer (live
+                # conv-98: the planner read the index as retrieved content
+                # and skipped the get_rendered_documents follow-up). The
+                # result repeats the pointer the registry description already
+                # gives, because the result is what survives into memory.
+                _convs = raw.get("conversations")
+                if isinstance(_convs, list):
+                    _tops = [
+                        f"{c.get('conversation_id')} "
+                        f"({c.get('doc_count') or 0} docs)"
+                        for c in _convs
+                        if isinstance(c, dict) and c.get("conversation_id")
+                    ][:3]
+                    _cbase = (
+                        f"{len(_convs)} conversation(s) with documents "
+                        f"(index only — call get_rendered_documents("
+                        f"conversation_id=...) to read one)"
+                    )
+                    return (
+                        f"{_cbase}: {', '.join(_tops)}"
+                        if _tops
+                        else _cbase
+                    )
                 return json.dumps(raw, ensure_ascii=False, default=str)
             except Exception:
                 return str(raw)
@@ -11804,6 +13052,68 @@ Respond with a JSON object:
             return json.dumps(raw, ensure_ascii=False, default=str)
         except Exception:
             return str(raw)
+
+    @staticmethod
+    def _format_tool_result_for_step(raw, tool=None) -> str:
+        """Step-result shaping for the DER execution path (not card rows).
+
+        Session-323: a rerouted READ (get_rendered_documents after a guard
+        REPEAT block) delivers the same gathered bytes through the document
+        store — but _format_tool_result reduces that envelope to a title
+        line ("1 document(s) retrieved"), so the step result starves and
+        synthesis honestly reports IDs-only (live B3-repeat). For read
+        tools, keep the header line AND append a bounded content excerpt
+        per doc (IDs + sources kept). All other tools delegate unchanged,
+        so card snapshots and the pinned format contract never move.
+        Never raises; falls back to _format_tool_result.
+        """
+        try:
+            _t = (tool or "").lower()
+            if _t in AgentKernel._DER_READ_TOOLS and isinstance(raw, dict):
+                _docs = raw.get("documents")
+                if isinstance(_docs, list) and _docs:
+                    _head = AgentKernel._format_tool_result(raw)
+                    _parts = [_head]
+                    for _d in _docs[:3]:
+                        if not isinstance(_d, dict):
+                            continue
+                        _did = str(_d.get("document_id") or "")[:12]
+                        _title = str(_d.get("title") or _did or "doc")
+                        _content = _d.get("content") or ""
+                        if not isinstance(_content, str):
+                            try:
+                                import json as _js323
+                                _content = _js323.dumps(_content, ensure_ascii=False, default=str)
+                            except Exception:
+                                _content = str(_content)
+                        if not _content.strip():
+                            try:
+                                _vars = _d.get("variants") or {}
+                                if isinstance(_vars, dict):
+                                    for _v in _vars.values():
+                                        if isinstance(_v, str) and _v.strip():
+                                            _content = _v
+                                            break
+                            except Exception:
+                                pass
+                        _srcs = _d.get("sources") or []
+                        try:
+                            _src_line = ""
+                            if isinstance(_srcs, list) and _srcs:
+                                _src_line = "sources: " + ", ".join(str(u) for u in _srcs[:5])
+                            elif isinstance(_srcs, str) and _srcs.strip():
+                                _src_line = "sources: " + _srcs.strip()[:400]
+                        except Exception:
+                            _src_line = ""
+                        _excerpt = AgentKernel._smart_excerpt(_content, 2500) if _content.strip() else "(no stored text)"
+                        _block = f"--- Doc {_title} [{_did}] ---\n{_excerpt}"
+                        if _src_line:
+                            _block += f"\n{_src_line}"
+                        _parts.append(_block)
+                    return "\n".join(_parts)
+        except Exception:
+            pass
+        return AgentKernel._format_tool_result(raw)
 
     @staticmethod
     def _supportive_text(text: str, max_chars: int = 200) -> str:
@@ -11895,6 +13205,13 @@ Respond with a JSON object:
                     )
             except Exception:
                 pass
+            # P1 (live conv-98): working memory enters this prompt unbounded —
+            # a 15KB+ crawl dump emptied the provider here while the
+            # compressed-record final synthesis on the same provider
+            # succeeded. Bound with an explicit truncation marker (never a
+            # silent amputation); prompts under the cap are byte-identical.
+            if len(wm_str) > 6000:
+                wm_str = self._smart_excerpt(wm_str, 6000)
 
             # Phase 1 (D1.6): inject the memory-coupled evidence block so the
             # acting prompt is conditioned on proven paths / failures / state.
@@ -11935,6 +13252,32 @@ Respond with a JSON object:
             result = self.infer(
                 prompt, role="reasoning", max_tokens=512, temperature=0.3
             )
+            if not (result.raw_text or "").strip():
+                # P3 (live conv-98): an Empty response here fell through to
+                # the "[step N completed]" placeholder, failed verification,
+                # and burned 3 sub-loop retries on the same bloated prompt.
+                # Retry ONCE with shrunk context (excerpted findings) before
+                # surrendering to the placeholder — same provider, bounded
+                # prompt is the combination proven to succeed.
+                logger.info(
+                    "[DER] step-direct infer empty — retrying once with "
+                    "shrunk context (step %s)", item.step_number,
+                )
+                _shrunk = (
+                    f"{cp_str}\n\n"
+                    + (
+                        "SESSION FINDINGS SO FAR (excerpted):\n"
+                        f"{self._smart_excerpt(wm_str, 1500)}\n\n"
+                        if wm_str else ""
+                    )
+                    + (f"{evidence_str}\n\n" if evidence_str else "")
+                    + f"OBJECTIVE: {item.objective_anchor}\n"
+                    f"STEP {item.step_number}: {item.description}\n\n"
+                    "Complete this step. Respond with the result only."
+                ).strip()
+                result = self.infer(
+                    _shrunk, role="reasoning", max_tokens=512, temperature=0.3
+                )
             return result.raw_text or f"[step {item.step_number} completed]"
         except Exception as _e:
             return f"[step {item.step_number} error: {_e}]"
@@ -12041,7 +13384,22 @@ Respond with a JSON object:
                 if _is_web_goal:
                     # Explicit resource bound (REQ-3 AC3): a FRESH distinct web
                     # query beyond the per-task crawl budget is vetoed. Same-key
-                    # repeats skip the budget (cache-served, read-only).
+                    # repeats skip the budget — but Session 312 (conv-99): a
+                    # repeat is steered to an honest READ of the already-gathered
+                    # documents instead of a re-dispatch, because the promised
+                    # cache-served repeat never existed (D6) and every repeat
+                    # re-fetched at full price. The result is already in the
+                    # document store; reading it IS the repeat's value.
+                    if _qkey in _attempted:
+                        logger.info(
+                            "[DER] exact-repeat gather %r -> steer "
+                            "get_rendered_documents (already gathered this turn)",
+                            goal[:60],
+                        )
+                        return {
+                            "tool": "get_rendered_documents",
+                            "rationale": "exact-repeat gather; read gathered docs instead of re-crawling",
+                        }
                     if _qkey not in _attempted and len(_attempted) >= self._MAX_CRAWLS_PER_TASK:
                         _veto_reason = "budget_exhausted"
                 if _veto_reason:
@@ -12080,10 +13438,50 @@ Respond with a JSON object:
                                     s["url"] for s in sr_result["sources"]
                                     if isinstance(s, dict) and "url" in s
                                 ][:3]
+                                # Session 312 (URL-level turn memory): filter
+                                # URLs this conversation already fetched —
+                                # conv-99 served the same 4 URLs to 3 gather
+                                # steps. All-filtered -> serve nothing (the
+                                # crawler does fresh discovery instead of
+                                # re-crawling known pages).
+                                _crawled = set(getattr(self, "_der_crawled_urls", {}).get(
+                                    self.conversation_id or "", set()
+                                ))
+                                if _crawled and known_urls:
+                                    try:
+                                        from backend.agent.tool_envelope import normalize_url as _norm_gate
+                                        _crawled_n = set(_norm_gate(str(u)) for u in _crawled)
+                                        _fresh = [u for u in known_urls if _norm_gate(str(u)) not in _crawled_n]
+                                    except Exception:
+                                        _fresh = [u for u in known_urls if u not in _crawled]
+                                    if _fresh != known_urls:
+                                        logger.info(
+                                            "[DER] gather gate filtered %d/%d registry URLs already crawled this conversation",
+                                            len(known_urls) - len(_fresh), len(known_urls),
+                                        )
+                                    known_urls = _fresh
                                 if known_urls:
                                     params["known_urls"] = known_urls
                         except Exception:
                             pass  # SourceRegistry failure is non-fatal
+                        # Session-318 T21-hotfix: the exclusion attach lives OUTSIDE
+                        # the registry try-block above — a resolve throw must never
+                        # skip it (unproven, but a resolve failure coinciding with
+                        # a repeat repeat would re-crawl known pages silently).
+                        try:
+                            _visited_all = sorted(
+                                getattr(
+                                    self, "_der_crawled_urls", {}
+                                ).get(self.conversation_id or "", set())
+                            )
+                        except Exception:
+                            _visited_all = []
+                        if _visited_all:
+                            params["excluded_urls"] = _visited_all
+                            logger.info(
+                                "[DER] attach excluded_urls=%d to %s dispatch",
+                                len(_visited_all), params.get("query", "")[:40],
+                            )
                         return {
                             "tool": "crawler_query",
                             "params": params,
@@ -12105,7 +13503,24 @@ Respond with a JSON object:
                         "synthes", "summar", "analy", "evaluat", "compar",
                         "recommend", "conclud", "final", "write up", "explain",
                     )
-                    if _attempted and not _is_web_goal and any(
+                    # Session-324: steer on DURABLE conversation URL memory,
+                    # not the per-turn _attempted budget. _attempted resets at
+                    # every turn boundary (process_text_message), so a
+                    # summarize-from-prior turn always saw attempted=0 and the
+                    # steer never fired — live b324_web1 turn 2 resolved REASON
+                    # trusting prior context, then infer returned empty twice.
+                    # _der_crawled_urls survives across turns per conversation.
+                    _conv_evidence323: set = set()
+                    try:
+                        _conv_evidence323 = set(
+                            getattr(self, "_der_crawled_urls", {}).get(
+                                self.conversation_id or "", set()
+                            )
+                        )
+                    except Exception:
+                        _conv_evidence323 = set()
+                    _evidence_committed = bool(_attempted) or bool(_conv_evidence323)
+                    if _evidence_committed and not _is_web_goal and any(
                         t in goal.lower() for t in _SYNTH_TRIGGERS
                     ):
                         logger.info(
@@ -12154,6 +13569,157 @@ Respond with a JSON object:
         return self._tool_box
 
     # â”€â”€ Phase 4: concurrent step execution helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    def _der_pre_dispatch_guard(self, item: "QueueItem") -> Optional[Dict[str, Any]]:
+        """T6B (specs/tool-result-envelope REQ-2/REQ-3 AC3.3, KD-10): the
+        pre-dispatch HARD-RULE guard — prevention decides, the envelope
+        testifies. Runs BEFORE a tool call is paid for; reads turn memory
+        (seen dispatches + crawled URLs) and the wall ledger ONLY — adds no
+        inference and no store writes.
+
+        Hierarchy C hard rules (never overridable in-run):
+          * WALLED — the target domain has a live wall record (is_walled):
+            the tool is NEVER retried; the step fails honestly.
+          * CIRCLING — this exact tool+params (or an all-known-URLs gather)
+            already ran this conversation: NEVER re-executed; the step is
+            rerouted to READ the original result via the document store
+            (get_rendered_documents), and the original envelope is re-stamped
+            confirmed load-bearing (AC1.6 retroactive half).
+
+        Returns None when the call may proceed, or a dict:
+          {"reason": ..., "reroute_tool": str|None, "reroute_params": dict,
+           "original_step_id": str}
+        Never raises — a broken guard must not change loop semantics
+        (advisory-gate principle).
+        """
+        try:
+            from backend.agent.tool_envelope import (
+                mark_consumed, params_digest,
+            )
+            from backend.agent.tool_errors import is_walled
+
+            _conv = self.conversation_id or ""
+            _counters = getattr(self, "_envelope_counters", None)
+            if _counters is None:
+                _counters = {
+                    "written": 0, "raw_ref_fetches": 0,
+                    "crit_confirmed": 0, "gate_fired": 0,
+                    "gate_blocked": 0, "hard_blocks": 0,
+                    "suggest_overrides": 0,
+                }
+                self._envelope_counters = _counters
+
+            # ── HARD RULE 1: walled domain — never retried in-run ─────────
+            _target = ""
+            try:
+                _p = item.params or {}
+                _candidate = str(
+                    _p.get("url") or _p.get("base_url") or ""
+                )
+                if _candidate.startswith("http"):
+                    from urllib.parse import urlparse as _urlparse
+
+                    _target = _urlparse(_candidate).hostname or ""
+            except Exception:
+                _target = ""
+            if _target and is_walled(_target):
+                _counters["hard_blocks"] += 1
+                logger.info(
+                    "[DER:guard] WALLED tool refused pre-dispatch "
+                    "(conv=%s step=%s tool=%s domain=%s) — never retried "
+                    "in-run",
+                    _conv, getattr(item, "step_id", "?"),
+                    getattr(item, "tool", None), _target,
+                )
+                return {
+                    "reason": f"walled domain {_target}",
+                    "reroute_tool": None,
+                    "reroute_params": {},
+                    "original_step_id": "",
+                }
+
+            # ── HARD RULE 2: repeat — never re-executed; read instead ─────
+            _digest = params_digest(
+                getattr(item, "tool", None), getattr(item, "params", None)
+            )
+            _seen = getattr(self, "_der_seen_dispatches", {}).get(_conv, {})
+            _original_step_id = _seen.get(_digest, "")
+            if _original_step_id:
+                # Find the original envelope for the doc pointer (bounded
+                # scan of the FIFO-capped registry).
+                _original_env = None
+                _bucket = getattr(self, "_der_envelope_registry", {}).get(
+                    _conv, {}
+                )
+                for _env in _bucket.values():
+                    if getattr(_env, "step_id", "") == _original_step_id:
+                        _original_env = _env
+                        break
+                if _original_env is not None:
+                    try:
+                        _before, _after = mark_consumed(_original_env)
+                        _counters["crit_confirmed"] += 1
+                        if _before[0] != "load-bearing":
+                            logger.info(
+                                "[envelope] criticality divergence: step %s "
+                                "declared %s but a later step consumed its "
+                                "doc (now %s) — tuning signal",
+                                _original_step_id, _before[0], _after[0],
+                            )
+                    except Exception:
+                        pass
+                _counters["hard_blocks"] += 1
+                logger.info(
+                    "[DER:guard] REPEAT blocked pre-dispatch (conv=%s "
+                    "step=%s tool=%s original=%s) — rerouting to read the "
+                    "gathered documents instead of re-executing",
+                    _conv, getattr(item, "step_id", "?"),
+                    getattr(item, "tool", None), _original_step_id,
+                )
+                return {
+                    "reason": f"repeat of step {_original_step_id}",
+                    "reroute_tool": "get_rendered_documents",
+                    "reroute_params": {"conversation_id": _conv},
+                    "original_step_id": _original_step_id,
+                }
+
+            # ── Gather URL-subset check: all fetch targets already crawled ─
+            # Compares NORMALIZED addresses so a trailing slash or fragment
+            # drift cannot re-open a visited page (session-321 B-probe fix).
+            _p = item.params or {}
+            _urls = _p.get("known_urls") or (
+                [_p["url"]] if _p.get("url") else []
+            )
+            _crawled = getattr(self, "_der_crawled_urls", {}).get(_conv, set())
+            try:
+                from backend.agent.tool_envelope import normalize_url as _norm_guard
+                _urls_n = [_norm_guard(str(u)) for u in _urls]
+                _crawled_n = set(_norm_guard(str(u)) for u in _crawled)
+            except Exception:
+                _urls_n = [str(u) for u in _urls]
+                _crawled_n = set(str(u) for u in _crawled)
+            if _urls and _crawled and all(
+                u in _crawled_n for u in _urls_n if u
+            ):
+                _counters["hard_blocks"] += 1
+                logger.info(
+                    "[DER:guard] URL-repeat blocked pre-dispatch (conv=%s "
+                    "step=%s): all %d fetch targets already crawled this "
+                    "conversation — rerouting to read",
+                    _conv, getattr(item, "step_id", "?"), len(_urls),
+                )
+                return {
+                    "reason": "all fetch targets already crawled this turn",
+                    "reroute_tool": "get_rendered_documents",
+                    "reroute_params": {"conversation_id": _conv},
+                    "original_step_id": "",
+                }
+            return None
+        except Exception as _guard_exc:
+            logger.debug(
+                "[DER:guard] pre-dispatch guard skipped: %s", _guard_exc
+            )
+            return None
 
     def _der_run_step_execution(
         self,
@@ -12262,6 +13828,109 @@ Respond with a JSON object:
                         "[DER] box resolved tool=%r for step %d (source=%s)",
                         item.tool, item.step_number, _decision.source,
                     )
+                    # ── T6B (specs/tool-result-envelope): pre-dispatch
+                    # HARD-RULE guard — a walled tool is never retried and a
+                    # repeat is never re-executed (rerouted to read). Runs
+                    # AFTER resolution (params known), BEFORE the call is
+                    # paid for (KD-10: prevention decides, envelope
+                    # testifies). Advisory: a broken guard never changes
+                    # loop semantics.
+                    _guard = self._der_pre_dispatch_guard(item)
+                    if _guard is not None:
+                        if _guard.get("reroute_tool"):
+                            logger.info(
+                                "[DER] step %d rerouted by guard: %s -> %s",
+                                item.step_number, _guard.get("reason"),
+                                _guard["reroute_tool"],
+                            )
+                            item.tool = _guard["reroute_tool"]
+                            item.params = dict(
+                                _guard.get("reroute_params") or {}
+                            )
+                        else:
+                            step_success = False
+                            step_result = (
+                                "[STEP BLOCKED: "
+                                + str(_guard.get("reason", "hard rule"))
+                                + " — the tool will not be retried in-run]"
+                            )
+                            return step_result, step_success
+                    # Session-322: dispatch-time intent record. Finalize writes
+                    # the digest->step_id map, but a transport crash skips
+                    # finalize entirely — the next same query then starts
+                    # clean and re-pays. Record here (guard passed, about to
+                    # pay) so the repeat guard fires even when this dispatch
+                    # never returns. setdefault keeps the FIRST step_id.
+                    # Seeds join turn memory too: a marker-less crash still
+                    # teaches the refusal set what was attempted.
+                    try:
+                        from backend.agent.tool_envelope import (
+                            params_digest as _pd322,
+                            normalize_url as _norm322,
+                        )
+                        _conv322 = self.conversation_id or ""
+                        if _conv322:
+                            _sd322 = dict(getattr(self, "_der_seen_dispatches", {}))
+                            _sdb322 = dict(_sd322.get(_conv322, {}))
+                            _pd322_self = _pd322(getattr(item, "tool", None), getattr(item, "params", None))
+                            if _pd322_self:
+                                _sdb322.setdefault(_pd322_self, item.step_id)
+                                _sd322[_conv322] = _sdb322
+                                self._der_seen_dispatches = _sd322
+                            _seeds322 = []
+                            try:
+                                _pp322 = getattr(item, "params", None) or {}
+                                _seeds322 = list(_pp322.get("known_urls") or [])
+                                if _pp322.get("url"):
+                                    _seeds322.append(_pp322["url"])
+                                _rec322 = list(getattr(item, "recovery_seeds", None) or [])
+                                _seeds322.extend(_rec322)
+                            except Exception:
+                                _seeds322 = []
+                            if _seeds322:
+                                _cu322 = dict(getattr(self, "_der_crawled_urls", {}))
+                                _cur322 = set(_cu322.get(_conv322, set()))
+                                for _s322 in _seeds322:
+                                    try:
+                                        _n322 = _norm322(str(_s322))
+                                    except Exception:
+                                        _n322 = ""
+                                    if _n322:
+                                        _cur322.add(_n322)
+                                _cu322[_conv322] = _cur322
+                                self._der_crawled_urls = _cu322
+                    except Exception:
+                        pass
+                    # Session-318 T16 (REQ-9 AC9.5): recovery seed enrichment.
+                    # The resolver keeps full tool authority (F6); when it
+                    # independently chooses a crawl for a recovery step, the
+                    # exact unvisited seeds resolved at trigger time ride along
+                    # (deterministic — never LLM-invented). Any other tool:
+                    # seeds stay parked, opportunity logged as declined.
+                    try:
+                        _rec_of = getattr(item, "recovery_of", "") or ""
+                        _rec_seeds = list(getattr(item, "recovery_seeds", []) or [])
+                    except Exception:
+                        _rec_of, _rec_seeds = "", []
+                    if _rec_of and _rec_seeds and (item.tool == "crawler_query") and isinstance(item.params, dict):
+                        try:
+                            from backend.agent.der_constants import RECOVERY_PAGE_BUDGET
+                            _rec_budget = max(int(RECOVERY_PAGE_BUDGET), 1)
+                        except Exception:
+                            _rec_budget = 5
+                        item.params = dict(item.params)
+                        item.params["seed_urls"] = _rec_seeds[:_rec_budget]
+                        item.params["max_pages"] = _rec_budget
+                        item.params["recovery_of"] = _rec_of
+                        logger.info(
+                            "[DER:recovery] step %d enriched: %d seeds (parent %s)",
+                            item.step_number, len(item.params["seed_urls"]), _rec_of,
+                        )
+                    elif _rec_of and _rec_seeds:
+                        logger.info(
+                            "[DER:recovery] step %d declined: resolver chose %r (parent %s)",
+                            item.step_number, item.tool, _rec_of,
+                        )
                     # pin_517dfcbda150: re-emit TOOL_CALL with the RESOLVED
                     # tool name. The loop's earlier emit (before execution)
                     # carries the planner's guess or "direct"; the frontend's
@@ -12318,6 +13987,28 @@ Respond with a JSON object:
                     )
                 except Exception:
                     pass
+                # Session-318 T18 (REQ-11 AC11.1): per-family deadline for
+                # the dispatch below, plus the monotonic start stamp that
+                # feeds elapsed_s and the stall warning at finalize.
+                try:
+                    _dispatch_deadline = self._der_tool_deadline(item.tool)
+                except Exception:
+                    _dispatch_deadline = 90.0
+                try:
+                    import time as _time_dispatch
+                    item.dispatch_started_at = _time_dispatch.monotonic()
+                except Exception:
+                    pass
+                # AC9.6 (session-319): warm the pooled vision browser the moment
+                # a WEB tool is dispatched, so its cold start overlaps the crawl
+                # instead of blocking recovery later. Measured: the pool stops
+                # the browser after 180s idle (browser_pool.py:55) and the live
+                # log shows "browser acquired in 32918ms (cold pool)"; boot-time
+                # warming (main.py:777) only covers the FIRST search after a
+                # restart, so every later search went cold again. Fire-and-forget
+                # — the crawl never waits on Chromium.
+                if item.tool in self._WEB_CONTENT_TOOLS:
+                    self._der_warm_vision_browser(item.tool)
                 try:
                     _dr = self._get_tool_box().dispatch(
                         Decision(
@@ -12328,6 +14019,7 @@ Respond with a JSON object:
                         session_id=_session,
                         conversation_id=self.conversation_id,
                         turn_id=_turn_id,
+                        timeout_s=_dispatch_deadline,
                     )
                     # pin_42ddd255162d: dispatch-time gather sanction â€” the
                     # resolution-time record (in _mem_lookup) was unreliable
@@ -12348,6 +14040,49 @@ Respond with a JSON object:
                             self._der_crawl_attempts = _cs
                         except Exception:
                             pass
+                except Exception as _maybe_timeout:
+                    # Session-318 T18 (REQ-11 AC11.3): deadline expiry settles
+                    # honestly — synthetic failed DispatchResult so the normal
+                    # downstream (record/call/capture/finalize) all run and the
+                    # envelope stamps status=timeout via item.timed_out.
+                    # Version-proof timeout check (TimeoutError aliases differ
+                    # pre-3.11); anything else re-raises to the outer handler.
+                    import asyncio as _aio_timeout_mod
+                    import concurrent.futures as _fut_timeout_mod
+                    if not isinstance(
+                        _maybe_timeout,
+                        (_aio_timeout_mod.TimeoutError,
+                         _fut_timeout_mod.TimeoutError),
+                    ):
+                        raise
+                    _timeout_text = (
+                        f"[STEP TIMEOUT after {_dispatch_deadline:g}s "
+                        f"(deadline {_dispatch_deadline:g}s) — tool "
+                        f"{item.tool} did not settle; continuing without it. "
+                        f"The worker was abandoned, not killed (threads "
+                        f"cannot be aborted); tool-internal ceilings bound "
+                        f"the orphan."
+                    )
+                    logger.warning(
+                        "[DER] step %d tool %r timed out (deadline %.0fs)",
+                        item.step_number, item.tool, _dispatch_deadline,
+                    )
+                    try:
+                        item.timed_out = True
+                    except Exception:
+                        pass
+                    try:
+                        from backend.agent.write_counters import bump as _bump_dlh
+                        _bump_dlh("envelope.deadline_hits")
+                    except Exception:
+                        pass
+                    _dr = DispatchResult(
+                        success=False,
+                        result={"success": False, "error": _timeout_text,
+                                "error_type": "timeout"},
+                        error=_timeout_text,
+                        error_type="timeout",
+                    )
                 except RuntimeError as _rte:
                     # asyncio.run() inside box may fail if an event loop is
                     # already running in this thread â€” executor fallback
@@ -12367,7 +14102,7 @@ Respond with a JSON object:
                                 session_id=_session,
                                 plan_title=plan.plan_title if plan else "",
                             ),
-                        ).result(timeout=60)
+                        ).result(timeout=_dispatch_deadline)
                         _dr = DispatchResult(
                             success=isinstance(_raw_dr, dict) and _raw_dr.get("success") is not False,
                             result=_raw_dr,
@@ -12394,15 +14129,15 @@ Respond with a JSON object:
                         )
                     except Exception as _rc_err:
                         logger.warning("[DER] record_tool_call failed: %s", _rc_err)
-                step_result = self._format_tool_result(
-                    getattr(_dr, "result", None)
+                step_result = self._format_tool_result_for_step(
+                    getattr(_dr, "result", None), item.tool,
                 ) if _dr else ""
                 if _dr and not _dr.success:
                     step_success = False
                 # W9 (O3): capture structured tool results
                 if item.tool and _dr and _dr.result is not None:
                     try:
-                        self._capture_tool_result(
+                        item.captured_doc_id = self._capture_tool_result(
                             item.tool, _dr.result,
                             self.conversation_id, _turn_id, _session,
                         )
@@ -12453,13 +14188,49 @@ Respond with a JSON object:
                 except Exception:
                     pass
                 self.mark_external_tool(item.tool)
-                raw = await self._tool_bridge.execute_tool(
-                    tool_name=item.tool,
-                    params=item.params,
-                    session_id=_session,
-                    plan_title=plan.plan_title if plan else "",
-                )
-                step_result = self._format_tool_result(raw) if raw is not None else ""
+                # Session-318 T18 (REQ-11 AC11.1/AC11.3): real enforcement —
+                # wait_for CANCELS the coroutine on expiry (no orphan).
+                try:
+                    _deadline_a = self._der_tool_deadline(item.tool)
+                except Exception:
+                    _deadline_a = 90.0
+                try:
+                    item.dispatch_started_at = __import__("time").monotonic()
+                except Exception:
+                    pass
+                try:
+                    import asyncio as _aio_async_dl
+                    raw = await _aio_async_dl.wait_for(
+                        self._tool_bridge.execute_tool(
+                            tool_name=item.tool,
+                            params=item.params,
+                            session_id=_session,
+                            plan_title=plan.plan_title if plan else "",
+                        ),
+                        timeout=_deadline_a,
+                    )
+                except _aio_async_dl.TimeoutError:
+                    _timeout_text_a = (
+                        f"[STEP TIMEOUT after {_deadline_a:g}s "
+                        f"(deadline {_deadline_a:g}s) — tool "
+                        f"{item.tool} did not settle; continuing without it.]"
+                    )
+                    logger.warning(
+                        "[DER] async step %d tool %r timed out (deadline %.0fs)",
+                        item.step_number, item.tool, _deadline_a,
+                    )
+                    try:
+                        item.timed_out = True
+                    except Exception:
+                        pass
+                    try:
+                        from backend.agent.write_counters import bump as _bump_adlh
+                        _bump_adlh("envelope.deadline_hits")
+                    except Exception:
+                        pass
+                    raw = {"success": False, "error": _timeout_text_a,
+                           "error_type": "timeout"}
+                step_result = self._format_tool_result_for_step(raw, item.tool) if raw is not None else ""
                 if isinstance(raw, dict) and raw.get("success") is False:
                     step_success = False
                 # REQ-18 AC5 (T31): correlate every browser navigation with its
@@ -12492,7 +14263,7 @@ Respond with a JSON object:
                         pass
                 if item.tool and raw is not None:
                     try:
-                        self._capture_tool_result(
+                        item.captured_doc_id = self._capture_tool_result(
                             item.tool, raw, self.conversation_id, _turn_id, _session
                         )
                     except Exception as _cap_err:
@@ -12648,6 +14419,29 @@ Respond with a JSON object:
             # than triggering a re-gather split.
             if _low.startswith("error"):
                 return "FAILED"
+            # Session 312 (goal-result alignment, user-directed): a successful
+            # fetch that never mentions the step's distinctive subject did NOT
+            # serve the goal — conv-99 "verified" a Parakeet step with a
+            # whisper.cpp dump. Distinctive terms = capitalized words in the
+            # goal (proper nouns like model names); if NONE appear in the
+            # result, commit honestly as UNVERIFIED so the next decision sees
+            # the gap instead of believing the goal is served.
+            _subj_terms = [
+                w for w in re.findall(r"[A-Z][a-zA-Z0-9]{2,}", goal or "")
+                if w.lower() not in {
+                    "the", "and", "for", "with", "find", "search", "research",
+                    "compare", "whether", "how", "its", "any", "github",
+                    "documentation", "authoritative", "information",
+                }
+            ]
+            if _subj_terms and not any(
+                t.lower() in _low for t in _subj_terms
+            ):
+                logger.info(
+                    "[DER] gather alignment MISS: goal %r — none of %s appear "
+                    "in fetched content", goal[:80], _subj_terms[:4],
+                )
+                return "UNVERIFIED"
             if success:
                 return "VERIFIED"
             if len(_without_marker) >= 80:
@@ -12996,6 +14790,7 @@ Respond with a JSON object:
 
     # â”€â”€ Phase 4: shared per-step finalize (extracted from _execute_plan_der)
 
+
     def _der_finalize_step(
         self,
         item: "QueueItem",
@@ -13026,7 +14821,21 @@ Respond with a JSON object:
         multi-session coupling wiring inside this method can classify the
         session domain ("voice" vs "der") instead of raising NameError.
         """
-        step_outputs.append(step_result)
+        # Session 312 (Pacman-only context flow, user-directed): the raw step
+        # result used to enter the inline flow UNBOUNDED — three crawls put
+        # 71.5k chars of page text into a 64k window (conv-99). The DB keeps
+        # the full text (Pacman fragments + document store); the context
+        # window gets the SAME bounded excerpt the evidence path uses
+        # (gather tools 8000, others 400). Raw text lives in memory, not in
+        # the window.
+        step_outputs.append(
+            self._smart_excerpt(step_result, self._der_evidence_cap(item.tool))
+        )
+        # Session 312 / Session-318 / Session-319: turn URL memory is harvested
+        # by ONE shared helper so the FAILURE path records addresses too (that
+        # path skips this function entirely — see _der_handle_step_failure).
+        # Behaviour here is unchanged; the body simply moved.
+        _remember_turn_urls(self, step_result, "finalize")
 
         # â”€â”€ EventBus: emit tool:result or tool:error â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         try:
@@ -13225,46 +15034,6 @@ Respond with a JSON object:
                 )
         except Exception as _wm_exc:
             loud_error(_wm_exc, "mycelium_working_memory")
-
-        # â”€â”€ WORKING MEMORY: accumulate findings for later steps â”€â”€â”€â”€â”€â”€â”€â”€
-        # Appends step result to working_history zone so _run_step_direct()
-        # calls on later steps can see what earlier steps discovered.
-        # Skips error outputs to avoid poisoning context with noise.
-        try:
-            if self._memory_interface and step_result and step_success:
-                # Session 245: content-aware window — a gather-tool crawl
-                # truncated to 400 chars starves every later step.
-                _wm_note = (
-                    f"[Step {item.step_number}: {item.description[:80]}]"
-                    f" {self._smart_excerpt(step_result, self._der_evidence_cap(item.tool))}"
-                )
-                self._memory_interface.append_to_session(
-                    _session, _wm_note, zone="working_history"
-                )
-                # Session 245 (live memory footer): surface the memory WRITE
-                # on the card's footer while execution happens — previously
-                # memory:event only fired once at recall time (before the
-                # card existed), so the footer sat on "Active Execution" for
-                # whole runs. Same registry kind ("episodic"), outcome_type
-                # distinguishes store from recall.
-                try:
-                    from backend.agent.event_bus import get_event_bus, IRISStreamEvent
-
-                    get_event_bus().emit(
-                        IRISStreamEvent.MEMORY_EVENT,
-                        data={
-                            "kind": "episodic",
-                            "task_summary": f"[Step {item.step_number}] {item.description[:80]}",
-                            "outcome_type": "store",
-                            "duration_ms": 0,
-                        },
-                        session_id=_session,
-                        conversation_id=self.conversation_id,
-                    )
-                except Exception:
-                    pass  # never block the DER loop on an emit failure
-        except Exception as _wm2_exc:
-            loud_error(_wm2_exc, "append_working_history")
 
         # Phase 0 fix (Gap 5): populate step result on the QueueItem so
         # downstream consumers (reviewer, trace) read real output instead of
@@ -14017,7 +15786,8 @@ Respond with a JSON object:
                                 break
                 except Exception as _fb_exc:  # noqa: BLE001
                     logger.debug("[DER] fold-back write failed: %s", _fb_exc)
-            # OFF THE CRITICAL PATH â€” the THIRD inline durability write found
+
+            # OFF THE CRITICAL PATH — the THIRD inline durability write found
             # on this path (after tool_bridge._record_tool_event and
             # _store_document_data). Per the note left on the second one, the
             # PATTERN is fixed here rather than the instance.
@@ -14055,8 +15825,118 @@ Respond with a JSON object:
             )
         except Exception as _cad_exc:
             loud_error(_cad_exc, "caducean_trajectory_immortus")
+        # ── specs/tool-result-envelope T6 (REQ-1 AC1.2): build the
+        # envelope ONCE at the finalize site. Extracted into its own
+        # method so an upstream caducean failure can never skip
+        # envelope construction (AC1.4: the envelope ALWAYS exists —
+        # full or minimal — never a silent legacy item).
+        try:
+            self._der_build_step_envelope(
+                item=item,
+                step_result=step_result,
+                step_success=step_success,
+                outcome=_verified,
+                completed_items=completed_items,
+                _session=_session,
+                _turn_id=_turn_id,
+                coords_from=locals().get("_coords_from"),
+                coords_to=locals().get("_coords_to"),
+            )
+        except Exception as _env_call_exc:
+            logger.warning(
+                "[envelope] finalize call failed for step %s: %s",
+                getattr(item, "step_id", "?"), _env_call_exc,
+            )
+
+        # ── WORKING MEMORY: accumulate findings for later steps ──
+        # T7 (specs/tool-result-envelope REQ-2 AC2.1): append the envelope
+        # LINE (status + summary + wrapper labels + raw_ref doc id) for EVERY
+        # settled step INCLUDING failures — the old site appended a raw
+        # _smart_excerpt for successes only, silently skipping failures,
+        # which guaranteed the next step could not see the flat tire it just
+        # hit. Raw payloads no longer enter working memory by construction;
+        # _run_step_direct's 6000-cap stays as defense-in-depth. Pre-envelope
+        # items (legacy edge) degrade to the old bounded excerpt.
+        try:
+            _env = getattr(item, "envelope", None)
+            if self._memory_interface:
+                if _env is not None:
+                    _wm_note = (
+                        f"[Step {item.step_number}: {item.description[:80]}] "
+                        f"{_env.line()}"
+                    )
+                elif step_result:
+                    _wm_note = (
+                        f"[Step {item.step_number}: {item.description[:80]}]"
+                        f" {self._smart_excerpt(step_result, self._der_evidence_cap(item.tool))}"
+                    )
+                else:
+                    _wm_note = ""
+                if _wm_note:
+                    self._memory_interface.append_to_session(
+                        _session, _wm_note, zone="working_history"
+                    )
+                # Session 245 (live memory footer): surface the memory WRITE
+                # on the card's footer while execution happens — previously
+                # memory:event only fired once at recall time (before the
+                # card existed), so the footer sat on "Active Execution" for
+                # whole runs. Same registry kind ("episodic"), outcome_type
+                # distinguishes store from recall.
+                try:
+                    from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+
+                    get_event_bus().emit(
+                        IRISStreamEvent.MEMORY_EVENT,
+                        data={
+                            "kind": "episodic",
+                            "task_summary": f"[Step {item.step_number}] {item.description[:80]}",
+                            "outcome_type": "store",
+                            "duration_ms": 0,
+                        },
+                        session_id=_session,
+                        conversation_id=self.conversation_id,
+                    )
+                except Exception:
+                    pass  # never block the DER loop on an emit failure
+        except Exception as _wm2_exc:
+            loud_error(_wm2_exc, "append_working_history")
 
         completed_items.append(item)
+
+        # Session-318 T16 (REQ-9 AC9.5/AC9.6): VLM in-site recovery trigger.
+        # Dead fetch + unvisited same-site candidates + budget remaining →
+        # a recovery QueueItem joins via add_item (the card-visible path).
+        # Dependents order after it; independents ahead proceed first — the
+        # lane never blocks the loop (no new locks, no waits). One recovery
+        # per dead host per turn; chains forbidden in the helper.
+        try:
+            _rec_item = self._der_maybe_open_recovery(
+                item, step_result, completed_items, queue,
+            )
+            if _rec_item is not None:
+                queue.add_item(_rec_item)
+                try:
+                    from backend.agent.write_counters import bump as _bump_ropen
+                    _bump_ropen("envelope.recovery_opens")
+                except Exception:
+                    pass
+                try:
+                    from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+                    get_event_bus().emit(
+                        IRISStreamEvent.TASK_PROGRESS,
+                        data={
+                            "add_step": True,
+                            "step_id": _rec_item.step_id,
+                            "step_number": _rec_item.step_number,
+                            "description": _rec_item.description[:200],
+                            "tool_name": "crawler_query",
+                            **self._card_envelope(_turn_id),
+                        },
+                    )
+                except Exception:
+                    pass  # never block the DER loop on an emit failure
+        except Exception as _rec_open_exc:
+            logger.debug("[DER] recovery open failed: %s", _rec_open_exc)
 
         # â”€â”€ Phase 3: escalation + explorer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # After each step, check if mode escalation is warranted.
@@ -14100,6 +15980,12 @@ Respond with a JSON object:
                     # _der_run_step_execution resolves it via the single resolver
                     # (explorer.propose) â€” F6 / System Invariant. We never take a
                     # tool from the Explorer's continuation dict.
+                    # Session 312 (live conv-99): QueueItem was referenced here
+                    # without an import — the one at the DER-loop function is a
+                    # LOCAL binding, invisible here. Explorer escalation died
+                    # with NameError at 18:05:09, exactly when result-aware
+                    # steering was needed.
+                    from backend.agent.der_loop import QueueItem
                     _next_item = QueueItem(
                         step_id=f"explorer_{len(completed_items) + 1}",
                         step_number=len(completed_items) + 1,
@@ -14167,6 +16053,18 @@ Respond with a JSON object:
             logger.warning(
                 "[DER] Explorer escalation failed: %s", _explorer_exc
             )
+        # Session-318 T19 (AC5.6 defect fix): grade at completion on EVERY
+        # terminal path — the continuation-done branch alone never runs on
+        # queue-exhaustion ends (conv-102: zero grade lines). Deduped by turn.
+        # Non-vacuous only: an EMPTY queue is trivially "complete" and must
+        # never stamp a premature PASS mid-run (caught by BT-4).
+        try:
+            if queue.is_complete() and len(getattr(queue, "items", []) or []) > 0:
+                self._der_report_run_grade(
+                    completed_items, _turn_id, "finalize-complete"
+                )
+        except Exception:
+            pass
 
         # â”€â”€ EventBus: emit der:step â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         try:
@@ -14394,30 +16292,63 @@ Respond with a JSON object:
 
             from backend.agent.der_constants import ExecutionMode
 
-            # Build a summary of what was done (include real outputs when present)
+            # Build a summary of what was done — T8 (specs/tool-result-envelope
+            # REQ-2 AC2.2 / REQ-4 AC4.2): BOTH halves render envelope views
+            # only. The old done_summary half appended the FULL raw i.result
+            # for the last 10 steps (the conv-99 leak); it is now capped to
+            # the envelope line exactly like the outputs block. Legacy edge
+            # (no envelope): bounded excerpt, never raw.
             done_summary = "\n".join(
                 f"  Step {i.step_number}: {i.description}"
-                + (f"\n    OUTPUT: {i.result}" if i.result else "")
+                + (
+                    f"\n    {i.envelope.line()}"
+                    if getattr(i, "envelope", None) is not None
+                    else (
+                        # Legacy edge (pre-envelope item): bounded excerpt via
+                        # the class static — fake/test kernels may not carry
+                        # the instance method.
+                        f"\n    OUTPUT: {AgentKernel._smart_excerpt(i.result, 400)}"
+                        if i.result
+                        else ""
+                    )
+                )
                 for i in completed_items[-10:]
             )
 
-            # Phase 3 (Gap 4): surface the actual step outputs to the Explorer
-            # so it can reason about what was really returned, not just the
-            # step descriptions. Bounded to keep the prompt small.
+            # Phase 3 (Gap 4): surface what each completed step actually
+            # returned — now as ENVELOPE lines (status + wrapper + summary +
+            # doc pointer), not bounded raw excerpts. Bounded by construction.
+            _env_lines = [
+                f"  [{i.step_number}] {i.envelope.line()}"
+                for i in completed_items[-10:]
+                if getattr(i, "envelope", None) is not None
+            ]
             outputs_block = (
-                "\n".join(
-                    f"  [{idx + 1}] {out[:600]}" for idx, out in enumerate(step_outputs)
+                "\n".join(_env_lines)
+                if _env_lines
+                else (
+                    "\n".join(
+                        f"  [{idx + 1}] {out[:600]}"
+                        for idx, out in enumerate(step_outputs)
+                    )
+                    if step_outputs
+                    else "  (none captured)"
                 )
-                if step_outputs
-                else "  (none captured)"
             )
 
+            # REQ-8 AC8.2: visited ledger — pointers only, omit when empty.
+            try:
+                _visited_next = self._der_visited_block()
+            except Exception:
+                _visited_next = ""
+            _visited_tail = f"{_visited_next}\n\n" if _visited_next else ""
             prompt = (
                 "You are the Explorer. Your job is to decide if more work is needed.\n\n"
                 f"OBJECTIVE: {task_objective}\n\n"
                 f"STEPS COMPLETED ({len(completed_items)} total):\n{done_summary}\n\n"
                 f"ACTUAL STEP OUTPUTS (what each completed step returned):\n"
                 f"{outputs_block}\n\n"
+                f"{_visited_tail}"
                 f"Current mode: {mode.value if isinstance(mode, (str, ExecutionMode)) else 'agentic'}\n\n"
                 "Is the objective fully met? If yes, respond with {\"done\": true}.\n"
                 "If no, describe the SINGLE next goal to make progress (do NOT name a\n"
@@ -14441,6 +16372,14 @@ Respond with a JSON object:
 
             data = _json.loads(m.group())
             if data.get("done") is True:
+                # AC5.6: done+GRADE via the shared helper (deduped by turn —
+                # the finalize-complete site may have reported first, T19).
+                try:
+                    self._der_report_run_grade(
+                        completed_items, turn_id, "continuation-done"
+                    )
+                except Exception:
+                    pass
                 return None
 
             _desc = data.get("description")
@@ -14669,11 +16608,25 @@ If any tools failed, address those issues in your response.
             except Exception:
                 _router_primary = False
             try:
+                # AC11.6 (session-319): the user-facing answer was the ONLY
+                # unbounded wait left in the turn — no timeout here, and the
+                # transport retried 3x60s beneath it, so one slow provider
+                # response could stall the turn for ~3 minutes with nothing
+                # watching. This bounds it. On expiry the exception path below
+                # degrades to the deterministic compressed summary, which is
+                # the honest outcome. Safety net BEHIND streaming (AC13.1),
+                # not the primary speed mechanism.
+                try:
+                    from backend.agent.der_constants import DEADLINE_SYNTHESIS_S
+                    _syn_deadline_s = float(DEADLINE_SYNTHESIS_S)
+                except Exception:
+                    _syn_deadline_s = 120.0
                 _syn_text, _syn_think, _syn_tools = self._router.generate(
                     "reasoning",
                     [{"role": "user", "content": synthesis_prompt}],
                     max_tokens=self.response_max_tokens(),
                     temperature=0.6,
+                    timeout_s=_syn_deadline_s,
                 )
                 self._accrue_tokens(
                     _syn_text, getattr(self._router, "last_usage", None),

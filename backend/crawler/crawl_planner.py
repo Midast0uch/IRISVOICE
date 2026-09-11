@@ -371,6 +371,16 @@ class CrawlPlanner:
             return self._fallback_plan(query)
         try:
             data = json.loads(match.group())
+            # Session-325: tool-capable models may emit a TOOL CALL instead
+            # of the urls array — fail fast with a named log, never silently
+            # flow into the 98s vision fallback.
+            if not data.get("urls") and isinstance(data.get("arguments"), dict):
+                logger.warning(
+                    "[CrawlPlanner] model emitted a tool call (%s) instead of "
+                    "urls for %r — failing fast",
+                    data.get("tool"), query[:60],
+                )
+                return self._fallback_plan(query)
             urls = [u for u in data.get("urls", []) if isinstance(u, str)][:_MAX_PAGES]
             if not urls:
                 return self._fallback_plan(query)

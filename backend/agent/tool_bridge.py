@@ -2382,6 +2382,18 @@ class AgentToolBridge:
         query = (params.get("query") or "").strip()
         if not query:
             return {"success": False, "error": "crawler_query requires a 'query'"}
+        # Session-318 (REQ-9 AC9.1/AC9.3): turn visited set rides the
+        # dispatch (kernel attaches params["excluded_urls"]).
+        # params["known_urls"] is registry-hint only and is not consumed
+        # downstream — exclusion flows exclusively via this key.
+        _excluded: List[str] = []
+        try:
+            _excluded = [
+                u for u in (params.get("excluded_urls") or [])
+                if isinstance(u, str) and u.startswith("http")
+            ]
+        except Exception:
+            _excluded = []
 
         # Session 245 (card-sync fix): TASK_PROGRESS frames emitted below MUST
         # carry the conversation_id — without it the gateway stamps
@@ -2656,8 +2668,25 @@ class AgentToolBridge:
         # subprocess fetch backend for C-level crash isolation (REQ-17). Narration
         # stays blueprint-pure: no web-mode override in the tool layer.
         try:
+            # Session-318 T16 (REQ-9 AC9.5): recovery seeds ride the ordinary
+            # funnel (REQ-19 AC3 precedent) — exact unvisited URLs resolved at
+            # trigger time; max_pages carries the recovery page budget.
+            _seed_urls = [
+                u for u in (params.get("seed_urls") or [])
+                if isinstance(u, str) and u.startswith("http")
+            ]
+            _rec_kwargs: Dict[str, Any] = {}
+            if _seed_urls:
+                _rec_kwargs["seed_urls"] = _seed_urls
+            if params.get("max_pages"):
+                try:
+                    _rec_kwargs["max_pages"] = max(int(params["max_pages"]), 1)
+                except Exception:
+                    pass
             result = await get_crawl_orchestrator().research(
                 query, mode="agent", session_id=session_id, on_progress=_on_progress,
+                excluded_urls=_excluded,
+                **_rec_kwargs,
             )
         except Exception as exc:
             logger.exception("[crawler_query] research failed: %s", exc)
@@ -2789,6 +2818,63 @@ class AgentToolBridge:
         except Exception as _learn_exc:
             logger.debug("[crawler_query] registry learn skipped: %s", _learn_exc)
 
+        # Session-318 (REQ-9 AC9.3/AC9.4): refusal-set feedback + next
+        # candidates. Attempted (not just usable) feeds the turn refusal set
+        # at finalize — re-paying a parked/failed fetch in-turn is the
+        # futile-retry loop. Outlinks are pointers only (bounded, marked).
+        # (Appended AFTER the honesty gate above, so zero-content crawls
+        # still fail honestly; and AFTER the registry snapshot, which stays
+        # clean of these machine lines.)
+        try:
+            _attempted: List[str] = []
+            for _p in getattr(crawl_result, "pages", []):
+                _u = getattr(_p, "url", "") or ""
+                if _u and _u not in _attempted:
+                    _attempted.append(_u)
+            if _attempted:
+                _combined += "\n\n--- Attempted: " + " ".join(_attempted)
+        except Exception:
+            pass
+        # Session-318 T17 (REQ-10 AC10.2): explicit dead line for zero-page
+        # deaths (Attempted only covers pages that produced PageData).
+        try:
+            _dead = [
+                u for u in (getattr(crawl_result, "dead_urls", []) or [])
+                if isinstance(u, str) and u.startswith("http")
+            ]
+            if _dead:
+                _combined += "\n--- Dead: " + " ".join(dict.fromkeys(_dead))
+        except Exception:
+            pass
+        try:
+            import re as _re_outlinks
+            _seen_links: List[str] = []
+            for _p in getattr(crawl_result, "pages", []):
+                _blob = (getattr(_p, "markdown", "") or "") + "\n" + (getattr(_p, "html", "") or "")
+                for _m in _re_outlinks.finditer(r"\[[^\]]{0,300}\]\((https?://[^)\s]+)\)", _blob):
+                    _lu = _m.group(1).strip()
+                    if _lu and _lu not in _seen_links:
+                        _seen_links.append(_lu)
+                for _m in _re_outlinks.finditer(r"href=[\"'](https?://[^\"'<>\s]+)", _blob):
+                    _lu = _m.group(1).strip()
+                    if _lu and _lu not in _seen_links:
+                        _seen_links.append(_lu)
+            if _seen_links:
+                try:
+                    from backend.agent.tool_envelope import normalize_url as _norm_out
+                    _excl_n = {_norm_out(str(u)) for u in _excluded}
+                    _new_links = [u for u in _seen_links if _norm_out(str(u)) not in _excl_n][:10]
+                except Exception:
+                    _excl = set(_excluded)
+                    _new_links = [u for u in _seen_links if u not in _excl][:10]
+                _combined += "\n--- Outlinks (uncrawled candidates):"
+                for _lu in _new_links:
+                    _combined += f"\n  - {_lu}"
+                _n_rest = len(_seen_links) - len(_new_links)
+                if _n_rest:
+                    _combined += f"\n  (+{_n_rest} already-visited or over cap)"
+        except Exception:
+            pass
         return {
             "success": True,
             "query": query,

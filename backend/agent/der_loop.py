@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
 if TYPE_CHECKING:  # pragma: no cover — typing only, zero runtime cost
     from backend.core_models import BatchOutcome, BatchToolCall
+    from backend.agent.tool_envelope import ToolResultEnvelope
 
 from .der_constants import (
     DER_EMERGENCY_STOP,
@@ -230,6 +231,30 @@ class QueueItem:
     # Defaults to None for non-split-created steps (every existing call site
     # is unaffected — the field is only populated by _split_step, T41).
     node_record: Optional[NodeRecord] = None  # REQ-3 T8: EVERY node carries its memory record
+    # specs/tool-result-envelope T5: the write-time envelope (REQ-1 AC1.2).
+    # Stays Optional so pre-envelope items in flight degrade per AC2.1's edge
+    # case (fall back to existing bounded evidence). Stamped ONCE at the
+    # finalize site — never re-derived per consumer.
+    envelope: Optional["ToolResultEnvelope"] = None
+    # T5/T6: the doc-store id captured at execution time (_capture_tool_result
+    # returns it; the finalize site reads it for the envelope's raw_ref —
+    # AC1.3 doc-id-only, Pacman chunk ids never waited on).
+    captured_doc_id: Optional[str] = None
+    # T5 (KD-9): planner-DECLARED criticality (load-bearing|supporting|
+    # cosmetic) — intent only until the finalize site confirms it (AC1.6).
+    declared_criticality: str = "supporting"
+    # Session-318 T16 (REQ-9 AC9.5/AC9.6): VLM in-site recovery lane.
+    # recovery_of = parent step_id ("" = not a recovery); recovery_seeds =
+    # exact unvisited in-site URLs resolved at trigger time. The resolver
+    # keeps full tool authority; post-resolve enrichment attaches the seeds
+    # only when it independently chooses a crawl.
+    recovery_of: str = ""
+    recovery_seeds: List[str] = field(default_factory=list)
+    # Session-318 T18 (REQ-11): execution accounting. timed_out marks a
+    # deadline expiry (envelope status=timeout); dispatch_started_at
+    # (monotonic) feeds elapsed_s and the stall warning at finalize.
+    timed_out: bool = False
+    dispatch_started_at: float = 0.0
 
     @property
     def footprint(self) -> Optional[NodeRecord]:
@@ -926,15 +951,145 @@ class Reviewer:
                         f"Duplicate of step {prev.step_number} (already completed) — skip or rephrase",
                     )
 
+            # Claim-coverage review (session-321): repeats by claim, not by
+            # words. Returns a REFINE-to-read description or None.
+            _claim_refine = self._claim_coverage_refine(item, completed_steps)
+            if _claim_refine is not None:
+                return ReviewVerdict.REFINE, _claim_refine
+
             return ReviewVerdict.PASS, None
 
         except Exception:
             return ReviewVerdict.PASS, None
 
+    def _claim_coverage_refine(
+        self,
+        item: QueueItem,
+        completed_steps: List[QueueItem],
+    ) -> Optional[str]:
+        """REFINE a candidate whose claims are all already covered into a
+        read/compose step — never into another gather.
+
+        Claims are per-family (gather: normalized target URLs; the envelope's
+        stamped sources are the completed-claims side). The refined text names
+        a READ of the gathered documents, so the post-review resolver picks
+        ``get_rendered_documents`` (idempotent, side-effect free) instead of
+        paying for another crawl. A read cannot recrawl by construction.
+
+        Rule 2 reads the envelope's own semantic labels (novelty/stuck_shape),
+        not addresses: two consecutive circling envelopes mean the loop is
+        re-gathering known bodies whatever the next step's words say.
+
+        Deterministic, zero LLM, zero encodes. Fail-open to None (PASS).
+        VETO is never returned here — repeats are rerouted, not blocked.
+        """
+        try:
+            from backend.agent.tool_envelope import normalize_url, tool_family
+        except Exception:
+            return None
+        try:
+            _fam = tool_family(getattr(item, "tool", None))
+            _p = getattr(item, "params", None) or {}
+            _cand: List[str] = []
+            try:
+                _raw_urls = list(_p.get("known_urls") or [])
+                if _p.get("url"):
+                    _raw_urls.append(_p["url"])
+                for _u in _raw_urls:
+                    _n = normalize_url(str(_u))
+                    if _n and _n not in _cand:
+                        _cand.append(_n)
+            except Exception:
+                _cand = []
+            _done_urls: set = set()
+            _done_ids: List[str] = []
+            for _prev in completed_steps[-8:]:
+                _env = getattr(_prev, "envelope", None)
+                if _env is None:
+                    continue
+                try:
+                    for _s in (getattr(_env, "sources", None) or []):
+                        _n = normalize_url(str(_s))
+                        if _n:
+                            _done_urls.add(_n)
+                except Exception:
+                    pass
+                _done_ids.append(str(getattr(_prev, "step_number", "?")))
+            # Rule 1: every claimed address already gathered → read instead.
+            if _cand and _done_urls and all(u in _done_urls for u in _cand):
+                _ids = ",".join(_done_ids[-3:] or ["?"])
+                return (
+                    f"All {len(_cand)} fetch target(s) already gathered "
+                    f"(steps {_ids}) — read the gathered documents and "
+                    f"compose the answer from them; do not dispatch "
+                    f"another crawl."
+                )
+            # Rule 2: the loop is circling — last two settled envelopes both
+            # repeat known bodies. Steer an unresolved or gather candidate to
+            # read/compose. Explicit non-gather tools pass through untouched.
+            if _fam in ("gather", "direct") and (
+                getattr(item, "tool", None) is None or _fam == "gather"
+            ):
+                _circling = 0
+                for _prev in completed_steps[-2:]:
+                    _env = getattr(_prev, "envelope", None)
+                    if _env is None:
+                        break
+                    _nov = str(getattr(_env, "novelty", "") or "")
+                    _shape = str(getattr(_env, "stuck_shape", "") or "")
+                    if _nov.startswith("repeat_of_") or _shape == "circling":
+                        _circling += 1
+                    else:
+                        break
+                if _circling >= 2:
+                    # Session-322 (owner correction): REFINE-to-read fires
+                    # ONLY on fruitful search — completed envelopes hold
+                    # sources/doc_ids and match != empty/mismatched. An empty
+                    # search must PASS so the Director can try_different
+                    # (retry_same only for transient/rate_limited).
+                    try:
+                        _fruitful = False
+                        for _prev in completed_steps[-2:]:
+                            _env = getattr(_prev, "envelope", None)
+                            if _env is None:
+                                continue
+                            _srcs = list(getattr(_env, "sources", None) or [])
+                            _match = str(getattr(_env, "match", "") or "")
+                            _doc = ""
+                            try:
+                                _doc = str((getattr(_env, "raw_ref", None) or {}).get("doc_id") or "")
+                            except Exception:
+                                _doc = ""
+                            if (_srcs or _doc) and _match not in ("", "empty", "mismatched"):
+                                _fruitful = True
+                                break
+                        if not _fruitful:
+                            return None
+                    except Exception:
+                        return None
+                    return (
+                        f"Last {_circling} gather steps circled "
+                        f"already-known sources — read the gathered "
+                        f"documents and compose the answer from them; do "
+                        f"not dispatch another crawl."
+                    )
+            return None
+        except Exception:
+            return None
+
     def _build_review_prompt(self, item, completed_steps, gradient_warnings, active_contracts):
+        # T8 (specs/tool-result-envelope REQ-4 AC1.1): completed steps render
+        # their envelope LINE (status + wrapper + summary) when one exists —
+        # the Reviewer's INPUTS are envelope views, never the raw result.
+        # ReviewVerdict semantics are LOCKED unchanged (AC4.4).
         completed_summary = (
             "\n".join(
-                f"- Step {s.step_number}: {s.description} [done]"
+                (
+                    f"- Step {s.step_number}: {s.description} [done] "
+                    f"{s.envelope.line()}"
+                    if getattr(s, "envelope", None) is not None
+                    else f"- Step {s.step_number}: {s.description} [done]"
+                )
                 for s in completed_steps[-3:]
             )
             or "None"
