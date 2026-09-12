@@ -1086,6 +1086,58 @@ The `_monitor_words` function has a contract comment:
 
 ## Known Issues & Recent Fixes
 
+### Parakeet silently ran on CPU for ~9 days — bad cuDNN path + silent fallback (fixed 2026-09-12)
+
+**SYMPTOM**: the sherpa worker spawned a ~750 MB–1.3 GB `python.exe`
+(`backend.audio.parakeet_sherpa_worker`) on the first wake word and built the
+recognizer **on CPU**, while this document (line 70) and
+`HANDOFF_AUDIO_PIPELINE.md:261` both state Parakeet is GPU. The operator's
+"my Parakeet was always on my GPU" was correct for the **old transformers
+worker** (`parakeet_worker.py`, hardcoded `device_map="cuda:0"`) and had been
+false since the 2026-09-03 sherpa swap.
+
+**ROOT CAUSE (two defects, one silent)**:
+1. `backend/audio/parakeet_sherpa.py:_torch_lib_dir()` returned
+   `<site-packages>/lib` instead of `<site-packages>/torch/lib`. torch bundles
+   cuDNN 9 (`cudnn64_9.dll`) in `torch/lib`, so the directory it put on the
+   DLL search path held no cuDNN. ORT then failed
+   `Error loading ... cudnn64_9.dll ... missing` and `build_recognizer()`
+   caught it and retried `cpu`.
+2. `PROVIDER` defaulted to `"cpu"` and `IRIS_PARAKEET_PROVIDER` was set
+   **nowhere** (verified: unset at Machine, User, and Process level), so the
+   GPU path was never even requested.
+3. The fallback logged only `provider 'cuda' failed (...) — trying next`,
+   which reads as a routine retry. Nothing distinguished "GPU built" from
+   "silently downgraded to CPU".
+
+**EVIDENCE**: every `recognizer built (provider=...)` line in the log history
+from 2026-09-04 through 2026-09-12 10:15 reads **`provider=cpu`** (13 builds).
+The first `provider=cuda` build is 2026-09-12 10:34, after the fix.
+
+**FIX**:
+- `_torch_lib_dir()` now joins `os.path.dirname(_spec.origin)` + `lib`
+  (i.e. `<torch>/lib`) — the directory that actually contains the cuDNN DLLs.
+- `.env` now sets `IRIS_PARAKEET_PROVIDER=cuda`, matching the documented
+  operator decision.
+- `build_recognizer()` logs a loud `FALLBACK: requested provider=... but built
+  provider=...` warning whenever the built provider differs from the requested
+  one, so a downgrade can never be quiet again.
+
+**VERIFIED LIVE (2026-09-12)**: a real `voice_command_start` built
+`recognizer built (provider=cuda)` in ~53 s, and `nvidia-smi` listed the
+worker PID in its compute-apps set with GPU memory rising 1301 → 1667 MiB.
+Honest limit: per-process VRAM attribution reads `[Insufficient Permissions]`
+on this box, so the GPU evidence is the explicit build line + the PID in the
+compute-apps list, not a clean per-process number.
+
+**PINNED**: `backend/tests/contract/test_parakeet_provider_contract.py`
+(CT-PP1..CT-PP4) — proven-failable: reverting the fix fails 2 of the 5
+assertions (the path shape and the loud fallback).
+
+**LESSON**: a fallback that keeps the feature working is not automatically a
+safe fallback — if it can silently move work off the hardware the user chose,
+it must be loud, and the chosen provider must be pinned by a test.
+
 ### Wake Word "not working after restart" — startup-window timing (documented 2026-07-17)
 
 **SYMPTOM**: After a backend (re)start, saying "Hey Iris" does nothing — the orb

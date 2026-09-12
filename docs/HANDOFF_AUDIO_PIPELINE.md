@@ -232,8 +232,17 @@ Prior session figures (17 s warm / 265 s cold) are warm-page-cache-only; plan on
 ### What changed (3 files + 1 new)
 - **NEW `backend/audio/parakeet_sherpa.py`** — model-dir resolution
   (`data/models/parakeet-sherpa/...v3-int8/`), torch-bundled cuDNN 9 DLL path setup,
-  `build_recognizer()` (tries `IRIS_PARAKEET_PROVIDER`, default `cuda`, falls back
-  to CPU so a missing cuDNN never wedges voice). Imported lazily, never at boot.
+  `build_recognizer()` (tries `IRIS_PARAKEET_PROVIDER`, intended default `cuda`,
+  falls back to CPU so a missing cuDNN never wedges voice). Imported lazily, never
+  at boot.
+  > **CORRECTION (2026-09-12):** the intended `cuda` default was NOT what shipped.
+  > `PROVIDER` defaulted to `cpu` and `IRIS_PARAKEET_PROVIDER` was set nowhere, and
+  > `_torch_lib_dir()` returned `<site-packages>/lib` instead of `<torch>/lib`, so
+  > cuDNN 9 was never on the DLL path. Every build from 2026-09-04 to 2026-09-12
+  > logged `provider=cpu` — Parakeet ran on CPU for ~9 days with a silent fallback.
+  > Fixed 2026-09-12 (correct path + `.env` `cuda` + loud FALLBACK warning); see
+  > `docs/architecture/audio-pipeline.md` Known Issues and
+  > `backend/tests/contract/test_parakeet_provider_contract.py`.
 - **`backend/audio/voice_command.py`** — `ParakeetTranscriber` reimplemented on the
   sherpa engine **inside the same class shell**: same lazy `_ensure_loaded()` /
   `_load_model_worker` background-build semantics, same `_loading` / `_loaded` /

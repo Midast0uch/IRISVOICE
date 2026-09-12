@@ -12,14 +12,20 @@ Model layout (sherpa transducer)::
         encoder.int8.onnx / decoder.int8.onnx / joiner.int8.onnx / tokens.txt
 
 Notes:
-  * Default provider is CPU (2026-09-03 measurement: int8 encoder has no
-    CUDA kernels, so CUDA EP silently runs encoder math on CPU anyway while
-    costing ~+1 GB RAM and ~1 GB VRAM; CPU is faster at every clip length:
-    0.16 s vs 0.30 s short, ~1.05 s vs ~1.45 s for 9 s audio). Override with
-    IRIS_PARAKEET_PROVIDER=cuda when true-GPU (fp16) weights land.
+  * Provider is resolved from ``IRIS_PARAKEET_PROVIDER`` (default ``cpu``).
+    Set it to ``cuda`` to run on the GPU; the operator's choice in ``.env``
+    is authoritative (2026-09-12).
+  * HISTORY / why the CUDA path was dead until 2026-09-12: this module used
+    to document CPU as the default because a 2026-09-03 measurement showed
+    CPU faster (0.16 s vs 0.30 s short). That measurement was taken while
+    ``_torch_lib_dir`` was returning the WRONG directory, so the CUDA
+    provider could never actually load — every "CUDA" run was silently CPU
+    with ORT noise, and the timings compared CPU against CPU. After the path
+    fix, ``IRIS_PARAKEET_PROVIDER=cuda`` builds the recognizer on the GPU in
+    ~10-12 s. Re-measure before claiming CPU is faster.
   * The CUDA wheel needs cuDNN 9 (``cudnn64_9.dll``). torch already bundles
-    it, so :func:`ensure_dll_path` puts ``torch/lib`` on the DLL search
-    path — no system install required.
+    it under ``<torch>/lib``, so :func:`ensure_dll_path` puts THAT directory
+    on the DLL search path — no system install required.
   * Everything here is imported LAZILY from ``voice_command`` (first
     utterance), never at backend boot, to preserve the 0.41 GB idle profile.
 """
@@ -49,7 +55,14 @@ MODEL_DIR = Path(
     )
 )
 
-PROVIDER = os.environ.get("IRIS_PARAKEET_PROVIDER", "cpu").strip().lower() or "cpu"
+# Default is cuda — the documented operator decision (audio-pipeline.md:70,
+# HANDOFF_AUDIO_PIPELINE.md:261: "CUDA is the wired default (user decision)").
+# This defaulted to "cpu" from the 2026-09-03 swap until 2026-09-12, which is
+# half of why Parakeet silently ran on CPU for ~9 days. A missing cuDNN now
+# falls back to CPU with a LOUD warning (see build_recognizer), so a machine
+# without the CUDA stack still works — it just cannot be quiet about it.
+# Override with IRIS_PARAKEET_PROVIDER=cpu to force the CPU path.
+PROVIDER = os.environ.get("IRIS_PARAKEET_PROVIDER", "cuda").strip().lower() or "cuda"
 
 ENCODER = MODEL_DIR / "encoder.int8.onnx"
 DECODER = MODEL_DIR / "decoder.int8.onnx"
@@ -74,9 +87,16 @@ def _torch_lib_dir() -> Optional[str]:
 
         _spec = _ilu.find_spec("torch")
         if _spec and _spec.origin:
-            _lib = os.path.join(
-                os.path.dirname(os.path.dirname(_spec.origin)), "lib"
-            )
+            # torch's bundled cuDNN lives in <torch>/lib, i.e.
+            # site-packages/torch/lib — NOT site-packages/lib. The previous
+            # grandparent join put the WRONG directory on PATH, so
+            # cudnn64_9.dll was never found and the CUDA provider silently
+            # fell back to CPU (ORT logs "Error loading ... cudnn64_9.dll ...
+            # missing", then build_recognizer's except-branch retries CPU).
+            # Result: the worker built the 758 MB int8 recognizer on CPU while
+            # docs/architecture/audio-pipeline.md claimed "Parakeet GPU".
+            # Fixed 2026-09-12 — verified cuda now builds in ~10-12 s.
+            _lib = os.path.join(os.path.dirname(_spec.origin), "lib")
             if os.path.isdir(_lib):
                 return _lib
     except Exception:
@@ -134,6 +154,16 @@ def build_recognizer(provider: Optional[str] = None):
                 model_type="nemo_transducer",
             )
             logger.info("[ParakeetSherpa] recognizer built (provider=%s)", prov)
+            if prov != wanted:
+                # A silent fallback hid a real cuDNN path bug for months
+                # (see module docstring). Never let it be quiet again.
+                logger.warning(
+                    "[ParakeetSherpa] FALLBACK: requested provider=%r but built "
+                    "provider=%r — GPU path unavailable. Set IRIS_PARAKEET_PROVIDER "
+                    "correctly or install cuDNN 9.",
+                    wanted,
+                    prov,
+                )
             return rec, prov
         except Exception as exc:
             tried.append(f"{prov}: {exc}")

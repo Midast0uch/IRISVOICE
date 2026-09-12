@@ -245,6 +245,239 @@ def _is_alive(pid: int) -> bool:
             return False
 
 
+# ─── Pre-flight cleanup (self-cleaning starts) ─────────────────────────────
+#
+# Why this exists (2026-09-12): starting backend/frontend could leave the
+# operator looking at processes that should not be there — a stale
+# parakeet_sherpa_worker, a legacy `.backend_pid`/`pids.txt` pair that named
+# long-dead PIDs, and an orphaned server still holding a port. Each start now
+# runs a bounded pre-flight so the process table reflects ONLY what this
+# manager tracks and started.
+#
+# Deliberately SCOPED: we never reap a service the manager still tracks as
+# alive. That is what makes `iris:start:backend` safe to run while a tracked
+# frontend is up (and vice versa) — it cannot kill the healthy other service.
+
+# Port each service owns. Used to free a stale holder before bind, so we never
+# see "address already in use" or a silent fall-back to another port.
+_SERVICE_PORTS = {"backend": 8090, "frontend": 3000, "launcher": 8080}
+
+# Command-line signatures that identify a service's process tree. Used ONLY to
+# reap ORPHANS (when the service is not tracked alive); never against a healthy
+# tracked service.
+_SERVICE_SIGNATURES = {
+    "backend": (
+        "start-backend.py",
+        "backend.audio.parakeet_sherpa_worker",
+    ),
+    "frontend": (
+        "next/dist/bin/next",
+        "next dev",
+    ),
+    "launcher": (
+        "iris-launcher",
+        "vite --port 8080",
+    ),
+}
+
+# Artifacts written by the retired `_start_services.ps1`. Nothing reads them
+# (verified 2026-09-12); their stale PIDs only mislead `iris:status`. Removed
+# on every start so the PID picture has ONE source of truth (.iris-pids/*.pid).
+_LEGACY_ARTIFACTS = (
+    REPO_ROOT / ".backend_pid",
+    PID_DIR / "pids.txt",
+)
+
+
+def _clear_stale_artifacts() -> None:
+    """Drop dead PID files and retired legacy artifacts.
+
+    A `.pid` whose process is gone is a lie in `iris:status`; clearing it is
+    what lets a later start tell "already running" from "stale file". The
+    legacy artifacts are deleted unconditionally (nothing reads them).
+    """
+    if PID_DIR.exists():
+        for f in sorted(PID_DIR.glob("*.pid")):
+            pid = _read_pid(f.stem)
+            if pid and not _is_alive(pid):
+                _clear_pid(f.stem)
+                print(f"[preflight] cleared stale {f.name} (pid {pid} gone)")
+    for legacy in _LEGACY_ARTIFACTS:
+        try:
+            if legacy.exists():
+                legacy.unlink()
+                print(f"[preflight] removed retired artifact {legacy.name}")
+        except OSError:
+            pass
+
+
+def _self_and_ancestor_pids() -> set[int]:
+    """This process plus every ancestor PID (Windows; best-effort elsewhere).
+
+    CRITICAL: the manager is normally launched as
+        npm run iris:start:backend
+          -> cmd.exe /c "python iris_process_manager.py start --detach backend
+                        -- python start-backend.py"
+    Every process on that chain (cmd.exe, npm) carries ``start-backend.py`` in
+    its command line, so a naive signature match reaps the manager's OWN
+    launcher. ``taskkill /F /T`` then tree-kills the manager itself and the
+    start silently does nothing (observed 2026-09-12). Excluding self alone is
+    NOT enough — the whole ancestor chain must be protected.
+    """
+    protected = {os.getpid()}
+    if sys.platform != "win32":
+        return protected
+    try:
+        out = subprocess.check_output(
+            [
+                "powershell", "-NoProfile", "-NonInteractive", "-Command",
+                "Get-CimInstance Win32_Process | "
+                "Select-Object ProcessId,ParentProcessId | ConvertTo-Json -Compress",
+            ],
+            stderr=subprocess.DEVNULL, text=True, timeout=20,
+        )
+        import json as _json
+
+        rows = _json.loads(out or "[]")
+        if isinstance(rows, dict):
+            rows = [rows]
+        parent_of = {int(r["ProcessId"]): r.get("ParentProcessId") for r in rows if r.get("ProcessId")}
+        cur = os.getpid()
+        for _ in range(64):  # bounded — a corrupt table must not loop forever
+            nxt = parent_of.get(cur)
+            if not nxt or int(nxt) in protected:
+                break
+            protected.add(int(nxt))
+            cur = int(nxt)
+    except Exception:
+        pass
+    return protected
+
+
+def _pids_for_signature(signatures: tuple[str, ...]) -> list[int]:
+    """PIDs whose command line matches any signature (Windows). Empty elsewhere."""
+    if sys.platform != "win32":
+        return []
+    try:
+        out = subprocess.check_output(
+            [
+                "powershell",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Get-CimInstance Win32_Process | "
+                "Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress",
+            ],
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=20,
+        )
+        import json as _json
+
+        data = _json.loads(out or "[]")
+        if isinstance(data, dict):
+            data = [data]
+        protected = _self_and_ancestor_pids()
+        hits: list[int] = []
+        for row in data:
+            cmd = str(row.get("CommandLine") or "")
+            pid = row.get("ProcessId")
+            if not pid or int(pid) in protected:
+                continue
+            # Never reap anything that is (or is launching) the manager itself.
+            if "iris_process_manager" in cmd.lower():
+                continue
+            if any(sig.lower() in cmd.lower() for sig in signatures):
+                hits.append(int(pid))
+        return hits
+    except Exception:
+        return []
+
+
+def _reap_orphans(service: str) -> None:
+    """Kill this service's ORPHAN processes — only when it is not tracked alive.
+
+    The tracked-alive guard is the safety property: `iris:start:backend` will
+    not touch a running, tracked frontend (and vice versa). When the service is
+    NOT tracked alive, any signature match is by definition an orphan from an
+    earlier run and is killed with its whole tree.
+    """
+    tracked = _read_pid(service)
+    if tracked and _is_alive(tracked):
+        return  # healthy + tracked — hands off
+    sigs = _SERVICE_SIGNATURES.get(service)
+    if not sigs:
+        return
+    for pid in _pids_for_signature(sigs):
+        if _read_pid(service) == pid:
+            continue
+        print(f"[preflight] reaping orphan {service} process pid {pid}")
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                           capture_output=True)
+        else:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+
+
+def _free_service_port(service: str) -> None:
+    """Kill whatever is LISTENING on this service's port, before we bind it.
+
+    Ports are unambiguous where command lines are not, so this is the reliable
+    half of the pre-flight. /T reaps the whole tree (npm -> next -> esbuild,
+    or backend -> parakeet worker), which is how the transient worker
+    subprocesses get cleaned up on a restart.
+
+    Same tracked-alive guard as _reap_orphans: a HEALTHY tracked service is
+    never killed here. Without this guard a direct _preflight() call (or any
+    future caller) could free the port of the very service it was asked to
+    protect — a self-inflicted outage. (Caught by a direct-call test
+    2026-09-12; the early-return in start_service is NOT a substitute, it is
+    just the first line of defence.)
+    """
+    tracked = _read_pid(service)
+    if tracked and _is_alive(tracked):
+        return  # healthy + tracked — hands off
+    port = _SERVICE_PORTS.get(service)
+    if not port:
+        return
+    try:
+        if sys.platform == "win32":
+            out = subprocess.run(
+                ["netstat", "-ano", "-p", "TCP"],
+                capture_output=True, text=True, timeout=20,
+            ).stdout
+            for line in out.splitlines():
+                if f":{port} " in line and "LISTENING" in line:
+                    parts = line.split()
+                    pid = int(parts[-1])
+                    if pid and pid != os.getpid() and pid != tracked:
+                        print(f"[preflight] freeing port {port}: killing pid {pid}")
+                        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)],
+                                       capture_output=True)
+        else:
+            out = subprocess.run(
+                ["lsof", "-ti", f":{port}"],
+                capture_output=True, text=True, timeout=20,
+            ).stdout
+            for pid_str in out.strip().splitlines():
+                pid = int(pid_str)
+                if pid and pid != os.getpid() and pid != tracked:
+                    print(f"[preflight] freeing port {port}: killing pid {pid}")
+                    os.kill(pid, signal.SIGTERM)
+    except Exception as exc:
+        print(f"[preflight] port {port} cleanup skipped: {exc}")
+
+
+def _preflight(service: str) -> None:
+    """Bounded, scoped cleanup run before every start."""
+    _clear_stale_artifacts()
+    _reap_orphans(service)
+    _free_service_port(service)
+
+
 # ─── Subprocess creation with all three fixes ──────────────────────────────
 
 
@@ -265,6 +498,11 @@ def start_service(
     if existing and _is_alive(existing):
         print(f"[{name}] already running (pid {existing}). Stop it first.")
         return existing
+
+    # Self-cleaning start: clear stale PID files / retired artifacts, reap
+    # this service's ORPHANS, and free its port. Scoped so a tracked-alive
+    # sibling service is never touched (see _reap_orphans).
+    _preflight(name)
 
     log_fh, log_path = _open_log(name)
     print(f"[{name}] starting: {' '.join(cmd)}")
