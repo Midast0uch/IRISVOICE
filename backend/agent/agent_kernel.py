@@ -16089,9 +16089,19 @@ Respond with a JSON object:
                             # blocking). Bounded to 2 per step so one rich
                             # result cannot fill the ceiling alone. Advisory.
                             try:
+                                # Session 326 (live bug): a step can be VERIFIED
+                                # while its result is an ERROR envelope. Probe 3
+                                # logged
+                                #   agent ceiling +2 ({"success": true,
+                                #   "stdout": "wc : The term 'wc' is not
+                                #   recognized..."})
+                                # — shell error text became "discovered facts".
+                                # Only discover from a result that carries
+                                # actual output.
                                 if (
                                     str(_verified or "").upper() == "VERIFIED"
                                     and str(step_result or "").strip()
+                                    and not _gc_result_is_error(step_result)
                                 ):
                                     _gc_req_norms = {
                                         _gc_mod2._norm(_f)
@@ -16712,6 +16722,55 @@ Respond with a JSON object:
             loud_error(_forget_exc, "step_forgetting_bound")
 
     # â”€â”€ Phase 3: explorer methods â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    def _gc_result_is_error(self, result: object) -> bool:
+        """True when a settled step's result is an ERROR envelope, not output.
+
+        Session 326 (live bug): ceiling discovery extracted "facts" from shell
+        error text because a step can be VERIFIED while its result is a failed
+        command. Accepts a dict envelope (``success: False`` / an ``error`` key /
+        non-zero ``returncode``) or a JSON string of one. Never raises; an
+        unparseable string is treated as real output (discovery is advisory, so
+        a false negative is harmless while a false positive pollutes the
+        ceiling with error text).
+        """
+        try:
+            _r = result
+            if isinstance(_r, str):
+                _s = _r.strip()
+                if _s[:1] in ("{", "["):
+                    try:
+                        import json as _json_err
+
+                        _r = _json_err.loads(_s)
+                    except Exception:
+                        return False
+                else:
+                    return False
+            if isinstance(_r, dict):
+                if _r.get("success") is False:
+                    return True
+                if str(_r.get("error") or "").strip():
+                    return True
+                _rc = _r.get("returncode")
+                if isinstance(_rc, int) and _rc != 0:
+                    return True
+                # A stdout that is only a shell "not recognized"/usage error is
+                # still an error even when the wrapper reported success.
+                _out = str(_r.get("stdout") or "").lower()
+                if _out and any(
+                    _m in _out
+                    for _m in (
+                        "is not recognized",
+                        "command not found",
+                        "no such file or directory",
+                        "cannot find path",
+                    )
+                ):
+                    return True
+            return False
+        except Exception:
+            return False
 
     def _goal_contract_open_facts(self) -> List[str]:
         """Goal contract T6 (REQ-3 AC3.2/AC3.6): required facts neither covered
