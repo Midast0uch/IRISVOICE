@@ -425,7 +425,7 @@ deleted** for having been under-scheduled rather than for being bad.
 | `u` → decay modulation | — | **PROVEN** | wired via `run_maintenance` |
 | `trig_coupling` | 157 | **PROVEN** | shared by both layers; CU-1 + sign regression |
 | `rate_meter` | 367 | **PROVEN** | quota-key + AIMD tests |
-| `phase_manager` | 650 | **FLAG-OFF** | `IRIS_PHASE_SCHEDULER` defaults **off** |
+| `phase_manager` | 650 | **PROVEN — LIVE** (corrected 2026-09-10) | `IRIS_PHASE_SCHEDULER=1` is set in `.env:55` (and `.env.example:63`), so `_flag_enabled()` (`phase_manager.py:74-84`) returns True and the gate at `router.py:980` actually schedules. **This row previously read `FLAG-OFF` / "defaults off", which was WRONG** — it reported the CODE default instead of the RUNNING configuration. See the rule below. |
 | `call_context` / priority lane | 171 | **FLAG-OFF** | `test_priority_lane_never_waits` |
 | `batch_dispatch` | 305 | **FLAG-OFF** | batch attribution + fallback tests |
 | `coupled_registry` | 359 | **FLAG-OFF** | `IRIS_COUPLING_ENABLED` defaults **off** |
@@ -438,6 +438,23 @@ deleted** for having been under-scheduled rather than for being bad.
 | **Local Model Loader (Phase 3)** | `local_model_manager.py` | **PROVEN** | `test_device_policy`, `test_config_deriver`, `test_degradation`, `test_tps_correction`, `test_config_cache`, `test_closed_loop_tuning`, `test_symlinked_model_discovered`, `test_loaded_context_exposed`, `test_phase3_regression`; `scripts/validate_local_model_path.py` (9 assertions) |
 | **Phase 4 Encoder** | `backend/memory/embedding.py` | **UNEXERCISED** (measurement gates blocked) | `scripts/validate_encoder_path.py` (24 assertions, all pass) — but `sentence_transformers` and the LFM2.5-Embedding-350M / Encoder-350M GGUF weights are absent in every environment this has run in (`embedding.py:336`, `:389`), so the harness itself falls back to the dependency-free `hash` backend on every run; the configured default stays `bge-m3` (`config.py:82,74`), but no run has ever exercised a real neural embedding, which is closer to never-produced-real-output than to proven |
 | **Model Switcher + ContextPill liveness (Phase 5)** | `components/ModelSwitcher.tsx`, `_emit_context_usage` (both DER + direct paths) | **PROVEN** | `__tests__/InputRow.test.tsx`, `__tests__/ModelSwitcher.test.tsx`, `__tests__/components/ContextPill.test.tsx`; CT-S1..CT-S5 (`backend/tests/contract/test_ct_s1..s5_*`, `test_context_usage_parity`); behavioral: `test_switch_from_chat_row`, `test_switch_failure_keeps_previous`, `test_brain_and_tool_independent`, `test_context_usage_on_direct_reply`, `test_context_usage_thread_switch`, `test_switcher_survives_restart`; `scripts/validate_switcher.py` (7 CDD assertions) |
+
+**RULE — a flag's status is the RUNNING value, not the code default.**
+The `phase_manager` row above was wrong for an unknown length of time because it read the default in
+`phase_manager.py` and never checked `.env`. A default describes what happens with NO
+configuration; this deployment HAS configuration. Any status in this table that depends on a feature
+flag MUST be re-derived from the running environment, not from the source default.
+
+Re-verified 2026-09-10 against `.env` and `.env.local` (the only files that set `IRIS_*`). `.env`
+sets exactly three variables — `IRIS_BACKEND_PORT`, `IRIS_VISION_READY_MAX_S`,
+`IRIS_PHASE_SCHEDULER`. `.env.local` sets none:
+
+- `phase_manager` → **ON** — corrected above.
+- `coupled_registry` → **OFF** — row is correct. `IRIS_COUPLING_ENABLED` defaults `"0"`
+  (`coupled_registry.py:80`) and is set in neither file.
+- `call_context` / priority lane → **OFF** — no enabling flag is set in either file.
+- `batch_dispatch` → **OFF / untuned** — it exposes only tuning parameters
+  (`IRIS_BATCH_WINDOW_RAD`, `IRIS_BATCH_MAX_HOLD_S`), and neither is set in either file.
 
 The Local Model Loader row's device policy, config derivation, and closed-loop tuning are covered
 in depth, with the same `file:line` discipline, in

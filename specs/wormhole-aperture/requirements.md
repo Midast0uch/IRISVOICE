@@ -1407,6 +1407,92 @@ hex querying for exactly that reason).
   (confounder hash / hex / walk / cause), so their relative value is measurable
   (REQ-35). **At current corpus size the cause axis may well outperform the
   physics axis, and the telemetry must be able to say so.**
+- AC7 (session-319, the OUTCOME counterpart of AC1–AC4): THE SYSTEM SHALL support
+  retrieval keyed on the EXPECTATION dimension triple
+  `(alignment, identity, yield_state)` declared by the envelope's expectation
+  registry (`backend/agent/tool_envelope.py`, `ExpectationDimensions`), and SHALL
+  treat it as a CLOSED categorical address on exactly the terms AC2 sets for the
+  FAULTLINE triple. The lattice is 3×3×3 = 27 addresses and `as_key()` returns the
+  hashable form (`"matched|new|full"`) — a primary-key shape, never a vector.
+  AC1–AC4 index FAILURES by cause; this AC indexes FINDINGS by outcome, so the
+  aperture holds a symmetric pair of closed lattices.
+
+  **This is load-bearing for node chains, not decoration.** `outcome_type` on a
+  recall episode is what REQ-20 AC1 gates chain genesis on (`outcome_type='success'`,
+  explicitly not `'hit'` or `'partial'`), and REQ-20 AC4 deduplicates chains by
+  *"same sequence hash → one chain"*. The expectation verdict is what PRODUCES
+  `outcome_type`. Therefore:
+
+  - WIDENING the value sets is a **BREAKING change**: it invalidates every stored
+    chain sequence hash, defeats REQ-20 AC4's dedup, and can silently crystallise a
+    chain from a `partial` (violating REQ-20 AC2).
+  - ADDING A NEW TOOL is **not** a widening. It is a Layer-2 registry edit
+    (`register_expectation_label(label, bar)`) that maps the tool onto an existing
+    bar and MUST NOT change the triple. Tools are expected to change; the alphabet
+    is not.
+  - A tool with no registered bar is judged `unclear` and COUNTED
+    (`unknown_expectation_counts()`), never silently defaulted — so an
+    unclassified tool is visible as a promotion candidate rather than invisible.
+
+#### AC7 deliberation notes (session-319) — what this AC does NOT decide
+
+*Written for whoever implements the aperture. AC7 was drafted from a code-level
+audit of the envelope + a reading of REQ-20; it deliberately fixes only the part
+that is a BREAKING-change boundary, and leaves the rest open.*
+
+**The mental model, stated once:** the dimensions are an **alphabet**; node chains
+are **sentences** written in it. New words (tools, bars) may be added freely —
+that is Layer 2, a data edit. The alphabet may not change, because every sentence
+already written (every stored chain sequence hash) would become unreadable. That
+is the whole of AC7's "closed" requirement, and it is why the constraint is
+load-bearing rather than stylistic.
+
+**Verified against the current implementation (session-319):**
+- `ExpectationDimensions` exists with `alignment` / `identity` / `yield_state`,
+  `as_key()` → `"matched|new|full"`, value sets closed as `frozenset`s.
+- `register_expectation_label(label, bar)` is the Layer-2 growth API; it refuses
+  unknown bars and refuses duplicates (mirroring `register_error_label`).
+- `unknown_expectation_counts()` / `promote_unknown_expectation()` are Layer 3.
+- Pinned by `backend/tests/unit/test_expectation_registry.py` (18 tests), including
+  one that asserts the lattice stays 27 addresses.
+
+**OPEN — needs deliberation at implementation time, NOT decided here:**
+
+1. **The `outcome_type` mapping is the sharpest open question.** REQ-20 AC1 gates
+   genesis on `outcome_type='success'` and AC2 excludes `'hit'` / `'partial'`. But
+   the envelope carries `status` (success|error|partial) AND a wrapper
+   (`match` = matched|mismatched|unclear). Is `outcome_type='success'` equivalent to
+   `alignment='matched' AND yield_state='full'`, or is it derived from `status`
+   alone? These give different chain populations. **Pin this before implementing
+   genesis**, or chains will crystallise from a `partial` and violate AC2.
+2. **Do the two lattices COMBINE or stay separate indexes?** Cause (27) × outcome
+   (27) = 729 if joined; AC1–AC4 and AC7 are written as two independent keys. The
+   spec does not say whether a hyperedge is scoped by both, one, or either.
+3. **What exactly is hashed into the sequence hash?** AC4 says "same sequence hash →
+   one chain" but never defines the input. If the input is the sequence of dimension
+   addresses, closure matters exactly as AC7 states. If it is the op/tool-name
+   sequence, closure matters less and AC7's breaking-change claim needs restating.
+   **This determines how much AC7 is worth.**
+4. **Does a recovery node appear IN a chain**, and does its `recovery_of` parent link
+   participate in the hash, or is it provenance-only metadata? AC7 assumes
+   provenance-only (which is what keeps `envelope.recovery_of` justified — see
+   `specs/tool-result-envelope` AC9.8). If the parent link enters the hash, the
+   field becomes part of the alphabet and AC7 must say so.
+5. **`hit` and `partial` still need representation** even though they are excluded
+   from genesis. Which corners of the outcome lattice do they occupy? Today only
+   `success`-shaped corners are implied.
+6. **Tool-less / envelope-less nodes.** `UNKNOWN_DIMENSIONS` is
+   `"unclear|unknown|empty"`. Is that a real address that participates in chains, or
+   is it excluded from the sequence entirely? REQ-20 AC5's attribution rule
+   (`agent_used=unknown` must not count) suggests the latter, but it is unstated.
+7. **Does the expectation registry feed attribution (REQ-17 / AC5)?** Or is
+   attribution determined purely by delivery-and-use, with the registry contributing
+   nothing? If the registry cannot influence attribution, say so explicitly so
+   nobody wires it in later expecting it to.
+
+**What is NOT open:** the value sets must not widen. That is the one thing AC7
+fixes hard, because it is the only irreversible mistake — a widened alphabet
+silently corrupts already-stored chains rather than failing loudly.
 
 **Edge Cases:**
 - A failure has no typed label yet (Layer 3) -> it still HAS dimensions once

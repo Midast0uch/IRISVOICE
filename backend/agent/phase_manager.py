@@ -63,6 +63,11 @@ def _env_float(name: str, default: float) -> float:
 
 PHASE_K = _env_float("IRIS_PHASE_K", 0.6)          # K in Kuramoto coupling
 PHASE_MAX_WAIT_S = _env_float("IRIS_PHASE_MAX_WAIT_S", 2.0)
+# Default oscillator period: smaller = faster cadence between admissions.
+# 1.0 ships conservative; the live ceiling (Cerebras 450 rpm) leaves wide
+# headroom — window-aware quota enforcement (see _compute_gate) is the real
+# 429 guard, so the phase mark stays the decorrelation cadence only.
+DEFAULT_PERIOD_S = _env_float("IRIS_PHASE_PERIOD_S", 0.5)
 TICK_MAX_DT_S = 5.0
 MIN_PERIOD_S = 0.05
 R_MIN = 0.1
@@ -155,6 +160,9 @@ class PhaseRegistry:
 
         ``oscillator_id`` is the primary key (e.g. ``"{session}:USER_TURN"``).
         ``quota_id`` is the grouping key for coupling and widest-gap placement.
+        A caller leaving ``natural_period_s`` at the 1.0 default gets
+        ``DEFAULT_PERIOD_S`` (env IRIS_PHASE_PERIOD_S) instead — explicit
+        non-default periods (tests, tuners) pass through untouched.
         On **first** registration: places θ at the widest gap across oscillators
         sharing ``quota_id`` (REQ-11 AC2).  On **re**-registration preserves θ
         and amplitude (REQ-11 AC3).
@@ -173,6 +181,8 @@ class PhaseRegistry:
                 return _existing
 
             _period = max(natural_period_s, MIN_PERIOD_S)
+            if natural_period_s == 1.0:
+                _period = max(DEFAULT_PERIOD_S, MIN_PERIOD_S)
             _theta = self._widest_gap(quota_id)
             _load = self._load_fraction(quota_id)
             _amp = max(1.0 - _load, R_MIN)

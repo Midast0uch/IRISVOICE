@@ -726,6 +726,11 @@ class PlanStep:
     failure_reason: Optional[str]   = None
     duration_ms: int                = 0
     expected_output: Optional[str]  = None
+    # specs/tool-result-envelope T5 (KD-9): planner-DECLARED criticality —
+    # "load-bearing" | "supporting" | "cosmetic". Intent only; the finalize
+    # site confirms it from raw_ref consumption (AC1.6, option C). One short
+    # field inside the existing planning call — no extra inference.
+    criticality: str                = "supporting"
 
 
 @dataclass

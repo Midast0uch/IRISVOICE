@@ -250,3 +250,34 @@ site that reads it.
 Tests: `backend/tests/unit/test_search_loop_bounds.py` (15) — ledger TTL +
 normalization, gate parse/fallback semantics, zero-yield trip/reset/isolation/
 aging.
+
+---
+
+## 12. Session 312 — the gap the wall ledger cannot see: SUCCESSFUL redundant fetches
+
+Live evidence (conv-99, whisper.cpp/WhisperX/Parakeet comparison, 6:40 turn):
+the planner emitted 3 overlapping gather steps; the SourceRegistry served the
+SAME 4 URLs to all three (topic-coverage bleed: a Parakeet query matched
+whisper.cpp URLs on shared topics); the orchestrator re-fetched every page
+fresh each time (3× full fetch, fresh HAR each run, 52–59s each); the turn
+ended with the deterministic fallback and raw crawl text dumped into the
+response card.
+
+Three findings, each a mechanism-without-consumer on the hot path — the exact
+decoration pattern §11 warns against:
+
+| Finding | What exists | What's missing |
+|---|---|---|
+| **Successful redundant fetch** | Wall ledger covers failures (parks/walls); FAULTLINE typed the one 404 | Nothing covers a SUCCESSFUL fetch happening 3×. A wall lesson never forms because GitHub answered (200). URL-level turn memory is not consulted at the gather decision |
+| **Broken cache-served-repeat promise** | Gather gate D6/REQ-9 comment: "same-query repeat is allowed — the JobRegistry dedupe serves the cached crawl (no provider call is paid)" | The JobRegistry stores completed results but NOTHING serves them on repeat dispatch. `CrawlPlanner cache HIT` caches the URL LIST only; pages re-fetch at full price. The promise is unimplemented |
+| **DCP unwired on the hot path** | `backend/agent/dcp.py` (3 passes, window-derived budget) — real pruner | Its only callers are the MCM `dcp_prune` action and swarm `context_control`. Neither runs on the DER context-assembly path: conversation memory sailed to 71.5k/64k while no pruner looked at it |
+
+Plus one latent NameError found the same run: `_der_finalize_step`'s
+explorer-escalation branch references `QueueItem` without importing it (the
+import lives in the DER-loop function). Escalation died at 18:05:09 with
+`name 'QueueItem' is not defined`.
+
+**Design rule extended:** a CACHE promise without a consumer is also
+decoration. The gather decision must consult what the agent already knows —
+URLs fetched this turn, queries already asked, window fullness — BEFORE
+dispatching. Successful fetches need memory too, not just failures.

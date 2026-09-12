@@ -267,6 +267,10 @@ class CrawlResult:
     # None when nothing was parked. Consumed by tool_bridge to emit the typed
     # `sources_parked` error so DER's reviewer can branch instead of blind-retry.
     park_summary: Optional[str] = None
+    # --- Session-318 T17 (REQ-10 AC10.2): per-URL deaths (slot None,
+    # exception, unusable body) even on zero-usable runs. Optional with
+    # default so every existing CrawlResult(...) construction keeps working.
+    dead_urls: list = field(default_factory=list)
     # --- vision-goal-directed-search REQ-8/REQ-11 (T27): when dispatch_urls ran
     # with an output_schema, this carries the StepFindingsAccumulator snapshot —
     # strict-projected instance + per-field verification (verified, claims,

@@ -159,6 +159,26 @@ Rules:
 ## Wave 3 — Verification
 - [ ] T4 (REQ-28): contract tests — <test files> — RIPPLE: <CT-x locks which interface>
 
+## Traceability Matrix (MANDATORY — every AC accounted for)
+| REQ | ACs | Covering tasks | Covering tests | Status |
+|---|---|---|---|---|
+| REQ-1 | AC1.1–1.4 | T1, T7 | <test files or TBD> | covered |
+| REQ-2 | AC2.1 (no task — deferred: <reason + who decided>) | — | — | DEFERRED |
+Every acceptance criterion in requirements.md MUST appear in exactly one row
+as covered or explicitly deferred. A covered AC names the task(s) AND the
+test(s) that prove it — a task without a proving test is a wish, not coverage.
+A deferred AC names the reason and the decision owner; silent gaps are
+spec defects, not scope discipline. Fill the Status column during writing
+(projected) and re-verify it at closeout (proven).
+
+## Wave gates (MANDATORY — no wave starts on a red gate)
+Each wave ends with a gate task (TG-1, TG-2, …) that proves THAT wave's REQs:
+re-run every covering test named in the matrix rows for the wave's REQs and
+record green/red per AC. The next wave MUST NOT start while its predecessor's
+gate is red, unless the user explicitly overrides (recorded in Decisions
+Locked with the reason). A gate is per-AC, not per-task: ten green tasks
+mean nothing if one AC has no proving test.
+
 ## Dependency / parallelization notes
 - <which waves are backend-independent and may run parallel with frontend; which tasks
  must land before others (e.g. a communication hook depends on the committed-outcome
@@ -203,16 +223,78 @@ Rules:
    Map**, contract+behavioral testing strategy).
 8. Write `tasks.md` (waves, each linked to a REQ, with parallelization notes AND a
    per-task ripple note so no dependent code is missed).
-9. **Iterative revision loop (MANDATORY — the spec is a living document).** After
-   writing each artifact, re-check the earlier ones. If a new finding (a better
-   alternative, a new requirement, a changed task) invalidates an earlier decision,
-   REVISE it — do not let the spec go stale. This applies during writing AND during
-   implementation: when implementation reveals a better approach, add a "refinements"
-   wave to tasks.md and update requirements/design so the spec reflects the as-built
-   optimum.
-10. Report the file paths and a one-line summary of each artifact, plus the REAL/STALE
+9. **Traceability matrix + wave gates (MANDATORY — the spec is not done without
+   them).** Build the Traceability Matrix (see tasks.md template): every single
+   AC from requirements.md lands in exactly one row as covered (task + proving
+   test named) or explicitly deferred (reason + decision owner named). Then add
+   one gate task per wave (TG-1, TG-2, …) proving that wave's REQs per-AC. Run
+   the matrix against the spec you just wrote: any AC with no covering task is
+   a spec defect — add the task, narrow the AC with user approval, or record
+   an explicit deferral. NEVER leave an AC silently unmapped (that is how
+   AC21.3-class gaps survive to production: modeled, unwired, unnoticed).
+10. **Iterative revision loop = Amendment Protocol (MANDATORY).** After writing,
+    AND on EVERY later edit to any spec file — including "just recording a
+    decision" (there are no lightweight spec edits) — run the Amendment
+    Protocol below: triplet rule, evidence-to-ripple, stale-reference sweep,
+    and the mechanical verification. A revision that skips the protocol is how
+    AC21.3-class gaps and stale ripple maps enter; the audit that catches them
+    later is the most expensive possible time to find them.
+11. Report the file paths and a one-line summary of each artifact, plus the REAL/STALE
     classification summary from step 1, the Ripple-Effect Map summary from step 2, and
-    the Design Deliberation summary from step 5.
+    the Design Deliberation summary from step 5, PLUS the traceability verdict from
+    step 9 (counts: ACs covered / deferred / unmapped — unmapped MUST be zero).
+
+## Amendment Protocol (MANDATORY — runs on EVERY spec edit after creation)
+
+Step 10 fails in practice because amendments don't feel like revisions: recording a
+locked decision looks like a one-line edit, so the workflow never fires — and the
+matrix silently goes stale (observed case: 8 AC10s in requirements.md vs 5 matrix
+rows; ripple rows missing for cited filler sites, orb components, and the settings
+path; "blocked by OQ-4" notes surviving OQ-4's resolution). This protocol fixes that.
+
+**Trigger — AMENDMENT MODE:** you are in Amendment Mode whenever you edit ANY file
+under `specs/<feature>/` after the spec's first creation — including "just recording
+a decision," "just adding an AC," or "just resolving an OQ." There is no lightweight
+spec edit. A decision recorded in chat but not fully landed in all three artifacts
+does not exist.
+
+**The triplet rule:** a requirements.md change is an INCOMPLETE EDIT until all three
+land in the SAME edit pass:
+1. the requirement / decision / AC text in requirements.md,
+2. its Traceability Matrix row in tasks.md (covered with task + proving test named,
+   or explicitly deferred with reason + owner),
+3. its ripple impact: new or rewritten task(s) if work is implied, Ripple-Effect
+   Map row(s) in design.md for every file the decision touches or cites, and a Key
+   Decisions entry if a deliberation happened.
+Finish the triplet before replying. Never "land the decision now, matrix later."
+
+**Evidence-to-ripple rule:** every `file:line` cited as evidence in a decision, AC,
+or Verified line MUST be classified in the Ripple-Effect Map in the same pass
+(CHANGE NEEDED / NO CHANGE (verified) / CONTRACT LOCK). A cited file with no map
+row is a spec defect — the map is how future edits know the file is load-bearing.
+
+**Stale-reference sweep:** when an OQ resolves, an AC is added/renamed, or a wave is
+restructured, grep the whole `specs/<feature>/` dir for the OQ id / AC pattern /
+wave name and update EVERY mention: verdict lines, dependency notes, task
+descriptions, gate scopes. A resolved OQ still referenced as open anywhere is a
+spec defect.
+
+**Mechanical verification (run it — 30 seconds, not by eye):**
+1. Count ACs per REQ (e.g. count `AC10.x` occurrences in requirements.md vs matrix
+   rows for that REQ). Every counted AC MUST have exactly one matrix row.
+2. Check the verdict arithmetic: covered + deferred + unmapped MUST equal the
+   counted total, and unmapped MUST be zero.
+3. Check ripple coverage: every basename cited as `file:line` evidence in
+   requirements.md Decisions Locked / Verified lines MUST appear in design.md's
+   Ripple-Effect Map.
+
+**Amendment Definition of Done (holds before you reply):**
+- [ ] Matrix unmapped = 0; verdict arithmetic matches the fresh AC count.
+- [ ] Every cited file classified in the ripple map.
+- [ ] No stale OQ/AC/wave cross-references (sweep ran).
+- [ ] Design Key Decisions + Testing Strategy updated if the amendment deliberated
+      or named new tests (every BT-Sx/CT-Sx id exists in BOTH the tasks.md matrix
+      and the design.md Testing Strategy).
 
 ## Design Deliberation & Optimization Discipline (MANDATORY for every spec)
 
@@ -300,6 +382,12 @@ worth the added complexity? Respect YAGNI — optimize what matters, not everyth
   marked UNVERIFIED with a live-measurement task. No target is written from assumption.
 - tasks.md tasks are small enough to check off independently, reference REQ IDs, note
   which waves may run in parallel, AND carry a per-task RIPPLE note.
+- The Traceability Matrix exists, every AC is covered or explicitly deferred
+  (unmapped = zero), and each wave ends with a per-AC gate task. A spec whose
+  matrix has silent gaps is incomplete no matter how good its prose.
+- After ANY amendment (not just at creation), the Amendment Definition of Done
+  holds: matrix unmapped = zero with verdict arithmetic matching a fresh AC
+  count, every cited file classified in the ripple map, no stale cross-refs.
 
 ## Testing Strategy standard (write this into design.md)
 This system is ONE recursive operator at four scales; bugs live in the SEAMS between

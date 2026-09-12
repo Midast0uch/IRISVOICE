@@ -187,6 +187,18 @@ class NodeRecord:
     # informed by branch X" is a lookup (REQ-20 relationship filters) instead
     # of a table scan.
     committed_decision: bool = False
+    # Goal contract (specs/goal-contract-coverage, T2) — the task node's
+    # required-fact set. required_facts is the FLOOR (immutable to the agent);
+    # ceiling_facts are agent discoveries (never blocking); covered_facts is
+    # the VERIFIED subset of required; blocked_facts carries
+    # {"fact", "reason", "evidence"} dicts; contract_version increments on
+    # every amendment. expected_output stays the human summary;
+    # verified_fraction carries coverage C. All additive with defaults.
+    required_facts: List[str] = field(default_factory=list)
+    ceiling_facts: List[str] = field(default_factory=list)
+    covered_facts: List[str] = field(default_factory=list)
+    blocked_facts: List[Dict[str, str]] = field(default_factory=list)
+    contract_version: int = 1
 
 
 @dataclass

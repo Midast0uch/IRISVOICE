@@ -500,15 +500,32 @@ export function RichDocument({
         }
         /* Long tokens inside nested markdown (links, inline code, table cells)
            escape the body's own wrapping rules unless they are told to break —
-           this is the other half of the clipped-text fix. */
+           this is the other half of the clipped-text fix.
+
+           AC13.3 (session-319): table cells are DELIBERATELY excluded. Breaking
+           td/th anywhere is what rendered headers as "STA TUS", "Moonshin e",
+           "Par tia l", "Fai led" in the owner's screenshot. Table layout now
+           sizes columns to their content and scrolls instead of compressing, so
+           cells never need a mid-token break; a single over-long token (a bare
+           URL) still breaks via the td rule below. */
         .rich-doc-body a,
         .rich-doc-body code,
-        .rich-doc-body td,
-        .rich-doc-body th,
         .rich-doc-body p,
         .rich-doc-body li {
           overflow-wrap: anywhere;
           word-break: break-word;
+        }
+        /* Table cells: break only when a single token cannot fit its own cell —
+           never mid-word to satisfy a compressed column. */
+        .rich-doc-body td {
+          overflow-wrap: break-word;
+          word-break: normal;
+        }
+        /* Headers are short labels: they never wrap and never break. */
+        .rich-doc-body th {
+          overflow-wrap: normal;
+          word-break: normal;
+          white-space: nowrap;
         }
       `}</style>
     </CardChassis>
@@ -539,7 +556,12 @@ function getMarkdownComponents(
       >
         <table
           style={{
-            width: "100%",
+            // AC13.3 (session-319): size columns to their CONTENT and let the
+            // wrapper (overflow-auto above) scroll horizontally. Forcing
+            // width:100% compressed the columns, which is what forced the
+            // mid-word breaks the owner reported.
+            width: "max-content",
+            minWidth: "100%",
             borderCollapse: "collapse",
             fontSize: "11px",
             fontFamily: "'Courier New', Courier, monospace",

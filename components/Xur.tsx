@@ -75,7 +75,13 @@ export function Xur({ size = 32, color = 'currentColor', speed = 1 }: XurProps) 
       ctx.fill()
 
       ctx.globalAlpha = 1
-      rafRef.current = requestAnimationFrame(animate)
+      // Session 312 (UX lock, settled cards): speed <= 0 renders ONE static
+      // frame and never schedules another — the marker stops moving when the
+      // card's activity is done. Callers passing a positive speed are
+      // unchanged.
+      if (speed > 0) {
+        rafRef.current = requestAnimationFrame(animate)
+      }
     }
 
     rafRef.current = requestAnimationFrame(animate)

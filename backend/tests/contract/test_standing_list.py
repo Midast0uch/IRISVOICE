@@ -36,15 +36,25 @@ def _clean_cache():
 # ── AC4: ALWAYS_ASK on the standing list is rejected on read ────────────────
 
 def test_ac4_always_ask_rejected_on_read(monkeypatch, tmp_path):
-    """A hand-edited config naming an ALWAYS_ASK tool must be dropped at read time."""
-    _write_cfg(monkeypatch, tmp_path, {"mode": "personal", "approved_tools": ["delete_file", "run_command"]})
+    """A hand-edited config naming an ALWAYS_ASK tool must be dropped at read
+    time. Goal-contract T18 (REQ-9 AC9.4/AC9.6): the always-ask set is the
+    DESTRUCTIVE tier (hardcoded OR registry-declared). run_command left
+    always-ask — its consent comes from the toggle — so it is no longer a
+    rejection case here; delete_file and the registry-destructive terminal
+    tools are."""
+    _write_cfg(
+        monkeypatch, tmp_path,
+        {"mode": "personal", "approved_tools": ["delete_file", "shutdown"]},
+    )
     standing = _perm._get_standing_approved_tools()
     assert "delete_file" not in standing
-    assert "run_command" not in standing
+    assert "shutdown" not in standing
     assert standing == set()
 
 
-async def test_ac4_always_ask_not_honoured_via_standing_list(monkeypatch, tmp_path):
+async def test_ac4_always_ask_not_honoured_via_standing_list(
+    monkeypatch, tmp_path, approval_ui_attached
+):
     """delete_file (ALWAYS_ASK) on the standing list still prompts — never auto-approved."""
     _write_cfg(monkeypatch, tmp_path, {"mode": "personal", "approved_tools": ["delete_file"]})
     bus = get_event_bus()
@@ -69,7 +79,9 @@ async def test_ac4_always_ask_not_honoured_via_standing_list(monkeypatch, tmp_pa
 
 # ── AC6: unreadable config -> empty list, still prompt ──────────────────────
 
-async def test_ac6_unreadable_config_empty_and_prompts(monkeypatch, tmp_path):
+async def test_ac6_unreadable_config_empty_and_prompts(
+    monkeypatch, tmp_path, approval_ui_attached
+):
     """An unreadable config yields an empty standing list; a SESSION_APPROVABLE tool
     still prompts (never 'everything approved')."""
     monkeypatch.setattr("backend.capabilities._CFG_PATH", str(tmp_path))  # a directory -> open() fails
@@ -100,7 +112,9 @@ async def test_ac6_unreadable_config_empty_and_prompts(monkeypatch, tmp_path):
 
 # ── AC3: standing list persisted -> tool auto-approved (no prompt) ──────────
 
-async def test_ac3_standing_list_auto_approves(monkeypatch, tmp_path):
+async def test_ac3_standing_list_auto_approves(
+    monkeypatch, tmp_path, approval_ui_attached
+):
     """A SESSION_APPROVABLE tool on the standing list is auto-approved every session."""
     _write_cfg(monkeypatch, tmp_path, {"mode": "personal", "approved_tools": ["write_file"]})
     bus = get_event_bus()
@@ -126,7 +140,9 @@ async def test_ac3_standing_list_auto_approves(monkeypatch, tmp_path):
 
 # ── Edge: standing list edited mid-session -> next call uses the new list ──
 
-async def test_edge_standing_list_reread_mid_session(monkeypatch, tmp_path):
+async def test_edge_standing_list_reread_mid_session(
+    monkeypatch, tmp_path, approval_ui_attached
+):
     """The standing list is re-read on every call, so a mid-session edit takes effect."""
     p = tmp_path / "iris_config.json"
     p.write_text(json.dumps({"mode": "personal", "approved_tools": ["write_file"]}), encoding="utf-8")

@@ -794,6 +794,43 @@ async def lifespan(app: FastAPI):
 
         asyncio.create_task(_warm_browser_pool())
 
+        # ── REQ-6 AC6.1: warm the shared EmbeddingService ───────────────────
+        # The embedder is lazy-loaded on first encode (embedding.py:791-793),
+        # so a cold first encode burns the rerank breaker's 20s budget
+        # (rerank.py:133-182) and the WHOLE semantic layer silently falls back
+        # to BM25 for the cooldown (conv-99 proof). One background
+        # encode("warmup") before serving traffic closes the breaker for the
+        # shared singleton (get_embedding_service, embedding.py:957) that
+        # serves rerank + SemanticVerifier + episodic in one fix.
+        #
+        # Fire-and-forget by design (KD-5): startup must NOT block on a
+        # GPU/CPU model load. If the sidecar is cold/dead the warm fails fast
+        # and the breaker remains the safety net (AC6.2).
+        async def _warm_embedding_service() -> None:
+            import time as _warm_time
+
+            _t0 = _warm_time.perf_counter()
+            try:
+                from backend.memory.embedding import get_embedding_service
+
+                _svc = get_embedding_service()
+                _svc.encode("warmup")
+                _elapsed_ms = int((_warm_time.perf_counter() - _t0) * 1000)
+                # NOTE: StructuredLogger.info() takes a single formatted
+                # string — printf-style lazy args crash the call (caught by
+                # the live gate, T11). f-strings are the main.py convention.
+                logger.info(
+                    f"  - [WARM] EmbeddingService warmed ({_elapsed_ms}ms)"
+                )
+            except Exception as _warm_err:  # noqa: BLE001 — best effort by design
+                _elapsed_ms = int((_warm_time.perf_counter() - _t0) * 1000)
+                logger.info(
+                    f"  - [WARM] EmbeddingService warm-up skipped after "
+                    f"{_elapsed_ms}ms ({_warm_err}) — breaker path unchanged"
+                )
+
+        asyncio.create_task(_warm_embedding_service())
+
         # ── Memory watchdog ────────────────────────────────────────────────
         # Graduated response to RSS growth: soft cap → GC + mycelium maint;
         # hard cap → also unload active local LLM.
@@ -1250,6 +1287,41 @@ async def set_launcher_mode(request: dict):
     return {"mode": mode, "status": "ok"}
 
 
+@app.post("/api/auto-approve")
+async def set_auto_approve(request: dict):
+    """Persist the Auto-approve consent toggle (goal-contract T19, KD-12).
+
+    Body: { "auto_approve": true | false }
+
+    Consent (whether the agent asks first) is SEPARATE from mode/capability
+    (which tools exist). Toggle ON auto-approves reads, writes, shell
+    commands, and GUI actions in both modes; the DESTRUCTIVE tier and
+    deletion/removal commands stay gated at all times (T18, AC9.4/AC9.6).
+    Default OFF (fail closed — ask first) when absent.
+    """
+    from fastapi import Response as FastAPIResponse
+
+    raw = request.get("auto_approve", None)
+    if not isinstance(raw, bool):
+        return FastAPIResponse(
+            content=json.dumps(
+                {"error": "Invalid auto_approve: must be true or false."}
+            ),
+            status_code=422,
+            media_type="application/json",
+        )
+    cfg = _load_iris_config()
+    cfg["auto_approve"] = raw
+    _save_iris_config(cfg)
+    logger.info(f"[Permissions] Auto-approve toggle set to: {raw}")
+    try:
+        ws_manager = get_websocket_manager()
+        await ws_manager.broadcast({"type": "auto_approve_changed", "auto_approve": raw})
+    except Exception as exc:
+        logger.debug(f"[Permissions] WS broadcast skipped (no clients?): {exc}")
+    return {"auto_approve": raw, "status": "ok"}
+
+
 @app.post("/api/approved-tools")
 async def api_save_approved_tools(request: dict = {}):
     """Persist the user's standing approved-tools list (REQ-19 AC3).
@@ -1312,12 +1384,13 @@ async def get_config():
     `CapabilitySet.get_mode()` consults, so they can never diverge even if the
     two path constants (`_IRIS_CONFIG_PATH` vs `_CFG_PATH`) ever drift.
     """
-    from backend.agent.permissions import get_approvable_tools
+    from backend.agent.permissions import get_approvable_tools, get_auto_approve
     from backend.capabilities import CapabilitySet, _CFG_PATH
 
     effective_mode = CapabilitySet.get_mode()
     stored_mode = None
     approved: list = []
+    auto_approve = False
     try:
         with open(_CFG_PATH, encoding="utf-8") as _f:
             _cfg = json.load(_f)
@@ -1325,13 +1398,22 @@ async def get_config():
         _raw = _cfg.get("approved_tools") or []
         if isinstance(_raw, list):
             approved = [t for t in _raw if isinstance(t, str)]
+        # T19 (AC12.4): surface the effective consent state alongside mode.
+        try:
+            auto_approve = bool(_cfg.get("auto_approve", False))
+        except Exception:
+            auto_approve = False
     except Exception:
-        pass
+        try:
+            auto_approve = get_auto_approve()
+        except Exception:
+            auto_approve = False
     return {
         "mode": stored_mode,
         "effective_mode": effective_mode,
         "approved_tools": approved,
         "available_tools": get_approvable_tools(),
+        "auto_approve": auto_approve,
     }
 
 

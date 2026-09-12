@@ -120,7 +120,11 @@ const PHASE_VERB: Record<string, string> = {
 // phrasings resolve. Order matters — FIRST match wins, so specific families
 // sit above generic ones.
 const INTENT_VERBS: Array<[RegExp, string]> = [
-  [/summari|explain|synthes|conclude|final/i, "SYNTH"],
+  [/summari|explain|synthes|conclude|final|combin/i, "SYNTH"],
+  // Session 312 (live conv-98): "Combine the recalled findings..." matched
+  // /find/ inside "findings" and rendered SEARCH on a synthesis step.
+  // Combining prior results into an answer IS synthesis — "combin" sits in
+  // the SYNTH row (first match wins, so it beats the /find/ row below).
   // Session 247: crawler phase-node labels ("Extracting content",
   // "Citing sources", "Reading X") must map to their OWN verbs — "extract"
   // previously fell into ANALYZE and "citing" matched nothing (blank/DONE).
@@ -206,6 +210,19 @@ export default function TaskListCard({
   const [thkOpen, setThkOpen] = useState(false)
   // Session 246 (@taskcard): copy-feedback for the footer ID chrome.
   const [idCopied, setIdCopied] = useState(false)
+  // Session 312 (wave glyph): mirrored audio phase from useIRISWebSocket
+  // (iris:audio_phase). When IRIS is SPEAKING, the currently working row
+  // shows a faint wave glyph — the narrated activity and the row are the
+  // same thing while a crawl narrates its pages. Never shown on settled
+  // rows (honesty: no row claims speech it didn't carry).
+  const [narrating, setNarrating] = useState(false)
+  useEffect(() => {
+    function onPhase(e: Event) {
+      setNarrating((e as CustomEvent).detail?.phase === "speaking")
+    }
+    window.addEventListener("iris:audio_phase", onPhase)
+    return () => window.removeEventListener("iris:audio_phase", onPhase)
+  }, [])
   const copyCardId = useCallback(() => {
     if (!cardId) return
     navigator.clipboard?.writeText(cardId).then(
@@ -565,8 +582,10 @@ export default function TaskListCard({
               }}
             />
           )}
-          {/* Animated identity marker — variant tokens verbatim: Xur 14,
-              vein-coloured, faster while working. The websearch Search icon
+          {/* Animated identity marker — variant tokens: Xur 14,
+              vein-coloured, 0.6 while idle/finished and 1.8 while working —
+              the header goes static when the run settles (Session 312 UX
+              lock). The websearch Search icon
               is gone: the objective itself carries the context now.
            * Session 246: marginLeft keeps the marker's centre on the SAME
               vertical axis as the body step nodes and the footer dot — one
@@ -574,7 +593,11 @@ export default function TaskListCard({
               pl-3(12) + body pl-2(8) + row px-1.5(6) + half node box(8) = 34;
               34 - 12 - 7 = 15. */}
           <span style={{ display: "flex", marginLeft: 15 }}>
-            <Xur size={14} color={veinColor} speed={isWorking ? 1.8 : 0.6} />
+            {/* Session 312 (UX lock): 1.8 while working; 0 when the run
+                settles — Xur renders one static frame at speed<=0, so the
+                header marker STOPS when the card's activity is done
+                (user-directed 2026-09-09). */}
+            <Xur size={14} color={veinColor} speed={isWorking ? 1.8 : 0} />
           </span>
           {/* OBJECTIVE leads the header (12px mono semibold white/95
               tracking-tight truncate, full text on tooltip). No badge in
@@ -774,17 +797,38 @@ export default function TaskListCard({
                 const meta = STATUS_META[step.status] ?? STATUS_META.unknown
                 const isOpen = expandedStep === step.id
                 const branchLabel = (step as StepWithBranch).branchLabel
+                // Session 312 (user-approved): activity rows (phase nodes)
+                // indent under the plan like branch rows — same chronology,
+                // clearer parentage. Settled rows dim slightly so the eye
+                // lands on the working row first (colors unchanged).
+                const isPhaseRow = step.id?.startsWith("phase-") ?? false
+                const settled =
+                  step.status === "done" ||
+                  step.status === "fail" ||
+                  step.status === "error" ||
+                  step.status === "skipped"
                 return (
                   /* Variant anatomy: branch rows indent pl-4 as a WHOLE —
                      the hierarchy shift the preview shows. */
-                  <div key={step.id ?? i} className={`flex flex-col ${branchLabel ? "pl-4" : ""}`}>
+                  <div
+                    key={step.id ?? i}
+                    className={`flex flex-col ${branchLabel || isPhaseRow ? "pl-4" : ""}`}
+                    style={{
+                      opacity: settled ? 0.75 : 1,
+                      transition: "opacity 0.4s ease",
+                    }}
+                  >
                     <button
                       type="button"
                       onClick={() =>
-                        step.resultPreview ? setExpandedStep(isOpen ? null : step.id) : undefined
+                        step.resultPreview || (step.history?.length ?? 0) > 0
+                          ? setExpandedStep(isOpen ? null : step.id)
+                          : undefined
                       }
                       className={`flex items-center gap-2 w-full text-left px-1.5 py-1 rounded-md transition-colors ${
-                        step.resultPreview ? "cursor-pointer hover:bg-white/[0.03]" : ""
+                        step.resultPreview || (step.history?.length ?? 0) > 0
+                          ? "cursor-pointer hover:bg-white/[0.03]"
+                          : ""
                       }`}
                     >
                       <ChassisStepNode
@@ -795,6 +839,25 @@ export default function TaskListCard({
                         }
                         color={meta.color}
                       />
+                      {/* Session 312 (wave glyph): faint marker on the row
+                          whose activity IRIS is narrating RIGHT NOW. Amber
+                          (the working palette) at half opacity — faint by
+                          design, tooltip names it. Only on working rows. */}
+                      {narrating && step.status === "working" ? (
+                        <span
+                          aria-label="IRIS is narrating this step"
+                          title="IRIS is narrating this step"
+                          style={{
+                            fontSize: 10,
+                            lineHeight: 1,
+                            color: "#fbbf24",
+                            opacity: 0.5,
+                            flexShrink: 0,
+                          }}
+                        >
+                          〰
+                        </span>
+                      ) : null}
                       {/* Verb column — fixed width so targets align;
                           phase-driven while working (PHASE_VERB), registry
                           verb otherwise, em-dash when no real tool. */}
@@ -921,6 +984,25 @@ export default function TaskListCard({
                           </span>
                         ))}
                       </span>
+                    ) : null}
+                    {/* Session 312 (expand-on-demand history): the bounded
+                        activity trail this row accumulated while working —
+                        newest last, capped at 6 by the reducer. Renders ONLY
+                        from real streamed detail (REQ-10 AC4: no fabrication). */}
+                    {isOpen && (step.history?.length ?? 0) > 0 ? (
+                      <div
+                        className="ml-6 mt-1 p-2 rounded-md bg-black/50 border border-white/6 text-[9px] font-mono leading-relaxed break-words"
+                        style={{ borderColor: "rgba(255,255,255,0.06)" }}
+                      >
+                        {step.history!.map((h, hi) => (
+                          <div
+                            key={`${step.id}-hist-${hi}`}
+                            style={{ color: "rgba(255,255,255,0.35)" }}
+                          >
+                            {h}
+                          </div>
+                        ))}
+                      </div>
                     ) : null}
                     {/* Expanded summary — boxed panel (variant tokens):
                         black/50 surface, hairline border, padded. */}

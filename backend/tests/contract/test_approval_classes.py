@@ -37,20 +37,29 @@ def _clean_cache():
 # ── AC1: derivation from tier/capability constants ──────────────────────────
 
 def test_ac1_approval_class_derivation():
-    """ALWAYS_ASK = destructive ∪ terminal; SESSION_APPROVABLE = repo − always_ask;
-    everything else UNGATED. Derived, never a literal list."""
+    """Goal-contract T18 (REQ-9 AC9.4, KD-12) supersedes the old union rule:
+    ALWAYS_ASK = the DESTRUCTIVE tier ONLY (the terminal/GUI tools left
+    always-ask and come under the Auto-approve toggle). SESSION_APPROVABLE =
+    repo − always_ask; everything else UNGATED. Derived, never a literal list."""
     # DESTRUCTIVE -> ALWAYS_ASK
     assert approval_class("delete_file") == ApprovalClass.ALWAYS_ASK
     assert approval_class("force_delete") == ApprovalClass.ALWAYS_ASK
-    # TERMINAL -> ALWAYS_ASK
-    assert approval_class("run_command") == ApprovalClass.ALWAYS_ASK
+    # A tool the REGISTRY declares destructive is always-ask too (CT-12): the
+    # approval class shares classify_tool's verdict, so the terminal/system
+    # tools cannot be UNGATED just because they left CapabilitySet._TERMINAL_TOOLS.
     assert approval_class("shutdown") == ApprovalClass.ALWAYS_ASK
-    # REPO but not destructive/terminal -> SESSION_APPROVABLE
+    assert approval_class("lock_screen") == ApprovalClass.ALWAYS_ASK
+    # A harmless shell command is NOT destructive -> not always-ask; its
+    # consent comes from the Auto-approve toggle (T18).
+    assert approval_class("run_command") != ApprovalClass.ALWAYS_ASK
+    # REPO but not destructive -> SESSION_APPROVABLE
     assert approval_class("write_file") == ApprovalClass.SESSION_APPROVABLE
     assert approval_class("git_commit") == ApprovalClass.SESSION_APPROVABLE
     # READ_ONLY / ungated -> UNGATED
     assert approval_class("search") == ApprovalClass.UNGATED
     assert approval_class("read_file") == ApprovalClass.UNGATED
+    # The always-ask set is exactly the destructive tier (CT-GC10 lock).
+    assert _perm._ALWAYS_ASK_TOOLS == set(_perm._DESTRUCTIVE_TOOLS)
 
 
 def test_ac1_classes_cannot_drift_from_tiers():
@@ -66,18 +75,25 @@ def test_ac1_classes_cannot_drift_from_tiers():
 # ── AC8: ALWAYS_ASK never enters the cache ──────────────────────────────────
 
 def test_ac8_always_ask_refused_by_cache():
-    """Approving an ALWAYS_ASK tool records nothing; the cache write path refuses it."""
+    """Approving an ALWAYS_ASK (destructive) tool records nothing; the cache
+    write path refuses it. A terminal tool is SESSION_APPROVABLE under
+    goal-contract T18 and therefore IS cacheable."""
     cache = SessionApprovalCache()
     cache.record_approval("sess-1", "delete_file")
     cache.record_approval("sess-1", "run_command")
     assert cache.is_approved("sess-1", "delete_file") is False
-    assert cache.is_approved("sess-1", "run_command") is False
+    # run_command left always-ask (T18): it is no longer the DESTRUCTIVE tier,
+    # so the cache accepts it (its consent comes from the tier/toggle path).
+    assert approval_class("run_command") != ApprovalClass.ALWAYS_ASK
+    assert cache.is_approved("sess-1", "run_command") is True
 
 
 # ── AC2: SESSION_APPROVABLE approved once per session ──────────────────────
 
 @pytest.mark.asyncio
-async def test_ac2_session_approvable_asked_once_per_session(tmp_path, monkeypatch):
+async def test_ac2_session_approvable_asked_once_per_session(
+    tmp_path, monkeypatch, approval_ui_attached
+):
     """A SESSION_APPROVABLE tool (write_file) approved in a session is not asked
     again for that session; a new session prompts again."""
     from backend import capabilities as _caps
@@ -145,7 +161,9 @@ async def test_ac2_session_approvable_asked_once_per_session(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_ac2_approval_discarded_on_restart(tmp_path, monkeypatch):
+async def test_ac2_approval_discarded_on_restart(
+    tmp_path, monkeypatch, approval_ui_attached
+):
     """The cache is in-memory only; a fresh process (empty cache) prompts again."""
     from backend import capabilities as _caps
 
@@ -195,12 +213,17 @@ async def test_ac2_approval_discarded_on_restart(tmp_path, monkeypatch):
     assert len(seen) == 1  # cache discarded -> prompts again
 
 
-# ── AC7: precedence — ALWAYS_ASK always prompts (cache never suppresses) ─────
+# ── AC7: precedence — destructive (ALWAYS_ASK) always prompts ───────────────
 
 @pytest.mark.asyncio
-async def test_ac7_always_ask_beats_session_cache(tmp_path, monkeypatch):
-    """An ALWAYS_ASK tool (run_command) is asked every time, even if a prior
-    approval was recorded (it never is) — session approval never suppresses it."""
+async def test_ac7_destructive_beats_session_cache(
+    tmp_path, monkeypatch, approval_ui_attached
+):
+    """Goal-contract T18 (REQ-9 AC9.4): the DESTRUCTIVE tier stays gated at
+    all times — a prior approval never suppresses the prompt, even with the
+    Auto-approve toggle ON. (run_command with a harmless command left the
+    always-ask set; the destructive-command detector is what keeps deletion
+    forms gated.)"""
     from backend import capabilities as _caps
 
     _write_cfg = tmp_path / "cfg.json"
@@ -214,10 +237,10 @@ async def test_ac7_always_ask_beats_session_cache(tmp_path, monkeypatch):
     bridge._mcp_servers = {}
     bridge._initialized = True
 
-    # First call: prompts (ALWAYS_ASK). Approve.
+    # First call: delete_file is DESTRUCTIVE -> prompts.
     task = asyncio.create_task(
         bridge.execute_tool(
-            "run_command", {"command": "echo hi"},
+            "delete_file", {"path": "x"},
             session_id="S", _skip_resilience=True,
         )
     )
@@ -226,14 +249,16 @@ async def test_ac7_always_ask_beats_session_cache(tmp_path, monkeypatch):
             break
         await asyncio.sleep(0.02)
     assert len(seen) == 1
-    _perm.get_permission_system().respond_to_permission(seen[0].data["request_id"], approved=True)
+    _perm.get_permission_system().respond_to_permission(
+        seen[0].data["request_id"], approved=True
+    )
     await task
     seen.clear()
 
-    # Second call in same session: ALWAYS_ASK -> prompts AGAIN (cache refused it).
+    # Second call: DESTRUCTIVE -> prompts AGAIN (never cached).
     task2 = asyncio.create_task(
         bridge.execute_tool(
-            "run_command", {"command": "echo again"},
+            "delete_file", {"path": "y"},
             session_id="S", _skip_resilience=True,
         )
     )
@@ -241,6 +266,8 @@ async def test_ac7_always_ask_beats_session_cache(tmp_path, monkeypatch):
         if seen:
             break
         await asyncio.sleep(0.02)
-    assert len(seen) == 1  # ALWAYS_ASK always prompts
-    _perm.get_permission_system().respond_to_permission(seen[0].data["request_id"], approved=True)
+    assert len(seen) == 1  # destructive always prompts
+    _perm.get_permission_system().respond_to_permission(
+        seen[0].data["request_id"], approved=True
+    )
     await task2

@@ -98,7 +98,14 @@ def outcome_from_crawler_error(error_str: str, started: float) -> NodeOutcome:
     """
     low = (error_str or "").lower()
     reason = Reason.TRANSPORT_ERROR
-    if "no candidate" in low or "no urls" in low or "zero urls" in low:
+    if "approval_unavailable" in low or "approval-unavailable" in low:
+        # Goal contract T15 (REQ-9 AC9.2): the bridge's pre-dispatch
+        # fail-fast stamps this keyword into the message so the typed
+        # Reason survives the kernel boundary (the result dict's error_type
+        # reaches only the ToolCallTree; item.error_type is re-derived here
+        # from text). Distinct from PERMISSION_DENIED (policy refused).
+        reason = Reason.APPROVAL_UNAVAILABLE
+    elif "no candidate" in low or "no urls" in low or "zero urls" in low:
         reason = Reason.NO_CANDIDATES
     elif "robots" in low:
         # Must precede the "bot" check — "robots.txt" contains "bot".

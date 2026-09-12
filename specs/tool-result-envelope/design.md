@@ -9,6 +9,8 @@ Constraints that bound the design:
 - Reporter-only: no hash minting, no graph walk, no recall scoring, no per-step encodes — coords pass through verbatim; wormhole/aperture owns everything graph-shaped.
 - Pre-existing failures untouched; the twins+loop-bounds suite (39 pass / 6 pre-existing `_FakeKernel._router` fails) is the regression baseline.
 
+Session-318 amendment (conv-102 live evidence): the turn memory the envelope testifies against never reaches the two components that decide addresses. `_der_crawled_urls` fills at finalize (agent_kernel.py:13743-13751) but `CrawlPlanner.plan(query: str)` (crawl_planner.py:113) takes only a query, orchestrator dedup is run-scoped (orchestrator.py:~1410), and the guard reads `params["known_urls"|"url"]` (agent_kernel.py:12778-12799) which `crawler_query` never carries. Result: one wiki seed dispatched 3x (~110/90/82s), identical bodies counted fresh 3x, a 404 read 2x — with guard 0, streak 0, gather-filtered 0. The amendment below wires memory INTO choosing (exclusions), INTO prompts (ledger block), INTO identity (exact hash), INTO recovery (VLM in-site lane), and puts every errand on a deadline. Vision substrate exists (`_vision_fetch`, orchestrator.py:1722); progress events exist (`TASK_PROGRESS`, event_bus.py:106) — both reused, none invented.
+
 ## Architecture Overview
 
 ```mermaid
@@ -40,6 +42,34 @@ flowchart LR
     WARM[main.py lifespan: background encode warmup] -.-> SVC[EmbeddingService singleton]
     TX[transport.py _nonstream: Empty → same-payload retry] -.-> TR
 ```
+
+## Ledger / recovery / deadline flow (session-318 amendment)
+
+```mermaid
+sequenceDiagram
+    participant PL as Planner (brain)
+    participant LG as Turn ledger
+    participant CH as Chooser (crawl planner)
+    participant OR as Orchestrator
+    participant VL as VLM recovery lane
+    participant EN as Envelope testify
+    PL->>LG: read VISITED block (<=20 URLs + pivot rule)
+    PL->>CH: plan(query, excluded=VISITED)
+    CH-->>PL: seeds (none excluded, by construction)
+    OR->>LG: queue-time check on resolved seeds (turn scope)
+    alt seed known
+        OR-->>PL: refused → re-seed or pivot
+    else all fresh
+        OR->>OR: fetch under deadline + heartbeats
+    end
+    alt fetch dead (4xx/empty)
+        OR->>VL: recovery step (unvisited in-site URLs only, page budget + deadline)
+        VL-->>EN: own envelope (recovery_of=parent)
+    end
+    EN->>LG: stamp sources + body hash + elapsed (ledger grows)
+```
+
+The brain never blocks on VL: recovery is async work beside the plan; dependents wait bounded by its deadline while independent steps proceed (AC9.6).
 
 ## Sequence / Data Flow
 
@@ -124,6 +154,26 @@ def confirm_criticality(declared, consuming_steps) -> tuple[str, str]  # option 
 def evaluate_streak(wrappers: list[dict], stuck_n, idle_n) -> tuple[bool, str]  # TOPO rec forces fire
 ```
 
+Amendment additions (session-318 — same file, still stdlib-only, still zero I/O):
+```python
+# Envelope gains (REQ-8/9/11):
+    sources: List[str]          # URLs actually fetched, max SOURCES_MAX (8), truncation marked
+    recovery_of: str = ""      # parent step_id when this envelope is a VLM recovery (AC9.5)
+    elapsed_s: float = 0.0      # wall time vs the step deadline (AC11.3/AC12.2)
+# Turn ledger (REQ-8): rendered prompt block, max LEDGER_PROMPT_MAX (20) URLs +
+# pivot rule; refusal/exclusion logic always uses the FULL in-memory set.
+# Identity (REQ-10): sha256(normalized extracted text); dead-address set per turn.
+# Deadlines (REQ-11, der_constants.py — UNVERIFIED defaults, tuned from REQ-12):
+DEADLINE_CRAWL_S = 150        # above conv-102 observed 82-110s max
+DEADLINE_READ_S = 60
+DEADLINE_DEFAULT_S = 90
+STALL_WARN_S = 30             # heartbeat stall → warning only, never abort
+RECOVERY_PAGE_BUDGET = 5      # max pages per recovery step (UNVERIFIED)
+RECOVERY_DEPTH = 2            # max in-site depth per recovery step (UNVERIFIED)
+LEDGER_PROMPT_MAX = 20
+SOURCES_MAX = 8
+```
+
 ## Key Decisions
 
 **KD-1: Envelope at write time, not caps at render time.**
@@ -156,6 +206,21 @@ Lifespan currently does heavy init inline (main.py:169-249). Embedding warm must
 **KD-6: Transport Empty-retry lives INSIDE `_nonstream`'s existing attempt loop.**
 The loop (transport.py:773-824) already retries 3× for HTTP exceptions and 429s; the Empty check (:839) simply sits after it. Moving the extraction+empty check into the loop = one retry site covers all four downstream Empty call sites (step-result processing, final synthesis, decision box, sub-loop). Alternative rejected: retry at each downstream call site — four patches instead of one, and downstream lacks the payload to retry with.
 
+**KD-11: The ledger is a prompt block + envelope field — never a wm-line suffix, never a new store.**
+Default: append visited URLs to every working-memory line. Why rejected: line bloat multiplies by step count and duplicates the ledger in every line. Alternative rejected: a fourth store table for visits — duplicates `_der_crawled_urls` which already exists and is already correct. Chosen: `envelope.sources` carries the data (for guard/novelty/ledger), a bounded VISITED block carries the view (for the decider). One write path, one read path, zero new stores — the same pointer-layer philosophy as KD-2. Cost layers: context (bounded ≤20 lines, evicted oldest-first), complexity (one render site), latency (O(ledger) string join off the hot path).
+
+**KD-12: Exclusions are HARD at the chooser — the miss must be impossible, not discouraged.**
+Default: pass visited URLs as a soft hint the crawl-planner LLM "should consider". Why rejected: an LLM hint is advice the planner pays for and may ignore — conv-102 proves untrusted planners re-pick. Alternative rejected: post-hoc filtering only (fetch, then discard known pages) — pays discovery + dispatch + render before refusing. Chosen: exclusions enforced where seeds become known — planner output and crawler-resolved seeds filtered against the turn visited set at queue time (reusing `_der_crawled_urls`: the gather-gate shape agent_kernel.py:12573-12591 plus guard branch-2 :12778-12799), plus turn-scope dedup — HARD like CIRCLING (KD-8): the same address cannot be re-fetched in-turn, period — EXCEPT the recovery lane (KD-14), whose targets are unvisited by construction. (Correction, session-318: the owner correctly noted per-URL exclusion mostly exists — gather gate for registry URLs, guard branch-2, run-scoped orchestrator dedup ~:1410/:2017. All three guard other roads; conv-102 traveled fresh-discovery, which none of them see. This KD wires that road into the same rulebook; whether `plan()` also takes an exclusions parameter is implementer's choice.) Necessity check: without hardness on the discovery road, every other instrument stays advisory and the 3x110s repeat recurs with better handwriting.
+
+**KD-13: Identity is exact hashing — the fingerprint CUT stands untouched.**
+Default: similarity scoring of page bodies. Why rejected: needs vectors/encodes — precisely what session-316 cut, twice. Alternative rejected: URL-only identity — misses identical bodies under different addresses (the conv-102 README-under-redirect case). Chosen: stdlib hash of normalized text, exact-match only. Known limit, accepted deliberately: near-identical bodies with changed chrome count as new — catching paraphrases belongs to wormhole scoring, not to a turn-local bouncer. Zero model cost, zero timing risk (pure function on text already in scope).
+
+**KD-14: The never-recrawl ban is per-address; the VLM recovery lane explores unvisited rooms (user-locked caveat, session-318).**
+Default: ban the whole site after one dead fetch. Why rejected: a 404 on one path says nothing about its siblings — banning the domain burns the recovery the user explicitly wants (404 → sibling pages). Alternative rejected: allow recovery to re-fetch anything (ban becomes advisory the moment it matters). Chosen: the ban keys on addresses; recovery is a first-class step type constrained to unvisited in-site URLs with its own page+depth budget, deadline, and envelope (`recovery_of`). It cannot re-fetch — not even the address that triggered it — and an empty-handed return is an honest dry-well that streak-counts. The brain never blocks on it (AC9.6): recovery is a lane of websearch, not a pause button.
+
+**KD-15: Deadlines kill honestly; heartbeats only whisper.**
+Default: silent kill + auto-retry on expiry. Why rejected: hides hangs and invites retry storms that look like progress. Alternative rejected: progress-monitoring with no deadline (the user's exact fear — watched forever, stopped never). Chosen: the deadline is the single abort authority; expiry mints a `timeout` envelope (status honest, partial results preserved via `raw_ref`, streak-counted like an empty). Heartbeats (`TASK_PROGRESS`, event_bus.py:106 — reused, CT-5 lock holds, no new event types) produce stall warnings only. Operational cost: one timer per dispatch; measurement: REQ-12 counters tune every duration from the first re-probe.
+
 ## Ripple-Effect Map (MANDATORY)
 
 | Area / File | Change? | Classification | Why / Evidence (file:line) |
@@ -187,6 +252,63 @@ The loop (transport.py:773-824) already retries 3× for HTTP exceptions and 429s
 | Task cards + der_execution_ledger (application memory) | No | NO CHANGE (verified) | Cards hold structured step state (UI + recall), ledger holds execution records — envelope adds no fourth store; it is the pointer layer connecting doc store + chunks + cards. CT-6 guards the gather gate they depend on |
 | Twins + loop-bounds suite (backend/tests) | Yes | CHANGE NEEDED | Existing suites must stay green (39/6 baseline); envelope units added to existing contract/behavioral layout per Testing Strategy — NO new root-level twin files |
 | Gather gate + URL turn memory (session-312) | No | CONTRACT LOCK | :12151 gate + `_der_crawled_urls` must survive refactor untouched; CT-6 |
+| `backend/agent/tool_envelope.py` — sources/hash/timeout | Yes | CHANGE NEEDED | `sources` field + `recovery_of` + `elapsed_s` (REQ-8/9/11); exact body-hash helper + dead-address check (REQ-10); `timeout` status path (REQ-11); still pure, still zero I/O/encodes (KD-13) |
+| `backend/agent/agent_kernel.py` — finalize stamp | Yes | CHANGE NEEDED | Stamp `sources`/hash/elapsed at the finalize site (:14054-14100 area); update `_der_crawled_urls` with RESOLVED seeds incl. crawler-resolved (AC9.3); dead-address set update (AC10.2) |
+| `backend/agent/agent_kernel.py` — prompt ledger | Yes | CHANGE NEEDED | Render bounded VISITED block + pivot rule in planning + continuation prompts (AC8.2); pointers only (AC8.3); omit-when-empty + truncate-with-marker edges |
+| `backend/agent/agent_kernel.py` — guard resolved-seed | Yes | CHANGE NEEDED | Guard URL check judges resolved seeds incl. crawler-resolved (AC9.3); refusal path unchanged (reroute to read); CT-13 |
+| `backend/agent/agent_kernel.py` — dispatch deadline | Yes | CHANGE NEEDED | Attach per-family deadline + heartbeat watch at dispatch; expiry → `timeout` envelope (AC11.3); streak-count timeouts (AC11.4); bound every wait (AC11.5) |
+| `backend/agent/agent_kernel.py` — run-grade log | Yes | CHANGE NEEDED | Defect fix: `run grade` logged ZERO times on the conv-102 live path — trace and repair the AC5.6 reporting path (completes existing AC, not new scope) |
+| `backend/agent/agent_kernel.py` — recovery join | Yes | CHANGE NEEDED | VLM recovery as async step type: own budget/deadline, dependents bounded-wait, independents proceed, envelope joins ledger on return (AC9.5/9.6) |
+| `backend/crawler/crawl_planner.py` — exclusions | Yes | CHANGE NEEDED | Planner-returned seeds filtered against visited set (inside `plan()` or at queue time — behavior locked by CT-12); empty-after-exclusion → no-seeds + pivot (edge) |
+| `backend/crawler/orchestrator.py` — turn dedup + outlinks + recovery | Yes | CHANGE NEEDED | Dedup widened run→turn scope at queue time (AC9.2); extraction returns bounded outlink set with crawled marking (AC9.4); recovery drives `_vision_fetch` (orchestrator.py:1722, reuse — no new fetch path) within page/depth budget (AC9.5) |
+| `backend/agent/der_constants.py` — budgets | Yes | CHANGE NEEDED | Deadline/stall/ledger/recovery constants (UNVERIFIED defaults — REQ-12 tunes them); constants-only tuning preserved |
+| `backend/agent/event_bus.py` | No | NO CHANGE (verified) | `TASK_PROGRESS` exists (event_bus.py:106); heartbeats reuse it — CT-5 (no new event types) already locks this interface |
+| `backend/crawler/crawl_runner.py` | No | NO CHANGE (verified) | Worker-level ceiling (`wait_for` at crawl_runner.py:555-556, `_DEFAULT_TIMEOUT_S` :55) stays as defense-in-depth under the new DER-layer deadlines; T18 does not alter it |
+| Frontend (progress display) | No | CONTRACT LOCK | Recovery/deadline ride existing `task:progress` + `tool:result` shapes (CT-5); no new UI contract — new envelope fields are backend-internal |
+
+### Wave 6 ripple map — recovery-lane convergence (session-319)
+
+**Rule this section obeys** (FAULTLINE.md §11/§12): *a taxonomy — or any signal — without a
+CONSUMER is decoration.* Removing the bespoke T16 lane is therefore NOT "delete a method":
+every signal it produces must either move to the router path or be explicitly retired.
+
+**CORRECTED ROWS (the session-316 "No frontend changes" Non-Requirement was LIFTED in session-319, so two rows above are now stale):**
+| Area / File | Change? | Classification | Why / Evidence |
+|---|---|---|---|
+| Frontend (hooks/useIRISWebSocket.ts, useTaskProgress.ts, cards) | **Yes** | **CHANGE NEEDED (was NO CHANGE)** | REQ-13: stream the final answer progressively (AC13.1/13.2) + prism-card legibility (AC13.3/13.4). The envelope stays backend-internal; what changes is how the answer is PRESENTED. |
+| Frontend (progress display) | No | CONTRACT LOCK (unchanged) | Recovery/deadline still ride existing `task:progress` + `tool:result` shapes — the streaming change adds progressive content to the existing answer channel, not a new event type. |
+
+**NEW ROWS:**
+| Area / File | Change? | Classification | Why / Evidence (file:line) |
+|---|---|---|---|
+| `agent_kernel.py` — `_der_maybe_open_recovery` (:5390) | **Yes — REMOVED** | **CHANGE NEEDED** | The bespoke lane bypasses the DAG router and duplicates it. Dead addresses instead emit a typed `Reason` and route through `NodeRouter`. Net code DELETION. |
+| `agent_kernel.py` — call site :15478 | **Yes — REMOVED** | **CHANGE NEEDED** | The trigger currently lives inside `_der_finalize_step`, i.e. the success-only path, so a FAILED step is never even considered. Routing moves to the failure/step boundary where `_der_route_step_failure` (:10774) already runs. |
+| `agent_kernel.py` — `_der_warm_vision_browser` (:5542) + dispatch hook (:13576) | Yes — DONE | CHANGE NEEDED | Session-319: warm Chromium at web-tool dispatch so the measured ~33s cold start overlaps the crawl. Fire-and-forget via `_broadcast_loop`. |
+| `agent_kernel.py` — `_remember_turn_urls` (module level) | Yes — DONE | CHANGE NEEDED | Session-319: turn URL memory harvested on BOTH the finalize and failure paths (was finalize-only, so a failed crawl taught memory nothing). Module-level so the behavioral suite's `_Kernel` double keeps working. |
+| `nodes/capabilities.py` — `fetch.vision` advertisement (:673) | Yes | CHANGE NEEDED | Must advertise the dead-address reason to be routable. NOTE the deliberate CHALLENGE exclusion (measured 0/3, 240s+188s+243s) — do NOT re-add CHALLENGE. |
+| `agent/tool_errors.py` | Yes | CHANGE NEEDED | Register the dead-address failure label via `register_error_label(...)` — a DATA edit per FAULTLINE Layer 2, never a loop rewrite. |
+| `agent/tool_envelope.py` — `derive_match` | Yes | CHANGE NEEDED | Becomes registry-driven (FAULTLINE's three layers: dimensions + data registry + unclassified bucket) instead of hardcoded per-family branches. New tool = data edit, no envelope change. |
+| `agent/tool_envelope.py` — `recovery_of` on the ENVELOPE (:186, written :446/:538, stamped :10047) | **Retire or wire** | **DECORATION (already violating the rule)** | **No reader exists.** All `recovery_of` reads are on the QUEUE ITEM (`getattr(item, "recovery_of")` at :5408/:10108/:13476) — nothing reads `envelope.recovery_of`. Either name a consumer or drop the field. |
+| `agent/tool_envelope.py` — expectation Layer 3 | Yes — NEW | CHANGE NEEDED | Unclassified bucket + counter for tools with no registered expectation, so a new tool is never silently judged matched. Mirrors `unknown_label_counts()` / `promote_unknown()`. |
+| `agent/tts.py` — `_ensure_worker` (:446) | Yes — DONE | CHANGE NEEDED | Session-319: adopt a worker that became ready AFTER its startup deadline (was: respawn, discarding the late "ready" line, spawning another ~238s cold worker). |
+| `agent/inference/transport.py` + `router.py` | Yes — DONE | CHANGE NEEDED | Session-319 AC11.6: `timeout_s` threaded through router → all five transports → `_nonstream`/`_stream`. Transports do NOT accept `**kwargs` — the router-side change alone would have raised `TypeError` on every call. |
+
+**CONSUMER AUDIT — what happens to each T16 signal on removal:**
+
+| Signal | Written at | Reader today | Disposition on removal |
+|---|---|---|---|
+| `_der_recovery_opened` (one recovery per host per turn) | :5485 | :5454 (the guard itself) | **LOAD-BEARING — must be re-homed** on the router path or the per-host budget is lost and one host can be recovered repeatedly. |
+| `QueueItem.recovery_of` (parent link) | :5511 | :5408 (no-chains), :10108 (counter gate), :13476 (enrichment gate) | **LOAD-BEARING — re-home** as the node's parent reference. |
+| `QueueItem.recovery_seeds` (pre-resolved unvisited seeds) | :5512 | :13477 — **only if the resolver picked `crawler_query`** | **FRAGILE — fix, do not port as-is.** Otherwise the seeds are silently discarded and only a log line remains; that is a signal with no consumer. |
+| `envelope.recovery_of` | :10047 | **NONE** | **RETIRE (or wire).** Currently pure decoration. |
+| `envelope.recovery_opens` | :15485 | none in code — read only by the T13 counter review | **INSTRUMENTATION — name T13 explicitly as the consumer** or it is decoration by the same rule. |
+| `envelope.recovery_recovered` / `recovery_empty` | :10111 / :10113 | none in code — T13 only | Same as above. |
+
+**Verdict:** two load-bearing signals (`_der_recovery_opened`, `QueueItem.recovery_of`), one
+fragile signal that must be repaired rather than ported (`recovery_seeds`), one field that is
+already decoration (`envelope.recovery_of`), and three counters whose only consumer is the T13
+review. **The removal is therefore a re-homing exercise, not a deletion** — which is exactly
+what the failure-is-a-signal requirement demands.
 
 ## Error Handling
 - Envelope build failure → minimal envelope (AC1.4), loud_error logged, loop proceeds (never crash a step for shaping).
@@ -195,6 +317,10 @@ The loop (transport.py:773-824) already retries 3× for HTTP exceptions and 429s
 - raw_ref resolution failure → "[source unavailable]" bounded marker (AC2.5 edge).
 - Embed warm failure → log + continue (AC6.2); breaker path unchanged.
 - Transport retry exhaustion → existing error, existing downstream handling (AC6.3/6.4).
+- Deadline expiry → `timeout` envelope (AC11.3) with elapsed-vs-deadline cause; partial results preserved via `raw_ref` when available; streak-counted (AC11.4). Completion at the boundary wins — timeout never retro-fires.
+- Recovery budget exhaustion → honest dry-well return, parent suggestion becomes try_different; same-address re-fetch stays blocked inside recovery (AC9.5 edge).
+- Heartbeat stall → warning log only; abort authority is the deadline alone (AC11.2 edge).
+- Ledger render failure → prompts assemble without the VISITED block + warning log (degrade, never block the loop).
 
 ## Testing Strategy
 Organized per the standing CDD standard:
@@ -247,3 +373,29 @@ scripts/            live gate rides the standing comparison probe (session-312 h
 Intertwined: every behavioral gap found decomposes into the contract test that would have caught it (e.g. BT-1 finding raw in the continuation prompt's done_summary half → CT-2 extension; a repeat re-dispatched → CT-10 extension). Physics-aware: BT-2 injects Caducean rec states (TOPO_VIOLATION forces gate fire regardless of streak arithmetic — KD-4). Baseline to hold: twins+loop-bounds 39 pass / 6 pre-existing fails; contract 1478-1485 pass / 30 pre-existing (session-310-verified).
 
 **Live-verification gate:** the success-criteria targets (context <50% window, breaker closed, zero Empty, <4min turn) are validated ONLY by the live comparison probe on the restarted backend — unit/contract green is not done.
+
+Session-318 extension (Wave 5 proving tests):
+```
+tests/contract/     CT-11 envelope sources: fields bounded (≤8, truncation marked), ledger
+                    pointers-only (no bodies in prompts — fixtures with bodies assert absence)
+                    CT-12 chooser exclusions: conv-102 replay fixtures (one seed, three queries)
+                    → 2nd/3rd pick refused or re-seeded; empty-after-exclusion → pivot, never force
+                    CT-13 guard on resolved seeds: crawler-resolved URLs fed back → repeat
+                    blocked even when params["known_urls"] was empty at dispatch
+                    CT-14 identity: identical bodies dedup to raw_ref read + hash-hit log;
+                    dead addresses (4xx/empty/known-404) never re-fetched in-turn
+                    CT-15 deadlines: fake-clock expiry → timeout envelope (cause + elapsed),
+                    streak-counted; completion-at-boundary wins; every wait bounded
+                    CT-16 recovery lane: 404 → sibling navigation allowed with own envelope +
+                    budget; same-address re-fetch inside recovery still blocked; budget
+                    exhaustion → honest dry-well; brain-side dependents bounded-wait
+tests/behavioral/   BT-4 conv-102 trajectory replay through the FULL stack: zero same-address
+                    re-fetch, VISITED block rendered in planning prompts, honest single-source
+                    answer preserved (no hallucinated citations), grade capped per AC5.6
+                    BT-5 hanging-tool drive: deadline fires → timeout streaks → gate fires →
+                    run grade capped; no unbounded wait (fails closed on a stuck clock)
+scripts/            live re-probe (T21): comparison probe with a seeded 404 — bars: zero
+                    same-address re-fetch (log-proven), ledger lines in logs, turn <4min,
+                    honest citations, breaker closed, zero Empty, recovery envelope present
+```
+Intertwined (extension): each new behavioral gap decomposes to its contract twin (e.g. BT-4 finding a re-seeded duplicate → CT-12 extension; a silent hang → CT-15 extension).

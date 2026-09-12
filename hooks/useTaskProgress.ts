@@ -120,6 +120,13 @@ export interface TaskStep {
   url?: string
   resultPreview?: string
   /**
+   * Session 312 (user-approved, conv-98 smoke): bounded per-row activity
+   * history — the detail lines that streamed through this row while it
+   * worked, newest last, capped at 6 (quality check: bounded footprint).
+   * Rendered inside the row's existing expand panel; never a phantom field.
+   */
+  history?: string[]
+  /**
    * Session 248 (pin_587a3e612558 item #4): the structured crawl phase this
    * node represents ("searching" / "fetching" / "extracting" / "citing" /
    * "synthesizing"). Set ONLY on progressive phase nodes. The verb column
@@ -161,11 +168,23 @@ export interface TaskStep {
  * completed count when nothing is in flight (start of turn, and after the last
  * step resolves) - so the card still finishes on N/N rather than claiming a step
  * that never ran.
+ *
+ * SETTLED-COUNT SINCE Session 312 (user-directed 2026-09-09, conv-98 smoke):
+ * the counter is settled rows, always — done + skipped + the frontend failure
+ * spellings (fail/error). A red row is finished work, so a failed run can still
+ * reach N/N. This deliberately returns to counting completions (the pre-08-17
+ * shape, extended to failure states); the "where is work" signal the RUNNING
+ * rule carried now lives on the glowing working row + elapsed timer + live
+ * phase verb instead. Same decision as deriveProgress (lib/cards/rowOrder) —
+ * both change together so card, tier, and ring can't drift.
  */
 export function deriveCurrentStep(steps: TaskStep[]): number {
-  const workingIdx = steps.findIndex((s) => s.status === "working")
-  if (workingIdx >= 0) return workingIdx + 1
-  return steps.filter((s) => s.status === "done").length
+  return steps.filter((s) =>
+    s.status === "done" ||
+    s.status === "skipped" ||
+    s.status === "fail" ||
+    s.status === "error",
+  ).length
 }
 
 /**
@@ -840,6 +859,9 @@ interface PersistedCardStep {
    *  rehydrated card reproduces its original order exactly. */
   seq?: number
   tool_name?: string | null
+  /** Session 312: the step's distilled outcome from the backend snapshot
+   *  (_queue_steps_snapshot result_summary) — rehydrates as resultPreview. */
+  result_summary?: string | null
 }
 
 interface PersistedCard {
@@ -897,6 +919,11 @@ function mergeHydratedCards(prev: CardsState, cards: PersistedCard[]): CardsStat
       // rehydrated card reproduces its original order exactly.
       seq: s.seq,
       toolName: s.tool_name ?? undefined,
+      // Session 312 (conv-98): persisted steps now carry a distilled outcome
+      // (_queue_steps_snapshot result_summary) — surface it as the row's
+      // resultPreview so a revisited card shows what each step found, not
+      // just its status. Same field live rows use, so nothing new renders.
+      resultPreview: s.result_summary ?? undefined,
     }))
     // Session 247 + GROUND TRUTH REQ-17: semantic row order survives rehydration.
     steps.sort(
@@ -1186,8 +1213,19 @@ function reduceTaskUpdate(prev: CardsState, d: TaskUpdateDetail): CardsState {
           if (workingIdx >= 0) {
             const s = steps.slice()
             const stepTd = normalizeTemporalDelta(d.temporal_delta)
+            // Session 312: bounded activity history — every detail that
+            // streams through this row is recorded (deduped against the
+            // last line), so expand-on-demand shows what happened here
+            // even after activeDetail clears. Capped at 6 lines.
+            const _histLine = `${d.detail || action}${d.detail_progress ? ` (${d.detail_progress})` : ""}`
+            const _prevHist = s[workingIdx].history ?? []
+            const _nextHist =
+              _prevHist[_prevHist.length - 1] === _histLine
+                ? _prevHist
+                : [..._prevHist, _histLine].slice(-6)
             s[workingIdx] = {
               ...s[workingIdx],
+              history: _nextHist,
               // Prefer the structured field; fall back to the sentence for
               // emitters that predate `detail`.
               activeDetail: d.detail || action,

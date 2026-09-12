@@ -49,11 +49,15 @@ describe("CT-GT-8 — one shared derivation, not two implementations", () => {
 })
 
 describe("CT-GT-8 — the progress pair is coherent wherever it is read", () => {
-  it("numerator tracks the working row's position in the rendered list", () => {
+  it("numerator counts settled rows, never the working row's position", () => {
+    // Session 312 (user-directed 2026-09-09, conv-98 smoke): every verb-row
+    // is a step and the counter advances only when a row settles. p1 + the
+    // phase row are done, p2 is still working -> 2, not the working
+    // position 3. This REPLACES the old "tracks the working row's position"
+    // expectation; same-collection rule (REQ-18 AC1/AC2) is unchanged.
     const sorted = sortRows(ROWS)
     const { currentStep, totalSteps } = deriveProgress(sorted)
-    // p2 is working and renders third
-    expect(currentStep).toBe(3)
+    expect(currentStep).toBe(2)
     expect(totalSteps).toBe(3)
   })
 

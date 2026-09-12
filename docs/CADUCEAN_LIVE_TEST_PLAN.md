@@ -38,6 +38,7 @@ in this document as a graduation event.
 | T5 | Coordinate recall | **UNEXERCISED** | `coords_from` count 0 → non-zero, query returns a doc |
 | T6 | Outer loop | **REPAIRED (16de4b3e)** | `live_guards: 3`, no dead guards, a genuinely varying `verified_fraction` |
 | T7 | Flags-off regression | — | no behavioral change with both flags off |
+| T8 | Classical vs phase — **OUTCOME** A/B | **new (session-319)** | phase is not worse on completed work, wasted work, or collisions — and better on one |
 | P1.x | Phase 1 — Foundation | Landed, unverified live | real window, two providers, no leaked credential |
 | P2.x | Phase 2 — The Instrument | Landed, unverified live | card moves without a page fetch, narration audible |
 | P3.x | Phase 3 — Local Model Loader | Landed, unverified live | derive → cache, VRAM degradation, correction loop |
@@ -346,6 +347,81 @@ Re-run T1's prompt and a voice request.
 `reason=flag_off`. No `CoupledRegistry` lines at all.
 **FAIL** — any behavioral difference with both flags off. That is the most serious possible
 finding in this plan, because it affects the default configuration everyone runs.
+
+---
+
+## T8 — Classical vs phase: OUTCOME comparison (A/B, env-controlled)
+
+**Prove:** the phase mechanism produces a *better outcome*, not merely different scheduler
+behaviour. T1 already measures the scheduler's own behaviour. T8 measures the **result**.
+
+> **Why this test exists.** If we only measure speed, the classical and phase approaches will look
+> similar and we will have learned nothing. Three numbers decide this, and speed is not one of them.
+
+### The three numbers that matter
+
+| # | Number | Where it comes from | Why it matters |
+|---|---|---|---|
+| 1 | **Completed work** | steps completed, answer produced, `run grade` line | Did the turn actually finish the task? |
+| 2 | **Wasted work** | `write_counters.snapshot()` — `envelope.recovery_opens` vs `recovery_recovered`, `envelope.hash_hits`, `envelope.dead_hits`, `crawler.exclusions_applied`, `crawler.seeds_refused` | How much effort bought nothing? |
+| 3 | **Collisions** | 429 observations (`rate_meter`), `envelope.deadline_hits`, `envelope.stalls` | Did we hit the wall, or stall? |
+
+A configuration that is **faster but wastes more work is not a win.** Say so plainly in the
+report. Speed alone does not decide this.
+
+### Env control — the flags are read LAZILY, so a restart is not required
+
+Both flags are re-read on every check (`phase_manager._flag_enabled()` reads `os.environ` each
+call; `coupled_registry` documents the same). And `main.py` loads `.env` **without** override, so a
+real environment variable **wins** over `.env`.
+
+```bash
+# Config A — CLASSICAL control (phase gate off)
+IRIS_PHASE_SCHEDULER=0 IRIS_COUPLING_ENABLED=0 <launch backend>
+
+# Config B — PHASE gate on, coupling off
+IRIS_PHASE_SCHEDULER=1 IRIS_COUPLING_ENABLED=0 <launch backend>
+
+# Config C — PHASE gate on + multi-session coupling on
+IRIS_PHASE_SCHEDULER=1 IRIS_COUPLING_ENABLED=1 <launch backend>
+```
+
+**GOTCHA — read this before trusting the toggle.** `main.py:25` runs
+`load_dotenv(".env.local", override=True)` BEFORE `load_dotenv()` for `.env`. So:
+- A real environment variable **beats** `.env` (good — that is the toggle).
+- `.env.local` **beats** a real environment variable (`override=True`). So if the flag is ever
+  added to `.env.local`, the launch toggle silently stops working.
+
+Confirm the flag took effect before trusting any result — T1's `flag_off` vs `gated` check does
+exactly that. Do not skip it.
+
+### Protocol
+
+1. Pick **one** workload and use it for every config. Recommended: the comparison prompt from the
+   main probe, plus one seeded dead address so the recovery lane is exercised.
+2. Run **each config at least 3 times.** Single runs are noise, and provider latency alone will
+   fool you.
+3. Between runs, record the three numbers above plus wall-clock and the `run grade` line.
+4. Compare configs **pairwise on the same workload**, never across different workloads.
+
+### PASS / FAIL
+
+- **PASS** — Config B (or C) is **not worse** than Config A on *any* of the three numbers, and is
+  better on at least one. Then report which one, and by how much.
+- **FAIL** — Config B/C is worse on **completed work** or **wasted work**. That is a real
+  regression. Speed does not excuse it.
+- **INCONCLUSIVE** — the numbers are within run-to-run noise. Report that honestly rather than
+  picking the run that flattered the hypothesis. This is a likely outcome at small sample sizes
+  and it is a legitimate result.
+
+### Open question this test is expected to expose
+
+The current recovery budget is a **classical count of one per host**. The owner's position is that
+a phase spread could instead let several recoveries on one host proceed at distinct positions.
+Whether a phase spread fixes **duplicate work** (two crews crawling the same pages) or only
+**resource collision** is NOT settled. T8 is the test that would settle it — if wasted work falls
+under Config B/C with the count removed, the phase spread handles duplicate work. If wasted work
+rises, it does not.
 
 ---
 

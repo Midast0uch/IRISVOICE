@@ -42,6 +42,7 @@ const SAMPLE_CONFIG = {
   effective_mode: "developer",
   approved_tools: ["write_file"],
   available_tools: ["write_file", "edit_file", "run_command"],
+  auto_approve: false,
 }
 
 describe("PermissionsSettingsCard — REQ-19 / REQ-16", () => {
@@ -68,5 +69,21 @@ describe("PermissionsSettingsCard — REQ-19 / REQ-16", () => {
     expect(screen.getByText("write_file")).toBeInTheDocument()
     expect(screen.getByText("edit_file")).toBeInTheDocument()
     expect(screen.getByText("run_command")).toBeInTheDocument()
+  })
+
+  it("renders the Auto-approve toggle with the effective consent state (REQ-12 AC12.4)", async () => {
+    render(<PermissionsSettingsCard configUrl="/api/config" />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId("auto-approve-toggle")).toBeInTheDocument()
+    })
+    // Toggle OFF by default: destructive tools stay gated even when ON.
+    expect(screen.getByTestId("auto-approve-toggle")).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    )
+    expect(
+      screen.getByText(/Destructive and deletion commands always ask/),
+    ).toBeInTheDocument()
   })
 })

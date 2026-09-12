@@ -85,6 +85,85 @@ DESKTOP_CONTROL_TOOLS = frozenset({
 })
 
 
+def _approval_ui_attached(session_id: str) -> bool:
+    """T15 (REQ-9 AC9.5 / REQ-12 AC12.1): is an approval UI attached?
+
+    Derived from the existing live WebSocket client presence FOR THE
+    SESSION — no new frontend signal, no shared-session fallback. The WS
+    handler registers the client under the turn's session id, so a WS turn
+    always finds its own client; a REST turn (session = thread id, never
+    registered) correctly reads False and fail-fasts instead of waiting
+    out the timeout. Returns True (keep the existing approval flow) when
+    the check itself fails — fail-fast fires only on a POSITIVE absence
+    signal, never on an unreadable manager.
+    """
+    try:
+        from backend.ws_manager import get_websocket_manager
+
+        ws = get_websocket_manager()
+        if ws is None:
+            return True
+        try:
+            return len(ws.get_clients_for_session(session_id or "")) > 0
+        except Exception:
+            return True
+    except Exception:
+        return True
+
+
+def _approval_unavailable_result(
+    tool_name: str, tier_value: str, session_id: str,
+) -> Dict[str, Any]:
+    """T15 (REQ-9 AC9.1/AC9.2) + REQ-11 AC11.1: the fail-fast result.
+
+    The FAULTLINE canonical shape (success/error/error_type/retryable/
+    blame/info_state/details.raw/ts) built at the pre-dispatch site — the
+    short-circuit bypasses normalize_failure, so the shape is built here,
+    not downstream. error_type approval_unavailable is registered in the
+    Layer-2 registry (DATA edit). permission_response carries the same
+    typed reason so dispatch callers can route on it without parsing text.
+    """
+    try:
+        from backend.agent.tool_errors import tool_error
+
+        _msg = (
+            f"Tool '{tool_name}' needs approval ({tier_value}), but no "
+            f"approval screen is open for this session — it stopped right "
+            f"away instead of waiting. Reason: approval_unavailable. "
+            f"Reroute to a tool that can run unattended, or name the gap."
+        )
+        _res = tool_error(
+            "approval_unavailable",
+            _msg,
+            details={
+                "tool": tool_name,
+                "tier": tier_value,
+                "session_id": session_id or "",
+            },
+            raw=_msg,
+        )
+    except Exception:
+        _res = {
+            "success": False,
+            "error": f"Tool '{tool_name}' cannot run: no approval UI attached",
+            "error_type": "approval_unavailable",
+            "retryable": "maybe",
+            "blame": "world",
+            "info_state": "blocked",
+            "details": {"raw": "approval_unavailable"},
+            "ts": 0.0,
+        }
+        try:
+            import time as _time_mod
+
+            _res["ts"] = _time_mod.time()
+        except Exception:
+            pass
+    _res["permission_response"] = "approval_unavailable"
+    _res["tool_name"] = tool_name
+    return _res
+
+
 def _plain_permission_description(tool_name, params, tier_value):
     """Session-326: human-readable permission headline (owner: the live card
     read "Execute 'run_command' with 1 params" — machine speak no non-coder
@@ -1218,7 +1297,9 @@ class AgentToolBridge:
                 tool_name, CapabilitySet.get_mode(),
             )
             try:
-                from backend.agent.permissions import classify_tool, get_permission_system
+                from backend.agent.permissions import (
+                    classify_tool, get_auto_approve, get_permission_system,
+                )
 
                 tier = classify_tool(tool_name, params)
                 level = CapabilitySet.get_mode()
@@ -1232,6 +1313,7 @@ class AgentToolBridge:
                         f"in {level} mode."
                     ),
                     level=level,
+                    auto_approve=get_auto_approve(),
                     force=True,
                     session_id=session_id,
                 )
@@ -1311,9 +1393,21 @@ class AgentToolBridge:
                     self._handle_speak({"text": f"Searching the web for {_q}"}, session_id)
 
         # ── Phase 4: Permission check ──────────────────────────────────────
+        # T15 (REQ-9 AC9.1/AC9.5): FAIL FAST on an un-attendable approval
+        # BEFORE dispatch — detect "no approval UI attached" from the live
+        # WebSocket client presence for the session (the same signal the DER
+        # loop uses) and settle immediately with Reason.APPROVAL_UNAVAILABLE,
+        # emitting the FAULTLINE canonical shape + learning hooks (REQ-11).
+        # Never wait the 120s timeout when nobody can approve. Approval UI
+        # attached → the existing approval flow below runs unchanged.
+        # T18 (consent/capability split): mode governs CAPABILITY only
+        # (enforced by CapabilitySet above); CONSENT comes from the
+        # Auto-approve toggle. Toggle ON auto-approves reads/writes/shell/GUI
+        # in both modes; DESTRUCTIVE + deletion/removal stay gated always.
         try:
             from backend.agent.permissions import (
                 classify_tool,
+                get_auto_approve,
                 get_permission_action,
                 get_permission_system,
                 PermissionTier,
@@ -1321,14 +1415,44 @@ class AgentToolBridge:
 
             tier = classify_tool(tool_name, params)
             level = CapabilitySet.get_mode()
-            action = get_permission_action(tier, level)
+            _auto = get_auto_approve()
+            action = get_permission_action(tier, auto_approve=_auto)
             # REQ-16 AC5: log the resolved permission action for every gated call.
             logger.info(
-                "[Permissions] gated_call tool=%s tier=%s mode=%s action=%s",
-                tool_name, tier.value, level, action.value,
+                "[Permissions] gated_call tool=%s tier=%s mode=%s auto=%s action=%s",
+                tool_name, tier.value, level, _auto, action.value,
             )
 
             if action.value in ("require_approval", "require_confirmation"):
+                # T15 fail-fast (REQ-9 AC9.1/AC9.5): no approval UI attached
+                # → settle NOW with APPROVAL_UNAVAILABLE, never wait the
+                # 120 s timeout. Approval UI attached → fall through to the
+                # existing request/wait flow unchanged.
+                try:
+                    _ui_attached = _approval_ui_attached(session_id)
+                except Exception:
+                    _ui_attached = True
+                if not _ui_attached:
+                    _ff = _approval_unavailable_result(
+                        tool_name, tier.value, session_id
+                    )
+                    logger.warning(
+                        "[Permissions] fail-fast tool=%s tier=%s: no "
+                        "approval UI attached — approval_unavailable "
+                        "(no wait)",
+                        tool_name, tier.value,
+                    )
+                    # REQ-11 AC11.3: the pre-dispatch short-circuit bypasses
+                    # execute_tool/normalize_failure, so feed the learning
+                    # record HERE — best-effort, never blocks the settle.
+                    try:
+                        self._record_tool_event(
+                            session_id, tool_name, "failure",
+                            params, _ff, plan_title=plan_title,
+                        )
+                    except Exception:
+                        pass
+                    return _ff
                 perm_system = get_permission_system()
                 req = perm_system.request_permission(
                     tool_name=tool_name,
@@ -1339,6 +1463,7 @@ class AgentToolBridge:
                         getattr(tier, "value", tier),
                     ),
                 level=level,
+                auto_approve=_auto,
                 session_id=session_id,
             )
                 if req.status == "pending":

@@ -86,17 +86,26 @@ def test_malformed_config_resolves_to_developer(tmp_path, monkeypatch):
 
 
 def test_missing_mode_consequence_side_effect_tools_auto_approve():
-    """The consequence, driven off the real module constants: EVERY tool in
-    permissions.py's `_SIDE_EFFECT_TOOLS` classifies as SIDE_EFFECT, and
-    SIDE_EFFECT auto-approves in "personal" mode."""
+    """Goal-contract T18 (REQ-9 AC9.4, KD-12) supersedes the old
+    mode-couples-consent rule. EVERY tool in permissions.py's
+    `_SIDE_EFFECT_TOOLS` classifies as SIDE_EFFECT, and consent is now
+    governed by the Auto-approve toggle — not by mode. With the toggle OFF
+    (the fail-closed default) they require approval; with it ON they
+    auto-approve in BOTH modes."""
     for tool_name in _perm._SIDE_EFFECT_TOOLS:
         tier = _perm.classify_tool(tool_name, {})
         assert tier == _perm.PermissionTier.SIDE_EFFECT, (
             f"{tool_name} did not classify as SIDE_EFFECT: {tier}"
         )
-        action = _perm.get_permission_action(tier, "personal")
-        assert action == _perm.PermissionAction.AUTO_APPROVE, (
-            f"{tool_name}: expected AUTO_APPROVE in personal mode, got {action}"
+        assert _perm.get_permission_action(
+            tier, auto_approve=False
+        ) == _perm.PermissionAction.REQUIRE_APPROVAL, (
+            f"{tool_name}: expected REQUIRE_APPROVAL with the toggle OFF"
+        )
+        assert _perm.get_permission_action(
+            tier, auto_approve=True
+        ) == _perm.PermissionAction.AUTO_APPROVE, (
+            f"{tool_name}: expected AUTO_APPROVE with the toggle ON"
         )
     # write_file is the headline example named in the spec.
     assert "write_file" in _perm._SIDE_EFFECT_TOOLS
@@ -203,14 +212,18 @@ def test_phase4_fails_open_on_any_exception():
 # ── 4. End-to-end symptom ────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_write_file_reaches_permission_gate_in_absent_mode(tmp_path, monkeypatch):
+async def test_write_file_reaches_permission_gate_in_absent_mode(
+    tmp_path, monkeypatch, approval_ui_attached
+):
     """T20 INVERTS the old silent-block. With no "mode" key the backend now
     fails CLOSED to "developer" (REQ-16 AC3), so write_file CLEARS the [13.3]
     capability gate (is_tool_allowed True) and REACHES Phase 4, which emits a
     PERMISSION_REQUEST — the gate now ASKS instead of silently blocking.
 
-    The permission timeout is shortened so the test does not wait 30s for a
-    real user response that never arrives in a headless probe.
+    Goal-contract T15: an approval UI is attached for this test (the
+    ``approval_ui_attached`` fixture) so the gate takes the APPROVAL path
+    under test rather than the no-UI fail-fast. The permission timeout is
+    shortened so the test does not wait for a real user response.
     """
     monkeypatch.setattr(_perm, "PERMISSION_TIMEOUT_SIDE_EFFECT", 0.2)
     _write_cfg(monkeypatch, tmp_path, json.dumps({}))
@@ -244,12 +257,17 @@ async def test_write_file_reaches_permission_gate_in_absent_mode(tmp_path, monke
 
 
 @pytest.mark.asyncio
-async def test_side_effect_tool_reaching_phase4_asks_in_developer_mode(tmp_path, monkeypatch):
+async def test_side_effect_tool_reaching_phase4_asks_in_developer_mode(
+    tmp_path, monkeypatch, approval_ui_attached
+):
     """T20 INVERTS the old silent-approve. A SIDE_EFFECT tool that clears the
     [13.3] gate now reaches Phase 4 and REQUIRES_APPROVAL (emits a
     PERMISSION_REQUEST) in developer mode — it no longer auto-approves
     silently. `edit_file` is in `_SIDE_EFFECT_TOOLS` but not in the blocked
     sets, so it clears [13.3] and exercises Phase 4 directly.
+
+    Goal-contract T15: an approval UI is attached (fixture) so the gate
+    exercises the approval path, not the no-UI fail-fast.
     """
     monkeypatch.setattr(_perm, "PERMISSION_TIMEOUT_SIDE_EFFECT", 0.2)
     _write_cfg(monkeypatch, tmp_path, json.dumps({}))

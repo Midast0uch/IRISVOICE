@@ -23,7 +23,9 @@ def _write_cfg(monkeypatch, tmp_path, content):
 
 
 @pytest.mark.asyncio
-async def test_t23_capability_denial_escalates_to_permission(tmp_path, monkeypatch):
+async def test_t23_capability_denial_escalates_to_permission(
+    tmp_path, monkeypatch, approval_ui_attached
+):
     """REQ-18 AC1/AC2/AC3: capability-blocked tool in personal mode escalates to a
     permission request; approval executes the tool; denial does not."""
     _write_cfg(monkeypatch, tmp_path, json.dumps({"mode": "personal"}))
@@ -112,7 +114,9 @@ async def test_t23_internet_gate_not_escalated(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_t23_developer_mode_not_escalated(tmp_path, monkeypatch):
+async def test_t23_developer_mode_not_escalated(
+    tmp_path, monkeypatch, approval_ui_attached
+):
     """REQ-18 AC4: in developer mode a repo/terminal tool is NOT capability-denied by
     [13.3] (is_tool_allowed is True there) — it reaches Phase 4 and prompts there,
     instead of being escalated by the [13.3] gate. Developer behaviour is unchanged."""
@@ -198,7 +202,9 @@ async def test_t23_both_gates_blocked_nonpermission_wins(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_t23_param_pattern_escalation_on_clearing_tool(tmp_path, monkeypatch):
+async def test_t23_param_pattern_escalation_on_clearing_tool(
+    tmp_path, monkeypatch, approval_ui_attached
+):
     """REQ-18 edge: a tool that CLEARS [13.3] (not capability-blocked) but carries a
     destructive param pattern still escalates via Phase 4 (classify_tool -> DESTRUCTIVE)."""
     _write_cfg(monkeypatch, tmp_path, json.dumps({"mode": "personal"}))

@@ -323,11 +323,16 @@ export function ChassisStepNode({
   if (status === "running") {
     return (
       <div className="w-4 h-4 shrink-0 flex items-center justify-center relative" data-testid="chassis-node-running">
+        {/* Session 312 (user: "not always apparent"): ring brightened /40->/60
+            + soft glow on the core dot. Same amber, same 2s breathing. */}
         <div
-          className="absolute w-4 h-4 rounded-full border border-amber-400/40 animate-ping"
+          className="absolute w-4 h-4 rounded-full border border-amber-400/60 animate-ping"
           style={{ animationDuration: "2s" }}
         />
-        <div className="w-2.5 h-2.5 rounded-full border border-amber-400 flex items-center justify-center bg-amber-500/20">
+        <div
+          className="w-2.5 h-2.5 rounded-full border border-amber-400 flex items-center justify-center bg-amber-500/20"
+          style={{ boxShadow: "0 0 8px rgba(251,191,36,0.45)" }}
+        >
           <Xur size={7} color="#fbbf24" speed={2.5} />
         </div>
       </div>

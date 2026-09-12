@@ -5692,14 +5692,58 @@ class AgentKernel:
             _envs = [
                 getattr(i, "envelope", None) for i in (completed_items or [])
             ]
+            # Goal contract T10 (REQ-7/REQ-8): grade from coverage when a
+            # contract exists — C=1.0 no-blocked is a pass; any open
+            # unblocked fact caps below pass; all-blocked-and-named is a
+            # partial (capped). Advisory: absent contract = legacy grade.
+            _gc_state = getattr(self, "_goal_contract_state", None)
+            _gc_c = None
+            _gc_open: List[str] = []
+            _gc_blocked: List[str] = []
+            if _gc_state is not None:
+                try:
+                    _gc_c = float(_gc_state.get("C", 0.0))
+                    _gc_open = self._goal_contract_open_facts()
+                    _gc_blocked = self._goal_contract_blocked_texts()
+                except Exception:
+                    _gc_state = None
             _grade, _reasons = evaluate_run_grade(
                 [e for e in _envs if e is not None],
                 load_bearing_veto=LOAD_BEARING_VETO,
+                coverage=_gc_c,
+                open_unblocked=_gc_open,
+                blocked=_gc_blocked,
             )
             self._der_last_run_grade = {
                 "turn_id": _turn_id or "", "grade": _grade,
                 "reasons": list(_reasons or []),
             }
+            # REQ-7 AC7.2: log the counters the contract introduced, naming
+            # the reader for each (AC7.4): seeded/mapped/re-added feed T4;
+            # covered/blocked feed T5/T9 + grade; amendments feed T7/T8;
+            # stalls/bonus feed T6/T3.
+            try:
+                if _gc_state is not None:
+                    _gc_counters = _gc_state.get("counters") or {}
+                    logger.info(
+                        "[goal-contract] counters (readers T4/T5/T6/T9/grade): "
+                        "seeded=%s mapped=%s readded=%s covered=%s blocked=%s "
+                        "amend_user=%s amend_agent=%s stalls=%s bonus=%s "
+                        "C=%.3f g=%.3f",
+                        _gc_counters.get("facts_seeded", 0),
+                        _gc_counters.get("facts_mapped", 0),
+                        _gc_counters.get("facts_readded", 0),
+                        _gc_counters.get("facts_covered", 0),
+                        _gc_counters.get("facts_blocked", 0),
+                        _gc_counters.get("amendments_user", 0),
+                        _gc_counters.get("amendments_agent", 0),
+                        _gc_counters.get("stalls", 0),
+                        _gc_counters.get("bonus_passes", 0),
+                        float(_gc_state.get("C", 0.0)),
+                        float(_gc_state.get("g", 1.0)),
+                    )
+            except Exception:
+                pass
             logger.info(
                 "[DER] run grade: %s%s (%s)",
                 _grade,
@@ -8283,6 +8327,80 @@ Respond with a JSON object:
         ]
         queue = DirectorQueue(objective=plan.original_task, items=items)
 
+        # ── Goal contract T4 (specs/goal-contract-coverage, REQ-1) ──
+        # Build the deterministic required-fact set once per turn, validate
+        # the plan against it (an omission is re-added by construction — the
+        # deterministic set stands alone — and logged with the fact text),
+        # and stamp required_facts on every step's node record. Advisory:
+        # never break plan start on a contract failure.
+        self._goal_contract_state = None
+        try:
+            from backend.agent import goal_contract as _gc_mod
+
+            _gc_facts = _gc_mod.extract_required(plan.original_task or "")
+            _gc_omitted = _gc_mod.map_to_steps(_gc_facts, list(plan.steps))
+            for _om_fact in _gc_omitted:
+                logger.info(
+                    "[goal-contract] planner omitted fact, re-added: %r",
+                    str(_om_fact)[:160],
+                )
+            _gc_task_rec = NodeRecord(
+                step_id=f"task:{(_turn_id or _session or 'turn')}",
+                parent_step_id="",
+                node_type="task",
+                objective_anchor=plan.original_task or "",
+                expected_output=plan.original_task or "",
+                required_facts=list(_gc_facts),
+                contract_version=1,
+            )
+            for _gc_item in items:
+                try:
+                    if getattr(_gc_item, "node_record", None) is not None:
+                        _gc_item.node_record.required_facts = list(_gc_facts)
+                except Exception:
+                    pass
+            self._goal_contract_state = {
+                "turn_id": _turn_id,
+                "contract": _gc_mod.Contract(
+                    required=tuple(_gc_facts), ceiling=(), version=1
+                ),
+                "task_record": _gc_task_rec,
+                "covered": [],
+                "outcomes": [],
+                "results": [],
+                "C": 0.0,
+                "g": 1.0,
+                "prev_c": 0.0,
+                "prev_tokens": 0,
+                "unmoved": 0,
+                "stall_cycles": 0,
+                "stalled": False,
+                "rho": 0.0,
+                # Wave 3 (T7/T8/T9/T10): amendment log, blocked list, REQ-7
+                # counters. All advisory — absent = legacy behavior.
+                "blocked": [],
+                "amendments": [],
+                "counters": {
+                    "facts_seeded": len(_gc_facts),
+                    "facts_mapped": len(_gc_facts) - len(_gc_omitted),
+                    "facts_readded": len(_gc_omitted),
+                    "facts_covered": 0,
+                    "facts_blocked": 0,
+                    "amendments_user": 0,
+                    "amendments_agent": 0,
+                    "stalls": 0,
+                    "bonus_passes": 0,
+                },
+            }
+            logger.info(
+                "[goal-contract] contract built: %d required facts (%d "
+                "omitted by planner, re-added)",
+                len(_gc_facts), len(_gc_omitted),
+            )
+        except Exception as _gc_exc:
+            logger.debug("[goal-contract] build skipped: %s", _gc_exc)
+            self._goal_contract_state = None
+
         # Force a real tool for web-search steps the planner left tool-less.
         # Without this, web-intent steps fall through to _run_step_direct and the
         # LLM returns empty ("[step N completed]") instead of actually searching.
@@ -9487,13 +9605,15 @@ Respond with a JSON object:
                 pass
             if _synthesis:
                 _emit_terminal_event()
-                return _synthesis
-            # LLM synthesis unavailable (e.g. model rate-limited â€” the very
+                return self._goal_contract_name_blocked(_synthesis)
+            # LLM synthesis unavailable (e.g. model rate-limited — the very
             # failure that broke the step) -> deterministic fallback so the user
             # is NEVER left with silence (Part B).
             _emit_terminal_event()
-            return AgentKernel._der_deterministic_failure_summary(
-                plan, completed_items, queue
+            return self._goal_contract_name_blocked(
+                AgentKernel._der_deterministic_failure_summary(
+                    plan, completed_items, queue
+                )
             )
 
         if step_outputs:
@@ -9521,14 +9641,16 @@ Respond with a JSON object:
                 pass
             if _synthesis:
                 _emit_terminal_event()
-                return _synthesis
+                return self._goal_contract_name_blocked(_synthesis)
             # REQ-12 (AC4): synthesis unavailable (e.g. reasoning provider
             # down) -> deterministic success summary mirroring
             # _der_deterministic_failure_summary so the user is never left
             # with raw concatenation (Part B symmetry).
             _emit_terminal_event()
-            return AgentKernel._der_deterministic_success_summary(
-                plan, completed_items, queue
+            return self._goal_contract_name_blocked(
+                AgentKernel._der_deterministic_success_summary(
+                    plan, completed_items, queue
+                )
             )
         # â”€â”€ Zero steps (or zero usable outputs) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # The crawl plan produced no executable URLs (all blocked/filtered
@@ -9943,6 +10065,15 @@ Respond with a JSON object:
                 steer_text, _session, plan, queue,
                 budget_deadline=budget_deadline,
             )
+        # ── Goal contract T7 (REQ-4 AC4.1): route user steering through
+        # amend — add/remove/repromote a floor fact in place, preserving task
+        # identity. Advisory: runs even when the replan above did nothing.
+        try:
+            if steer_text and not stop:
+                if self._goal_contract_apply_steering(steer_text):
+                    revised = True
+        except Exception:
+            pass
 
         # ── T9 (specs/tool-result-envelope REQ-5): stuck-streak gate at the
         # step boundary, in front of the same replan machinery. Skipped when
@@ -10396,9 +10527,33 @@ Respond with a JSON object:
             except Exception:
                 _topo = False
 
+            # Goal contract T6 (REQ-3 AC3.4): feed the stall-rate signal
+            # into the idling shape alongside the streak arithmetic. Advisory
+            # — a missing contract preserves the legacy streak behavior.
+            _gcov_state = getattr(self, "_goal_contract_state", None)
+            _gcov_c = None
+            _gcov_unmoved = 0
+            _gcov_rho = None
+            _gcov_stall = 0.0
+            if _gcov_state is not None:
+                try:
+                    from backend.agent.der_constants import (
+                        GOAL_STALL_RATE as _GOAL_STALL_RATE,
+                    )
+
+                    _gcov_c = float(_gcov_state.get("C", 0.0))
+                    _gcov_unmoved = int(_gcov_state.get("unmoved", 0))
+                    _gcov_rho = float(_gcov_state.get("rho", 0.0))
+                    _gcov_stall = float(_GOAL_STALL_RATE)
+                except Exception:
+                    _gcov_state = None
             fire, reason = evaluate_streak(
                 _wrappers, STUCK_STREAK_N, IDLE_STREAK_N,
                 topo_violation=_topo,
+                coverage=_gcov_c,
+                coverage_unmoved_n=_gcov_unmoved,
+                coverage_rho=_gcov_rho,
+                stall_rate=_gcov_stall,
             )
             if not fire:
                 _counters["gate_blocked"] += 1
@@ -10415,6 +10570,19 @@ Respond with a JSON object:
                 return False
 
             _counters["gate_fired"] += 1
+            # Goal contract (REQ-7 AC7.2): a coverage-stall fire is a
+            # coverage stall — count it on the contract so the stall rate
+            # is tunable from measurement. Advisory, never raises.
+            try:
+                _gc_stall = getattr(self, "_goal_contract_state", None)
+                if _gc_stall is not None and str(reason or "").startswith(
+                    "coverage_"
+                ):
+                    _gc_c = _gc_stall.get("counters") or {}
+                    _gc_c["stalls"] = int(_gc_c.get("stalls", 0)) + 1
+                    _gc_stall["counters"] = _gc_c
+            except Exception:
+                pass
             # AC5.4: audit — the triggering envelopes (step ids + wrapper
             # labels) are logged so the trigger is auditable post-run.
             _tail = _wrappers[-max(STUCK_STREAK_N, IDLE_STREAK_N, 1):]
@@ -11262,6 +11430,87 @@ Respond with a JSON object:
                 )
         except Exception:
             pass
+        # Goal contract T9 (REQ-5 AC5.1): the failure path SKIPS finalize, so
+        # the finalize-site blocking twin never runs here. A FAILED settle
+        # with a terminal typed reason blocks the facts it was working on —
+        # same helper, same denominator semantics. Advisory, never raises.
+        try:
+            _gc_reason = str(getattr(item, "error_type", "") or "")
+            if _gc_reason:
+                self._goal_contract_block_facts(
+                    item, _gc_reason, str(step_result or ""),
+                )
+        except Exception:
+            pass
+        # Goal contract T15 / REQ-11 AC11.3-AC11.5: a fail-fast or blocked
+        # step must TEACH — the failure path skips finalize, so none of its
+        # learning hooks run here. Gated on blocked reasons only (fail-fast +
+        # blocked steps, never ordinary retries): verified_label FAILED feeds
+        # the causal scorer (_der_score_step_outcome → edge scoring + AVOID
+        # episode), task:learning emits the reviewer's signal, and the
+        # failure-class graph walk gets its link. All best-effort, never
+        # blocking; a fail-fast with no mediator records "none" via the
+        # existing _der_mediator_for path (AC11 edge).
+        try:
+            _gc_learn_reason = str(getattr(item, "error_type", "") or "")
+            _gc_learn = False
+            if _gc_learn_reason:
+                try:
+                    from backend.agent import goal_contract as _gc_learn_mod
+
+                    _gc_learn = bool(
+                        _gc_learn_mod.is_blocked(_gc_learn_reason)
+                    )
+                except Exception:
+                    _gc_learn = False
+            if _gc_learn:
+                try:
+                    self._der_score_step_outcome(
+                        item, "FAILED", _session, str(step_result or "")
+                    )
+                except Exception:
+                    pass
+                try:
+                    from backend.agent.event_bus import (
+                        get_event_bus as _gleb,
+                        IRISStreamEvent as _gl_ev,
+                    )
+
+                    _gleb().emit(
+                        _gl_ev.TASK_LEARNING,
+                        {
+                            "session_id": _session,
+                            "step_id": getattr(item, "step_id", ""),
+                            "step_number": getattr(item, "step_number", 0),
+                            "signal": "avoided",
+                            "verified_label": "FAILED",
+                            "description": getattr(item, "description", "") or "",
+                            "is_subloop": bool(
+                                getattr(item, "is_subloop", False)
+                            ),
+                            "reason": _gc_learn_reason,
+                        },
+                    )
+                except Exception:
+                    pass
+                try:
+                    _gc_links = getattr(self, "_der_links", None)
+                    _gc_rec = getattr(item, "node_record", None)
+                    if _gc_links is not None and _gc_rec is not None:
+                        _gc_links.write_node_links(
+                            item,
+                            _gc_rec,
+                            step_success=False,
+                            step_result=str(step_result or ""),
+                            execution_domain=getattr(
+                                _gc_rec, "execution_domain", "der"
+                            ),
+                            session_id=_session or "",
+                        )
+                except Exception:
+                    pass
+        except Exception:
+            pass
         if aborted:
             logger.info(
                 "[DER] Aborted %d downstream step(s) after failure of %s: %s",
@@ -11938,7 +12187,9 @@ Respond with a JSON object:
         except Exception as _cd_exc:  # noqa: BLE001
             logger.debug("[DER] coupling-decision record failed: %s", _cd_exc)
 
-    def _der_verify_strictness(self, u: float) -> str:
+    def _der_verify_strictness(
+        self, u: float, coverage: Optional[float] = None
+    ) -> str:
         """Adaptive verification strictness by |u| band (D2.3).
 
         |u| < U_SPLIT  -> "wide"   : step was split; children verified individually,
@@ -11947,10 +12198,27 @@ Respond with a JSON object:
                                    PLUS LLM rubric verdict (tier-3 empowered check).
         >= 0.85        -> "atomic" : converged -> deterministic verify only (no LLM
                                    rubric; cheap, deterministic).
+
+        Goal contract T6 (REQ-3 AC3.3): task-level coverage C is an optional
+        second input. When supplied, the gap g = 1 - C acts as a forcing term
+        on the effective magnitude — an open goal makes the state read less
+        converged (stricter verification), a covered goal lets it settle.
+        ``coverage=None`` preserves the exact legacy bands. The parameter is
+        optional so every existing (u)-only caller keeps working unchanged.
         """
         from backend.agent.der_constants import U_SPLIT, U_CONVERGED
 
         au = abs(u)
+        if coverage is not None:
+            try:
+                from backend.agent.der_constants import (
+                    GOAL_FORCING_GAIN as _GOAL_GAIN,
+                )
+
+                _g = 1.0 - max(0.0, min(1.0, float(coverage)))
+                au = au * max(0.0, 1.0 - float(_GOAL_GAIN) * _g)
+            except Exception:
+                pass
         if au < U_SPLIT:
             return "wide"
         if au < U_CONVERGED:
@@ -12048,9 +12316,22 @@ Respond with a JSON object:
 
         u = cad.get("u", 0.0)
         # REQ-4 AC1/AC2 (T16): the width is now a GRADED function of BOTH |u|
-        # and the verified fraction â€” the continuous signal is a steering
+        # and the verified fraction — the continuous signal is a steering
         # input, not a post-hoc label. Mid-band -> bounded probe (width 1).
-        width = self._der_split_width(u, verified_fraction)
+        # Goal contract T6 (REQ-3 AC3.3): feed task-level coverage C when the
+        # per-step fraction is degenerate (0.0 default) so the split width is
+        # a continuous function of coverage as well as |u|. Advisory — falls
+        # back to the per-step fraction exactly when no contract exists.
+        _gcov_state = getattr(self, "_goal_contract_state", None)
+        _steer_frac = verified_fraction
+        if _gcov_state is not None and not (0.0 < verified_fraction < 1.0):
+            try:
+                _gcov_c = float(_gcov_state.get("C", 0.0))
+                if 0.0 < _gcov_c < 1.0:
+                    _steer_frac = _gcov_c
+            except Exception:
+                pass
+        width = self._der_split_width(u, _steer_frac)
         # Cap at DER_MAX_GRAFTS AND bounded by remaining work units.
         width = min(width, DER_MAX_GRAFTS, max(0, work_units))
         if width < 1 or item.depth_layer >= MAX_DEPTH:
@@ -15746,6 +16027,136 @@ Respond with a JSON object:
                             _verified, 0.0
                         )
                     _rec.verified_fraction = _vf
+                    # ── Goal contract T5 (specs/goal-contract-coverage,
+                    # REQ-2/REQ-3) ── mark coverage from the settled node's
+                    # outcome + result (VERIFIED + term match, set union),
+                    # stamp C onto the task node's verified_fraction, log
+                    # C/g/covered/required. Advisory: never break finalize.
+                    try:
+                        _gc_state = getattr(self, "_goal_contract_state", None)
+                        if _gc_state is not None:
+                            from backend.agent import goal_contract as _gc_mod2
+
+                            _gc_state["outcomes"].append(_verified)
+                            _gc_state["results"].append(str(step_result or ""))
+                            _gc_cov = _gc_mod2.mark_coverage(
+                                _gc_state["contract"],
+                                list(_gc_state["outcomes"]),
+                                list(_gc_state["results"]),
+                            )
+                            _gc_prev = float(_gc_state.get("C", 0.0))
+                            _gc_state["prev_c"] = _gc_prev
+                            _gc_state["C"] = float(_gc_cov.C)
+                            _gc_state["g"] = float(_gc_cov.g)
+                            _gc_state["covered"] = list(_gc_cov.covered)
+                            try:
+                                _gc_counters = _gc_state.get("counters") or {}
+                                _gc_counters["facts_covered"] = len(_gc_cov.covered)
+                                _gc_state["counters"] = _gc_counters
+                            except Exception:
+                                pass
+                            # REQ-3 AC3.4: track consecutive settled nodes with
+                            # unmoved C so the stall signal (rho/idling) can
+                            # fire downstream. Never raises, never blocks.
+                            try:
+                                if abs(float(_gc_cov.C) - _gc_prev) < 1e-9:
+                                    _gc_state["unmoved"] = int(
+                                        _gc_state.get("unmoved", 0)
+                                    ) + 1
+                                else:
+                                    _gc_state["unmoved"] = 0
+                                # rho = dC/(g*ds): ds = measured tokens spent
+                                # this cycle (4 chars ~= 1 token on the step
+                                # result). Advisory — computed best-effort.
+                                _gc_ds = max(
+                                    1.0, len(str(step_result or "")) / 4.0
+                                )
+                                _gc_state["rho"] = _gc_mod2.progress_ratio(
+                                    _gc_prev, float(_gc_cov.C),
+                                    float(_gc_cov.g), _gc_ds,
+                                )
+                            except Exception:
+                                _gc_state["unmoved"] = 0
+                            _gc_task_rec = _gc_state.get("task_record")
+                            if _gc_task_rec is not None:
+                                _gc_task_rec.verified_fraction = float(_gc_cov.C)
+                                _gc_task_rec.covered_facts = list(_gc_cov.covered)
+                            # REQ-4 AC4.2: agent ceiling discovery — a VERIFIED
+                            # step whose result carries deliverables BEYOND the
+                            # required floor proposes them as ceiling facts
+                            # (surplus extraction via the same deterministic
+                            # extractor; floor-deduped, capped, never
+                            # blocking). Bounded to 2 per step so one rich
+                            # result cannot fill the ceiling alone. Advisory.
+                            try:
+                                if (
+                                    str(_verified or "").upper() == "VERIFIED"
+                                    and str(step_result or "").strip()
+                                ):
+                                    _gc_req_norms = {
+                                        _gc_mod2._norm(_f)
+                                        for _f in _gc_state["contract"].required
+                                    }
+                                    _gc_surplus = [
+                                        _f for _f in _gc_mod2.extract_required(
+                                            str(step_result or "")
+                                        )
+                                        if _gc_mod2._norm(_f)
+                                        not in _gc_req_norms
+                                    ][:2]
+                                    if _gc_surplus:
+                                        _gc_new = _gc_mod2.add_ceiling(
+                                            _gc_state["contract"], _gc_surplus
+                                        )
+                                        if _gc_new is not _gc_state["contract"]:
+                                            _gc_state["contract"] = _gc_new
+                                            _gc_state["task_record"].ceiling_facts = (
+                                                list(_gc_new.ceiling)
+                                            )
+                                            _gc_state[
+                                                "task_record"
+                                            ].contract_version = int(
+                                                _gc_new.version
+                                            )
+                                            _gc_c2 = _gc_state.get("counters") or {}
+                                            _gc_c2["amendments_agent"] = int(
+                                                _gc_c2.get("amendments_agent", 0)
+                                            ) + 1
+                                            _gc_state["counters"] = _gc_c2
+                                            logger.info(
+                                                "[goal-contract] agent ceiling "
+                                                "+%d (%s)",
+                                                len(_gc_surplus),
+                                                str(_gc_surplus[0])[:120],
+                                            )
+                            except Exception:
+                                pass
+                            logger.info(
+                                "[goal-contract] node settled: C=%.3f g=%.3f "
+                                "covered=%d required=%d blocked=%s",
+                                float(_gc_cov.C), float(_gc_cov.g),
+                                len(_gc_cov.covered), int(_gc_cov.required_n),
+                                [b for b in _gc_cov.blocked] or [],
+                            )
+                    except Exception as _gc_cov_exc:
+                        logger.debug(
+                            "[goal-contract] coverage mark skipped: %s",
+                            _gc_cov_exc,
+                        )
+                    # ── Goal contract T9 (REQ-5 AC5.1): a FAILED settle with
+                    # a terminal typed reason blocks the facts it was working
+                    # on. Advisory — non-terminal failures retry, never block.
+                    try:
+                        if str(_verified or "").upper() == "FAILED":
+                            _gc_reason = str(
+                                getattr(item, "error_type", "") or ""
+                            )
+                            if _gc_reason:
+                                self._goal_contract_block_facts(
+                                    item, _gc_reason, str(step_result or ""),
+                                )
+                    except Exception:
+                        pass
                     _rec.mediator = _mediator
                     _rec.mediator_source = _mediator_source
                     _rec.coords_to = _coords_to
@@ -16302,6 +16713,303 @@ Respond with a JSON object:
 
     # â”€â”€ Phase 3: explorer methods â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
+    def _goal_contract_open_facts(self) -> List[str]:
+        """Goal contract T6 (REQ-3 AC3.2/AC3.6): required facts neither covered
+        nor blocked. Advisory helper — empty when no contract exists."""
+        try:
+            _st = getattr(self, "_goal_contract_state", None)
+            if _st is None:
+                return []
+            _contract = _st.get("contract")
+            if _contract is None:
+                return []
+            _covered = {str(_c).strip().lower() for _c in _st.get("covered", [])}
+            _blocked = set()
+            try:
+                from backend.agent import goal_contract as _gc_mod3
+
+                for _bf in _st.get("blocked", []):
+                    if isinstance(_bf, dict):
+                        _blocked.add(str(_bf.get("fact", "")).strip().lower())
+                    else:
+                        _blocked.add(str(_bf).strip().lower())
+                _open = [
+                    str(_f) for _f in _contract.required
+                    if str(_f).strip().lower() not in _covered
+                    and str(_f).strip().lower() not in _blocked
+                ]
+                return _open
+            except Exception:
+                return [
+                    str(_f) for _f in _contract.required
+                    if str(_f).strip().lower() not in _covered
+                ]
+        except Exception:
+            return []
+
+    # ── Goal contract Wave 3 (T7/T8/T9/T10) ─────────────────────────────
+    # Advisory helpers: every path degrades to legacy behavior when no
+    # contract exists. Never raise, never block the turn.
+
+    def _goal_contract_block_facts(
+        self,
+        failed_item: object = None,
+        reason: str = "",
+        evidence: str = "",
+    ) -> List[str]:
+        """Mark uncovered facts a failed step was working on as blocked (T9).
+
+        REQ-5 AC5.1: only fires on a terminal typed Reason (via
+        goal_contract.is_blocked); non-terminal failures are retried, not
+        blocked. Blocked facts stay in the denominator (AC5.2, CT-GC7).
+        Returns the newly blocked fact texts.
+        """
+        try:
+            _st = getattr(self, "_goal_contract_state", None)
+            if _st is None:
+                return []
+            from backend.agent import goal_contract as _gc_mod4
+
+            _reason = str(reason or getattr(failed_item, "error_type", "") or "")
+            if not _gc_mod4.is_blocked(_reason):
+                return []
+            _open = self._goal_contract_open_facts()
+            if not _open:
+                return []
+            _step_text = " ".join([
+                str(getattr(failed_item, "description", "") or ""),
+                str(getattr(failed_item, "expected_output", "") or ""),
+                str(evidence or ""),
+            ])
+            _hits = list(_gc_mod4.step_fact_hits(_open, _step_text))
+            if not _hits:
+                # The failed step maps to no open fact — name the gap against
+                # the first open fact so the block is never silent.
+                _hits = [str(_open[0])]
+            _blocked = _st.get("blocked") or []
+            _have = set()
+            for _b in _blocked:
+                if isinstance(_b, dict):
+                    _have.add(str(_b.get("fact", "")).strip().lower())
+                else:
+                    _have.add(str(_b).strip().lower())
+            _new: List[str] = []
+            import time as _time_mod
+
+            for _h in _hits:
+                if str(_h).strip().lower() in _have:
+                    continue
+                _blocked.append({
+                    "fact": str(_h),
+                    "reason": _reason,
+                    "evidence": str(evidence or "")[:200],
+                })
+                _new.append(str(_h))
+                _have.add(str(_h).strip().lower())
+            _st["blocked"] = _blocked
+            try:
+                _counters = _st.get("counters") or {}
+                _counters["facts_blocked"] = len(_blocked)
+                _st["counters"] = _counters
+            except Exception:
+                pass
+            _task_rec = _st.get("task_record")
+            if _task_rec is not None:
+                try:
+                    _task_rec.blocked_facts = list(_blocked)
+                except Exception:
+                    pass
+            for _h in _new:
+                logger.info(
+                    "[goal-contract] fact blocked (%s): %r",
+                    _reason, _h[:160],
+                )
+            return _new
+        except Exception as _blk_exc:
+            logger.debug("[goal-contract] block skipped: %s", _blk_exc)
+            return []
+
+    def _goal_contract_blocked_texts(self) -> List[str]:
+        """Blocked fact texts for grade + naming (T9/T10)."""
+        try:
+            _st = getattr(self, "_goal_contract_state", None)
+            if _st is None:
+                return []
+            _out: List[str] = []
+            for _b in _st.get("blocked", []) or []:
+                if isinstance(_b, dict):
+                    _out.append(str(_b.get("fact", "")))
+                else:
+                    _out.append(str(_b))
+            return [str(_f) for _f in _out if str(_f).strip()]
+        except Exception:
+            return []
+
+    def _goal_contract_name_blocked(self, answer: str) -> str:
+        """T9 AC5.3/AC5.4: the final answer names every blocked fact.
+
+        When blocked facts exist and the answer does not already name all
+        of them, the deterministic blocked-fact summary is the floor — the
+        naming block is appended so every blocked fact is explicit. Returns
+        the answer unchanged when nothing is blocked or all are named.
+        Advisory: never raises.
+        """
+        try:
+            _blocked = self._goal_contract_blocked_texts()
+            if not _blocked or not (answer or "").strip():
+                return answer
+            from backend.agent import goal_contract as _gc_mod6
+
+            _unnamed = [
+                _f for _f in _blocked
+                if not _gc_mod6.step_fact_hits((_f,), answer or "")
+            ]
+            if not _unnamed:
+                return answer
+            _lines = "\n".join(f"- {_f}" for _f in _blocked)
+            _suffix = (
+                "\n\nParts of your request I could not cover "
+                "(blocked — not skipped):\n" + _lines
+            )
+            logger.info(
+                "[goal-contract] named %d blocked fact(s) in final answer "
+                "(%d were unnamed)", len(_blocked), len(_unnamed),
+            )
+            return str(answer or "") + _suffix
+        except Exception:
+            return answer
+
+    def _goal_contract_apply_steering(self, text: str) -> bool:
+        """Route user steering through amend (T7, REQ-4 AC4.1/AC4.6/AC4.7).
+
+        Amends the task node's required set in place — add, remove, or
+        repromote — without creating a second task. Writes the forward
+        amendment node (derives_from, T8) and logs who/when/why (AC7.3).
+        Returns True when the contract changed.
+        """
+        try:
+            _st = getattr(self, "_goal_contract_state", None)
+            if _st is None or not (text or "").strip():
+                return False
+            from backend.agent import goal_contract as _gc_mod5
+
+            _parsed = _gc_mod5.parse_steering_amendment(
+                text,
+                list(_st["contract"].required),
+                self._goal_contract_blocked_texts(),
+            )
+            if not any(_parsed.values()):
+                return False
+            import time as _time_mod2
+
+            _old = _st["contract"]
+            _new = _old
+            # Repromote: drop the blocked entry so the fact is open again.
+            _repromoted: List[str] = []
+            for _rp in _parsed.get("repromote", ()):
+                _keys = {_b["fact"].strip().lower() for _b in _st.get("blocked", [])
+                         if isinstance(_b, dict)}
+                _kept = [
+                    _b for _b in _st.get("blocked", [])
+                    if not (isinstance(_b, dict)
+                            and _b.get("fact", "").strip().lower()
+                            == str(_rp).strip().lower())
+                ]
+                if len(_kept) != len(_st.get("blocked", [])):
+                    _st["blocked"] = _kept
+                    _repromoted.append(str(_rp))
+            if _parsed.get("add") or _parsed.get("remove"):
+                _new = _gc_mod5.amend(
+                    _old, add=_parsed.get("add", ()),
+                    remove=_parsed.get("remove", ()),
+                    source="user", reason=str(text)[:200],
+                )
+            if _new is _old and not _repromoted:
+                return False
+            _from_v = int(_old.version)
+            _st["contract"] = _new
+            _st["task_record"].required_facts = list(_new.required)
+            _st["task_record"].contract_version = int(_new.version)
+            # Forward amendment node (T8): who/when/why + version pair.
+            _entry = {
+                "who": "user",
+                "when": _time_mod2.time(),
+                "why": str(text)[:200],
+                "add": list(_parsed.get("add", ())),
+                "remove": list(_parsed.get("remove", ())),
+                "repromote": list(_repromoted),
+                "version_from": _from_v,
+                "version_to": int(_new.version),
+            }
+            _st.setdefault("amendments", []).append(_entry)
+            try:
+                _counters2 = _st.get("counters") or {}
+                _counters2["amendments_user"] = int(
+                    _counters2.get("amendments_user", 0)) + 1
+                _st["counters"] = _counters2
+            except Exception:
+                pass
+            try:
+                _writer = getattr(self, "_der_links", None)
+                if _writer is not None:
+                    _writer.link_derives_from(
+                        f"contract-v{int(_new.version)}",
+                        f"contract-v{_from_v}",
+                    )
+            except Exception:
+                pass
+            logger.info(
+                "[goal-contract] amendment by user: +%d -%d repromote=%d "
+                "v%d->v%d (%s)",
+                len(_parsed.get("add", ())), len(_parsed.get("remove", ())),
+                len(_repromoted), _from_v, int(_new.version),
+                str(text)[:120],
+            )
+            return True
+        except Exception as _am_exc:
+            logger.debug("[goal-contract] steering amend skipped: %s", _am_exc)
+            return False
+
+    def _goal_contract_bonus_pass(self) -> Optional[Dict[str, str]]:
+        """REQ-3 AC3.5: one bounded bonus pass over ceiling facts at C=1.0.
+
+        Returns a goal-only continuation dict when the turn reached full
+        floor coverage with uncovered ceiling facts and no bonus pass has
+        run yet this turn; None otherwise. Advisory, never raises. The
+        counter (REQ-7 AC7.2) is incremented here so every increment has
+        exactly one writer.
+        """
+        try:
+            _st = getattr(self, "_goal_contract_state", None)
+            if _st is None:
+                return None
+            _counters = _st.get("counters") or {}
+            if abs(float(_st.get("C", 0.0)) - 1.0) >= 1e-9:
+                return None
+            if int(_counters.get("bonus_passes", 0)) != 0:
+                return None
+            _covered_now = {
+                str(_c).strip().lower() for _c in _st.get("covered", [])
+            }
+            _open = [
+                str(_f) for _f in (_st["contract"].ceiling or ())
+                if str(_f).strip().lower() not in _covered_now
+            ]
+            if not _open:
+                return None
+            _counters["bonus_passes"] = 1
+            _st["counters"] = _counters
+            logger.info(
+                "[goal-contract] bonus pass over %d ceiling fact(s): %r",
+                len(_open), str(_open[0])[:160],
+            )
+            return {"description": (
+                "Bonus pass over an extra discovery: "
+                f"{str(_open[0])[:300]}"
+            )}
+        except Exception:
+            return None
+
     def _der_plan_next_step(
         self,
         task_objective: str,
@@ -16377,9 +17085,28 @@ Respond with a JSON object:
             except Exception:
                 _visited_next = ""
             _visited_tail = f"{_visited_next}\n\n" if _visited_next else ""
+            # Goal contract T6 (REQ-3 AC3.2/AC3.6): the deterministic gap
+            # check rides with the replan hook. Open (uncovered, unblocked)
+            # required facts go into the prompt so the planner sees them, and
+            # an LLM "done" with open facts still requests work instead of
+            # finalizing. Advisory — absent contract = legacy behavior.
+            _gc_open: List[str] = []
+            try:
+                _gc_open = self._goal_contract_open_facts()
+            except Exception:
+                _gc_open = []
+            _gc_open_block = ""
+            if _gc_open:
+                _gc_open_block = (
+                    "OPEN REQUIRED FACTS (uncovered, unblocked — the turn "
+                    "must not end while any remains and work is admissible):\n"
+                    + "\n".join(f"  - {_f[:200]}" for _f in _gc_open[:8])
+                    + "\n\n"
+                )
             prompt = (
                 "You are the Explorer. Your job is to decide if more work is needed.\n\n"
                 f"OBJECTIVE: {task_objective}\n\n"
+                f"{_gc_open_block}"
                 f"STEPS COMPLETED ({len(completed_items)} total):\n{done_summary}\n\n"
                 f"ACTUAL STEP OUTPUTS (what each completed step returned):\n"
                 f"{outputs_block}\n\n"
@@ -16407,6 +17134,32 @@ Respond with a JSON object:
 
             data = _json.loads(m.group())
             if data.get("done") is True:
+                # Goal contract T6 (REQ-3 AC3.6): the turn SHALL NOT end while
+                # a required fact is open and unblocked — request work on the
+                # first open fact instead of honoring the LLM's done.
+                try:
+                    _gc_open_now = self._goal_contract_open_facts()
+                except Exception:
+                    _gc_open_now = []
+                if _gc_open_now:
+                    logger.info(
+                        "[goal-contract] gap open (%d facts) — requesting "
+                        "work instead of finalizing: %r",
+                        len(_gc_open_now), str(_gc_open_now[0])[:160],
+                    )
+                    return {"description": (
+                        f"Cover the open required fact: "
+                        f"{str(_gc_open_now[0])[:300]}"
+                    )}
+                # REQ-3 AC3.5: C reached 1.0 — permit ONE bounded bonus pass
+                # over ceiling facts, then terminate (helper owns the
+                # counter so every increment has exactly one writer).
+                try:
+                    _gc_bonus = self._goal_contract_bonus_pass()
+                except Exception:
+                    _gc_bonus = None
+                if _gc_bonus is not None:
+                    return _gc_bonus
                 # AC5.6: done+GRADE via the shared helper (deduped by turn —
                 # the finalize-complete site may have reported first, T19).
                 try:

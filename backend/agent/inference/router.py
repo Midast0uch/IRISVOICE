@@ -912,6 +912,7 @@ class InferenceRouter:
         temperature: float = 0.6,
         chunk_callback: Optional[Callable[[str], None]] = None,
         reasoning_callback: Optional[Callable[[str], None]] = None,
+        timeout_s: Optional[float] = None,
         **kwargs: Any,
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         """Generate a response for the given *role*.
@@ -989,6 +990,7 @@ class InferenceRouter:
             temperature=temperature,
             chunk_callback=chunk_callback,
             reasoning_callback=reasoning_callback,
+            timeout_s=timeout_s,
         )
 
         # Remap sanitized tool names back to the originals (see above) so

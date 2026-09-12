@@ -266,9 +266,60 @@ DER_COUPLING_PROVENANCE_MAX = 5
 # EML explore-pressure bands (REQ-17 / REQ-17 AC5)
 # Shared source of truth for continuous explore-pressure function and
 # cognitive-state phase label in agent_kernel.py. These match the old
-# discrete thresholds: EXPLORE at >= 1.5, VERIFY at < 1.0, BALANCE in between.
+# discrete thresholds: EXPAND at >= 1.5, VERIFY at < 1.0, BALANCE in between.
 EML_EXPLORE = 1.5
 EML_VERIFY = 1.0
+
+
+# ── Tool-result envelope: streak + grade constants (specs/tool-result-envelope,
+#    REQ-5 / REQ-3; design.md Data Models) ────────────────────────────────────
+# Constants-ONLY tuning per REQ-7 — thresholds are tuned from the REQ-7
+# counters after the first live run, never by editing logic.
+
+# Consecutive repeat/empty/mismatch wrappers before the replan gate fires.
+STUCK_STREAK_N = 2
+# Consecutive success+new+matched steps with an unmoved verified_fraction
+# (idling-in-neutral) before the gate fires.
+IDLE_STREAK_N = 2
+# Any load-bearing step with match != matched caps the run below full pass
+# (AC5.6) — the load-bearing veto on run grade.
+LOAD_BEARING_VETO = True
+
+
+# ── Tool-result envelope Wave 5: ledger + deadlines (specs/tool-result-envelope,
+#    REQ-8..REQ-12; design.md amendment Data Models) ──────────────────────────
+# Constants-ONLY tuning — all starting points UNVERIFIED, tuned from the
+# REQ-12 counters after the first live re-probe, never by editing logic.
+
+# Max URLs stamped per envelope (REQ-8 AC8.1) and rendered in the VISITED
+# prompt block (REQ-8 AC8.2). Refusal/exclusion logic always uses the FULL
+# in-memory set — these caps bound the envelope and the render only.
+SOURCES_MAX = 8
+LEDGER_PROMPT_MAX = 20
+# Per-family dispatch deadlines in seconds (REQ-11 AC11.1). Crawl default
+# sits above the conv-102 observed 82-110s max.
+DEADLINE_CRAWL_S = 150
+DEADLINE_READ_S = 60
+DEADLINE_DEFAULT_S = 90
+# Heartbeat stall → warning log only; the deadline alone aborts (AC11.2).
+STALL_WARN_S = 30
+# VLM in-site recovery lane (REQ-9 AC9.5/AC9.7, session-319). The lane is
+# bounded by the AGENT'S OWN sufficiency judgement plus its own deadline (the
+# recovery step inherits the crawl-family deadline above), NOT by a page cap.
+# RECOVERY_PAGE_BUDGET is a RUNAWAY SAFETY NET only -- it exists so a
+# pathological site cannot crawl forever, not as the operating limit. The
+# session-318 operating cap of 5 was too tight to gather anything useful.
+RECOVERY_PAGE_BUDGET = 25
+# RECOVERY_DEPTH was defined here in session-318 and consumed NOWHERE -- the
+# depth limit never existed (verified: grep found only this definition). Retired
+# rather than left as a constant that does nothing (AC9.7). Do not reintroduce
+# without an enforcing call site.
+
+# Final-synthesis deadline (REQ-11 AC11.6, session-319). The user-facing answer
+# was the only unbounded wait in the turn: `_synthesize_response` called
+# router.generate with no timeout, and the transport retried 3x60s beneath it.
+# This is a SAFETY NET behind streaming, not the primary speed mechanism.
+DEADLINE_SYNTHESIS_S = 120
 
 
 # ── REQ-5: depth check on VERIFIED-but-shallow steps ───────────────────────
@@ -298,6 +349,22 @@ DEPTH_EXCLUDED_TASK_CLASSES = ("question", "greeting", "simple_command")
 # multi-part task. Deliberately loose (see rationale above); tighten only
 # once real post-Phase-4 label data justifies a stricter cut (OQ-1).
 EXPECTED_DEPTH_MIN_TOKENS = 400
+
+
+# ── Goal contract & DAG coverage (specs/goal-contract-coverage, T3; REQ-3/REQ-7)
+# Constants-ONLY tuning — all starting points UNVERIFIED, tuned from the
+# REQ-7 counters after the first live run, never by editing logic.
+
+# Max required (floor) facts on one task contract (REQ-1 AC1.5).
+GOAL_REQUIRED_FACTS_CAP = 12
+# Max agent-discovered (ceiling) facts (REQ-4 AC4.2).
+GOAL_CEILING_CAP = 8
+# Stall line for the dimensionless progress ratio rho = dC/(g*ds) (REQ-3
+# AC3.4). Below this the run is idling and must try_different/replan.
+# Retires GOAL_STALL_N (a count is blind to work cost and gap size).
+GOAL_STALL_RATE = 0.05
+# Gain of the goal-gap forcing term on the cognitive u (KD-3).
+GOAL_FORCING_GAIN = 0.5
 
 
 def is_shallow_verified(

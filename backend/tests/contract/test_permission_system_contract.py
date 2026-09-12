@@ -86,36 +86,55 @@ class TestClassifyTool:
 
 
 class TestPermissionAction:
-    def test_personal_read_only_auto_approves(self):
-        assert get_permission_action(PermissionTier.READ_ONLY, "personal") == PermissionAction.AUTO_APPROVE
+    """Goal-contract T18 (REQ-9 AC9.4, KD-12): CONSENT comes from the
+    Auto-approve toggle; MODE no longer decides approval. The old matrix
+    (personal auto-approves SIDE_EFFECT, developer requires confirmation)
+    is superseded by the explicit toggle."""
 
-    def test_personal_side_effect_auto_approves(self):
-        assert get_permission_action(PermissionTier.SIDE_EFFECT, "personal") == PermissionAction.AUTO_APPROVE
+    def test_toggle_off_read_only_auto_approves(self):
+        assert get_permission_action(
+            PermissionTier.READ_ONLY, auto_approve=False
+        ) == PermissionAction.AUTO_APPROVE
 
-    def test_personal_destructive_requires_approval(self):
-        assert get_permission_action(PermissionTier.DESTRUCTIVE, "personal") == PermissionAction.REQUIRE_APPROVAL
+    def test_toggle_off_side_effect_requires_approval(self):
+        assert get_permission_action(
+            PermissionTier.SIDE_EFFECT, auto_approve=False
+        ) == PermissionAction.REQUIRE_APPROVAL
 
-    def test_developer_read_only_auto_approves(self):
-        assert get_permission_action(PermissionTier.READ_ONLY, "developer") == PermissionAction.AUTO_APPROVE
+    def test_toggle_off_destructive_requires_approval(self):
+        assert get_permission_action(
+            PermissionTier.DESTRUCTIVE, auto_approve=False
+        ) == PermissionAction.REQUIRE_APPROVAL
 
-    def test_developer_side_effect_requires_approval(self):
-        assert get_permission_action(PermissionTier.SIDE_EFFECT, "developer") == PermissionAction.REQUIRE_APPROVAL
+    def test_toggle_on_side_effect_auto_approves(self):
+        assert get_permission_action(
+            PermissionTier.SIDE_EFFECT, auto_approve=True
+        ) == PermissionAction.AUTO_APPROVE
 
-    def test_developer_destructive_requires_confirmation(self):
-        assert get_permission_action(PermissionTier.DESTRUCTIVE, "developer") == PermissionAction.REQUIRE_CONFIRMATION
+    def test_toggle_on_read_only_auto_approves(self):
+        assert get_permission_action(
+            PermissionTier.READ_ONLY, auto_approve=True
+        ) == PermissionAction.AUTO_APPROVE
 
-    def test_personal_vs_developer_read_only(self):
-        """Both personal and developer auto-approve read-only."""
-        assert get_permission_action(PermissionTier.READ_ONLY, "personal") == get_permission_action(
-            PermissionTier.READ_ONLY, "developer"
-        )
+    def test_toggle_on_destructive_still_gated(self):
+        """AC9.4/AC9.6: the DESTRUCTIVE tier stays gated in BOTH toggle
+        states — the toggle never opens a destructive path."""
+        assert get_permission_action(
+            PermissionTier.DESTRUCTIVE, auto_approve=True
+        ) == PermissionAction.REQUIRE_CONFIRMATION
+        assert get_permission_action(
+            PermissionTier.DESTRUCTIVE, auto_approve=False
+        ) == PermissionAction.REQUIRE_APPROVAL
 
-    def test_personal_vs_developer_destructive(self):
-        """Personal requires approval, developer requires confirmation."""
-        personal = get_permission_action(PermissionTier.DESTRUCTIVE, "personal")
-        developer = get_permission_action(PermissionTier.DESTRUCTIVE, "developer")
-        assert personal != developer
-        assert developer == PermissionAction.REQUIRE_CONFIRMATION
+    def test_mode_does_not_decide_approval(self):
+        """KD-12: mode governs capability only. Passing a mode string with
+        no toggle leaves the consent default (OFF, fail closed) in force."""
+        assert get_permission_action(
+            PermissionTier.SIDE_EFFECT, "personal"
+        ) == get_permission_action(PermissionTier.SIDE_EFFECT, "developer")
+        assert get_permission_action(
+            PermissionTier.SIDE_EFFECT, "personal"
+        ) == PermissionAction.REQUIRE_APPROVAL
 
 
 # ── ToolPermissionRequest tests ────────────────────────────────────────────
@@ -202,11 +221,26 @@ class TestPermissionSystem:
         assert resolved.status == "timed_out"
 
     def test_auto_approve_sets_timeout_correctly(self):
+        """The pending wait uses the side-effect timeout constant (raised to
+        120 s in session 247 so a human can notice, read, and click)."""
+        from backend.agent.permissions import PERMISSION_TIMEOUT_SIDE_EFFECT
+
         system = ToolPermissionSystem()
-        req = system.request_permission("write_file", PermissionTier.SIDE_EFFECT, level="developer")
-        assert req.timeout_seconds == 30
+        req = system.request_permission(
+            "write_file", PermissionTier.SIDE_EFFECT, auto_approve=False
+        )
+        assert req.timeout_seconds == PERMISSION_TIMEOUT_SIDE_EFFECT
 
     def test_destructive_timeout_longer(self):
+        """Destructive keeps the tighter-but-longer window (180 s)."""
+        from backend.agent.permissions import (
+            PERMISSION_TIMEOUT_DESTRUCTIVE,
+            PERMISSION_TIMEOUT_SIDE_EFFECT,
+        )
+
         system = ToolPermissionSystem()
-        req = system.request_permission("delete_file", PermissionTier.DESTRUCTIVE, level="developer")
-        assert req.timeout_seconds == 60
+        req = system.request_permission(
+            "delete_file", PermissionTier.DESTRUCTIVE, auto_approve=True
+        )
+        assert req.timeout_seconds == PERMISSION_TIMEOUT_DESTRUCTIVE
+        assert PERMISSION_TIMEOUT_DESTRUCTIVE >= PERMISSION_TIMEOUT_SIDE_EFFECT

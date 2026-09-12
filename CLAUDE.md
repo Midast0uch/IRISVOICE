@@ -432,6 +432,25 @@ Keep responses SHORT. No paragraphs of explanation.
   - Do not re-explain something already said.
   - Format: what the problem was / what was fixed. A few lines, not an essay.
 
+EXPLAIN IN PLAIN TERMS FIRST (user preference, 2026-09-10)
+
+The user is technical. The user accepts technical language. But the user must
+understand the idea BEFORE the technical terms start.
+
+  - Explain the idea in plain words first. Give the technical detail second.
+  - Use an everyday analogy for a design choice, a bug, or a trade-off. The user
+    must be able to picture the situation. If the user cannot picture it, the
+    explanation failed.
+  - Do NOT open with file names, line numbers, or code identifiers. Use those as
+    proof, not as the explanation.
+  - Do NOT remove the technical detail. The user needs the plain version AND the
+    technical version.
+
+NOTE — THIS CHANGES ONE RULE ABOVE. The rule "Do not use slang, idiom, metaphor,
+or humour" is RELAXED for explanation only. An analogy is now REQUIRED when it
+helps the user understand. All other STE rules stay: short sentences, active
+voice, one word for one meaning, lists for related items.
+
 JUST FIX IT — do not ask permission for a fix that is clearly correct.
 Ask ONLY when a real decision is needed (two valid approaches with different
 consequences). One short question, options listed, no essay around it.

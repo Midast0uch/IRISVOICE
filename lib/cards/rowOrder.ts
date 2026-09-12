@@ -45,9 +45,23 @@ export function allRowsKeyed(rows: readonly OrderableRow[]): boolean {
   return rows.every((r) => orderKey(r) !== Number.MAX_SAFE_INTEGER)
 }
 
-/** Statuses that mean the row is finished, whatever vocabulary produced it. */
-const TERMINAL = new Set(["done", "crystallized", "rerouted", "failed", "skipped"])
-const WORKING = new Set(["working", "running"])
+/**
+ * Statuses that mean the row is finished, whatever vocabulary produced it.
+ * Session 312 (user-directed 2026-09-09): the frontend settles rows as
+ * "fail"/"error" while the backend records "failed" — both spellings count,
+ * otherwise failed rows could never advance the counter (live conv-98 where
+ * three red rows settled but counted for nothing). "vetoed" stays out:
+ * rejected work is not settled progress.
+ */
+const TERMINAL = new Set([
+  "done",
+  "crystallized",
+  "rerouted",
+  "failed",
+  "fail",
+  "error",
+  "skipped",
+])
 
 /**
  * The progress pair — numerator and denominator from the SAME row collection,
@@ -58,6 +72,12 @@ const WORKING = new Set(["working", "running"])
  * alone. Because that same value drives the XurOrb ring, the counter and the
  * ring drifted from the list together.
  *
+ * The numerator is SETTLED rows, always (Session 312, user-directed
+ * 2026-09-09): every verb-row is a step and the counter advances only when a
+ * row settles. The previous reading — the working row's position while
+ * anything was in flight — is gone; WHERE work is shows on the glowing
+ * working row + timer, while the counter shows what SETTLED.
+ *
  * `floor` carries a previously-seen denominator so it can never SHRINK as work
  * is discovered (REQ-18 AC6).
  */
@@ -66,11 +86,7 @@ export function deriveProgress(
   floor = 0,
 ): { currentStep: number; totalSteps: number } {
   const totalSteps = Math.max(floor, rows.length)
-  const workingIdx = rows.findIndex((r) => WORKING.has(String(r.status)))
-  const raw =
-    workingIdx >= 0
-      ? workingIdx + 1
-      : rows.filter((r) => TERMINAL.has(String(r.status))).length
+  const raw = rows.filter((r) => TERMINAL.has(String(r.status))).length
   // REQ-18 AC4: the numerator can never exceed the denominator.
   return { currentStep: Math.min(raw, totalSteps), totalSteps }
 }

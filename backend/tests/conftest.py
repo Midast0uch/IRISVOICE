@@ -225,3 +225,22 @@ def _search_provider_isolation(monkeypatch):
     monkeypatch.setattr(_sp_mod, "_provider_instance", LLMSearchProvider())
     yield
     monkeypatch.setattr(_sp_mod, "_provider_instance", None)
+
+
+# ── Approval-UI precondition for permission tests (goal-contract T15) ────────
+#
+# REQ-9 AC9.5 (specs/goal-contract-coverage): when NO approval UI is attached
+# the bridge now fail-fasts with APPROVAL_UNAVAILABLE instead of waiting out
+# the permission timeout. The permission suites below were written against the
+# old world, where the gate always waited — their subject is the APPROVAL FLOW
+# (deny blocks / approve runs / timeout denies), not the no-UI fail-fast. This
+# fixture restores their precondition (an attached approval UI) so they keep
+# testing what they were written to test; the no-UI path is pinned separately
+# by BT-GC6 in backend/tests/behavioral/test_goal_contract_coverage.py.
+@_pytest.fixture
+def approval_ui_attached(monkeypatch):
+    """Simulate a live approval UI for the session (REQ-12 AC12.1)."""
+    from backend.agent import tool_bridge as _tb
+
+    monkeypatch.setattr(_tb, "_approval_ui_attached", lambda _sid: True)
+    yield

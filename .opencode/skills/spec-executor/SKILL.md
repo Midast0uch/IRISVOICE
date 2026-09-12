@@ -102,13 +102,19 @@ Rules:
 2. Read `design.md` fully. Note: architecture, mermaid diagrams, Key Decisions
    (D1..Dn), UX/UI/Audio Layer Map, Resilient Transport, Verification Strategy
    (4 tiers). These decisions OVERRIDE any tempting shortcut.
-3. Read `tasks.md` fully. Note the waves and each task's `(REQ-x, REQ-y)` links.
-   4. Cross-check: every REQ in requirements.md should be covered by ≥1 task; every
-    task should link to ≥1 REQ. If a gap exists, note it but do NOT silently skip —
-    flag it to the user. If the spec was just crafted (Phase -1), confirm the
-    REAL-GAP / ALREADY-FIXED / STALE classifications were resolved and the user's
-    decision gates were locked into the requirements. ALSO re-open the Phase -1.0
-    `grounding.md` table and confirm every symbol named in the spec still matches
+3. Read `tasks.md` fully. Note the waves, each task's `(REQ-x, REQ-y)` links,
+   the Traceability Matrix (every AC → covering task + proving test), and the
+   per-wave gate tasks (TG-1, TG-2, …).
+   4. Cross-check (BLOCKING, at AC granularity — not advisory): build the
+    REQ → AC map from requirements.md and verify EVERY AC appears in the
+    matrix as covered or explicitly deferred.
+    - Unmapped AC (no task, no deferral) → STOP. Add the missing task, narrow
+      the AC with user approval, or record an explicit deferral (reason +
+      owner). Do NOT start Phase 2 with unmapped ACs — "flag it and continue"
+      is how AC21.3-class gaps reach production modeled-but-unwired.
+    - Deferred AC → confirm the deferral names a reason and owner; carry it
+      into the closeout ledger so it stays visible, never silent.
+    - ALSO re-open the Phase -1.0 `grounding.md` table and confirm every symbol named in the spec still matches
     its `file:line` evidence (no BLUEPRINT-DIVERGENT rows remain).
 
 ### Phase 1 — Build the execution ledger
@@ -117,13 +123,26 @@ Rules:
 - Identify cross-layer/seam tasks (those touching ≥2 layers) — these need the
   Tier 3/4 verification from design.md, not just unit tests.
 
-### Phase 2 — Execute wave by wave
+### Phase 2 — Execute wave by wave, gated
 - Do waves IN ORDER (Wave 1 before Wave 2, etc.) because later waves depend on
   earlier ones.
+- WAVE GATE (BLOCKING): after each wave's tasks, run its gate task (TG-n):
+  re-run every proving test named in the matrix rows for that wave's REQs and
+  record green/red PER AC. The next wave MUST NOT start while the gate is red,
+  unless the user explicitly overrides (recorded in Decisions Locked with the
+  reason). Ten green tasks mean nothing if one AC has no proving test — the
+  gate checks ACs, not task checkboxes. If the spec has no gate tasks (older
+  specs), create them from the matrix before starting Wave 1.
 - Within a wave, tasks may run in parallel IF they touch disjoint files AND no
   task edits a file another task in the same wave edits. Otherwise serialize.
+- Honor wave scope on Ripple-Effect Map rows: a row scoped to a later wave (e.g.
+  "NO CHANGE in Waves 1–3, CHANGE NEEDED in Wave 4") is hands-off until that
+  wave. Re-read the row before touching any file it names — a stale reading is
+  how early waves trample later waves' assumptions.
 - For EACH task:
   1. `navigate(file)` (MCM) before editing — respect topology/confidence.
+     If the task touches a CONTRACT LOCK ripple row, run its pinning tests
+     BEFORE editing too — distinguishes "was already broken" from "I broke it."
   2. Implement to satisfy the linked REQ's acceptance criteria EXACTLY (EARS is the
      requirement; do not write code to match a weaker interpretation).
   3. Honor the design.md decision for that area (e.g. if D4 says "one atomic tool",
@@ -160,7 +179,12 @@ Rules:
      and `pin_add(title='<feature>:<req>', type='decision', content='what held')`.
   7. On test FAIL: fix the CODE, not the test (the test is the requirement). After
      fix, re-run. If a design decision is wrong, STOP and ask the user — do not
-     mutate requirements.md silently.
+     mutate requirements.md silently. If the user approves a spec change, apply
+     the kiro-spec-writer Amendment Protocol (triplet rule: requirement text +
+     matrix row + ripple impact in the same pass, plus the mechanical
+     verification) — an approved edit that skips it reintroduces exactly the
+     drift Phase 0 guards against. Then re-run the Phase 0 cross-check before
+     continuing to the next task.
 
 ### Phase 3 — Verify the whole feature (not just tasks)
 - After the last wave, confirm EVERY REQ in requirements.md has ≥1 passing test
@@ -168,6 +192,9 @@ Rules:
   before declaring done.
 - Confirm the design.md Verification Strategy tiers are all represented.
 - Run the project's existing suite (pytest / npm test / tsc) to catch regressions.
+- Close out the Traceability Matrix: flip every row from projected to proven
+  (proving test name + pass), with deferred rows still showing reason + owner.
+  A spec is NOT complete while any row is neither proven nor explicitly deferred.
 
 ### Phase 4 — Record & crystallize
 - `define_feature(name='<feature>', seed_files=[...], thread_id='<session>')`  — note: no `mcm_` prefix.
@@ -177,14 +204,21 @@ Rules:
 ## Hard rules
 - NEVER modify requirements.md or design.md to make code pass. If reality contradicts
   the spec, STOP and surface it. The spec is the contract; code conforms to it.
+- Non-Requirements are hard boundaries. If the work seems to require touching an
+  excluded area, STOP and surface it — do not widen scope to make the task
+  convenient. Quietly widening the bound destroys the evidence the task was scoped
+  wrong, same as quietly weakening a test.
 - NEVER hit live web in Tier 1–3 tests. Mock the fetch engine.
 - A task is NOT done because tasks.md says so — it is done when its REQ's EARS
   criteria are proven by a passing test.
+- NO wave starts while the prior wave's gate (TG-n) is red, unless the user
+  explicitly overrides with a recorded reason. Unmapped ACs block Phase 2 start.
 - Respect DER blueprint invariants (single operator, `u/ξ` physics, `ExecutionMode`
   display-only, narration lock) — these are non-negotiable constraints from
   design.md Context, not optional.
 
 ## Output to user
-After each wave: one-line status per task (done / blocked / flagged). After Phase 3:
-a REQ-coverage table (REQ-ID → test tier → pass). After Phase 4: confirmation of
-crystallization.
+After each wave: one-line status per task (done / blocked / flagged) PLUS the
+gate verdict (TG-n green/red per AC). After Phase 3: a REQ×AC coverage ledger
+(REQ-ID → AC → proving test → pass, plus deferred-with-reason rows). After
+Phase 4: confirmation of crystallization.

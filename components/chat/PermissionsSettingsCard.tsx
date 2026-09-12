@@ -13,6 +13,7 @@ export interface PermissionsConfig {
   effective_mode: PermissionMode
   approved_tools: string[]
   available_tools: string[]
+  auto_approve: boolean
 }
 
 interface PermissionsSettingsCardProps {
@@ -27,7 +28,8 @@ const MODE_LABEL: Record<PermissionMode, string> = {
 
 /**
  * PermissionsSettingsCard — the standing permission-mode + approved-tools
- * settings surface (REQ-19 AC3/AC5, REQ-16 AC2). Rendered on the shared
+ * settings surface (REQ-19 AC3/AC5, REQ-16 AC2) plus the Auto-approve consent
+ * toggle (goal-contract T19, REQ-12 AC12.4). Rendered on the shared
  * Liquid Ink `CardChassis` so it reads as part of the same chat-stream system
  * as the per-tool `PermissionCard` (which this card is NOT — that one is the
  * inline per-request approval prompt; this is the settings surface).
@@ -35,7 +37,9 @@ const MODE_LABEL: Record<PermissionMode, string> = {
  * The card always displays the EFFECTIVE mode (REQ-16 AC2) — the truthful
  * current mode returned by the backend — not merely the stored `mode`. After
  * any toggle it re-fetches `/api/config` so the effective mode and approved
- * tools update IMMEDIATELY (REQ-19 AC5).
+ * tools update IMMEDIATELY (REQ-19 AC5). Mode governs CAPABILITY only
+ * (which tools exist); Auto-approve governs CONSENT (whether it asks
+ * first) — destructive tools stay gated even when ON.
  */
 export function PermissionsSettingsCard({
   configUrl = "/api/config",
@@ -49,6 +53,7 @@ export function PermissionsSettingsCard({
   const [error, setError] = useState<string | null>(null)
   const [modeBusy, setModeBusy] = useState(false)
   const [toolsBusy, setToolsBusy] = useState(false)
+  const [autoBusy, setAutoBusy] = useState(false)
 
   const loadConfig = useCallback(async () => {
     setLoading(true)
@@ -116,6 +121,30 @@ export function PermissionsSettingsCard({
     },
     [toolsBusy, config, loadConfig],
   )
+
+  // Goal-contract T19 (REQ-12 AC12.4): the Auto-approve consent toggle —
+  // separate from mode/capability. ON: reads, writes, shell commands, and
+  // GUI actions auto-approve in both modes. DESTRUCTIVE tier and
+  // deletion/removal commands stay gated at all times, toggle or not.
+  const toggleAutoApprove = useCallback(async () => {
+    if (autoBusy || !config) return
+    const next = !config.auto_approve
+    setAutoBusy(true)
+    try {
+      const res = await fetch("/api/auto-approve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ auto_approve: next }),
+      })
+      if (!res.ok) throw new Error(`POST /api/auto-approve returned ${res.status}`)
+      // Re-fetch so the effective consent state reflects the persisted toggle.
+      await loadConfig()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to change auto-approve")
+    } finally {
+      setAutoBusy(false)
+    }
+  }, [autoBusy, config, loadConfig])
 
   const effectiveMode = config?.effective_mode ?? null
   const approvedSet = new Set(config?.approved_tools ?? [])
@@ -211,6 +240,41 @@ export function PermissionsSettingsCard({
                 </button>
               )
             })}
+          </div>
+
+          {/* Auto-approve consent toggle — goal-contract T19 (REQ-12 AC12.4).
+              Separate from mode/capability: ON auto-approves reads, writes,
+              shell commands, and GUI actions in both modes; DESTRUCTIVE tier
+              and deletion/removal commands stay gated at all times. */}
+          <div className="flex flex-col gap-1">
+            <button
+              type="button"
+              disabled={autoBusy}
+              onClick={toggleAutoApprove}
+              className="flex items-center gap-2 px-2 py-1.5 rounded-md transition-colors disabled:opacity-50 hover:bg-white/5"
+              style={{ border: `1px solid ${config.auto_approve ? `${glowColor}40` : "rgba(255,255,255,0.08)"}` }}
+              aria-pressed={config.auto_approve}
+              data-testid="auto-approve-toggle"
+            >
+              <span
+                className="w-3.5 h-3.5 rounded flex items-center justify-center shrink-0 transition-colors"
+                style={{
+                  background: config.auto_approve ? glowColor : "rgba(255,255,255,0.08)",
+                  border: `1px solid ${config.auto_approve ? glowColor : "rgba(255,255,255,0.2)"}`,
+                }}
+              >
+                {config.auto_approve && <Check size={9} style={{ color: "#05060c" }} />}
+              </span>
+              <span className="text-[10px] font-semibold" style={{ color: "rgba(255,255,255,0.85)" }}>
+                Auto-approve
+              </span>
+              <span className="text-[9px] ml-auto" style={{ color: "rgba(255,255,255,0.4)" }}>
+                {config.auto_approve ? "ON — reads, writes, shell auto-run" : "OFF — writes and shell ask"}
+              </span>
+            </button>
+            <p className="text-[9px]" style={{ color: "rgba(255,255,255,0.35)" }}>
+              Destructive and deletion commands always ask, even when ON.
+            </p>
           </div>
 
           {/* Standing approved-tools list. */}

@@ -162,6 +162,33 @@ class DerLinkWriter:
             logger.debug("[der_links] relevant_to link failed: %s", exc)
             return False
 
+    def link_derives_from(self, new_step_id: str, prior_step_id: str) -> bool:
+        """Goal-contract forward amendment (specs/goal-contract-coverage T8).
+
+        Canonical direction: source=new contract state, target=prior (frozen)
+        state, predicate ``derives_from`` (ontology.md §3b rule 3, REQ-24).
+        The goal is amended, never lost — every mutation is a forward edge.
+        """
+        if not new_step_id or not prior_step_id:
+            return False
+        ps = self._ensure_store()
+        if ps is None:
+            return False
+        try:
+            return bool(
+                ps.link(
+                    self._node_id(new_step_id),
+                    self._node_id(prior_step_id),
+                    relationship="derives_from",
+                    source_type="node",
+                    target_type="node",
+                    weight=1.0,
+                )
+            )
+        except Exception as exc:
+            logger.debug("[der_links] derives_from link failed: %s", exc)
+            return False
+
     # ── dispatcher (called by the kernel at finalize) ─────────────────────
 
     def write_node_links(self, item, record, step_success: bool,

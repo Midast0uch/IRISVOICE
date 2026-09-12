@@ -60,6 +60,13 @@ class Reason(str, Enum):
     WALL = "wall"  # CAPTCHA / login / paywall -> park + ask
     ROBOTS_REFUSED = "robots_refused"  # TERMINAL, never routed around
     PERMISSION_DENIED = "permission_denied"  # TERMINAL
+    # Goal contract T15 (REQ-9 AC9.2): no approval UI was attached to the
+    # session, so nobody could approve — distinct from PERMISSION_DENIED
+    # (policy refused) and UNAVAILABLE (backing service absent). NOT in
+    # TERMINAL_REASONS: the loop may reroute to an available alternative;
+    # only when no alternative exists is the fact blocked. Never retried
+    # verbatim (retry could never produce an approver).
+    APPROVAL_UNAVAILABLE = "approval_unavailable"
     BUDGET_EXCEEDED = "budget_exceeded"
     UPSTREAM_ERROR = "upstream_error"
     UNEXPECTED = "unexpected"  # reserved for REQ-1 AC2 raise-conversion

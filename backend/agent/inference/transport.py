@@ -319,6 +319,7 @@ class Transport(Protocol):
         temperature: float = 0.6,
         chunk_callback: Optional[Callable[[str], None]] = None,
         reasoning_callback: Optional[Callable[[str], None]] = None,
+        timeout_s: Optional[float] = None,
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         """Run inference and return ``(text, thinking, tool_calls)``."""
         ...
@@ -522,6 +523,7 @@ class ApiHttpxTransport:
         temperature: float = 0.6,
         chunk_callback: Optional[Callable[[str], None]] = None,
         reasoning_callback: Optional[Callable[[str], None]] = None,
+        timeout_s: Optional[float] = None,
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         import httpx as _httpx
         from backend.utils.ssl_context import get_ssl_context
@@ -590,10 +592,11 @@ class ApiHttpxTransport:
                 messages,
                 chunk_callback,
                 reasoning_callback,
+                timeout_s=timeout_s,
             )
         else:
             _text, _think, _tools = self._nonstream(
-                url, headers, body, model, messages
+                url, headers, body, model, messages, timeout_s=timeout_s
             )
         self._record_success(_text, self.last_usage)
         return _text, _think, _tools
@@ -609,6 +612,7 @@ class ApiHttpxTransport:
         messages: List[Dict[str, Any]],
         chunk_callback: Callable[[str], None],
         reasoning_callback: Optional[Callable[[str], None]] = None,
+        timeout_s: Optional[float] = None,
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         import httpx as _httpx
         from backend.utils.ssl_context import get_ssl_context
@@ -625,7 +629,7 @@ class ApiHttpxTransport:
             _stream_ok = False
             try:
                 with _httpx.Client(
-                    timeout=_httpx.Timeout(60.0), verify=get_ssl_context()
+                    timeout=_httpx.Timeout(timeout_s or 60.0), verify=get_ssl_context()
                 ) as _client:
                     with _client.stream(
                         "POST",
@@ -763,6 +767,7 @@ class ApiHttpxTransport:
         body: Dict[str, Any],
         model: str,
         messages: List[Dict[str, Any]],
+        timeout_s: Optional[float] = None,
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         import httpx as _httpx
         from backend.utils.ssl_context import get_ssl_context
@@ -774,7 +779,7 @@ class ApiHttpxTransport:
             _record_attempt(self)
             try:
                 with _httpx.Client(
-                    timeout=_httpx.Timeout(60.0), verify=get_ssl_context()
+                    timeout=_httpx.Timeout(timeout_s or 60.0), verify=get_ssl_context()
                 ) as _client:
                     _resp = _client.post(url, headers=headers, json=body)
                     if _resp.status_code == 429:
@@ -805,6 +810,23 @@ class ApiHttpxTransport:
                             f"{_resp.text[:200]}"
                         )
                     result = _resp.json()
+                    # REQ-6 AC6.3: an empty response (no content AND no
+                    # tool_calls) retries the SAME payload before raising —
+                    # the Empty disease hit 4 downstream call sites
+                    # (step-result processing, final synthesis, decision box,
+                    # sub-loop); one retry here covers all of them. The final
+                    # attempt falls through to the post-loop empty check which
+                    # keeps the existing "Empty response from API" error.
+                    _msg = result.get("choices", [{}])[0].get("message", {})
+                    _reply = _msg.get("content") or ""
+                    _tool_calls = _msg.get("tool_calls") or []
+                    if not _reply and not _tool_calls and attempt < 2:
+                        logger.warning(
+                            "[ApiHttpx] empty response (attempt %d/3) "
+                            "-- retrying same payload",
+                            attempt + 1,
+                        )
+                        continue
                     break
             except RuntimeError:
                 raise
@@ -906,6 +928,7 @@ class OpenAICompatTransport:
         temperature: float = 0.6,
         chunk_callback: Optional[Callable[[str], None]] = None,
         reasoning_callback: Optional[Callable[[str], None]] = None,
+        timeout_s: Optional[float] = None,
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         import httpx as _httpx
         from backend.utils.ssl_context import get_ssl_context
@@ -940,9 +963,12 @@ class OpenAICompatTransport:
                 _body,
                 chunk_callback,
                 reasoning_callback,
+                timeout_s=timeout_s,
             )
         else:
-            _text, _think, _tools = self._nonstream(_url, _url_v1, _body)
+            _text, _think, _tools = self._nonstream(
+                _url, _url_v1, _body, timeout_s=timeout_s
+            )
         self._record_success(_text, self.last_usage)
         return _text, _think, _tools
 
@@ -955,6 +981,7 @@ class OpenAICompatTransport:
         body: Dict[str, Any],
         chunk_callback: Callable[[str], None],
         reasoning_callback: Optional[Callable[[str], None]] = None,
+        timeout_s: Optional[float] = None,
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         import httpx as _httpx
         from backend.utils.ssl_context import get_ssl_context
@@ -971,7 +998,7 @@ class OpenAICompatTransport:
             _stream_ok = False
             try:
                 with _httpx.Client(
-                    timeout=_httpx.Timeout(60.0), verify=get_ssl_context()
+                    timeout=_httpx.Timeout(timeout_s or 60.0), verify=get_ssl_context()
                 ) as _client:
                     # Try standard v1 path, fall back to v1-less path
                     for _try_url in [url, url_v1]:
@@ -1123,7 +1150,7 @@ class OpenAICompatTransport:
             _record_attempt(self)
             try:
                 with _httpx.Client(
-                    timeout=_httpx.Timeout(60.0), verify=get_ssl_context()
+                    timeout=_httpx.Timeout(timeout_s or 60.0), verify=get_ssl_context()
                 ) as _client:
                     for _try_url in [url, url_v1]:
                         try:
@@ -1244,6 +1271,7 @@ class InProcessTransport:
         temperature: float = 0.6,
         chunk_callback: Optional[Callable[[str], None]] = None,
         reasoning_callback: Optional[Callable[[str], None]] = None,
+        timeout_s: Optional[float] = None,
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         # Lazy import to avoid circular dependency at module level
         if self._model_manager is not None:
@@ -1312,6 +1340,7 @@ class OllamaTransport:
         temperature: float = 0.6,
         chunk_callback: Optional[Callable[[str], None]] = None,
         reasoning_callback: Optional[Callable[[str], None]] = None,
+        timeout_s: Optional[float] = None,
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         import httpx as _httpx
 

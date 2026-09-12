@@ -447,6 +447,28 @@ class TTSManager:
         """Ensure the worker subprocess is running and ready."""
         if self._proc is not None and self._proc.poll() is None and self._ready:
             return True
+        # session-319 fix: a worker that finished loading AFTER its startup
+        # deadline must be ADOPTED, never abandoned.
+        #
+        # `_ready` is set in exactly one place — inside `_wait_ready`, when it
+        # reads a "ready" line. So when the startup deadline fires first, the
+        # worker's late "ready" line simply sits unread in `self._lines`. The
+        # old code then called `_spawn_worker()` here, which REPLACED
+        # `self._lines` and DISCARDED that line, spawning a fresh ~238 s cold
+        # worker — which timed out in turn, and so on. Every narration in the
+        # turn then came back silent (measured: worker ready 10:14:59, startup
+        # deadline fired 10:13:58, ZERO audio across 12 narrations).
+        #
+        # Give the EXISTING worker the chance to report readiness before paying
+        # for another cold spawn. The wait is short and bounded: the ready line,
+        # when it exists, is already queued, so this returns immediately.
+        if self._proc is not None and self._proc.poll() is None:
+            self._wait_ready(timeout=self._remaining_startup_budget() or 5.0)
+            if self._ready:
+                logger.info(
+                    "[TTSManager] Worker adopted (ready after startup deadline)"
+                )
+                return True
         self._spawn_worker()
         return self._ready
 

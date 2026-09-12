@@ -1052,12 +1052,16 @@ export function useIRISWebSocket(
          break
        }
 
-       case "audio_envelope": {
-         // Consolidated audio envelope: { rms, cadence, phase }
-         // Used by XurOrb for cadence-driven breathing at all levels.
-         const rms = typeof payload.rms === 'number' ? payload.rms : 0
-         const cadence = typeof payload.cadence === 'number' ? payload.cadence : 0
-         const phase = typeof payload.phase === 'string' ? payload.phase : "idle"
+        case "audio_envelope": {
+          // Consolidated audio envelope: { rms, cadence, phase }
+          // Used by XurOrb for cadence-driven breathing at all levels.
+          const rms = typeof payload.rms === 'number' ? payload.rms : 0
+          const cadence = typeof payload.cadence === 'number' ? payload.cadence : 0
+          const phase = typeof payload.phase === 'string' ? payload.phase : "idle"
+          // Session 312: mirror the phase for card surfaces (TaskListCard's
+          // narration wave glyph) — same iris:* mirror pattern as the other
+          // WS cases. No new transport; the envelope already carries phase.
+          window.dispatchEvent(new CustomEvent('iris:audio_phase', { detail: { phase } }))
          setAudioPhase(phase as "listening" | "speaking" | "idle")
          if (phase === "listening") {
            setAudioLevel(rms)

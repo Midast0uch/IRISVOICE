@@ -29,7 +29,9 @@ def _write_cfg(monkeypatch, tmp_path, content):
 
 
 @pytest.mark.asyncio
-async def test_ct11_gate_reached_denial_blocks_approval_runs(tmp_path, monkeypatch):
+async def test_ct11_gate_reached_denial_blocks_approval_runs(
+    tmp_path, monkeypatch, approval_ui_attached
+):
     """REQ-17 AC1/AC2/AC4: gated call emits PERMISSION_REQUEST, blocks until answered;
     DENY prevents execution; APPROVE lets it proceed; both reach respond_to_permission."""
     monkeypatch.setattr(_perm, "PERMISSION_TIMEOUT_SIDE_EFFECT", 5)
@@ -90,7 +92,9 @@ async def test_ct11_gate_reached_denial_blocks_approval_runs(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_ct11_fail_closed_on_permission_error(tmp_path, monkeypatch):
+async def test_ct11_fail_closed_on_permission_error(
+    tmp_path, monkeypatch, approval_ui_attached
+):
     """REQ-17: the gate must NOT silently bypass on error — an exception inside the
     permission check blocks the tool (fail closed), it does not proceed."""
     _write_cfg(monkeypatch, tmp_path, json.dumps({"mode": "developer"}))
@@ -164,7 +168,9 @@ def test_ct13_mode_binding_absent_not_permissive(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ct11_timeout_treated_as_denied(tmp_path, monkeypatch):
+async def test_ct11_timeout_treated_as_denied(
+    tmp_path, monkeypatch, approval_ui_attached
+):
     """REQ-17 edge: a gated call whose permission times out is treated as denied —
     the tool does NOT execute."""
     _write_cfg(monkeypatch, tmp_path, json.dumps({"mode": "developer"}))

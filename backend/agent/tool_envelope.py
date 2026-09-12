@@ -912,6 +912,10 @@ def evaluate_streak(
     stuck_n: int,
     idle_n: int,
     topo_violation: bool = False,
+    coverage: Optional[float] = None,
+    coverage_unmoved_n: int = 0,
+    coverage_rho: Optional[float] = None,
+    stall_rate: float = 0.0,
 ) -> Tuple[bool, str]:
     """REQ-5 AC5.1/AC5.2/AC5.3: fire the replan gate only on a stuck streak.
 
@@ -919,12 +923,34 @@ def evaluate_streak(
       * N consecutive wrappers with novelty repeat/empty OR match mismatched
       * N consecutive idling wrappers (success + new + matched, fraction unmoved)
       * timeouts count exactly like empties (AC11.4 — a hang is a dry run)
+      * goal-contract stall (specs/goal-contract-coverage REQ-3 AC3.4/CT-GC5):
+        task coverage C below 1.0 and EITHER unmoved across N settled nodes
+        OR the dimensionless progress ratio rho = dC/(g*ds) below the stall
+        rate. Patience shrinks as the gap grows — fail on no-progress, never
+        on slowness. ``coverage=None`` (no contract) preserves the exact
+        legacy behavior — the coverage arms are purely additive.
     TOPO_VIOLATION (Caducean rec, der_loop.py:536) forces fire REGARDLESS of
     streak arithmetic (AC5.3 / KD-4 — reuse the existing physics detection).
     Below threshold → (False, "") — the plan continues, no inference paid.
     """
     if topo_violation:
         return True, "topo_violation"
+    if coverage is not None and float(coverage) < 1.0:
+        if idle_n > 0 and int(coverage_unmoved_n) >= idle_n:
+            return True, (
+                f"coverage_stall:C={float(coverage):.3f}"
+                f":unmoved={int(coverage_unmoved_n)}"
+            )
+        if (
+            coverage_rho is not None
+            and float(stall_rate) > 0.0
+            and int(coverage_unmoved_n) >= 1
+            and float(coverage_rho) < float(stall_rate)
+        ):
+            return True, (
+                f"coverage_rate:rho={float(coverage_rho):.4f}"
+                f"<{float(stall_rate)}:C={float(coverage):.3f}"
+            )
     if not wrappers:
         return False, ""
 
@@ -969,9 +995,19 @@ def evaluate_streak(
 def evaluate_run_grade(
     envelopes: List[Any],
     load_bearing_veto: bool = True,
+    coverage: Optional[float] = None,
+    open_unblocked: Optional[List[str]] = None,
+    blocked: Optional[List[str]] = None,
 ) -> Tuple[str, List[str]]:
     """AC5.6 done + grade: any load-bearing step with match != matched caps
     the run below full pass; supporting/cosmetic misses alone never sink it.
+    Goal contract T10 (REQ-8 AC8.1-AC8.3): when coverage inputs are supplied,
+    the grade is computed from coverage — C = 1.0 with no blocked fact is a
+    pass; an open unblocked fact caps the run below pass (an open unblocked
+    fact NEVER reports pass, AC8.3); all-open-facts-blocked-and-named is a
+    partial (capped with the blocked list as the reason). A ``coverage=None``
+    (no contract) preserves the exact legacy envelope behavior. A run that is
+    capped on EITHER signal reports both reason families.
     Returns (grade, reasons) — grade is 'pass' or 'capped' (live over-exceed
     markers — faster-than-baseline etc. — are judged by the live probe, not
     here). Zero LLM, O(n) over envelopes."""
@@ -983,6 +1019,34 @@ def evaluate_run_grade(
                 f"step {getattr(env, 'step_id', '?')} load-bearing "
                 f"match={getattr(env, 'match', 'unclear')}"
             )
+    if coverage is not None:
+        try:
+            _c = float(coverage)
+        except Exception:
+            # AC8 edge: coverage computation failed — grade unavailable,
+            # logged, never silently pass.
+            return "unavailable", ["coverage computation failed"]
+        _open = [str(_f) for _f in (open_unblocked or []) if str(_f).strip()]
+        _blocked = [str(_f) for _f in (blocked or []) if str(_f).strip()]
+        if _open:
+            reasons.append(
+                f"goal coverage C={_c:.3f}: "
+                f"{len(_open)} required fact(s) open and unblocked"
+            )
+            for _f in _open[:5]:
+                reasons.append(f"open fact: {_f[:160]}")
+        elif _blocked:
+            reasons.append(
+                f"goal coverage C={_c:.3f}: every open fact blocked and "
+                f"named ({len(_blocked)})"
+            )
+            for _f in _blocked[:5]:
+                reasons.append(f"blocked fact: {_f[:160]}")
+        if _open or _c < 1.0:
+            if load_bearing_veto and reasons:
+                return "capped", reasons
+            if _c < 1.0:
+                return "capped", reasons or [f"C={_c:.3f} below 1.0"]
     if load_bearing_veto and reasons:
         return "capped", reasons
     return "pass", []

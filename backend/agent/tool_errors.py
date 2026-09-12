@@ -187,6 +187,19 @@ register_error_label(
     "worktree_unavailable", "maybe", "world", "blocked",
     "REQ-13 sandbox worktree could not be created; the write was refused.",
 )
+# Goal contract T15 (REQ-11 AC11.2): a step that cannot run because no
+# approval UI was attached. A DATA edit per FAULTLINE Layer 2 — never a new
+# branch. Dimensions (KD-11): retryable=maybe (an approver may appear, or
+# rerouting may find an available tool), blame=world (nobody was there to
+# approve), info_state=blocked. Dispatch/planning readers: the pre-dispatch
+# fail-fast in tool_bridge (emits it), the T9 blocked-fact path in
+# agent_kernel (is_blocked consumes it), grade + naming (T9/T10).
+register_error_label(
+    "approval_unavailable", "maybe", "world", "blocked",
+    "No approval UI attached to the session, so a gated step could not "
+    "run. Settles immediately with Reason.APPROVAL_UNAVAILABLE — reroute "
+    "to an available alternative or block the fact, never hang.",
+)
 
 
 def resolve_label(label: str) -> Optional[LabelSpec]:

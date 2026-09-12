@@ -23,6 +23,7 @@ import enum
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -171,6 +172,17 @@ _DESTRUCTIVE_TOOLS: set = {
     "format_disk",
     "factory_reset",
     "purge",
+    # Goal-contract T18 (REQ-9 AC9.4): the registry declares these destructive,
+    # and each was previously gated only by accident — lock_screen / shutdown /
+    # restart via CapabilitySet._TERMINAL_TOOLS (which T18 removed from
+    # always-ask), and github_delete_ssh_key not at all (it sat in _REPO_TOOLS,
+    # so a DELETION was pre-approvable). Listing them here keeps the destructive
+    # tier set in sync with the registry's own tier verdict — the drift CT-12
+    # exists to catch, and the unguarded-deletion path the toggle must not open.
+    "lock_screen",
+    "shutdown",
+    "restart",
+    "github_delete_ssh_key",
 }
 
 # Parameter patterns that escalate the tier
@@ -186,15 +198,39 @@ class ApprovalClass(str, enum.Enum):
     UNGATED = "ungated"
 
 
-# ALWAYS_ASK = destructive tools ∪ terminal tools. SESSION_APPROVABLE = repo tools
-# minus the always-ask set. Everything else is UNGATED (no prompt).
-_ALWAYS_ASK_TOOLS = _DESTRUCTIVE_TOOLS | CapabilitySet._TERMINAL_TOOLS
+# ALWAYS_ASK = the DESTRUCTIVE tier only. The terminal/GUI tools used to sit
+# here too (via CapabilitySet._TERMINAL_TOOLS), but consent is now governed
+# by the Auto-approve toggle (T18, KD-12): mode governs CAPABILITY only
+# (which tools exist), the toggle governs CONSENT (whether it asks first).
+# CapabilitySet._TERMINAL_TOOLS still governs capability (personal has no
+# terminal; developer does) — it no longer feeds always-ask (CT-GC10 lock).
+#
+# This is the HARDCODED core of the destructive tier. The EFFECTIVE
+# always-gate set is this set UNIONED with every tool the registry declares
+# destructive — see approval_class(), which shares the classify_tool verdict
+# so the tier and the approval class can never drift (CT-12: a tool the
+# registry calls destructive must never be UNGATED or pre-approvable).
+_ALWAYS_ASK_TOOLS = set(_DESTRUCTIVE_TOOLS)
 _SESSION_APPROVABLE_TOOLS = CapabilitySet._REPO_TOOLS - _ALWAYS_ASK_TOOLS
 
 
 def approval_class(tool_name: str) -> ApprovalClass:
-    """Classify a tool into an approval class from the tier/capability constants."""
+    """Classify a tool into an approval class from the tier/capability constants.
+
+    The DESTRUCTIVE verdict is authoritative and SHARED with ``classify_tool``
+    (which also consults the tool registry). Reading the same verdict from both
+    entry points is what makes drift impossible: a tool the registry declares
+    destructive can never be UNGATED (never prompts) or SESSION_APPROVABLE
+    (user can whitelist it). CT-12 pins this — a permission hole here voids the
+    goal contract, because an un-gated destructive call is exactly the
+    unguarded deletion path the Auto-approve toggle must not open.
+    """
     name = tool_name.lower()
+    try:
+        if classify_tool(tool_name, None) == PermissionTier.DESTRUCTIVE:
+            return ApprovalClass.ALWAYS_ASK
+    except Exception:
+        pass  # registry read must never break classification — fall through
     if name in _ALWAYS_ASK_TOOLS:
         return ApprovalClass.ALWAYS_ASK
     if name in _SESSION_APPROVABLE_TOOLS:
@@ -205,12 +241,17 @@ def approval_class(tool_name: str) -> ApprovalClass:
 def get_approvable_tools() -> List[str]:
     """Tools the user may pre-approve via the standing list (REQ-19 AC3).
 
-    These are exactly the SESSION_APPROVABLE tools — side-effect/repo tools that
-    would otherwise prompt every session. ALWAYS_ASK (destructive/terminal) and
-    UNGATED (read-only) tools are intentionally excluded: the former can never be
-    pre-approved, the latter never prompt.
+    These are the SESSION_APPROVABLE tools — side-effect/repo tools that would
+    otherwise prompt every session. ALWAYS_ASK (the destructive tier, hardcoded
+    OR registry-declared) and UNGATED (read-only) tools are excluded: the
+    former can never be pre-approved, the latter never prompt. The filter is
+    live (not the module constant alone) so a registry-destructive tool can
+    never leak onto the pre-approval list.
     """
-    return sorted(_SESSION_APPROVABLE_TOOLS)
+    return sorted(
+        t for t in _SESSION_APPROVABLE_TOOLS
+        if approval_class(t) != ApprovalClass.ALWAYS_ASK
+    )
 
 
 def _get_standing_approved_tools() -> Set[str]:
@@ -285,6 +326,65 @@ _DESTRUCTIVE_PARAM_PATTERNS: List[str] = [
     "overwrite",
 ]
 
+# Goal contract T18 (REQ-9 AC9.6): deletion/removal COMMAND forms. These are
+# shell-command tokens, matched with word boundaries against the shell
+# command text only (never against prose inside a file write) so the
+# Auto-approve toggle cannot open an unguarded deletion path through the
+# shell. Matched case-insensitively.
+_DESTRUCTIVE_COMMAND_FORMS: List[str] = [
+    "rm",
+    "rmdir",
+    "del",
+    "erase",
+    "remove-item",
+    "rd",
+    "unlink",
+    "truncate",
+    "shred",
+]
+
+# Tools whose params carry a shell command string.
+_SHELL_COMMAND_TOOLS: set = {
+    "run_command",
+    "execute_command",
+    "shell",
+    "dev_cli",
+    "execute_script",
+}
+
+# Param keys that carry the shell command text.
+_COMMAND_PARAM_KEYS: tuple = ("command", "query", "script", "cmd")
+
+
+def is_destructive_command(
+    tool_name: str, params: Optional[Dict[str, Any]] = None
+) -> bool:
+    """True when this invocation is a destructive command (T18, AC9.6).
+
+    The detector is the shell safety net under the Auto-approve toggle:
+    destructive commands stay gated at all times, toggle or not. Implemented
+    as the classify_tool verdict so the two can never drift.
+    """
+    try:
+        return classify_tool(tool_name, params) == PermissionTier.DESTRUCTIVE
+    except Exception:
+        return False
+
+
+def get_auto_approve() -> bool:
+    """Read the Auto-approve consent toggle (T18, KD-12).
+
+    Consent (whether the agent asks first) is SEPARATE from mode/capability
+    (which tools exist). Default OFF (fail closed — ask first) when the
+    config is absent or unreadable. Never raises.
+    """
+    try:
+        with open(_caps._CFG_PATH, encoding="utf-8") as _f:
+            _cfg = json.load(_f)
+        return bool(_cfg.get("auto_approve", False))
+    except Exception:
+        return False
+
 
 def classify_tool(tool_name: str, params: Optional[Dict[str, Any]] = None) -> PermissionTier:
     """Classify a tool by name and params into a risk tier.
@@ -341,32 +441,68 @@ def classify_tool(tool_name: str, params: Optional[Dict[str, Any]] = None) -> Pe
         for pattern in _DESTRUCTIVE_PARAM_PATTERNS:
             if pattern in params_str:
                 return PermissionTier.DESTRUCTIVE
+        # AC9.6: deletion/removal command forms in SHELL command text —
+        # shell tools only, word-boundaried, so prose inside a file write
+        # (e.g. "remove-item from the list" in a document) never trips it.
+        if name_lower in _SHELL_COMMAND_TOOLS:
+            try:
+                _cmd_texts = [
+                    str(params.get(_k, "") or "")
+                    for _k in _COMMAND_PARAM_KEYS
+                    if isinstance(params, dict)
+                ]
+                _cmd_blob = "\n".join(_cmd_texts).lower()
+                for _form in _DESTRUCTIVE_COMMAND_FORMS:
+                    if re.search(
+                        r"(?<![a-z0-9_-])" + re.escape(_form)
+                        + r"(?![a-z0-9_-])",
+                        _cmd_blob,
+                    ):
+                        return PermissionTier.DESTRUCTIVE
+            except Exception:
+                pass
 
     return base_tier
 
 
-def get_permission_action(tier: PermissionTier, level: str) -> PermissionAction:
-    """Determine what action to take based on tier + permission level.
+def get_permission_action(
+    tier: PermissionTier,
+    level: Optional[str] = None,
+    auto_approve: Optional[bool] = None,
+) -> PermissionAction:
+    """Determine what action to take based on tier + consent toggle (T18).
+
+    KD-12: mode and approval are two separate controls. Mode (personal /
+    developer) governs CAPABILITY only — which tools exist — and is enforced
+    by CapabilitySet, never here. ``auto_approve`` governs CONSENT — whether
+    the agent asks first. ``level`` is accepted for backward compatibility
+    and ignored.
+
+    Toggle ON: reads, writes, shell commands, and GUI actions auto-approve.
+    The DESTRUCTIVE tier and deletion/removal commands stay gated at all
+    times (T18, AC9.4/AC9.6) — the toggle never opens those.
 
     Args:
         tier: The classified risk tier.
-        level: "personal" or "developer".
+        level: legacy mode string (ignored; kept for existing callers).
+        auto_approve: the consent toggle; read from config when None.
 
     Returns:
         PermissionAction: auto_approve, require_approval, or require_confirmation.
     """
-    if level == "personal":
-        # Personal: READ_ONLY auto, SIDE_EFFECT auto, DESTRUCTIVE require approval
-        if tier == PermissionTier.DESTRUCTIVE:
-            return PermissionAction.REQUIRE_APPROVAL
+    _auto = bool(auto_approve) if auto_approve is not None else get_auto_approve()
+    if tier == PermissionTier.DESTRUCTIVE:
+        return (
+            PermissionAction.REQUIRE_CONFIRMATION
+            if _auto
+            else PermissionAction.REQUIRE_APPROVAL
+        )
+    if _auto:
         return PermissionAction.AUTO_APPROVE
-
-    # Developer: READ_ONLY auto, SIDE_EFFECT require approval, DESTRUCTIVE require confirmation
+    # Toggle OFF (default, fail closed): reads auto; writes/shell ask.
     if tier == PermissionTier.READ_ONLY:
         return PermissionAction.AUTO_APPROVE
-    if tier == PermissionTier.SIDE_EFFECT:
-        return PermissionAction.REQUIRE_APPROVAL
-    return PermissionAction.REQUIRE_CONFIRMATION
+    return PermissionAction.REQUIRE_APPROVAL
 
 
 # ── Permission system ──────────────────────────────────────────────────────
@@ -397,22 +533,27 @@ class ToolPermissionSystem:
         level: Optional[str] = None,
         force: bool = False,
         session_id: Optional[str] = None,
+        auto_approve: Optional[bool] = None,
     ) -> ToolPermissionRequest:
         """Create and emit a permission request.
 
         Returns the request (not yet acted on).  The caller must await
         the response via get_response().
 
-        Never raises — logs and returns auto-approved request on error.
+        ``level`` is legacy (mode-coupled) and ignored; ``auto_approve``
+        is the consent authority (T18, KD-12). Never raises — logs and
+        returns auto-approved request on error.
         """
         try:
-            _level = level or CapabilitySet.get_mode()
-            action = get_permission_action(tier, _level)
+            action = get_permission_action(tier, auto_approve=auto_approve)
             cls = approval_class(tool_name)
 
             # REQ-19 AC7 precedence: ALWAYS_ASK > standing list > session approval > prompting.
             # ALWAYS_ASK always prompts (never honoured by the standing list or cache).
-            if cls != ApprovalClass.ALWAYS_ASK:
+            # T18 (AC9.6): a param-ESCALATED destructive tier (e.g. run_command
+            # carrying "rm") skips the standing/session bypasses too — the
+            # tier verdict, not the tool name, is authoritative.
+            if cls != ApprovalClass.ALWAYS_ASK and tier != PermissionTier.DESTRUCTIVE:
                 standing = _get_standing_approved_tools()
                 if tool_name.lower() in standing:
                     return ToolPermissionRequest(
