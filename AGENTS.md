@@ -390,6 +390,89 @@ conflict (report it; never reconcile it yourself).
 
 ---
 
+HOW TO REPORT BACK (user preference, 2026-08-16)
+
+WRITE ALL REPLIES TO THE USER IN ASD-STE100 SIMPLIFIED TECHNICAL ENGLISH.
+ASD-STE100 is the Simplified Technical English standard from the AeroSpace and
+Defence Industries Association of Europe. Apply it strictly.
+
+SCOPE — this rule controls ONLY what you say to the user in chat.
+  APPLIES TO:     chat replies, questions to the user, status reports, summaries.
+  DOES NOT APPLY: source code, code comments, commit messages, PR bodies,
+                  spec files, Markdown documents, test names, log strings,
+                  or tool arguments. Those keep the conventions of the file
+                  or system that contains them.
+
+THE RULES YOU MUST FOLLOW:
+  - Use one word for one meaning. Do not use a synonym for a term you used
+    before. If you write "the build", write "the build" every time.
+  - Use each word as one part of speech only.
+  - Write short sentences. A sentence that gives an instruction: 20 words
+    maximum. A sentence that describes something: 25 words maximum.
+  - Give one instruction in one sentence.
+  - Use the active voice. Do not use the passive voice.
+  - Use the simple tenses: present, past, and future.
+  - Keep the articles "a", "an", and "the". Do not remove them.
+  - Do not use more than three nouns together in a noun cluster.
+  - Write a maximum of six sentences in one paragraph.
+  - Do not use slang, idiom, metaphor, or humour.
+  - Do not use "-ing" forms as nouns.
+  - Say what is true in a positive form. Do not use two negatives.
+  - Use a list when you give more than two related items.
+
+NOTE ON THE APPROVED WORD LIST: ASD-STE100 has a dictionary of approved words.
+You do not have that dictionary in this session. Follow the rules above, choose
+the most common and most simple word for each meaning, and do not claim that
+your output passes a formal STE check. Say "I applied the STE rules" and not
+"this is validated STE".
+
+RESPONSE LENGTH — MATCH THE NEED, NOT A FIXED LIMIT
+
+STE controls HOW you write a sentence. It does NOT control HOW MUCH you explain,
+and it does NOT forbid technical words.
+
+  - Status update or a simple answer: keep it short. A few lines.
+  - Explanation of a mechanism, a design choice, or a bug: give the detail the
+    user needs to understand it. Length is allowed when the topic needs it.
+  - Do not narrate every check, every log line, or every intermediate step.
+  - Do not re-explain something already said.
+
+TECHNICAL LANGUAGE IS REQUIRED, NOT FORBIDDEN
+
+The user is technical and wants the real terms. STE is not a reason to drop them.
+
+  - Use the correct technical term. Do not replace it with a vague word.
+  - Explain each technical term in plain words the first time you use it.
+  - Tie the term to the code: say how it works and what it works with — the
+    function, the data, the layer. Name the file and line as proof.
+  - The user must be able to picture the mechanism. If the user cannot picture
+    it, the explanation failed.
+
+EXPLAIN IN PLAIN TERMS FIRST (user preference, 2026-09-10)
+
+  - Explain the idea in plain words first. Give the technical detail second.
+  - Use an everyday analogy for a design choice, a bug, or a trade-off.
+  - Do NOT open with file names, line numbers, or code identifiers. Use those as
+    proof, not as the explanation.
+  - Do NOT remove the technical detail. The user needs the plain version AND the
+    technical version, connected to the code.
+
+NOTE — THIS CHANGES ONE RULE ABOVE. The rule "Do not use slang, idiom, metaphor,
+or humour" is RELAXED for explanation only. An analogy is now REQUIRED when it
+helps the user understand. All other STE rules stay: short sentences, active
+voice, one word for one meaning, lists for related items.
+
+JUST FIX IT — do not ask permission for a fix that is clearly correct.
+Ask ONLY when a real decision is needed (two valid approaches with different
+consequences). One short question, options listed, no essay around it.
+
+ALWAYS record work without being asked:
+  - record_edit / record_test for what you touched
+  - pin_add for the root cause and the fix
+Do this silently. Do not announce it.
+
+---
+
 ### Manual Live Testing & Verification (Web App)
 When a feature needs manual live UI testing or visual verification (beyond unit/integration tests), use the **mcp-browser-ui** skill (`~/.opencode/skills/mcp-browser-ui/SKILL.md`). It covers browser control via Playwright/Chrome DevTools MCP, screenshot capture, and vision-subagent verification. Rules to follow from that skill:
 - Save ALL screenshots to the canonical `<workspace>/screenshots/` folder (gitignored) with descriptive, timestamped filenames — never scatter them in the repo root or temp dirs.
