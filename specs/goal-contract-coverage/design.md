@@ -244,7 +244,7 @@ Chosen: **(c)**. (a) burned 162 s in D1/D11 and crashed. (b) is exactly the tool
 Rejected: (a) wastes budget and hides the failure; (b) narrows the vast domain.
 Cost: a new closed-vocabulary member `APPROVAL_UNAVAILABLE` and one pre-dispatch check. Distinguished from `PERMISSION_DENIED` (policy refused) and `UNAVAILABLE` (backing service absent) so the loop reroutes or blocks correctly.
 
-**Matrix decision (session-327, owner):** the tier matrix changes so `developer` SIDE_EFFECT auto-approves — writes auto-approve in **both** modes. The always-ask terminal/system set (`run_command`, `read_shell_output`, `gui_automate_*`, `lock_screen`, `shutdown`, `restart`) is a **separate capability gate** and stays gated, because shell is arbitrary code execution. REQ-9 makes a gated shell step fail fast and reroute, so the agent still progresses without removing the shell boundary. `lock_screen`/`shutdown`/`restart` are already DESTRUCTIVE tier and stay gated under both gates.
+**Consent decision (session-327, owner, final):** an **Auto-approve toggle** becomes the consent authority, separate from mode. ON: reads, writes, shell commands, and GUI actions auto-approve in both modes. OFF: writes and shell ask; reads stay auto. **Destructive and deletion/removal commands stay gated at all times.** This supersedes the earlier "keep shell gated" choice: the terminal/GUI tools leave `_ALWAYS_ASK_TOOLS` (`permissions.py:191`) and come under the toggle; only the DESTRUCTIVE tier stays in the always-gate set. The shell safety net is the destructive-command detector (`_DESTRUCTIVE_PARAM_PATTERNS`, `permissions.py:274`), which this spec requires to cover deletion/removal command forms.
 
 **KD-10 — The goal contract reuses the cognitive layer; it adds no phase layer.**
 Default: treat "phase" as one thing and wire the goal into whatever phase is nearest.
@@ -261,6 +261,14 @@ Alternatives: (a) settle silently; (b) route the fail-fast through the normal `e
 Chosen: **(c)**. (a) is the decoration FAULTLINE §11 forbids — the agent would never learn that this mediator failed in this region. (b) would dispatch a tool that cannot run, which is the hang we are removing. (c) keeps the short-circuit and still teaches.
 Rejected: (a) silent failure; (b) re-introduces the hang.
 Cost: the pre-dispatch site must build the canonical shape and call the learning hooks directly. `APPROVAL_UNAVAILABLE` is a DATA registration, not a branch.
+
+**KD-12 — Consent is a separate control from capability.**
+Default: let the mode decide approval (current `get_permission_action(tier, level)`).
+Why the default exists: it was the first place a mode was available.
+Alternatives: (a) mode decides approval; (b) "permission toggle off = everything auto-approves"; (c) a separate Auto-approve toggle, mode governs capability only.
+Chosen: **(c)**. (a) is the current coupling and is why "developer mode requires approval for writes" felt wrong. (b) is dangerous: switching to Personal to *restrict* access would also remove all oversight — the user asks for less access and gets less consent. (c) makes each control answer one question: mode = which doors, toggle = whether a guard watches.
+Rejected: (a) conflates two questions; (b) inverts the user's intent on the restrictive path.
+Cost: a config flag, one toggle in `PermissionsSettingsCard`, and `get_permission_action` takes `auto_approve` instead of `level`. The always-gate set shrinks to the DESTRUCTIVE tier; the destructive-command detector must be strengthened to cover deletion/removal forms, or shell becomes an unguarded deletion path.
 
 ## Ripple-Effect Map (MANDATORY)
 
@@ -286,14 +294,14 @@ Cost: the pre-dispatch site must build the canonical shape and call the learning
 | `backend/agent/der_constants.py` | Yes | CHANGE NEEDED | `GOAL_REQUIRED_FACTS_CAP`, `GOAL_CEILING_CAP`, `GOAL_STALL_RATE` (retires `GOAL_STALL_N`), `GOAL_FORCING_GAIN` (all UNVERIFIED starting points). |
 | `backend/agent/tool_bridge.py` (dispatch path) | Yes | CHANGE NEEDED | REQ-9: detect an un-attendable approval before dispatch and settle with `Reason.APPROVAL_UNAVAILABLE` — never wait the 120 s timeout. REQ-11: emit the FAULTLINE canonical shape at the pre-dispatch site and feed `_record_tool_event` (`:1799`) + the learning hooks, since the short-circuit bypasses `normalize_failure` (`:1183-1184`). The permission matrix is untouched. |
 | `backend/agent/tool_errors.py` | Yes | DATA EDIT | REQ-11 AC11.2: `register_error_label("approval_unavailable", retryable="maybe", blame="world", info_state="blocked", ...)` — a DATA edit per FAULTLINE Layer 2, never a new branch. |
-| `backend/agent/permissions.py:348-369` | Yes | CHANGE NEEDED | REQ-9 AC9.4: `get_permission_action` changes so `developer` SIDE_EFFECT auto-approves (writes auto-approve in both modes); DESTRUCTIVE stays gated. CT-GC10 pins the NEW matrix. |
-| `backend/capabilities.py:56-68` | No | CONTRACT LOCK (CT-GC10) | The always-ask terminal/system set (`_TERMINAL_TOOLS`) is unchanged — shell/GUI/system control stay gated. CT-GC10 pins it so the matrix change cannot silently widen the shell boundary. |
+| `backend/agent/permissions.py:348-369` | Yes | CHANGE NEEDED | REQ-9 AC9.4: `get_permission_action` takes `auto_approve` instead of `level`; the toggle governs reads/writes/shell/GUI. `_ALWAYS_ASK_TOOLS` (`:191`) shrinks to the DESTRUCTIVE tier. The destructive detector (`:274`) grows deletion/removal forms (AC9.6). CT-GC10 pins the new behavior. |
+| `backend/capabilities.py:56-68` | No | CONTRACT LOCK (CT-GC10) | `CapabilitySet._TERMINAL_TOOLS` still governs **capability** (personal has no terminal; developer does). It no longer feeds always-ask. CT-GC10 pins that capability and consent stay separate. |
 | `backend/tests/contract/`, `tests/behavioral/`, `tests/unit/` | Yes | CONTRACT LOCK | New CT-GC1..CT-GC8 + BT-GC1..BT-GC5; existing suites stay green. |
 | `scripts/validate_goal_coverage.py` | Yes | CHANGE NEEDED | NEW standing CDD harness — replays recorded trajectories, asserts coverage + blocked naming. |
 | Frontend | No new component | CONTRACT LOCK (CT-GC12) | REQ-12: the existing `PermissionCard` renders `APPROVAL_UNAVAILABLE` honestly; the `personal`/`developer` toggle stays the matrix authority; "approval UI attached" uses existing WS presence. No new component. |
 | `hooks/useIRISWebSocket.ts:1705-1719` | No | CONTRACT LOCK (CT-GC12) | The permission event forward-set (`permission:request/granted/denied`) must stay complete; the fail-fast path adds no new event type. |
 | `components/chat/PermissionCard.tsx` | No | CONTRACT LOCK (CT-GC12) | The approval UI is the "attached" signal's counterpart; its props/shape are unchanged. |
-| `components/chat/PermissionsSettingsCard.tsx` | No | NO CHANGE (verified) | The `personal`/`developer` mode toggle already exists (`:9`) and remains the matrix authority (AC12.3). |
+| `components/chat/PermissionsSettingsCard.tsx` | Yes | CHANGE NEEDED | REQ-12 AC12.4: add the Auto-approve toggle next to the mode segmented control (`:194`); the card already re-fetches `/api/config` after a change (`:84`). Mode remains the capability authority (AC12.3). |
 
 **Ripple note (surfaced, not silently widened):** the "planner picks `run_command` over `list_directory`" observation is **situation dependent** and is NOT a tool-specific patch. Two general properties follow. (1) **Fail-fast on un-runnable steps** is IN scope as REQ-9 — the D1/D11 hang was the real defect, not the planner's choice. (2) **Capability advertisement** — a tool must describe what it can do well enough for the planner to choose correctly across vast domains — is a general registry-quality concern and remains a separate spec. No requirement here tailors behaviour to a specific tool or task shape.
 
@@ -337,7 +345,8 @@ scripts/validate_goal_coverage.py   standing CDD harness — replays recorded tr
 | CT-GC7 | A blocked fact keeps `C` from rising — the denominator never shrinks on block. |
 | CT-GC8 | **Caller-existence pin** — `mark_coverage`, `amend`, and the coverage consumer each have a real production caller (AST). This codebase produced 19 built-but-never-called mechanisms during the websearch spec; every seam here gets this guard. |
 | CT-GC9 | `Reason.APPROVAL_UNAVAILABLE` exists and is distinct from `PERMISSION_DENIED` and `UNAVAILABLE`; a blocked fact records the exact reason (AC9.2). |
-| CT-GC10 | The NEW permission matrix holds — read/write (READ_ONLY, SIDE_EFFECT) auto-approve in BOTH modes; DESTRUCTIVE and the always-ask terminal/system set stay gated (AC9.4, AC12.3). |
+| CT-GC10 | Capability and consent are separate — mode governs capability only; the Auto-approve toggle governs reads/writes/shell/GUI; DESTRUCTIVE stays gated in both toggle states (AC9.4, AC12.3). |
+| CT-GC14 | The destructive detector covers deletion/removal command forms and gates them even with Auto-approve ON (AC9.6). |
 | CT-GC11 | The goal contract adds no new phase layer — `goal_contract.py` imports no oscillator/phase module; the gap feeds the cognitive `u` path only; the scheduler path is unchanged (REQ-10 AC10.1/AC10.2). |
 | CT-GC12 | The fail-fast emits the FAULTLINE canonical shape (`success/error/error_type/retryable/blame/info_state/details.raw/ts`); the permission event forward-set is unchanged; no new event type (AC11.1, AC12.1/12.3). |
 | CT-GC13 | A fail-fast/blocked step feeds the learning hooks — `_record_tool_event`, `verified_label` → `task:learning`, `record_region_mediator_outcome`, `link_failed_like` (AC11.3/11.4/11.5). |
@@ -354,10 +363,11 @@ scripts/validate_goal_coverage.py   standing CDD harness — replays recorded tr
 | BT-GC6 | A step whose chosen tool cannot run settles within 1 s with `APPROVAL_UNAVAILABLE`; the loop reroutes or blocks the fact; no hang (D1/D11 shape). |
 | BT-GC7 | The stall signal is a rate: a no-progress cycle far from the goal trips idling fast; a slow-but-progressing cycle near the goal does not. |
 | BT-GC8 | A fail-fast on an un-runnable tool emits a typed FAULTLINE record AND a learning signal — the failure is recallable by cause and the mediator's region score moves (AC11). |
+| BT-GC9 | With Auto-approve ON, a write and a shell command run without asking; a delete/removal command still prompts (AC9.4/AC9.6). |
 
 **Physics-aware:** inject Caducean `u`/`ξ` trajectories and assert the system-level outcome — the split width moves as `C` moves (AC3.3), an oscillating `u` with an open fact splits, and a converged `u` with `C=1` finalizes.
 
-**Intertwined:** every behavioral gap found decomposes into the contract test that would have caught it. BT-GC2 decomposes to CT-GC7; BT-GC5 to CT-GC6; BT-GC4 to CT-GC4; BT-GC6 to CT-GC9/CT-GC10; BT-GC7 to CT-GC5; BT-GC8 to CT-GC13.
+**Intertwined:** every behavioral gap found decomposes into the contract test that would have caught it. BT-GC2 decomposes to CT-GC7; BT-GC5 to CT-GC6; BT-GC4 to CT-GC4; BT-GC6 to CT-GC9/CT-GC10; BT-GC7 to CT-GC5; BT-GC8 to CT-GC13; BT-GC9 to CT-GC14.
 
 **Standing CDD harness:** `scripts/validate_goal_coverage.py` replays the recorded D3/D7/D8/D9/D10 trajectories through `goal_contract` + the real finalize path and asserts: the required-fact count, terminal `C`, blocked naming, and grade. This is the gap-finding instrument — the same five probes that varied five ways must now terminate with the same coverage verdict.
 

@@ -14,7 +14,8 @@
 - (User, session-327) **Speed becomes accuracy.** The target is coverage gained per unit of work (`dC/ds`), not raw speed. A step that cannot produce progress must fail fast; a step that is slow but still progressing must be allowed to run. The stall signal is a **rate**, not a count — `GOAL_STALL_N` is retired in favour of `GOAL_STALL_RATE`.
 - (User, session-327) **A step that cannot run must fail fast with a typed reason, never hang.** The dispatch path must detect an un-attendable approval before it waits. (The permission matrix itself is changed by the decision below.)
 - (User, session-327) The domains the agent executes across are **vast**. No requirement may tailor behaviour to a specific tool or a specific task shape; capability advertisement and fail-fast are general properties.
-- (User, session-327) **Writes auto-approve in both modes; only destructive and the always-ask terminal/system set stay gated.** The tier matrix changes: `developer` SIDE_EFFECT moves from require-approval to auto-approve. The always-ask set — `run_command` (shell), `read_shell_output`, `gui_automate_*`, `lock_screen`, `shutdown`, `restart` — is a **separate capability gate** and stays gated, because shell is arbitrary code execution. REQ-9 makes a gated step fail fast and reroute, so the agent still progresses.
+- (User, session-327, final) **The Auto-approve toggle covers reads, writes, shell command, and GUI.** Only **destructive commands and any form of deletion or removal stay gated at all times.** This supersedes the earlier "keep shell gated" choice. The always-gate set is the DESTRUCTIVE tier plus a destructive-command detector that must cover deletion/removal forms. The terminal/GUI tools leave always-ask and are governed by the toggle.
+- (User, session-327) **Mode and approval are two separate controls.** Mode (`personal`/`developer`) is **capability** — which tools the agent may access (terminal/repo). Auto-approve is **consent** — whether it must ask first. The current coupling that lets mode decide approval (`get_permission_action`, `backend/agent/permissions.py:348`) is removed.
 
 ## Phase-Layer Taxonomy (stated distinction — do not merge these)
 
@@ -189,8 +190,9 @@ The agent's turn currently ends when its step queue is empty, not when the user'
 - AC9.1: WHEN a chosen tool cannot run (approval unavailable, missing capability, or terminal reason) THEN THE SYSTEM SHALL settle the step immediately with a typed `Reason`, without waiting for the permission timeout.
 - AC9.2: THE SYSTEM SHALL add `APPROVAL_UNAVAILABLE` to the closed `Reason` vocabulary, distinct from `PERMISSION_DENIED` (policy refused) and `UNAVAILABLE` (backing service absent).
 - AC9.3: WHEN a step settles `APPROVAL_UNAVAILABLE` THEN THE SYSTEM SHALL reroute to an available alternative or mark the required fact blocked — never hang.
-- AC9.4: THE SYSTEM SHALL change the tier matrix so read and write tools (READ_ONLY, SIDE_EFFECT) auto-approve in BOTH modes; DESTRUCTIVE tools stay gated. The always-ask terminal/system set (`run_command`, `read_shell_output`, `gui_automate_*`, `lock_screen`, `shutdown`, `restart`) SHALL remain gated as a separate capability boundary.
+- AC9.4: WHEN the Auto-approve toggle is ON THEN THE SYSTEM SHALL auto-approve reads, writes, shell commands, and GUI actions in both modes; the DESTRUCTIVE tier and deletion/removal commands SHALL stay gated at all times, toggle or not. Mode SHALL govern capability only, never consent.
 - AC9.5: WHEN no approval UI is attached to the session THEN THE SYSTEM SHALL detect it before dispatch (using the existing live WebSocket client presence for the session) and fail fast; WHEN an approval UI is attached THEN THE SYSTEM SHALL keep the existing approval flow unchanged.
+- AC9.6: THE SYSTEM SHALL extend the destructive-command detector so it covers deletion/removal command forms (for example `rm`, `del`, `Remove-Item`, `rmdir`, `unlink`, `truncate`, `shred`) and SHALL gate them even when the Auto-approve toggle is ON.
 
 **Edge Cases:**
 - Approval UI attached → normal approval flow, unchanged.
@@ -239,6 +241,7 @@ The agent's turn currently ends when its step queue is empty, not when the user'
 - AC12.1: THE SYSTEM SHALL derive "approval UI attached" from the existing live WebSocket client presence for the session; no new frontend signal SHALL be introduced.
 - AC12.2: THE frontend SHALL render `Reason.APPROVAL_UNAVAILABLE` as an honest permission condition through the existing `PermissionCard` / failure rendering path, not as a generic error.
 - AC12.3: The existing `personal`/`developer` mode toggle SHALL remain the authority for capability (terminal/repo access); no new toggle SHALL be introduced. The toggle no longer gates simple writes (AC9.4).
+- AC12.4: The frontend SHALL present an **Auto-approve** toggle in `PermissionsSettingsCard` next to the mode toggle, showing the effective state; destructive tools SHALL render as gated even when Auto-approve is ON.
 
 **Edge Cases:**
 - WS client disconnects mid-approval → the step settles `APPROVAL_UNAVAILABLE`; the card clears.
