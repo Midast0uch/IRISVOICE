@@ -28,21 +28,63 @@ export interface PermissionCardProps {
   onConfirm: (id: string) => void
 }
 
+// Session 326 (owner, live): the card read as machine speak — a raw
+// `run_command` badge beside a `SIDE EFFECT` tier word. Neither tells a
+// non-coder what is about to happen. Now the badge says "Permission" and the
+// slot beside it names the ACTION TYPE in plain words ("Run command"). The raw
+// tool name and params still render in the body (see below) so nothing is
+// hidden — the header is the human verdict, the rows stay the evidence.
+const TOOL_ACTION_LABELS: Record<string, string> = {
+  run_command: "Run command",
+  write_file: "Write file",
+  edit_file: "Edit file",
+  append_file: "Add to file",
+  replace_in_file: "Edit file",
+  patch_file: "Patch file",
+  copy_file: "Copy file",
+  move_file: "Move file",
+  rename_file: "Rename file",
+  create_directory: "Create folder",
+  delete_file: "Delete file",
+  read_file: "Read file",
+  list_files: "List files",
+  glob_files: "Find files",
+  search: "Web search",
+  crawler_query: "Web search",
+  take_screenshot: "Take screenshot",
+  gui_click: "Screen click",
+  gui_type: "Screen typing",
+  git_commit: "Git commit",
+  git_push: "Git push",
+  shutdown: "Shut down",
+  lock_screen: "Lock screen",
+}
+
+/** Human action label for the badge; falls back to a neutral "Permission". */
+function actionLabel(toolName: string): string {
+  const key = (toolName || "").toLowerCase()
+  if (TOOL_ACTION_LABELS[key]) return TOOL_ACTION_LABELS[key]
+  // Unknown tool: de-underscore and title-case so it reads as words, not a
+  // code identifier ("fetch_vision" -> "Fetch vision").
+  const words = key.replace(/[._]+/g, " ").trim()
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : "Permission"
+}
+
 const TIER_CONFIG = {
   read_only: {
-    label: "Read Only",
+    label: "Just looking — nothing changes",
     color: "#34d399",
     icon: ShieldCheck,
     confirmLabel: "Approve",
   },
   side_effect: {
-    label: "Side Effect",
+    label: "This can change things on your computer",
     color: "#fbbf24",
     icon: ShieldAlert,
     confirmLabel: "Allow",
   },
   destructive: {
-    label: "Destructive",
+    label: "This can delete or overwrite things — check twice",
     color: "#f87171",
     icon: AlertTriangle,
     confirmLabel: "Confirm",
@@ -165,23 +207,26 @@ export function PermissionCard({
               boxShadow: `0 0 10px ${glowColor}, inset 0 0 4px rgba(255,255,255,0.6)`,
             }}
           />
-          {/* Tool badge — was 9px; a tool name carries meaning (which tool is
-              asking), so it moves to the chassis's 10px meaning floor
-              (Decision 15) via ChassisBadge. */}
+          {/* Badge — Session 326 (owner): the card is a PERMISSION request, so
+              the badge says exactly that. What kind of action it is moves to
+              the tier slot beside it. */}
           <ChassisBadge
             color={glowColor}
             background={`${glowColor}1a`}
             border={`1px solid ${glowColor}30`}
           >
-            {toolName}
+            Permission
           </ChassisBadge>
-          {/* Tier label — same reasoning: read_only/side_effect/destructive
-              is meaning, not chrome, so 9px -> 10px. */}
+          {/* Action label — Session 326 (owner): names the action TYPE in plain
+              words ("Run command", "Write file"), replacing the bare
+              "SIDE EFFECT" tier word. The risk stays visible via the accent
+              vein colour, the description line, and this label's tooltip. */}
           <span
-            className="text-[10px] font-semibold uppercase tracking-wide shrink-0"
+            className="text-[10px] font-semibold tracking-wide shrink-0"
             style={{ color: tierCfg.color }}
+            title={tierCfg.label}
           >
-            {tierCfg.label}
+            {actionLabel(toolName)}
           </span>
           {/* Timer stays at 9px — chrome, per the same de-emphasized-timer
               precedent CardChassis documents for TaskListCard's footnote. */}
@@ -240,7 +285,7 @@ export function PermissionCard({
             className="flex items-center gap-2"
           >
             <span className="text-[10px]" style={{ color: "rgba(255,255,255,0.6)" }}>
-              Confirm {tierCfg.label.toLowerCase()} action?
+              Are you sure? This one can delete or overwrite things.
             </span>
             <button
               type="button"

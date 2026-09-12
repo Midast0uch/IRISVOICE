@@ -1316,6 +1316,13 @@ class AgentToolBridge:
                     auto_approve=get_auto_approve(),
                     force=True,
                     session_id=session_id,
+                    # Session 326 (cross-thread card bug): carry the real
+                    # conversation so the card renders only in the thread that
+                    # asked. Without it the emit defaulted to "default" and the
+                    # bridge broadcast to every client.
+                    conversation_id=self._active_conversation_id.get(
+                        session_id, ""
+                    ) or None,
                 )
                 if req.status == "pending":
                     resolved = await perm_system.get_response_async(req)
@@ -1465,6 +1472,11 @@ class AgentToolBridge:
                 level=level,
                 auto_approve=_auto,
                 session_id=session_id,
+                # Session 326: same cross-thread fix as the force=True site
+                # above — route the card to the asking conversation.
+                conversation_id=self._active_conversation_id.get(
+                    session_id, ""
+                ) or None,
             )
                 if req.status == "pending":
                     # Wait for user response (async)

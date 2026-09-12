@@ -233,6 +233,21 @@ def approval_class(tool_name: str) -> ApprovalClass:
         pass  # registry read must never break classification — fall through
     if name in _ALWAYS_ASK_TOOLS:
         return ApprovalClass.ALWAYS_ASK
+    # Session 326 (live bug): this used to be `name in _SESSION_APPROVABLE_TOOLS`,
+    # where that set is `CapabilitySet._REPO_TOOLS - _ALWAYS_ASK_TOOLS`. Any
+    # SIDE_EFFECT tool NOT in _REPO_TOOLS therefore fell through to UNGATED and
+    # could never be remembered — `run_command` (a _TERMINAL_TOOL, tier
+    # side_effect) prompted on EVERY call. Live proof: 4 approvals for one
+    # run_command in a single session, each granted, each asking again.
+    # The class is a property of the TIER (which is what the docstring above
+    # already claims): destructive -> always ask; side-effect -> ask once per
+    # session; read-only -> never ask. Deriving it from the tier keeps the
+    # terminal/GUI tools in the same consent model as writes.
+    try:
+        if classify_tool(tool_name, None) == PermissionTier.SIDE_EFFECT:
+            return ApprovalClass.SESSION_APPROVABLE
+    except Exception:
+        pass  # registry read must never break classification — fall through
     if name in _SESSION_APPROVABLE_TOOLS:
         return ApprovalClass.SESSION_APPROVABLE
     return ApprovalClass.UNGATED
@@ -534,6 +549,7 @@ class ToolPermissionSystem:
         force: bool = False,
         session_id: Optional[str] = None,
         auto_approve: Optional[bool] = None,
+        conversation_id: Optional[str] = None,
     ) -> ToolPermissionRequest:
         """Create and emit a permission request.
 
@@ -613,6 +629,14 @@ class ToolPermissionSystem:
             self._pending[req.request_id] = req
 
             # Emit via EventBus
+            # Session 326 (cross-thread card bug): the emit used to omit
+            # session_id/conversation_id, so EventPayload defaulted both to
+            # "default". WSEventBridge.handler then took its broadcast-to-ALL
+            # fallback (ws_event_bridge.py:160-169: a "default"/unknown session
+            # is not routed), and the PermissionCard rendered in EVERY open
+            # conversation — not just the one that asked. Routing the emit by
+            # session fixes it at the source; the frontend also guards by
+            # conversation_id (defence in depth).
             self._bus.emit(
                 self._IRISStreamEvent.PERMISSION_REQUEST,
                 data={
@@ -625,6 +649,8 @@ class ToolPermissionSystem:
                     "requires_confirmation": action == PermissionAction.REQUIRE_CONFIRMATION,
                 },
                 turn_id=turn_id,
+                session_id=session_id or "default",
+                conversation_id=conversation_id or session_id or "default",
             )
 
             logger.info(

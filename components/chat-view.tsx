@@ -1559,9 +1559,25 @@ export function ChatWing({
       const detail = (e as CustomEvent<{
         request_id: string; tool_name: string; tier: string;
         params?: Record<string, unknown>; description?: string;
-        timeout_seconds?: number; requires_confirmation?: boolean
+        timeout_seconds?: number; requires_confirmation?: boolean;
+        conversation_id?: string
       }>).detail
       if (!detail?.request_id || !detail?.tool_name) return
+
+      // Session 326 (cross-thread card bug): a permission request belongs to
+      // ONE conversation. Without this guard the card rendered in every open
+      // thread (the backend used to broadcast to all clients). The backend now
+      // routes by conversation_id; this is defence in depth so a stale or
+      // mis-routed frame can never surface a card in the wrong thread.
+      // An absent conversation_id is accepted (older backend / unknown
+      // session) — dropping those would hide a real prompt, which is worse.
+      if (
+        detail.conversation_id &&
+        activeConversationIdRef.current &&
+        detail.conversation_id !== activeConversationIdRef.current
+      ) {
+        return
+      }
 
       const perm: PendingPermission = {
         requestId: detail.request_id,
