@@ -163,8 +163,8 @@ def test_ct_perm3_card_labels_are_human_readable():
         encoding="utf-8", errors="replace",
     ).read()
     assert "TOOL_ACTION_LABELS" in src, "an action-label map must exist"
-    assert "run_command: \"Run a command\"" in src, "run_command needs a plain label"
-    assert "{actionLabel(toolName)}" in src, "the badge must render the action label"
+    assert "run_command: \"Run command\"" in src, "run_command needs a plain label"
+    assert '{actionLabel(toolName)}' in src, "the badge must render the action label"
     # The bare tier words must be gone from the rendered header.
     assert 'label: "Side Effect"' not in src
     assert "This can change things on your computer" in src

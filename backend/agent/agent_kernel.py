@@ -5750,10 +5750,79 @@ class AgentKernel:
                 ("; reasons: " + "; ".join(_reasons)) if _reasons else "",
                 _where,
             )
+            # Session-326 (goal-contract terminal-signal diag): at every grade
+            # chokepoint, settle the card. The grade helper was reachable from
+            # three call sites — _execute_plan_der (failure-settled),
+            # _der_finalize_step (finalize-complete), and _der_plan_next_step
+            # (continuation-done) — but only _execute_plan_der's
+            # _emit_terminal_event emitted a card frame. Without this emit,
+            # regressions where the possess motion ran without writing a
+            # task:done event left the card in Active Execution forever while
+            # the turn had finished; follow-ups were then routed as steering
+            # (anyCardWorking=True) into a closed turn.
+            self._der_emit_card_settle(_turn_id, completed_items, _grade, _where)
             return _grade
         except Exception as _grade_exc:
             logger.debug("[DER] run grade computation failed: %s", _grade_exc)
             return ""
+
+    def _der_emit_card_settle(self, _turn_id, completed_items, _grade, _where):
+        """Settle the task card when the goal contract's grade fires.
+
+        Session-326 (owner directive, 2026-09-12): the grade is the terminal
+        authority — the loop's "done" signal. The card is only a display. If
+        the grade never reaches the card, a card stays Active Execution
+        forever. ember.
+
+        Idempotent per turn: emits once, then marks emitted. Never raises —
+        a display-frame must never block a terminal.
+        """
+        try:
+            from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+        except Exception:
+            return  # bus unavailable
+
+        _emitted = getattr(self, "_der_card_terminal_emitted", None)
+        if _emitted is None:
+            _emitted = set()
+            self._der_card_terminal_emitted = _emitted
+        _key = _turn_id or "<none>"
+        if _key in _emitted:
+            return
+
+        card_id = None
+        try:
+            _env = self._card_envelope(_turn_id)
+            if isinstance(_env, dict):
+                card_id = _env.get("card_id")
+        except Exception:
+            pass
+        if not card_id:
+            # No card was created this turn — nothing to settle.
+            _emitted.add(_key)
+            return
+
+        outcome = "success" if _grade == "pass" else "partial" if \
+            _grade == "partial" else "failure"
+        try:
+            get_event_bus().emit(
+                IRISStreamEvent.TASK_DONE if outcome in ("success", "partial")
+                else IRISStreamEvent.TASK_FAIL,
+                data={
+                    "task_id": _key,
+                    "card_id": card_id,
+                    "outcome": outcome,
+                    "steps_completed": len(completed_items or []),
+                    "conversation_id": getattr(self, "conversation_id", None),
+                },
+                turn_id=_turn_id,
+                conversation_id=getattr(self, "conversation_id", None),
+                session_id=getattr(self, "session_id", None) or "default",
+            )
+            _emitted.add(_key)
+        except Exception:
+            # Never block the grade on a display frame.
+            pass
 
     def _get_failure_warnings(self, task: str) -> str:
         """
