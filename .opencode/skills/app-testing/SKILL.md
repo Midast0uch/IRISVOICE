@@ -75,6 +75,53 @@ done
   server whose log already said `✓ Ready in 13.0s`. Poll for the **listener** on 3000
   (`netstat -ano -p TCP | findstr :3000`) or `Ready in` in `.iris-logs/frontend-*.log`.
 
+#### Frontend accepts TCP but never answers → WEDGED, not compiling
+
+**Symptom**: `http://localhost:3000` "can't be reached" / times out; even static
+assets (`/favicon.ico`) hang; a raw TCP connect succeeds but the server sends **0 bytes**.
+
+**The distinguishing test** — is the server *working* or *wedged*?
+
+```powershell
+$p = Get-Process -Id <next-server-pid>   # owner of :3000, NOT the npm wrapper
+$c1 = $p.TotalProcessorTime.TotalSeconds; Start-Sleep 8
+$p2 = Get-Process -Id <next-server-pid>
+"CPU delta: $([Math]::Round($p2.TotalProcessorTime.TotalSeconds-$c1,2))s  handles=$($p2.HandleCount)  threads=$($p2.Threads.Count)"
+```
+
+- **Compiling** → CPU delta is large (seconds), handles in the hundreds.
+- **Wedged** → CPU delta ≈ `0s` AND **handles ≈ 100,000+** (Windows handle exhaustion).
+  The request thread is blocked on a handle-constrained file watcher, so it burns no CPU.
+
+**Root cause**: `.next` (Turbopack dev cache) bloats to **200k+ files**. Turbopack's
+file watcher opens a handle per file; the process hits the Windows handle ceiling and
+request threads block. Measured 2026-09-13: `.next` = **200,366 files**, server held
+**100,253 handles** at **0 CPU**, every route timed out (including static). This is the
+"slow drive / AV realtime scan" hang called out in `next.config.mjs` — the fast-cache
+junction mitigation (`scripts/setup_fast_next_cache.py`, referenced by `.env.local`) was
+**not active**, so `.next` lived on the slow project drive under Defender realtime.
+
+**Fix** (the `.next` dir is pinned by the wedged process, so stop first):
+
+```powershell
+python scripts/iris_process_manager.py stop-named frontend
+taskkill /F /T /PID <next-server-pid>        # manager kills only the npm wrapper
+Rename-Item .next .next.bloated               # rename is instant; a recursive delete of 200k files is not
+npm run iris:start:frontend
+```
+
+**Verify**: first request now returns **200 in ~2.5s** (cold), server handles in the
+hundreds. If handles are still ~100k after a clean `.next`, the cache is bloating again
+within one session — relocate it via `setup_fast_next_cache.py` or add a Defender
+exclusion for the project drive.
+
+> **Manager gotcha**: `stop-named frontend` kills the npm wrapper PID only. The real
+> `next-server` child (the owner of :3000) **survives** and keeps holding `.next`. Always
+> find the :3000 owner and `taskkill` it explicitly. A process stuck in a kernel wait
+> (0 handles, 1 thread) may be **unkillable** — `taskkill`/WMI Terminate fail with
+> `ReturnValue=2`; if so, rename `.next` out of the way and start fresh, and expect the
+> zombie to linger until reboot.
+
 ### Teardown
 
 `npm run iris:stop` — kills every tracked service and its tree, then verify the ports
@@ -229,6 +276,11 @@ bug-vs-feature calls, launch quirks.
   (`tool_bridge.py:66`); `recall_memory` → `AttributeError` on tool-failure recovery.
   Latent until a tool fails.
 - **Dilithium `data/memory.db`**: "file is not a database" — unresolved.
+- **`.next` cache bloat → frontend wedge (2026-09-13)**: Turbopack's dev cache can grow
+  to 200k+ files; the server then holds ~100k handles at 0 CPU and answers **nothing**
+  (see Step 0 "WEDGED, not compiling"). Fix = stop, `taskkill` the :3000 owner, rename
+  `.next` aside, restart. Recurrence risk while `.next` sits on the slow drive with
+  Defender realtime on — activate `setup_fast_next_cache.py` or exclude the drive.
 - **Port drift (fixed)**: a stale backend held 8090, the launcher fell back to 8091, the
   WS never connected and the orb showed a phantom inner glow. Divergent launchers deleted;
   `start-backend.py` now tree-kills the stale process and fails loudly rather than drifting.

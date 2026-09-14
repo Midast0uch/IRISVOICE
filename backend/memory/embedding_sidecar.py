@@ -228,6 +228,24 @@ def embed(text: str, timeout_s: float = 30.0) -> Optional[List[float]]:
     return vecs[0] if vecs else None
 
 
+# llama-server is started with `-c 2048 --parallel 4`, i.e. 512 tokens per
+# slot. An input longer than that slot makes the server answer HTTP 500 for the
+# WHOLE request (measured 2026-09-13: 2048 chars -> 200, 4096 chars -> 500).
+# The chunker normally caps chunks at EMBED_MAX_CHARS (1024), but the
+# encode_batch fast path can hand us an over-long chunk, and one bad element
+# poisons the entire batch. Clip at the HTTP boundary so no caller can 500 the
+# sidecar. 1024 chars is the project's shared EMBED_MAX_CHARS standard and is
+# comfortably inside the 512-token slot.
+_MAX_INPUT_CHARS = 1024
+
+
+def _clip(text: str) -> str:
+    """Bound one input to the sidecar's per-slot context. Never raises."""
+    if not isinstance(text, str):
+        text = str(text)
+    return text[:_MAX_INPUT_CHARS]
+
+
 def embed_batch(texts: List[str], timeout_s: float = 60.0) -> List[Optional[List[float]]]:
     """Many texts -> many vectors in ONE POST (llama-server accepts arrays).
 
@@ -243,7 +261,7 @@ def embed_batch(texts: List[str], timeout_s: float = 60.0) -> List[Optional[List
     try:
         r = _get_client().post(
             f"http://127.0.0.1:{_SIDECAR_PORT}/v1/embeddings",
-            json={"input": list(texts)},
+            json={"input": [_clip(t) for t in texts]},
             timeout=timeout_s,
         )
         r.raise_for_status()

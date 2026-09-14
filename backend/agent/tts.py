@@ -828,6 +828,22 @@ class TTSManager:
                         return
                     msg = self._read_line(timeout=min(30.0, remaining))
                     if msg is None:
+                        # A read timeout is NOT proof the worker is wedged. A
+                        # cold model or a long prompt can delay the FIRST chunk
+                        # past 30s while the worker is healthy and generating
+                        # (measured 2026-09-13: the worker logged "Prompting
+                        # text took 15636 ms" then generation steps, yet the
+                        # parent killed it at 30s and paid a fresh 438MB model
+                        # load — the restart loop that spiked CPU/RAM). Only
+                        # restart when the process is actually gone; otherwise
+                        # keep waiting inside the synthesis budget.
+                        if self._proc is not None and self._proc.poll() is None:
+                            _root_log.warning(
+                                "[TTSManager] No chunk for 30s but worker is "
+                                "alive — continuing to wait (%.0fs budget left)",
+                                remaining,
+                            )
+                            continue
                         _root_log.error(
                             "[TTSManager] Worker produced nothing for 30s "
                             "mid-synthesis — restarting"

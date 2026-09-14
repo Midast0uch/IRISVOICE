@@ -179,44 +179,20 @@ class CrawlPlanner:
         if provider_plan is not None:
             return provider_plan
 
-        # ── Step 2: MISS — call LLM for URL generation (with retry) ────
-        # Pre-flight rate probe: the planner's ONLY URL source is the LLM, and
-        # a saturated provider would burn the transport's blind 3x retry loop
-        # (~90s of Retry-After sleeps) before returning empty anyway. Probe
-        # the window FIRST: saturated -> honest empty plan in milliseconds, so
-        # the websearch fails fast (REQ-5 honest failure) instead of stalling.
-        probe = await self._probe_rate_window()
-        if probe is not None and probe.get("saturated"):
-            logger.warning(
-                "[CrawlPlanner] rate window saturated (%d reqs / %.0fs window, "
-                "ceiling %.1f rpm) — skipping LLM, honest empty plan for %r",
-                probe.get("requests", 0), probe.get("window_s", 60),
-                probe.get("ceiling_rpm", 0), query[:60],
-            )
-            return self._empty_plan(query)
-
-        prompt = _PLAN_PROMPT.format(today=date.today().isoformat(), query=query)
-        plan = await self._plan_with_retry(prompt, query)
-
-        # ── Post-process: filter bot-blocked domains ────────────────────
-        if plan.urls:
-            plan.urls = _filter_urls(plan.urls, query)
-
-        # Every plan names WHICH path produced its URLs — a silent provider
-        # choice is unanswerable in logs, which is how the Exa dead-wiring
-        # defect survived undetected.
+        # ── Step 2: NO LLM URL GENERATION (owner directive 2026-09-13) ──
+        # The LLM must NEVER fabricate URLs. It used to be the planner's only
+        # URL source, which is why an unconfigured box invented paywalled
+        # academic URLs and the crawl then stalled for the full step budget
+        # (measured 2026-09-13: 255s TimeoutError on "latest Zig release").
+        # When no configured provider (e.g. Exa) yields real URLs, return an
+        # EMPTY plan. The orchestrator routes an empty plan to
+        # `search_discovery`, which drives the in-app browser to run a real
+        # search and hands back real URLs — that is the natural websearch path.
         logger.info(
-            "[CrawlPlanner] source=llm urls=%d query=%r", len(plan.urls), query[:60],
+            "[CrawlPlanner] source=none urls=0 query=%r — deferring to "
+            "search_discovery (in-app browser)", query[:60],
         )
-
-        # ── Step 3: Learn from the LLM result (if any) ─────────────────
-        if plan.urls:
-            from backend.crawler.search_providers.base import SearchResult, SearchResultItem
-
-            items = [SearchResultItem(url=u) for u in plan.urls]
-            await registry.learn(query, SearchResult(query=query, results=items, provider="llm"))
-
-        return plan
+        return self._empty_plan(query)
 
     async def _plan_with_configured_provider(self, query: str) -> Optional["CrawlPlan"]:
         """Try the configured SearchProvider (e.g. Exa) before the LLM path.

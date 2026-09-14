@@ -175,12 +175,15 @@ def test_exa_provider_used_when_configured_and_key_present(caplog):
 # provider="exa" + NO key -> falls back to LLM, does not crash
 # ══════════════════════════════════════════════════════════════════════════
 
-def test_exa_configured_without_key_falls_back_to_llm(monkeypatch):
-    """get_search_provider() itself already falls back to LLMSearchProvider
-    when provider='exa' is configured but EXA_API_KEY is unset (see
-    search_providers/__init__.py get_search_provider). This pins that
-    crawl_planner survives that fallback and reaches the LLM path normally
-    rather than crashing on a missing key."""
+def test_exa_configured_without_key_yields_empty_plan(monkeypatch):
+    """Owner directive 2026-09-13: the LLM must NEVER fabricate URLs. When
+    provider='exa' is configured but no key resolves, the planner returns an
+    EMPTY plan (no LLM URL generation); the orchestrator routes an empty plan
+    to search_discovery, which drives the in-app browser.
+
+    RE-SCOPED from the old "falls back to llm" contract: that contract encoded
+    the removed behavior (LLM-generated URLs). The name and assertions now
+    describe the new requirement."""
     from backend.crawler import search_providers as sp_mod
 
     monkeypatch.setattr(
@@ -188,15 +191,11 @@ def test_exa_configured_without_key_falls_back_to_llm(monkeypatch):
     )
     monkeypatch.delenv("EXA_API_KEY", raising=False)
     # Seal the third key source: this machine's real keyring may hold a live
-    # Exa key (migrated 2026-09-04), which would satisfy the reader and break
-    # the "NO key anywhere" precondition this fallback contract requires.
+    # Exa key (migrated 2026-09-04), which would satisfy the reader.
     monkeypatch.setattr(sp_mod, "get_secret", lambda slot: None)
     sp_mod.clear_search_provider_cache()
 
-    kern = _FakeKernel([
-        '{"urls":["https://example.com/c"],"instructions":"extract",'
-        '"result_type":"mixed","title":"T"}',
-    ])
+    kern = _FakeKernel(forbid=True)  # any LLM call is a hard failure
     reg = _FakeRegistry()
     planner = CrawlPlanner()
 
@@ -207,9 +206,10 @@ def test_exa_configured_without_key_falls_back_to_llm(monkeypatch):
     finally:
         sp_mod.clear_search_provider_cache()
 
-    assert plan.urls == ["https://example.com/c"]
-    assert kern.calls == 1, (
-        "missing-key Exa config must fall back to the LLM path, not crash"
+    assert plan.urls == [], "the LLM must not fabricate URLs"
+    assert kern.calls == 0, (
+        "LLM URL generation was removed by owner directive — the planner must "
+        "defer to search_discovery instead"
     )
 
 
@@ -217,15 +217,14 @@ def test_exa_configured_without_key_falls_back_to_llm(monkeypatch):
 # provider="llm" -> LLM path unchanged
 # ══════════════════════════════════════════════════════════════════════════
 
-def test_llm_provider_configured_reaches_llm_path_directly():
-    """provider='llm' (the default) behaves exactly as before this fix —
-    straight to the LLM planning path, zero provider.search() detours."""
+def test_llm_provider_configured_never_generates_urls():
+    """provider='llm' must no longer fabricate URLs: the planner returns an
+    empty plan and defers to search_discovery (in-app browser). RE-SCOPED from
+    the old "reaches LLM path directly" contract, which encoded the removed
+    behavior."""
     llm_provider = LLMSearchProvider()
 
-    kern = _FakeKernel([
-        '{"urls":["https://example.com/d"],"instructions":"extract",'
-        '"result_type":"mixed","title":"T"}',
-    ])
+    kern = _FakeKernel(forbid=True)
     reg = _FakeRegistry()
     planner = CrawlPlanner()
 
@@ -234,24 +233,24 @@ def test_llm_provider_configured_reaches_llm_path_directly():
          patch("backend.crawler.source_registry.get_source_registry", return_value=reg):
         plan = _run(planner.plan("some query"))
 
-    assert plan.urls == ["https://example.com/d"]
-    assert kern.calls == 1
+    assert plan.urls == [], "the LLM must not fabricate URLs"
+    assert kern.calls == 0
 
 
 # ══════════════════════════════════════════════════════════════════════════
 # Exa returns zero results -> falls back to the LLM path, not a dead end
 # ══════════════════════════════════════════════════════════════════════════
 
-def test_exa_zero_results_falls_back_to_llm(caplog):
+def test_exa_zero_results_yields_empty_plan(caplog):
+    """Zero Exa results must NOT fall through to LLM-fabricated URLs; the
+    planner returns an empty plan and defers to search_discovery. RE-SCOPED
+    from the old "falls back to llm" contract."""
     exa = ExaSearchProvider(api_key="test-key-not-real")
     exa.search = AsyncMock(return_value=SearchResult(
         query="an obscure query", results=[], provider="exa",
     ))
 
-    kern = _FakeKernel([
-        '{"urls":["https://example.com/e"],"instructions":"extract",'
-        '"result_type":"mixed","title":"T"}',
-    ])
+    kern = _FakeKernel(forbid=True)
     reg = _FakeRegistry()
     planner = CrawlPlanner()
 
@@ -261,24 +260,24 @@ def test_exa_zero_results_falls_back_to_llm(caplog):
          caplog.at_level("INFO"):
         plan = _run(planner.plan("an obscure query"))
 
-    assert plan.urls == ["https://example.com/e"]
-    assert kern.calls == 1, "zero Exa results must fall through to the LLM path"
+    assert plan.urls == [], "zero Exa results must NOT produce LLM URLs"
+    assert kern.calls == 0
     assert "source=exa urls=0" in caplog.text
-    assert "source=llm urls=1" in caplog.text
+    assert "source=none urls=0" in caplog.text
 
 
 # ══════════════════════════════════════════════════════════════════════════
 # Exa error (auth/rate-limit/timeout/upstream) -> falls back, no crash
 # ══════════════════════════════════════════════════════════════════════════
 
-def test_exa_error_falls_back_to_llm_without_crashing(caplog):
+def test_exa_error_yields_empty_plan_without_crashing(caplog):
+    """An Exa failure must NOT fall through to LLM-fabricated URLs; the planner
+    returns an empty plan without crashing and defers to search_discovery.
+    RE-SCOPED from the old "falls back to llm" contract."""
     exa = ExaSearchProvider(api_key="test-key-not-real")
     exa.search = AsyncMock(side_effect=SearchProviderError("rate limited", retry_after=30.0))
 
-    kern = _FakeKernel([
-        '{"urls":["https://example.com/f"],"instructions":"extract",'
-        '"result_type":"mixed","title":"T"}',
-    ])
+    kern = _FakeKernel(forbid=True)
     reg = _FakeRegistry()
     planner = CrawlPlanner()
 
@@ -288,6 +287,6 @@ def test_exa_error_falls_back_to_llm_without_crashing(caplog):
          caplog.at_level("INFO"):
         plan = _run(planner.plan("some query"))
 
-    assert plan.urls == ["https://example.com/f"]
-    assert kern.calls == 1
+    assert plan.urls == [], "an Exa failure must NOT produce LLM URLs"
+    assert kern.calls == 0
     assert "source=exa failed" in caplog.text
