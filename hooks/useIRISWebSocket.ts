@@ -171,6 +171,17 @@ let _sharedHandleMessage: ((message: Record<string, unknown>) => void) | null = 
 let _sharedConnState: ConnectionState = "disconnected"
 let _sharedTauriStarted = false
 let _sharedTauriListenersReady = false
+// Session-331: the liveness clock is SHARED (module-level), like the socket it
+// describes. Multiple components instantiate this hook (orbit-node,
+// useInferenceState, NavigationContext) but only ONE — the primary — has its
+// handleMessage wired to the shared socket. With a per-instance clock, every
+// NON-primary instance never saw a frame, so its liveness watchdog fired
+// "No frame for 75-90s — treating the backend as wedged and reconnecting" and
+// force-closed the SHARED socket while a turn was mid-flight. That reconnect
+// cancels the in-flight turn on the backend ("client_replace cancelled
+// in-flight thread"). One socket ⇒ one liveness clock. The watchdog below reads
+// this, and handleMessage/onopen bump it for every instance at once.
+let _sharedLastFrameAt = 0
 const _connSubs = new Set<() => void>()
 
 function _emitSharedConn(next: ConnectionState) {
@@ -398,7 +409,11 @@ export function useIRISWebSocket(
   // is therefore never re-triggered and the UI is stale until a manual
   // refresh. This ref is what lets the watchdog below tell "connected" apart
   // from "connected to something that stopped answering".
-  const lastFrameAtRef = useRef<number>(0)
+  //
+  // Session-331: the clock is the MODULE-LEVEL `_sharedLastFrameAt`, not a
+  // per-instance number — the socket is shared, so the clock must be too (see
+  // its declaration). Every instance reads the same truth, so a non-primary
+  // instance can no longer mistake a live connection for a wedged one.
 
   // Optimistic update tracking: store previous values for revert on validation error
   const pendingUpdatesRef = useRef<Map<string, { sectionId: string; fieldId: string; previousValue: string | number | boolean }>>(new Map())
@@ -612,7 +627,7 @@ export function useIRISWebSocket(
           _emitSharedConn("connected")
           reconnectAttemptsRef.current = 0     // reset backoff counter on success
           connectedAtRef.current = Date.now()  // Fix 2 — record connection time
-          lastFrameAtRef.current = Date.now()  // liveness watchdog starts fresh
+          _sharedLastFrameAt = Date.now()  // liveness watchdog starts fresh
           setIsChatTyping(false)               // Fix: reset typing state on reconnect
                                                 // prevents stuck "thinking..." after disconnect
 
@@ -712,7 +727,7 @@ export function useIRISWebSocket(
     // Proof of life for the liveness watchdog: ANY frame means the backend is
     // still answering. Recorded here (not per-path) because both the browser
     // socket and the Tauri Rust client funnel through this one function.
-    lastFrameAtRef.current = Date.now()
+    _sharedLastFrameAt = Date.now()
     // Proof of life for the typing watchdog: any frame from the backend means
     // it is still working, so the "stuck indicator" timer restarts. Cheap —
     // a counter bump, and the watchdog is the only reader.
@@ -2336,7 +2351,7 @@ export function useIRISWebSocket(
         _emitSharedConn('connected');
         reconnectAttemptsRef.current = 0;
         connectedAtRef.current = Date.now();
-        lastFrameAtRef.current = Date.now();
+        _sharedLastFrameAt = Date.now();
         setIsChatTyping(false);
         seqRef.current = 0;
 
@@ -2411,7 +2426,7 @@ export function useIRISWebSocket(
     const SILENCE_TIMEOUT_MS = 75_000;
 
     const timer = setInterval(() => {
-      const last = lastFrameAtRef.current;
+      const last = _sharedLastFrameAt;
       if (!last) return;                       // no frame yet — nothing to judge
       if (Date.now() - last < SILENCE_TIMEOUT_MS) return;
 
@@ -2419,7 +2434,7 @@ export function useIRISWebSocket(
         `[IRIS WebSocket] No frame for ${Math.round((Date.now() - last) / 1000)}s ` +
         `while connected — treating the backend as wedged and reconnecting.`
       );
-      lastFrameAtRef.current = 0;
+      _sharedLastFrameAt = 0;
 
       if (isTauri) {
         // connect() only spawns a fresh Rust loop when _sharedTauriStarted is

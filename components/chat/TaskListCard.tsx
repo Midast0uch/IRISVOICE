@@ -399,12 +399,28 @@ export default function TaskListCard({
   }, [memCount])
 
   // Design token table — footnote text: latest REAL memory event
-  // (recall/compress/episodic), falling back to "Active Execution".
+  // (recall/compress/episodic), falling back to a run-state label.
+  //
+  // Session-331 (live T3): the old fallback was a bare "Active Execution"
+  // whenever there were no memory events — with NO terminal branch. A settled
+  // card whose grade fired (task:fail/task:done) therefore still read "Active
+  // Execution" with a frozen timer, visually identical to a live run. The
+  // label is now a function of the run state: only claim "Active Execution"
+  // while the run is actually live; once settled, name the real outcome from
+  // the steps. Never fabricate liveness.
   const footnoteText = useMemo(() => {
     const last = memoryEvents?.[memoryEvents.length - 1]
-    if (!last) return "Active Execution"
-    return formatMemoryEntry(last.kind, last.data)?.summary ?? last.kind
-  }, [memoryEvents])
+    if (last) return formatMemoryEntry(last.kind, last.data)?.summary ?? last.kind
+    if (isWorking) return "Active Execution"
+    if (steps.some((s) => s.status === "fail" || s.status === "error")) {
+      return "Run failed"
+    }
+    if (steps.length > 0 && steps.every((s) => s.status === "done" || s.status === "skipped")) {
+      return "Run complete"
+    }
+    if (steps.length > 0) return "Run ended"
+    return "Idle"
+  }, [memoryEvents, isWorking, steps])
 
   // Session 246: the footer memory line takes the KIND's tint so episodic
   // activity is visibly alive (amber) vs recall (violet) vs compress (cyan).
@@ -518,7 +534,11 @@ export default function TaskListCard({
           {/* Right group — justify-between on the parent pins this to the
               FAR RIGHT edge of the footer. */}
           <span className="flex items-center gap-2 shrink-0">
-            {(isWorking || elapsedSec > 0) && (
+            {/* Session-331: the live ⏱ pill is gated on isWorking ONLY, so a
+                settled run can never show a frozen live timer (the old
+                `|| elapsedSec > 0` kept it after settle). The frozen-duration
+                pill below covers completed/rehydrated runs. */}
+            {isWorking && (
               <span
                 className="px-1.5 py-0.5 rounded text-[9px] font-mono tabular-nums"
                 style={{ color: `${veinColor}cc`, border: `1px solid ${veinColor}20`, background: `${veinColor}10` }}

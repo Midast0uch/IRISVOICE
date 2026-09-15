@@ -386,17 +386,42 @@ def is_destructive_command(
         return False
 
 
+# ── Auto-approve default (session-331 owner decision) ──────────────────────
+# The owner's directive: creating files (via write_file OR run_command) must
+# NOT require a permission card to accept. The Auto-approve toggle is the ONE
+# consent control (KD-12), so the coherent way to honour "creation never asks"
+# without special-casing tool names is to default the toggle ON. The DESTRUCTIVE
+# tier and deletion/removal commands stay gated at ALL times regardless (AC9.4/
+# AC9.6) — that is the real safety net and it is unchanged. An operator can set
+# `auto_approve: false` in data/iris_config.json (or toggle it in the Tools
+# card) to make writes and shell ask again; that choice is honoured.
+DEFAULT_AUTO_APPROVE = True
+
+
 def get_auto_approve() -> bool:
     """Read the Auto-approve consent toggle (T18, KD-12).
 
     Consent (whether the agent asks first) is SEPARATE from mode/capability
-    (which tools exist). Default OFF (fail closed — ask first) when the
-    config is absent or unreadable. Never raises.
+    (which tools exist).
+
+    Two distinct cases (session-331, preserving the REQ-19 AC6 safety rule):
+      * config READABLE, key ABSENT  -> DEFAULT_AUTO_APPROVE (ON — the owner
+        decision that file creation must not need a card).
+      * config UNREADABLE/UNPARSEABLE -> False (FAIL CLOSED — still ask). AC6:
+        an unreadable config must never resolve to "everything approved".
+
+    The DESTRUCTIVE tier stays gated in BOTH states. Never raises.
     """
     try:
         with open(_caps._CFG_PATH, encoding="utf-8") as _f:
             _cfg = json.load(_f)
-        return bool(_cfg.get("auto_approve", False))
+    except Exception:
+        # Unreadable config: fail CLOSED (ask), never "everything approved" (AC6).
+        return False
+    try:
+        if "auto_approve" in _cfg:
+            return bool(_cfg.get("auto_approve"))
+        return DEFAULT_AUTO_APPROVE
     except Exception:
         return False
 

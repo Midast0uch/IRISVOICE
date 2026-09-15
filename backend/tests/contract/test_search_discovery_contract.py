@@ -121,9 +121,15 @@ def test_discovery_extracts_and_filters_dom_results():
     assert "https://www.bing.com/" not in result.urls
     assert not any("doubleclick.net" in u for u in result.urls)
     assert result.used_vision_fallback is False
-    # AC2: type the query then submit — both actions performed.
-    assert [a.kind for a in sess.acts] == ["type", "click"]
+    # AC2: the query is entered, then submitted. Session-331 RE-SCOPE: submit is
+    # a NAVIGATE to the engine's results URL, not a click on a submit button —
+    # the button markup is not stable (live 2026-09-15: Bing's #sb_form_go and
+    # button[type=submit] both matched ZERO elements, so the click timed out and
+    # the search never fired). The requirement (query entered AND submitted) is
+    # unchanged; only the mechanism moved to the markup-independent one.
+    assert [a.kind for a in sess.acts] == ["type", "navigate"]
     assert sess.acts[0].value == "boss tower builds"
+    assert "boss+tower+builds" in (sess.acts[1].target or "")
     assert sess.closed is True
 
 
@@ -193,8 +199,10 @@ def test_discovery_wall_on_search_engine_is_reported_not_solved():
     assert result.wall == "captcha"
     assert result.urls == []
     # No action beyond type+submit — the module never probes further to
-    # "solve" the wall.
-    assert [a.kind for a in sess.acts] == ["type", "click"]
+    # "solve" the wall. Session-331: submit is now a results-URL NAVIGATE (see
+    # the extraction test above); the intent (one type + one submit, then stop)
+    # is unchanged.
+    assert [a.kind for a in sess.acts] == ["type", "navigate"]
 
 
 def test_orchestrator_parks_search_engine_wall_and_dispatches_nothing(monkeypatch):

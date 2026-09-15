@@ -35,7 +35,9 @@ async def test_ct11_gate_reached_denial_blocks_approval_runs(
     """REQ-17 AC1/AC2/AC4: gated call emits PERMISSION_REQUEST, blocks until answered;
     DENY prevents execution; APPROVE lets it proceed; both reach respond_to_permission."""
     monkeypatch.setattr(_perm, "PERMISSION_TIMEOUT_SIDE_EFFECT", 5)
-    _write_cfg(monkeypatch, tmp_path, json.dumps({"mode": "developer"}))
+    # Session-331: explicit auto_approve=False so the gate ASKS (the shipped
+    # default is now ON — file creation must not need a card).
+    _write_cfg(monkeypatch, tmp_path, json.dumps({"mode": "developer", "auto_approve": False}))
 
     from backend.agent.event_bus import get_event_bus, IRISStreamEvent
     from backend.agent.tool_bridge import AgentToolBridge
@@ -97,7 +99,9 @@ async def test_ct11_fail_closed_on_permission_error(
 ):
     """REQ-17: the gate must NOT silently bypass on error — an exception inside the
     permission check blocks the tool (fail closed), it does not proceed."""
-    _write_cfg(monkeypatch, tmp_path, json.dumps({"mode": "developer"}))
+    # Session-331: auto_approve=False so the gate reaches request_permission,
+    # which the test then forces to raise.
+    _write_cfg(monkeypatch, tmp_path, json.dumps({"mode": "developer", "auto_approve": False}))
 
     from backend.agent.event_bus import get_event_bus, IRISStreamEvent
     from backend.agent.tool_bridge import AgentToolBridge
@@ -158,12 +162,15 @@ def test_ct12_tier_set_vs_runtime_registry(monkeypatch):
 
 def test_ct13_mode_binding_absent_not_permissive(tmp_path, monkeypatch):
     """REQ-17 AC3: an absent 'mode' key does NOT resolve to the most permissive policy
-    ('personal'); it fails CLOSED to 'developer' (which requires approval)."""
+    ('personal'); it fails CLOSED to 'developer' (which requires approval).
+    Session-331: consent is now the toggle (default ON), so the mode-binding claim
+    is asserted on the MODE, and the consent requirement is asserted with the
+    toggle explicitly OFF."""
     _write_cfg(monkeypatch, tmp_path, json.dumps({"other": True}))
     assert _caps.CapabilitySet.get_mode() == "developer"
-    # And developer mode requires approval for SIDE_EFFECT (the gate asks)
+    # Developer mode + toggle OFF -> SIDE_EFFECT requires approval (the gate asks).
     assert _perm.get_permission_action(
-        _perm.PermissionTier.SIDE_EFFECT, "developer"
+        _perm.PermissionTier.SIDE_EFFECT, "developer", auto_approve=False
     ).value == "require_approval"
 
 
@@ -173,7 +180,8 @@ async def test_ct11_timeout_treated_as_denied(
 ):
     """REQ-17 edge: a gated call whose permission times out is treated as denied —
     the tool does NOT execute."""
-    _write_cfg(monkeypatch, tmp_path, json.dumps({"mode": "developer"}))
+    # Session-331: auto_approve=False so the gate asks and can time out.
+    _write_cfg(monkeypatch, tmp_path, json.dumps({"mode": "developer", "auto_approve": False}))
     # Make the permission wait time out fast so the test does not hang.
     monkeypatch.setattr(_perm, "PERMISSION_TIMEOUT_SIDE_EFFECT", 0.2)
 

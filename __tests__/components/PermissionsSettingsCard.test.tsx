@@ -1,8 +1,14 @@
 /**
- * PermissionsSettingsCard — REQ-19 AC3/AC5, REQ-16 AC2.
- * Smoke test: renders without crashing, mocks the /api/config fetch, and
- * asserts the EFFECTIVE mode is shown (REQ-16 AC2 — the truthful current mode,
- * not merely the stored one).
+ * PermissionsSettingsCard — REQ-19 AC3/AC5.
+ *
+ * Session-331 RE-SCOPE: this component now renders ONLY the standing
+ * approved-tools list. The permission MODE dropdown and the AUTO-APPROVE
+ * toggle moved to ordinary dashboard fields (`permission_mode` /
+ * `auto_approve` in data/cards.ts), rendered by dark-glass-dashboard's native
+ * row style — so they are no longer part of THIS component. The assertions
+ * below test what the component still owns: it renders the approvable tools
+ * from /api/config and lets each be toggled. Requirement changed (the card was
+ * split for visual consistency); tests re-scoped, not weakened.
  */
 import "@testing-library/jest-dom"
 import { render, screen, waitFor } from "@testing-library/react"
@@ -18,25 +24,6 @@ jest.mock("@/contexts/BrandColorContext", () => ({
   }),
 }))
 
-jest.mock("framer-motion", () => {
-  const React = require("react")
-  const motion = new Proxy(
-    {},
-    {
-      get: (_t: unknown, tag: string) =>
-        React.forwardRef((props: Record<string, unknown>, ref: unknown) => {
-          const { children, ...rest } = props || {}
-          return React.createElement(tag, { ...rest, ref }, children)
-        }),
-    }
-  )
-  return {
-    motion,
-    AnimatePresence: ({ children }: { children: React.ReactNode }) =>
-      React.createElement(React.Fragment, null, children),
-  }
-})
-
 const SAMPLE_CONFIG = {
   mode: "personal",
   effective_mode: "developer",
@@ -45,7 +32,7 @@ const SAMPLE_CONFIG = {
   auto_approve: false,
 }
 
-describe("PermissionsSettingsCard — REQ-19 / REQ-16", () => {
+describe("PermissionsSettingsCard — REQ-19", () => {
   beforeEach(() => {
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,
@@ -57,33 +44,30 @@ describe("PermissionsSettingsCard — REQ-19 / REQ-16", () => {
     jest.restoreAllMocks()
   })
 
-  it("renders without crashing and shows the EFFECTIVE mode (REQ-16 AC2)", async () => {
+  it("renders the approvable tools from /api/config", async () => {
     render(<PermissionsSettingsCard configUrl="/api/config" />)
 
-    // Effective mode is developer even though stored mode is personal.
     await waitFor(() => {
-      expect(screen.getByTestId("effective-mode")).toHaveTextContent("Developer")
+      expect(screen.getByText("write_file")).toBeInTheDocument()
     })
-
-    // Approved tools list renders with the approved tool toggled on.
-    expect(screen.getByText("write_file")).toBeInTheDocument()
     expect(screen.getByText("edit_file")).toBeInTheDocument()
     expect(screen.getByText("run_command")).toBeInTheDocument()
   })
 
-  it("renders the Auto-approve toggle with the effective consent state (REQ-12 AC12.4)", async () => {
+  it("shows an approved tool's toggle as on and an unapproved one as off", async () => {
     render(<PermissionsSettingsCard configUrl="/api/config" />)
 
     await waitFor(() => {
-      expect(screen.getByTestId("auto-approve-toggle")).toBeInTheDocument()
+      expect(screen.getByLabelText("Approve write_file")).toBeInTheDocument()
     })
-    // Toggle OFF by default: destructive tools stay gated even when ON.
-    expect(screen.getByTestId("auto-approve-toggle")).toHaveAttribute(
+    // write_file is in approved_tools -> pressed; edit_file is not.
+    expect(screen.getByLabelText("Approve write_file")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    )
+    expect(screen.getByLabelText("Approve edit_file")).toHaveAttribute(
       "aria-pressed",
       "false",
     )
-    expect(
-      screen.getByText(/Destructive and deletion commands always ask/),
-    ).toBeInTheDocument()
   })
 })

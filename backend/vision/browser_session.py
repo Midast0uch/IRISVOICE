@@ -107,6 +107,47 @@ _CLICK_INTERCEPTED_MARK = "intercepts pointer events"
 # Popup adoption settle budget (REQ-6 AC6.2): adopt fast, never stall the loop.
 _POPUP_SETTLE_TIMEOUT_MS = 5_000
 
+# Session-331 (live T2): a realistic desktop UA. The Playwright default
+# advertises "HeadlessChrome/<ver>", which Bing detects and answers with a JS
+# challenge (no search box, empty body) that search_discovery misread as a login
+# wall. A normal UA gets the real results page. Overridable for other sites.
+_IRIS_BROWSER_UA = os.environ.get(
+    "IRIS_BROWSER_USER_AGENT",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36",
+)
+
+
+def _context_options() -> dict:
+    """Browser-context options for every vision session (session-331).
+
+    Sets the realistic UA + a common viewport/locale so the headless Chromium is
+    not trivially fingerprinted as a bot. This is presentation, not
+    CAPTCHA-solving (REQ-19 AC5): a genuine challenge/login wall is still
+    detected and parked by the wall detector. Never raises.
+    """
+    return {
+        "user_agent": _IRIS_BROWSER_UA,
+        "viewport": {"width": 1366, "height": 768},
+        "locale": "en-US",
+    }
+
+
+async def _new_context(browser, **extra) -> object:
+    """Create a context with the session-331 options, tolerating doubles.
+
+    Real Playwright's ``browser.new_context(**options)`` accepts the UA /
+    viewport / locale. Test doubles and alternate browser objects may not — so
+    if the optioned call fails with a TypeError (unexpected kwarg), retry with
+    no options. Never masks a real launch failure: any non-TypeError propagates.
+    """
+    opts = _context_options()
+    opts.update(extra)
+    try:
+        return await browser.new_context(**opts)
+    except TypeError:
+        return await browser.new_context()
+
 
 class SessionBudgetExceeded(RuntimeError):
     """Raised by ``act()`` when the session's action or wall-clock bound is hit.
@@ -145,7 +186,10 @@ class VisionAction:
     the model's stated justification, carried for REQ-16.
     """
 
-    kind: Literal["navigate", "reload", "back", "forward", "scroll", "click", "type", "wait"]
+    kind: Literal[
+        "navigate", "reload", "back", "forward", "scroll",
+        "click", "type", "press", "wait",
+    ]
     target: Optional[str] = None
     value: Optional[str] = None
     reason: str = ""
@@ -432,8 +476,38 @@ class BrowserSession:
         self._lease = lease
         try:
             # Fresh context per session — isolation, never shared (see docstring).
-            self._context = await browser.new_context()
-            # REQ-12: private session cookies from the OS keyring, injected
+            #
+            # Session-331 (live T2): the pooled Chromium can be a CORPSE — its
+            # transport died (e.g. after a login wall) but acquire_browser's
+            # is_connected() pre-check missed it, so new_context() raises
+            # "'NoneType' object has no attribute 'send'". Detect that signature,
+            # force-reset the pool, re-acquire, and retry ONCE. Any other failure
+            # falls through to the existing close-and-raise path unchanged.
+            try:
+                self._context = await _new_context(browser)
+            except Exception as _ctx_exc:  # noqa: BLE001
+                if "no attribute 'send'" not in str(_ctx_exc):
+                    raise
+                logger.warning(
+                    "[browser_session] pooled browser corpse detected job=%s "
+                    "(%s) — resetting pool and retrying once",
+                    self._job_id, _ctx_exc,
+                )
+                try:
+                    await browser_pool.reset_browser_pool()
+                except Exception:  # noqa: BLE001 — best-effort reset
+                    pass
+                try:
+                    if self._lease is not None:
+                        self._lease.release()
+                except Exception:  # noqa: BLE001
+                    pass
+                browser, lease = await browser_pool.acquire_browser(
+                    max_lease_ms=self._bounds.max_wall_ms + 30_000,
+                )
+                self._lease = lease
+                self._started_at = time.monotonic()
+                self._context = await _new_context(browser)            # REQ-12: private session cookies from the OS keyring, injected
             # before any navigation so authenticated pages settle signed-in.
             # Best-effort: no keyring entry (or no keyring lib) means anonymous.
             await _inject_keyring_cookies(self._context, self.url, self._job_id)
@@ -733,6 +807,20 @@ class BrowserSession:
             # REQ-4 AC4.5: instant fill (native input/change events in ~1ms),
             # never character-by-character typing.
             await locator.fill(action.value or "")
+        elif kind == "press":
+            # Session-331: press a key on a target (or the page when no target).
+            # Search engines change their submit-button markup constantly
+            # (measured 2026-09-15: Bing's #sb_form_go / button[type=submit]
+            # returned ZERO elements, so the submit click timed out and the
+            # query was typed but never submitted). Pressing Enter in the
+            # focused search box is markup-independent and always submits.
+            key = (action.value or "Enter")
+            if action.target:
+                locator = page.locator(action.target)
+                await self._teleport_to(locator)
+                await locator.press(key, timeout=_ACTION_TIMEOUT_MS)
+            else:
+                await page.keyboard.press(key)
         elif kind == "wait":
             ms = _parse_int(action.value, default=500)
             await page.wait_for_timeout(ms)

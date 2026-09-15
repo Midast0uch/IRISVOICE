@@ -99,7 +99,9 @@ async def test_ac2_session_approvable_asked_once_per_session(
     from backend import capabilities as _caps
 
     _write_cfg = tmp_path / "cfg.json"
-    _write_cfg.write_text('{"mode": "developer"}', encoding="utf-8")
+    # Session-331: explicit auto_approve=False so the session-cache flow under
+    # test is exercised (the shipped default is now ON).
+    _write_cfg.write_text('{"mode": "developer", "auto_approve": false}', encoding="utf-8")
     monkeypatch.setattr(_caps, "_CFG_PATH", str(_write_cfg))
 
     bus = get_event_bus()
@@ -168,7 +170,9 @@ async def test_ac2_approval_discarded_on_restart(
     from backend import capabilities as _caps
 
     _write_cfg = tmp_path / "cfg.json"
-    _write_cfg.write_text('{"mode": "developer"}', encoding="utf-8")
+    # Session-331: explicit auto_approve=False so the restart-cache flow under
+    # test is exercised (the shipped default is now ON).
+    _write_cfg.write_text('{"mode": "developer", "auto_approve": false}', encoding="utf-8")
     monkeypatch.setattr(_caps, "_CFG_PATH", str(_write_cfg))
 
     bus = get_event_bus()

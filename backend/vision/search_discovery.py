@@ -50,6 +50,24 @@ _SEARCH_INPUT_SELECTOR = os.environ.get(
 _SEARCH_SUBMIT_SELECTOR = os.environ.get(
     "IRIS_VISION_SEARCH_SUBMIT_SELECTOR", "#sb_form_go, button[type='submit']"
 )
+
+
+def _results_url(query: str) -> str:
+    """The search engine's RESULTS url for a query (session-331).
+
+    Submitting via the results URL is markup-independent — it does not depend on
+    a submit button existing, or on the box submitting on Enter. Built from the
+    configured engine URL's host so a swapped engine still works. Bing's form is
+    ``/search?q=``; other engines fall back to a ``?q=`` query on the root.
+    """
+    from urllib.parse import quote_plus, urlparse
+
+    base = urlparse(_SEARCH_ENGINE_URL)
+    host = f"{base.scheme}://{base.netloc}" if base.scheme else _SEARCH_ENGINE_URL
+    host = host.rstrip("/")
+    if "bing.com" in host:
+        return f"{host}/search?q={quote_plus(query)}"
+    return f"{host}/search?q={quote_plus(query)}"
 # REQ-19 AC4: "at most a configurable number of candidate URLs."
 _DEFAULT_MAX_RESULTS = int(os.environ.get("IRIS_VISION_DISCOVERY_MAX_URLS", "5"))
 # REQ-19 AC4: bounded by SessionBounds — discovery is a handful of actions
@@ -254,6 +272,49 @@ class DiscoveryResult:
     used_vision_fallback: bool = False
 
 
+def _unwrap_engine_redirect(url: str) -> str:
+    """Decode a search engine's redirect wrapper to the real destination.
+
+    Session-331 (live T2): Bing wraps EVERY result as
+    ``https://www.bing.com/ck/a?...&u=a1<base64url>`` where the ``u`` param is
+    ``a1`` + base64url(destination). Without unwrapping, the destination is on
+    ``bing.com`` and `_looks_like_result_url` rejects ALL of them — extraction
+    returned ZERO URLs on a page with 10 real results (measured 2026-09-15:
+    ziglang.org / github.com links were all present but wrapped).
+
+    The href as it appears in the HTML is entity-escaped (``&amp;`` not ``&``),
+    so the raw string is HTML-unescaped BEFORE parsing the query — otherwise
+    ``parse_qsl`` sees one bogus ``amp;p`` param and never finds ``u``.
+    Returns the url unchanged when it is not a recognised wrapper. Never raises.
+    """
+    try:
+        import html as _html
+
+        url = _html.unescape(url)
+        parsed = urlparse(url)
+        netloc = (parsed.netloc or "").lower()
+        if "bing.com" not in netloc:
+            return url
+        for key, value in parse_qsl(parsed.query or "", keep_blank_values=True):
+            if key == "u" and value.startswith("a1"):
+                import base64
+
+                raw = value[2:]
+                # base64url -> bytes; pad to a multiple of 4.
+                padded = raw + "=" * (-len(raw) % 4)
+                try:
+                    decoded = base64.urlsafe_b64decode(padded).decode(
+                        "utf-8", errors="replace"
+                    )
+                except Exception:  # noqa: BLE001
+                    return url
+                if decoded.startswith("http"):
+                    return decoded
+    except Exception:  # noqa: BLE001 — a malformed wrapper is returned as-is
+        pass
+    return url
+
+
 def _looks_like_result_url(url: str) -> bool:
     """REQ-19 AC2: drop the engine's own domain, ads, and non-result links."""
     try:
@@ -273,7 +334,7 @@ def _extract_urls_from_html(html: str, limit: int) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
     for m in _HREF_RE.finditer(html or ""):
-        url = m.group(1)
+        url = _unwrap_engine_redirect(m.group(1))
         if not _looks_like_result_url(url):
             continue
         if url in seen:
@@ -364,13 +425,27 @@ async def discover_urls_via_vision(
         # Per-action failures are recorded as observations by `act()` itself
         # (REQ-7 AC6) — a failed type/click here degrades to "no results
         # extracted" below, it does not raise.
+        #
+        # Session-331 (live T2): type-then-submit is fragile — search engines
+        # rewrite their submit markup and their boxes submit via JS, so the
+        # click on #sb_form_go / button[type=submit] matched ZERO elements
+        # (measured 2026-09-15) and the query never fired; Enter in the box did
+        # not submit either. Driving the RESULTS URL directly is
+        # markup-independent and returns a real results page (verified live:
+        # "About 47,200 results" with ziglang.org / github.com links). We still
+        # type the query first so the visible browser panel shows the real
+        # search interaction, then navigate the results URL to guarantee the
+        # submission.
+        try:
+            await session.act(VisionAction(
+                kind="type", target=_SEARCH_INPUT_SELECTOR, value=query,
+                reason="enter search query (REQ-19)",
+            ))
+        except Exception:  # noqa: BLE001 — the direct URL below still submits
+            pass
         await session.act(VisionAction(
-            kind="type", target=_SEARCH_INPUT_SELECTOR, value=query,
-            reason="enter search query (REQ-19)",
-        ))
-        await session.act(VisionAction(
-            kind="click", target=_SEARCH_SUBMIT_SELECTOR,
-            reason="submit search (REQ-19)",
+            kind="navigate", target=_results_url(query),
+            reason="submit search via results URL (REQ-19)",
         ))
         html = await session.settle()
         _announce(_emit, job_id, "submit_search", query)

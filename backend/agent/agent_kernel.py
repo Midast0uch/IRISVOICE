@@ -5615,7 +5615,17 @@ class AgentKernel:
         """Session-318 T18 (REQ-11 AC11.1): per-family dispatch deadline in
         seconds. Gather covers the 90s crawler ceilings with margin;
         everything else takes the default. Constants-only tuning (REQ-12).
-        Never raises."""
+        Never raises.
+
+        Session-331 (live T3): when a tool will WAIT for user consent, the
+        approval window must NOT be charged against the execution budget — a
+        gated call used to time out at 90s while the permission card's window
+        is 120s, so the tool died before a human could approve it. The consent
+        wait is not execution, so add the applicable permission window (plus a
+        small margin) to the deadline whenever this call will actually gate.
+        With Auto-approve ON (the default) nothing waits and the base deadline
+        stands unchanged — the common path pays nothing.
+        """
         try:
             from backend.agent.tool_envelope import tool_family as _tf
             from backend.agent.der_constants import (
@@ -5623,10 +5633,32 @@ class AgentKernel:
             )
             _fam = _tf(tool)
             if _fam == "gather":
-                return max(float(DEADLINE_CRAWL_S), 1.0)
-            if _fam == "read":
-                return max(float(DEADLINE_READ_S), 1.0)
-            return max(float(DEADLINE_DEFAULT_S), 1.0)
+                _base = max(float(DEADLINE_CRAWL_S), 1.0)
+            elif _fam == "read":
+                _base = max(float(DEADLINE_READ_S), 1.0)
+            else:
+                _base = max(float(DEADLINE_DEFAULT_S), 1.0)
+            # Add the consent window only when this exact call will wait.
+            try:
+                from backend.agent.permissions import (
+                    classify_tool,
+                    get_auto_approve,
+                    get_permission_action,
+                    PERMISSION_TIMEOUT_SIDE_EFFECT,
+                    PERMISSION_TIMEOUT_DESTRUCTIVE,
+                )
+
+                _tier = classify_tool(tool, None)
+                _action = get_permission_action(
+                    _tier, auto_approve=get_auto_approve()
+                )
+                if _action.value == "require_confirmation":
+                    _base += float(PERMISSION_TIMEOUT_DESTRUCTIVE) + 15.0
+                elif _action.value == "require_approval":
+                    _base += float(PERMISSION_TIMEOUT_SIDE_EFFECT) + 15.0
+            except Exception:
+                pass  # permission read must never break the deadline
+            return _base
         except Exception:
             return 90.0
 
@@ -11626,6 +11658,18 @@ Respond with a JSON object:
                 or _res_low.startswith("timeouterror")
                 or _res_low.startswith("[step error")
                 or _res_low.startswith("duplicate call")
+                # Session-331: the crawler's terminal park/failure shapes were
+                # MISSING here, so they fell through _tool_errored=False and the
+                # step was treated as a SEMANTIC failure -> grafted a retry that
+                # deterministically failed the same way (live T2: crawler_query
+                # "no candidate urls" grafted 3x on a search-engine wall). These
+                # are environmental/terminal, never semantic.
+                or _res_low.startswith("no candidate")
+                or _res_low.startswith("no usable")
+                or "sources parked" in _res_low
+                or "wall=" in _res_low
+                or _res_low.startswith("permission")
+                or _res_low.startswith("denied")
             )
             if _tool_errored:
                 _fail_class = classify_failure(

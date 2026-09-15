@@ -285,6 +285,36 @@ bug-vs-feature calls, launch quirks.
   WS never connected and the orb showed a phantom inner glow. Divergent launchers deleted;
   `start-backend.py` now tree-kills the stale process and fails loudly rather than drifting.
   A healthy idle orb has a connected WS and **no** inner glow.
+- **Duplicate localhost:3000 tabs CANCEL your in-flight turn (2026-09-14)**: every tab
+  connects as the same WS client id `iris`; the second connection makes the backend log
+  `client_replace cancelled in-flight thread conv-NNN` and the running turn dies silently
+  (the UI shows the user message with no reply). This cost a whole T2 run. Close every
+  duplicate app tab before driving. (Close via `chrome-devtools_list_pages` → `close_page`.)
+- **WS liveness watchdog false-positives (2026-09-14)**: `hooks/useIRISWebSocket.ts:2411`
+  (`SILENCE_TIMEOUT_MS=75_000`) force-closes and reconnects whenever no frame arrives for
+  75s. A long tool wait (a >75s gated command or crawl) is mistaken for a wedged backend,
+  and the reconnect then cancels the in-flight turn (same `client_replace` path). Watch for
+  `[IRIS WebSocket] No frame for Ns ... treating the backend as wedged and reconnecting` in
+  the browser console during long turns.
+- **Memory spike = the TTS worker, not a leak (2026-09-14)**: `backend.audio.tts_worker`
+  (a python subprocess) loads ~980 MB idle and jumps to ~2.0 GB during each synthesis
+  (+~1 GB transient), then unloads after 600s idle (`[TTSManager] Idle 60Xs > 600s -
+  unloading TTS worker`) and the ~1 GB frees. It is a **sawtooth, not a ratchet** — the
+  backend/embed/next processes stay flat. Measure with `scripts/mem_watch.py` (writes
+  `.iris-logs/mem_watch.csv`: free RAM, per-IRIS-process MB, handles, CPU). This is the
+  biggest RAM swing in the app and the owner watches for it.
+- **`run_command` dispatch deadline (90s) < permission window (120s) (2026-09-14, OPEN)**:
+  `DEADLINE_DEFAULT_S=90` in `der_constants.py`; a gated command can hit
+  `[TOOL_DISPATCH] ... CRASHED error='TimeoutError'` before the user approves the card.
+- **Card view can stay "Active Execution" after settle (2026-09-14, OPEN)**: the backend
+  DID emit `task:fail` (see `.iris-logs/backend-events.jsonl`) and the frontend log shows
+  `matrix_transition ...:e->:f`, yet the card rendered "Active Execution" with a frozen
+  timer. The emit is present — the bug is downstream in the card view/reducer.
+- **Pooled browser corpse after a login wall (2026-09-14, OPEN)**: after the in-app browser
+  hits a Bing login wall the shared Chromium can die; later `browser.new_context()` calls
+  fail with `'NoneType' object has no attribute 'send'` and `browser_pool.acquire_browser`'s
+  `is_connected()` self-heal did not catch it. `search_discovery` is the owner-mandated
+  natural websearch path, so this must be robust.
 
 ## Providers (verified)
 

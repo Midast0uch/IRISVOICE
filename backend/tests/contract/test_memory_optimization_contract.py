@@ -51,6 +51,50 @@ def test_tts_worker_trims_working_set_after_load():
     assert "EmptyWorkingSet" in _read("backend/utils/memory_trim.py")
 
 
+def test_trim_working_set_actually_trims():
+    """Session-331 PROVEN-FAILABLE behavioral pin for the trim defect.
+
+    The old contract test only asserted the string ``EmptyWorkingSet`` existed
+    in ``memory_trim.py`` — so a SILENT no-op passed. It was: the trim called
+    ``EmptyWorkingSet(GetCurrentProcess())`` with the PSEUDO-handle (-1), which
+    lacks ``PROCESS_SET_QUOTA``, so the call returned 0 and reclaimed nothing.
+    Measured: a 617 MB resident process stayed at 647 MB; with a REAL handle it
+    dropped to 1.7 MB.
+
+    This test allocates a large resident buffer, calls the REAL
+    ``trim_working_set()``, and asserts the resident set actually shrank — which
+    FAILS on the pseudo-handle version and PASSES on the real-handle fix.
+    Windows-only (the function is a documented no-op elsewhere)."""
+    import sys
+
+    if sys.platform != "win32":
+        import pytest
+
+        pytest.skip("working-set trim is Windows-only")
+
+    import psutil
+
+    from backend.utils.memory_trim import trim_working_set
+
+    proc = psutil.Process()
+    # Allocate ~400 MB and TOUCH every page so it is genuinely resident.
+    blob = bytearray(400 * 1024 * 1024)
+    for i in range(0, len(blob), 4096):
+        blob[i] = 1
+    before_mb = proc.memory_info().rss / (1024 ** 2)
+    assert before_mb > 300, f"test setup failed to allocate resident memory ({before_mb:.0f} MB)"
+
+    trim_working_set()
+
+    after_mb = proc.memory_info().rss / (1024 ** 2)
+    # A working trim returns most of the touched pages. A no-op leaves them all.
+    assert after_mb < before_mb - 200, (
+        f"trim_working_set() did not trim (before={before_mb:.0f} MB, "
+        f"after={after_mb:.0f} MB) — is it using the pseudo-handle again?"
+    )
+    _ = blob  # keep the allocation alive so it is not GC'd mid-assertion
+
+
 def test_voice_command_init_does_not_eagerly_warm_up():
     """REQ-1 AC1.2 / REQ-6 AC6.1: no eager warm_up in VoiceCommandDetector.__init__."""
     src = _read("backend/audio/voice_command.py")

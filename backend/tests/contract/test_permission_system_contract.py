@@ -127,13 +127,22 @@ class TestPermissionAction:
         ) == PermissionAction.REQUIRE_APPROVAL
 
     def test_mode_does_not_decide_approval(self):
-        """KD-12: mode governs capability only. Passing a mode string with
-        no toggle leaves the consent default (OFF, fail closed) in force."""
+        """KD-12: mode governs capability only. Passing a mode string with no
+        toggle leaves the consent default in force. Session-331: the default is
+        now ON (owner: file creation must not need a card), so SIDE_EFFECT
+        auto-approves by default; the point of THIS test is that mode is
+        irrelevant — both modes resolve identically, and the toggle alone
+        decides."""
         assert get_permission_action(
             PermissionTier.SIDE_EFFECT, "personal"
         ) == get_permission_action(PermissionTier.SIDE_EFFECT, "developer")
+        # The default (toggle absent -> ON) auto-approves.
         assert get_permission_action(
             PermissionTier.SIDE_EFFECT, "personal"
+        ) == PermissionAction.AUTO_APPROVE
+        # With the toggle explicitly OFF, it requires approval — regardless of mode.
+        assert get_permission_action(
+            PermissionTier.SIDE_EFFECT, auto_approve=False
         ) == PermissionAction.REQUIRE_APPROVAL
 
 
@@ -170,7 +179,10 @@ class TestPermissionSystem:
 
     def test_side_effect_developer_requires_approval(self):
         system = ToolPermissionSystem()
-        req = system.request_permission("write_file", PermissionTier.SIDE_EFFECT, level="developer")
+        req = system.request_permission(
+            "write_file", PermissionTier.SIDE_EFFECT,
+            level="developer", auto_approve=False,
+        )
         assert req.status == "pending"
 
     def test_destructive_personal_requires_approval(self):
@@ -185,7 +197,10 @@ class TestPermissionSystem:
 
     def test_respond_approved_changes_status(self):
         system = ToolPermissionSystem()
-        req = system.request_permission("write_file", PermissionTier.SIDE_EFFECT, level="developer")
+        req = system.request_permission(
+            "write_file", PermissionTier.SIDE_EFFECT,
+            level="developer", auto_approve=False,
+        )
         assert req.status == "pending"
 
         result = system.respond_to_permission(req.request_id, approved=True)

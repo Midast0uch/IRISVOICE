@@ -65,7 +65,9 @@ def test_gated_call_logs_resolved_action(caplog, tmp_path, monkeypatch):
     from backend.agent.tool_bridge import AgentToolBridge
 
     monkeypatch.setattr(_perm, "PERMISSION_TIMEOUT_SIDE_EFFECT", 0.2)
-    _write_cfg(monkeypatch, tmp_path, json.dumps({"mode": "developer"}))
+    # Session-331: auto_approve=False so the gated call resolves to
+    # require_approval and logs it (the shipped default is now ON).
+    _write_cfg(monkeypatch, tmp_path, json.dumps({"mode": "developer", "auto_approve": False}))
 
     bus = get_event_bus()
     bus.subscribe(IRISStreamEvent.PERMISSION_REQUEST, lambda e: None)

@@ -461,6 +461,14 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
   // ============================================================================
 
   // tools section - tool-permissions-card
+  // Session-331 clean swap: the two legacy fields here (`allowed_tools`
+  // dropdown, `tool_confirmations` toggle) were DEAD — nothing in the backend
+  // read them; they only persisted raw form values. The REAL consent controls
+  // are the permission mode (personal/developer) and the Auto-approve toggle,
+  // backed by /api/mode + /api/auto-approve (backend/agent/permissions.py,
+  // backend/capabilities.py). Both render as ordinary dashboard rows so this
+  // card matches every other settings card. The `permissions_settings` custom
+  // field carries the approved-tools list (which needs a custom renderer).
   tools: [
     {
       id: 'tool-permissions-card',
@@ -468,17 +476,22 @@ export const CARDS_BY_SECTION: Record<string, Card[]> = {
       icon: 'Tool',
       fields: [
         {
-          id: 'allowed_tools',
+          id: 'permission_mode',
           type: 'dropdown',
-          label: 'Allowed Tools',
-          options: ['All', 'None', 'Custom'],
-          defaultValue: 'All'
+          label: 'Permission Mode',
+          options: ['developer', 'personal'],
+          defaultValue: 'developer'
         },
         {
-          id: 'tool_confirmations',
+          id: 'auto_approve',
           type: 'toggle',
-          label: 'Require Confirmations',
+          label: 'Auto-approve tools',
           defaultValue: true
+        },
+        {
+          id: 'permissions_settings',
+          type: 'custom',
+          label: 'Approved Tools',
         }
       ]
     }

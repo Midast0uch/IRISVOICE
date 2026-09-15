@@ -243,6 +243,20 @@ async def lifespan(app: FastAPI):
         except Exception:
             pass
 
+        # Session-331: kill any orphaned Pocket-TTS worker from a previous
+        # crash. The worker is a ~2 GB-commit python subprocess; if the backend
+        # died mid-synthesis it is left orphaned with no parent to reap it, and
+        # it never idles out (its parent-owned reaper is gone). This mirrors the
+        # llama-server cleanup above so a crashed run can never leave a
+        # multi-GB zombie behind. Best-effort: a failure here never blocks boot.
+        try:
+            from .agent.tts import kill_orphan_tts_workers
+
+            await asyncio.to_thread(kill_orphan_tts_workers)
+            logger.info("  - [CLEANUP] Orphaned TTS worker processes killed")
+        except Exception:
+            pass
+
         logger.info("  - Starting session manager...")
         session_manager = get_session_manager()
         await session_manager.start()
@@ -1244,13 +1258,22 @@ async def set_launcher_mode(request: dict):
     # run git subprocesses and were called inline on the event loop — a slow
     # git op (fsmonitor/index rebuild on a large dirty tree) wedged the whole
     # backend. Off-loop via to_thread; the endpoint stays responsive.
+    #
+    # Session-331: to_thread alone was not enough — a git op that HANGS (lock
+    # contention, huge dirty tree) left the request open until the browser
+    # timed out and reported a 500 on the Tools card. Bound the worktree work
+    # so the MODE CHANGE (the thing the user asked for) always returns: the
+    # config is saved regardless, and a worktree timeout is logged, not fatal.
     wt_info = None
     try:
         import asyncio as _asyncio
         from backend import dev_worktree
 
+        _WT_TIMEOUT_S = 20.0
         if mode == "developer":
-            wt_info = await _asyncio.to_thread(dev_worktree.setup)
+            wt_info = await _asyncio.wait_for(
+                _asyncio.to_thread(dev_worktree.setup), timeout=_WT_TIMEOUT_S
+            )
             if wt_info.get("status") == "ok":
                 cfg["worktree_path"] = wt_info.get("worktree_path")
                 cfg["worktree_branch"] = wt_info.get("branch")
@@ -1258,12 +1281,16 @@ async def set_launcher_mode(request: dict):
             else:
                 logger.warning(f"[Mode] Worktree setup failed: {wt_info.get('error')}")
         elif mode == "personal":
-            teardown = await _asyncio.to_thread(dev_worktree.teardown, merge=False)
+            teardown = await _asyncio.wait_for(
+                _asyncio.to_thread(dev_worktree.teardown, merge=False),
+                timeout=_WT_TIMEOUT_S,
+            )
             cfg.pop("worktree_path", None)
             cfg.pop("worktree_branch", None)
             logger.info(f"[Mode] Worktree teardown: {teardown.get('status')}")
     except Exception as exc:
-        logger.warning(f"[Mode] Worktree management error: {exc}")
+        # Includes asyncio.TimeoutError — the mode change still succeeds below.
+        logger.warning(f"[Mode] Worktree management error (non-fatal): {exc}")
 
     _save_iris_config(cfg)
 

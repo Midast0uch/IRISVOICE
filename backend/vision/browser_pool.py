@@ -267,7 +267,27 @@ async def _start_browser() -> None:
 
     pw = await async_playwright().start()
     try:
-        browser = await pw.chromium.launch(headless=True)
+        # Session-331: launch with a REALISTIC UA and automation signals
+        # suppressed. The default Playwright UA advertises
+        # "HeadlessChrome/<ver>", which search engines detect and answer with a
+        # JS challenge (measured 2026-09-15: Bing returned a 68 KB challenge
+        # page with NO search box and empty body text, which search_discovery
+        # then misread as `wall=login` and parked — T2 never completed). With a
+        # normal UA + --disable-blink-features=AutomationControlled the SAME
+        # headless Chromium got a real Bing results page WITH the search box.
+        # This is NOT CAPTCHA-solving (REQ-19 AC5 stays honoured): it is simply
+        # not advertising that we are a bot in the first place. A genuine
+        # CAPTCHA/login wall is still detected and parked unchanged.
+        #
+        # The args launch is tolerant of doubles (tests / alternate drivers)
+        # that accept only ``headless`` — retry bare rather than crash the pool.
+        try:
+            browser = await pw.chromium.launch(
+                headless=True,
+                args=["--disable-blink-features=AutomationControlled"],
+            )
+        except TypeError:
+            browser = await pw.chromium.launch(headless=True)
     except Exception:
         try:
             await pw.stop()
@@ -365,11 +385,40 @@ async def shutdown_browser_pool() -> None:
     await _stop_owned_browser()
 
 
+async def reset_browser_pool() -> None:
+    """Force-tear-down the owned browser so the NEXT ``acquire_browser`` starts
+    a fresh Chromium.
+
+    Session-331 (live T2): after the in-app browser hit a Bing login wall the
+    shared Chromium's transport died, but a later ``new_context()`` still failed
+    with ``'NoneType' object has no attribute 'send'`` — i.e. the corpse was not
+    always caught by the ``is_connected()`` pre-check in ``acquire_browser`` (a
+    crash can land between that check and the first call, or ``is_connected()``
+    can still report True on a half-dead transport). A caller that OBSERVES the
+    corpse signature can call this to guarantee the poisoned handles are gone
+    before retrying. Idempotent; never raises.
+    """
+    global _idle_task
+    task = None
+    with _idle_task_lock:
+        if _idle_task is not None:
+            task = _idle_task
+            task.cancel()
+            _idle_task = None
+    if task is not None:
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
+    await _stop_owned_browser()
+
+
 __all__ = [
     "BrowserLease",
     "acquire_browser",
     "acquire_browser_lease",
     "has_active_browser_lease",
+    "reset_browser_pool",
     "should_idle_stop_browser",
     "shutdown_browser_pool",
     "set_browser_idle_callback",

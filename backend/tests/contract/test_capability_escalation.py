@@ -120,7 +120,7 @@ async def test_t23_developer_mode_not_escalated(
     """REQ-18 AC4: in developer mode a repo/terminal tool is NOT capability-denied by
     [13.3] (is_tool_allowed is True there) — it reaches Phase 4 and prompts there,
     instead of being escalated by the [13.3] gate. Developer behaviour is unchanged."""
-    _write_cfg(monkeypatch, tmp_path, json.dumps({"mode": "developer"}))
+    _write_cfg(monkeypatch, tmp_path, json.dumps({"mode": "developer", "auto_approve": False}))
     assert _caps.CapabilitySet.get_mode() == "developer"
     assert _caps.CapabilitySet.is_tool_allowed("write_file") is True  # [13.3] won't block
 

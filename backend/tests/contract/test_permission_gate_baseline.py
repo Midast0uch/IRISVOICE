@@ -226,6 +226,9 @@ async def test_write_file_reaches_permission_gate_in_absent_mode(
     shortened so the test does not wait for a real user response.
     """
     monkeypatch.setattr(_perm, "PERMISSION_TIMEOUT_SIDE_EFFECT", 0.2)
+    # Session-331: force the consent toggle OFF so the gate actually asks (the
+    # shipped default is now ON — file creation must not need a card).
+    monkeypatch.setattr(_perm, "get_auto_approve", lambda: False)
     _write_cfg(monkeypatch, tmp_path, json.dumps({}))
     assert _caps.CapabilitySet.get_mode() == "developer"
 
@@ -270,6 +273,9 @@ async def test_side_effect_tool_reaching_phase4_asks_in_developer_mode(
     exercises the approval path, not the no-UI fail-fast.
     """
     monkeypatch.setattr(_perm, "PERMISSION_TIMEOUT_SIDE_EFFECT", 0.2)
+    # Session-331: force the consent toggle OFF so the gate asks (the shipped
+    # default is now ON).
+    monkeypatch.setattr(_perm, "get_auto_approve", lambda: False)
     _write_cfg(monkeypatch, tmp_path, json.dumps({}))
     assert "edit_file" not in (_caps.CapabilitySet._REPO_TOOLS | _caps.CapabilitySet._TERMINAL_TOOLS)
     assert "edit_file" in _perm._SIDE_EFFECT_TOOLS
@@ -302,8 +308,16 @@ async def test_side_effect_tool_reaching_phase4_asks_in_developer_mode(
 # ── 5. Contrast case: the gate is not simply dead ───────────────────────
 
 def test_destructive_requires_approval_in_personal_mode():
-    action = _perm.get_permission_action(_perm.PermissionTier.DESTRUCTIVE, "personal")
-    assert action == _perm.PermissionAction.REQUIRE_APPROVAL
+    """The safety property that survives every consent change: DESTRUCTIVE is
+    NEVER auto-approved, in either toggle state or mode. Session-331: with the
+    default toggle ON it is REQUIRE_CONFIRMATION (approval + second confirm);
+    with it OFF it is REQUIRE_APPROVAL — gated either way."""
+    on = _perm.get_permission_action(_perm.PermissionTier.DESTRUCTIVE, auto_approve=True)
+    off = _perm.get_permission_action(_perm.PermissionTier.DESTRUCTIVE, auto_approve=False)
+    assert on == _perm.PermissionAction.REQUIRE_CONFIRMATION
+    assert off == _perm.PermissionAction.REQUIRE_APPROVAL
+    assert on != _perm.PermissionAction.AUTO_APPROVE
+    assert off != _perm.PermissionAction.AUTO_APPROVE
 
 
 def test_destructive_param_pattern_escalates_tier():

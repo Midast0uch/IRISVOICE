@@ -16,6 +16,7 @@ import { ActivityPanel } from './dashboard/ActivityPanel';
 import { LogsPanel } from './dashboard/LogsPanel';
 import { InferenceConsolePanel } from './dashboard/InferenceConsolePanel';
 import { LearnedSkillsPanel } from './wheel-view/LearnedSkillsPanel';
+import { PermissionsSettingsCard } from './chat/PermissionsSettingsCard';
 import { ModelBrowserPanel } from './dashboard/ModelBrowserPanel';
 import { MarketplaceScreen } from './integrations/MarketplaceScreen';
 import { UnifiedMarketplaceModelsSurface } from './integrations/UnifiedMarketplaceModelsSurface';
@@ -285,6 +286,17 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
       return (
         <div className="col-span-full mt-2 mb-4">
           <LearnedSkillsPanel glowColor={glowColor} />
+        </div>
+      );
+    }
+    // Session-331 clean swap: the Tools card renders the REAL consent surface
+    // (Auto-approve toggle + mode + approved tools) instead of the legacy dead
+    // `tool_confirmations` / `allowed_tools` fields. One control, backed by
+    // /api/auto-approve + /api/mode + /api/approved-tools.
+    if (field.id === 'permissions_settings') {
+      return (
+        <div className="col-span-full mt-1 mb-2">
+          <PermissionsSettingsCard />
         </div>
       );
     }
@@ -952,11 +964,54 @@ export function DarkGlassDashboard({
       ...prev,
       [sectionId]: { ...(prev[sectionId] || {}), [fieldId]: value },
     }));
+    // Session-331: the Tools card's two controls are NOT generic field_values —
+    // they map to dedicated config keys with their own endpoints. Route them
+    // there so the change actually persists and takes effect (a generic WS
+    // field update would only write field_values and do nothing).
+    if (sectionId === 'tools' && fieldId === 'permission_mode') {
+      fetch('/api/mode', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: value }),
+      }).catch(() => {});
+      return;
+    }
+    if (sectionId === 'tools' && fieldId === 'auto_approve') {
+      fetch('/api/auto-approve', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ auto_approve: !!value }),
+      }).catch(() => {});
+      return;
+    }
     // Live-update the backend via WebSocket (optimistic — does not block UI)
     if (wsUpdateField) wsUpdateField(sectionId, fieldId, value);
     // Also propagate to external store if provided via props
     if (propUpdateField) propUpdateField(sectionId, fieldId, value);
   }, [propUpdateField, wsUpdateField]);
+
+  // Session-331: seed the Tools card from the REAL permission config
+  // (/api/config), not generic field_values — mode and auto-approve live in
+  // dedicated keys, so the dashboard must read them from the endpoint that
+  // owns them. Re-fetched on mount; the POSTs above keep it in sync.
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/config')
+      .then(r => (r.ok ? r.json() : null))
+      .then((cfg: any) => {
+        if (cancelled || !cfg) return;
+        setLocalFieldValues(prev => ({
+          ...prev,
+          tools: {
+            ...(prev.tools || {}),
+            permission_mode: cfg.effective_mode || cfg.mode || 'developer',
+            auto_approve: cfg.auto_approve === true,
+          },
+        }));
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
 
   // Listen for model-selected events from the ModelBrowserPanel
   useEffect(() => {

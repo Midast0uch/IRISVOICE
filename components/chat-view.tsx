@@ -557,6 +557,18 @@ export function ChatWing({
   }
   const [pendingPermissions, setPendingPermissions] = useState<Map<string, PendingPermission>>(new Map())
 
+  // Session-331: optimistic removal for the permission card's own click
+  // handlers (see the card's onApprove/onDeny/onConfirm). Mirrors the backend
+  // permission_granted/denied removal path so a click always clears the card,
+  // even if the broadcast is missing or mis-routed.
+  const removePendingPermission = useCallback((id: string) => {
+    setPendingPermissions(prev => {
+      const next = new Map(prev)
+      next.delete(id)
+      return next
+    })
+  }, [])
+
   // Pending agent questions state — rendered as QuestionCards
   interface PendingQuestion {
     questionId: string
@@ -4469,18 +4481,31 @@ ${message.text}`;
                             notification_id: id,
                             action: 'grant',
                           })
+                          // Session-331: remove the card OPTIMISTICALLY. The
+                          // card only disappeared when the backend's
+                          // permission:granted broadcast arrived — and that
+                          // broadcast is routed by session/conversation, so a
+                          // missing or mis-routed frame left the card rendered
+                          // forever after the user clicked Allow (live report:
+                          // permission cards never disappear after answering,
+                          // unlike AskUserQuestion cards). Removing it here
+                          // makes the click always land; a duplicate
+                          // permission_granted event is a harmless no-op.
+                          removePendingPermission(id)
                         }}
                         onDeny={(id) => {
                           sendMessage?.('notification_response', {
                             notification_id: id,
                             action: 'deny',
                           })
+                          removePendingPermission(id)
                         }}
                         onConfirm={(id) => {
                           sendMessage?.('notification_response', {
                             notification_id: id,
                             action: 'confirm',
                           })
+                          removePendingPermission(id)
                         }}
                       />
                     ))}

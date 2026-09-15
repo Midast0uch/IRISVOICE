@@ -37,6 +37,51 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+
+def kill_orphan_tts_workers() -> None:
+    """Kill any stray Pocket-TTS worker processes left by a previous crash.
+
+    Session-331: the TTS worker is a ~2 GB-commit python subprocess spawned as
+    a child of the backend. Its idle-unload reaper lives in the PARENT, so if
+    the backend dies mid-synthesis the worker is orphaned and never reaped — it
+    just sits there holding multi-GB until reboot. This mirrors
+    ``local_model_manager.kill_orphan_servers`` (called at the same startup
+    point) so a crashed run can never leave a zombie behind.
+
+    Matches on the module name ``backend.audio.tts_worker`` in the command line,
+    NOT the bare word "python" — killing every python process would take out the
+    backend itself and every MCP server. Windows uses WMIC/taskkill via
+    psutil (already a dependency); non-Windows uses pkill -f. Best-effort:
+    never raises, never blocks boot.
+    """
+    import platform as _pf
+
+    _marker = "backend.audio.tts_worker"
+    _self = os.getpid()
+    try:
+        if _pf.system().lower() == "windows":
+            import psutil
+
+            for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+                try:
+                    if proc.pid == _self:
+                        continue
+                    cmd = " ".join(proc.info.get("cmdline") or [])
+                    if _marker in cmd and "python" in (proc.info.get("name") or "").lower():
+                        logger.warning(
+                            "[TTSManager] Killing orphaned TTS worker pid=%s",
+                            proc.pid,
+                        )
+                        proc.kill()
+                except Exception:  # noqa: BLE001 — a vanished process is fine
+                    pass
+        else:
+            subprocess.run(
+                ["pkill", "-f", _marker], capture_output=True, timeout=10
+            )
+    except Exception as exc:  # noqa: BLE001 — cleanup must never block boot
+        logger.debug("[TTSManager] orphan TTS worker cleanup skipped: %s", exc)
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
