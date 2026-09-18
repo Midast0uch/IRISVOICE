@@ -16,8 +16,8 @@ import React, { useEffect, useRef, useState } from "react"
  *     with href) — CT-6 forbids those in the overlay tree; it captures
  *     pointer/key events on its own surface div and echoes text through the
  *     window event bus. (Wording note: the tags are described, not spelled, so
- *     the CT-6b guard's source scan stays clean — the same convention
- *     `browser_session.request_takeover` uses for its transport token.)
+ *     the CT-6b guard's source scan stays clean — the same convention the
+ *     server-side takeover docstring uses for its transport token.)
  *   - It never talks to the backend directly: it emits `iris:takeover_input`
  *     and `iris:takeover_frame_ack` CustomEvents, which `useIRISWebSocket`
  *     forwards over the WS. So this component stays transport-agnostic and the
