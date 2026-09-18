@@ -172,7 +172,7 @@
       `scripts/validate_vision_browser_e2e.py`, `scripts/measure_vision_latency.py` —
       RIPPLE: reuse recorded trajectories; assert the takeover frame/grant
       invariants on every run; set latency targets AFTER baseline.
-- [ ] T14 (REQ-1–REQ-18): execute the dated Verification Plan (design.md) steps
+- [x] T14 (REQ-1–REQ-18): execute the dated Verification Plan (design.md) steps
       1–11 against the running system — RIPPLE: requires frontend listener on
       `:3000`; record PASS/FAIL per step; no step inferred from a unit test.
       Steps 7–9 are the live takeover gates. Step 11 is the agent gate.
@@ -228,17 +228,17 @@ in the SAME edit pass per the triplet rule.")
 
 ## Wave gates (MANDATORY — no wave starts on a red gate)
 
-- [ ] TG-1 (Wave 1): re-run every covering test for REQ-1, REQ-2, REQ-6, REQ-8,
+- [x] TG-1 (Wave 1): re-run every covering test for REQ-1, REQ-2, REQ-6, REQ-8,
       REQ-10 named in the matrix; record green/red per AC. The extended AST scan
       MUST be green before Wave 2 starts.
-- [ ] TG-2 (Wave 2): re-run covering tests for REQ-3, REQ-4, REQ-9, REQ-18; the
+- [x] TG-2 (Wave 2): re-run covering tests for REQ-3, REQ-4, REQ-9, REQ-18; the
       long-scroll-not-stopped behavioral test MUST be green, and the cold/warm
       acquire accounting, the prewarm test, and the hard-bound fail-open test MUST
       be green.
-- [ ] TG-3 (Wave 3): re-run covering tests for REQ-7; the seq-keyed mirror and
+- [x] TG-3 (Wave 3): re-run covering tests for REQ-7; the seq-keyed mirror and
       late-event-rejection tests MUST be green. (REQ-5/REQ-13–REQ-16 moved to TG-4
       under the 2026-09-17 amendment.)
-- [ ] TG-4 (Wave 4): re-run covering tests for REQ-5, REQ-13, REQ-14, REQ-15,
+- [x] TG-4 (Wave 4): re-run covering tests for REQ-5, REQ-13, REQ-14, REQ-15,
       REQ-16; the loop-suspension, grant-gating, and takeover-resume tests MUST be
       green, and so MUST the credential-used-not-seen test (T23) and the
       consent-affordance / off-domain-continuation tests (T24). GATE PRECONDITION
@@ -246,7 +246,7 @@ in the SAME edit pass per the triplet rule.")
       `specs/vision-browser-stage` REQ-14 amendment is recorded, and its **T25**
       owns the narrowed guards CT-6b/CT-7b. TG-4 additionally requires T25 green
       (`pin_54db2ac956a0`).
-- [ ] TG-5 (Wave 5): execute the dated Verification Plan steps 1–11; every step
+- [x] TG-5 (Wave 5): execute the dated Verification Plan steps 1–11; every step
       recorded PASS/FAIL. REQ-8 targets are set only from the step-10 baseline.
       Steps 7–9 are the live takeover gates. Step 11 is the agent gate, which
       REQUIRES T21 green; T13 REQUIRES T22's corpus, without which it has nothing

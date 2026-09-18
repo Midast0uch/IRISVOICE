@@ -319,7 +319,7 @@
 
 ## Amendment 2026-09-17 — REQ-14 narrowed for grant-gated takeover input
 
-- [ ] **T25 (REQ-14 AC4/AC5)**: ADD the narrowing guards CT-6b (the takeover
+- [x] **T25 (REQ-14 AC4/AC5)**: ADD the narrowing guards CT-6b (the takeover
   capture surface is rendered ONLY while a grant is open, and the overlay's
   pointer-events opt-out is intact with no grant) and CT-7b (every input path into
   the session is grant-gated; input arriving with no open grant is rejected) —
