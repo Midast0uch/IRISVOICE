@@ -290,6 +290,71 @@ def _host_of(url: str) -> str:
         return ""
 
 
+# REQ-2 AC1/AC4 (T8): the role+name vocabulary the model is asked to use
+# matches `backend/vision/action_allowlist.py`. These helpers turn a
+# description-only target ("button \"Sign in\"", "link 'Home'",
+# "textbox 'Search'") into bounded, executor-resolvable CSS candidates. Kept
+# as module-level pure functions so the resolution step is unit-testable
+# without a browser.
+_ROLE_TO_CSS = {
+    "button": "button",
+    "link": "a",
+    "textbox": "input, textarea",
+    "combobox": "select",
+    "searchbox": "input[type='search'], input[name='q'], textarea[name='q']",
+    "checkbox": "input[type='checkbox']",
+    "radio": "input[type='radio']",
+    "tab": "[role='tab']",
+    "menuitem": "[role='menuitem']",
+    "heading": "h1, h2, h3, h4, h5, h6",
+}
+_ROLE_NAME_RE = re.compile(
+    r"^\s*(?P<role>[a-zA-Z]+)\s*[\"'`](?P<name>.+?)[\"'`]\s*$"
+)
+
+
+def _parse_role_name(target: str) -> "tuple[str, str] | None":
+    """Parse a ``role "name"`` description into (role, name), else None.
+
+    Accepts single, double, or backtick quoting around the accessible name.
+    Returns None for anything that is not a role+name description (a bare CSS
+    selector, or free prose), so the caller falls straight through to treating
+    it as a selector.
+    """
+    try:
+        m = _ROLE_NAME_RE.match(target or "")
+        if not m:
+            return None
+        role = m.group("role").strip().lower()
+        name = m.group("name").strip()
+        if not name:
+            return None
+        return role, name
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _role_name_selectors(role: str, name: str) -> "list[str]":
+    """Bounded CSS candidates for a role+name target (REQ-2 AC4).
+
+    Prefers Playwright's own role/name engine when available, then falls back
+    to attribute/`:has-text` selectors derived from the allowlist vocabulary.
+    The list is deliberately SHORT (a bounded resolution step, not a crawl).
+    """
+    _base = _ROLE_TO_CSS.get(role)
+    candidates: "list[str]" = []
+    if _base:
+        # `:has-text` matches the element whose text contains the name — the
+        # cheapest executor-side resolution for a button/link by label.
+        for tag in [t.strip() for t in _base.split(",")]:
+            candidates.append(f"{tag}:has-text(\"{name}\")")
+            candidates.append(f"{tag}[aria-label=\"{name}\"]")
+    # Generic accessible-name fallbacks, bounded to two.
+    candidates.append(f"[aria-label=\"{name}\"]")
+    candidates.append(f"[title=\"{name}\"]")
+    return candidates
+
+
 async def _inject_keyring_cookies(context: object, url: str, job_id: str) -> int:
     """Inject OS-keyring session cookies into a fresh context (REQ-12 AC12.1/12.2).
 
@@ -486,6 +551,20 @@ class BrowserSession:
                 "budget clock starts now",
                 acquire_ms, self._job_id,
             )
+        # REQ-18 AC1/AC3 (T20): record the acquire's COLD/WARM classification
+        # scoped to THIS run id, so the per-run split is visible without
+        # re-measuring. The launch is NOT charged to the action budget — the
+        # budget clock is reset below (after acquire), which is the existing
+        # "cold launch is infrastructure, not browsing" behavior REQ-18 AC3
+        # requires.
+        try:
+            _cold = browser_pool.last_acquire_was_cold()
+            record_stage(
+                self._job_id, "browser_acquire_class",
+                _acquire_ms, cold=_cold, warm=not _cold,
+            )
+        except Exception:  # noqa: BLE001 — accounting is off the critical path
+            pass
         # REQ-18 AC1 (T20) will classify cold/warm; here (T4) we only record the
         # acquire duration so the split is measurable per run id.
         record_stage(self._job_id, "open", _acquire_ms)
@@ -806,7 +885,7 @@ class BrowserSession:
         elif kind == "click":
             if not action.target:
                 raise ValueError("click requires a target selector")
-            locator = page.locator(action.target)
+            locator = await self._resolve_target(page, action.target)
             # REQ-4 AC4.3: instant teleport onto the element before acting.
             await self._teleport_to(locator)
             # Best-effort BEFORE the click: capture where the cursor mirror
@@ -826,7 +905,7 @@ class BrowserSession:
         elif kind == "type":
             if not action.target:
                 raise ValueError("type requires a target selector")
-            locator = page.locator(action.target)
+            locator = await self._resolve_target(page, action.target)
             await self._teleport_to(locator)
             await self._capture_action_point(page, locator)
             # REQ-4 AC4.5: instant fill (native input/change events in ~1ms),
@@ -841,7 +920,7 @@ class BrowserSession:
             # focused search box is markup-independent and always submits.
             key = (action.value or "Enter")
             if action.target:
-                locator = page.locator(action.target)
+                locator = await self._resolve_target(page, action.target)
                 await self._teleport_to(locator)
                 await locator.press(key, timeout=_ACTION_TIMEOUT_MS)
             else:
@@ -851,6 +930,55 @@ class BrowserSession:
             await page.wait_for_timeout(ms)
         else:
             raise ValueError(f"unknown action kind: {kind}")
+
+    async def _resolve_target(self, page: object, target: str) -> object:
+        """Resolve a model-named target to a Playwright locator (REQ-2 AC1/AC4).
+
+        The model is asked for a RESOLVABLE handle (a CSS selector OR a
+        role+name). A CSS selector is used directly; a role+name description
+        (e.g. ``button "Sign in"`` or ``link "Home"``) is resolved through a
+        BOUNDED role/name lookup so a description-only suggestion still has a
+        chance before it is treated as unresolvable. Never raises for the
+        description path — on failure it returns a locator that will simply not
+        match, and the caller's ``act()`` records the miss as a ``last_error``
+        observation (REQ-2 AC2), exactly as before.
+        """
+        # A CSS selector resolves directly (the common, cheap path).
+        try:
+            _loc = page.locator(target)
+            _count = getattr(_loc, "count", None)
+            if callable(_count):
+                try:
+                    if await _count() > 0:
+                        return _loc
+                except Exception:  # noqa: BLE001 — counting is best-effort
+                    return _loc
+            else:
+                return _loc
+        except Exception:  # noqa: BLE001 — fall through to description resolution
+            pass
+        # REQ-2 AC4: bounded role/name resolution for a description-only target.
+        _parsed = _parse_role_name(target)
+        if _parsed is not None:
+            role, name = _parsed
+            for _candidate in _role_name_selectors(role, name):
+                try:
+                    _loc = page.locator(_candidate)
+                    _count = getattr(_loc, "count", None)
+                    if callable(_count):
+                        if await _count() > 0:
+                            logger.info(
+                                "[browser_session] resolved description %r -> %s "
+                                "job=%s (REQ-2 AC4)",
+                                target, _candidate, self._job_id,
+                            )
+                            return _loc
+                    else:
+                        return _loc
+                except Exception:  # noqa: BLE001 — try the next candidate
+                    continue
+        # Unresolvable: hand back the raw locator so act() surfaces the miss.
+        return page.locator(target)
 
     async def _teleport_to(self, locator: object) -> None:
         """Instantly bring a target element into view (REQ-4 AC4.3).

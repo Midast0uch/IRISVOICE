@@ -85,9 +85,14 @@ def test_screenshot_to_bytes_comes_from_the_session_never_the_desktop(monkeypatc
 
 
 def test_describe_live_frame_and_read_text_and_analyze_screen_use_session_frame():
-    """Every VLM-facing method captures ITS frame from the session, not a
-    module-level or cached desktop image, and forwards those exact bytes to
-    the real provider's img_bytes-first methods."""
+    """Every VLM-facing method forwards the SESSION's frame bytes to the real
+    provider's img_bytes-first methods.
+
+    REQ-9 AC3 (this spec's T7): triage and the extraction tiers for the SAME
+    settled state SHARE one capture — three VLM-facing calls on an unmoved page
+    cost ONE screenshot, not three (the old behavior re-captured an identical
+    screen per call). The cache is invalidated by scroll_down (REQ-9 AC4).
+    """
     session = _FakeSession()
     provider = _FakeProvider()
     adapter = SessionVisionAdapter(session, provider)
@@ -104,7 +109,24 @@ def test_describe_live_frame_and_read_text_and_analyze_screen_use_session_frame(
     for img_bytes, _question in provider.analyze_calls:
         assert img_bytes == _FakeSession.SESSION_FRAME
     assert provider.read_text_calls == [_FakeSession.SESSION_FRAME]
-    assert session.screenshot_calls == 3  # one capture per VLM-facing call
+    # REQ-9 AC3: ONE capture shared across the same settled state, not one per
+    # VLM-facing call.
+    assert session.screenshot_calls == 1
+
+
+def test_frame_cache_is_invalidated_by_scroll():
+    """REQ-9 AC4 (T7): a CHANGED frame always gets a fresh observation — the
+    cache is per settled state, and scroll_down (a new state) clears it."""
+    session = _FakeSession()
+    adapter = SessionVisionAdapter(session, _FakeProvider())
+
+    asyncio.run(adapter.screenshot_to_bytes())
+    asyncio.run(adapter.screenshot_to_bytes())
+    assert session.screenshot_calls == 1  # same settled state -> shared
+
+    asyncio.run(adapter.scroll_down(delta=500))  # page moved
+    asyncio.run(adapter.screenshot_to_bytes())
+    assert session.screenshot_calls == 2  # fresh capture after the move
 
 
 # ── scrolling delegates to session.act(VisionAction(kind="scroll")) ────────

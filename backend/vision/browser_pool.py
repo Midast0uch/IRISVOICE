@@ -58,6 +58,11 @@ _IDLE_TIMEOUT: float = float(os.environ.get("IRIS_BROWSER_IDLE_TIMEOUT", "60"))
 # Set IRIS_BROWSER_HOLD_OPEN=1 to keep one Chromium for backend lifetime.
 _HOLD_OPEN: bool = os.environ.get("IRIS_BROWSER_HOLD_OPEN", "0") == "1"
 
+# REQ-18 AC4 (T20): bound a cold Chromium launch so a wedged start fails open
+# instead of pinning the run (or the pool start lock). Env-overridable; the
+# default is generous (a cold launch measured ~33s) but finite.
+_ACQUIRE_TIMEOUT_MS: int = int(os.environ.get("IRIS_BROWSER_ACQUIRE_TIMEOUT_MS", "90000"))
+
 # Shared Chromium process state. None until the first acquire_browser().
 _pw = None  # Playwright driver instance (opaque; typed loosely — lazy import)
 _browser = None  # Chromium Browser instance (opaque)
@@ -71,6 +76,51 @@ _last_browser_use: float = 0.0
 _idle_task: Optional[asyncio.Task] = None
 _idle_task_lock = threading.Lock()  # guards _idle_task against concurrent touches
 _browser_idle_callback = None  # set by the caller to broadcast idle-stop status
+
+# REQ-18 (T20): cold/warm acquire accounting. `_warm` is True while a live run
+# has DECLARED it needs the browser (see `declare_browser_run`), so the idle
+# watchdog holds warmth BETWEEN two URLs of the same run instead of firing the
+# 60s idle-stop in the gap. `_last_acquire_was_cold` records whether the most
+# recent acquire paid a launch, for REQ-18 AC1's per-run split.
+_warm_run_holders: int = 0  # count of runs holding warmth (nested/parallel safe)
+_last_acquire_was_cold: bool = False
+
+
+def declare_browser_run() -> None:
+    """Declare that a RUN needs the browser, holding the pool warm (REQ-18 AC2).
+
+    While at least one run holds warmth the idle watchdog does NOT stop the
+    browser between two URLs of that run, so a cold launch is paid at most once
+    per run where a warm pool was achievable. Release with
+    ``release_browser_run`` on every exit path. Counted, so nested/parallel runs
+    are safe. Never raises.
+    """
+    global _warm_run_holders
+    try:
+        _warm_run_holders += 1
+        _touch_browser_use()
+    except Exception:  # noqa: BLE001 — warmth is best-effort
+        pass
+
+
+def release_browser_run() -> None:
+    """Release one run's warmth hold (REQ-18 AC2). Never raises."""
+    global _warm_run_holders
+    try:
+        _warm_run_holders = max(0, _warm_run_holders - 1)
+        _touch_browser_use()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def has_warm_run_holder() -> bool:
+    """True while any run is holding the pool warm (REQ-18 AC2)."""
+    return _warm_run_holders > 0
+
+
+def last_acquire_was_cold() -> bool:
+    """Whether the most recent acquire paid a cold Chromium launch (REQ-18 AC1)."""
+    return _last_acquire_was_cold
 
 
 def set_browser_idle_callback(cb) -> None:
@@ -133,6 +183,11 @@ def should_idle_stop_browser() -> bool:
         return False
     if has_active_browser_lease():
         return False  # a live session must never be idle-stopped out from under it
+    if has_warm_run_holder():
+        # REQ-18 AC2 (T20): a run declared it needs the browser — hold warmth
+        # BETWEEN two URLs of the same run so the idle-stop does not fire in the
+        # gap and force a second cold launch.
+        return False
     return (time.monotonic() - _last_browser_use) >= _IDLE_TIMEOUT
 
 
@@ -320,19 +375,70 @@ async def acquire_browser(max_lease_ms: float = 120_000.0):
     Raises ``ImportError`` if Playwright is not installed, or any other
     exception on a hard launch failure — never silently returns a broken
     browser.
+
+    REQ-18 (T20): the acquire is CLASSIFIED cold (paid a Chromium launch) vs
+    warm (reused a live browser) and the classification is recorded so the
+    per-run split is visible without re-measuring (AC1). A cold launch is
+    ANNOUNCED on the idle/lifecycle callback channel (AC3). The whole acquire
+    is bounded by ``_ACQUIRE_TIMEOUT_MS`` and FAILS OPEN — a wedged launch
+    raises so the caller (BrowserSession.open) degrades the session to
+    unavailable, and the pool start lock is released by the ``async with`` on
+    the way out (AC4).
     """
+    global _last_acquire_was_cold
+    _acquire_t0 = time.monotonic()
     async with _start_lock:
+        _was_cold = _browser is None
         if _browser is not None and not _browser.is_connected():
             logger.warning(
                 "[browser_pool] shared browser is not connected (crashed?) "
                 "— tearing down and restarting"
             )
             await _stop_owned_browser()
+            _was_cold = True
         if _browser is None:
-            await _start_browser()
+            _was_cold = True
+            # REQ-18 AC4 (T20): bound the launch. A wedged Chromium start must
+            # never pin the run OR the pool start lock — fail open by raising
+            # within the timeout (the async-with releases the lock as the
+            # exception propagates).
+            await asyncio.wait_for(
+                _start_browser(), timeout=max(1.0, _ACQUIRE_TIMEOUT_MS / 1000.0),
+            )
+    _last_acquire_was_cold = _was_cold
+    _acquire_ms = int((time.monotonic() - _acquire_t0) * 1000)
+    # REQ-18 AC1/AC3 (T20): record the cold/warm split per acquire and announce
+    # a cold launch on the lifecycle channel. Off the critical path.
+    _record_acquire(_acquire_ms, _was_cold)
     lease = acquire_browser_lease(max_lease_ms)
     _touch_browser_use()
     return _browser, lease
+
+
+def _record_acquire(duration_ms: int, cold: bool) -> None:
+    """Emit the acquire accounting + announce a cold launch (REQ-18 AC1/AC3).
+
+    Never raises: a status broadcast must never fail an acquire.
+    """
+    try:
+        from backend.vision.stage_timing import record_stage
+
+        record_stage("", "browser_acquire", duration_ms, cold=cold, warm=not cold)
+    except Exception:  # noqa: BLE001
+        pass
+    if cold:
+        cb = _browser_idle_callback
+        if cb is not None:
+            try:
+                cb("cold_launch")
+            except TypeError:
+                # The existing idle callback takes no args — honour that shape.
+                try:
+                    cb()
+                except Exception:  # noqa: BLE001
+                    pass
+            except Exception:  # noqa: BLE001 — announce must never fail the launch
+                pass
 
 
 async def _stop_owned_browser() -> None:
@@ -417,7 +523,11 @@ __all__ = [
     "BrowserLease",
     "acquire_browser",
     "acquire_browser_lease",
+    "declare_browser_run",
     "has_active_browser_lease",
+    "has_warm_run_holder",
+    "last_acquire_was_cold",
+    "release_browser_run",
     "reset_browser_pool",
     "should_idle_stop_browser",
     "shutdown_browser_pool",

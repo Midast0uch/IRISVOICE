@@ -5,7 +5,7 @@
 
 ## Wave 1 — Foundation (serving + contracts)
 
-- [ ] T1 (REQ-1): Route browser vision consumers through `resolve_vision_client()`
+- [x] T1 (REQ-1): Route browser vision consumers through `resolve_vision_client()`
       — `backend/vision/fetch_vision.py`, `backend/vision/search_discovery.py` —
       RIPPLE: preserve method surface used by `SessionVisionAdapter`; do not touch
       tier-3 lease semantics; extend the AST bypass scan in
@@ -23,16 +23,16 @@
       only, and must allowlist the lifecycle/health sites
       (`backend/iris_gateway.py:10907-10909`, `:10972-10976`,
       `backend/inference_router.py:318-319`) or it fails on legitimate code.
-- [ ] T2 (REQ-2): Define the resolvable-target + separate-value action contract in
+- [x] T2 (REQ-2): Define the resolvable-target + separate-value action contract in
       BOTH prompts — `backend/tools/lfm_vl_provider.py`, `backend/agent/inference/router.py` —
       RIPPLE: `fetch_vision._map_action` parsing; `VisionAction.value`;
       `action_allowlist` role/name vocabulary (NO CHANGE, reuse it).
-- [ ] T3 (REQ-6): Make `tool_bridge._UI_EVENT_DEFAULTS` the single canonical vision
+- [x] T3 (REQ-6): Make `tool_bridge._UI_EVENT_DEFAULTS` the single canonical vision
       event shape and forward it whole from BOTH forwarders —
       `backend/agent/tool_bridge.py`, `backend/iris_gateway.py` —
       RIPPLE: `ux_map.py` msg_type lock; `orchestrator._on_action` contract lock;
       `test_vision_action_fields_reach_the_panel.py` becomes the guard; add seq.
-- [ ] T4 (REQ-8, REQ-10): Add run-scoped per-stage timing + tuning signals —
+- [x] T4 (REQ-8, REQ-10): Add run-scoped per-stage timing + tuning signals —
       `backend/vision/browser_session.py`, `backend/vision/fetch_vision.py` —
       RIPPLE: off critical path; consumable by `scripts/measure_vision_latency.py`.
 

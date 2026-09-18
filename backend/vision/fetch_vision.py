@@ -328,8 +328,12 @@ class FetchVisionCapability(FetchCapability):
                 )
 
             # ── action loop (REQ-7): suggest -> guard -> act -> wall check ──
-            repeats: list[str] = []
             trajectory = ActionTrajectory()
+            # REQ-9 AC3 (T7): ONE observation per settled state. `_current_frame`
+            # is the settled frame for the CURRENT decision; it is captured
+            # once, fed to the suggestion, and refreshed ONLY after an action
+            # changes the page. The first decision captures it lazily.
+            _current_frame: Optional[bytes] = None
             # REQ-6 AC4 (this spec's T3): a monotonic per-run sequence number
             # stamped on every emitted vision action so a dropped or reordered
             # event is detectable by the consumer. run_id scopes it to this run.
@@ -365,16 +369,42 @@ class FetchVisionCapability(FetchCapability):
                     _termination_cause = f"wall_unresolved:{wall.value}"
                     break
 
-                suggestion = await self._suggest_action(session, _goal_text, job_id)
+                # REQ-9 AC3 (T7): capture the settled frame ONCE for this
+                # decision (lazily; it is refreshed only after an action that
+                # changed the page). Both the suggestion below and any later
+                # reuse in this iteration share this ONE capture — no second
+                # screenshot for the same settled state.
+                if _current_frame is None:
+                    try:
+                        _current_frame = await session.screenshot()
+                    except Exception:  # noqa: BLE001 — a lost frame is not fatal
+                        _current_frame = None
+                suggestion = await self._suggest_action(
+                    session, _goal_text, job_id,
+                    trajectory=trajectory, img=_current_frame,
+                )
                 action = self._map_action(suggestion)
                 if action is None:
-                    # Model said error/unknown or the loop would repeat itself
-                    # 3x in a row (stuck in a click loop) — settle and hand back.
+                    # Model said error/unknown — settle and hand back.
                     logger.info(
                         "[fetch.vision] job_id=%s url=%s stop-loop step=%d suggestion=%r (REQ-7)",
                         job_id, url, step, suggestion,
                     )
                     _termination_cause = "model_stop"
+                    break
+
+                # REQ-4 AC2 (T6): measured-progress termination. After N
+                # consecutive actions whose measured visual delta is below the
+                # no-progress threshold (or which re-target the same element
+                # twice), the loop settles. A productive multi-scroll or
+                # multi-click session keeps a changing delta and is NOT stopped.
+                if trajectory.should_terminate:
+                    logger.info(
+                        "[fetch.vision] job_id=%s url=%s no-progress streak=%d "
+                        "-> settling (REQ-4 AC2)",
+                        job_id, url, trajectory.no_progress_streak(),
+                    )
+                    _termination_cause = "no_progress"
                     break
 
                 # REQ-20 AC20.1/AC20.3 (T31 + T39): task guardrails gate BEFORE
@@ -404,26 +434,43 @@ class FetchVisionCapability(FetchCapability):
                     _termination_cause = f"guardrail:{_gate.violated}"
                     break
 
-                # Loop-prevention: 3 identical action kinds in a row = stuck.
-                repeats.append(action.kind)
-                if len(repeats) >= 3 and len(set(repeats[-3:])) == 1:
-                    logger.info(
-                        "[fetch.vision] job_id=%s url=%s stuck on %s — settling (REQ-7)",
-                        job_id, url, action.kind,
-                    )
-                    _termination_cause = f"repeat_kind:{action.kind}"
-                    break
+                # REQ-4 (T6): termination is decided by MEASURED PROGRESS, not
+                # by a repeated action KIND. The former `repeats` list and its
+                # "3 identical kinds = stuck" stop are REMOVED — a long page is
+                # legitimately scroll-dominated, so a kind-repeat heuristic
+                # stops exactly the sessions it should keep. The post-action
+                # visual delta recorded onto the trajectory (below) is the
+                # progress signal; `trajectory.should_terminate` ends the loop
+                # only after N consecutive no-progress actions.
 
                 try:
                     await session.act(action)
                     actions += 1
+                    # REQ-4 AC1/AC3 (T6): measure the perceptual delta this
+                    # action produced and record it on the trajectory, so a
+                    # measurable change resets the no-progress streak even when
+                    # the action KIND repeats. `_post is None` (a lost frame)
+                    # scores as changed per visual_delta's contract, so a
+                    # degraded capture never falsely stalls the loop.
+                    try:
+                        _post = await session.screenshot()
+                    except Exception:  # noqa: BLE001 — a lost frame is not progress
+                        _post = None
+                    _delta = visual_delta(_current_frame, _post)
+                    trajectory.record(
+                        action.kind, target=action.target or "",
+                        outcome="ok", visual_delta=_delta,
+                    )
+                    if _post is not None:
+                        _current_frame = _post
                     # REQ-10 AC1 (T4): per-step tuning signal — the action
-                    # cadence (kind + step index). Combined with the per-stage
-                    # timing lines this lets the tuner see cadence vs latency
-                    # without re-instrumenting. Off the critical path.
+                    # cadence (kind + step index) AND the measured no-progress
+                    # delta + streak. Off the critical path.
                     record_stage(
                         job_id, "cadence", 0,
                         step=step, kind=action.kind, actions=actions,
+                        delta=round(_delta, 3),
+                        streak=trajectory.no_progress_streak(),
                     )
                     # REQ-11 AC4: announce the action so the panel can annotate
                     # it. Best-effort — a failing emitter must never break the
@@ -587,14 +634,44 @@ class FetchVisionCapability(FetchCapability):
 
     async def _suggest_action(
         self, session: BrowserSession, goal: str | GoalAnatomy, run_id: str = "",
+        trajectory: Optional["ActionTrajectory"] = None,
+        img: Optional[bytes] = None,
     ) -> dict:
         """Ask the VLM for the next action, feeding a BROWSER screenshot
-        (REQ-9 AC2: never the desktop). Graceful when vision is down."""
+        (REQ-9 AC2: never the desktop). Graceful when vision is down.
+
+        REQ-3 (T5): the recent `ActionTrajectory` window and its no-repeat
+        constraint are fed into the prompt as ADDITIONAL CONTEXT (a separate
+        `trajectory` argument, never folded into `goal` — the goal stays the
+        objective, so goal-propagation callers are unaffected). The window is
+        rendered by `ActionTrajectory.format_prompt()`; an EMPTY window sends
+        the un-augmented baseline (REQ-3 edge), and a formatting failure falls
+        back to the baseline prompt without failing the action request
+        (REQ-3 AC4). Only providers that ACCEPT a `trajectory` keyword receive
+        it (decided by signature, mirroring `_make_session`) so a fake with the
+        bare `(img, goal)` shape is called unchanged.
+
+        REQ-9 AC3 (T7): when the caller already captured the settled-state frame
+        it passes it as `img` and this method does NOT take a second screenshot
+        for the same decision — one observation per settled state serves the
+        suggestion.
+        """
         provider = self._get_provider()
         if provider is None:
             return {"action": "error", "target": "", "reasoning": "vision unavailable"}
+        # REQ-3 AC1/AC2: build the window text. Never raises (AC4).
+        _traj_text = ""
+        if trajectory is not None:
+            try:
+                if len(trajectory) > 0:
+                    _traj_text = trajectory.format_prompt()
+            except Exception as exc:  # noqa: BLE001 — fall back to baseline (AC4)
+                logger.info("[fetch.vision] trajectory format failed: %s", exc)
+                _traj_text = ""
         try:
-            img = await session.screenshot()
+            # REQ-9 AC3: reuse the caller's frame when given, else capture once.
+            if img is None:
+                img = await session.screenshot()
             if img is None:
                 return {"action": "error", "target": "", "reasoning": "no browser frame"}
             # to_thread, NOT a direct call. suggest_action is SYNCHRONOUS and
@@ -610,7 +687,12 @@ class FetchVisionCapability(FetchCapability):
             # REQ-8 AC1 (T4): time the MODEL INFERENCE stage (the await only —
             # the screenshot above is timed by the session as its own stage).
             _inf_t0 = time.monotonic()
-            _result = await asyncio.to_thread(provider.suggest_action, img, goal) or {}
+            if _traj_text and self._provider_accepts_trajectory(provider):
+                _result = await asyncio.to_thread(
+                    provider.suggest_action, img, goal, trajectory=_traj_text,
+                ) or {}
+            else:
+                _result = await asyncio.to_thread(provider.suggest_action, img, goal) or {}
             record_stage(
                 run_id or getattr(session, "job_id", "") or "",
                 "inference", int((time.monotonic() - _inf_t0) * 1000),
@@ -619,6 +701,26 @@ class FetchVisionCapability(FetchCapability):
         except Exception as exc:  # noqa: BLE001
             logger.info("[fetch.vision] suggest failed: %s", exc)
             return {"action": "error", "target": "", "reasoning": str(exc)}
+
+    def _provider_accepts_trajectory(self, provider: object) -> bool:
+        """True when `provider.suggest_action` accepts a `trajectory=` keyword.
+
+        Decided by signature (like `_make_session`) rather than by catching a
+        TypeError from the call, so a TypeError raised INSIDE a real provider is
+        never misread as "no such parameter". Fakes with the bare `(img, goal)`
+        shape keep working unchanged.
+        """
+        try:
+            import inspect
+
+            _params = inspect.signature(provider.suggest_action).parameters
+            if "trajectory" in _params:
+                return True
+            return any(
+                p.kind is inspect.Parameter.VAR_KEYWORD for p in _params.values()
+            )
+        except Exception:  # noqa: BLE001 — undecidable means "don't pass it"
+            return False
 
     def _map_action(self, suggestion: dict) -> Optional[VisionAction]:
         """Map a VLM suggestion dict to a VisionAction, or None to stop.

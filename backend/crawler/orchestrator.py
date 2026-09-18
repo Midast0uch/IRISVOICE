@@ -410,6 +410,48 @@ class CrawlOrchestrator:
         excluded_urls: Optional[list] = None,
         seed_urls: Optional[list] = None,
     ) -> CrawlResult:
+        """Public entry point. REQ-18 AC2 (T20): declare that this RUN needs the
+        browser for its whole duration, so the pool's idle-stop cannot fire
+        between two URLs of the same run and force a second cold launch. The
+        declaration is released on EVERY exit path (finally). Never raises on
+        the declare/release itself — warmth is best-effort and must never break
+        a crawl.
+        """
+        try:
+            from backend.vision import browser_pool as _bp20
+
+            _bp20.declare_browser_run()
+            _declared = True
+        except Exception:  # noqa: BLE001 — warmth is best-effort
+            _bp20 = None
+            _declared = False
+        try:
+            return await self._research_inner(
+                query, mode=mode, session_id=session_id, on_progress=on_progress,
+                max_pages=max_pages, min_pages=min_pages, timeout_s=timeout_s,
+                job_id=job_id, excluded_urls=excluded_urls, seed_urls=seed_urls,
+            )
+        finally:
+            if _declared and _bp20 is not None:
+                try:
+                    _bp20.release_browser_run()
+                except Exception:  # noqa: BLE001
+                    pass
+
+    async def _research_inner(
+        self,
+        query: str,
+        *,
+        mode: Literal["ws", "agent"] = "agent",
+        session_id: str = "",
+        on_progress: Optional[Callable[[CrawlProgress], None]] = None,
+        max_pages: int = _DEFAULT_MAX_PAGES,
+        min_pages: int = _DEFAULT_MIN_PAGES,
+        timeout_s: float = _DEFAULT_TIMEOUT_S,
+        job_id: Optional[str] = None,
+        excluded_urls: Optional[list] = None,
+        seed_urls: Optional[list] = None,
+    ) -> CrawlResult:
         """Run the full funnel. Never raises for crawl failures (REQ-17 AC1)."""
         t_start = time.monotonic()
         if not job_id:

@@ -78,12 +78,36 @@ class SessionVisionAdapter:
     def __init__(self, session: _SessionLike, provider: object) -> None:
         self._session = session
         self._provider = provider
+        # REQ-9 AC2/AC3 (T7): ONE captured frame per settled state. Triage and
+        # the extraction tiers for the SAME state share this frame instead of
+        # each taking its own screenshot (the old behavior: three VLM-facing
+        # calls cost three captures of one unchanged screen). Invalidated when
+        # the page actually moves (scroll_down), so a NEW settled state always
+        # gets a FRESH observation (REQ-9 AC4).
+        self._frame_cache: Optional[bytes] = None
+
+    def invalidate_frame(self) -> None:
+        """Drop the cached frame so the next capture is fresh.
+
+        Called when the page changes (scroll_down). REQ-9 AC4: a changed frame
+        always gets a fresh observation -- the cache is per settled state, never
+        across states.
+        """
+        self._frame_cache = None
 
     # ── VisionProvider surface (frame_extraction.extract_page_frames) ──────
 
     async def screenshot_to_bytes(self) -> Optional[bytes]:
-        """The current BROWSER frame (REQ-9 AC2) — never the desktop."""
-        return await self._session.screenshot()
+        """The current BROWSER frame (REQ-9 AC2) -- never the desktop.
+
+        REQ-9 AC3 (T7): returns the cached frame for the CURRENT settled state
+        when one exists, so triage and extraction share a single capture. The
+        cache is cleared by ``scroll_down`` (a new settled state).
+        """
+        if self._frame_cache is not None:
+            return self._frame_cache
+        self._frame_cache = await self._session.screenshot()
+        return self._frame_cache
 
     async def describe_live_frame(self, prompt: str) -> str:
         """Triage tier (design D8, cheap-gates-expensive).
@@ -142,6 +166,10 @@ class SessionVisionAdapter:
         await self._session.act(
             VisionAction(kind="scroll", value=str(delta), reason="frame extraction scroll (T12a)")
         )
+        # REQ-9 AC4 (T7): the page moved, so the settled state CHANGED — drop
+        # the cached frame so the next triage/extraction captures fresh. Without
+        # this the cache would pin the first screenful for the whole loop.
+        self.invalidate_frame()
 
 
 __all__ = ["SessionVisionAdapter"]
