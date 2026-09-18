@@ -1239,6 +1239,33 @@ class _DirectVisionClient:
         prompt = question if question else "Describe what is visible on this screen in detail."
         return self._call(img_bytes, prompt, max_tokens=256)
 
+    def read_text(self, img_bytes: bytes, region: Optional[Tuple] = None) -> str:
+        """OCR-style verbatim extraction (REQ-1 AC1 method-surface parity).
+
+        Mirrors ``LFMVLProvider.read_text`` exactly (same prompt, same token
+        budget) so a browser consumer that resolved to tier 1/2 gets IDENTICAL
+        call-site semantics to the tier-3 path it used before â€” the whole point
+        of routing through the resolver is that only the endpoint changes, never
+        the caller's contract.
+        """
+        hint = f" Focus on: {region}." if region else ""
+        prompt = (
+            f"Extract all readable text from this screenshot.{hint} "
+            "Return only the text content, no commentary."
+        )
+        return self._call(img_bytes, prompt, max_tokens=256)
+
+    def describe_live_frame(self, img_bytes: bytes) -> str:
+        """Fast single-sentence description (REQ-1 AC1 method-surface parity).
+
+        Mirrors ``LFMVLProvider.describe_live_frame``. ``SessionVisionAdapter``
+        routes triage through ``analyze_screen`` instead (it needs a
+        goal-specific question), but the surface is preserved so any consumer
+        that calls it directly still works when the resolver picks tier 1/2.
+        """
+        prompt = "In one sentence, what is happening on this screen right now?"
+        return self._call(img_bytes, prompt, max_tokens=64)
+
     def find_ui_element(self, img_bytes: bytes, description: str) -> Dict[str, Any]:
         prompt = (
             f'Find the UI element described as: "{description}". '
@@ -1255,21 +1282,36 @@ class _DirectVisionClient:
         return {"found": found, "location_hint": response}
 
     def suggest_action(self, img_bytes: bytes, goal: str) -> Dict[str, Any]:
+        # REQ-2 (this spec's T2): the SAME resolvable-target + separate-value
+        # contract as LFMVLProvider.suggest_action, so a consumer that resolved
+        # to tier 1/2 gets an identical suggestion shape. `value` carries a
+        # `type` action's text separately from `target`.
         prompt = (
             f'Goal: "{goal}". '
             "Looking at the current screen, what is the single best next action? "
-            "Reply with: ACTION: [click/type/scroll/wait], TARGET: [what to interact with], REASON: [brief reason]."
+            "Reply with exactly these fields, one per line: "
+            "ACTION: [click/type/scroll/wait/navigate], "
+            "TARGET: [a stable handle the executor can resolve -- a CSS selector "
+            "OR a role and accessible name, e.g. 'button \"Sign in\"' or "
+            "'#submit'], "
+            "VALUE: [for a type action ONLY, the exact text to enter; leave empty "
+            "for every other action], "
+            "REASON: [brief reason]."
         )
-        response = self._call(img_bytes, prompt, max_tokens=128)
+        response = self._call(img_bytes, prompt, max_tokens=160)
         if response.startswith("Vision unavailable"):
-            return {"action": "error", "target": "", "reasoning": response}
-        result: Dict[str, Any] = {"action": "unknown", "target": "", "reasoning": response}
+            return {"action": "error", "target": "", "value": "", "reasoning": response}
+        result: Dict[str, Any] = {
+            "action": "unknown", "target": "", "value": "", "reasoning": response,
+        }
         for line in response.splitlines():
             line_lower = line.lower()
             if line_lower.startswith("action:"):
                 result["action"] = line.split(":", 1)[1].strip().lower()
             elif line_lower.startswith("target:"):
                 result["target"] = line.split(":", 1)[1].strip()
+            elif line_lower.startswith("value:"):
+                result["value"] = line.split(":", 1)[1].strip()
             elif line_lower.startswith("reason:"):
                 result["reasoning"] = line.split(":", 1)[1].strip()
         return result

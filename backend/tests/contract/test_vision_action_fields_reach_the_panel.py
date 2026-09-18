@@ -75,45 +75,84 @@ def _last_action_point_keys() -> set:
     return keys
 
 
-def _gateway_vision_whitelist() -> set:
-    """The key tuple iris_gateway copies onto the crawler_vision_action message.
+def _gateway_forwards_vision_payload_whole() -> bool:
+    """True when iris_gateway's crawler_vision_action branch merges the
+    producer's WHOLE payload (`pl`) into the emitted message rather than
+    copying a fixed key subset.
 
-    Located by its loop variable (`for _coord_key in (...)`) so it is found
-    wherever in the file it lives.
+    REQ-6 AC1 (this spec's T3) replaced the old hand-written `_coord_key`
+    allowlist with wholesale forwarding: the branch merges the payload over
+    the canonical shape from `tool_bridge._UI_EVENT_DEFAULTS`. This helper
+    locates that merge — a comprehension of the form
+    `{k: v for k, v in pl.items() ...}` inside the CRAWLER_VISION_ACTION
+    branch — so the guard below can assert the forwarder CANNOT drop a field
+    by construction. If the branch is ever reduced back to a key tuple, this
+    returns False and the guard fails loudly.
+    """
+    tree = ast.parse(_GATEWAY.read_text(encoding="utf-8", errors="replace"))
+
+    def _iterates_pl(node: ast.AST) -> bool:
+        # {k: v for k, v in pl.items() ...}
+        if not isinstance(node, ast.DictComp):
+            return False
+        it = node.generators[0].iter if node.generators else None
+        # pl.items()  ->  Attribute(value=Name('pl'), attr='items')
+        return (
+            isinstance(it, ast.Call)
+            and isinstance(it.func, ast.Attribute)
+            and it.func.attr == "items"
+            and isinstance(it.func.value, ast.Name)
+            and it.func.value.id == "pl"
+        )
+
+    for node in ast.walk(tree):
+        if _iterates_pl(node):
+            return True
+    return False
+
+
+def _gateway_still_has_a_coord_key_whitelist() -> bool:
+    """True if a `for _coord_key in (...)` subsetting loop is still present.
+
+    After T3 it must NOT be: the whole point of REQ-6 AC1 is that no middle
+    allowlist can drop a field. This is asserted as a negative so a future
+    edit that reintroduces the pattern is caught immediately.
     """
     tree = ast.parse(_GATEWAY.read_text(encoding="utf-8", errors="replace"))
     for node in ast.walk(tree):
-        if not isinstance(node, ast.For):
-            continue
-        if getattr(node.target, "id", None) != "_coord_key":
-            continue
-        if isinstance(node.iter, (ast.Tuple, ast.List, ast.Set)):
-            return {
-                e.value
-                for e in node.iter.elts
-                if isinstance(e, ast.Constant) and isinstance(e.value, str)
-            }
-    return set()
+        if isinstance(node, ast.For) and getattr(node.target, "id", None) == "_coord_key":
+            return True
+    return False
 
 
-def test_gateway_whitelist_carries_every_coordinate_the_session_records():
+def test_gateway_forwards_the_whole_vision_payload_not_a_whitelist():
+    """REQ-6 AC1 (T3): the gateway's crawler_vision_action branch forwards the
+    producer's whole payload, so EVERY field BrowserSession records (scroll_y,
+    scroll_height, x, y, viewport_w, viewport_h, capture_page, escalated, and
+    any future coordinate) survives to the panel by construction.
+
+    The predecessor of this test pinned a `_coord_key` whitelist and failed
+    each time a new coordinate was added but the whitelist was not. The fix is
+    structural: the whitelist is GONE and the payload rides whole, which is a
+    strictly stronger guarantee — there is no list left to fall behind.
+    """
     produced = _last_action_point_keys()
     assert produced, (
-        "parsed no last_action_point keys from browser_session.py — the AST walk "
-        "is wrong, and this test would pass vacuously"
+        "parsed no last_action_point keys from browser_session.py — the AST "
+        "walk is wrong, and this test would pass vacuously"
     )
 
-    forwarded = _gateway_vision_whitelist()
-    assert forwarded, (
-        "found no `for _coord_key in (...)` whitelist in iris_gateway.py — either "
-        "it was renamed (update this test) or the copy loop is gone"
+    assert _gateway_forwards_vision_payload_whole(), (
+        "iris_gateway's crawler_vision_action branch no longer merges the "
+        "producer's whole payload (`{k: v for k, v in pl.items() ...}`) — a "
+        "hand-maintained subset has crept back in, which is the exact REQ-6 "
+        "AC1 defect this guard exists to catch"
     )
 
-    dropped = sorted(produced - forwarded)
-    assert not dropped, (
-        f"BrowserSession records {dropped} on last_action_point but the gateway's "
-        f"crawler_vision_action whitelist does not carry them, so they die in the "
-        f"forwarder and the panel never sees them. Whitelist: {sorted(forwarded)}"
+    assert not _gateway_still_has_a_coord_key_whitelist(), (
+        "iris_gateway still contains a `for _coord_key in (...)` subsetting "
+        "loop on the crawler_vision_action path — the REQ-6 AC1 whole-payload "
+        "forwarding regressed"
     )
 
 

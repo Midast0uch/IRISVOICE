@@ -2227,31 +2227,48 @@ class LFMVLProvider:
         """
         Suggest the next UI action to achieve a goal.
 
+        REQ-2 (this spec's T2): the prompt requests a RESOLVABLE target the
+        executor can satisfy rather than open-ended prose, and asks for a
+        `type` action's input in its OWN field (`VALUE:`) so the text never
+        gets embedded in `target`. `_map_action` (fetch_vision) parses the
+        four fields into `VisionAction(kind, target, value, reason)`, so
+        `type` populates `value` separately. The role+name vocabulary matches
+        `backend/vision/action_allowlist.py`, which the executor resolves.
+
         Args:
             img_bytes: PNG screenshot bytes
             goal: What the user wants to accomplish
 
         Returns:
-            {"action": str, "target": str, "reasoning": str}
+            {"action": str, "target": str, "value": str, "reasoning": str}
         """
         prompt = (
             f'Goal: "{goal}". '
             "Looking at the current screen, what is the single best next action? "
-            "Reply with: ACTION: [click/type/scroll/wait], TARGET: [what to interact with], REASON: [brief reason]."
+            "Reply with exactly these fields, one per line: "
+            "ACTION: [click/type/scroll/wait/navigate], "
+            "TARGET: [a stable handle the executor can resolve -- a CSS selector "
+            "OR a role and accessible name, e.g. 'button \"Sign in\"' or "
+            "'#submit'], "
+            "VALUE: [for a type action ONLY, the exact text to enter; leave empty "
+            "for every other action], "
+            "REASON: [brief reason]."
         )
-        response = self._call(img_bytes, prompt, max_tokens=128)
+        response = self._call(img_bytes, prompt, max_tokens=160)
 
         if response.startswith("Vision unavailable"):
-            return {"action": "error", "target": "", "reasoning": response}
+            return {"action": "error", "target": "", "value": "", "reasoning": response}
 
         # Parse structured response
-        result = {"action": "unknown", "target": "", "reasoning": response}
+        result = {"action": "unknown", "target": "", "value": "", "reasoning": response}
         for line in response.splitlines():
             line_lower = line.lower()
             if line_lower.startswith("action:"):
                 result["action"] = line.split(":", 1)[1].strip().lower()
             elif line_lower.startswith("target:"):
                 result["target"] = line.split(":", 1)[1].strip()
+            elif line_lower.startswith("value:"):
+                result["value"] = line.split(":", 1)[1].strip()
             elif line_lower.startswith("reason:"):
                 result["reasoning"] = line.split(":", 1)[1].strip()
 

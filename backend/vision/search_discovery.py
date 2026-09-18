@@ -28,6 +28,7 @@ attempts to defeat one.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -364,13 +365,21 @@ def _extract_urls_from_text(text: str, limit: int) -> list[str]:
 
 
 def _get_provider():
-    """Lazy singleton lookup, mirroring `fetch_vision.py`'s pattern. Never
-    raises — a missing/broken vision stack just means no fallback tier."""
-    try:
-        from backend.tools.lfm_vl_provider import get_lfm_vl_provider
+    """Resolve the vision serving client through the ONE resolver (REQ-1).
 
-        return get_lfm_vl_provider()
-    except Exception as exc:  # noqa: BLE001
+    Mirrors ``fetch_vision.py``'s pattern: before this, discovery constructed
+    the tier-3 ``LFMVLProvider`` directly via ``get_lfm_vl_provider()``, so a
+    bound multimodal brain/tool was ignored and tier 3 was always used. The
+    resolver preserves the ``read_text`` / ``analyze_screen`` method surface the
+    fallback below relies on. Never raises (REQ-1 AC3) -- a missing/broken vision
+    stack just means no fallback tier.
+    """
+    try:
+        from backend.agent.inference.router import resolve_vision_client
+
+        _resolution, client = resolve_vision_client()
+        return client
+    except Exception as exc:  # noqa: BLE001 -- degrade, never raise (REQ-1 AC3)
         logger.info("[search_discovery] provider unavailable: %s", exc)
         return None
 
@@ -411,7 +420,15 @@ async def discover_urls_via_vision(
     """
     b = bounds or _DEFAULT_BOUNDS
     session = session_cls(job_id, _SEARCH_ENGINE_URL, query, b)
+    # Session-332 (live T2): discovery emitted exactly ONE event, AFTER
+    # open+type+navigate+settle. A cold browser pool makes that span 70s+
+    # with zero frames, and the orchestrator's stall watchdog cancels a
+    # silent step at _STALL_S (120s) — so a slow-but-healthy discovery could
+    # be killed as if wedged. Announce each phase boundary so the watchdog
+    # sees a live step. Best-effort: _announce never raises.
+    _phase_total = 4
     try:
+        _announce(_emit, job_id, "opening_browser", query, index=1, total=_phase_total)
         await session.open()
         if not session.available():
             logger.info(
@@ -420,6 +437,7 @@ async def discover_urls_via_vision(
                 job_id,
             )
             return DiscoveryResult(unavailable=True)
+        _announce(_emit, job_id, "browser_ready", query, index=2, total=_phase_total)
 
         # REQ-19 AC2: navigate to a search engine, enter the query, submit.
         # Per-action failures are recorded as observations by `act()` itself
@@ -448,7 +466,7 @@ async def discover_urls_via_vision(
             reason="submit search via results URL (REQ-19)",
         ))
         html = await session.settle()
-        _announce(_emit, job_id, "submit_search", query)
+        _announce(_emit, job_id, "submit_search", query, index=3, total=_phase_total)
 
         # REQ-19 AC5: a wall on the SEARCH ENGINE itself is parked by the
         # caller, NEVER solved. Checked before extraction so a challenge page
@@ -472,9 +490,18 @@ async def discover_urls_via_vision(
                 try:
                     img = await session.screenshot()
                     if img is not None:
-                        text = prov.read_text(img) or ""
+                        # F2 (REQ-1, T1): the provider's read_text /
+                        # analyze_screen are SYNCHRONOUS blocking HTTP calls.
+                        # Called inline from this already-running async function
+                        # they block the event loop for every concurrent task
+                        # (WS, audio, other crawls) for up to the provider
+                        # timeout. Dispatch via asyncio.to_thread exactly as
+                        # fetch_vision._suggest_action does, so a slow/hung vision
+                        # server stalls only this discovery, never the reactor.
+                        text = await asyncio.to_thread(prov.read_text, img) or ""
                         if not text.strip():
-                            text = prov.analyze_screen(
+                            text = await asyncio.to_thread(
+                                prov.analyze_screen,
                                 img,
                                 "List the URLs or article titles of the search "
                                 "results visible on this page.",
@@ -496,6 +523,7 @@ async def discover_urls_via_vision(
             "(REQ-19 AC1/AC2/AC4, REQ-16; REQ-9 raw=%d kept=%d)",
             job_id, query[:60], len(urls), used_fallback, raw_count, len(urls),
         )
+        _announce(_emit, job_id, "results_extracted", query, index=4, total=_phase_total)
         return DiscoveryResult(urls=urls, used_vision_fallback=used_fallback)
     except Exception as exc:  # noqa: BLE001 — REQ-19 must never fail the run
         logger.warning("[search_discovery] job_id=%s error=%s (REQ-19 AC8)", job_id, exc)
@@ -507,15 +535,21 @@ async def discover_urls_via_vision(
             logger.info("[search_discovery] session close failed job_id=%s: %s", job_id, exc)
 
 
-def _announce(_emit, job_id: str, kind: str, reason: str) -> None:
+def _announce(_emit, job_id: str, kind: str, reason: str,
+              *, index: int = 1, total: int = 1) -> None:
     """Best-effort action announcement, same shape as `_vision_fetch`'s
-    CRAWLER_VISION_ACTION payload (REQ-11 AC4) — never breaks discovery."""
+    CRAWLER_VISION_ACTION payload (REQ-11 AC4) — never breaks discovery.
+
+    ``index``/``total`` are the phase counters (Session-332): the orchestrator's
+    stall watchdog resets on every event, so announcing each phase keeps a
+    slow-but-healthy discovery from being cancelled as if wedged.
+    """
     if _emit is None:
         return
     try:
         _emit("CRAWLER_VISION_ACTION", {
             "job_id": job_id, "url": _SEARCH_ENGINE_URL, "kind": kind,
-            "reason": reason, "action_index": 1, "total": 1,
+            "reason": reason, "action_index": index, "total": total,
         })
     except Exception:  # noqa: BLE001
         pass

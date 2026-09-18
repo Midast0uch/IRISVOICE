@@ -43,6 +43,7 @@ from backend.vision.browser_session import (
 )
 from backend.vision.frame_extraction import extract_page_frames, reconcile
 from backend.vision.session_vision_adapter import SessionVisionAdapter
+from backend.vision.stage_timing import StageTimer, record_stage
 
 logger = logging.getLogger(__name__)
 
@@ -308,6 +309,11 @@ class FetchVisionCapability(FetchCapability):
         session = _make_session(self._session_cls, job_id, url, _goal_text, bounds, page_offset)
         wall: Optional[WallKind] = None
         actions = 0
+        # REQ-10 AC1 (T4): the termination cause + last step index are recorded
+        # for the tuning line. Initialised here so the finally block can always
+        # report them, even on an early return or an exception.
+        _termination_cause = "not_started"
+        step = -1
         try:
             await session.open()
             if not session.available():
@@ -324,6 +330,11 @@ class FetchVisionCapability(FetchCapability):
             # ── action loop (REQ-7): suggest -> guard -> act -> wall check ──
             repeats: list[str] = []
             trajectory = ActionTrajectory()
+            # REQ-6 AC4 (this spec's T3): a monotonic per-run sequence number
+            # stamped on every emitted vision action so a dropped or reordered
+            # event is detectable by the consumer. run_id scopes it to this run.
+            _run_id = job_id
+            _seq = 0
             for step in range(_MAX_LOOP_STEPS):
                 # Wall check first (cheap DOM heuristics, no VLM).
                 try:
@@ -351,9 +362,10 @@ class FetchVisionCapability(FetchCapability):
                         # AC3: wall verified gone; resume the action loop.
                         wall = None
                         continue
+                    _termination_cause = f"wall_unresolved:{wall.value}"
                     break
 
-                suggestion = await self._suggest_action(session, _goal_text)
+                suggestion = await self._suggest_action(session, _goal_text, job_id)
                 action = self._map_action(suggestion)
                 if action is None:
                     # Model said error/unknown or the loop would repeat itself
@@ -362,6 +374,7 @@ class FetchVisionCapability(FetchCapability):
                         "[fetch.vision] job_id=%s url=%s stop-loop step=%d suggestion=%r (REQ-7)",
                         job_id, url, step, suggestion,
                     )
+                    _termination_cause = "model_stop"
                     break
 
                 # REQ-20 AC20.1/AC20.3 (T31 + T39): task guardrails gate BEFORE
@@ -388,6 +401,7 @@ class FetchVisionCapability(FetchCapability):
                         "[fetch.vision] job_id=%s url=%s blocked %s: %s (REQ-20)",
                         job_id, url, _gate.violated, _gate.reason,
                     )
+                    _termination_cause = f"guardrail:{_gate.violated}"
                     break
 
                 # Loop-prevention: 3 identical action kinds in a row = stuck.
@@ -397,17 +411,31 @@ class FetchVisionCapability(FetchCapability):
                         "[fetch.vision] job_id=%s url=%s stuck on %s — settling (REQ-7)",
                         job_id, url, action.kind,
                     )
+                    _termination_cause = f"repeat_kind:{action.kind}"
                     break
 
                 try:
                     await session.act(action)
                     actions += 1
+                    # REQ-10 AC1 (T4): per-step tuning signal — the action
+                    # cadence (kind + step index). Combined with the per-stage
+                    # timing lines this lets the tuner see cadence vs latency
+                    # without re-instrumenting. Off the critical path.
+                    record_stage(
+                        job_id, "cadence", 0,
+                        step=step, kind=action.kind, actions=actions,
+                    )
                     # REQ-11 AC4: announce the action so the panel can annotate
                     # it. Best-effort — a failing emitter must never break the
                     # loop (REQ-16 AC7: instrumentation is off the critical path).
                     if on_action is not None:
                         try:
+                            _seq += 1
                             payload = {
+                                # REQ-6 AC4: run-scoped monotonic sequence so a
+                                # dropped/reordered event is detectable.
+                                "run_id": _run_id,
+                                "seq": _seq,
                                 "job_id": job_id,
                                 "url": url,
                                 "kind": action.kind,
@@ -444,7 +472,13 @@ class FetchVisionCapability(FetchCapability):
                         "[fetch.vision] job_id=%s url=%s act %s failed: %s (REQ-7 AC6)",
                         job_id, url, action.kind, exc,
                     )
+                    _termination_cause = f"action_error:{action.kind}"
                     break
+            else:
+                # REQ-4 AC4 (T6): the hard step bound is the outer limit. Reached
+                # only when every step made progress and the loop ran out of
+                # iterations — recorded distinctly from a stall.
+                _termination_cause = "max_steps"
 
             # ── extraction (T12a): triage-before-extract, bounded ──
             # SessionVisionAdapter binds the SESSION (frames + scrolling) and
@@ -507,23 +541,53 @@ class FetchVisionCapability(FetchCapability):
             # T9: lease releases on EVERY path (normal + exception).
             if lease is not None:
                 lease.release()
+            # REQ-8 AC1 (T4): total session duration, scoped by run id. Also
+            # carries the REQ-10 tuning signals captured during the loop
+            # (termination cause + action cadence) so one line answers "why did
+            # this run end and how fast was it" without cross-referencing.
+            record_stage(
+                job_id, "session", int((time.monotonic() - t0) * 1000),
+                actions=actions, steps=step + 1,
+                termination=_termination_cause,
+            )
 
     # ── internals ─────────────────────────────────────────────────────────
 
     def _get_provider(self):
+        """Resolve the vision serving client through the ONE resolver (REQ-1).
+
+        Before this, the browser path constructed the tier-3 ``LFMVLProvider``
+        directly (via ``get_lfm_vl_provider``), so a bound multimodal brain/tool
+        was silently ignored and tier 3 was always used â€” the confirmed REQ-1
+        defect. ``resolve_vision_client()`` is the same single source of vision
+        serving every other consumer uses, and it preserves the method surface
+        (``analyze_screen`` / ``read_text`` / ``suggest_action`` /
+        ``health_check``), so nothing downstream of this method changes.
+
+        Degrades exactly as before on failure (REQ-1 AC3): a resolver that
+        raises ``VisionModelUnavailable`` (or any other error) yields ``None``,
+        which callers already read as "vision unavailable" â€” never a raise into
+        the crawl/vision hot path. Lease/idle-stop stays tier 3's exclusive
+        concern (REQ-1 AC4): the resolver's tier-1/2 client takes no lease, and
+        ``fetch_one``'s ``acquire_vision_lease`` returns None unless an OWNED
+        tier-3 server is running.
+        """
         if self._provider is not None:
             return self._provider
         if self._provider_singleton is None:
             try:
-                from backend.tools.lfm_vl_provider import get_lfm_vl_provider
+                from backend.agent.inference.router import resolve_vision_client
 
-                self._provider_singleton = get_lfm_vl_provider()
-            except Exception as exc:  # noqa: BLE001
+                _resolution, client = resolve_vision_client()
+                self._provider_singleton = client
+            except Exception as exc:  # noqa: BLE001 â€” degrade, never raise (REQ-1 AC3)
                 logger.info("[fetch.vision] provider init failed: %s", exc)
                 self._provider_singleton = None
         return self._provider_singleton
 
-    async def _suggest_action(self, session: BrowserSession, goal: str | GoalAnatomy) -> dict:
+    async def _suggest_action(
+        self, session: BrowserSession, goal: str | GoalAnatomy, run_id: str = "",
+    ) -> dict:
         """Ask the VLM for the next action, feeding a BROWSER screenshot
         (REQ-9 AC2: never the desktop). Graceful when vision is down."""
         provider = self._get_provider()
@@ -542,15 +606,40 @@ class FetchVisionCapability(FetchCapability):
             # launched" observed live on 2026-08-11. SessionVisionAdapter
             # already dispatches every provider call this way; this was the one
             # provider call that had been left on the loop.
-            return await asyncio.to_thread(provider.suggest_action, img, goal) or {}
+            #
+            # REQ-8 AC1 (T4): time the MODEL INFERENCE stage (the await only —
+            # the screenshot above is timed by the session as its own stage).
+            _inf_t0 = time.monotonic()
+            _result = await asyncio.to_thread(provider.suggest_action, img, goal) or {}
+            record_stage(
+                run_id or getattr(session, "job_id", "") or "",
+                "inference", int((time.monotonic() - _inf_t0) * 1000),
+            )
+            return _result
         except Exception as exc:  # noqa: BLE001
             logger.info("[fetch.vision] suggest failed: %s", exc)
             return {"action": "error", "target": "", "reasoning": str(exc)}
 
     def _map_action(self, suggestion: dict) -> Optional[VisionAction]:
-        """Map a VLM suggestion dict to a VisionAction, or None to stop."""
+        """Map a VLM suggestion dict to a VisionAction, or None to stop.
+
+        REQ-2 AC3 (this spec's T2): the suggestion's `target` is the resolvable
+        handle and `value` is the `type` input, carried in its OWN field.
+        `type` populates `VisionAction.value` from the suggestion's `value`
+        and never embeds the input text in `target`. A `type` with no value is
+        still a resolvable action here; the executor (browser_session.act,
+        REQ-2 AC2/T8) records the missing-value case as a `last_error`
+        observation rather than silently typing an empty string.
+        """
         action = str((suggestion or {}).get("action", "")).strip().lower()
         target = str((suggestion or {}).get("target", "")).strip()
+        # REQ-2 AC3: the input value rides its own field. Fall back to a
+        # `text`/`input` alias a model may emit, but NEVER fold it into target.
+        value = str(
+            (suggestion or {}).get("value", "")
+            or (suggestion or {}).get("text", "")
+            or (suggestion or {}).get("input", "")
+        ).strip()
         reason = str((suggestion or {}).get("reasoning", "")).strip()
         if action in ("error", "unknown", "done", "stop", "none"):
             return None
@@ -566,7 +655,7 @@ class FetchVisionCapability(FetchCapability):
         }.get(action)
         if kind is None:
             return None
-        return VisionAction(kind=kind, target=target or None, value=target or None, reason=reason)
+        return VisionAction(kind=kind, target=target or None, value=value or None, reason=reason)
 
     def _build_page(self, url: str, settled_dom: str, vision_text: str) -> PageData:
         """Build PageData for the outcome. Vision text wins when present and

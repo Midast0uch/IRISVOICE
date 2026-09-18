@@ -3581,7 +3581,19 @@ _UI_EVENT_DEFAULTS: dict = {
     "CRAWLER_SOURCES_ADDED": {"urls": [], "job_id": ""},
     "CRAWLER_PHASE": {"phase": "", "phase_sequence": 0},
     "CRAWLER_PROGRESS": {"stage": "", "message": ""},
-    "CRAWLER_VISION_ACTION": {"job_id": "", "url": "", "kind": ""},
+    # REQ-6 (this spec's T3): the CANONICAL vision-action shape. Every field a
+    # consumer would break on if absent is defaulted HERE, and both forwarders
+    # (this module's `_crawl_ui_emitter` AND `iris_gateway._on_progress`) merge
+    # the producer's WHOLE payload on top — so a newly added field (scroll,
+    # viewport, seq, ...) rides end to end with no edit to a middle allowlist.
+    # The gateway's old hand-written `_coord_key` tuple was exactly that
+    # allowlist, and it silently dropped each new coordinate in turn.
+    # `run_id` + `seq` are the REQ-6 AC4 monotonic sequence (per vision run) so
+    # a dropped/reordered event is detectable by the consumer.
+    "CRAWLER_VISION_ACTION": {
+        "run_id": "", "seq": 0, "job_id": "", "url": "", "kind": "",
+        "reason": "", "action_index": 0, "total": 0,
+    },
     "CRAWLER_SOURCE_PARKED": {"job_id": "", "url": ""},
     "CRAWLER_COMPLETE": {"page_count": 0, "summary": ""},
     "CRAWLER_ERROR": {"message": "crawl error"},

@@ -56,6 +56,7 @@ from typing import Literal, Optional
 from dataclasses import dataclass
 
 from backend.crawler.capture_store import CAPTURE_SLOT_STRIDE, get_capture_store
+from backend.vision.stage_timing import StageTimer, record_stage
 
 logger = logging.getLogger(__name__)
 
@@ -366,6 +367,13 @@ class BrowserSession:
         self._page_offset = max(0, int(page_offset))
         self._page_number = self._page_offset + 1 if self._page_offset else 0
         self._last_published: Optional[str] = None  # T16: rate-bound dedupe
+        # REQ-8 AC2 (T4): counts that reveal waste, scoped to this session's
+        # run id. `screenshots` (per-settled-state redundancy) and the
+        # published/skipped split on _publish_frame are the two the audit
+        # named. Never read for control flow — observability only.
+        self._screenshots_taken = 0
+        self._frames_published = 0
+        self._frames_skipped = 0
         self._started_at = time.monotonic()
         self._unavailable = False
         self._closed = False
@@ -438,6 +446,11 @@ class BrowserSession:
             return  # idempotent — already open
         from backend.vision import browser_pool
 
+        # REQ-8 AC1 (T4): time the browser ACQUIRE separately from the session
+        # work. acquire_browser() may cold-launch Chromium (~33s measured) and
+        # that is infrastructure, not browsing — the split is what makes the
+        # cold/warm cost visible without re-measuring.
+        _acquire_timer = StageTimer(self._job_id, "acquire")
         try:
             browser, lease = await browser_pool.acquire_browser(
                 max_lease_ms=self._bounds.max_wall_ms + 30_000,
@@ -449,6 +462,7 @@ class BrowserSession:
                 self._job_id, self.url, exc,
             )
             return
+        _acquire_ms = _acquire_timer.record()
 
         # The wall-clock budget starts HERE, not in __init__.
         #
@@ -472,6 +486,9 @@ class BrowserSession:
                 "budget clock starts now",
                 acquire_ms, self._job_id,
             )
+        # REQ-18 AC1 (T20) will classify cold/warm; here (T4) we only record the
+        # acquire duration so the split is measurable per run id.
+        record_stage(self._job_id, "open", _acquire_ms)
         self._started_at = time.monotonic()
         self._lease = lease
         try:
@@ -692,6 +709,8 @@ class BrowserSession:
         # Reset before every action — a stale point from a PRIOR action must
         # never be reported against this one (REQ-16 AC7: no false coords).
         self.last_action_point = None
+        # REQ-8 AC1 (T4): time the action execution (the DOM round trip).
+        _act_t0 = time.monotonic()
         try:
             await self._execute(page, action)
         except Exception as exc:  # noqa: BLE001 — REQ-7 AC6: observation, not abort
@@ -705,6 +724,12 @@ class BrowserSession:
             if action.kind == "navigate":
                 # REQ-11 AC1: a navigated-away page is a distinct settled frame.
                 await self._publish_frame()
+        finally:
+            record_stage(
+                self._job_id, "action",
+                int((time.monotonic() - _act_t0) * 1000),
+                kind=action.kind, index=self._actions_taken,
+            )
 
     async def _execute(self, page: object, action: VisionAction) -> None:
         kind = action.kind
@@ -972,7 +997,15 @@ class BrowserSession:
                 _locator = self._page.locator(target_selector)
                 _shot = getattr(_locator, "screenshot", None)
                 if callable(_shot):
-                    return await _shot(timeout=_ACTION_POINT_TIMEOUT_MS)
+                    _t0 = time.monotonic()
+                    _bytes = await _shot(timeout=_ACTION_POINT_TIMEOUT_MS)
+                    self._screenshots_taken += 1
+                    record_stage(
+                        self._job_id, "screenshot",
+                        int((time.monotonic() - _t0) * 1000),
+                        count=self._screenshots_taken,
+                    )
+                    return _bytes
             except Exception as exc:  # noqa: BLE001 — fall back to viewport
                 logger.debug(
                     "[browser_session] element screenshot fell back to viewport "
@@ -980,7 +1013,18 @@ class BrowserSession:
                     self._job_id, target_selector, exc,
                 )
         try:
-            return await self._page.screenshot(type="png")
+            _t0 = time.monotonic()
+            _bytes = await self._page.screenshot(type="png")
+            self._screenshots_taken += 1
+            # REQ-8 AC1/AC2 (T4): per-capture duration + the running screenshot
+            # count (a count that reveals waste: redundant screenshots per
+            # settled state). Off the critical path — record_stage never raises.
+            record_stage(
+                self._job_id, "screenshot",
+                int((time.monotonic() - _t0) * 1000),
+                count=self._screenshots_taken,
+            )
+            return _bytes
         except Exception as exc:  # noqa: BLE001 — a lost frame degrades the loop, not the page
             logger.warning("[browser_session] screenshot failed job=%s: %s", self._job_id, exc)
             return None
@@ -1132,6 +1176,7 @@ class BrowserSession:
                 "[browser_session] frame dedupe job=%s page=%s (T16 rate-bound)",
                 self._job_id, self._page_number,
             )
+            self._frames_skipped += 1
             return html
         # Stay inside this session's reserved block. A session is bounded to ~12
         # distinct frames, so the stride is ample; the clamp is the guard that a
@@ -1148,14 +1193,24 @@ class BrowserSession:
             )
             return html
         self._page_number = _next
+        _pub_t0 = time.monotonic()
         try:
             get_capture_store().save(self._job_id, self._page_number, self.url, html)
             self._last_published = html
+            self._frames_published += 1
         except Exception as exc:  # noqa: BLE001 — publication is off the hot path
             logger.warning(
                 "[browser_session] frame publish failed job=%s page=%s: %s",
                 self._job_id, self._page_number, exc,
             )
+        # REQ-8 AC1/AC2 (T4): publish duration + the published/skipped split
+        # (a count that reveals waste — a session that keeps publishing the
+        # same state, or that skips almost everything).
+        record_stage(
+            self._job_id, "publish",
+            int((time.monotonic() - _pub_t0) * 1000),
+            published=self._frames_published, skipped=self._frames_skipped,
+        )
         return html
 
 
