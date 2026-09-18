@@ -303,6 +303,33 @@
 - [x] **T14 (REQ-14)**: Non-interference guards — CT-6 pointer-events grep
   guard over overlay source; CT-7 no-inbound-channel grep guard over
   `browser_session.py`; assert scroll mirror sends nothing backendward.
+  **CT-6/CT-7 remain in force UNMODIFIED — see T25.**
+  **AUDIT 2026-09-18 (T14 was NOT honest-green):** CT-7 was FAILING at HEAD.
+  `backend/vision/browser_session.py:1039` contained the token `WebSocket` inside a
+  docstring in `request_takeover` ("…freeze every concurrent crawl and the
+  WebSocket for the full timeout"), and CT-7 asserts that token is absent from the
+  whole file. It was committed state (`git diff --stat` on the file was empty),
+  introduced with the takeover work in `9337ac8f`, and no run reported it — so the
+  "no inbound control channel" property was UNVERIFIED while being treated as
+  pinned. FIXED IN CODE, NOT IN THE TEST (THE TEST RULE): the docstring now reads
+  "every other live client" plus an explicit wording note. Zero behaviour change.
+  Both CT-6 and CT-7 conditions now verify true. The whole-file string scan is the
+  root cause of the false-negative class; see T25's CT-6b/CT-7b narrowing.
+  Evidence: `pin_f659183fd764`.
+
+## Amendment 2026-09-17 — REQ-14 narrowed for grant-gated takeover input
+
+- [ ] **T25 (REQ-14 AC4/AC5)**: ADD the narrowing guards CT-6b (the takeover
+  capture surface is rendered ONLY while a grant is open, and the overlay's
+  pointer-events opt-out is intact with no grant) and CT-7b (every input path into
+  the session is grant-gated; input arriving with no open grant is rejected) —
+  `backend/tests/contract/test_takeover_input_authority_contract.py` (NEW FILE).
+  RIPPLE: `test_non_interference_contract.py` is NOT touched (this is the point —
+  the originals stay byte-identical); guard must be proven to FAIL against an
+  ungated input path, then the gating restored. Driven by
+  `specs/vision-browser-e2e-reliability` REQ-13/REQ-14 (CDP screencast);
+  owner-authorised amendment to REQ-14 AC1/AC2, Decisions Locked 8, and the
+  Non-Requirements read-only line. Evidence: `pin_54db2ac956a0`.
 
 ## Host prerequisites (READ BEFORE ANY LIVE VISION MEASUREMENT)
 

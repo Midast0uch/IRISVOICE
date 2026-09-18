@@ -32,6 +32,19 @@ User-resolved 2026-08-23. Do not re-litigate.
 8. **The overlay never interferes with anyone.** It stays pointer-events-none
    (pinned by test), and the agent's headless session is architecturally
    independent of the iframe mirror. Both facts become permanent guards.
+   **AMENDED 2026-09-17 (owner-authorised — grant-scoped exception).** The rule
+   now reads: the overlay stays pointer-events-none EXCEPT inside an open takeover
+   grant, and the session has no inbound control channel EXCEPT the grant-gated
+   takeover input path. Reason: `specs/vision-browser-e2e-reliability` REQ-13 now
+   drives takeover with a CDP screencast, because the pooled Chromium is headless
+   (`backend/vision/browser_pool.py:285-290`) and each context carries a spoofed
+   user agent (`backend/vision/browser_session.py:111-131`) — so a wall's
+   clearance cannot move to another browser, and an external browser can never
+   satisfy that spec's REQ-5 AC3. The exception is NARROWED by two new guards
+   (CT-6b/CT-7b, REQ-14 AC4/AC5) that pin the grant gating. CT-6/CT-7 themselves
+   are UNCHANGED and must never be deleted or weakened; the new guards live in a
+   separate file so the originals stay byte-identical. Evidence:
+   `pin_54db2ac956a0`, owner decision 2026-09-17.
 9. **The reading surface fits the frame.** Captured pages are scaled to the
    iframe width; the whole page width is always visible without horizontal
    scrolling. Height scrolls naturally.
@@ -546,6 +559,39 @@ mirror. Nothing pins either fact.
 - AC3: THE SCROLL MIRROR (`sendScrollTo`) SHALL affect ONLY the local iframe
   view and SHALL send nothing toward the backend vision session.
 
+**AMENDMENT 2026-09-17 (owner-authorised — grant-scoped exception).**
+
+Original AC1/AC2 text, preserved verbatim as the historical record:
+- AC1 (original): A CONTRACT TEST SHALL assert the overlay root and ALL its
+  rendered children carry pointer-events: none (grep/DOM-shaped guard).
+- AC2 (original): A CONTRACT TEST SHALL assert no frontend component sends input
+  events into the vision session's Playwright page (the session has no inbound
+  control channel from the UI — grep-shaped guard over `browser_session.py`).
+
+Both guards PASS today while their INTENT would invert under CDP input, because
+both are string-shaped rather than intent-shaped. The amended contract therefore
+NARROWS both — in the same spirit — and the narrowing is itself pinned:
+- AC1 (AMENDED): the overlay root and every rendered child SHALL carry
+  pointer-events: none EXCEPT the takeover capture surface, which SHALL exist
+  ONLY while a takeover grant is open.
+- AC2 (AMENDED): the vision session SHALL have NO inbound control channel EXCEPT
+  the grant-gated takeover input path. No other route, and no input arriving
+  outside an open grant, may reach the session.
+
+**Acceptance Criteria (ADDED by the amendment):**
+- AC4 (CT-6b): A CONTRACT TEST SHALL assert the takeover capture surface is
+  rendered ONLY while a grant is open, and that the overlay's pointer-events
+  opt-out is intact whenever no grant is open.
+- AC5 (CT-7b): A CONTRACT TEST SHALL assert every input path into the session is
+  grant-gated — no ungated input route exists, and an input arriving with no open
+  grant is rejected.
+
+**Non-weakening rule (binding):** CT-6 and CT-7 SHALL remain in force unmodified.
+This amendment ADDS guards; it never relaxes an existing one. The new guards live
+in a NEW file (`backend/tests/contract/test_takeover_input_authority_contract.py`)
+so that `test_non_interference_contract.py` stays byte-identical. Owner authority:
+2026-09-17. Evidence: `pin_54db2ac956a0`.
+
 ### REQ-15: Single Live Reading surface (no tab-per-page)
 **User Story:** As a user I want the panel to follow the agent's reading in
 ONE place, so the tab strip is not flooded with a tab per crawled page.
@@ -694,6 +740,9 @@ inside it carried no reading grammar at all.
 - Changing vision routing hierarchy (unified-vision-routing spec owns it).
 - Changing the VISION_UNAVAILABLE fail-loudly contract.
 - Making the agent's actions controllable from the panel (read-only mirror).
+  **AMENDED 2026-09-17:** ONE narrow exception now exists — the grant-gated
+  takeover input path defined by REQ-14 AC1/AC2 (amended) plus AC4/AC5. Outside
+  an open grant the mirror stays read-only, exactly as before.
 - Rewriting the dual WS/SSE transport (contract-motivated duplication).
 - New VLM models or quality changes.
 - Mobile-specific layouts beyond what isRemoteView already handles.

@@ -439,6 +439,13 @@ Contract tests (pin boundaries BEFORE behavior work):
   Pins REQ-14 AC1.
 - CT-7: no inbound control channel into BrowserSession (grep-shaped).
   Pins REQ-14 AC2.
+- CT-6b (ADDED 2026-09-17): the takeover capture surface exists ONLY while a
+  grant is open, and the overlay pointer-events opt-out is intact whenever no
+  grant is open. Pins REQ-14 AC4. Lives in a NEW file so CT-6/CT-7 stay
+  byte-identical.
+- CT-7b (ADDED 2026-09-17): every input path into the session is grant-gated —
+  no ungated input route exists, and input with no open grant is rejected.
+  Pins REQ-14 AC5. Same new file.
 - CT-8: vision_status payload shape additive vs existing consumers.
 
 Behavioral tests:
@@ -490,6 +497,23 @@ Frontend:
 - `app/dev/vision-stage/page.tsx` + `simulator/` (NEW)
 - `hooks/useIRISWebSocket.ts` (vision_status detail extension)
 - `hooks/useViewProtocol.ts` / view-agent script (scale-aware scrollTo)
+
+**Amendment 2026-09-17 — grant-scoped takeover input (owner-authorised).** Driven
+by `specs/vision-browser-e2e-reliability` REQ-13/REQ-14 (CDP screencast):
+- `backend/tests/contract/test_takeover_input_authority_contract.py` (NEW — CT-6b/
+  CT-7b; `test_non_interference_contract.py` is NOT touched)
+- `components/iris/browser/BrowserNavigationOverlay.tsx` (takeover capture surface,
+  rendered ONLY while a grant is open)
+- `backend/agent/tools/ask_user_tool.py` + `backend/vision/browser_session.py`
+  (grant open/close; NOTE CT-7 still forbids `FastAPI`/`WebSocket`/`APIRouter`
+  strings in `browser_session.py` — a mention in a comment also fails the guard)
+  **PRE-CONDITION NOW TRUE (2026-09-18):** CT-7 was RED at HEAD because a docstring
+  at `browser_session.py:1039` named the socket transport. Fixed in the code
+  (docstring reworded), not in the test. T25 starts from an honestly-green guard;
+  any new transport token you add to that file will break it deliberately.
+- `hooks/useIRISWebSocket.ts` (grant-gated input sender; no ungated path)
+- `backend/iris_gateway.py` (the grant-gated inbound branch only; the existing
+  `question_response` answer funnel stays UNCHANGED)
 
 ## 9. REQ-16 design notes (AmbientCrawlTier repurposed — Wave 6, not started)
 
