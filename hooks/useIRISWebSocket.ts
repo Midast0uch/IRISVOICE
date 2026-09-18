@@ -1653,6 +1653,27 @@ export function useIRISWebSocket(
         break
       }
 
+      case "takeover_frame": {
+        // REQ-16 (T16/T17): a live CDP screencast frame. It rides its OWN event
+        // (never the CRAWLER_VISION_ACTION shape) and is consumed by the
+        // takeover live surface, which renders it and acks it.
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:takeover_frame', {
+            detail: message
+          }))
+        }
+        break
+      }
+
+      case "takeover_input_rejected": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:takeover_input_rejected', {
+            detail: message
+          }))
+        }
+        break
+      }
+
       case "crawler_source_parked": {
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('iris:crawler_source_parked', {
@@ -2114,6 +2135,29 @@ export function useIRISWebSocket(
     }
     sendMessage('set_web_mode', { enabled: webMode })
   }, [isConnected, sendMessage])
+
+  // REQ-14 / REQ-16 (T17): the takeover input + frame-ack forwarders. The live
+  // surface emits these as window events (transport-agnostic); this is the ONE
+  // place they become WS messages. The typed value rides the `takeover_input`
+  // message and is never stored here.
+  useEffect(() => {
+    const onInput = (e: Event) => {
+      const d = (e as CustomEvent<Record<string, unknown>>).detail
+      if (!d) return
+      sendMessage('takeover_input', d)
+    }
+    const onAck = (e: Event) => {
+      const d = (e as CustomEvent<Record<string, unknown>>).detail
+      if (!d) return
+      sendMessage('takeover_frame_ack', d)
+    }
+    window.addEventListener('iris:takeover_input', onInput)
+    window.addEventListener('iris:takeover_frame_ack', onAck)
+    return () => {
+      window.removeEventListener('iris:takeover_input', onInput)
+      window.removeEventListener('iris:takeover_frame_ack', onAck)
+    }
+  }, [sendMessage])
 
   // Action methods
   const selectCategory = useCallback((category: string) => {

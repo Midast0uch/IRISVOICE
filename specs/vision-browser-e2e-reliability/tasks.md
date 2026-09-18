@@ -95,14 +95,14 @@
 > CT-6b/CT-7b are owned THERE as that spec's **T25**. T17/T19 CONSUME that guard.
 > Do NOT delete or weaken CT-6/CT-7. Evidence: `pin_54db2ac956a0`.
 
-- [ ] T15 (REQ-13): CDP screencast transport — start/stop, ack pacing, bounded
+- [x] T15 (REQ-13): CDP screencast transport — start/stop, ack pacing, bounded
       in-flight frames, degrade on CDP failure — `backend/vision/cdp_takeover.py`
       (NEW), `backend/vision/browser_session.py` —
       RIPPLE: keep `browser_session.py` free of `FastAPI`/`WebSocket`/`APIRouter`
       strings (CT-7 fails on a comment too); publish frames through the event bus,
       never through a route; the `request_takeover` seam (`:1017`) is the mount
       point; stop on close/timeout/cancel (`:1073-1097`).
-- [ ] T16 (REQ-16): Frame envelope + delivery bounds + panel renderer —
+- [x] T16 (REQ-16): Frame envelope + delivery bounds + panel renderer —
       `backend/agent/event_bus.py`, `backend/agent/ws_event_bridge.py`,
       `hooks/useIRISWebSocket.ts`, `hooks/useBrowserNavOverlay.ts`,
       `components/iris/browser/BrowserNavigationOverlay.tsx` —
@@ -110,7 +110,7 @@
       proxy surface stays untouched); `capture_store` (NO CHANGE — frames are not
       captures); `browser_surface` (NO CHANGE); `VisionLifecycleChip` (NO CHANGE);
       latest-wins drop with a dropped counter; OQ-10/OQ-11 decide encoding + rate.
-- [ ] T17 (REQ-14): Takeover grant + input forwarding (grant-gated, page-scoped,
+- [x] T17 (REQ-14): Takeover grant + input forwarding (grant-gated, page-scoped,
       ephemeral) — `backend/vision/cdp_takeover.py`, `backend/iris_gateway.py`,
       `hooks/useIRISWebSocket.ts`, `components/iris/browser/BrowserNavigationOverlay.tsx` —
       RIPPLE: the inbound branch is a sibling of `question_response`
@@ -119,21 +119,21 @@
       `<button`/`<input`/`<a href` (CT-6); the typed value never reaches memory,
       ledger, logs, or a frame echo; the narrowed guards are that spec's T25
       (GATE CLEARED 2026-09-17 — CONSUME, do not re-own).
-- [ ] T18 (REQ-15): Loop suspension + ownership handoff + release paths —
+- [x] T18 (REQ-15): Loop suspension + ownership handoff + release paths —
       `backend/vision/fetch_vision.py`, `backend/vision/browser_session.py`,
       `backend/vision/cdp_takeover.py` —
       RIPPLE: keep the inline await (`fetch_vision.py:340-348`) as the suspension
       point; no model call and no DOM action while the grant is open; wall re-check
       before resume (existing `:1080`); cancellation releases the vision lease and
       the browser context (no orphan Chromium).
-- [ ] T19 (REQ-13–REQ-16): Takeover contract + behavioral tests + harness extension —
+- [x] T19 (REQ-13–REQ-16): Takeover contract + behavioral tests + harness extension —
       `backend/tests/contract/`, `backend/tests/behavioral/`,
       `scripts/validate_vision_browser_e2e.py` —
       RIPPLE: pin frame envelope + monotonic `frame_seq`, input allowlist shape,
       grant gating (no input without a grant), loop-suspension behavior, frame stop
       at terminal; CONSUME `test_takeover_input_authority_contract.py` (CT-6b/CT-7b,
       owned by vision-browser-stage T25); CT-6/CT-7 stay untouched.
-- [ ] T23 (REQ-14 AC5/AC6): Credential application WITHOUT exposure — the system
+- [x] T23 (REQ-14 AC5/AC6): Credential application WITHOUT exposure — the system
       applies a keyring secret to a session field under an open grant, with
       explicit user authorisation and a value-free audit record —
       `backend/vision/cdp_takeover.py`, `backend/vision/browser_session.py`,
@@ -144,7 +144,7 @@
       shows only the page's own (masked) rendering; a host with no keyring entry
       degrades to the manual takeover; never try several secrets (account lockout).
       Shares the REQ-14 grant with T17 — do not build a second grant mechanism.
-- [ ] T24 (REQ-15 AC5/AC6): Post-takeover continuation — the revocable consent
+- [x] T24 (REQ-15 AC5/AC6): Post-takeover continuation — the revocable consent
       affordance for persisting session cookies, and off-domain continuation with
       an `AskUserQuestion` escalation when the agent cannot safely resume —
       `backend/vision/cdp_takeover.py`, `backend/vision/browser_session.py`,

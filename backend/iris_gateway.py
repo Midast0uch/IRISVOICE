@@ -284,6 +284,37 @@ class IRISGateway:
         self._main_loop = loop
         self._ws_bridge.set_main_loop(loop)
         self._logger.info("[IRISGateway] Main event loop captured.")
+        # REQ-16 (T16/T17): register the CDP screencast frame sink. Each frame
+        # envelope rides the WS channel ONLY (never the capture-store slot
+        # design or CRAWLER_VISION_ACTION shape, REQ-16 AC2). Marshalled onto
+        # the main loop via run_coroutine_threadsafe (the same pattern every
+        # other cross-loop WS emit uses).
+        try:
+            from backend.vision import cdp_takeover as _cdp
+
+            def _frame_sink(envelope: dict) -> None:
+                try:
+                    _loop = self._main_loop
+                    if _loop is None or not _loop.is_running():
+                        return
+                    _msg = {"type": "takeover_frame", **envelope}
+                    # The run happens inside ONE live conversation session. The
+                    # manager is created deep inside BrowserSession, which does
+                    # not know the WS session id, so we broadcast to the live
+                    # conversation sessions (this is a single-user desktop; the
+                    # takeover frame stream is bounded and only flows while a
+                    # grant is open).
+                    for _sid in list(self._conversation_sessions):
+                        asyncio.run_coroutine_threadsafe(
+                            self._ws_manager.broadcast_to_session(_sid, _msg),
+                            _loop,
+                        )
+                except Exception:  # noqa: BLE001 — a frame must never break a run
+                    pass
+
+            _cdp.set_frame_sink(_frame_sink)
+        except Exception as _fs_err:  # noqa: BLE001
+            self._logger.warning(f"[takeover] frame sink registration failed: {_fs_err}")
         # Start session GC task
         if self._session_gc_task is None:
             self._session_gc_task = asyncio.create_task(self._session_gc_loop())
@@ -6244,6 +6275,42 @@ class IRISGateway:
                         )
             except Exception as _q_err:
                 self._logger.warning(f"[AskUser] question_response failed: {_q_err}")
+
+        elif msg_type == "takeover_input":
+            # REQ-14 (T17): the takeover INPUT channel — a SIBLING of
+            # question_response (not a replacement). The typed value is
+            # ephemeral: forwarded to the session's CDP input dispatcher and
+            # never logged here. Grant-gated inside the manager (input outside
+            # an open grant is rejected + counted).
+            try:
+                from backend.vision import cdp_takeover as _cdp
+
+                _run_id = payload.get("run_id", "") or payload.get("job_id", "")
+                _kind = str(payload.get("kind", "")).strip()
+                event = _cdp.TakeoverInput(
+                    kind=_kind,
+                    seq=int(payload.get("seq", 0) or 0),
+                    x=payload.get("x"),
+                    y=payload.get("y"),
+                    button=payload.get("button"),
+                    key=payload.get("key"),
+                    text=payload.get("text"),
+                )
+                # NOTE: the value in `event.text` is forwarded, never logged.
+                await _cdp.deliver_input(_run_id, event)
+            except Exception as _in_err:
+                self._logger.warning(f"[takeover] input failed: {_in_err}")
+
+        elif msg_type == "takeover_frame_ack":
+            # REQ-13 AC2: the panel acknowledges a frame so Chromium keeps
+            # sending; releases the single in-flight slot (latest-wins).
+            try:
+                from backend.vision import cdp_takeover as _cdp
+
+                _run_id = payload.get("run_id", "") or payload.get("job_id", "")
+                _cdp.ack_frame(_run_id)
+            except Exception as _ack_err:
+                self._logger.warning(f"[takeover] frame ack failed: {_ack_err}")
 
         elif msg_type == "clear_chat":
             # Get AgentKernel for this session and clear conversation

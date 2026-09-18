@@ -1186,6 +1186,51 @@ class BrowserSession:
 
     # ── T11 (REQ-10): interactive takeover ─────────────────────────────────
 
+    def _get_takeover_manager(self):
+        """Lazily create this session's TakeoverManager (REQ-13, T15).
+
+        Imported lazily so `browser_session.py` never references the CDP
+        transport at module scope (keeps the CT-7 token scan clean). The
+        manager routes frames through the process-wide frame sink the gateway
+        registers.
+        """
+        mgr = getattr(self, "_takeover_mgr", None)
+        if mgr is None:
+            from backend.vision import cdp_takeover as _cdp
+
+            mgr = _cdp.TakeoverManager(
+                run_id=self._job_id,
+                frame_sink=_cdp.get_frame_sink(),
+            )
+            _cdp.register_active(mgr)
+            self._takeover_mgr = mgr
+        return mgr
+
+    async def _stop_takeover_manager(self, reason: str) -> None:
+        """Stop the screencast + release the CDP session + close the grant.
+
+        REQ-13 AC3 / REQ-15 AC3: on resolve, timeout, cancel, or run end the
+        screencast stops, the CDP session is released, and the session returns
+        to the deterministic DOM path. Idempotent; never raises.
+        """
+        mgr = getattr(self, "_takeover_mgr", None)
+        if mgr is None:
+            return
+        try:
+            await mgr.stop_screencast()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[browser_session] screencast stop failed job=%s: %s", self._job_id, exc)
+        try:
+            mgr.close_grant(reason)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from backend.vision import cdp_takeover as _cdp
+
+            _cdp.unregister_active(self._job_id)
+        except Exception:  # noqa: BLE001
+            pass
+
     async def request_takeover(
         self,
         wall: WallKind,
@@ -1223,6 +1268,26 @@ class BrowserSession:
             )
             return False
         url = getattr(self._page, "url", None) or self.url
+        # REQ-13 (T15/T18): start the CDP screencast BEFORE asking, so the panel
+        # has live frames the moment the user sees the banner. A CDP failure
+        # degrades to the existing replay mirror (REQ-13 AC4) — the ask/resume
+        # path below is unchanged and still works.
+        manager = self._get_takeover_manager()
+        manager.open_grant(
+            question_id="", wall_kind=wall.value,
+            max_ms=max(1, int(timeout_seconds)) * 1000,
+        )
+        try:
+            started = await manager.start_screencast(self._page)
+            if not started:
+                logger.info(
+                    "[browser_session] CDP screencast unavailable job=%s — "
+                    "degrading to replay mirror (REQ-13 AC4)", self._job_id,
+                )
+        except Exception as exc:  # noqa: BLE001 — degrade, never fail the run
+            logger.info(
+                "[browser_session] screencast start failed job=%s: %s", self._job_id, exc
+            )
         try:
             tool = get_ask_user_tool()
             question = tool.ask_browser_takeover(
@@ -1232,11 +1297,18 @@ class BrowserSession:
                 job_id=self._job_id,
                 timeout_seconds=timeout_seconds,
             )
+            # Bind the grant to the real question id now that it exists.
+            manager.open_grant(
+                question_id=getattr(question, "question_id", ""),
+                wall_kind=wall.value,
+                max_ms=max(1, int(timeout_seconds)) * 1000,
+            )
         except Exception as exc:  # noqa: BLE001 — a broken takeover ask must
             # never kill the session; the caller still has the wall.
             logger.warning(
                 "[browser_session] takeover ask failed job=%s: %s", self._job_id, exc
             )
+            await self._stop_takeover_manager("ask_failed")
             return False
         try:
             answered = await asyncio.to_thread(tool.wait_for_answer, question)
@@ -1244,7 +1316,11 @@ class BrowserSession:
             logger.info(
                 "[browser_session] takeover wait failed job=%s: %s", self._job_id, exc
             )
+            await self._stop_takeover_manager("wait_failed")
             return False
+        # REQ-13 AC3 / REQ-15 AC3: the takeover resolved — STOP the screencast,
+        # release the CDP session, and return to the deterministic DOM path.
+        await self._stop_takeover_manager("answered")
         if getattr(answered, "answer", None) != "completed":
             logger.info(
                 "[browser_session] takeover not completed job=%s status=%s",
