@@ -38,7 +38,7 @@
 
 ## Wave 2 — Loop quality (backend behavior)
 
-- [ ] T20 (REQ-18): Browser warm-path bound + cold-launch accounting — record
+- [x] T20 (REQ-18): Browser warm-path bound + cold-launch accounting — record
       cold/warm per run, hold warmth for a run, announce a cold launch, keep the
       launch out of the action budget, bound the acquire and fail open —
       `backend/vision/browser_pool.py`, `backend/vision/browser_session.py`,
@@ -50,27 +50,27 @@
       one; a BORROWED tier-3 server is never idle-stopped (REQ-1 AC4); the
       latency NUMBER stays UNVERIFIED until the step-10 baseline (Decision 13).
 
-- [ ] T5 (REQ-3): Feed the `ActionTrajectory` window + no-repeat constraint into
+- [x] T5 (REQ-3): Feed the `ActionTrajectory` window + no-repeat constraint into
       `_suggest_action` — `backend/vision/fetch_vision.py` —
       RIPPLE: `ActionTrajectory.window_steps`; fallback to baseline prompt on
       format failure; no change to prompt semantics for tier 1/2 beyond the same
       contract (shared with T2).
-- [ ] T6 (REQ-4): Replace repeat-kind termination with measured progress
+- [x] T6 (REQ-4): Replace repeat-kind termination with measured progress
       termination — `backend/vision/fetch_vision.py` —
       RIPPLE: `visual_delta` reuse; `_step_is_no_progress`; keep hard bounds.
-- [ ] T7 (REQ-9): Single observation per settled state shared across triage,
+- [x] T7 (REQ-9): Single observation per settled state shared across triage,
       extraction, and suggestion — `backend/vision/session_vision_adapter.py`,
       `backend/vision/frame_extraction.py`, `backend/vision/fetch_vision.py` —
       RIPPLE: `_publish_frame` dedupe already exists (reuse); changed-frame always
       fresh; `VisionProvider` protocol surface unchanged.
-- [ ] T8 (REQ-2): Bounded description→handle resolution fallback —
+- [x] T8 (REQ-2): Bounded description→handle resolution fallback —
       `backend/vision/browser_session.py` `act()` —
       RIPPLE: `last_error` observation semantics; allowlist vocabulary;
       no change to `browser_pool`.
 
 ## Wave 3 — Frontend reflection (REQ-7)
 
-- [ ] T9 (REQ-7): Consume seq + canonical fields; absolute-scroll mirror and
+- [x] T9 (REQ-7): Consume seq + canonical fields; absolute-scroll mirror and
       action/step/total — `hooks/useBrowserNavOverlay.ts`, `hooks/useIRISWebSocket.ts`,
       `hooks/useCrawlSSE.ts` —
       RIPPLE: `useViewProtocol` (NO CHANGE); `VisionLifecycleChip` (NO CHANGE);

@@ -71,6 +71,16 @@ export interface NavOverlayStatus {
    * a value-equality effect would skip it. */
   visionScrollSeq: number
   /**
+   * REQ-6 AC4 / REQ-7 AC1 (this spec's T9): the backend's run-scoped monotonic
+   * `seq` from the vision action, and the `run_id` it belongs to. Duplicate or
+   * out-of-order deliveries are detected by (run_id, seq) and ignored
+   * (idempotent by sequence number — REQ-6 edge), and the scroll mirror is
+   * KEYED on seq so every event re-anchors the iframe. `-1` means "no seq seen
+   * yet" (older producers without seq are still accepted).
+   */
+  visionSeq: number
+  visionRunId: string
+  /**
    * REQ-9 (specs/vision-browser-stage): the headless viewport's pixel size
    * for the CURRENT action — lets consumers aspect-correct the fractional
    * coordinates instead of naively stretching them onto the frame box.
@@ -123,6 +133,7 @@ const IDLE: NavOverlayStatus = {
   visionAction: "", visionStep: 0, visionTotal: 0,
   visionX: undefined, visionY: undefined,
   visionScrollY: undefined, visionScrollHeight: undefined, visionScrollSeq: 0,
+  visionSeq: -1, visionRunId: "",
   visionViewportW: undefined, visionViewportH: undefined,
   visionEscalated: false,
   visionSaccadic: false,
@@ -182,6 +193,10 @@ export function useBrowserNavOverlay(seed?: NavOverlaySeed) {
         visionScrollY: undefined,
         visionScrollHeight: undefined,
         visionScrollSeq: 0,
+        // T9: a new run resets the sequence so the first action of THIS run is
+        // never dropped as a stale duplicate of the previous run's last seq.
+        visionSeq: -1,
+        visionRunId: "",
         visionViewportW: undefined,
         visionViewportH: undefined,
         visionEscalated: false,
@@ -223,6 +238,7 @@ export function useBrowserNavOverlay(seed?: NavOverlaySeed) {
         scroll_y?: number; scroll_height?: number
         viewport_w?: number; viewport_h?: number
         escalated?: boolean
+        seq?: number; run_id?: string
       }>).detail ?? {}
       // T19 (REQ-3 AC3): saccadic burst detection — count arrivals in the
       // trailing 1s window; ≥3 actions/sec engages the compressed transit
@@ -234,6 +250,14 @@ export function useBrowserNavOverlay(seed?: NavOverlaySeed) {
         // Never revive a finished run: a late action arriving after complete
         // or error must not restart the animation.
         if (p.state === "complete" || p.state === "error") return p
+        // REQ-6 edge / REQ-7 AC1 (T9): idempotent by (run_id, seq). A duplicate
+        // or out-of-order delivery for the SAME run is dropped — the panel
+        // never double-applies an event. A new run_id resets the cursor.
+        const incomingSeq = typeof d.seq === "number" ? d.seq : -1
+        const incomingRun = typeof d.run_id === "string" ? d.run_id : p.visionRunId
+        if (incomingRun === p.visionRunId && incomingSeq >= 0 && incomingSeq <= p.visionSeq) {
+          return p  // stale or duplicate for the current run
+        }
         return {
           ...p,
           // First signal of life disperses, exactly as a first page does; any
@@ -253,8 +277,17 @@ export function useBrowserNavOverlay(seed?: NavOverlaySeed) {
           visionEscalated: d.escalated ?? p.visionEscalated,
           visionScrollY: d.scroll_y ?? p.visionScrollY,
           visionScrollHeight: d.scroll_height ?? p.visionScrollHeight,
+          // REQ-7 AC1 (T9): the mirror is KEYED ON seq, not on a scroll-only
+          // counter — every event (scroll or not) carries a new seq, so the
+          // iframe re-anchors on the ABSOLUTE offset for the current state.
+          // Falling back to the legacy scroll-only bump keeps a producer
+          // without seq working.
           visionScrollSeq:
-            typeof d.scroll_y === "number" ? p.visionScrollSeq + 1 : p.visionScrollSeq,
+            incomingSeq >= 0
+              ? incomingSeq
+              : (typeof d.scroll_y === "number" ? p.visionScrollSeq + 1 : p.visionScrollSeq),
+          visionSeq: incomingSeq >= 0 ? incomingSeq : p.visionSeq,
+          visionRunId: incomingRun,
           // T19: the burst flag travels with the action cadence — the overlay
           // reads it once per transit instead of deriving its own timing.
           visionSaccadic: saccadic,

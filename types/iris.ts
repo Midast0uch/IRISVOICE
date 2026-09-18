@@ -187,6 +187,11 @@ export interface CrawlerPhaseMsg {
  * cursor-relevant point (navigate/reload/back/forward/wait). */
 export interface CrawlerVisionActionMsg {
   type: 'crawler_vision_action'
+  /** REQ-6 AC4 (this spec's T3/T9): run-scoped monotonic sequence + the run it
+   * belongs to. Consumers dedupe by (run_id, seq) and re-anchor the scroll
+   * mirror on seq. Optional so an older producer without seq still type-checks. */
+  run_id?: string
+  seq?: number
   job_id: string
   url: string
   kind: string
