@@ -158,17 +158,17 @@
 
 ## Wave 5 — Verification
 
-- [ ] T11 (REQ-1–REQ-11): contract tests —
+- [x] T11 (REQ-1–REQ-11): contract tests —
       `backend/tests/contract/` — RIPPLE: CT-1 (canonical event shape),
       CT-2 (takeover REQUEST/RESPONSE shape — the ask/resume contract, NOT the new
       transport pins), CT-3 (orchestrator `_on_action` lock),
       CT-4 (ux_map msg_type lock), CT-5 (pool corpse self-heal — REQ-11),
       extended AST scan. The REQ-13–REQ-16 transport pins live in T19.
-- [ ] T12 (REQ-3, REQ-4, REQ-9): behavioral tests with fake session+provider —
+- [x] T12 (REQ-3, REQ-4, REQ-9): behavioral tests with fake session+provider —
       `backend/tests/behavioral/` — RIPPLE: assert one inference per settled state,
       trajectory present, long scroll session not stopped, takeover resume.
       T19 adds the loop-suspension and frame-stop behaviors.
-- [ ] T13 (REQ-8, REQ-13–REQ-16): standing CDD harness + live measurement —
+- [x] T13 (REQ-8, REQ-13–REQ-16): standing CDD harness + live measurement —
       `scripts/validate_vision_browser_e2e.py`, `scripts/measure_vision_latency.py` —
       RIPPLE: reuse recorded trajectories; assert the takeover frame/grant
       invariants on every run; set latency targets AFTER baseline.
@@ -176,7 +176,7 @@
       1–11 against the running system — RIPPLE: requires frontend listener on
       `:3000`; record PASS/FAIL per step; no step inferred from a unit test.
       Steps 7–9 are the live takeover gates. Step 11 is the agent gate.
-- [ ] T21 (REQ-17 AC1/AC2/AC4): Agent-driveable harness — loopback fixture pages
+- [x] T21 (REQ-17 AC1/AC2/AC4): Agent-driveable harness — loopback fixture pages
       (incl. a wall page), the bounded run-scoped JSONL event journal, and the
       headless exit-code gate — `scripts/fixtures/vision_pages/` (NEW),
       `backend/vision/run_journal.py` (NEW),
@@ -184,7 +184,7 @@
       off the critical path and bounded (never fail a run); the journal must not
       duplicate the capture/proxy surface; the gate must NAME the offending
       invariant on failure.
-- [ ] T22 (REQ-17 AC3): Trajectory recorder + replayed corpus —
+- [x] T22 (REQ-17 AC3): Trajectory recorder + replayed corpus —
       `scripts/record_vision_trajectory.py` (NEW), `tests/vision_traces/` (NEW) —
       RIPPLE: T13 can only "reuse recorded trajectories" once this exists, so T13
       DEPENDS on T22; mirror `validate_websearch_trajectory.py`'s redacted

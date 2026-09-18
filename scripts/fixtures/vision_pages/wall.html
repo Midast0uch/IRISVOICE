@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>IRIS Vision Fixture — Wall Page</title>
+  <style>body { font-family: sans-serif; padding: 24px; }</style>
+</head>
+<body>
+  <!--
+    Deterministic WALL fixture (REQ-17 AC1). It carries a CAPTCHA marker that
+    `browser_session._detect_wall_from_html` recognizes structurally
+    (id*="captcha"), so the wall path and the takeover path run with NO network
+    and NO external model.
+
+    A LOGIN wall is also representable: the password input + "Sign in" copy.
+    The script clears the wall when the field is filled and submitted, so the
+    takeover input path (REQ-14) can clear it and the loop can resume.
+  -->
+  <h1>Verify you are human</h1>
+  <div id="captcha-container" class="captcha">
+    <p>Please complete the check to continue.</p>
+    <input name="captcha_answer" id="captcha-answer" type="text" placeholder="answer" />
+    <button id="captcha-submit" type="button">Submit</button>
+  </div>
+  <div id="protected" style="display:none">
+    <h2>Protected content</h2>
+    <p>You cleared the wall. This content is now available.</p>
+  </div>
+  <script>
+    // Clearing the wall mutates the DOM so detection re-check (REQ-5 AC3)
+    // finds no wall afterwards.
+    document.getElementById('captcha-submit').addEventListener('click', function () {
+      var box = document.getElementById('captcha-container');
+      box.parentNode.removeChild(box);
+      document.getElementById('protected').style.display = 'block';
+    });
+  </script>
+</body>
+</html>

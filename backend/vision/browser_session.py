@@ -603,7 +603,23 @@ class BrowserSession:
                 )
                 self._lease = lease
                 self._started_at = time.monotonic()
-                self._context = await _new_context(browser)            # REQ-12: private session cookies from the OS keyring, injected
+                # REQ-11 AC3: IF the retry ALSO fails THEN the session SHALL
+                # mark itself unavailable and degrade — never raise into the
+                # run. (A normal, non-corpse context failure still raises below,
+                # unchanged.) This is the one place a corpse is expected to be
+                # unrecoverable; degrading is the honest outcome.
+                try:
+                    self._context = await _new_context(browser)
+                except Exception as _retry_exc:  # noqa: BLE001
+                    self._unavailable = True
+                    logger.warning(
+                        "[browser_session] corpse retry failed job=%s url=%s (%s) "
+                        "— degrading to unavailable (REQ-11 AC3)",
+                        self._job_id, self.url, _retry_exc,
+                    )
+                    await self.close()
+                    return
+            # REQ-12: private session cookies from the OS keyring, injected
             # before any navigation so authenticated pages settle signed-in.
             # Best-effort: no keyring entry (or no keyring lib) means anonymous.
             await _inject_keyring_cookies(self._context, self.url, self._job_id)

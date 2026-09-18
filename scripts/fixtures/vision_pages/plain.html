@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>IRIS Vision Fixture — Plain Page</title>
+  <style>
+    body { font-family: sans-serif; margin: 0; padding: 24px; }
+    .block { height: 900px; padding: 16px; border-bottom: 1px solid #ccc; }
+    button { padding: 8px 16px; }
+  </style>
+</head>
+<body>
+  <!--
+    Deterministic loopback fixture (REQ-17 AC1). No network, no external
+    model. The page is TALL on purpose so the vision loop's scroll walk has
+    real content to advance through, and it carries a resolvable button (for
+    the REQ-2 action contract) plus a text input (for the REQ-2 type-value
+    contract and the REQ-14 input channel).
+  -->
+  <h1>Fixture: Plain Page</h1>
+  <p>This is a deterministic test page served over loopback HTTP.</p>
+  <button id="primary" aria-label="Primary Action">Primary Action</button>
+  <label for="query">Search</label>
+  <input id="query" name="query" type="text" placeholder="type here" />
+  <div class="block"><h2>Section 1</h2><p>Alpha content block for the scroll walk.</p></div>
+  <div class="block"><h2>Section 2</h2><p>Beta content block for the scroll walk.</p></div>
+  <div class="block"><h2>Section 3</h2><p>Gamma content block for the scroll walk.</p></div>
+  <div class="block"><h2>Section 4</h2><p>Delta content block for the scroll walk.</p></div>
+  <script>
+    // The primary button mutates the DOM so a click is OBSERVABLE (the action
+    // contract needs a visible change, not just a no-op handler).
+    document.getElementById('primary').addEventListener('click', function () {
+      document.body.setAttribute('data-clicked', 'true');
+      var p = document.createElement('p');
+      p.id = 'clicked-marker';
+      p.textContent = 'Primary action clicked.';
+      document.body.appendChild(p);
+    });
+  </script>
+</body>
+</html>
