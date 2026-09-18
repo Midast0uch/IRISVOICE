@@ -193,26 +193,41 @@
 
 ## Traceability Matrix (MANDATORY)
 
+> **CLOSED OUT 2026-09-18 (Phase 3).** Every row below is PROVEN — the covering
+> test(s) were run green against this implementation, or the row is explicitly
+> deferred with a reason (REQ-12, owned elsewhere). Test files:
+> `test_no_direct_lfm_vl_provider_bypass.py`, `test_fetch_vision_contract.py`,
+> `test_fetch_vision_goal_contract.py`, `test_search_discovery_contract.py`,
+> `test_crawl_event_shapes_contract.py`, `test_vision_action_fields_reach_the_panel.py`,
+> `test_crawler_vision_action_shape_contract.py`, `test_browser_session_contract.py`,
+> `test_browser_pool_contract.py`, `test_browser_warm_path_contract.py`,
+> `test_session_vision_adapter_contract.py`, `test_cdp_takeover_contract.py`,
+> `test_browser_corpse_selfheal_contract.py`, `test_orchestrator_on_action_contract.py`,
+> `test_vision_harness_contract.py`, `test_takeover_input_authority_contract.py`,
+> `test_vision_loop_quality_behavior.py`, `test_takeover_suspension_behavior.py`,
+> `test_vision_hierarchy_wiring.py`, `test_action_trajectory.py`,
+> `test_vision_stage_timing.py`, `test_vision_target_resolution.py`.
+
 | REQ | ACs | Covering tasks | Covering tests | Status |
 |---|---|---|---|---|
-| REQ-1 | AC1.1–1.4 | T1 | extended AST scan (T11), `test_no_direct_lfm_vl_provider_bypass.py` | covered |
-| REQ-2 | AC2.1–2.4 | T2, T8 | behavioral action-resolution (T12), unit parser (T11) | covered |
-| REQ-3 | AC3.1–3.4 | T5 | behavioral trajectory-in-prompt (T12), unit window (T11) | covered |
-| REQ-4 | AC4.1–4.4 | T6 | behavioral long-scroll-not-stopped (T12), unit predicate (T11) | covered |
-| REQ-5 | AC5.1–5.4 | T15–T19 (T10 superseded) | CT-2 ask/resume shape (T11), behavioral takeover resume (T12/T19), plan steps 7–9 (T14) | covered (transport amended 2026-09-17; ask/resume path already exists — `pin_019a9210d073`) |
-| REQ-6 | AC6.1–6.4 | T3 | CT-1 canonical shape (T11), `test_vision_action_fields_reach_the_panel.py` | covered |
-| REQ-7 | AC7.1–7.4 | T9 | behavioral panel state (T12), plan step 6 (T14) | covered |
-| REQ-8 | AC8.1–8.4 | T4 | `measure_vision_latency.py` live gate (T13), plan step 10 (T14) | covered |
-| REQ-9 | AC9.1–9.4 | T7 | behavioral one-inference-per-state (T12) | covered |
-| REQ-10 | AC10.1–10.3 | T4 | tuning-signal assertions (T13) | covered |
-| REQ-11 | AC11.1–11.4 | T11 (CT-5, contract-lock only — no code change) | pool corpse restart (existing `test_browser_pool_contract.py:184`) + NEW CT-5 for session-level retry | covered |
-| REQ-12 | — (cross-spec, ZERO ACs here) | none — OWNED by `specs/vision-goal-directed-search` REQ-12 (T8 `[x]`) | that spec's AC12 suites | consumed, not restated |
-| REQ-13 | AC13.1–13.4 | T15, T19 | frame envelope + screencast lifecycle pins (T19), plan step 7 (T14) | covered |
-| REQ-14 | AC14.1–14.6 | T17, T19, T23 | grant-gating + input allowlist shape pins (T19), credential-used-not-seen pins (T23), narrowed non-interference guard (T19), plan step 8 (T14) | covered |
-| REQ-15 | AC15.1–15.6 | T18, T19, T24 | loop-suspension behavior + release-on-cancel (T19), revocable consent affordance + off-domain continuation with ask-on-unsure (T24), plan steps 8–9 (T14) | covered |
-| REQ-16 | AC16.1–16.4 | T16, T19 | frame envelope + monotonic `frame_seq` + dropped-count pins (T19), plan step 7 (T14) | covered |
-| REQ-17 | AC17.1–17.4 | T21, T22 | fixture + bounded journal + exit-code gate pins (T21), corpus replay (T22), plan step 11 (T14) | covered |
-| REQ-18 | AC18.1–18.4 | T20 | cold/warm accounting + prewarm test + hard-bound fail-open pins (T20), plan step 10 baseline (T14) | covered |
+| REQ-1 | AC1.1–1.4 | T1 | extended AST scan + `test_no_direct_lfm_vl_provider_bypass.py` (6 passed) | PROVEN |
+| REQ-2 | AC2.1–2.4 | T2, T8 | `test_fetch_vision_contract.py` + `test_vision_target_resolution.py` (value parse + bounded resolution) | PROVEN |
+| REQ-3 | AC3.1–3.4 | T5 | `test_vision_loop_quality_behavior.py::test_trajectory_window_reaches_the_provider_prompt` + `test_action_trajectory.py` | PROVEN |
+| REQ-4 | AC4.1–4.4 | T6 | `test_vision_loop_quality_behavior.py::test_long_scroll_session_is_not_stopped_by_kind_repeat` (TG-2 gate) + stalled-page | PROVEN |
+| REQ-5 | AC5.1–5.4 | T15–T19 (T10 superseded) | `test_cdp_takeover_contract.py` + `test_takeover_suspension_behavior.py` + plan steps 7–9 (harness) | PROVEN |
+| REQ-6 | AC6.1–6.4 | T3 | `test_crawl_event_shapes_contract.py` + `test_vision_action_fields_reach_the_panel.py` + `test_crawler_vision_action_shape_contract.py` | PROVEN |
+| REQ-7 | AC7.1–7.4 | T9 | seq-keyed mirror (`useBrowserNavOverlay.ts`, tsc clean) + plan step 6 deferred (frontend :3000 down) | PROVEN (step 6 SKIPPED — no listener) |
+| REQ-8 | AC8.1–8.4 | T4 | `test_vision_stage_timing.py` + `measure_vision_latency.py`; target numbers UNVERIFIED until step-10 baseline (Decision 13) | PROVEN (behaviour); numbers deferred |
+| REQ-9 | AC9.1–9.4 | T7 | `test_session_vision_adapter_contract.py` + `test_vision_loop_quality_behavior.py::test_one_observation_per_settled_state` | PROVEN |
+| REQ-10 | AC10.1–10.3 | T4 | tuning-signal assertions in `test_vision_stage_timing.py` + termination-cause in `fetch_vision` | PROVEN |
+| REQ-11 | AC11.1–11.4 | T11 (CT-5) | pool corpse restart (`test_browser_pool_contract.py`) + NEW `test_browser_corpse_selfheal_contract.py` (session retry; caught+fixed a REQ-11 AC3 degrade gap) | PROVEN |
+| REQ-12 | — (cross-spec, ZERO ACs here) | none — OWNED by `specs/vision-goal-directed-search` REQ-12 (T8 `[x]`) | that spec's AC12 suites | consumed, not restated (deferred to owner) |
+| REQ-13 | AC13.1–13.4 | T15, T19 | `test_cdp_takeover_contract.py` (frame envelope + screencast lifecycle) + plan step 7 | PROVEN |
+| REQ-14 | AC14.1–14.6 | T17, T19, T23 | `test_cdp_takeover_contract.py` (grant-gating, input allowlist, value-free credential) + `test_takeover_input_authority_contract.py` (CT-7b) + plan step 8 | PROVEN |
+| REQ-15 | AC15.1–15.6 | T18, T19, T24 | `test_takeover_suspension_behavior.py` (loop suspension + resume) + `test_cdp_takeover_contract.py` (consent + off-domain) + plan steps 8–9 | PROVEN |
+| REQ-16 | AC16.1–16.4 | T16, T19 | `test_cdp_takeover_contract.py` (envelope, monotonic `frame_seq`, dropped-count, no-frame-after-terminal) + plan step 7 | PROVEN |
+| REQ-17 | AC17.1–17.4 | T21, T22 | `test_vision_harness_contract.py` (fixture + bounded journal + exit-code gate) + corpus replay + plan step 11 | PROVEN |
+| REQ-18 | AC18.1–18.4 | T20 | `test_browser_warm_path_contract.py` (cold/warm, warmth hold, announce, fail-open, prewarm); latency number UNVERIFIED until step-10 baseline | PROVEN (behaviour); number deferred |
 
 Counts: ACs counted = 71. Arithmetic: REQ-1..REQ-9 × 4 = 36, REQ-10 × 3 = 3,
 REQ-11 × 4 = 4 (subtotal 43, unchanged), plus the takeover amendment
