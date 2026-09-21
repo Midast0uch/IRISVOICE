@@ -4138,19 +4138,26 @@ class AgentKernel:
         is responsible for the source check; this helper only classifies the
         TEXT when sources are already known to be empty.
         """
-        if sources is not None and len(sources) > 0:
-            return False
         lc = (content or "").lower()
-        return (
-            "wasn't able to pull" in lc
-            or "wasn't able to retrieve" in lc
+        head = lc[:250]  # failure verdicts are LEADING claims; a late
+        # "B&H wasn't reachable" inside an answered response keeps its card.
+        # Session-345 (live, conv-133): blocked pages still produce a sources
+        # list, so the failure shape must be judged BEFORE the sources escape.
+        if (
+            ("what was attempted" in lc and "what failed" in lc)
+            or "wasn't able to pull" in head
+            or "wasn't able to retrieve" in head
             or "no usable direct image" in lc
             or "no usable content" in lc
             or "no candidate urls" in lc
             or "retry produced no usable content" in lc
             or ("image urls retrieved" in lc and " 0" in lc)
             or ("what failed" in lc and "no usable" in lc)
-        )
+        ):
+            return True
+        if sources is not None and len(sources) > 0:
+            return False
+        return False
 
     @staticmethod
     def _unwrap_tool_envelope(response: str) -> Tuple[str, Optional[str]]:
@@ -5075,7 +5082,7 @@ class AgentKernel:
             self._pending_web_doc_id = document_id
         return document_id
 
-    def _maybe_escalate_web_format(self, turn_id: str, conversation_id: str) -> None:
+    def _maybe_escalate_web_format(self, turn_id: str, conversation_id: str, response_text: str = "") -> None:
         """Escalate a web result's format choice to the user via a QuestionCard.
 
         Called after the agent's response is processed. If a web/crawler result
@@ -5108,13 +5115,20 @@ class AgentKernel:
             from backend.agent.tools.ask_user_tool import get_ask_user_tool
 
             tool = get_ask_user_tool()
+            # Session-345 (live finding, conv-131): the reformat must operate
+            # on the ANSWER the user already read, not the crawl aggregate. The
+            # old wiring reformatted the ~36KB crawl dump — 55s of LLM work and
+            # a table of crawl metadata instead of a table of the answer.
+            _ctx = {"document_id": pending, "source": "web_format_escalation"}
+            if response_text:
+                _ctx["answer_text"] = response_text[:2000]
             tool.ask(
                 text="I found web results. How would you like me to present them?",
                 options=["Markdown", "Table", "HTML", "Diagram", "Plain text"],
                 allow_other=False,
                 turn_id=turn_id,
                 conversation_id=conversation_id,
-                context={"document_id": pending, "source": "web_format_escalation"},
+                context=_ctx,
             )
         except Exception as exc:
             logger.warning("[AgentKernel] web format escalation failed: %s", exc)
@@ -6983,7 +6997,9 @@ class AgentKernel:
             )
             # Escalate web-format choice to the user if the agent returned a web
             # result without rendering it as a document (pin_9e97e21340e7).
-            self._maybe_escalate_web_format(task_id, _conv_id)
+            # Session-345: pass the response text so the chosen format applies
+            # to the ANSWER, not the crawl dump.
+            self._maybe_escalate_web_format(task_id, _conv_id, response)
             # Never store error or empty responses in conversation memory.
             # They break role alternation and accumulate into garbage context
             # on subsequent turns, causing Cohere/OpenAI 400 errors.
@@ -7588,7 +7604,8 @@ class AgentKernel:
                 )
                 # Escalate web-format choice to the user if the agent returned a
                 # web result without rendering it as a document (pin_9e97e21340e7).
-                self._maybe_escalate_web_format(task_id, _conv_id)
+                # Session-345: pass the response text (see direct-path twin).
+                self._maybe_escalate_web_format(task_id, _conv_id, _der_response)
                 return _der_response
 
         # If DER produced empty/failed response, return error instead of
@@ -9759,6 +9776,29 @@ Respond with a JSON object:
                 _open_facts_txt = "; ".join(
                     str(_f)[:200] for _f in _gc_open_final[:5]
                 )
+                # Session-345 (live, conv-135): suppression must not hide what
+                # WAS gathered. With completed steps on record, synthesize the
+                # partial answer and append the open fact line — the fixed
+                # string alone told the user nothing about the data the crawl
+                # actually found. The failure path takes over if synthesis
+                # itself is unavailable (deterministic close).
+                _partial = None
+                if completed_items:
+                    try:
+                        _partial = self._der_synthesize_outcome(
+                            plan, completed_items, queue, _session
+                        )
+                    except Exception as _ps_err:
+                        logger.warning(
+                            "[goal-contract] partial synthesis failed: %s", _ps_err,
+                        )
+                if _partial:
+                    return (
+                        _partial.strip()
+                        + "\n\nI couldn't fully complete the task — still open: "
+                        + _open_facts_txt
+                        + "\nWhat would you like me to do next?"
+                    )
                 return (
                     "I couldn't fully complete the task — required work is "
                     f"still open: {_open_facts_txt}\n"
@@ -13153,6 +13193,24 @@ Respond with a JSON object:
                               max_tokens=self.response_max_tokens(floor=400),
                               temperature=self.response_temperature())
             _out = _res.raw_text or ""
+            # Session-345 (live, conv-134): with thinking disabled the model
+            # may answer the failure-summary prompt with the tool-call ARGS
+            # JSON — `{"query": ..., "top_n": 10}` went straight to chat AND
+            # TTS. A bare-JSON final answer is never a user-facing message;
+            # reject it so the deterministic failure close takes over.
+            _stripped = _out.strip()
+            if _stripped.startswith("{") and _stripped.endswith("}"):
+                try:
+                    import json as _json
+                    _parsed = _json.loads(_stripped)
+                    if isinstance(_parsed, dict) and "query" in _parsed:
+                        logger.warning(
+                            "[DER] failure synthesis returned tool-args JSON — "
+                            "rejecting for deterministic close"
+                        )
+                        return ""
+                except Exception:
+                    pass
             # Session-326 shield 3, failure side: same stub rule as the
             # success path — a stub falls through to the deterministic
             # failure close, which names every failed step by shape.
@@ -13664,9 +13722,14 @@ Respond with a JSON object:
                          session_id=getattr(self, "session_id", "") or "")
             except Exception:
                 pass
-        self._last_surface_choice = ds.chosen
+        # Session-345 (live finding: duplicate render): in SHADOW the engine
+        # must observe, never steer. Writing _last_surface_choice from a shadow
+        # decision made plain_text suppress the supportive-excerpt branch,
+        # duplicating the full answer in bubble AND prism card. Only an
+        # enforced+confident verdict may steer.
         if not (enforced and confident):
             return None  # shadow / unconfident → heuristic still decides
+        self._last_surface_choice = ds.chosen
         return "plain" if ds.chosen == "plain_text" else "card"
 
     @staticmethod
@@ -13968,12 +14031,17 @@ Respond with a JSON object:
                         "rationale": _veto_reason,
                     }
 
-                # Web-intent â†’ crawler_query (capability-gated, not a silent fallback)
+                # Web-intent → crawler_query (capability-gated, not a silent fallback)
                 if _is_web_goal:
-                    _crawl_state = dict(_crawl_state)
-                    _crawl_state[_g_session] = _attempted | {_qkey}
-                    self._der_crawl_attempts = _crawl_state
-
+                    # Session-345 (live finding conv-124): do NOT mark the
+                    # qkey here. This gate is consulted more than once per
+                    # step (engine hint pass + kernel re-resolution), and a
+                    # mark at PROPOSAL time means the superseded first pass
+                    # makes the second pass read "already gathered this turn"
+                    # and steer to get_rendered_documents — the search then
+                    # never runs and the turn ends in an honest-but-wrong
+                    # refusal. The mark happens at DISPATCH time (where the
+                    # tool is actually paid for), not here.
                     from backend.agent.tool_registry import resolve_tool, capability_allowed
                     spec = resolve_tool("crawler_query")
                     if spec and capability_allowed(spec):
@@ -14576,12 +14644,20 @@ Respond with a JSON object:
                 if item.tool in self._WEB_CONTENT_TOOLS:
                     self._der_warm_vision_browser(item.tool)
                 try:
+                    # Session-345 (live finding, ledger gap): the box resolved
+                    # `_decision` carries the engine's provenance in .meta;
+                    # re-wrapping here must PRESERVE it or the tool event row
+                    # loses the decision block (0/40 live dispatch rows carried
+                    # it before this fix — REQ-5 was silently dead in prod).
+                    _dispatch_decision = Decision(
+                        kind=DecisionKind.TOOL,
+                        tool=item.tool,
+                        params=item.params,
+                    )
+                    _dispatch_decision.meta = getattr(_decision, "meta", None)
+                    _dispatch_decision.source = getattr(_decision, "source", "")
                     _dr = self._get_tool_box().dispatch(
-                        Decision(
-                            kind=DecisionKind.TOOL,
-                            tool=item.tool,
-                            params=item.params,
-                        ),
+                        _dispatch_decision,
                         session_id=_session,
                         conversation_id=self.conversation_id,
                         turn_id=_turn_id,

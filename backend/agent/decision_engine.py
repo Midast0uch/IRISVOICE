@@ -536,9 +536,25 @@ class DecisionEngine:
         if not lanes_clean:
             return None
         lane_options = list(lanes_clean.keys()) + ["DELEGATE", "NONE"]
+        # Session-345 (live finding conv-128): the lane stage received BARE
+        # category names ("web", "vision", ...) while the worked examples only
+        # ever score tool names — live result: NONE at 0.99 confidence for a
+        # websearch goal with crawler_query on the menu. Give each lane a real
+        # description built from its member tools so the lane stage reads
+        # semantics, not bare words. No new constants: derived from the same
+        # option_descriptions the leaf stage already uses.
+        _src_descs = frame.get("option_descriptions") or {}
+        lane_descs: Dict[str, str] = {}
+        for _lane, _members in lanes_clean.items():
+            _parts = []
+            for _m in _members[:3]:
+                _md = str(_src_descs.get(_m, "")).strip()[:60]
+                _parts.append(f"{_m} ({_md})" if _md else _m)
+            lane_descs[_lane] = "lane with tools: " + ", ".join(_parts)
         ds_lane = self.decide(consumer_id, lane_options, {
             **frame,
             "stage": "lane",
+            "option_descriptions": lane_descs,
         })
         if ds_lane is None:
             return None

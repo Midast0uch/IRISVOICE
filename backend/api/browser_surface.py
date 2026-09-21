@@ -124,6 +124,25 @@ def _origin_of(url: str) -> str | None:
 
 _CAPTURE_UNAVAILABLE = "capture unavailable"
 
+# Session-345 (live): a missing capture rendered as the naked "capture
+# unavailable" text in the panel iframe — looks like a broken page to the
+# user. Serve a styled empty-state instead; the contract is unchanged (404 +
+# the marker string appears in the body).
+_CAPTURE_UNAVAILABLE_HTML = (
+    "<!DOCTYPE html><html><head><meta charset='utf-8'><style>"
+    "body{margin:0;background:#0a0a0f;color:#8b8fa3;font-family:system-ui,"
+    "sans-serif;display:flex;align-items:center;justify-content:center;"
+    "height:100vh;text-align:center;flex-direction:column;}"
+    ".t{font-size:15px;color:#c6c9d4;margin-bottom:6px}"
+    ".s{font-size:12px}"
+    "</style></head><body>"
+    "<div class='t'>Capture unavailable</div>"
+    "<div class='s'>"
+    + _CAPTURE_UNAVAILABLE
+    + " — this page was not stored, or its capture was cleaned up."
+    "</div></body></html>"
+)
+
 
 @router.get(
     "/capture/{job_id}/{page_number}",
@@ -148,8 +167,8 @@ async def capture_replay(job_id: str, page_number: int, request: Request):
         )
         headers = _isolation_headers(nonce)
         headers["X-Capture-Status"] = "unavailable"
-        return PlainTextResponse(
-            _CAPTURE_UNAVAILABLE, status_code=404, headers=headers,
+        return HTMLResponse(
+            _CAPTURE_UNAVAILABLE_HTML, status_code=404, headers=headers,
         )
     # REQ-1 AC4: provenance in the panel chrome (headers the frontend reads).
     headers = _isolation_headers(nonce, _origin_of(capture["url"]))

@@ -242,7 +242,13 @@ class TestCtDe3Ledger:
 
     def test_reason_engine_decision_records_route_only_row_once(self):
         bridge = FakeBridge()
+        # Session-345: engine NONE now runs the AC3.2 ladder (memory→legacy),
+        # so the ladder's model must answer for the step to land REASON — the
+        # old empty-text fixture produced FAIL once the ladder was engaged.
+        # Text input drives the load; the pinned property (one route-only row,
+        # single writer) is unchanged.
         box = make_box(engine=FakeEngine(chosen="NONE", confidence=0.99),
+                       router_result=("Thinking it over is the answer.", "", []),
                        bridge=bridge)
         d = box.resolve(step={"description": "just think"})
         assert d.kind == DecisionKind.REASON
@@ -250,7 +256,12 @@ class TestCtDe3Ledger:
         assert len(bridge.decision_rows) == 1
         row = bridge.decision_rows[0]
         assert row["kind"] == "reason"
-        assert row["meta"]["route"] == "engine"
+        # Session-345: NONE now takes the AC3.2 ladder (memory→legacy) instead
+        # of committing — so the single row's route is "escalated", not
+        # "engine". The pinned property is unchanged: exactly one route-only
+        # row per decision. (Live finding: engine NONE@0.869 on a websearch
+        # goal used to kill the step without consulting the ladder.)
+        assert row["meta"]["route"] == "escalated"
 
     def test_legacy_decision_never_records_rows(self):
         bridge = FakeBridge()

@@ -462,6 +462,7 @@ class ToolDecisionBox:
                 vision_front = vision_names
                 names = vision_names + [n for n in names if n not in vision_names]
             _cap = getattr(getattr(engine, "_cfg", None), "candidate_cap", 8)
+            _pre_cap_count = len(names)
             if vision_front:
                 # guaranteed in: vision names never fall off under the cap
                 names = vision_front[:_cap] + [
@@ -516,10 +517,14 @@ class ToolDecisionBox:
             else:
                 ds = None
             if ds is None:
-                # REQ-17: hierarchical lane→leaf staging is the primary shape when
-                # the menu carries a real category structure; flat scoring is the
-                # fallback for degenerate menus. Look up each option's category
-                # from ALL tools (names were capped for prompt cost).
+                # Session-345 (live A/B, conv-128 goal replay): the tree's lane
+                # stage scored NONE 0.94 for a websearch goal that the flat
+                # stage answers crawler_query 0.9988. Lane names carry no
+                # worked-example grounding, so the two-stage shape REGRESSES
+                # small menus. Rule: flat while nothing was lost to the cap
+                # (the measured, calibrated regime); the tree runs only when
+                # the pre-cap menu exceeded the cap — the only case where
+                # grouping real tools into lanes adds information.
                 name_to_cat = {
                     t.get("name"): (t.get("category") or "misc")
                     for t in (all_tools or [])
@@ -532,7 +537,7 @@ class ToolDecisionBox:
                 if self._DE_DELEGATE not in lanes and self._DE_NONE not in lanes:
                     lanes_for_engine["DELEGATE"] = [self._DE_DELEGATE]
                     lanes_for_engine["NONE"] = [self._DE_NONE]
-                if len(lanes_for_engine) > 1:  # hierarchical path
+                if _pre_cap_count > _cap and len(lanes_for_engine) > 1:
                     _dt = getattr(engine, "decide_tree", None)
                     if callable(_dt):
                         ds = _dt("tool_choice", lanes_for_engine, frame)
@@ -556,6 +561,11 @@ class ToolDecisionBox:
                 "chosen": chosen,
                 "confidence": round(conf, 4),
                 "candidates": len(names),
+                # Session-345: the candidate count alone cannot explain a wrong
+                # answer. Record the menu itself (bounded: <= cap+2 names) so a
+                # live miss is auditable — today's NONE@0.935 was inexplicable
+                # until the menu could be reconstructed.
+                "candidate_names": list(names) + [self._DE_DELEGATE, self._DE_NONE],
                 "threshold": self._decision_threshold,
                 "engine_latency_ms": ds.engine_latency_ms,
                 "previous_chosen": _prev.get("chosen"),
@@ -573,14 +583,14 @@ class ToolDecisionBox:
                 meta.update(kw)
                 return meta
 
-            # AC2.x NONE → no tool applies (OQ-2 resolution: direct REASON).
-            if chosen == self._DE_NONE:
-                _d = Decision(
-                    kind=DecisionKind.REASON, source="engine",
-                    rationale="engine: no tool applies",
-                )
-                _d.meta = _m("engine", args_valid=None, retried=False)
-                return _d
+            # Session-345 (live finding, conv-128): NONE must NOT commit here.
+            # REQ-3 AC3.2: chosen ∈ {DELEGATE, NONE} SHALL try the memory
+            # fallback, then the legacy ladder — the old code returned REASON
+            # immediately for NONE at ANY confidence, so a confident-wrong
+            # "no tool applies" (live: NONE@0.869 on a websearch goal) killed
+            # the step with no search ever running. NONE now takes the same
+            # ladder as DELEGATE; the ledger still distinguishes it (822-824
+            # records engine_correct=False when the ladder runs a real tool).
             # Memory vetoes outrank engine confidence (pin_517dfcbda150 stands).
             if chosen in vetoed:
                 logger.info(
@@ -594,8 +604,8 @@ class ToolDecisionBox:
                 )
                 _d.meta = _m("memory-fallback", args_valid=None, retried=False)
                 return _d
-            # Below threshold or DELEGATE → memory fallback, then escalate (AC3.2).
-            if chosen == self._DE_DELEGATE or conf < self._decision_threshold:
+            # Below threshold, DELEGATE, or NONE → memory fallback, then escalate (AC3.2).
+            if chosen in (self._DE_DELEGATE, self._DE_NONE) or conf < self._decision_threshold:
                 md = self._memory_decision(all_tools, goal, conversation_id)
                 if md is not None:
                     md.meta = _m("memory-fallback", args_valid=None, retried=False)

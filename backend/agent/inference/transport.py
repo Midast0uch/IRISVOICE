@@ -1352,6 +1352,14 @@ class OllamaTransport:
             "model": model,
             "messages": messages,
             "stream": False,
+            # Session-345 live finding: thinking models (gpt-oss:120b-cloud)
+            # can place the ENTIRE answer in message.thinking while content
+            # is empty or a stub ("Empty response from Ollama" turn-kill on
+            # 2026-09-21 03:58; 15-char synthesis stub at 04:37). Thinking is
+            # never consumed downstream — parse_thinking strips it — so the
+            # hidden pass is pure cost. Disable it at the source: the model
+            # then answers directly in content (faster, fewer tokens).
+            "think": False,
         }
 
         try:
@@ -1360,6 +1368,15 @@ class OllamaTransport:
                 # The provider publishes its own RPM ceiling on every response;
                 # learning it only from 429s meant guessing 30 against a real 5.
                 _observe_advertised_limit(self, _resp.headers)
+                if _resp.status_code == 400 and "think" in _resp.text.lower():
+                    # Older Ollama servers reject the think flag — retry once
+                    # without it rather than failing the turn.
+                    logger.warning(
+                        "[OllamaTransport] server rejected think flag — retrying without it"
+                    )
+                    payload.pop("think", None)
+                    _resp = _client.post(url, json=payload)
+                    _observe_advertised_limit(self, _resp.headers)
                 if _resp.status_code != 200:
                     raise RuntimeError(
                         f"Ollama returned {_resp.status_code}: "

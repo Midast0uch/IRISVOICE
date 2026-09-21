@@ -3884,6 +3884,16 @@ class IRISGateway:
             }
             bridge = getattr(self, "_tool_bridge", None) or getattr(
                 self, "tool_bridge", None)
+            if bridge is None:
+                # Session-345 (live finding): the gateway never had a bridge
+                # reference, so EVERY narration decision row was dropped before
+                # this — the narration consumer's harvest was zero. Resolve the
+                # shared bridge singleton instead of dying on the None.
+                try:
+                    from backend.agent.tool_bridge import get_agent_tool_bridge
+                    bridge = get_agent_tool_bridge()
+                except Exception:
+                    bridge = None
             recorder = getattr(bridge, "record_decision", None)
             if callable(recorder):
                 try:
@@ -6292,6 +6302,56 @@ class IRISGateway:
                             f"[AskUser] question_response for unknown/already-"
                             f"resolved question_id={question_id!r} (session={session_id})"
                         )
+                    else:
+                        # Session-345 (live finding, conv-129): the web-format
+                        # escalation asked the question, the turn finalized with
+                        # plain text, and the answer went NOWHERE — no consumer
+                        # ever re-rendered the document. The resolution is the
+                        # consumer: context rides the Question object.
+                        _ctx = getattr(resolved, "context", None) or {}
+                        if (
+                            _ctx.get("source") == "web_format_escalation"
+                            and _ctx.get("document_id")
+                        ):
+                            try:
+                                # NOTE: no local import here — a function-level
+                                # import marked every bare get_agent_kernel use
+                                # in _handle_chat as a local and killed normal
+                                # chat with UnboundLocalError (live, session-345).
+                                # Module-level import exists at line 13.
+                                _conv = (
+                                    getattr(resolved, "conversation_id", None)
+                                    or session_id
+                                )
+                                _k = get_agent_kernel(_conv, session_id)
+                                if _ctx.get("answer_text"):
+                                    # Session-345: reformat the ANSWER the user
+                                    # read, not the raw crawl aggregate —
+                                    # ~250 chars through the LLM instead of
+                                    # ~36KB, and the table contains the answer.
+                                    _k.reformat_document(
+                                        content=_ctx["answer_text"],
+                                        target_format=str(answer).strip().lower(),
+                                        conversation_id=_conv,
+                                        turn_id=getattr(resolved, "turn_id", None),
+                                    )
+                                else:
+                                    _k.reformat_document(
+                                        document_id=_ctx["document_id"],
+                                        target_format=str(answer).strip().lower(),
+                                        conversation_id=_conv,
+                                        turn_id=getattr(resolved, "turn_id", None),
+                                    )
+                                self._logger.info(
+                                    "[AskUser] web-format answer '%s' applied: "
+                                    "document %s re-rendered (conv=%s)",
+                                    str(answer)[:30], _ctx["document_id"], _conv,
+                                )
+                            except Exception as _rf_err:
+                                self._logger.warning(
+                                    "[AskUser] web-format re-render failed: %s",
+                                    _rf_err,
+                                )
             except Exception as _q_err:
                 self._logger.warning(f"[AskUser] question_response failed: {_q_err}")
 

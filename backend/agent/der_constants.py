@@ -297,8 +297,11 @@ LOAD_BEARING_VETO = True
 SOURCES_MAX = 8
 LEDGER_PROMPT_MAX = 20
 # Per-family dispatch deadlines in seconds (REQ-11 AC11.1). Crawl default
-# sits above the conv-102 observed 82-110s max.
-DEADLINE_CRAWL_S = 150
+# measured 2026-09-21: 83/106/112/117/146/158/159s across 7 live crawls on a
+# loaded box (Cloudflare-walled retailers + TTS + dev tooling) — the old 150
+# killed two live crawls at 157-159s, i.e. at the finish line. 240 keeps the
+# abort for genuinely wedged runs while covering the realistic wall.
+DEADLINE_CRAWL_S = 240
 DEADLINE_READ_S = 60
 DEADLINE_DEFAULT_S = 90
 # Heartbeat stall → warning log only; the deadline alone aborts (AC11.2).

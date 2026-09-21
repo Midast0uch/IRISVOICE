@@ -189,7 +189,12 @@ class TestBtDe3EmptyOnceThenRetry:
 class TestBtDe4ReasonSingleRow:
     def test_none_choice_one_route_only_row(self):
         bridge = BtBridge()
+        # Session-345: engine NONE runs the AC3.2 ladder (memory→legacy), so
+        # the ladder's model must answer for the step to land REASON — the old
+        # empty-text fixture produced FAIL once the ladder engaged. Same load,
+        # same single-row property; only the stranded input is updated.
         box = make_box(BtEngine(chosen="NONE", confidence=0.99),
+                       router_results=[("Thinking it over is the answer.", "", [])],
                        bridge=bridge)
         d = box.resolve(step={"description": "nothing to do"})
         assert d.kind == DecisionKind.REASON
@@ -197,7 +202,10 @@ class TestBtDe4ReasonSingleRow:
         assert len(bridge.decision_rows) == 1
         row = bridge.decision_rows[0]
         assert row["kind"] == "reason"
-        assert row["meta"]["route"] == "engine"
+        # Session-345: NONE now runs the AC3.2 ladder (memory→legacy), so the
+        # single route-only row says "escalated". The pinned property — one
+        # row, single writer — is unchanged.
+        assert row["meta"]["route"] == "escalated"
 
     def test_engine_dead_no_rows_no_meta(self):
         bridge = BtBridge()

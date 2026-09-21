@@ -1292,6 +1292,11 @@ class AgentToolBridge:
         # specs/tool-decision-engine: set (or explicitly clear) the decision
         # context so every _record_tool_event below reads THIS call's provenance.
         _DECISION_META.set(decision_meta if isinstance(decision_meta, dict) else None)
+        logger.debug(
+            "[tool-event] meta set for %s: %s",
+            tool_name,
+            (decision_meta or {}).get("route") if isinstance(decision_meta, dict) else None,
+        )
         # ── Phase 2: registry-based name resolution + consolidated gates ──
         # The DER planner (LLM) frequently emits "web_search" / "google_search";
         # the registry normalizes these aliases to the canonical "search" so every
@@ -2010,23 +2015,32 @@ class AgentToolBridge:
             # THIS row. Scalars only, whitelist-bounded, None when the call came
             # from a legacy path (AC9.3 edge: fields absent, not null-filled).
             _dm = _DECISION_META.get()
+            logger.debug(
+                "[tool-event] meta read for %s: %s",
+                tool_name, "present" if isinstance(_dm, dict) else "NONE",
+            )
             _decision_block = None
             if isinstance(_dm, dict):
                 _decision_block = {
                     k: _dm.get(k)
                     for k in (
                         "engine", "consumer_id", "route", "chosen",
-                        "confidence", "candidates", "threshold",
+                        "confidence", "candidates", "candidate_names", "threshold",
                         "args_valid", "retried", "escalated",
                         "engine_latency_ms", "decision_latency_ms",
                         "dag_node_id",
                         "previous_chosen", "previous_outcome", "step_index",
                         "needs_vision", "vision_candidates",
                         "final_choice", "engine_correct",
+                        "stage_detail", "cached",
                     )
                     if k in _dm
                 }
 
+            # Session-345 (live finding): default=str — a tool result carrying
+            # a datetime/set raised TypeError in json.dumps and the outer
+            # `except: pass` dropped the ledger row SILENTLY (live crawler_query
+            # rows never landed). Rows must never die on serialization.
             payload = json.dumps({
                 "tool": tool_name,
                 "params": _summarize(params),
@@ -2041,11 +2055,11 @@ class AgentToolBridge:
                 "blame": result.get("blame"),
                 "info_state": result.get("info_state"),
                 **({"decision": _decision_block} if _decision_block else {}),
-            })
+            }, default=str)
 
             def _ingest() -> None:
                 try:
-                    ffi_ingest_event(
+                    _ok = ffi_ingest_event(
                         session_id=session_id,
                         domain="SYSTEM",
                         event_type="tool_execution",
@@ -2055,14 +2069,25 @@ class AgentToolBridge:
                         payload_json=payload,
                         screenshot_blob=screenshot_blob,
                     )
+                    if not _ok:
+                        logger.warning(
+                            "[tool-event] ffi ingest returned falsy for %s "
+                            "(row dropped by store)", tool_name,
+                        )
                 except Exception as _exc:  # noqa: BLE001
-                    logger.debug("[tool-event] ingest failed for %s: %s", tool_name, _exc)
+                    logger.warning("[tool-event] ingest failed for %s: %s", tool_name, _exc)
 
             _threading.Thread(
                 target=_ingest, daemon=True, name=f"tool-event-{tool_name}",
             ).start()
-        except Exception:
-            pass  # Never block tool execution on recording failure
+        except Exception as _rx_err:
+            # Was `except Exception: pass` — a dropped audit row is a
+            # diagnosable defect, never silence (session-345: five days of
+            # silently missing tool rows). Never re-raise: recording must
+            # not block tool execution.
+            logger.warning(
+                "[tool-event] record build failed for %s: %r", tool_name, _rx_err
+            )
 
     def record_decision(
         self,
