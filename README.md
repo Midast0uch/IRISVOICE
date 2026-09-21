@@ -50,6 +50,15 @@ The full audio pipeline — wake word → VAD → STT → LLM → TTS → audio 
   | **Total (whisper path)** | **0** | **~95 MB** | — |
 
 ### 🤖 AI Agent System
+- **Tool Decision Engine (new, session 344)**: Calibrated 350M local model (LFM2.5-350M)
+  that scores every candidate tool in ONE forward pass ("parallel sampler") and returns
+  the tool + a measured confidence level — instead of sending tool selection through a
+  second LLM call that sometimes produces malformed JSON (or nothing). The engine runs
+  in SHADOW by default (it logs answers but doesn't act until measured tooling flips
+  `IRIS_DECISION_ENFORCE`): scripts/calibrate_decision_threshold.py keeps a ledger per
+  decision. Three consumers live on one context: tool_choice (DER step → tool pick +
+  fallback), presentation (when a Prism card opens), narration (when TTS speaks). See
+  docs/architecture/tool-decision-engine.md + specs/tool-decision-engine/**.
 - **Flexible Inference**: Brain model via ik_llama.cpp (port 8082) or llama-cpp-python, vision via upstream llama.cpp (port 8081), or remote OpenAI-compatible API — select in Settings
 - **MTP Speculative Decoding (1.5-3× speedup)**: Multi-Token Prediction for compatible GGUF models (e.g. Qwopus3.6-27B-MTP). Auto-detected from tensor names, routed to compiled `llama-server --spec-type draft-mtp`. Configurable `--spec-draft-n-max` (1-6) and acceptance-rate logging. Non-MTP models fall back transparently to in-process inference.
 - **Tool Execution**: Dedicated tool-calling model handles structured tool calls; main LLM handles reasoning and conversation
