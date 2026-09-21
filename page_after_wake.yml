@@ -1,0 +1,23 @@
+- generic [active] [ref=f1e1]:
+  - main [ref=f1e2]:
+    - generic [ref=f1e6] [cursor=pointer]:
+      - generic [ref=f1e10]:
+        - generic [ref=f1e11]: → Chat ←
+        - generic [ref=f1e12]: ↑ Menu
+        - generic [ref=f1e13]: ↑↑ Voice
+      - generic:
+        - generic:
+          - generic:
+            - button
+          - generic:
+            - button
+          - generic:
+            - button
+          - generic:
+            - button
+          - generic:
+            - button
+          - generic:
+            - button
+  - button "Open Next.js Dev Tools" [ref=f1e19] [cursor=pointer]
+  - alert [ref=f1e23]

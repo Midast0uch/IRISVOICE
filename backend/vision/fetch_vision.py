@@ -2,8 +2,8 @@
 
 Composes the Wave-2 pieces into one goal-directed fetch capability:
   - BrowserSession (T8): persistent Playwright page, bounded by SessionBounds
-  - vision lease (T9): hard-expiry lease holds the owned vision server alive
-    for the whole multi-action loop; released on EVERY exit path
+  - no lease (specs/vision-single-server): the shared multimodal server is
+    someone else's process and stays warm on its own
   - frame extraction (T12a): triage-before-extract, bounded by max_extractions
   - page_is_usable (T1): vision-derived text is NOT trusted by virtue of being
     vision-derived — it goes through the same predicate as crawl content
@@ -34,7 +34,8 @@ from backend.crawler.usability import (
     UsabilityVerdict,
     page_is_usable,
 )
-from backend.tools.lfm_vl_provider import acquire_vision_lease
+# specs/vision-single-server: no lease API anymore — the shared multimodal
+# server stays up on its owner's watch; borrow discovery never idles it down.
 from backend.vision.action_allowlist import evaluate_task_guardrails
 from backend.vision.browser_session import (
     BrowserSession,
@@ -304,8 +305,6 @@ class FetchVisionCapability(FetchCapability):
             _guards = list(getattr(goal, "guardrails", None) or []) or [
                 "NO_PURCHASE", "DOMAIN_BOUND",
             ]
-        # T9: hold the vision server for the whole loop; release on exit.
-        lease = acquire_vision_lease(max_ms=bounds.max_wall_ms)
         session = _make_session(self._session_cls, job_id, url, _goal_text, bounds, page_offset)
         wall: Optional[WallKind] = None
         actions = 0
@@ -585,9 +584,6 @@ class FetchVisionCapability(FetchCapability):
                 await session.close()
             except Exception as exc:  # noqa: BLE001
                 logger.info("[fetch.vision] close failed: %s", exc)
-            # T9: lease releases on EVERY path (normal + exception).
-            if lease is not None:
-                lease.release()
             # REQ-8 AC1 (T4): total session duration, scoped by run id. Also
             # carries the REQ-10 tuning signals captured during the loop
             # (termination cause + action cadence) so one line answers "why did
@@ -613,11 +609,10 @@ class FetchVisionCapability(FetchCapability):
 
         Degrades exactly as before on failure (REQ-1 AC3): a resolver that
         raises ``VisionModelUnavailable`` (or any other error) yields ``None``,
-        which callers already read as "vision unavailable" â€” never a raise into
-        the crawl/vision hot path. Lease/idle-stop stays tier 3's exclusive
-        concern (REQ-1 AC4): the resolver's tier-1/2 client takes no lease, and
-        ``fetch_one``'s ``acquire_vision_lease`` returns None unless an OWNED
-        tier-3 server is running.
+        which callers already read as "vision unavailable" — never a raise into
+        the crawl/vision hot path. Specs/vision-single-server: there is no
+        owned tier-3 server and no lease — the resolver's tier-3 client borrows
+        the shared multimodal server.
         """
         if self._provider is not None:
             return self._provider

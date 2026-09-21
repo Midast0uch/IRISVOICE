@@ -804,7 +804,8 @@ BACKEND_PORT=8090
 # IRIS-owned ports (also overridable via env vars)
 # IRIS_BACKEND_PORT=8090   # FastAPI + WebSocket
 # IRIS_BRAIN_PORT=18182    # Brain llama-server
-# IRIS_VISION_PORT=18181   # Vision llama-server
+# (no vision port: tier-3 vision borrows the shared multimodal server —
+#  specs/vision-single-server)
 
 # Provider endpoints (external services IRIS connects to)
 # IRIS_LMSTUDIO_URL=http://localhost:1234

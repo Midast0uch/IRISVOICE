@@ -1,0 +1,15 @@
+[browser_session] action failed job=probe-job kind=type target=textarea[name='q'], input[name='q']: Locator.fill: Timeout 30000ms exceeded.
+Call log:
+  - waiting for locator("textarea[name='q'], input[name='q']")
+    - locator resolved to <textarea name="q" autofocus="" type="search" id="sb_form_q" role="combobox" maxlength="2000" aria-owns="sw_as" inputmode="search" autocomplete="off" aria-expanded="false" aria-controls="sw_as" aria-autocomplete="both" placeholder="Search the web" class="sb_form_q hp_fadein_ph" aria-label="Enter your search here - Search suggestions will show as you type"></textarea>
+    - fill("site:ziglang.org download")
+  - attempting fill action
+    - waiting for element to be visible, enabled and editable
+
+Exception ignored while calling deallocator <function BaseSubprocessTransport.__del__ at 0x000001677F97EC40>:
+Traceback (most recent call last):
+  File "C:\Python314\Lib\asyncio\base_subprocess.py", line 135, in __del__
+  File "C:\Python314\Lib\asyncio\base_subprocess.py", line 74, in __repr__
+  File "C:\Python314\Lib\asyncio\proactor_events.py", line 80, in __repr__
+  File "C:\Python314\Lib\asyncio\windows_utils.py", line 109, in fileno
+ValueError: I/O operation on closed pipe

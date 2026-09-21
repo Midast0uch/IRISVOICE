@@ -1,0 +1,20 @@
+[PASS] step1.plain_page_has_no_wall
+[PASS] step1.wall_page_detects_captcha
+[PASS] step4.long_scroll_not_stopped
+[PASS] step5.seq_present_and_monotonic
+[PASS] step5.run_id_present
+[PASS] step7.screencast_started
+[PASS] step7.frame_seq_monotonic
+[PASS] step7.frame_envelope_has_owner
+[PASS] step8.input_rejected_outside_grant
+[PASS] step8.input_forwarded_inside_grant
+[PASS] step9.no_frame_after_terminal
+[PASS] contract.no_resolver_bypass
+[PASS] corpus.fixture_basic.schema_v1
+[PASS] corpus.fixture_basic.seq_monotonic
+[PASS] corpus.fixture_basic.redacted
+
+journal: C:\Users\midas\AppData\Local\Temp\iris_vision_e2e_journal.jsonl (available=True)
+15 passed, 0 failed
+
+EXIT=0

@@ -66,24 +66,24 @@ class PortConfig:
 
     backend_port: int = 8090
     brain_port: int = 18182
-    vision_port: int = 18181
 
     def __post_init__(self) -> None:
         """Apply env-var overrides on top of whatever constructor set."""
         self.backend_port = _env_int("IRIS_BACKEND_PORT", self.backend_port)
         self.brain_port = _env_int("IRIS_BRAIN_PORT", self.brain_port)
-        self.vision_port = _env_int("IRIS_VISION_PORT", self.vision_port)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "PortConfig":
-        """Restore from dict, then __post_init__ applies env-var overrides."""
+        """Restore from dict, then __post_init__ applies env-var overrides.
+
+        A persisted ``vision_port`` key from pre-single-server configs is
+        simply ignored (never referenced)."""
         return cls(
             backend_port=int(d.get("backend_port", 8090)),
             brain_port=int(d.get("brain_port", 18182)),
-            vision_port=int(d.get("vision_port", 18181)),
         )
 
 

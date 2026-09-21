@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Live Jet Stream Map - Real-Time Global Jet Streams 3D Globe</title>
+<meta name="description" content="Track jet streams live on an interactive dark 3D globe. Real-time global upper-level wind speed, direction and intensity at 200, 250 and 300 hPa from NOAA GFS data.">
+<meta name="keywords" content="jet stream, jet stream map, live jet stream, real-time jet stream, jet stream tracker, jet stream forecast, upper level winds, 250 hPa wind, 300 hPa, 200 hPa, global wind map, polar jet, subtropical jet, wind visualization, NOAA GFS, atmospheric flow, weather globe">
+<meta name="author" content="JETSTREAM">
+<meta name="robots" content="index, follow">
+<meta name="theme-color" content="#05070d">
+<meta name="color-scheme" content="dark">
+<link rel="canonical" href="./">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Live Jet Stream Map - Real-Time Global Jet Streams">
+<meta property="og:description" content="Watch the world's jet streams flow in real time on an interactive 3D globe. Live upper-level winds at 200, 250 and 300 hPa from NOAA GFS.">
+<meta property="og:image" content="preview.png">
+<meta property="og:image:alt" content="Real-time jet streams flowing over a dark interactive globe">
+<meta property="og:site_name" content="JETSTREAM">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Live Jet Stream Map - Real-Time Global Jet Streams">
+<meta name="twitter:description" content="Watch the world's jet streams flow in real time on an interactive 3D globe. Live upper-level winds from NOAA GFS.">
+<meta name="twitter:image" content="preview.png">
+<link rel="preconnect" href="https://cdn.jsdelivr.net">
+<link rel="preconnect" href="https://api.open-meteo.com">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap">
+<link rel="stylesheet" href="styles.css">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"WebApplication","name":"JETSTREAM Live Jet Stream Map","url":"./","applicationCategory":"WeatherApplication","operatingSystem":"Web","browserRequirements":"Requires JavaScript","description":"Real-time interactive visualization of global jet streams and upper-level winds at 200, 250 and 300 hPa on a dark 3D globe, using NOAA GFS data.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"},"featureList":["Real-time global jet stream visualization","Interactive 3D globe and flat map","200, 250 and 300 hPa upper-level winds","5-day history and 7-day forecast timeline","Wind speed, direction and intensity","NOAA GFS data via Open-Meteo"]}
+</script>
+</head>
+<body>
+<div id="app">
+  <canvas id="map"></canvas>
+  <canvas id="flow"></canvas>
+
+  <div id="overlay" class="overlay">
+    <div class="overlay-card">
+      <div class="spinner"><span></span><span></span><span></span></div>
+      <div class="overlay-title">JETSTREAM</div>
+      <div id="overlay-msg" class="overlay-msg">Initialising&hellip;</div>
+      <div class="progress"><div id="progress-bar" class="progress-bar"></div></div>
+      <div class="overlay-actions">
+        <button id="retry-btn" class="retry-btn" hidden>Retry</button>
+        <button id="demo-btn" class="retry-btn ghost" hidden>Explore demo</button>
+      </div>
+    </div>
+  </div>
+
+  <header class="hud titlebar" id="titlebar">
+    <div class="brand-row">
+      <div class="brand">
+        <span class="brand-mark"></span>
+        <h1>JETSTREAM<span class="sr-only"> Live Jet Stream Map</span></h1>
+        <span class="brand-live" id="live-dot" title="Live data"></span>
+        <span class="demo-badge">DEMO</span>
+      </div>
+      <div class="sub" id="sub-level">250&nbsp;hPa <span class="sub-x">&middot; upper-level winds</span></div>
+    </div>
+    <dl class="meta">
+      <div><dt>Valid</dt><dd id="valid-time">-</dd></div>
+      <div><dt>Peak</dt><dd id="peak-wind">-</dd></div>
+      <div><dt>Source</dt><dd id="src-val">Open-Meteo &middot; GFS</dd></div>
+    </dl>
+    <div class="legend" id="legend">
+      <span class="legend-title">Wind speed</span>
+      <button id="unit-toggle" class="unit-toggle" title="Cycle units" aria-label="Change wind speed units">m/s</button>
+      <div class="legend-scale">
+        <div class="legend-bar" id="legend-bar"></div>
+        <div class="legend-ticks" id="legend-ticks"></div>
+      </div>
+    </div>
+  </header>
+
+  <div class="attribution">Data <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> &middot; NOAA GFS</div>
+  <div id="cursor-readout" class="readout" aria-live="off"></div>
+
+  <div class="hud dock" id="dock">
+    <!-- timeline popover, opened by the Time button -->
+    <div class="tl-pop" id="tl-pop" role="dialog" aria-label="Timeline: 5 days of history to 7 days of forecast">
+      <div class="timeline is-live" id="timeline" role="group" aria-label="Time travel">
+        <button class="tl-btn" id="tl-prev" title="Step back 3 hours (&larr; / &darr;)" aria-label="Step back in time">
+          <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>
+        </button>
+        <div class="tl-track">
+          <input type="range" id="tl-slider" class="tl-slider" min="0" max="100" step="1" value="42" aria-label="Timeline: history to forecast">
+          <div class="tl-ticks" id="tl-ticks" aria-hidden="true"></div>
+        </div>
+        <button class="tl-btn" id="tl-next" title="Step forward 3 hours (&rarr; / &uarr;)" aria-label="Step forward in time">
+          <svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg>
+        </button>
+        <button class="tl-now" id="tl-now" title="Showing the live field" aria-label="Jump back to live data"><span class="tl-now-dot"></span><span id="tl-label">LIVE</span></button>
+      </div>
+    </div>
+
+    <div class="ctl-row" id="controls">
+      <div class="ctl-group">
+        <div class="ctl-item">
+          <button class="ctl" id="btn-play" title="Play / Pause (Space)" aria-label="Play or pause">
+            <svg class="i-pause" viewBox="0 0 24 24"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
+            <svg class="i-play" viewBox="0 0 24 24" hidden><path d="M7 4.5v15l13-7.5z"/></svg>
+          </button>
+          <span class="ctl-cap" id="cap-play">Pause</span>
+        </div>
+        <div class="ctl-item">
+          <button class="ctl" id="btn-proj" title="Toggle Globe / Map (G)" aria-label="Toggle projection">
+            <svg class="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.5 3 14.5 0 18M12 3c-3 3.5-3 14.5 0 18M4.5 6.5c4.5 2.8 10.5 2.8 15 0M4.5 17.5c4.5-2.8 10.5-2.8 15 0"/></svg>
+            <svg class="i-map" viewBox="0 0 24 24" hidden><path d="M3 6l6-2 6 2 6-2v14l-6 2-6-2-6 2zM9 4v14M15 6v14"/></svg>
+          </button>
+          <span class="ctl-cap" id="cap-proj">Globe</span>
+        </div>
+        <div class="ctl-item">
+          <button class="ctl" id="btn-time" title="Timeline: 5 days of history to 7 days of forecast (T)" aria-label="Open the timeline" aria-expanded="false" aria-controls="tl-pop">
+            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7.5V12l3.2 2"/></svg>
+            <span class="ctl-dot" aria-hidden="true"></span>
+          </button>
+          <span class="ctl-cap" id="cap-time">Time</span>
+        </div>
+      </div>
+
+      <div class="ctl-group">
+        <div class="ctl-item">
+          <div class="seg" id="level-seg" role="group" aria-label="Pressure level (hPa)">
+            <span class="seg-unit" aria-hidden="true">hPa</span>
+            <button class="seg-btn" data-level="200">200</button>
+            <button class="seg-btn active" data-level="250">250</button>
+            <button class="seg-btn" data-level="300">300</button>
+          </div>
+          <span class="ctl-cap">Level &middot; hPa</span>
+        </div>
+      </div>
+
+      <div class="ctl-group ctl-sliders">
+        <div class="ctl-item item-slider">
+          <input type="range" id="density" class="range-fill" min="1500" max="13000" step="500" value="6500" aria-label="Particle density" title="Particle density">
+          <span class="ctl-cap">Density <output class="ctl-val" id="density-val" for="density">6 500</output></span>
+        </div>
+        <div class="ctl-item item-slider">
+          <input type="range" id="speed" class="range-fill" min="0" max="1" step="0.01" value="0.82" aria-label="Flow speed" title="Flow speed, minimum is real time">
+          <span class="ctl-cap">Speed <output class="ctl-val" id="speed-val" for="speed">7 000&times;</output></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <section class="sr-only">
+    <h2>Real-time global jet stream visualization</h2>
+    <p>JETSTREAM is a live, interactive map of the world's jet streams. It animates global upper-level winds, their speed, direction and intensity, at the 200, 250 and 300 hPa pressure levels where the polar-front and subtropical jet streams flow. Wind data comes from the NOAA GFS model via Open-Meteo and is rendered as a flowing particle field over a dark, draggable 3D globe or a flat world map. Drag to rotate, scroll or pinch to zoom, switch pressure levels, and open the timeline to view the last 5 days of history or the 7-day jet stream forecast.</p>
+  </section>
+  <noscript>This real-time jet stream map requires JavaScript to render the interactive globe and live wind data.</noscript>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/topojson-client@3/dist/topojson-client.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

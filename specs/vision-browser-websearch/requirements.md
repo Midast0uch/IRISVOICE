@@ -583,11 +583,12 @@ REQ-22).
 - Document store at its 500-document cap → existing eviction applies unchanged.
 - Vision-only content with no DOM equivalent → still needs a stable `chunk_id` for AC4.
 
-### REQ-19: Vision drives a search engine when the planner yields no URLs
+### REQ-19: Vision drives a search engine when the planner yields no URLs -- or every source it produced failed
 
 **User Story:** As a user I want the agent to go find sources itself when its URL
 planner comes back empty, so that a search-provider outage or a missing key does not
-turn into "I couldn't find anything".
+turn into "I couldn't find anything" -- and I want the same rescue when every URL the
+planner DID produce turns out walled or dead, so a bad batch does not end in an apology.
 
 **Verified:** NEW (unverified — implementation pending). The dead end is real and
 observed live on 2026-08-10: `[CrawlPlanner] LLM planning produced no URLs for '...';
@@ -619,6 +620,17 @@ calls, both yielding nothing. A browser that can type into a search box is a
 - AC7: THE SYSTEM SHALL attempt search-engine discovery at most once per research run.
 - AC8: IF vision is unavailable THEN THE SYSTEM SHALL report the honest
   no-sources outcome (REQ-15) rather than failing silently.
+- AC9 (session-342, owner-ordered P1, live evidence 2026-09-18): WHEN every
+  planned URL (including the broadened re-plan) yields zero usable pages AND
+  discovery has not yet run this run THEN THE SYSTEM SHALL attempt search-engine
+  discovery once for fresh URLs before reporting the honest no-usable-content
+  outcome. The trigger is EXHAUSTION of the planned source set, complementing
+  AC1's trigger (the planner produced nothing). AC7's once-per-run bound applies
+  across BOTH triggers combined — whichever fires first consumes the single
+  attempt. Rationale: a Cloudflare wall on every planned URL killed the live
+  run with an apology while the search-engine channel sat idle; a page the
+  planner cannot retrieve is the same "no candidates" information gap reached
+  one rung later, and a browser that can search is the rescue for both.
 
 **Edge Cases:**
 - Search engine blocks automated access entirely → AC5 park-and-report; do not rotate

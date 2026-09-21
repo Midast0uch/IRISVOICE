@@ -46,6 +46,25 @@ def _is_write_tool(tool_name: str) -> bool:
     return any(tool_name.startswith(p) for p in write_prefixes)
 
 
+# specs/tool-decision-engine REQ-16: exact-token triggers for vision relevance.
+# Keeps 'view' OUT and 'screenshot' IN — a sighted decision must be earned.
+_VISION_TOKENS = frozenset({
+    "screenshot", "screen", "screenshot,", "screens", "image", "photo",
+    "picture", "pixels", "vision", "diagram", "banner", "logo",
+    "what's",  # "what's on screen" style prompts split to what's
+})
+
+
+def _vision_relevant(goal: str) -> bool:
+    """Deterministic vision-relevance feature (REQ-16).
+
+    Token-level match, never substring: 'screenshotting' and 'view' don't
+    fire; 'screenshot' / 'image' / 'diagram' do.
+    """
+    toks = {t.strip(",.?!\"'").lower() for t in (goal or "").split()}
+    return bool(toks & _VISION_TOKENS)
+
+
 # ── Propose prompt ──────────────────────────────────────────────────────────
 
 _PROPOSE_PROMPT = """You are the tool-selection policy for one agent step.
@@ -136,8 +155,23 @@ class Decision:
     tool: Optional[str] = None
     params: Dict[str, Any] = field(default_factory=dict)
     rationale: str = ""
-    source: str = ""  # "llm" | "memory" | "fail"
+    source: str = ""  # "llm" | "memory" | "engine" | "fail"
     error: Optional[str] = None  # populated when kind == FAIL
+
+    # specs/tool-decision-engine REQ-9 AC9.1: decision-engine provenance rides
+    # every decision the engine participated in (route: engine / memory-fallback
+    # / escalated); None on pure-legacy decisions. **Property, not a dataclass
+    # field**: test_tool_decision_contract.py::TestDecisionShape pins the field
+    # set at exactly {kind, tool, params, rationale, source, error}, and both
+    # contracts hold — the kernel-facing shape is unchanged, the channel exists.
+    # Shape of the dict itself is pinned by CT-DE-1.
+    @property
+    def meta(self) -> Optional[Dict[str, Any]]:
+        return self.__dict__.get("_meta_value")
+
+    @meta.setter
+    def meta(self, value: Optional[Dict[str, Any]]) -> None:
+        self.__dict__["_meta_value"] = value
 
 
 @dataclass
@@ -225,6 +259,9 @@ class ToolDecisionBox:
         validate_tool_call: Callable[[str, dict], tuple[bool, Optional[str]]],
         infer_fn: Optional[Callable[..., str]] = None,
         memory_lookup_fn: Optional[Callable[[str], Optional[dict]]] = None,
+        decision_engine: Any = None,
+        decision_threshold: float = 0.85,
+        use_decision_engine: bool = True,
     ):
         """
         Args:
@@ -256,6 +293,28 @@ class ToolDecisionBox:
         # permanently-failing call kept escaping its failure budget. Cleared
         # for a given call as soon as that call succeeds.
         self._permanent_failed_args: Dict[tuple, int] = {}
+        # specs/tool-decision-engine: resident decision engine (Jev-pattern
+        # calibrated Choice). Injected or lazily resolved from the module
+        # singleton; disabled entirely by use_decision_engine=False.
+        self._decision_engine: Any = decision_engine
+        self._decision_threshold: float = float(decision_threshold)
+        self._use_decision_engine: bool = bool(use_decision_engine)
+        self._engine_meta: Optional[Dict[str, Any]] = None  # set by _engine_try
+        self._engine_retried: bool = False  # REQ-4 escalated-call retry marker
+        # RE site: turn-scoped engine cache — same question (goal + options +
+        # class) inside one box lifetime does not re-evaluate the model. A
+        # change to any of those properties invalidates, so decisions stay
+        # honest; we pay the model once per distinct question per session,
+        # not once per step.
+        self._engine_cache: Dict[tuple, Any] = {}
+        # REQ-15 continuity: (chosen, kind.value) of the LAST engine-resolved
+        # decision this conversation made — read-only frame input, never
+        # engine-written (AC15.3: the engine keeps no state of its own).
+        self._engine_prev: Optional[Dict[str, Optional[str]]] = None
+        # Resolve-scoped step index (REQ-15 AC15.2): node records land at
+        # dispatch time, so a second resolve of a pending step must still see
+        # it — this counter is resolve-scoped, not dispatch-scoped.
+        self._engine_step_index: int = 0
 
     @staticmethod
     def _run_async(coro, timeout_s: Optional[float] = None):
@@ -311,6 +370,290 @@ class ToolDecisionBox:
     def _selection_role(self) -> str:
         """Role that converts a step description into a tool call."""
         return "tool_execution" if self._bindings_differ() else "reasoning"
+
+    # ── Decision engine (specs/tool-decision-engine REQ-1..3, REQ-13) ────────
+
+    _DE_DELEGATE = "DELEGATE"  # engine says: below its pay grade
+    _DE_NONE = "NONE"          # engine says: no tool applies
+
+    def _engine(self):
+        """The injected decision engine when enabled; None disables cleanly.
+
+        Injection is required (the kernel wires it): the box must NOT lazily
+        adopt the module singleton on its own — that would flip behavior in
+        unit tests the moment a 350M file lands on disk. Degrade = legacy path
+        (AC1.3).
+        """
+        if not self._use_decision_engine:
+            return None
+        return self._decision_engine
+
+    def _memory_decision(
+        self, all_tools: list[dict], goal: str, conversation_id: str,
+    ) -> Optional[Decision]:
+        """Shared memory-fallback step (used by the engine ladder and legacy).
+
+        Returns a TOOL Decision when memory names a valid, registered tool;
+        None otherwise. Identical semantics to the inline memory fallback the
+        legacy path has always run.
+        """
+        memory_result = (
+            self._memory_lookup(goal) if callable(self._memory_lookup) else None
+        )
+        if memory_result and isinstance(memory_result, dict):
+            mtool = memory_result.get("tool")
+            mparams = memory_result.get("params", {})
+            if mtool and mtool in {t.get("name") for t in all_tools}:
+                is_valid, _verr = self._validate_tool_call(mtool, mparams)
+                if is_valid:
+                    logger.info(
+                        "[TOOL_DECISION] kind=TOOL source=memory tool=%s conv=%s",
+                        mtool, conversation_id,
+                    )
+                    return Decision(
+                        kind=DecisionKind.TOOL, tool=mtool, params=mparams,
+                        source="memory",
+                        rationale=memory_result.get("rationale", ""),
+                    )
+        return None
+
+    def _engine_try(
+        self,
+        *,
+        engine,
+        step: dict,
+        goal: str,
+        evidence: Optional[dict],
+        start: float,
+        session_id: str,
+        conversation_id: str,
+    ) -> Optional[Decision]:
+        """Calibrated Choice over the pre-filtered candidate set (REQ-2).
+
+        Returns a Decision when the engine fully resolved the step. Returns
+        None when the engine declined, degraded, or scored below threshold —
+        the caller then runs the legacy ladder, which IS the escalation path
+        (AC3.2). Never raises.
+        """
+        try:
+            all_tools: list[dict] = self._get_available_tools() or []
+            memory_hint = (
+                self._memory_lookup(goal) if callable(self._memory_lookup) else None
+            )
+            pre_filtered = self._apply_pre_filter(all_tools, memory_hint, goal)
+            vetoed: set = set((memory_hint or {}).get("veto") or [])
+            names = [t.get("name") for t in pre_filtered if t.get("name")]
+            if not names:
+                return None
+
+            # REQ-16: vision-relevant steps keep the vision tools on the menu
+            # even when the memory pre-filter dropped them — the candidate cap
+            # must never silently delete a sighted option. Vision tools are
+            # kept ahead of the cap truncation for vision-relevant steps.
+            needs_vision = _vision_relevant(goal)
+            vision_front: list = []
+            if needs_vision:
+                vision_names = [
+                    t.get("name")
+                    for t in all_tools
+                    if (t.get("category") or "").lower() == "vision"
+                    and t.get("name")
+                ]
+                vision_front = vision_names
+                names = vision_names + [n for n in names if n not in vision_names]
+            _cap = getattr(getattr(engine, "_cfg", None), "candidate_cap", 8)
+            if vision_front:
+                # guaranteed in: vision names never fall off under the cap
+                names = vision_front[:_cap] + [
+                    n for n in names if n not in vision_front
+                ][:_cap]
+                names = names[:_cap + len(vision_front)]
+            else:
+                names = names[:_cap]
+
+            # REQ-15: cross-step continuity — the engine sees (only) its own
+            # last verdict inside this conversation's run. Read-only: the
+            # engine never writes chain state (AC15.3).
+            _prev = self._engine_prev or {}
+            step_index = self._engine_step_index
+            # REQ-16/new-fix: frame carries option descriptions so the 350M can
+            # ground its choice in MEANING of the name (cuddled-token read-out
+            # alone collapsed to literal name matching — session 344 finding).
+            desc_map = {
+                t.get("name"): (t.get("description") or "")[:90]
+                for t in all_tools if t.get("name")
+            }
+            # Enumerated feature frame (D9): no prose, deterministic fields.
+            frame = {
+                "goal": (goal or "")[:200],
+                "task_class": (step or {}).get("task_class"),
+                "n_candidates": len(names),
+                "previous_chosen": _prev.get("chosen"),
+                "previous_outcome": _prev.get("outcome"),
+                "step_index": step_index,
+                "needs_vision": needs_vision,
+                "vision_candidates": sum(
+                    1
+                    for t in all_tools
+                    if (t.get("category") or "").lower() == "vision"
+                ),
+                "option_descriptions": desc_map,
+            }
+            # Turn-scoped cache: a repeat of the identical engine question
+            # inside this conversation reuses the measured distribution. The
+            # ledger still gets the row (meta carries cache=True), because the
+            # second answer is the same decision, not a new one.
+            cache_key = (
+                (goal or "")[:200],
+                tuple(names),
+                (step or {}).get("task_class"),
+                needs_vision,
+            )
+            cached_hit = False
+            if cache_key in self._engine_cache:
+                ds = self._engine_cache[cache_key]
+                cached_hit = True  # carried into meta as cached=True below
+            else:
+                ds = None
+            if ds is None:
+                # REQ-17: hierarchical lane→leaf staging is the primary shape when
+                # the menu carries a real category structure; flat scoring is the
+                # fallback for degenerate menus. Look up each option's category
+                # from ALL tools (names were capped for prompt cost).
+                name_to_cat = {
+                    t.get("name"): (t.get("category") or "misc")
+                    for t in (all_tools or [])
+                    if t.get("name")
+                }
+                lanes: Dict[str, list] = {}
+                for n in names:
+                    lanes.setdefault(name_to_cat.get(n, "misc"), []).append(n)
+                lanes_for_engine = dict(lanes)
+                if self._DE_DELEGATE not in lanes and self._DE_NONE not in lanes:
+                    lanes_for_engine["DELEGATE"] = [self._DE_DELEGATE]
+                    lanes_for_engine["NONE"] = [self._DE_NONE]
+                if len(lanes_for_engine) > 1:  # hierarchical path
+                    _dt = getattr(engine, "decide_tree", None)
+                    if callable(_dt):
+                        ds = _dt("tool_choice", lanes_for_engine, frame)
+                    else:
+                        ds = engine.decide(
+                            "tool_choice",
+                            names + [self._DE_DELEGATE, self._DE_NONE], frame,
+                        )
+                else:
+                    ds = engine.decide(
+                        "tool_choice", names + [self._DE_DELEGATE, self._DE_NONE], frame
+                    )
+                if ds is not None:
+                    self._engine_cache[cache_key] = ds
+            if ds is None:
+                return None  # engine unavailable/timeout — plain degrade
+            chosen, conf = ds.chosen, ds.confidence
+            base_meta: Dict[str, Any] = {
+                "engine": getattr(engine, "model_id", None) or "decision-engine",
+                "consumer_id": "tool_choice",
+                "chosen": chosen,
+                "confidence": round(conf, 4),
+                "candidates": len(names),
+                "threshold": self._decision_threshold,
+                "engine_latency_ms": ds.engine_latency_ms,
+                "previous_chosen": _prev.get("chosen"),
+                "previous_outcome": _prev.get("outcome"),
+                "step_index": step_index,
+                "needs_vision": needs_vision,
+                "vision_candidates": frame["vision_candidates"],
+                "stage_detail": getattr(ds, "stage_detail", None),
+                "cached": cached_hit,
+            }
+
+            def _m(route: str, **kw) -> Dict[str, Any]:
+                meta = dict(base_meta)
+                meta.update(route=route, escalated=route == "escalated")
+                meta.update(kw)
+                return meta
+
+            # AC2.x NONE → no tool applies (OQ-2 resolution: direct REASON).
+            if chosen == self._DE_NONE:
+                _d = Decision(
+                    kind=DecisionKind.REASON, source="engine",
+                    rationale="engine: no tool applies",
+                )
+                _d.meta = _m("engine", args_valid=None, retried=False)
+                return _d
+            # Memory vetoes outrank engine confidence (pin_517dfcbda150 stands).
+            if chosen in vetoed:
+                logger.info(
+                    "[TOOL_DECISION] engine pick %s VETOED by memory sanction "
+                    "-> REASON conv=%s", chosen, conversation_id,
+                )
+                _d = Decision(
+                    kind=DecisionKind.REASON, source="memory",
+                    rationale=(memory_hint or {}).get("rationale")
+                    or "vetoed by execution policy",
+                )
+                _d.meta = _m("memory-fallback", args_valid=None, retried=False)
+                return _d
+            # Below threshold or DELEGATE → memory fallback, then escalate (AC3.2).
+            if chosen == self._DE_DELEGATE or conf < self._decision_threshold:
+                md = self._memory_decision(all_tools, goal, conversation_id)
+                if md is not None:
+                    md.meta = _m("memory-fallback", args_valid=None, retried=False)
+                    _c = getattr(engine, "counters", None)
+                    if _c is not None:
+                        _c.memory_fallbacks += 1
+                    return md
+                self._engine_meta = _m(
+                    "escalated", args_valid=None, retried=False)
+                return None
+            # Confident real tool → schema-constrained args from the engine.
+            from .tool_registry import resolve_tool
+
+            rspec = resolve_tool(chosen)
+            if rspec is None:
+                return None
+            params_schema = {
+                "properties": {
+                    k: {
+                        "type": (v or {}).get("type", "string"),
+                        "description": (v or {}).get("description", "")[:120],
+                    }
+                    for k, v in (rspec.parameters or {}).items()
+                },
+                "required": [
+                    k
+                    for k, v in (rspec.parameters or {}).items()
+                    if not (v or {}).get("optional", False)
+                ],
+            }
+            ar = engine.generate_args("tool_choice", chosen, params_schema, frame)
+            if ar.args is None:
+                # AC2.5: invalid structure/args escalates the whole decision.
+                self._engine_meta = _m(
+                    "escalated", args_valid=False, retried=ar.retried)
+                return None
+            decision = self._validate_as_tool(
+                chosen, ar.args, "engine", conversation_id, start, {},
+                goal=goal,
+            )
+            if decision.kind != DecisionKind.TOOL:
+                self._engine_meta = _m(
+                    "escalated", args_valid=False, retried=ar.retried)
+                return None
+            decision.meta = _m("engine", args_valid=True, retried=ar.retried)
+            ms = int((time.perf_counter() - start) * 1000)
+            logger.info(
+                "[TOOL_DECISION] kind=TOOL source=engine tool=%s conf=%.3f "
+                "resolve_ms=%d conv=%s",
+                chosen, conf, ms, conversation_id,
+            )
+            return decision
+        except Exception as _e:
+            logger.warning(
+                "[TOOL_DECISION] engine path failed (%r) — legacy ladder", _e,
+            )
+            return None
+
 
     def _missing_required(self, tool_name: str, params: Optional[dict]) -> list:
         """Required parameters the proposed call did not supply."""
@@ -425,6 +768,114 @@ class ToolDecisionBox:
         session_id: str = "",
         conversation_id: str = "",
     ) -> Decision:
+        """Engine-first resolution (specs/tool-decision-engine REQ-2/3/4).
+
+        Order: engine Choice over the pre-filtered candidates → memory fallback
+        → legacy single-shot generation ladder (which is the escalation path).
+        The kernel-facing DecisionKind set is unchanged: {TOOL, REASON, FAIL}
+        (AC3.4); DELEGATE never escapes this method. Provenance rides
+        ``Decision.meta``; route-only rows (REASON/FAIL with meta) are recorded
+        through the SAME tool-event writer as executions — one row, one writer
+        (AC5.1, AC5.4).
+        """
+        _start = time.perf_counter()
+        goal = step.get("description", "") or ""
+        self._engine_meta = None
+        eng = self._engine()
+        if eng is not None:
+            early = self._engine_try(
+                engine=eng, step=step, goal=goal, evidence=evidence,
+                start=_start, session_id=session_id,
+                conversation_id=conversation_id,
+            )
+            if early is not None:
+                engine_counts = getattr(eng, "counters", None)
+                if engine_counts is not None and getattr(
+                    early.meta or {}, "escalated", False
+                ):
+                    engine_counts.escalations += 1
+                self._engine_prev = {
+                    "chosen": early.tool or (early.meta or {}).get("chosen"),
+                    "outcome": early.kind.value,
+                }
+                self._engine_step_index += 1
+                self._record_decision_row(early, session_id)
+                return early
+        else:
+            eng = None
+        decision = self._resolve_legacy(
+            step, evidence=evidence, session_id=session_id,
+            conversation_id=conversation_id,
+        )
+        if self._engine_meta is not None and decision.meta is None:
+            meta = dict(self._engine_meta)
+            meta["retried"] = bool(self._engine_retried)
+            meta["decision_latency_ms"] = int((time.perf_counter() - _start) * 1000)
+            # Calibration join key: the engine's pick vs what the escalation
+            # ACTUALLY ran. Without this the ladder was 'engine said X' with no
+            # 'reality ran Y' and the reliability curve was fiction.
+            chosen = meta.get("chosen")
+            if chosen == self._DE_DELEGATE:
+                # engine asked for the brain; the escalation path IS the brain
+                meta["final_choice"] = decision.tool or decision.kind.value
+                meta["engine_correct"] = True
+            elif chosen == self._DE_NONE:
+                meta["final_choice"] = decision.tool or decision.kind.value
+                meta["engine_correct"] = decision.kind != DecisionKind.TOOL
+            else:
+                meta["final_choice"] = (
+                    decision.tool if decision.kind == DecisionKind.TOOL
+                    else decision.kind.value
+                )
+                meta["engine_correct"] = (
+                    decision.kind == DecisionKind.TOOL
+                    and decision.tool == chosen
+                )
+            decision.meta = meta
+            counters = getattr(eng, "counters", None) if eng is not None else None
+            if counters is not None:
+                counters.escalations += 1
+        # REQ-15: roll the continuity record forward for the NEXT step.
+        self._engine_prev = {
+            "chosen": decision.tool or (decision.meta or {}).get("chosen"),
+            "outcome": decision.kind.value,
+        }
+        self._engine_step_index += 1
+        self._record_decision_row(decision, session_id)
+        return decision
+
+    def _record_decision_row(self, decision: Decision, session_id: str) -> None:
+        """Write the route-only ledger row for non-TOOL engine decisions.
+
+        TOOL decisions carry their meta into execute_tool, where the tool event
+        row already records the outcome — recording here would double-count
+        (D4). Best-effort; the bridge absorbs failures (AC5.3).
+        """
+        meta = decision.meta
+        if not meta or decision.kind == DecisionKind.TOOL:
+            return
+        bridge = self._tool_bridge
+        recorder = getattr(bridge, "record_decision", None)
+        if recorder is None:
+            return
+        try:
+            recorder(
+                meta,
+                kind=decision.kind.value,
+                error=decision.error,
+                session_id=session_id,
+            )
+        except Exception as _e:
+            logger.debug("[TOOL_DECISION] decision row write failed: %r", _e)
+
+    def _resolve_legacy(
+        self,
+        step: dict,
+        evidence: Optional[dict] = None,
+        session_id: str = "",
+        conversation_id: str = "",
+    ) -> Decision:
+        """Pre-engine single-shot resolution (now also the escalation path)."""
         """Resolve a DER step to a tool (or reason / fail).
 
         Two-phase *retrieve-then-decide* (REQ-4 AC6):
@@ -495,6 +946,26 @@ class ToolDecisionBox:
                 temperature=0.2,
                 max_tokens=500,
             )
+            # REQ-4 (specs/tool-decision-engine, session-342 E5): the planner
+            # died cleanly on an EMPTY completion ("[TOOL_DECISION_FAIL]
+            # Empty response from Ollama") because this path had no retry while
+            # the synthesis path had one. One bounded retry, no loop; the retry
+            # flag lands in the escalation meta row.
+            self._engine_retried = False
+            if not (text and text.strip()) and not tool_calls:
+                self._engine_retried = True
+                logger.info(
+                    "[TOOL_DECISION] empty completion — one bounded retry "
+                    "conv=%s",
+                    conversation_id,
+                )
+                text, _thinking, tool_calls = self._router.generate(
+                    _sel_role,
+                    messages,
+                    tools=_fn_tools,
+                    temperature=0.2,
+                    max_tokens=500,
+                )
 
             # ── 4. Parse response ──────────────────────────────────────
             # Prefer provider-native tool_calls when available
@@ -892,6 +1363,7 @@ class ToolDecisionBox:
                 result = self._run_async(
                     self._tool_bridge.execute_tool(
                         decision.tool, decision.params, session_id=session_id,
+                        decision_meta=getattr(decision, "meta", None),
                     ),
                     timeout_s=timeout_s,
                 )
@@ -1150,14 +1622,28 @@ class ToolDecisionBox:
         suggested = memory_hint.get("tool")
         if not suggested:
             return all_tools
-        # Keep: the suggested tool + any generic utilities
+        # Session-332 (live T3): a memory *suggestion* is a RANKING BIAS, not a
+        # whitelist. This branch used to return ONLY {suggested} ∪ generic, which
+        # deleted every other real tool from the candidate set. Measured: a goal
+        # "create t3_redrive.txt" with memory hint {tool: list_directory} left
+        # candidates = [list_directory, speak, ask_user] — write_file was gone,
+        # so the LLM could not select it no matter how clearly the goal asked to
+        # write. The docstring already promised "so the model still has a
+        # choice"; the code did not deliver it. Keep the full set and float the
+        # suggested tool to the front (plus generics) so memory still biases the
+        # model without amputating its options. The `veto` branch above is a
+        # genuine hard constraint and remains exclusive — only *suggestions*
+        # are demoted to a hint.
         generic = {"speak", "tts", "ask_user", "respond"}
-        keep = []
+        preferred, rest = [], []
         for t in all_tools:
             name = t.get("name", "")
             if name == suggested or name in generic:
-                keep.append(t)
-        return keep if keep else all_tools
+                preferred.append(t)
+            else:
+                rest.append(t)
+        return preferred + rest if preferred else all_tools
+
 
     def _run_reason_step(self, prompt: str, role: str = "REASONING") -> str:
         """Direct reasoning: used when the model decided no tool is needed."""

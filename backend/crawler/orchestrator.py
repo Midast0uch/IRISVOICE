@@ -91,9 +91,17 @@ _RUN_BUDGET_MS = int(os.environ.get("IRIS_WEBSEARCH_MAX_WALL_MS", "150000"))
 # crawl could not either), and fetch.vision navigates directly with no
 # robots gate of its own (only crawler_engine.crawl() checks robots.txt).
 # Escalating any transport_error would silently bypass robots.txt for
-# exactly the URL it just refused. Only these three reasons escalate.
+# exactly the URL it just refused.
+#
+# CHALLENGE is excluded too (2026-08-12 decision, capabilities.py
+# fetch.vision NodeSpec): escalating a wall to a headless browser measured
+# 0/3 across three live attempts costing 240s + 188s + 243s of a
+# seven-minute turn with zero content gained. A wall is PARKED (the
+# CHALLENGE branch in _dispatch_one) and, when it empties the whole batch,
+# rescued by the REQ-19 AC9 exhaustion discovery — never re-fought by the
+# tier that provably loses to it. This set now matches fetch.vision's
+# advertised recovers_reasons exactly.
 _FRESH_FAILURE_ESCALATE_REASONS = frozenset({
-    UsabilityReason.CHALLENGE,
     UsabilityReason.EMPTY,
     UsabilityReason.TOO_SHORT,
 })
@@ -767,6 +775,69 @@ class CrawlOrchestrator:
         # Placed AFTER the broadened-retry branch so the record reflects the
         # job's final fetch outcome, not a zero the retry was about to rescue.
         self._record_yield(session_id, len(ok_pages))
+        if not ok_pages and not discovery_attempted:
+            # REQ-19 AC9 (T27): EXHAUSTION trigger — every planned URL (broadened
+            # re-plan included) yielded nothing usable, so the run is one step
+            # from the honest failure report below. Before reporting, spend this
+            # run's ONE discovery attempt (AC7's bound is shared with the AC1
+            # empty-plan trigger via `discovery_attempted`): a browser typing the
+            # query into a search engine is a different acquisition channel than
+            # re-planning, and it stayed idle in the 2026-09-18 live wall run —
+            # every planned URL Cloudflare-blocked, discovery never consulted
+            # because the planner itself was not empty, apology delivered.
+            discovery_attempted = True
+            if _router_recovery_node(
+                "no_candidates", step_id=f"disc:{job_id}",
+            ) == "search_discovery":
+                discovered = await self._discover_urls_via_vision(query, job_id, _emit)
+            else:
+                discovered = []
+            # Discovery feeds the SAME fetch selection the run already made
+            # (AC3: one dispatch path — `dispatch_urls` in production,
+            # `backend.fetch` under the test seam). Already-attempted URLs are
+            # excluded: a search engine often re-surfaces the very walled pages
+            # that just failed, and re-paying for them re-fails identically.
+            discovered = self._exclude_visited(
+                discovered,
+                _excluded | {p.url for p in (fetched.pages or []) if p.url},
+                f"{job_id}_ac9",
+                "ac9-exhaustion",
+            )
+            if discovered:
+                discovered_urls.update(discovered)
+                _emit("CRAWLER_PROGRESS", {"stage": "narrowing", "message": "Finding new sources…"})
+                _emit("CRAWLER_PHASE", {"phase": "searching", "phase_sequence": PHASE_SEARCHING})
+                _emit("CRAWLER_SOURCES_ADDED", {
+                    "job_id": job_id,
+                    "urls": list(discovered),
+                    "discovered_urls": sorted(discovered_urls),
+                    "query": query,
+                    "reason": "exhaustion_discovery",
+                })
+                if dispatch_path:
+                    fetched = await self.dispatch_urls(
+                        discovered,
+                        query=query, job_id=job_id, session_id=session_id,
+                        on_progress=on_progress, max_pages=max_pages,
+                        timeout_s=timeout_s, excluded_urls=sorted(_excluded),
+                    )
+                else:
+                    fetched = await backend.fetch(
+                        query=query, urls=discovered,
+                        instructions=plan.instructions,
+                        max_pages=max_pages,
+                        on_page_done=self._page_emitter(_emit, job_id),
+                        timeout_s=timeout_s,
+                        job_id=f"{job_id}_ac9",
+                    )
+                # The broaden retry budget is spent the same way here — AC9 IS
+                # this run's other rescue; the rerank escalate must not re-plan.
+                setattr(fetched, "_retried", True)
+                self._stamp_discovery_provenance(fetched, discovered_urls)
+                self._apply_har_penalties(fetched, query)
+                await self._learn_from_crawl(fetched, query)
+                ok_pages = [p for p in fetched.pages if page_is_usable(p).usable]
+                self._record_yield(session_id, len(ok_pages))
         if not ok_pages:
             _emit("CRAWLER_ERROR", {"message": "all pages failed to fetch"})
             await self._drain_log_tasks()

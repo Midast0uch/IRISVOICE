@@ -172,11 +172,19 @@ class TestResolveFail:
         assert decision.kind == DecisionKind.FAIL  # tool not in _AVAILABLE
 
     def test_unparseable_json(self):
-        """LLM returns non-JSON â†’ FAIL."""
+        """LLM replies with prose instead of a tool decision -> REASON.
+
+        Session-260 deliberate behavior (REQ-35, agent_kernel documented note):
+        a model that ANSWERED but named no tool did not fail — the step is
+        routed to direct reasoning, with source='llm-noparse' as the marker.
+        FAIL remains for genuinely textless/dead responses (see
+        TestResolveFail above), not for prose-instead-of-JSON.
+        """
         text = "I think we should search the web"
         box = _make_box(router_gen=(text, "", []), memory=lambda _g: None)
         decision = box.resolve(step={"description": "think aloud"})
-        assert decision.kind == DecisionKind.FAIL
+        assert decision.kind == DecisionKind.REASON
+        assert decision.source == "llm-noparse"
 
 
 # â”€â”€ dispatch â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

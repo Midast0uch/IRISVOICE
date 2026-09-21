@@ -47,23 +47,66 @@ def _is_junction(path: Path) -> bool:
 
 
 def _junction_target(path: Path) -> Path | None:
+    """Return the target of the reparse point AT `path` (no recursion).
+
+    Uses `fsutil reparsepoint query`, which reports the reparse point on the
+    path itself. The previous implementation ran `dir /AL <path>`, which lists
+    the path's CONTENTS — so once a nested junction existed inside the cache
+    (the node_modules shim), `dir` reported THAT one instead of `.next`'s own
+    target. The setup then mis-detected a healthy junction as wrong and
+    churned it on every start. (Caught 2026-09-15.)
+    """
     if not path.exists():
         return None
     try:
         out = subprocess.check_output(
-            ["cmd", "/c", "dir", "/AL", str(path)], text=True, stderr=subprocess.DEVNULL
+            ["cmd", "/c", "fsutil", "reparsepoint", "query", str(path)],
+            text=True, stderr=subprocess.DEVNULL,
         )
     except subprocess.CalledProcessError:
         return None
-    # Look for a "<JUNCTION>   name   target [path]" line
     for line in out.splitlines():
-        if "<JUNCTION>" in line:
-            parts = line.split()
-            if not parts:
-                continue
-            # Last token is the target path
-            return Path(parts[-1])
+        stripped = line.strip()
+        # Match "Print Name:" exactly — NOT the "Print Name offset:" line.
+        if stripped.startswith("Print Name:"):
+            target = stripped.split(":", 1)[1].strip()
+            if target:
+                return Path(target)
     return None
+
+
+def _ensure_cache_node_modules() -> None:
+    """Put a `node_modules` junction at the cache root.
+
+    The `.next` junction alone BREAKS Node's module resolution: Turbopack
+    resolves the cache to its REAL path (LOCALAPPDATA\\...), then walks UP
+    looking for `node_modules` and finds none, so every external import dies
+    with `Failed to load external module react/jsx-runtime` (observed
+    2026-09-15). A `node_modules` junction at the cache root makes that walk
+    succeed at the single real node_modules — no duplicate React, so no
+    "invalid hook call". Idempotent; a no-op once correct.
+    """
+    nm_real = REPO_ROOT / "node_modules"
+    nm_link = FAST_TARGET / "node_modules"
+    if not nm_real.exists():
+        return
+    if _is_junction(nm_link):
+        existing = _junction_target(nm_link)
+        if existing and existing.resolve() == nm_real.resolve():
+            return
+        print(f"[fix] {nm_link} is a junction to {existing}, expected {nm_real}")
+        nm_link.rmdir()
+    elif nm_link.exists():
+        print(f"[warn] {nm_link} exists but is not a junction; leaving as-is")
+        return
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(nm_link), str(nm_real)],
+        capture_output=True, text=True,
+    )
+    if result.returncode == 0:
+        print(f"[ok] created junction {nm_link} -> {nm_real}")
+    else:
+        print(f"[warn] node_modules junction failed: {result.stderr or result.stdout}")
 
 
 def main() -> int:
@@ -80,6 +123,10 @@ def main() -> int:
         existing = _junction_target(NEXT_DIR)
         if existing and existing.resolve() == FAST_TARGET.resolve():
             print(f"[ok] {NEXT_DIR} is already a junction to {FAST_TARGET}")
+            # Still ensure the node_modules shim — it is required for Node
+            # module resolution from the cache's real path, and must be
+            # (re)established even when .next is already correct.
+            _ensure_cache_node_modules()
             return 0
         else:
             print(f"[fix] {NEXT_DIR} is a junction to {existing}, expected {FAST_TARGET}")
@@ -132,6 +179,10 @@ def main() -> int:
         else:
             print(f"[warn] {NEXT_DIR} exists but is not a junction; leaving as-is")
 
+    # Node resolves the junction to its real path, then walks up for
+    # node_modules. Without a shim at the cache root every external import
+    # (react/jsx-runtime) fails to load. Always ensure it.
+    _ensure_cache_node_modules()
     return 0
 
 

@@ -274,8 +274,14 @@ export function ModelBrowserPanel({ glowColor, fontColor, sendMessage }: ModelBr
     setLoadPct(0);
     setLoadPhase('loading');
     setLoadMsg(withProjector ? 'Loading model…' : 'Loading model (text-only)…');
-    const payload: { model_path: string; with_projector?: false } = { model_path: path };
-    if (!withProjector) payload.with_projector = false;
+    // 2026-09-18 (specs/vision-single-server): send the intent EXPLICITLY.
+    // The WS boundary default is text-only (pinned by tests), so leaving the
+    // key off when WITH-PROJECTOR was intended silently produced a text-only
+    // load (observed live: vision_loaded=False after a bare Load click).
+    const payload: { model_path: string; with_projector: boolean } = {
+      model_path: path,
+      with_projector: withProjector,
+    };
     const sent = sendMessage('load_local_model', payload);
     if (!sent) {
       setIsLoading(false);

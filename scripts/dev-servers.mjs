@@ -14,11 +14,36 @@
  * load. It stays in the foreground because Tauri treats the exit of
  * beforeDevCommand as the end of the dev session.
  */
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+
+// Relocate the Next.js `.next` cache off the slow project drive BEFORE Next
+// starts. On the project drive Turbopack's dev cache bloats to ~100k+ files
+// under Defender realtime scanning; next-server then holds ~50-100k handles at
+// ~0 CPU and answers NOTHING (TCP connects, HTTP hangs) — the "frontend wedge".
+//
+// This runs here as well as in iris_process_manager so BOTH launch paths
+// self-heal: `npm run iris:start:frontend` (manager) and Tauri dev
+// (`beforeDevCommand: npm run dev:servers`, this file). Without it, Tauri dev
+// would re-bloat the cache on the slow drive. The script is idempotent (a no-op
+// once the junction exists) and also ensures the cache-root node_modules shim
+// that Node's module resolution needs. Best-effort: never block startup.
+const setupScript = path.join(root, 'scripts', 'setup_fast_next_cache.py')
+const pythonCandidates = [
+  path.join(root, 'venv', 'Scripts', 'python.exe'), // project venv (Windows)
+  path.join(root, 'venv', 'bin', 'python'), // project venv (POSIX)
+  'python',
+  'python3',
+]
+for (const python of pythonCandidates) {
+  const result = spawnSync(python, [setupScript], { stdio: 'ignore' })
+  if (result.status === 0) break
+  if (result.error && result.error.code === 'ENOENT') continue // interpreter missing
+  break // ran but failed — best-effort, do not retry every candidate
+}
 
 const servers = [
   {

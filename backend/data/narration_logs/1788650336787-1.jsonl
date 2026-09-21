@@ -1,0 +1,3 @@
+{"ts": 1788652006.0776033, "conversation_id": "1788650336787-1", "step_id": "s1_s0", "decision": "brief", "signal": "crystallized", "u": -0.1173922454211006, "xi": 0.016814692820412702, "text": "Sub-task done; folding back into the main thread.", "tts_played": true}
+{"ts": 1788652023.6748471, "conversation_id": "1788650336787-1", "step_id": "amend-8", "decision": "silence", "signal": null, "u": 0.2325582773130947, "xi": 1.0668146928204125, "text": "", "tts_played": false}
+{"ts": 1788652024.2020142, "conversation_id": "1788650336787-1", "step_id": "amend-6_s0", "decision": "brief", "signal": "crystallized", "u": 0.40157885689267314, "xi": 2.1168146928204123, "text": "Sub-task done; folding back into the main thread.", "tts_played": true}

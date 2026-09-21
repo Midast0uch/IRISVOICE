@@ -161,6 +161,13 @@ async def capture_replay(job_id: str, page_number: int, request: Request):
         "X-Capture-Page-Number": str(page_number),
     })
     html = capture["html"]
+    # Anchor relative refs (stylesheets/images/links) to the captured page's
+    # own URL before any injector runs — the injectors' contract says they
+    # come AFTER <base> anchoring, and without it every relative ref resolved
+    # against /api/browser/capture/... and 404'd, which is what rendered
+    # captured pages as bare unstyled HTML. base-uri CSP is already tightened
+    # to the capture's own origin above, so this cannot re-base elsewhere.
+    html = _rewrite_html(html, capture["url"])
     # REQ-4 (T9): inject the view-agent so the sandboxed frame can speak OUT
     # (scroll/ready). Idempotent; a stripped script degrades to coarse states
     # (REQ-4 AC5) — the replay bytes themselves are never altered otherwise.

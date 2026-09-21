@@ -1,0 +1,82 @@
+- generic [ref=f1e1]:
+  - main [ref=f1e2]:
+    - generic [ref=f1e6] [cursor=pointer]:
+      - generic [ref=f1e10]:
+        - generic: → MND2JA
+        - generic: ↑ Menu
+        - generic: ↑↑ Voice
+      - generic:
+        - generic:
+          - generic:
+            - button
+          - generic:
+            - button
+          - generic:
+            - button
+          - generic:
+            - button
+          - generic:
+            - button
+          - generic:
+            - button
+    - generic [ref=f1e28]:
+      - generic [ref=f1e29]:
+        - generic [ref=f1e30]:
+          - generic [ref=f1e32]: IRIS
+          - button "Open Dashboard" [ref=f1e33]
+        - button "Maximize chat" [ref=f1e40]
+        - generic [ref=f1e46]:
+          - button "Notifications" [ref=f1e47]
+          - button "Conversation History" [ref=f1e51]
+          - button "Close Chat" [ref=f1e56]
+      - generic [ref=f1e61]:
+        - generic [ref=f1e64]:
+          - generic [ref=f1e65]:
+            - generic [ref=f1e66]: You
+            - generic [ref=f1e67]: 11:50 AM
+          - paragraph [ref=f1e68]: websearch what is the latest SpaceX Starship launch date and payload capacity
+        - generic [ref=f1e72]:
+          - generic [ref=f1e73]:
+            - generic [ref=f1e74]: IRIS
+            - generic [ref=f1e75]: 11:50 AM
+          - generic [ref=f1e76]: "[IRIS error: 'ExecutionPlan' object has no attribute 'title']"
+          - generic [ref=f1e77]:
+            - button "Copy" [ref=f1e78]
+            - button "Play text-to-speech" [ref=f1e82]
+            - button "Revert conversation to this point" [ref=f1e87]
+            - generic [ref=f1e91]:
+              - button "Helpful response" [ref=f1e92]
+              - button "Not helpful" [ref=f1e96]
+        - generic [ref=f1e103]:
+          - generic [ref=f1e104]:
+            - generic [ref=f1e105]: You
+            - generic [ref=f1e106]: 12:04 PM
+          - paragraph [ref=f1e107]: websearch what is the latest SpaceX Starship launch date and payload capacity
+        - generic [ref=f1e111]:
+          - generic [ref=f1e112]:
+            - generic [ref=f1e113]: IRIS
+            - generic [ref=f1e114]: 12:05 PM
+          - generic [ref=f1e115]: As of October 2023, the latest SpaceX Starship launch was the Starship Integrated Flight Test 2, which occurred on November 18, 2023. The launch was successful, with the Starship reaching space and completing several key milestones. However, the spacecraft did not achieve a full orbit due to a planned termination of the flight. Regarding payload capacity, the SpaceX Starship is designed to have a payload capacity of up to 150 metric tons to low Earth orbit (LEO) and 21 metric tons to Mars. Howe
+          - generic [ref=f1e116]:
+            - button "Copy" [ref=f1e117]
+            - button "Play text-to-speech" [ref=f1e121]
+            - button "Revert conversation to this point" [ref=f1e126]
+            - generic [ref=f1e130]:
+              - button "Helpful response" [ref=f1e131]
+              - button "Not helpful" [ref=f1e135]
+        - generic [ref=f1e143]:
+          - generic [ref=f1e144]: markdown
+          - button "Expand to panel" [ref=f1e145]
+      - generic [ref=f1e155]:
+        - button "Toggle web research mode" [ref=f1e157]
+        - textbox "Type command or drop file..." [active] [ref=f1e161]
+        - generic [ref=f1e162]:
+          - button "Send message" [disabled] [ref=f1e163]
+          - button "Upload file" [ref=f1e169]
+          - generic [ref=f1e173]:
+            - button "Conversation history (2)" [ref=f1e175] [cursor=pointer]
+            - 'generic "Context: 0 / 128000 tokens — IDLE" [ref=f1e180]':
+              - generic [ref=f1e181]: 0 / 128.0k
+              - generic [ref=f1e183]: IDL
+  - button "Open Next.js Dev Tools" [ref=f1e19] [cursor=pointer]
+  - alert [ref=f1e26]

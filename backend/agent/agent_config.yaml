@@ -19,6 +19,18 @@ models:
   #   brain    → any ~9B reasoning model at Q4_K_M  (~5 GB VRAM)
   #   executor → any ~1B tool-call model at Q4_K_M  (~1 GB VRAM)
   # Select actual model names in the IRIS Settings → Configure → Models card.
+  - id: "decision_driver"
+    path: null             # resolved by backend/agent/decision_engine.resolve_model_path()
+    capabilities: ["tool_decision", "surface_choice", "narration_gate"]
+    constraints:
+      device: "cpu"
+      dtype: "q4_K_M"
+      n_ctx: 1024
+      candidate_cap: 32
+      acquire_timeout_s: 2.0
+      default_threshold: 0.85
+    optional: true   # decision paths degrade to the legacy heuristics if missing
+
   - id: "executor"
     path: "./models/LFM2.5-1.2B-Instruct"
     capabilities: ["tool_execution", "instruction_following"]

@@ -1,0 +1,14 @@
+{
+  "profile": "balanced_mtp",
+  "model": "qwopus",
+  "results": [
+    {
+      "prompt": "Explain quantum computing in simple terms.",
+      "tokens": 0,
+      "elapsed": 75.29784140002448,
+      "tps": 0,
+      "ok": false
+    }
+  ],
+  "mtp_acceptance_window": []
+}

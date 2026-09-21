@@ -246,9 +246,31 @@ _narration_gate_last = 0.0
 def may_narrate() -> bool:
     """Return True if no other narration source has spoken in the last
     _NARRATION_GATE_INTERVAL seconds.  Thread-safe (used from both sync
-    tool_bridge.py and async narration.py contexts)."""
+    tool_bridge.py and async narration.py contexts).
+
+    specs/tool-decision-engine REQ-12: when the decision engine is available,
+    enforced, and confident that this narration should stay silent, silence
+    wins — and the timer slot is NOT consumed (the engine's answer does not
+    commit the 18 s window to nothing). Engine unavailable / shadow mode /
+    low confidence → the timer gate below stands exactly as before (AC12.3).
+    """
     global _narration_gate_last
     now = time.time()
+    try:
+        from backend.agent.decision_engine import gate, get_decision_engine
+
+        eng = get_decision_engine()
+        ds, enforced = gate("narration", ["speak", "silent"],
+                            {"kind": "progress"})
+        if (
+            enforced
+            and ds is not None
+            and ds.chosen == "silent"
+            and ds.confident(eng._cfg.threshold_for("narration"))
+        ):
+            return False
+    except Exception:
+        pass  # the timer gate alone, as before
     with _narration_gate_lock:
         if now - _narration_gate_last >= _NARRATION_GATE_INTERVAL:
             _narration_gate_last = now

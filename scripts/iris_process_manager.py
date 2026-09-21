@@ -471,11 +471,47 @@ def _free_service_port(service: str) -> None:
         print(f"[preflight] port {port} cleanup skipped: {exc}")
 
 
+def _ensure_fast_next_cache() -> None:
+    """Relocate the Next.js `.next` cache off the slow project drive.
+
+    Why this is wired into the start path (2026-09-15): the `.next` Turbopack
+    dev cache bloats to ~100k+ files when it lives on the project drive under
+    Defender realtime scanning. The next-server then holds ~50-100k file
+    handles, burns ~0 CPU, and answers NOTHING — TCP connects, HTTP hangs. The
+    documented fix (rename `.next` aside, restart) only papers over it; the
+    cache re-bloats within one session and every future agent hits the wedge
+    again. `setup_fast_next_cache.py` creates an NTFS junction so `.next`
+    resolves to a fast local path (LOCALAPPDATA\\iris-next-cache). Running it
+    here makes the mitigation PERMANENT: idempotent, a no-op once the junction
+    exists, and it repairs a real (non-junction) `.next` by moving contents.
+
+    Best-effort: a failure here must never block a frontend start, so it is
+    wrapped and only warns.
+    """
+    if sys.platform != "win32":
+        return
+    script = REPO_ROOT / "scripts" / "setup_fast_next_cache.py"
+    if not script.exists():
+        return
+    try:
+        result = subprocess.run(
+            [sys.executable, str(script)],
+            capture_output=True, text=True, timeout=30,
+        )
+        out = (result.stdout or "").strip().splitlines()
+        for line in out[-2:]:
+            print(f"[frontend] fast-cache: {line}")
+    except Exception as exc:  # noqa: BLE001 - never block a start
+        print(f"[frontend] fast-cache setup skipped: {exc}")
+
+
 def _preflight(service: str) -> None:
     """Bounded, scoped cleanup run before every start."""
     _clear_stale_artifacts()
     _reap_orphans(service)
     _free_service_port(service)
+    if service == "frontend":
+        _ensure_fast_next_cache()
 
 
 # ─── Subprocess creation with all three fixes ──────────────────────────────

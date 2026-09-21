@@ -1,0 +1,182 @@
+{
+  "frame_counts": {
+    "chat_typing": 1,
+    "listening_state": 8,
+    "task:start": 2,
+    "tool:call": 2,
+    "task:progress": 8,
+    "crawler_started": 1,
+    "crawler_phase": 4,
+    "crawler_page_fetched": 2
+  },
+  "records": [
+    {
+      "t": 15.5,
+      "type": "task:start",
+      "payload_keys": [
+        "task_id",
+        "description",
+        "plan_title",
+        "mode",
+        "steps",
+        "total_steps",
+        "origin",
+        "card_id",
+        "card_relation",
+        "conversation_id",
+        "agent_id",
+        "project_id",
+        "turn_id"
+      ],
+      "card_id": "card_3010db48-a1f",
+      "conversation_id": "gcweb_dev"
+    },
+    {
+      "t": 15.5,
+      "type": "task:start",
+      "payload_keys": [
+        "task_id",
+        "description",
+        "plan_title",
+        "mode",
+        "steps",
+        "total_steps",
+        "origin",
+        "card_id",
+        "card_relation",
+        "conversation_id",
+        "agent_id",
+        "project_id",
+        "turn_id"
+      ],
+      "card_id": "card_3010db48-a1f",
+      "conversation_id": "gcweb_dev"
+    },
+    {
+      "t": 16.7,
+      "type": "task:progress",
+      "payload_keys": [
+        "description",
+        "action",
+        "plan_title",
+        "conversation_id"
+      ],
+      "card_id": null,
+      "conversation_id": "gcweb_dev"
+    },
+    {
+      "t": 16.7,
+      "type": "task:progress",
+      "payload_keys": [
+        "description",
+        "action",
+        "plan_title",
+        "conversation_id"
+      ],
+      "card_id": null,
+      "conversation_id": "gcweb_dev"
+    },
+    {
+      "t": 27.8,
+      "type": "task:progress",
+      "payload_keys": [
+        "description",
+        "action",
+        "update_step",
+        "detail",
+        "detail_progress",
+        "phase",
+        "phase_sequence",
+        "seq",
+        "conversation_id"
+      ],
+      "card_id": null,
+      "conversation_id": "gcweb_dev"
+    },
+    {
+      "t": 31.3,
+      "type": "task:progress",
+      "payload_keys": [
+        "description",
+        "action",
+        "update_step",
+        "detail",
+        "detail_url",
+        "detail_progress",
+        "phase",
+        "phase_sequence",
+        "conversation_id"
+      ],
+      "card_id": null,
+      "conversation_id": "gcweb_dev"
+    },
+    {
+      "t": 31.6,
+      "type": "task:progress",
+      "payload_keys": [
+        "description",
+        "action",
+        "update_step",
+        "detail",
+        "detail_url",
+        "detail_progress",
+        "phase",
+        "phase_sequence",
+        "conversation_id"
+      ],
+      "card_id": null,
+      "conversation_id": "gcweb_dev"
+    },
+    {
+      "t": 31.6,
+      "type": "task:progress",
+      "payload_keys": [
+        "description",
+        "action",
+        "update_step",
+        "detail",
+        "detail_progress",
+        "phase",
+        "phase_sequence",
+        "seq",
+        "conversation_id"
+      ],
+      "card_id": null,
+      "conversation_id": "gcweb_dev"
+    },
+    {
+      "t": 32.7,
+      "type": "task:progress",
+      "payload_keys": [
+        "description",
+        "action",
+        "update_step",
+        "detail",
+        "detail_progress",
+        "phase",
+        "phase_sequence",
+        "seq",
+        "conversation_id"
+      ],
+      "card_id": null,
+      "conversation_id": "gcweb_dev"
+    },
+    {
+      "t": 57.2,
+      "type": "task:progress",
+      "payload_keys": [
+        "description",
+        "action",
+        "update_step",
+        "detail",
+        "detail_progress",
+        "phase",
+        "phase_sequence",
+        "seq",
+        "conversation_id"
+      ],
+      "card_id": null,
+      "conversation_id": "gcweb_dev"
+    }
+  ]
+}

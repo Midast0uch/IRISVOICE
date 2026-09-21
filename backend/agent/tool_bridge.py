@@ -16,6 +16,7 @@ Requirements: 8.1, 8.2, 8.3, 8.4, 8.5, 8.6
 """
 
 import asyncio
+import contextvars
 import logging
 import os
 import sys
@@ -23,6 +24,14 @@ import subprocess
 import time  # used by _on_page_done; absent until now, see below
 from typing import Any, Dict, List, Optional
 from datetime import datetime
+
+# specs/tool-decision-engine REQ-5/REQ-9: the decision provenance carried on the
+# ONE tool-event row (D4 — the engine never writes; the bridge is the single
+# writer). A ContextVar so concurrent tool calls on this bridge never cross-tag
+# each other's rows; every path into _execute_tool_dispatch sets it explicitly.
+_DECISION_META: contextvars.ContextVar = contextvars.ContextVar(
+    "iris_decision_meta", default=None
+)
 from urllib.parse import urlparse  # _on_page_done:1833, also never imported
 
 # NOTE: `time` was never imported here, yet `_on_page_done` opens with
@@ -1244,7 +1253,7 @@ class AgentToolBridge:
             logger.warning("[ToolBridge] speak failed: %s", exc)
             return {"status": "error", "reason": str(exc)}
 
-    async def execute_tool(self, tool_name: str, params: Dict, session_id: str = "unknown", plan_title: str = "", _skip_resilience: bool = False) -> Dict:
+    async def execute_tool(self, tool_name: str, params: Dict, session_id: str = "unknown", plan_title: str = "", _skip_resilience: bool = False, decision_meta: Optional[Dict] = None) -> Dict:
         """FAULTLINE boundary (session 244) — universal typed outcomes.
 
         EVERY tool result passes through here, so every failure leaving this
@@ -1254,9 +1263,14 @@ class AgentToolBridge:
         {"success": False, "error": str(exc)} are classified automatically at
         this choke point — universality by enforcement, not by convention.
         Idempotent: already-typed results pass through with dimensions filled.
+
+        ``decision_meta`` (specs/tool-decision-engine REQ-5/REQ-9): the
+        calibrated decision that produced this call. It rides the single tool
+        event row as the ``decision`` payload block — never a second event.
         """
         result = await self._execute_tool_dispatch(
-            tool_name, params, session_id, plan_title, _skip_resilience
+            tool_name, params, session_id, plan_title, _skip_resilience,
+            decision_meta=decision_meta,
         )
         try:
             from backend.agent.tool_errors import normalize_failure
@@ -1265,7 +1279,7 @@ class AgentToolBridge:
             pass
         return result
 
-    async def _execute_tool_dispatch(self, tool_name: str, params: Dict, session_id: str = "unknown", plan_title: str = "", _skip_resilience: bool = False) -> Dict:
+    async def _execute_tool_dispatch(self, tool_name: str, params: Dict, session_id: str = "unknown", plan_title: str = "", _skip_resilience: bool = False, decision_meta: Optional[Dict] = None) -> Dict:
         """
         Execute any tool by name with routing to appropriate server.
 
@@ -1275,6 +1289,9 @@ class AgentToolBridge:
 
         Requirements: 8.3, 8.4, 8.5, 8.6
         """
+        # specs/tool-decision-engine: set (or explicitly clear) the decision
+        # context so every _record_tool_event below reads THIS call's provenance.
+        _DECISION_META.set(decision_meta if isinstance(decision_meta, dict) else None)
         # ── Phase 2: registry-based name resolution + consolidated gates ──
         # The DER planner (LLM) frequently emits "web_search" / "google_search";
         # the registry normalizes these aliases to the canonical "search" so every
@@ -1989,6 +2006,27 @@ class AgentToolBridge:
                     return f"<bytes:{len(value)}>"
                 return value
 
+            # specs/tool-decision-engine REQ-5 AC5.1: decision provenance rides
+            # THIS row. Scalars only, whitelist-bounded, None when the call came
+            # from a legacy path (AC9.3 edge: fields absent, not null-filled).
+            _dm = _DECISION_META.get()
+            _decision_block = None
+            if isinstance(_dm, dict):
+                _decision_block = {
+                    k: _dm.get(k)
+                    for k in (
+                        "engine", "consumer_id", "route", "chosen",
+                        "confidence", "candidates", "threshold",
+                        "args_valid", "retried", "escalated",
+                        "engine_latency_ms", "decision_latency_ms",
+                        "dag_node_id",
+                        "previous_chosen", "previous_outcome", "step_index",
+                        "needs_vision", "vision_candidates",
+                        "final_choice", "engine_correct",
+                    )
+                    if k in _dm
+                }
+
             payload = json.dumps({
                 "tool": tool_name,
                 "params": _summarize(params),
@@ -2002,6 +2040,7 @@ class AgentToolBridge:
                 "retryable": result.get("retryable"),
                 "blame": result.get("blame"),
                 "info_state": result.get("info_state"),
+                **({"decision": _decision_block} if _decision_block else {}),
             })
 
             def _ingest() -> None:
@@ -2024,6 +2063,34 @@ class AgentToolBridge:
             ).start()
         except Exception:
             pass  # Never block tool execution on recording failure
+
+    def record_decision(
+        self,
+        decision_meta: Dict,
+        kind: str,
+        error: Optional[str] = None,
+        session_id: str = "unknown",
+    ) -> None:
+        """Route-only ledger row for engine decisions that never dispatched a
+        tool (REASON / FAIL with meta). specs/tool-decision-engine AC5.1 edge:
+        one row, outcome=None, SAME writer as tool executions (D4).
+        Never raises (AC5.3).
+        """
+        try:
+            result: Dict = {"success": None, "route": decision_meta.get("route")}
+            if error:
+                result["error"] = str(error)[:200]
+            _DECISION_META.set(decision_meta)
+            try:
+                self._record_tool_event(
+                    session_id, "no_tool",
+                    "failure" if kind == "fail" else kind,
+                    {}, result,
+                )
+            finally:
+                _DECISION_META.set(None)
+        except Exception:
+            pass
 
     def _tool_action_label(self, tool_name: str, params: Dict) -> str:
         """Human-readable one-line label for a tool, used for live task progress.

@@ -181,16 +181,16 @@ async def lifespan(app: FastAPI):
         from backend.utils.port_checker import resolve_ports as _pc_resolve
 
         _cfg = _pc_load()
+        # specs/vision-single-server: no vision port — tier 3 borrows the
+        # shared multimodal server; there is no IRIS-owned vision listener.
         _ports = _pc_resolve("0.0.0.0", {
             "backend": _cfg.ports.backend_port,
             "brain": _cfg.ports.brain_port,
-            "vision": _cfg.ports.vision_port,
         })
         for _name, _actual in _ports.items():
             _expected = {
                 "backend": _cfg.ports.backend_port,
                 "brain": _cfg.ports.brain_port,
-                "vision": _cfg.ports.vision_port,
             }
             if _actual != _expected[_name]:
                 logger.warning(
@@ -199,8 +199,7 @@ async def lifespan(app: FastAPI):
                 )
         logger.info(
             f"[Ports] Backend → 0.0.0.0:{_ports['backend']} | "
-            f"Brain → 0.0.0.0:{_ports['brain']} | "
-            f"Vision → 0.0.0.0:{_ports['vision']}"
+            f"Brain → 0.0.0.0:{_ports['brain']}"
         )
     except Exception as _pc_exc:
         logger.warning(f"[Ports] Port availability check unavailable: {_pc_exc}")
@@ -845,6 +844,31 @@ async def lifespan(app: FastAPI):
 
         asyncio.create_task(_warm_embedding_service())
 
+        # specs/tool-decision-engine AC1.1: pre-warm the decision engine so the
+        # FIRST turn pays no lazy-load spike (session-344 ledger showed 32-37 s
+        # cold-start outliers on the first decision after every backend restart).
+        # A no-op when the engine is not configured (missing model file — the
+        # box degrades to the legacy ladder). Runs off the async loop.
+        async def _warm_decision_engine():
+            import asyncio as _asyncio
+
+            def _do():
+                try:
+                    from backend.agent.decision_engine import (
+                        get_decision_engine,
+                    )
+
+                    eng = get_decision_engine()
+                    if eng is not None:
+                        eng.decide("tool_choice", ["NONE", "DELEGATE"],
+                                   {"goal": "warm"})
+                except Exception:
+                    pass
+
+            await _asyncio.to_thread(_do)
+
+        asyncio.create_task(_warm_decision_engine())
+
         # ── Memory watchdog ────────────────────────────────────────────────
         # Graduated response to RSS growth: soft cap → GC + mycelium maint;
         # hard cap → also unload active local LLM.
@@ -983,6 +1007,15 @@ async def lifespan(app: FastAPI):
         logger.info("  - Stopping all servers...")
         server_manager = get_server_manager()
         server_manager.stop_all_servers()
+
+        # Free the in-process decision engine context (specs/tool-decision-engine
+        # REQ-7 AC7.4). Ordered with the model teardown, not after it.
+        try:
+            from backend.agent.decision_engine import shutdown_decision_engine
+
+            shutdown_decision_engine()
+        except Exception:
+            pass
 
         # Kill any orphaned llama-server processes before shutdown
         try:

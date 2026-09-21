@@ -130,6 +130,11 @@ def test_build_server_cmd_full_argv_snapshot():
         "-1",
         "--fit",
         "off",
+        # Session-342 load-latency fix (measured 2026-09-19): --no-warmup
+        # removes llama.cpp's default warmup pass (~24 s of a 40.2 s load on
+        # the pinned VL model). The kernels JIT-compile on first real
+        # inference instead — cost moved, not lost. See _build_server_cmd.
+        "--no-warmup",
         "--ctx-size",
         "32768",
         "--batch-size",
@@ -177,6 +182,7 @@ def test_build_server_cmd_full_argv_snapshot_with_projector():
         "-1",
         "--fit",
         "off",
+        "--no-warmup",
         "--ctx-size",
         "32768",
         "--batch-size",

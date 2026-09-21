@@ -1,0 +1,7 @@
+Exception ignored while calling deallocator <function BaseSubprocessTransport.__del__ at 0x000001F1A0322C40>:
+Traceback (most recent call last):
+  File "C:\Python314\Lib\asyncio\base_subprocess.py", line 135, in __del__
+  File "C:\Python314\Lib\asyncio\base_subprocess.py", line 74, in __repr__
+  File "C:\Python314\Lib\asyncio\proactor_events.py", line 80, in __repr__
+  File "C:\Python314\Lib\asyncio\windows_utils.py", line 109, in fileno
+ValueError: I/O operation on closed pipe

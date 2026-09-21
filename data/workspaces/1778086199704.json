@@ -1,0 +1,13 @@
+{
+  "tabs": [],
+  "sections": [],
+  "archived": [],
+  "activeTabId": null,
+  "isTerminalExpanded": false,
+  "isFocusMode": true,
+  "focusPreset": "chat",
+  "showTerminal": false,
+  "showArchive": false,
+  "showKanban": true,
+  "kanbanCompact": true
+}

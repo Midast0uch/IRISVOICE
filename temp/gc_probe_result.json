@@ -1,0 +1,212 @@
+[
+  {
+    "t": 0.1,
+    "type": "chat_typing",
+    "outcome": null
+  },
+  {
+    "t": 1.7,
+    "type": "listening_state",
+    "outcome": null
+  },
+  {
+    "t": 1.7,
+    "type": "audio_envelope",
+    "outcome": null
+  },
+  {
+    "t": 5.1,
+    "type": "chat_heartbeat",
+    "outcome": null
+  },
+  {
+    "t": 6.6,
+    "type": "system_status",
+    "outcome": null
+  },
+  {
+    "t": 7.6,
+    "type": "system_status",
+    "outcome": null
+  },
+  {
+    "t": 8.6,
+    "type": "system_status",
+    "outcome": null
+  },
+  {
+    "t": 9.6,
+    "type": "system_status",
+    "outcome": null
+  },
+  {
+    "t": 10.1,
+    "type": "chat_heartbeat",
+    "outcome": null
+  },
+  {
+    "t": 10.6,
+    "type": "system_status",
+    "outcome": null
+  },
+  {
+    "t": 11.8,
+    "type": "system_status",
+    "outcome": null
+  },
+  {
+    "t": 12.8,
+    "type": "system_status",
+    "outcome": null
+  },
+  {
+    "t": 13.3,
+    "type": "task:start",
+    "outcome": null
+  },
+  {
+    "t": 13.3,
+    "type": "task:start",
+    "outcome": null
+  },
+  {
+    "t": 13.8,
+    "type": "system_status",
+    "outcome": null
+  },
+  {
+    "t": 14.5,
+    "type": "tool:call",
+    "outcome": null
+  },
+  {
+    "t": 14.8,
+    "type": "system_status",
+    "outcome": null
+  },
+  {
+    "t": 15.1,
+    "type": "chat_heartbeat",
+    "outcome": null
+  },
+  {
+    "t": 15.8,
+    "type": "system_status",
+    "outcome": null
+  },
+  {
+    "t": 15.9,
+    "type": "tool:call",
+    "outcome": null
+  },
+  {
+    "t": 15.9,
+    "type": "task:progress",
+    "outcome": null
+  },
+  {
+    "t": 15.9,
+    "type": "task:progress",
+    "outcome": null
+  },
+  {
+    "t": 16.8,
+    "type": "memory:event",
+    "outcome": null
+  },
+  {
+    "t": 16.8,
+    "type": "tool:result",
+    "outcome": null
+  },
+  {
+    "t": 16.8,
+    "type": "context:usage",
+    "outcome": null
+  },
+  {
+    "t": 16.8,
+    "type": "task:learning",
+    "outcome": null
+  },
+  {
+    "t": 17.3,
+    "type": "system_status",
+    "outcome": null
+  },
+  {
+    "t": 18.3,
+    "type": "system_status",
+    "outcome": null
+  },
+  {
+    "t": 18.5,
+    "type": "memory:event",
+    "outcome": null
+  },
+  {
+    "t": 18.5,
+    "type": "task:done",
+    "outcome": "success"
+  },
+  {
+    "t": 18.5,
+    "type": "task:progress",
+    "outcome": null
+  },
+  {
+    "t": 19.3,
+    "type": "system_status",
+    "outcome": null
+  },
+  {
+    "t": 20.1,
+    "type": "chat_heartbeat",
+    "outcome": null
+  },
+  {
+    "t": 20.3,
+    "type": "system_status",
+    "outcome": null
+  },
+  {
+    "t": 20.6,
+    "type": "context:usage",
+    "outcome": null
+  },
+  {
+    "t": 20.6,
+    "type": "task:progress",
+    "outcome": null
+  },
+  {
+    "t": 21.3,
+    "type": "system_status",
+    "outcome": null
+  },
+  {
+    "t": 22.2,
+    "type": "task:done",
+    "outcome": "success"
+  },
+  {
+    "t": 22.2,
+    "type": "chat_chunk",
+    "outcome": null
+  },
+  {
+    "t": 22.2,
+    "type": "chat_chunk",
+    "outcome": null
+  },
+  {
+    "t": 22.2,
+    "type": "inference_event",
+    "outcome": null
+  },
+  {
+    "t": 22.2,
+    "type": "chat_message",
+    "outcome": null
+  }
+]

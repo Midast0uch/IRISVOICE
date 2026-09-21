@@ -93,12 +93,10 @@ def _get_port_config() -> "PortConfig":
     return _PC(
         backend_port=ports.backend_port,
         brain_port=ports.brain_port,
-        vision_port=ports.vision_port,
     )
 
 
 _BRAIN_PORT: int = _get_port_config().brain_port
-_VISION_PORT: int = _get_port_config().vision_port
 _BACKEND_PORT: int = _get_port_config().backend_port
 # Provider URL defaults (also env-var overridable via IRIS_LMSTUDIO_URL / IRIS_OLLAMA_URL)
 _DEFAULT_LMSTUDIO_URL: str = load_config().inference.lm_studio_url or "http://localhost:1234"
@@ -192,16 +190,14 @@ class IRISGateway:
         self._cleanup_analyzer = CleanupAnalyzer()
         self._logger.info("[IRISGateway] Cleanup analyzer initialized")
 
-        # Tier-3 (VL fallback) vision provider â€” connects to the dedicated
-        # LFM2.5-VL llama-server on vision_port. T16: this is no longer the
-        # ONLY vision path; `_resolve_vision_availability` below checks the
-        # full hierarchy (brain -> tool -> this fallback) first, and only
-        # falls through to health-checking THIS server when tier 1/2 cannot
-        # see. Kept here unchanged as the tier-3 default (CT-3's lifecycle).
+        # Tier-3 vision provider — the borrow-only HTTP client. Tier 1/2
+        # (a vision-capable brain/tool provider) are checked first in
+        # `_resolve_vision_availability`; this is the shared multimodal
+        # server when borrowed, else unavailable (specs/vision-single-server).
         self._vision_provider = LFMVLProvider()
         self._logger.info(
-            "[IRISGateway] Vision provider initialized (LFM2.5-VL @ http://localhost:%d/v1)",
-            _VISION_PORT,
+            "[IRISGateway] Vision provider initialized (borrow-only; no "
+            "standalone vision server is spawned — specs/vision-single-server)"
         )
 
         # Initialize model cache for lazy loading (5 minute TTL)
@@ -363,23 +359,13 @@ class IRISGateway:
         # The browser_pool's own idle watchdog reclaims memory when unused, so
         # no boot-time warm-up is needed or wanted.
 
-        # VLM pre-warm DISABLED (2026-08-31): this machine has no VL model and
-        # no VRAM for one. The separate vision server on port 18181 is a
-        # candidate for merging into the local model server (which already
-        # supports --mmproj). Tracked in pin: "Merge vision server into local
-        # model server (eliminate port 18181)".
-        # Re-enable with IRIS_VLM_PREWARM=1 when a VL model is available.
-        if os.environ.get("IRIS_VLM_PREWARM", "").strip().lower() in ("1", "true", "yes"):
-            try:
-                loop.create_task(self._prewarm_vlm_server())
-                self._logger.info("[IRISGateway] VLM server pre-warm scheduled.")
-            except Exception as e:
-                self._logger.warning(f"VLM pre-warm scheduling failed: {e}")
-        else:
-            self._logger.info(
-                "[IRISGateway] VLM server pre-warm skipped (IRIS_VLM_PREWARM "
-                "not set â€” no VL model on this machine)"
-            )
+        # VISION PREWARM REMOVED (specs/vision-single-server, 2026-09-18):
+        # there is no owned vision server to warm. Tier 3 borrows the shared
+        # multimodal server on demand; borrow discovery runs in milliseconds,
+        # so pre-warming pays nothing and the 18181 spawn path is deleted.
+        self._logger.info(
+            "[IRISGateway] vision is borrow-only; no boot pre-warm needed"
+        )
 
     async def _prewarm_embedding_encoder(self) -> None:
         """Load the shared EmbeddingService encoder in a background thread at boot.
@@ -418,70 +404,6 @@ class IRISGateway:
             )
         except Exception as exc:
             self._logger.warning(f"[IRISGateway] embedding encoder pre-warm failed: {exc}")
-
-    async def _prewarm_vlm_server(self) -> None:
-        """Session 248: warm the LFM2.5-VL vision server at boot.
-
-        fetch.vision escalation fires only when a crawl URL fails with a
-        vision-recoverable reason â€” exactly when latency hurts most. Spawning
-        the small VL model here (GPU offload, ~seconds once binaries are
-        cached) means escalation finds a warm endpoint. Runs ~20s after bind,
-        off the critical path; failure is non-fatal (escalation falls back to
-        its own lazy spawn). Never raises."""
-        try:
-            # REQ-5 (specs/vision-browser-stage): register the lifecycle
-            # broadcaster BEFORE any spawn so cold->spawning->warm reaches the
-            # UI from the very first boot prewarm, not just after a manual
-            # enable toggle.
-            if not getattr(self, "_vision_lifecycle_cb_registered", False):
-                from backend.tools.lfm_vl_provider import (
-                    set_vision_lifecycle_callback,
-                )
-
-                set_vision_lifecycle_callback(self._on_vision_lifecycle)
-                self._ensure_vision_loop()
-                self._vision_lifecycle_cb_registered = True
-
-            await asyncio.sleep(25)  # after port bind + crawl pool kick
-            # REQ-4: boot warm goes through request_warm so the lifecycle
-            # emits carry trigger="boot" and the single-flight lock applies.
-            from backend.tools.lfm_vl_provider import request_warm
-
-            t0 = time.monotonic()
-            ok = await asyncio.to_thread(request_warm, "boot")
-            self._logger.info(
-                "[IRISGateway] VLM server pre-warm %s in %.1fs",
-                "warm" if ok else "UNAVAILABLE (no VL model / VRAM)",
-                time.monotonic() - t0,
-            )
-        except Exception as exc:
-            self._logger.warning(f"[IRISGateway] VLM pre-warm failed: {exc}")
-
-    async def _warm_vision_for_search(self) -> None:
-        """REQ-4 (specs/vision-browser-stage): re-warm the VLM when a search
-        starts, SEQUENCED AFTER the crawl pool is live â€” the Session-248
-        search-start prewarm was rejected for starving pool workers (conv-53);
-        this waits for live workers (bounded 10s) before spawning, so the
-        intent returns without the starvation. One warm per run (request_warm
-        drops concurrent triggers). Off the crawl critical path. Never raises."""
-        try:
-            from backend.crawler.crawl_runner import get_crawl_pool, pool_enabled
-
-            if pool_enabled():
-                pool = get_crawl_pool()
-                deadline = time.monotonic() + 10.0
-                while time.monotonic() < deadline:
-                    workers = getattr(pool, "_workers", []) or []
-                    if any(getattr(w, "alive", False) for w in workers):
-                        break
-                    await asyncio.sleep(0.5)
-            from backend.tools.lfm_vl_provider import request_warm
-
-            await asyncio.to_thread(request_warm, "search-scoped")
-        except Exception as exc:
-            self._logger.warning(
-                f"[IRISGateway] search-scoped vision warm failed: {exc}"
-            )
 
     async def _broadcast_inference_snapshot(
         self, session_id: Optional[str], router: Any = None
@@ -3536,7 +3458,20 @@ class IRISGateway:
                     # Gated on _spoken_queued (set at every real put, including
                     # the streaming ones) so a normal streaming reply that
                     # already spoke its sentences is NOT repeated in full.
-                    if not _spoken_queued and spoken and spoken.strip():
+                    #
+                    # specs/tool-decision-engine REQ-12 AC12.4: when the
+                    # decision engine is available, enforced, and confident in
+                    # "silent", ITS judgment replaces this backstop — the turn
+                    # ending quiet is a decision, not an accident. Unavailable
+                    # or shadow or unconfident → the backstop below runs as
+                    # before (degrade path).
+                    _engine_speech = self._engine_permits_speech(resp)
+                    if (
+                        not _spoken_queued
+                        and spoken
+                        and spoken.strip()
+                        and _engine_speech is not False
+                    ):
                         sentence_queue.put(_normalize_spoken_sentence(spoken))
                         _spoken_queued = True
                         self._logger.warning(
@@ -3814,6 +3749,38 @@ class IRISGateway:
         text = _RE_MULTI_NL.sub("\n", text)
         return text.strip()
 
+    # ── TTS no-consumer latch (chat-communication-lanes REQ-4, session-342 P6) ──
+    # When a synthesis's audio queue stays full past its stall limit, the
+    # consumer (playback) is gone — barge-in, dead device, headless run. The
+    # pre-342 behavior re-paid the entire stall AND logged an ERROR on EVERY
+    # later speak attempt (observed 2026-09-18: ~25 s of repeated "consumer
+    # gone" errors during one run). Latch the turn instead: one WARN, then
+    # every later chunk/call in the SAME turn fails fast in silence. A
+    # different turn id clears the latch (the consumer may be back), and a
+    # 60 s age cap covers paths that carry no distinct turn id.
+    def _tts_no_consumer_skip(self, turn_key: str) -> bool:
+        """True when this turn already learned the audio consumer is gone.
+        Failing fast here is what eliminates the flood AND the 5 s stall."""
+        latched = getattr(self, "_tts_no_consumer_latch", None)
+        if latched and latched[0] != turn_key:
+            self._tts_no_consumer_latch = None  # new turn — consumer may be back
+            latched = None
+        if latched is not None:
+            if time.monotonic() - latched[1] > 60.0:
+                self._tts_no_consumer_latch = None  # stale latch — retry once
+                return False
+            return True
+        return False
+
+    def _tts_no_consumer_latch_set(self, turn_key: str, stalled_s: float) -> None:
+        """First confirmed consumer-gone event: one WARN per turn, then latch."""
+        self._tts_no_consumer_latch = (turn_key, time.monotonic())
+        self._logger.warning(
+            "[Voice] TTS audio consumer gone after %.1fs (turn %s) — "
+            "skipping synthesis for the remainder of this turn",
+            stalled_s, turn_key,
+        )
+
     def _play_reply_node(self, node) -> None:
         """Play a REPLY/ALERT node through the contract-locked `_speak_response`
         path (T7, REQ-7 AC7.1). Called by the lane scheduler's worker thread.
@@ -3881,6 +3848,53 @@ class IRISGateway:
             },
         )
         _ck.scheduler.admit(node)
+
+    def _engine_permits_speech(self, resp: Optional[str]) -> Optional[bool]:
+        """Narration gate, final-answer admission point (REQ-12).
+
+        Returns True/False only when the engine produced an enforced,
+        confident verdict; None means "the legacy gates stay in charge."
+        Never raises.
+        """
+        try:
+            from backend.agent.decision_engine import gate, get_decision_engine
+
+            eng = get_decision_engine()
+            ds, enforced = gate(
+                "narration", ["speak", "silent"],
+                {"kind": "final", "content_chars": len(resp or "")},
+            )
+            if ds is None:
+                return None
+            meta = {
+                "engine": eng.model_id or "decision-engine",
+                "consumer_id": "narration",
+                "chosen": ds.chosen,
+                "confidence": round(ds.confidence, 4),
+                "candidates": 2,
+                "threshold": eng._cfg.threshold_for("narration"),
+                "args_valid": None,
+                "retried": False,
+                "engine_latency_ms": ds.engine_latency_ms,
+                "route": "engine" if (
+                    enforced
+                    and ds.confident(eng._cfg.threshold_for("narration"))
+                ) else "shadow",
+                "escalated": False,
+            }
+            bridge = getattr(self, "_tool_bridge", None) or getattr(
+                self, "tool_bridge", None)
+            recorder = getattr(bridge, "record_decision", None)
+            if callable(recorder):
+                try:
+                    recorder(meta, kind="narration", session_id="unknown")
+                except Exception:
+                    pass
+            if not enforced or not ds.confident(eng._cfg.threshold_for("narration")):
+                return None  # shadow / unconfident → legacy gates
+            return ds.chosen == "speak"
+        except Exception:
+            return None
 
     def _speak_response(
         self,
@@ -4055,6 +4069,10 @@ class IRISGateway:
 
                 Returns False when the turn was aborted (caller should stop).
                 """
+                # P6/REQ-4: same-turn fail-fast once the consumer is known gone.
+                _turn_key = str(_turn_id or session_id or "unknown")
+                if self._tts_no_consumer_skip(_turn_key):
+                    return False
                 while True:
                     if interrupted.is_set() or engine.is_speech_interrupted():
                         return False
@@ -4065,7 +4083,7 @@ class IRISGateway:
                         # `interrupted` (both the 60 s pre-first-audio wait and
                         # the 0.5 s post-streaming stall). If the abort flags
                         # are the only way out of this loop, an abandoned turn
-                        # spins here forever â€” still holding the process-wide
+                        # spins here forever — still holding the process-wide
                         # synthesis lock. Bound the *unbroken* fullness instead:
                         # a live consumer drains continuously, so every attempt
                         # succeeds within 0.25 s. Sustained failure means the
@@ -4073,9 +4091,10 @@ class IRISGateway:
                         if not _queue_full_since[0]:
                             _queue_full_since[0] = time.monotonic()
                         elif time.monotonic() - _queue_full_since[0] > _PUT_STALL_LIMIT:
-                            self._logger.error(
-                                "[Voice] TTS audio queue stayed full for %.1fs "
-                                "(consumer gone) â€” abandoning synthesis",
+                            # P6/REQ-4 AC1: ONE WARN per turn instead of an
+                            # ERROR per stall-tripping call.
+                            self._tts_no_consumer_latch_set(
+                                _turn_key,
                                 time.monotonic() - _queue_full_since[0],
                             )
                             return False
@@ -8690,7 +8709,7 @@ class IRISGateway:
                 "load_progress_percent": None,
                 "error_message": None
                 if available
-                else f"Vision server not running on port {_VISION_PORT}. Enable Vision from the UI or run start_vl.bat.",
+                else "No shared multimodal vision server available — load a projector-backed model on the local server or configure a multimodal provider (specs/vision-single-server).",
                 "model_name": "lfm2.5-vl-3b",
                 "quantization_enabled": False,
                 "is_available": available,
@@ -8776,7 +8795,7 @@ class IRISGateway:
                         "load_progress_percent": None,
                         "error_message": None
                         if available
-                        else f"Vision server not running on port {_VISION_PORT}",
+                        else "No shared multimodal vision server available (specs/vision-single-server)",
                         "model_name": "lfm2.5-vl-3b",
                         "quantization_enabled": False,
                         "is_available": available,
@@ -9288,15 +9307,14 @@ class IRISGateway:
         model_path = payload.get("model_path", "")
         profile = payload.get("profile", "balanced")
         custom_params = payload.get("custom_params", {})
-        # Session 268 (pin_8e40f54a98dc): the local model (port 8082) is the
-        # BRAIN â€” vision is served separately by the 18181 vision server
-        # (LFM2.5-VL-3B). Attaching the mmproj projector to the local model
-        # by default caused Bonsai-27B-Q1_0 + mmproj (needs ~5.13GB) to crash
-        # against ~4.9GB free (the vision server holds ~1GB), leaving the
-        # load stuck at 98% then "signal aborted". Default to TEXT-ONLY so
-        # the brain loads reliably; a caller that genuinely wants a
-        # multimodal local model opts in with with_projector=true.
-        with_projector = bool(payload.get("with_projector", False))
+        # specs/vision-single-server (2026-09-18): the standalone vision server
+        # is gone — the local model server IS the vision server. Loading a
+        # model that has a projector therefore means loading it WITH the
+        # projector by default ("vision and text together"). Opting out needs
+        # an explicit with_projector=false (the UI's "Text only" button).
+        # The VRAM-accounting path included in load_model (reserve mmproj) is
+        # what makes the old text-only crash scenario obsolete.
+        with_projector = bool(payload.get("with_projector", True))
 
         if not model_path:
             await self._ws_manager.send_to_client(
@@ -10936,35 +10954,6 @@ class IRISGateway:
             except RuntimeError:
                 self._vision_loop = None
 
-    def _on_vision_idle_stop(self) -> None:
-        """Called by the vision idle watchdog (daemon thread) when it stops the server."""
-        loop = getattr(self, "_vision_loop", None)
-        if loop is None:
-            return
-        try:
-            asyncio.run_coroutine_threadsafe(self._broadcast_vision_idle(), loop)
-        except Exception:
-            pass
-
-    async def _broadcast_vision_idle(self) -> None:
-        """Notify all clients that the vision server idled off (still enabled)."""
-        try:
-            from backend.tools.lfm_vl_provider import _IDLE_TIMEOUT
-            await self._ws_manager.broadcast(
-                {
-                    "type": "vision_status",
-                    "payload": {
-                        "enabled": True,
-                        "running": False,
-                        "status": "idle_stopped",
-                        "port": _VISION_PORT,
-                        "idle_timeout_seconds": _IDLE_TIMEOUT,
-                    },
-                }
-            )
-        except Exception:
-            pass
-
     async def _handle_get_vision_status(self, session_id: str, client_id: str) -> None:
         """REQ-5 AC3 (specs/vision-browser-stage): truthful lifecycle snapshot
         for chip seeding on mount/refresh. warm = endpoint answers; cold =
@@ -11032,33 +11021,25 @@ class IRISGateway:
     async def _handle_set_vision_enabled(
         self, session_id: str, client_id: str, message: dict
     ) -> None:
-        """Start or stop the LFM2.5-VL llama-server subprocess on vision_port."""
+        """Resolve the shared multimodal server for this UI's vision toggle.
+
+        specs/vision-single-server: this handler NEVER spawns or kills a
+        process. "Enabled" means: a borrowable multimodal endpoint exists;
+        status reflects that resolution. "Disabled" clears the local reuse
+        selection (the shared server belongs to its owner and keeps running).
+        """
         payload = message.get("payload", message)
         enabled = bool(payload.get("enabled", False))
         try:
             from .tools.lfm_vl_provider import get_lfm_vl_provider
 
-            from .tools.lfm_vl_provider import get_lfm_vl_provider
-            from backend.tools.lfm_vl_provider import _IDLE_TIMEOUT
             vl = get_lfm_vl_provider()
-            # Register idle-stop broadcaster + capture loop once
-            if not getattr(self, "_vision_idle_cb_registered", False):
-                try:
-                    from backend.tools.lfm_vl_provider import set_vision_idle_callback
-                    set_vision_idle_callback(self._on_vision_idle_stop)
-                    self._vision_idle_cb_registered = True
-                except Exception:
-                    pass
             self._ensure_vision_loop()
             if enabled:
-                # Eagerly spawn the llama-server so vision is ready immediately.
-                # It will idle-stop after inactivity and restart on demand.
-                started = vl.start()
+                started = vl.start()  # borrow-only resolution
                 status = "running" if started else "not_started"
             else:
-                # Signal the provider that vision is disabled -> stop server
-                if hasattr(vl, "disable"):
-                    vl.disable()
+                vl.disable()
                 status = "stopped"
             await self._ws_manager.send_to_client(
                 client_id,
@@ -11067,9 +11048,8 @@ class IRISGateway:
                     "payload": {
                         "enabled": enabled,
                         "running": status == "running",
-                        "port": _VISION_PORT,
                         "status": status,
-                        "idle_timeout_seconds": _IDLE_TIMEOUT,
+                        "endpoint": vl._active_vision_base_url(),
                     },
                 },
             )
@@ -11082,7 +11062,6 @@ class IRISGateway:
                     "payload": {
                         "enabled": enabled,
                         "running": False,
-                        "port": _VISION_PORT,
                         "error": str(e),
                     },
                 },
@@ -11163,10 +11142,6 @@ class IRISGateway:
                 asyncio.ensure_future(send(
                     {"type": "crawler_started", "query": pl["query"], "url_count": pl["url_count"]}
                 ))
-                # REQ-4 (specs/vision-browser-stage): one staggered VLM warm
-                # per run â€” waits for live pool workers first, off the crawl
-                # critical path. request_warm drops concurrent triggers.
-                asyncio.create_task(self._warm_vision_for_search())
             elif ev == "CRAWLER_PAGE_FETCHED":
                 asyncio.ensure_future(send(
                     {"type": "crawler_page_fetched", "url": pl["url"],

@@ -1,0 +1,4 @@
+⚠ Slow filesystem detected. The benchmark took 681ms. If C:\dev\IRISVOICE\.next/dev is a network drive, consider moving it to a local folder.
+See more: https://nextjs.org/docs/app/guides/local-development
+[browser] [IRIS WebSocket] Connection failed - backend may be offline (hooks/useIRISWebSocket.ts:359:17)
+[browser] [IntegrationsContext] WebSocket connection failed (backend may be offline) (contexts/IntegrationsContext.tsx:255:17)

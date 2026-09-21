@@ -58,7 +58,8 @@ def resolve_ports(
         The hostname/interface to check (e.g. "127.0.0.1", "0.0.0.0").
     wanted : dict
         Service-name → preferred-port mapping, e.g.
-        {"backend": 8090, "brain": 18182, "vision": 18181}.
+        {"backend": 8090, "brain": 18182}.
+        (specs/vision-single-server: there is no vision port anymore.)
 
     Returns
     -------
@@ -98,7 +99,7 @@ def ports_to_flag_list(ports: Dict[str, int]) -> List[Tuple[str, str]]:
 
 # Quick smoke-test when run directly
 if __name__ == "__main__":
-    wanted = {"backend": 8090, "brain": 18182, "vision": 18181}
+    wanted = {"backend": 8090, "brain": 18182}
     result = resolve_ports("127.0.0.1", wanted)
     for name, port in result.items():
         status = "✓" if port == wanted.get(name) else "→ {}".format(port)

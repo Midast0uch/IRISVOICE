@@ -1,0 +1,36 @@
+fix(audio): restore Parakeet GPU path + self-cleaning service starts
+
+Parakeet silently ran on CPU for ~9 days (2026-09-03 -> 2026-09-12). Two
+defects, one silent:
+
+1. parakeet_sherpa._torch_lib_dir() returned <site-packages>/lib instead of
+   <site-packages>/torch/lib, so cudnn64_9.dll was never on the DLL path and
+   the CUDA provider failed -> ORT retried CPU.
+2. PROVIDER defaulted to "cpu" while the docs (audio-pipeline.md:70,
+   HANDOFF_AUDIO_PIPELINE.md:261) record CUDA as the wired operator decision.
+   IRIS_PARAKEET_PROVIDER was set nowhere.
+3. The fallback logged only "trying next" -- a downgrade was invisible.
+
+Evidence: every "recognizer built (provider=...)" line from 2026-09-04 through
+2026-09-12 10:15 reads provider=cpu (13 builds); the first provider=cuda build
+is 2026-09-12 10:34, after the fix.
+
+Fixes:
+- _torch_lib_dir() joins <torch>/lib (where torch bundles cuDNN 9).
+- Code default is now cuda (the documented decision); .env + .env.example wire it.
+- build_recognizer() logs a loud FALLBACK warning when the built provider
+  differs from the requested one.
+- iris_process_manager: self-cleaning starts -- clear stale/dead PID files and
+  retired .backend_pid/pids.txt, reap orphan service processes, free service
+  ports. Tracked-alive + ancestor-chain guards ensure a healthy sibling service
+  and the manager's own launcher are never reaped.
+
+Tests: backend/tests/contract/test_parakeet_provider_contract.py (CT-PP1..CT-PP4,
+6 passed). Proven-failable: reverting the fix fails 3 of 6 assertions.
+
+Docs: audio-pipeline.md Known-Issues entry with symptom/root-cause/evidence;
+HANDOFF_AUDIO_PIPELINE.md correction of the false "default cuda" claim.
+
+Verified live: recognizer built (provider=cuda) in ~53 s; worker PID appears in
+nvidia-smi compute-apps with GPU memory 1301 -> 1667 MiB.
+

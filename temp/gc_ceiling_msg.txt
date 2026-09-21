@@ -1,0 +1,14 @@
+fix(goal-contract): never draft ceiling facts from error envelopes
+
+Session-326 live finding: a step can settle VERIFIED while its result is a
+failed-command envelope. The ceiling-discovery path then extracted "facts" from
+the error text itself (probe 3: agent ceiling +2 ({success: true, stdout: "wc :
+The term wc is not recognized..."})), polluting the contract ceiling with
+error strings.
+
+Fix: _gc_result_is_error() classifies a settled result as an error envelope
+(dict success=False / error key / nonzero returncode / shell "not recognized" /
+"no such file or directory") and ceiling discovery now skips those results.
+Discovery from real output is unchanged.
+
+Validated: validate_goal_coverage.py replay PASS; test_goal_contract_coverage.py 28 passed.

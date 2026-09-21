@@ -145,6 +145,12 @@ ACTION_VERBS = (
     "turn on", "turn off", "switch", "navigate", "go to", "browse",
     "scrape", "fetch", "pull", "sync", "backup", "translate", "summarize",
     "analyze", "compare", "calculate", "convert", "test",
+    # Session-334 (live append defect): "append" was the one file-write verb
+    # missing here. An explicit "Append a second line ... to notes/x.txt"
+    # classified as QUESTION and took the direct path (der_steps=0, no tool
+    # dispatch), so the LLM narrated a successful append with zero execution
+    # and the file stayed unchanged. Same class as the T3 routing gap.
+    "append", "prepend", "merge into", "insert into",
 )
 
 # Follow-up / anaphora markers — signal the user is continuing a PRIOR task

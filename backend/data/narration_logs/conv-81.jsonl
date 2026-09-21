@@ -1,0 +1,7 @@
+{"ts": 1787880631.0183465, "conversation_id": "conv-81", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.35, "xi": 1.0499999999999998, "text": "", "tts_played": false}
+{"ts": 1787881227.1303055, "conversation_id": "conv-81", "step_id": "amend-2", "decision": "silence", "signal": null, "u": 0.35, "xi": 1.0499999999999998, "text": "", "tts_played": false}
+{"ts": 1787881227.864416, "conversation_id": "conv-81", "step_id": "s1_s0", "decision": "brief", "signal": "crystallized", "u": 0.5241498667621045, "xi": 2.0999999999999996, "text": "Sub-task done; folding back into the main thread.", "tts_played": true}
+{"ts": 1787881461.142976, "conversation_id": "conv-81", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.3474537301521545, "xi": 3.1499999999999995, "text": "", "tts_played": false}
+{"ts": 1787881495.8450105, "conversation_id": "conv-81", "step_id": "s2_s0", "decision": "brief", "signal": "crystallized", "u": -0.0025339003128151405, "xi": 4.199999999999999, "text": "Sub-task done; folding back into the main thread.", "tts_played": true}
+{"ts": 1787881508.6091275, "conversation_id": "conv-81", "step_id": "amend-5", "decision": "silence", "signal": null, "u": -0.1741251877820602, "xi": 5.249999999999999, "text": "", "tts_played": false}
+{"ts": 1787881509.1552918, "conversation_id": "conv-81", "step_id": "amend-3_s0", "decision": "brief", "signal": "crystallized", "u": 0.005104729252583762, "xi": 0.016814692820412702, "text": "Sub-task done; folding back into the main thread.", "tts_played": true}

@@ -1,0 +1,19 @@
+# workflow
+- Before executing code changes, first present a plan and ask clarifying questions to confirm understanding of expectations. Confidence: 0.88
+- The backend lifespan startup is slow (~3 min) — it pre-loads the Pocket-TTS model (438 MB), Parakeet, audio engine, Porcupine wake-word, and memory system before `await server.serve()` binds the port. The "IRIS Backend startup completed successfully!" log fires before uvicorn binds; check for "Uvicorn running on http://..." to confirm the server is actually listening. Confidence: 0.75
+- When using browser/MCP tools to investigate user-facing issues, connect to the user's existing browser session instead of opening a new one. Confidence: 0.65
+- Before executing a plan, pin a summary of what is being fixed and the approach being taken. Confidence: 0.78
+- Thoroughly verify and test fixes before claiming they are resolved — do not report a fix unless >95% confident it works as intended. Verify the entire user-facing flow end-to-end (not just syntax/compile/HTTP health checks) before declaring a fix complete. Confidence: 0.90
+- Bundle model weights (e.g., nvidia/parakeet-tdt-0.6b-v3) with the application instead of downloading them dynamically at runtime. Confidence: 0.65
+- When restarting the backend, first kill any old shell background commands/tasks to ensure a clean restart. Confidence: 0.70
+- Avoid broad/grep searches across large directories — use targeted file reads instead, as broad searches can hang and block progress. Confidence: 0.95
+- Break long-running tasks into small, sequential steps rather than chaining multiple commands with timeouts, as single long scripts can exceed timeout limits and fail. Confidence: 0.65
+- Commit pending code changes before restarting servers to avoid losing uncommitted work. Confidence: 0.70
+- Call `get_session` (MCP tool, compact mode) before starting new work to re-establish context and check session health. Confidence: 0.70
+- Be careful not to kill active sessions or PIDs — use `get_session` to verify the current working session identity before stopping processes, so you don't accidentally kill the session you're working in. Confidence: 0.72
+- Avoid long-blocking shell commands (e.g., `ping -n 90` as a 90-second sleep) — they tie up shell resources and should be replaced with shorter, non-blocking alternatives or proper exit patterns. Confidence: 0.70
+- Use `write_file` to create commit messages or multi-line text instead of heredoc syntax (`<<'EOF'`) — Windows cmd.exe does not support heredocs and they fail with "unexpected" errors. Confidence: 0.70
+- After making code edits, record them via the MCM `record_edit` tool with a description and `thread_id` — don't skip event recording as part of the edit workflow. Confidence: 0.65
+- Before implementing code changes, first read the relevant design/spec documentation to ensure the approach aligns with the overall objective — don't jump into implementation without consulting the spec first. Confidence: 0.72
+- When edit_file corruption creates cascading syntax errors in a file, use git checkout to restore the clean version and re-apply only the essential targeted changes, verifying compilation after each step. Confidence: 0.70
+- Prefer using Chrome/browser MCP tools over Playwright MCP for browser automation and testing. Confidence: 0.70

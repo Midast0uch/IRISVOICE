@@ -319,6 +319,34 @@ identically. Confirmed live: two plan calls, both empty.
   `validate_websearch_trajectory.py` zero-URL variant extension — left for
   a follow-up task; the harness still passes unchanged (exit 0).
 
+- [x] T27 (REQ-19 AC9, owner-ordered P1, session-342): EXHAUSTION trigger — when the
+  planned set (including the broadened re-plan) yields zero usable pages and
+  discovery has NOT yet fired this run, attempt search-engine discovery once before
+  the honest `all pages failed to fetch` report. Live evidence 2026-09-18: every
+  planned URL walled (Cloudflare), discovery never consulted because the planner
+  itself was not empty — the run apologized with the search channel idle.
+  — RIPPLE: `orchestrator.py` `_research_inner` zero-usable tail only. AC7's
+  once-per-run bound holds across AC1+AC9 combined (shared `discovery_attempted`
+  flag). Discovered URLs take the SAME fetch selection the run already made
+  (`dispatch_urls` when registered, `backend.fetch` under the test seam) — no
+  second dispatch path (AC3). Wall on the search engine parks via `_park_source`
+  (AC5); vision unavailable degrades to the existing honest outcome (AC8).
+  DONE 2026-09-19 (session 342): one block inserted at the zero-usable tail of
+  `_research_inner` — discovery attempted once, results filtered against the
+  already-attempted URL set (search engines re-surface walled URLs; re-paying
+  them re-fails identically), survivors dispatched through the run's own fetch
+  selection, provenance stamped (AC6), `_retried` set so the rerank escalate
+  does not re-plan after the rescue. BT-AC9: two new behavioral tests in
+  `test_websearch_discovery_behavior.py` (exhaustion fires discovery once and
+  the discovered page rescues the run; already-attempted URLs are never
+  re-fetched). 5/5 green; adjacent suites (contract discovery CC-12, honest
+  reporting, fresh-failure escalation, dag-node behavior/contract, web-mode
+  gates, transport-empty retry, progress envelope, error envelope) unchanged —
+  the two red tests found during the sweep (`test_websearch_escalation_by_
+  advertisement` cross-file isolation; `TestHonestFailureFinalization` stub
+  missing `_DER_GATHER_TOOLS` from uncommitted agent_kernel.py:11762 work)
+  reproduce with this change stashed and are PRE-EXISTING.
+
 **Problem-1 fix landed alongside T24-T26** (found live 2026-08-10 17:09:08,
 same session as the REQ-19 dead end): `dispatch_urls`'s escalation to
 `fetch.vision` fired ONLY via `_race_url`, which is gated on

@@ -167,10 +167,10 @@ def test_tier1_brain_serves_via_consumer_with_no_spawn(monkeypatch):
 
     monkeypatch.setattr(subprocess, "Popen", _spawn_spy)
 
-    def _find_spy():
-        raise AssertionError("_find_vision_model called despite the brain answering directly")
+    def _discover_spy(base_url=""):
+        raise AssertionError("borrow discovery called despite the brain answering directly")
 
-    monkeypatch.setattr(vl, "_find_vision_model", _find_spy)
+    monkeypatch.setattr(vl, "_discover_reusable_vision_server", _discover_spy)
 
     lfm_call_spy: list = []
     monkeypatch.setattr(
@@ -210,10 +210,8 @@ def test_tier1_brain_serves_via_consumer_with_no_spawn(monkeypatch):
 
 def test_resolve_vision_provider_propagates_vision_model_unavailable(monkeypatch):
     """REQ-3 AC4 ("fail loudly") must reach resolve_vision_provider()'s own
-    caller. Before the T16 fix, the tier-3 try/except caught
-    VisionModelUnavailable like any other lookup failure and returned a
-    clean VisionResolution(model_path=None) instead — silently defeating
-    the user's decision at the hierarchy's own entry point."""
+    caller. specs/vision-single-server: with nothing borrowable, tier 3 raises
+    VisionModelUnavailable — never a clean empty resolution, never a spawn."""
     monkeypatch.setattr(
         LocalModelManager, "get_hardware_info",
         lambda self, force_refresh=False: {"cuda_available": True, "vram_free_gb": 4.0},
@@ -224,23 +222,17 @@ def test_resolve_vision_provider_propagates_vision_model_unavailable(monkeypatch
     router = _router_with(brain)
     router.roles.bind("reasoning", "cohere")
 
-    def _raise_unavailable():
-        raise vl.VisionModelUnavailable(
-            "No vision-language model found on disk.",
-            free_gb=4.0, smallest_requirement_gb=2.5, ladder=[],
-        )
-
-    monkeypatch.setattr(vl, "_find_vision_model", _raise_unavailable)
+    monkeypatch.setattr(vl, "_discover_reusable_vision_server", lambda base_url="": None)
 
     with pytest.raises(vl.VisionModelUnavailable):
         router.resolve_vision_provider()
 
 
 def test_resolve_vision_client_also_propagates_the_raise(monkeypatch):
-    """The new production entry point (resolve_vision_client) must not
-    swallow the raise either — a consumer catching VisionModelUnavailable
-    (as vision_guided_operator.py and automation/vision.py now do) is the
-    only thing standing between REQ-3 AC4 and an unhandled exception."""
+    """The production entry point (resolve_vision_client) must not swallow the
+    raise either — a consumer catching VisionModelUnavailable (as
+    vision_guided_operator.py and automation/vision.py do) is the only thing
+    standing between REQ-3 AC4 and an unhandled exception."""
     monkeypatch.setattr(
         LocalModelManager, "get_hardware_info",
         lambda self, force_refresh=False: {"cuda_available": True, "vram_free_gb": 4.0},
@@ -251,13 +243,7 @@ def test_resolve_vision_client_also_propagates_the_raise(monkeypatch):
     router = _router_with(brain)
     router.roles.bind("reasoning", "cohere")
 
-    def _raise_unavailable():
-        raise vl.VisionModelUnavailable(
-            "No vision-language model found on disk.",
-            free_gb=4.0, smallest_requirement_gb=2.5, ladder=[],
-        )
-
-    monkeypatch.setattr(vl, "_find_vision_model", _raise_unavailable)
+    monkeypatch.setattr(vl, "_discover_reusable_vision_server", lambda base_url="": None)
 
     with pytest.raises(vl.VisionModelUnavailable):
         resolve_vision_client(router)

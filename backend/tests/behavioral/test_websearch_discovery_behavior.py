@@ -167,3 +167,120 @@ def test_discovery_wall_parks_and_falls_through_to_honest_failure(monkeypatch):
     assert result.error == "no candidate urls"
     parked = get_parked_source_registry().pending("run-wall")
     assert len(parked) == 1 and parked[0].wall_kind == "captcha"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# BT-AC9 (REQ-19 AC9, session-342 / owner P1) — EXHAUSTION trigger: the
+# planner produced URLs, but every one of them (broadened re-plan included)
+# came back unusable. Live evidence 2026-09-18: Cloudflare walled every
+# planned source and the run apologized with the search channel idle —
+# discovery only ever fired on an EMPTY plan, never on an exhausted one.
+# ══════════════════════════════════════════════════════════════════════════
+
+def test_exhausted_plan_triggers_discovery_and_fetches_fresh_urls(monkeypatch):
+    """AC9: planned URLs all unusable -> discovery runs ONCE (it did not run
+    at plan time), and the URLs it finds reach the normal fetch path. The
+    run then succeeds from the discovered source, so the apology the live
+    run delivered becomes a fetched page."""
+    fetch_calls: list[list[str]] = []
+
+    class _WalledThenFreshBackend:
+        async def fetch(self, *, query, urls, instructions, max_pages,
+                        on_page_done=None, timeout_s=None, job_id=""):
+            urls = list(urls)
+            fetch_calls.append(urls)
+            if any("discovered.example" in u for u in urls):
+                return CrawlResult(
+                    query=query,
+                    pages=[_page(u, "quantum verification real content " * 5)
+                           for u in urls],
+                    duration_ms=1, crawled_at="", error=None,
+                )
+            # The walled batch (planned AND broadened re-plan): unusable.
+            return CrawlResult(
+                query=query,
+                pages=[_page(u, "") for u in urls],
+                duration_ms=1, crawled_at="", error=None,
+            )
+
+    orch = CrawlOrchestrator()
+    orch._backend_override = _WalledThenFreshBackend()
+
+    async def _plan(q):
+        return CrawlPlan(urls=["https://walled.example/a"], instructions="",
+                         result_type="mixed", title="t")
+
+    monkeypatch.setattr(orch, "_plan", _plan)
+
+    discovery_calls: list[str] = []
+
+    async def _fake_discover(query, job_id, _emit=None, **kw):
+        discovery_calls.append(query)
+        return DiscoveryResult(urls=["https://discovered.example/fresh"])
+
+    import backend.vision.search_discovery as sd_mod
+    monkeypatch.setattr(sd_mod, "discover_urls_via_vision", _fake_discover)
+
+    result = asyncio.run(orch.research("quantum verification", mode="agent"))
+
+    assert len(discovery_calls) == 1, (
+        "the AC9 exhaustion trigger must fire discovery exactly once when "
+        "the planner had URLs but every one failed"
+    )
+    assert any("https://discovered.example/fresh" in batch for batch in fetch_calls), (
+        "the discovered URL never reached the normal fetch path"
+    )
+    assert result.error is None, (
+        f"the discovered usable page must rescue the run, got error={result.error!r}"
+    )
+    # AC6: discovered provenance survives on the rescued page.
+    assert any(
+        p.metadata.get("url_origin") == "vision_discovered" for p in result.pages
+    )
+
+
+def test_exhaustion_discovery_does_not_repay_failed_urls(monkeypatch):
+    """AC9 edge: a search engine often re-surfaces the very walled pages that
+    just failed. Those URLs are already attempted — paying for them again
+    re-fails identically. Discovery results are filtered against the URLs
+    this run already fetched."""
+    fetch_calls: list[list[str]] = []
+
+    class _AlwaysWalledBackend:
+        async def fetch(self, *, query, urls, instructions, max_pages,
+                        on_page_done=None, timeout_s=None, job_id=""):
+            fetch_calls.append(list(urls))
+            return CrawlResult(
+                query=query,
+                pages=[_page(u, "") for u in urls],
+                duration_ms=1, crawled_at="", error=None,
+            )
+
+    orch = CrawlOrchestrator()
+    orch._backend_override = _AlwaysWalledBackend()
+
+    async def _plan(q):
+        return CrawlPlan(urls=["https://walled.example/a"], instructions="",
+                         result_type="mixed", title="t")
+
+    monkeypatch.setattr(orch, "_plan", _plan)
+
+    async def _fake_discover(query, job_id, _emit=None, **kw):
+        # The engine hands back ONLY the URL whose fetch just failed.
+        return DiscoveryResult(urls=["https://walled.example/a"])
+
+    import backend.vision.search_discovery as sd_mod
+    monkeypatch.setattr(sd_mod, "discover_urls_via_vision", _fake_discover)
+
+    result = asyncio.run(orch.research("quantum verification", mode="agent"))
+
+    assert all(
+        "https://walled.example/a" in batch for batch in fetch_calls[:2]
+    ) and len(fetch_calls) == 2, (
+        "the already-failed URL must not be re-fetched after discovery — "
+        f"expected exactly the plan fetch + broaden retry, got {fetch_calls!r}"
+    )
+    assert result.error, (
+        "with only already-attempted URLs offered, the run still ends in the "
+        "honest failure (REQ-15), never a fabricated success"
+    )

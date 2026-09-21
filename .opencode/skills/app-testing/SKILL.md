@@ -115,6 +115,27 @@ hundreds. If handles are still ~100k after a clean `.next`, the cache is bloatin
 within one session — relocate it via `setup_fast_next_cache.py` or add a Defender
 exclusion for the project drive.
 
+> **NOW AUTOMATIC (2026-09-15) — both launch paths self-heal.** The junction is created
+> and repaired automatically: `iris_process_manager._ensure_fast_next_cache()` runs it on
+> every `iris:start:frontend`, and `scripts/dev-servers.mjs` runs it before Tauri dev
+> starts Next. So the manual rename/restart recipe above is now a fallback, not the norm.
+> If the wedge recurs, first check `fsutil reparsepoint query .next` — if it is NOT a
+> junction, the cache is back on the slow drive and the auto-setup was bypassed (e.g. a
+> start path that calls `next dev` directly).
+
+> **CRITICAL — the `.next` junction ALONE breaks the app (2026-09-15).** A bare junction
+> makes Node resolve the cache to its REAL path (`%LOCALAPPDATA%\iris-next-cache`), then
+> walk UP for `node_modules` and find none → every external import dies with
+> `Failed to load external module react/jsx-runtime` (and the server answers 200 on `/`
+> but the route errors). The fix is a `node_modules` junction at the CACHE ROOT pointing
+> at the project's real `node_modules` — one instance, so no duplicate-React "invalid hook
+> call". `setup_fast_next_cache.py` now creates BOTH junctions. Do NOT try to fix this
+> with `--preserve-symlinks` (risk of a second React instance). Also: detect the junction
+> target with `fsutil reparsepoint query` (`Print Name:`), NOT `dir /AL` — `dir /AL`
+> lists the directory's CONTENTS, so once the nested `node_modules` junction exists it
+> reports THAT and the setup mis-detects a healthy junction as wrong (it churned the
+> junction on every start until fixed).
+
 > **Manager gotcha**: `stop-named frontend` kills the npm wrapper PID only. The real
 > `next-server` child (the owner of :3000) **survives** and keeps holding `.next`. Always
 > find the :3000 owner and `taskkill` it explicitly. A process stuck in a kernel wait
@@ -182,6 +203,12 @@ button instead (those have real React onClick handlers and respond to uid clicks
 
 **Getting back**: clicking the **orb itself** navigates backwards to the root view where
 the labels are visible again. There is no back button; that is the way out of any panel.
+
+**New conversation**: the "new conversation" icon lives in the **ChatWing header** (top
+row of the chat panel, alongside Conversation History / Close Chat). It has been there
+permanently — do not hunt for a "start new chat" text button, there isn't one. Click the
+header icon, then confirm the chat area shows "Select a conversation / or start a new one"
+before driving the next test. (Owner-supplied, 2026-09-15.)
 
 Non-orb elements (chat wing, dashboard buttons) work fine with normal uid clicks.
 
@@ -281,6 +308,24 @@ bug-vs-feature calls, launch quirks.
   (see Step 0 "WEDGED, not compiling"). Fix = stop, `taskkill` the :3000 owner, rename
   `.next` aside, restart. Recurrence risk while `.next` sits on the slow drive with
   Defender realtime on — activate `setup_fast_next_cache.py` or exclude the drive.
+- **ALL ROUTES 404 with a healthy layout (2026-09-18) — poisoned persistent cache**:
+  a DIFFERENT failure from the wedge. Symptoms: every route returns **404**
+  (`/`, `/dashboard`, even `/favicon.ico`), yet the layout renders normally, the page
+  `<title>` is the app's real title, the RSC route tree resolves to `/_not-found`, the
+  dev log shows `Compiling /_not-found/page` and **zero errors**, and the first request
+  takes minutes (`GET / 404 in 6.6min`) while later 404s are fast. Requests are NOT
+  stuck — this is not the handle-exhaustion wedge (CPU/responses are fine), so the
+  CPU/handle test does not catch it. Cause: the Turbopack persistent filesystem cache
+  (the junctioned `%LOCALAPPDATA%\iris-next-cache`) had gone stale/corrupt — Next
+  compiled fine but served `not-found` for every page. Fix (5 min):
+  `python scripts/iris_process_manager.py stop-named frontend`, then
+  `taskkill /F /T /PID <:3000 owner>` if a next-server survived, then
+  `cmd /c rmdir .next` (removes the JUNCTION only — never delete through it, that would
+  delete the cache target's contents), `Rename-Item $env:LOCALAPPDATA\iris-next-cache
+  iris-next-cache.bloated`, then `npm run iris:start:frontend` (auto-setup recreates both
+  junctions). Verify: `GET /` → 200 with `<title>Control Center | TTS Chatbot</title>`
+  as the ONLY title in the head. A head with BOTH `404: This page could not be found.`
+  AND the app title is still the failure — the 404 page renders inside the real layout.
 - **Port drift (fixed)**: a stale backend held 8090, the launcher fell back to 8091, the
   WS never connected and the orb showed a phantom inner glow. Divergent launchers deleted;
   `start-backend.py` now tree-kills the stale process and fails loudly rather than drifting.

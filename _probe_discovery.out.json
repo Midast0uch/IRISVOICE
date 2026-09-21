@@ -1,0 +1,44 @@
+{
+  "query": "site:ziglang.org download",
+  "steps": [
+    {
+      "event": "CRAWLER_VISION_ACTION",
+      "kind": "opening_browser",
+      "reason": "site:ziglang.org download",
+      "action_index": 1,
+      "total": 4
+    },
+    {
+      "event": "CRAWLER_VISION_ACTION",
+      "kind": "browser_ready",
+      "reason": "site:ziglang.org download",
+      "action_index": 2,
+      "total": 4
+    },
+    {
+      "event": "CRAWLER_VISION_ACTION",
+      "kind": "submit_search",
+      "reason": "site:ziglang.org download",
+      "action_index": 3,
+      "total": 4
+    },
+    {
+      "event": "CRAWLER_VISION_ACTION",
+      "kind": "results_extracted",
+      "reason": "site:ziglang.org download",
+      "action_index": 4,
+      "total": 4
+    }
+  ],
+  "urls": [
+    "https://www.cnn.com/",
+    "https://www.cnn.com/us",
+    "https://www.facebook.com/cnn/",
+    "https://www.youtube.com/cnn",
+    "https://en.wikipedia.org/wiki/CNN"
+  ],
+  "used_vision_fallback": false,
+  "wall": null,
+  "unavailable": false,
+  "engine_url": null
+}

@@ -723,66 +723,48 @@ class InferenceRouter:
             )
             return resolution
 
-        # Tier 3 — VL fallback. Scope: T6 calls the EXISTING entry point only;
-        # size-selecting a ladder against free VRAM is T7's job. The fallback
-        # is always a local llama-server process, so it always takes a lease.
+        # Tier 3 — shared-server BORROW (specs/vision-single-server). There is
+        # no spawned llama-server anymore: tier 3 resolves to a verified
+        # multimodal server that is ALREADY RUNNING (the shared local model
+        # server hosting a projector-backed model, or a configured
+        # LOCAL_OPENAI/API provider). When nothing verifies, the router fails
+        # loudly — never a spawn, never a silent text-only degrade.
         free_vram = _free_vram_gb()
-        model_path: Optional[str] = None
-        mmproj_path: Optional[str] = None
-        ladder_note = "no candidate found"
         try:
             from backend.tools.lfm_vl_provider import (
                 VisionModelUnavailable,
-                _find_vision_model,
+                _discover_reusable_vision_server,
             )
 
-            pair = _find_vision_model()
-            if pair:
-                model_path, mmproj_path = pair
-                ladder_note = f"selected {model_path}"
-            else:
-                ladder_note = "no VL model found on disk"
+            if _discover_reusable_vision_server("") is None:
+                raise VisionModelUnavailable(
+                    "vision-single-server: no shared multimodal server is "
+                    "available to borrow (tier-3 is borrow-only; spawn was "
+                    "removed). Load a projector-backed model on the local "
+                    "model server, or configure a multimodal provider."
+                )
+            logger.info(
+                "[resolve_vision_provider] ctx=%s tier=fallback provider=shared-vision "
+                "requires_load=False free_vram_gb=%.2f takes_lease=False",
+                ctx, free_vram,
+            )
+            return VisionResolution(
+                tier="fallback",
+                provider_id="shared_vision_server",
+                requires_load=False,
+                free_vram_gb=free_vram,
+                takes_lease=False,
+            )
         except VisionModelUnavailable:
-            # T16 fix: this is REQ-3 AC4's "fail loudly" case — no VL model
-            # exists, or none fit free VRAM. ``_find_vision_model`` already
-            # logged and emitted VISION_UNAVAILABLE (AC6) before raising.
-            # Swallowing it here (the old behavior) returned a clean
-            # ``VisionResolution(model_path=None)`` and silently defeated the
-            # user's explicit decision at the hierarchy's own entry point —
-            # re-raise so it actually reaches the caller.
-            logger.warning(
-                "[resolve_vision_provider] ctx=%s tier=fallback: no VL model "
-                "usable — propagating VisionModelUnavailable (REQ-3 AC4)",
-                ctx,
-            )
             raise
-        except Exception as exc:  # noqa: BLE001 — genuinely unrelated lookup
-            # errors (e.g. an import failure) still degrade cleanly; only the
-            # user's explicit fail-loud case above propagates.
-            ladder_note = f"fallback lookup failed: {exc}"
+        except Exception as exc:  # noqa: BLE001 — discovery must not break routing
             logger.warning(
-                "[resolve_vision_provider] ctx=%s fallback lookup error: %s", ctx, exc
+                "[resolve_vision_provider] ctx=%s fallback discovery error: %s",
+                ctx, exc,
             )
-
-        resolution = VisionResolution(
-            tier="fallback",
-            provider_id="lfm_vl_fallback",
-            requires_load=True,
-            free_vram_gb=free_vram,
-            model_path=model_path,
-            mmproj_path=mmproj_path,
-            takes_lease=True,
-        )
-        # REQ-9 AC2: log the candidate ladder and why it was chosen. T7 owns
-        # widening this to a real multi-candidate ladder with per-rejection
-        # reasons; today's entry point returns a single pair, so the "ladder"
-        # is that one candidate (or its absence).
-        logger.info(
-            "[resolve_vision_provider] ctx=%s tier=fallback provider=%s requires_load=True "
-            "free_vram_gb=%.2f takes_lease=True ladder=%s",
-            ctx, resolution.provider_id, resolution.free_vram_gb, ladder_note,
-        )
-        return resolution
+            raise VisionModelUnavailable(
+                f"vision-single-server: borrow discovery failed: {exc}"
+            ) from exc
 
     def set_inprocess_manager(self, mgr: Any) -> None:
         """Set the local model manager for ``INPROCESS`` transport."""

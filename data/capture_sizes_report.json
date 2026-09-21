@@ -1,0 +1,113 @@
+{
+  "captured_at": "2026-08-04T02:39:49.942282+00:00",
+  "jobs": 5,
+  "pages_total": 15,
+  "min": 559,
+  "median": 330855,
+  "p95": 1169976,
+  "max": 1219705,
+  "mean": 385313,
+  "sum_bytes": 5779697,
+  "per_job": [
+    {
+      "job": 0,
+      "pages": [
+        {
+          "url": "https://example.com",
+          "html_bytes": 559,
+          "error": null
+        },
+        {
+          "url": "https://en.wikipedia.org/wiki/Web_browser",
+          "html_bytes": 545443,
+          "error": null
+        },
+        {
+          "url": "https://www.python.org/doc/",
+          "html_bytes": 53533,
+          "error": null
+        }
+      ]
+    },
+    {
+      "job": 1,
+      "pages": [
+        {
+          "url": "https://developer.mozilla.org/en-US/docs/Web/HTML",
+          "html_bytes": 102994,
+          "error": null
+        },
+        {
+          "url": "https://www.bbc.com/news",
+          "html_bytes": 330855,
+          "error": null
+        },
+        {
+          "url": "https://www.nytimes.com/",
+          "html_bytes": 1219705,
+          "error": null
+        }
+      ]
+    },
+    {
+      "job": 2,
+      "pages": [
+        {
+          "url": "https://github.com/",
+          "html_bytes": 602661,
+          "error": null
+        },
+        {
+          "url": "https://www.rust-lang.org/",
+          "html_bytes": 18286,
+          "error": null
+        },
+        {
+          "url": "https://example.com",
+          "html_bytes": 559,
+          "error": null
+        }
+      ]
+    },
+    {
+      "job": 3,
+      "pages": [
+        {
+          "url": "https://en.wikipedia.org/wiki/Web_browser",
+          "html_bytes": 662846,
+          "error": null
+        },
+        {
+          "url": "https://www.python.org/doc/",
+          "html_bytes": 53533,
+          "error": null
+        },
+        {
+          "url": "https://developer.mozilla.org/en-US/docs/Web/HTML",
+          "html_bytes": 102994,
+          "error": null
+        }
+      ]
+    },
+    {
+      "job": 4,
+      "pages": [
+        {
+          "url": "https://www.bbc.com/news",
+          "html_bytes": 334346,
+          "error": null
+        },
+        {
+          "url": "https://www.nytimes.com/",
+          "html_bytes": 1148664,
+          "error": null
+        },
+        {
+          "url": "https://github.com/",
+          "html_bytes": 602719,
+          "error": null
+        }
+      ]
+    }
+  ]
+}

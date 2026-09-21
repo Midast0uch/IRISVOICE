@@ -1,0 +1,45 @@
+{
+  "frame_counts": {
+    "audio_level": 70,
+    "chat_typing": 1,
+    "listening_state": 4,
+    "task:start": 2,
+    "tool:call": 2,
+    "permission:request": 1,
+    "ping": 1
+  },
+  "events": [
+    {
+      "t": -166,
+      "type": "task:start",
+      "card_id": "card_f20d0610-97e",
+      "outcome": null,
+      "conversation_id": "session_gc-live-verify",
+      "action": null
+    },
+    {
+      "t": -166,
+      "type": "task:start",
+      "card_id": "card_f20d0610-97e",
+      "outcome": null,
+      "conversation_id": "session_gc-live-verify",
+      "action": null
+    },
+    {
+      "t": -163,
+      "type": "tool:call",
+      "card_id": "card_f20d0610-97e",
+      "outcome": null,
+      "conversation_id": "session_gc-live-verify",
+      "action": null
+    },
+    {
+      "t": -159,
+      "type": "tool:call",
+      "card_id": "card_f20d0610-97e",
+      "outcome": null,
+      "conversation_id": "session_gc-live-verify",
+      "action": null
+    }
+  ]
+}

@@ -1,0 +1,2 @@
+{"ts": 1789088336.300771, "conversation_id": "configB_probe1", "step_id": "s2", "decision": "silence", "signal": null, "u": 0.35, "xi": 1.0499999999999998, "text": "", "tts_played": false}
+{"ts": 1789088389.690795, "conversation_id": "configB_probe1", "step_id": "s3", "decision": "silence", "signal": null, "u": 0.5241498667621045, "xi": 2.0999999999999996, "text": "", "tts_played": false}

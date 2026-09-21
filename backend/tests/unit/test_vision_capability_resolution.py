@@ -249,34 +249,37 @@ class TestResolveVisionProviderHierarchy:
         router.roles.bind("reasoning", "cohere")
         router.roles.bind("tool_execution", "deepseek")
 
+        # specs/vision-single-server: tier 3 borrows an already-running,
+        # verified multimodal server; there is no spawn and no on-disk ladder.
         monkeypatch.setattr(
-            "backend.tools.lfm_vl_provider._find_vision_model",
-            lambda: ("/models/LFM2.5-VL-3B/model.gguf", "/models/LFM2.5-VL-3B/mmproj.gguf"),
+            "backend.tools.lfm_vl_provider._discover_reusable_vision_server",
+            lambda base_url="": "http://127.0.0.1:8082/v1",
         )
 
         res = router.resolve_vision_provider()
 
         assert res.tier == "fallback"
-        assert res.provider_id == "lfm_vl_fallback"
-        assert res.requires_load is True
-        assert res.takes_lease is True  # fallback is always a local llama-server
-        assert res.model_path == "/models/LFM2.5-VL-3B/model.gguf"
-        assert res.mmproj_path == "/models/LFM2.5-VL-3B/mmproj.gguf"
+        assert res.provider_id == "shared_vision_server"
+        assert res.requires_load is False
+        assert res.takes_lease is False  # borrowed; we never own its lifecycle
+        assert res.model_path is None
+        assert res.mmproj_path is None
 
-    def test_fallback_when_no_vl_model_found(self, monkeypatch):
-        """No VL model on disk -> fallback resolution still returns cleanly
-        with no paths (T7 owns the hard-failure behavior; T6 only reports)."""
+    def test_fallback_raises_when_no_shared_server(self, monkeypatch):
+        """specs/vision-single-server REQ-1 AC3: with no borrowed multimodal
+        server, tier 3 fails LOUDLY (VisionModelUnavailable) — the spawn path
+        that would have made this return a soft VisionResolution is deleted."""
+        from backend.tools.lfm_vl_provider import VisionModelUnavailable
+
         _no_op_free_vram(monkeypatch)
         router = _router_with()
         monkeypatch.setattr(
-            "backend.tools.lfm_vl_provider._find_vision_model", lambda: None
+            "backend.tools.lfm_vl_provider._discover_reusable_vision_server",
+            lambda base_url="": None,
         )
 
-        res = router.resolve_vision_provider()
-
-        assert res.tier == "fallback"
-        assert res.model_path is None
-        assert res.mmproj_path is None
+        with pytest.raises(VisionModelUnavailable):
+            router.resolve_vision_provider()
 
     def test_role_unbound_continues_down_hierarchy(self, monkeypatch):
         """Reasoning is unbound entirely (empty role table, no default) ->
@@ -301,7 +304,8 @@ class TestResolveVisionProviderHierarchy:
         _no_op_free_vram(monkeypatch)
         router = _router_with()  # empty registry, nothing bound, no default
         monkeypatch.setattr(
-            "backend.tools.lfm_vl_provider._find_vision_model", lambda: None
+            "backend.tools.lfm_vl_provider._discover_reusable_vision_server",
+            lambda base_url="": "http://127.0.0.1:8082/v1",
         )
 
         res = router.resolve_vision_provider()  # must not raise
@@ -394,15 +398,18 @@ class TestResolveVisionProviderLease:
         assert res.tier == "tool"
         assert res.takes_lease is False
 
-    def test_fallback_takes_lease(self, monkeypatch):
+    def test_fallback_takes_no_lease(self, monkeypatch):
+        """specs/vision-single-server: tier 3 is borrow-only — the shared
+        multimodal server is never ours, so the fallback takes NO lease
+        (there is no owned process left that an idle-stop could kill)."""
         _no_op_free_vram(monkeypatch)
         router = _router_with()
         monkeypatch.setattr(
-            "backend.tools.lfm_vl_provider._find_vision_model",
-            lambda: ("/models/LFM2.5-VL-450M/model.gguf", "/models/LFM2.5-VL-450M/mmproj.gguf"),
+            "backend.tools.lfm_vl_provider._discover_reusable_vision_server",
+            lambda base_url="": "http://127.0.0.1:8082/v1",
         )
 
         res = router.resolve_vision_provider()
 
         assert res.tier == "fallback"
-        assert res.takes_lease is True
+        assert res.takes_lease is False

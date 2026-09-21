@@ -154,9 +154,9 @@ async def test_vision_get_context_returns_dict_without_hard_error():
 # ── Provider config ───────────────────────────────────────────────────────────
 
 def test_lfm_vl_config_defaults():
-    from backend.tools.lfm_vl_provider import LFMVLConfig, _VISION_PORT
+    from backend.tools.lfm_vl_provider import LFMVLConfig
     cfg = LFMVLConfig()
-    assert cfg.base_url == f"http://localhost:{_VISION_PORT}/v1"
+    assert cfg.base_url.endswith("/v1")
     assert cfg.temperature == pytest.approx(0.1)
     assert cfg.min_p == pytest.approx(0.15)
     assert cfg.repetition_penalty == pytest.approx(1.05)
@@ -190,81 +190,30 @@ def test_get_lfm_vl_provider_singleton():
     assert a is b
 
 
-def test_should_idle_stop_predicate():
-    """should_idle_stop() is True only for an owned, idle-past-timeout server."""
-    from backend.tools.lfm_vl_provider import should_idle_stop, _IDLE_TIMEOUT
+def test_no_owned_server_surface():
+    """specs/vision-single-server: the owned-server lifecycle is deleted.
+
+    There is no idle watchdog, no owned PID, no stop/kill functions. A borrowed
+    shared server must never be stopped by IRIS — the strongest form of the
+    guard is that the symbols do not exist at all."""
     import backend.tools.lfm_vl_provider as m
 
-    saved_pid = m._VISION_SERVER_PID
-    saved_use = m._last_vision_use
-    try:
-        # No owned server -> never idle-stop
-        m._VISION_SERVER_PID = None
-        assert should_idle_stop() is False
-
-        # Owned server, recently used -> not idle
-        m._VISION_SERVER_PID = 12345
-        m._last_vision_use = time.monotonic()
-        assert should_idle_stop() is False
-
-        # Owned server, idle past timeout -> idle-stop
-        m._last_vision_use = time.monotonic() - (_IDLE_TIMEOUT + 10)
-        assert should_idle_stop() is True
-    finally:
-        m._VISION_SERVER_PID = saved_pid
-        m._last_vision_use = saved_use
+    for sym in (
+        "should_idle_stop",
+        "_stop_owned_vision_server",
+        "_touch_vision_use",
+        "_idle_timer",
+        "_VISION_SERVER_PID",
+        "acquire_vision_lease",
+        "_spawn_vision_server_now",
+    ):
+        assert getattr(m, sym, None) is None, sym
 
 
-def test_stop_owned_vision_server_kills_tracked_pid():
-    """_stop_owned_vision_server() kills only the tracked PID and resets it."""
-    from backend.tools.lfm_vl_provider import _stop_owned_vision_server
+def test_disable_is_state_reset_only():
+    """disable() never touches a process; it just clears the reuse selection."""
     import backend.tools.lfm_vl_provider as m
 
-    killed = {}
-    m.subprocess.run = lambda *a, **k: killed.setdefault("called", True)
-    saved_pid = m._VISION_SERVER_PID
-    try:
-        m._VISION_SERVER_PID = 99999
-        _stop_owned_vision_server()
-        assert killed.get("called") is True
-        assert m._VISION_SERVER_PID is None
-    finally:
-        m._VISION_SERVER_PID = saved_pid
-
-
-def test_touch_schedules_timer_when_owned():
-    """_touch_vision_use() schedules the idle timer only when IRIS owns the server."""
-    from backend.tools.lfm_vl_provider import _touch_vision_use
-    import backend.tools.lfm_vl_provider as m
-
-    saved_pid = m._VISION_SERVER_PID
-    saved_timer = m._idle_timer
-    try:
-        m._VISION_SERVER_PID = 88888
-        _touch_vision_use()
-        assert m._idle_timer is not None
-    finally:
-        if m._idle_timer is not None:
-            m._idle_timer.cancel()
-        m._VISION_SERVER_PID = saved_pid
-        m._idle_timer = saved_timer
-
-
-def test_disable_cancels_idle_timer():
-    """disable() stops the owned server and clears the idle timer."""
-    from backend.tools.lfm_vl_provider import _touch_vision_use, get_lfm_vl_provider
-    import backend.tools.lfm_vl_provider as m
-
-    saved_pid = m._VISION_SERVER_PID
-    saved_timer = m._idle_timer
-    try:
-        m._VISION_SERVER_PID = 77777
-        _touch_vision_use()
-        assert m._idle_timer is not None
-        get_lfm_vl_provider().disable()
-        assert m._VISION_SERVER_PID is None
-    finally:
-        if m._idle_timer is not None:
-            m._idle_timer.cancel()
-        m._VISION_SERVER_PID = saved_pid
-        m._idle_timer = saved_timer
+    m._reused_vision_base_url = "http://borrowed.test/v1"
+    m.get_lfm_vl_provider().disable()
+    assert m._reused_vision_base_url is None

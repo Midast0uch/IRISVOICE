@@ -1,0 +1,25 @@
+fix(goal-contract): card-settle rides the grade; ceiling skips error envelopes
+
+Two distinct defects proven live (backend-20260912-103123.log, conv-105):
+
+1. Card stayed 'Active Execution' forever while the grade read 'capped
+   (failure-settled)'. _der_report_run_grade is the single deduped terminal
+   authority — called on failure-settled, finalize-complete, and
+   continuation-done — but the card's settle event only fired at the end
+   of _execute_plan_der. Grade ran, card never settled, so the frontend's
+   anyCardWorking gate routed the next message into a dead steer.
+
+2. A VERIFIED step whose result was an envelope error (ws, 'not
+   recognized') got ceiling facts mined from the error string itself
+   (probe 3: 'wc : The term 'wc' is not recognized' became a discovered
+   fact). `_gc_result_is_error` now rejects envelope errors at ceiling time.
+
+Fix: `_der_emit_card_settle` (called from `_der_report_run_grade`'s choke,
+agreeing with the existing dedup key) emits `task:done`/`task:fail` by card
+identity and conversation so the card always settles exactly when the grade
+fires. Outcome is derived from the grade text.
+
+Tests: backend/tests/contract/test_card_settle_contract.py (CT-CS1..4),
+4 passed. Combined with the permission contract + approval-class suite 29
+passed after fixing the earlier wording test (its label assertion captured
+the old spelling; the rendered copy was already correct).

@@ -1,0 +1,82 @@
+- generic [ref=e1]:
+  - main [ref=e2]:
+    - generic:
+      - generic:
+        - generic:
+          - generic [ref=e6] [cursor=pointer]:
+            - generic [ref=e10]:
+              - generic:
+                - generic: → Chat ←
+              - generic:
+                - generic: ↑ Menu
+              - generic:
+                - generic: ↑↑ Voice
+            - generic:
+              - generic:
+                - generic:
+                  - button:
+                    - generic:
+                      - generic:
+                        - img
+                - generic:
+                  - button:
+                    - generic:
+                      - generic:
+                        - img
+                - generic:
+                  - button:
+                    - generic:
+                      - generic:
+                        - img
+                - generic:
+                  - button:
+                    - generic:
+                      - generic:
+                        - img
+                - generic:
+                  - button:
+                    - generic:
+                      - generic:
+                        - img
+                - generic:
+                  - button:
+                    - generic:
+                      - generic:
+                        - img
+          - paragraph [ref=e17] [cursor=pointer]: tap the CHAT label to open chat
+    - generic [ref=e31]:
+      - generic [ref=e32]:
+        - generic [ref=e33]:
+          - generic [ref=e35]: IRIS
+          - button "Open Dashboard" [ref=e36]:
+            - img [ref=e37]
+        - button "Maximize chat" [ref=e43]:
+          - img [ref=e44]
+        - generic [ref=e49]:
+          - button "Notifications" [ref=e50]:
+            - img [ref=e51]
+          - button "Conversation History" [ref=e54]:
+            - img [ref=e55]
+          - button "Close Chat" [ref=e59]:
+            - img [ref=e60]
+      - paragraph [ref=e65]:
+        - text: Start a conversation
+        - text: How can I help you today?
+      - generic [ref=e69]:
+        - button "Toggle web research mode" [ref=e71]:
+          - img [ref=e72]
+        - textbox "Type command or drop file..." [active] [ref=e75]
+        - generic [ref=e76]:
+          - button "Send message" [disabled] [ref=e77]:
+            - img [ref=e78]
+          - button "Upload file" [ref=e83]:
+            - img [ref=e84]
+          - generic [ref=e87]:
+            - button "No conversation history yet" [ref=e89]:
+              - img [ref=e90]
+            - 'generic "Context: 0 / 128000 tokens" [ref=e94]':
+              - generic [ref=e95]: 0 / 128.0k
+              - generic [ref=e97]: IDLE
+  - button "Open Next.js Dev Tools" [ref=e23] [cursor=pointer]:
+    - img [ref=e24]
+  - alert [ref=e27]

@@ -1,0 +1,24 @@
+fix(goal-contract): card-settles ride the grade chokepoint
+
+The grade IS the authoritative done signal.
+_der_report_plan_grade fires once per turn, on every terminal path (failure-settled, finalize-
+complete, continuation-done). Hook task:done/task:fail card emission into the same point
+so "card stops working" only when the contract says the turn is over.
+
+OLD: _emit_terminal_event (the closure at bottom of _execute_plan_der) was only reached
+on three return paths, and the continue-done/failure-settled paths must reach the grade
+helper instead — they never touched _emit_terminal_event. The visible evidence: cards
+stayed Active Execution forever (probe 1 stayed 3.5 min; Node.terminate, from my subsequent
+prompts were treated as 'brick' stays because anyCardWorking never dropped.
+
+Fix: emit task:done/task:fail from _der_report_run_grade itself (the deduplicated grade
+chokepoint). Combined with the existing helper closure (which already remains
+emitting, which might look like a second frame for Gr�ndit now happens once per
+turn instead of a `once per increasingly-emitted" loop.
+
+REORGANIZE: card-id/dedup via `_der_card_terminal_emitted` (set) so whichever path fires
+RETURNS ONCE even if both paths run (grade-site chokes first usually).
+
+Test: backend/tests/contract/test_card_settle_contract.py (4 tests).
+Passes — backend hard-baked evidence: "[DER] run grade" at 00:00:58, "task_done"
+arriving to the frontend after the fix.

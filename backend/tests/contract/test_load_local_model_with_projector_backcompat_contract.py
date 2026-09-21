@@ -117,12 +117,12 @@ def _run(coro):
 
 
 class TestWSHandlerBackCompat:
-    def test_payload_without_with_projector_forwards_text_only_default(self, monkeypatch):
-        """Session 268 (pin_8e40f54a98dc): a sender that omits
-        `with_projector` entirely (every pre-T8 sender, and the dashboard's
-        Load button today) must get the TEXT-ONLY brain — the handler
-        forwards `with_projector=False` so a sibling mmproj can never push
-        the load past free VRAM into SIGABRT."""
+    def test_payload_without_with_projector_defers_to_manager(self, monkeypatch):
+        """CONTRACT CHANGE (specs/vision-single-server, 2026-09-18): the
+        18181 vision server is gone, so the old "brain defaults text-only —
+        vision lives elsewhere" rule is dead. A payload with no
+        `with_projector` key must NOT force text-only: the gw omits the kwarg,
+        the manager's own default (attach when a projector exists) applies."""
         gateway, mgr = _gateway_and_mgr(monkeypatch)
 
         async def _noop(*a, **k):
@@ -137,11 +137,9 @@ class TestWSHandlerBackCompat:
 
         assert len(mgr.calls) == 1
         _, kwargs = mgr.calls[0]
-        assert kwargs.get("with_projector") is False, (
-            "absent with_projector in the payload must translate into an "
-            "explicit with_projector=False forwarded to the manager — the "
-            "local model is the BRAIN and defaults text-only; vision is "
-            "served by the separate 18181 vision server (pin_8e40f54a98dc)"
+        assert kwargs.get("with_projector", None) is not False, (
+            "absent with_projector in the payload must NOT become an explicit "
+            "False anymore — vision attaches by default (specs/vision-single-server)"
         )
 
     def test_explicit_opt_out_still_reaches_the_manager(self, monkeypatch):

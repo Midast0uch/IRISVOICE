@@ -1,0 +1,13 @@
+{"ts": 1785526886.7379613, "conversation_id": "conv_1785526803775_bk4dxbrls", "step_id": "s1", "decision": "brief", "signal": "retried", "u": 0.0, "xi": 0.0, "text": "Now moving into a sub-task — splitting into 3 parts.", "tts_played": true}
+{"ts": 1785526888.023151, "conversation_id": "conv_1785526803775_bk4dxbrls", "step_id": "s2", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
+{"ts": 1785526952.38958, "conversation_id": "conv_1785526803775_bk4dxbrls", "step_id": "s1_s0", "decision": "brief", "signal": "crystallized", "u": 0.0, "xi": 0.0, "text": "Sub-task done; folding back into the main thread.", "tts_played": true}
+{"ts": 1785526983.744099, "conversation_id": "conv_1785526803775_bk4dxbrls", "step_id": "s1_s1", "decision": "brief", "signal": "crystallized", "u": 0.0, "xi": 0.0, "text": "Sub-task done; folding back into the main thread.", "tts_played": true}
+{"ts": 1785527016.0463364, "conversation_id": "conv_1785526803775_bk4dxbrls", "step_id": "s1_s2", "decision": "brief", "signal": "crystallized", "u": 0.0, "xi": 0.0, "text": "Sub-task done; folding back into the main thread.", "tts_played": true}
+{"ts": 1785527047.159894, "conversation_id": "conv_1785526803775_bk4dxbrls", "step_id": "gap-s2-0", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
+{"ts": 1785527079.1880176, "conversation_id": "conv_1785526803775_bk4dxbrls", "step_id": "gap-s1_s1-0", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
+{"ts": 1785527152.4670794, "conversation_id": "conv_1785526803775_bk4dxbrls", "step_id": "gap-gap-s2-0-0", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
+{"ts": 1785527185.393504, "conversation_id": "conv_1785526803775_bk4dxbrls", "step_id": "gap-gap-s2-0-1", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
+{"ts": 1785527220.951924, "conversation_id": "conv_1785526803775_bk4dxbrls", "step_id": "gap-gap-s2-0-2", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
+{"ts": 1785527259.724611, "conversation_id": "conv_1785526803775_bk4dxbrls", "step_id": "gap-gap-s1_s1-0-0", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
+{"ts": 1785527398.585927, "conversation_id": "conv_1785526803775_bk4dxbrls", "step_id": "gap-gap-gap-s2-0-2-0", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
+{"ts": 1785527477.822649, "conversation_id": "conv_1785526803775_bk4dxbrls", "step_id": "gap-gap-gap-s1_s1-0-0-1", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}

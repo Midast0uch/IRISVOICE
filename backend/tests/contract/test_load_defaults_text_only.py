@@ -1,18 +1,18 @@
-"""Session 268, handoff item 3.9 — pin the TEXT-ONLY load default
-(pin_8e40f54a98dc): the local model on 8082 is the BRAIN; vision is served
-separately by the 18181 vision server. Loading with the mmproj projector
-attached by default caused Bonsai-27B-Q1_0 + mmproj (~5.13GB) to SIGABRT
-against ~4.9GB free VRAM — the "stuck at 98%, then signal aborted" failure.
+"""CONTRACT CHANGE (specs/vision-single-server, 2026-09-18): this file used
+to pin the TEXT-ONLY load default ("the local model is the brain; vision is
+a separate server on 18181"). That separation no longer exists — the spawn
+path was deleted and the local model server IS the vision server. The new
+default is: load WITH the projector when one exists.
 
-Two layers:
+Renamed accordingly (test identity was the old behavior; the new name says
+what is pinned now). The two argv tests at the command layer are UNCHANGED
+(they pin the textbook property: --mmproj appears iff mmproj_path resolved).
 
   1. WS boundary (`IRISGateway._handle_load_local_model`): a payload without
-     `with_projector` forwards `with_projector=False` to the manager
-     (text-only); an explicit `with_projector: True` omits the kwarg so the
-     manager's own default (attach) applies.
-  2. Command layer (`LocalModelManager._build_server_cmd`): `mmproj_path`
-     is the ONLY thing that puts `--mmproj` on the spawned llama-server
-     argv — a text-only load must never carry it.
+     `with_projector` forwards with_projector=True to the manager (attach
+     default). An explicit `with_projector: False` stays text-only.
+  2. Command layer: `mmproj_path` is the ONLY thing that puts `--mmproj` on
+     the spawned llama-server argv — a text-only load must never carry it.
 
 No subprocess, no GPU — load_model is faked; the command builder is driven
 directly with `_select_server_binary` stubbed to a fixed path.
@@ -124,11 +124,10 @@ def _run(coro):
         loop.close()
 
 
-class TestWSBoundaryTextOnlyDefault:
-    def test_absent_with_projector_loads_text_only(self, monkeypatch):
-        """The dashboard's Load button sends no with_projector key. The
-        brain must load text-only — the manager receives an explicit
-        with_projector=False (mirroring pin_8e40f54a98dc)."""
+class TestWSBoundaryAttachDefault:
+    def test_absent_with_projector_loads_with_attachment(self, monkeypatch):
+        """specs/vision-single-server: the local server IS the vision server,
+        so an unspecified load must attach the projector — the default."""
         gateway, mgr = _gateway_and_mgr(monkeypatch)
 
         async def _noop(*a, **k):
@@ -143,14 +142,13 @@ class TestWSBoundaryTextOnlyDefault:
 
         assert len(mgr.calls) == 1
         _, kwargs = mgr.calls[0]
-        assert kwargs.get("with_projector") is False, (
-            "a load without with_projector must be text-only "
-            "(with_projector=False forwarded to the manager)"
+        assert kwargs.get("with_projector", None) is not False, (
+            "a load without with_projector must NOT forward False — the "
+            "manager's own default (attach) must stand"
         )
 
-    def test_explicit_with_projector_true_opts_in(self, monkeypatch):
-        """A caller that genuinely wants a multimodal local model opts in
-        explicitly; the attach decision is then the manager's default."""
+    def test_explicit_text_only_opt_out(self, monkeypatch):
+        """The opt-out: with_projector=false goes through explicitly."""
         gateway, mgr = _gateway_and_mgr(monkeypatch)
 
         async def _noop(*a, **k):
@@ -162,15 +160,14 @@ class TestWSBoundaryTextOnlyDefault:
             "session_iris", "client_iris",
             {"payload": {
                 "model_path": "C:/models/x.gguf",
-                "with_projector": True,
+                "with_projector": False,
             }},
         ))
 
         assert len(mgr.calls) == 1
         _, kwargs = mgr.calls[0]
-        assert "with_projector" not in kwargs, (
-            "explicit opt-in takes the manager's own default (attach) — "
-            "the gateway must not force it either way"
+        assert kwargs.get("with_projector") is False, (
+            "explicit opt-out must be honored"
         )
 
 
@@ -183,6 +180,17 @@ class TestServerCommandMmprojArgv:
         mgr = object.__new__(LocalModelManager)  # skip heavy __init__
         monkeypatch.setattr(
             mgr, "_select_server_binary", lambda model_path: "llama-server"
+        )
+        # 2026-09-18 setup repair (called out): _build_server_cmd later grew a
+        # VRAM probe (get_hardware_info -> self._hw_cache/_hw_cache_time),
+        # which object.__new__ leaves unset. Give the stub the attributes and
+        # a fixed VRAM answer; the assertions below are UNCHANGED.
+        mgr._hw_cache = None
+        mgr._hw_cache_time = 0.0
+        monkeypatch.setattr(
+            mgr,
+            "get_hardware_info",
+            lambda force_refresh=False: {"cuda_available": True, "vram_free_gb": 8.0},
         )
         return mgr
 

@@ -4260,16 +4260,16 @@ class AgentKernel:
                 return self._finalize_response(_display, _spoken)
 
         if show is None:
-            # â”€â”€ Plain-text response â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── Plain-text response ─────────────────────────────────────────
             # The LLM did not produce structured JSON.  Normally return the
             # full text as-is so the frontend renders it in the normal chat
             # bubble path (chat-view.tsx short-message branch) with TTS word
-            # highlighting â€” no DOCUMENT_RENDER, no prism card.
+            # highlighting — no DOCUMENT_RENDER, no prism card.
             #
             # pin (user decision 2026-07-31): when this turn gathered
             # web/reference content and the response IS the synthesized
             # markdown answer (substantial), auto-render it as a markdown
-            # prism card AND return the text â€” the agent's response accompanies
+            # prism card AND return the text — the agent's response accompanies
             # the card instead of the card popping on every web-tool commit
             # (the old capture-time deterministic render). The agent's explicit
             # `show` choice above still wins when it renders deliberately; this
@@ -4277,10 +4277,20 @@ class AgentKernel:
             # _last_render_emitted suppresses the format-escalation QuestionCard
             # (pin_9e97e21340e7) for this turn.
             try:
-                if (
+                # specs/tool-decision-engine REQ-11: the engine gate decides
+                # card-worthiness when available+enforced+confident; the raw
+                # heuristic below is the documented degrade path (AC11.2/11.3).
+                _surface_gate = self._engine_gate_surface(response, turn_id)
+                _heuristic_ok = (
                     self._pacman_zone_for_turn() == "reference"
                     and len(response) >= 300
-                ):
+                )
+                _want_card = (
+                    _heuristic_ok
+                    if _surface_gate is None
+                    else _surface_gate == "card"
+                )
+                if _want_card:
                     # Empty-result websearch — suppress auto-render. The
                     # synthesis ("I wasn't able to pull...") has no usable
                     # sources and belongs in the bubble, not as a prism.
@@ -4375,6 +4385,8 @@ class AgentKernel:
             _support = (
                 self._supportive_text(response)
                 if getattr(self, "_last_render_emitted", False)
+                and getattr(self, "_last_surface_choice", "card_plus_summary")
+                == "card_plus_summary"  # REQ-11: "prism_card" = card only
                 else ""
             )
             return self._finalize_response(_support or response)
@@ -9721,6 +9733,37 @@ Respond with a JSON object:
             # REQ-16 AC2 (T32): a task that ran steps to completion exited
             # naturally.
             self._der_stamp_session_exit(True)
+            # AC3.6 defense-in-depth (session-334, live T3): the loop-level
+            # continuation gate in _der_plan_next_step is bypassable — COMPRESS
+            # (rec==1) skips it, a non-AGENTIC/FULL mode skips it, and a planner
+            # JSON-parse failure returns None. Measured 2026-09-17: grade=capped
+            # with 1 open unblocked required fact still produced "I've completed
+            # the task. 1/1 steps finished." The spec says the turn SHALL NOT
+            # terminate while a required fact is open and unblocked. Guard the
+            # FINALIZE boundary itself so a false success claim is impossible no
+            # matter which bypass fired.
+            try:
+                _gc_open_final = list(self._goal_contract_open_facts() or [])
+            except Exception:
+                _gc_open_final = []
+            # Test the COUNT, never truthiness: a non-sequence (or any object
+            # with a permissive __bool__) would otherwise trip this branch with
+            # zero open facts and suppress a legitimate success claim.
+            if len(_gc_open_final) > 0:
+                logger.warning(
+                    "[goal-contract] finalize with %d open unblocked fact(s) — "
+                    "suppressing success claim: %r",
+                    len(_gc_open_final), str(_gc_open_final[0])[:160],
+                )
+                _emit_terminal_event()
+                _open_facts_txt = "; ".join(
+                    str(_f)[:200] for _f in _gc_open_final[:5]
+                )
+                return (
+                    "I couldn't fully complete the task — required work is "
+                    f"still open: {_open_facts_txt}\n"
+                    "What would you like me to do next?"
+                )
             # REQ-12 (AC1/AC2/AC3): synthesize the gathered evidence into a
             # final answer instead of raw-concatenating step outputs. Consumes
             # the same evidence the failure path consumes (plan.original_task
@@ -13300,6 +13343,7 @@ Respond with a JSON object:
             # shared mutable state). A load-bearing mismatch caps the run
             # below full pass, honestly, in the user-facing fallback too.
             _grade_line = ""
+            _capped = False
             try:
                 from backend.agent.tool_envelope import evaluate_run_grade
                 from backend.agent.der_constants import LOAD_BEARING_VETO
@@ -13312,6 +13356,7 @@ Respond with a JSON object:
                     load_bearing_veto=LOAD_BEARING_VETO,
                 )
                 if _grade == "capped":
+                    _capped = True
                     _grade_line = (
                         "\nRun grade: capped below full pass — "
                         + "; ".join(_reasons or [])
@@ -13319,14 +13364,28 @@ Respond with a JSON object:
                     )
             except Exception:
                 pass
+            # AC5.6 honesty (session-334, live T3): the grade is recomputed above
+            # and can say "capped ... required fact(s) open and unblocked" while
+            # this summary still opened with "I've completed the task". Measured
+            # 2026-09-17: grade=capped C=0.000 with an open fact, narration said
+            # "I've completed the task. 1/1 steps finished." — a false success
+            # claim. The narration MUST agree with the grade it just computed.
+            if _capped:
+                return (
+                    f"I couldn't fully complete the task — {_done}/{_total} steps "
+                    f"finished, but required work remains open.\n"
+                    f"{_done_txt}\n{_grade_line}\n"
+                    f"What would you like me to do next?"
+                )
             return (
                 f"I've completed the task. {_done}/{_total} steps finished.\n"
                 f"{_done_txt}\n{_grade_line}\n"
                 f"What would you like to do next?"
             )
         except Exception as _e:
+            # AC5.6 honesty: this is the failure path — never claim success here.
             logger.warning("[DER] deterministic success summary failed: %s", _e)
-            return "I've completed that task. What would you like to do next?"
+            return "I finished running the steps but couldn't verify the result. What would you like me to do next?"
 
     # â”€â”€ Phase 2.2: context-aware query refinement â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
@@ -13543,6 +13602,72 @@ Respond with a JSON object:
         except Exception:
             pass
         return AgentKernel._format_tool_result(raw)
+
+    def _engine_gate_surface(
+        self, response: str, turn_id: str = ""
+    ) -> Optional[str]:
+        """Presentation gate (specs/tool-decision-engine REQ-11).
+
+        Returns "card" / "plain" when the engine gate is decisive, else None
+        (caller uses the legacy heuristic). Gate-layer only — surface choice,
+        never content (content belongs to chat-communication-lanes). Never
+        raises.
+        """
+        try:
+            from backend.agent.decision_engine import (
+                enforced_consumers,
+                get_decision_engine,
+            )
+        except Exception:
+            return None
+        # AC11.4: one card per turn — never consult for a second card.
+        if getattr(self, "_last_render_emitted", False):
+            return None
+        eng = get_decision_engine()
+        n = len(response or "")
+        frame = {
+            "content_chars": (
+                "small" if n < 300 else "medium" if n < 1500 else "large"
+            ),
+            "has_structure": any(
+                m in response for m in ("```", "\n|", "\n- ", "\n# ", "\n1. ")
+            ),
+            "card_already_rendered": False,
+            "zone": self._pacman_zone_for_turn(),
+            "mode": getattr(self, "_launcher_mode", "personal"),
+        }
+        options = ["plain_text", "prism_card", "card_plus_summary"]
+        ds = eng.decide("presentation", options, frame)
+        if ds is None:
+            self._last_surface_choice = "card_plus_summary"  # legacy default
+            return None
+        enforced = "presentation" in enforced_consumers()
+        confident = ds.confidence >= eng._cfg.threshold_for("presentation")
+        meta = {
+            "engine": eng.model_id or "decision-engine",
+            "consumer_id": "presentation",
+            "chosen": ds.chosen,
+            "confidence": round(ds.confidence, 4),
+            "candidates": len(options),
+            "threshold": eng._cfg.threshold_for("presentation"),
+            "args_valid": None,
+            "retried": False,
+            "engine_latency_ms": ds.engine_latency_ms,
+            "route": "engine" if (enforced and confident) else "shadow",
+            "escalated": False,
+        }
+        bridge = getattr(self, "_tool_bridge", None)
+        recorder = getattr(bridge, "record_decision", None)
+        if callable(recorder):
+            try:
+                recorder(meta, kind="surface",
+                         session_id=getattr(self, "session_id", "") or "")
+            except Exception:
+                pass
+        self._last_surface_choice = ds.chosen
+        if not (enforced and confident):
+            return None  # shadow / unconfident → heuristic still decides
+        return "plain" if ds.chosen == "plain_text" else "card"
 
     @staticmethod
     def _supportive_text(text: str, max_chars: int = 200) -> str:
@@ -13987,6 +14112,17 @@ Respond with a JSON object:
             except Exception:
                 return None
 
+        # specs/tool-decision-engine: inject the resident calibrated decision
+        # engine (injected, not lazily global — unit suites run engine-free for
+        # determinism; the engine degrades to legacy path when its model is
+        # absent, AC1.3). Wiring lives here so the box stays snapshot-free.
+        try:
+            from backend.agent.decision_engine import get_decision_engine
+
+            _de = get_decision_engine()
+        except Exception:
+            _de = None
+
         self._tool_box = ToolDecisionBox(
             router=self._router,
             tool_bridge=self._tool_bridge,
@@ -13994,6 +14130,7 @@ Respond with a JSON object:
             validate_tool_call=validate_tool_call,
             infer_fn=self.infer,
             memory_lookup_fn=_mem_lookup,
+            decision_engine=_de,
         )
         return self._tool_box
 
@@ -17593,6 +17730,30 @@ Cover every part of the user's request. If the results lack some asked part, say
                     _syn_text, getattr(self._router, "last_usage", None),
                     source="_synthesize_response:router",
                 )
+                # Session-342 (live 2026-09-19): Ollama intermittently answers
+                # a synthesis prompt with an EMPTY completion (HTTP 200, no
+                # text) while the provider is healthy — observed on a working
+                # run where the crawl had extracted the answer and the turn
+                # degraded to "I've completed the task" anyway. A single retry
+                # on the SAME prompt recovers it; without that the user sees a
+                # task-status receipt instead of the answer the run found.
+                # Bounded: exactly ONE retry, inside the existing deadline.
+                if not _syn_text and _router_primary:
+                    logger.warning(
+                        "[AgentKernel] router synthesis returned empty — retrying "
+                        "once before degrading (transient empty completion)"
+                    )
+                    _syn_text, _syn_think, _syn_tools = self._router.generate(
+                        "reasoning",
+                        [{"role": "user", "content": synthesis_prompt}],
+                        max_tokens=self.response_max_tokens(),
+                        temperature=0.6,
+                        timeout_s=_syn_deadline_s,
+                    )
+                    self._accrue_tokens(
+                        _syn_text, getattr(self._router, "last_usage", None),
+                        source="_synthesize_response:router:retry_empty",
+                    )
                 if _syn_text:
                     logger.info(
                         "[AgentKernel] Brain synthesized response via InferenceRouter"
@@ -17611,6 +17772,44 @@ Cover every part of the user's request. If the results lack some asked part, say
                 logger.warning(
                     f"[AgentKernel] router synthesis failed: {_syn_err}"
                 )
+                # Session-342 (live 2026-09-19): the transport RAISES on a
+                # transient empty completion ("Empty response from Ollama"),
+                # never returning a falsy string — so the success-path retry
+                # above never fired and the turn degraded to "I've completed
+                # the task" while the answer sat extracted on the card. Retry
+                # once on THIS shape only; any other failure degrades exactly
+                # as before.
+                if _router_primary and "empty response" in str(_syn_err).lower():
+                    logger.warning(
+                        "[AgentKernel] synthesis failed on a transient empty "
+                        "completion — retrying once (session-342 evidence: the "
+                        "same endpoint answered 688 tokens 16s earlier)"
+                    )
+                    try:
+                        _syn_retry, _syn_retry_think, _syn_retry_tools = (
+                            self._router.generate(
+                                "reasoning",
+                                [{"role": "user", "content": synthesis_prompt}],
+                                max_tokens=self.response_max_tokens(),
+                                temperature=0.6,
+                                timeout_s=_syn_deadline_s,
+                            )
+                        )
+                        self._accrue_tokens(
+                            _syn_retry,
+                            getattr(self._router, "last_usage", None),
+                            source="_synthesize_response:router:retry_empty",
+                        )
+                        if _syn_retry:
+                            logger.info(
+                                "[AgentKernel] Brain synthesized response via "
+                                "InferenceRouter (retry after empty completion)"
+                            )
+                            return self._strip_thinking(_syn_retry)
+                    except Exception as _retry_err:
+                        logger.warning(
+                            f"[AgentKernel] empty-response retry failed: {_retry_err}"
+                        )
                 if _router_primary:
                     # REQ-8 AC3 (T26): primary provider failed â€” degrade to the
                     # deterministic compressed summary, no giant-prompt replay.

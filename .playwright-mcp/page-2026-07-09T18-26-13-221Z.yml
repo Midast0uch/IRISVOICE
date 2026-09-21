@@ -1,0 +1,41 @@
+- generic [active] [ref=e1]:
+  - main [ref=e2]:
+    - generic [ref=e5]:
+      - generic [ref=e6] [cursor=pointer]:
+        - generic [ref=e12]: → QG2N5C
+        - generic:
+          - generic:
+            - generic:
+              - button:
+                - generic:
+                  - generic:
+                    - img
+            - generic:
+              - button:
+                - generic:
+                  - generic:
+                    - img
+            - generic:
+              - button:
+                - generic:
+                  - generic:
+                    - img
+            - generic:
+              - button:
+                - generic:
+                  - generic:
+                    - img
+            - generic:
+              - button:
+                - generic:
+                  - generic:
+                    - img
+            - generic:
+              - button:
+                - generic:
+                  - generic:
+                    - img
+      - paragraph [ref=e17] [cursor=pointer]: tap the CHAT label to open chat
+  - button "Open Next.js Dev Tools" [ref=e23] [cursor=pointer]:
+    - img [ref=e24]
+  - alert [ref=e27]

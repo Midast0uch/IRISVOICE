@@ -1,0 +1,4 @@
+{"ts": 1787349527.9562082, "conversation_id": "conv-34", "step_id": "s1_s0", "decision": "brief", "signal": "crystallized", "u": 0.35, "xi": 1.0499999999999998, "text": "Sub-task done; folding back into the main thread.", "tts_played": true}
+{"ts": 1787353770.907969, "conversation_id": "conv-34", "step_id": "s1_s0", "decision": "brief", "signal": "crystallized", "u": 0.35, "xi": 1.0499999999999998, "text": "Sub-task done; folding back into the main thread.", "tts_played": true}
+{"ts": 1787353773.0094328, "conversation_id": "conv-34", "step_id": "amend-2_s0", "decision": "brief", "signal": "crystallized", "u": 0.5241498667621045, "xi": 2.0999999999999996, "text": "Sub-task done; folding back into the main thread.", "tts_played": true}
+{"ts": 1787355143.9169688, "conversation_id": "conv-34", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.35, "xi": 1.0499999999999998, "text": "", "tts_played": false}

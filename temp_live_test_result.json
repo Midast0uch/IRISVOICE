@@ -1,0 +1,17 @@
+{
+  "thread_id": "immortus:thread-LIVE-526d",
+  "prompt1": {
+    "status": 200,
+    "seconds": 8.2,
+    "content": "Some of the largest reptiles include:\n\n*   **Saltwater Crocodile**: The largest living reptile, reaching lengths of over 6 meters.\n*   **Green Anaconda**: One of the heaviest and longest snakes in the world.\n*   **Komodo Dragon**: The largest living species of lizard.\n*   **Leatherback Sea Turtle**: The largest of all living turtles.\n*   **Nile Crocodile**: One of the largest crocodilians, similar in scale to the saltwater crocodile.\n*   **Burmese Python**: One of the longest snake species.",
+    "thinking": "",
+    "model": ""
+  },
+  "prompt2": {
+    "status": 200,
+    "seconds": 7.1,
+    "content": "Large reptiles (ectotherms) generally consume significantly less food per day than mammals (endotherms) of a similar size. Because reptiles do not use energy to maintain a constant internal body temperature, their basal metabolic rate (BMR) is typically 1/10th to 1/30th that of a mammal.\n\n**Comparison Data:**\n*   **Metabolic Rate:** Mammals require a constant high caloric intake to fuel thermogenesis. In contrast, large reptiles can survive for weeks or months without eating after a single large meal.\n*   **Daily Intake:** While a mammal of similar mass (e.g., a large pig or small cow) requires daily feeding to maintain weight, a large reptile (e.g., a Nile crocodile or Komodo dragon) may eat only a few times a month.\n*   **Energy Efficiency:** Reptiles convert a much higher percentage of consumed calories into body mass rather than burning them for heat.",
+    "thinking": "",
+    "model": ""
+  }
+}

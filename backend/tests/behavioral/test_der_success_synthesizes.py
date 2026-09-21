@@ -267,5 +267,91 @@ def test_synthesis_unavailable_returns_empty_and_summary_is_safe():
     assert "(no step output)" in empty, empty
 
 
+class _FlakyRouter:
+    """Ollama cloud's transient shape from the live run 2026-09-19 20:48:41 —
+    a healthy provider raising 'Empty response from Ollama' once per burst,
+    then answering the identical prompt a second later. Each generate() call
+    pattern still returns a 3-tuple per the real transport contract."""
+
+    def __init__(self, failures: int):
+        self.failures = failures
+        self.calls = 0
+
+    def generate(self, role, messages, **kwargs):
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise RuntimeError("Empty response from Ollama")
+        return ("Synth answer: two retailers list it.", "", [])
+
+    def health_check_provider(self, role):
+        return {"ok": True}
+
+    last_usage = None
+
+
+def test_transient_empty_completion_retries_once_before_degrading():
+    """Session-342 (live 2026-09-19): the synthesis turn ended with 'I've
+    completed the task' while the card held the actual extracted answer —
+    because Ollama raised 'Empty response from Ollama' on the synthesis call
+    (the SAME endpoint answered 688 tokens 16 s earlier). The fix is ONE retry
+    on the empty-completion exception. This drives the REAL
+    _synthesize_response code with that transport shape.
+
+    Two pins, one test: (1) one transient failure recovers to the answer;
+    (2) a provider that never answers still degrades to "" (REQ-8 AC3 — the
+    retry is bounded: exactly one extra call, then the fallback stands)."""
+    from backend.agent import agent_kernel
+
+    class _ModelRouter:
+        models = {}
+
+    class _Task:
+        plan = {}
+        user_message = "price?"
+        task_id = "t"
+        session_id = "sess"
+        conversation_history = []
+
+        def get_results_summary(self):
+            return "found: two retailers"
+
+    # Kernel shape _synthesize_response actually touches on the router path:
+    # _model_router (None-model path), _selected_reasoning_model (no local
+    # model), _router (flaky), response_max_tokens, _accrue_tokens,
+    # _strip_thinking.
+    class _K:
+        _model_router = _ModelRouter()
+        _selected_reasoning_model = "gpt-oss:120b-cloud"
+        _strip_thinking = staticmethod(lambda s: s)
+
+        def __init__(self, router):
+            self._router = router
+
+        def response_max_tokens(self):
+            return 512
+
+        def _accrue_tokens(self, *a, **k):
+            pass
+
+    recovers = _K(_FlakyRouter(failures=1))
+    out = agent_kernel.AgentKernel._synthesize_response(
+        recovers, _Task(), [{"result": "found"}]
+    )
+    assert out == "Synth answer: two retailers list it.", out
+    assert recovers._router.calls == 2, (
+        f"exactly one retry, got {recovers._router.calls} calls"
+    )
+
+    never = _K(_FlakyRouter(failures=99))
+    out = agent_kernel.AgentKernel._synthesize_response(
+        never, _Task(), [{"result": "found"}]
+    )
+    assert out == "", "a provider that keeps failing must still degrade cleanly"
+    assert never._router.calls == 2, (
+        f"bounded: empty-completion retry is exactly one extra call, got "
+        f"{never._router.calls}"
+    )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

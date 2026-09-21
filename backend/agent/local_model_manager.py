@@ -3420,15 +3420,18 @@ class LocalModelManager:
             reader.start()
 
             # ── Async wait loop — drain progress queue + poll for server ready ──
-            # Poll with exponential backoff: starts at 1 s, doubles each miss up to 8 s.
-            # This prevents 2 HTTP requests/sec thrashing the event loop during a 3-min load.
-            # MoE models (LFM2.5 8B) need extra time for expert routing init; bump to 300s for them.
+            # Poll with exponential backoff: starts at 0.5 s, doubles each miss up
+            # to 2 s. The pre-342 backoff (1→2→4→8 s cap) cost a FAST model up to
+            # 8 s of "already ready but unpolled" dead time at the tail; the cap
+            # still bounds request rate to 0.5 Hz worst case, which is nothing
+            # next to a multi-GB load. MoE models (LFM2.5 8B) need extra time for
+            # expert routing init; bump to 300s for them.
             _is_moe = bool(model_meta.get("is_moe") or "A1B" in str(model_path))
             _deadline_secs = 300.0 if _is_moe else 180.0
             deadline = loop.time() + _deadline_secs
             ready = False
             last_pct = 0
-            poll_interval = 1.0  # seconds; grows with backoff
+            poll_interval = 0.5  # seconds; grows with backoff
 
             async with httpx.AsyncClient(timeout=2.0) as client:
                 while loop.time() < deadline:
@@ -3463,8 +3466,8 @@ class LocalModelManager:
                     if ready:
                         break
                     await asyncio.sleep(poll_interval)
-                    # Exponential backoff: 1 s → 2 s → 4 s → 8 s (cap) per missed poll
-                    poll_interval = min(poll_interval * 2, 8.0)
+                    # Exponential backoff: 0.5 s → 1 s → 2 s (cap) per missed poll
+                    poll_interval = min(poll_interval * 2, 2.0)
 
             if ready:
                 # The subprocess path had no terminal event, so a load that
@@ -4109,6 +4112,18 @@ class LocalModelManager:
             # that loads fine. llama.cpp's own log points at this: "for bugs
             # during this step try to reproduce them with -fit off".
             cmd += ["--fit", "off"]
+            # Session-342 load-latency fix (measured 2026-09-19): llama.cpp's
+            # default warmup is a throwaway forward pass whose ONLY effect is
+            # to JIT-compile kernels before first use. On the pinned VL model
+            # it consumed ~24 s of a 40.2 s load — 60% of the total — while
+            # the first real inference pays that same cost anyway (~1-2 s,
+            # amortised into the response the user is already waiting for).
+            # Time-to-ready drops 40.2 s -> ~16 s. No memory, correctness, or
+            # throughput change: the generated kernels are identical, just
+            # compiled on first demand instead of before the server serves.
+            # NOT added to the legacy llama_cpp.server path below — that
+            # branch is CPU-bound and only kept for pre-flight protection.
+            cmd += ["--no-warmup"]
             if params.get("n_ctx"):
                 cmd += ["--ctx-size", str(params["n_ctx"])]
             if params.get("n_batch"):

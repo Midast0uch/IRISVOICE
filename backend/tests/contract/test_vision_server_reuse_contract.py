@@ -1,21 +1,22 @@
 """Contract tests for borrowed vision-server discovery (2026-08-27).
 
-Before spawning IRIS's OWN llama-server (~6-minute cold load), the vision
-provider must discover and reuse an already-running, MULTIMODAL OpenAI-compatible
-server the user already configured in iris_config (a provider with an API key).
-The regression this guards: a text-only server answers `/models` happily and then
-fails every vision call, so reuse is gated on a real multimodal round trip, not
-an id match. When a borrowed server is selected, vision traffic is actually routed
-to it (with its credential) instead of spawning.
+specs/vision-single-server (2026-09-18): the standalone llama-server spawn
+path is DELETED. Tier 3 is borrow-ONLY. These tests now pin the borrow
+semantics themselves: text-only candidates are rejected, verified multimodal
+candidates are reused, no spawn surface exists to fall through to, and a
+borrowed server is never touched by lifecycle management (there is none).
 
-No GPU, no real model loads. httpx and the spawn path are monkeypatched.
+No GPU, no real model loads. httpx is faked.
 
-Cases (from docs/SESSION-2026-08-27-STATE.md):
+Cases:
   C1. a reachable but TEXT-ONLY candidate is NOT reused (the regression that matters)
-  C2. a verified multimodal candidate IS reused and NO subprocess is spawned
-  C3. a borrowed endpoint is never killed by disable() or the idle watchdog
-  C4. no candidate -> spawn path unchanged
+  C2. a verified multimodal candidate IS reused
+  C3. disable() only clears the local reuse selection (no process control)
+  C4. no candidate -> VisionModelUnavailable-style failure, NOTHING spawned
   C5. a reused borrowed server is actually routed to (endpoint + model + auth)
+  C6. router-mode servers are probed across ALL models, not just models[0]
+  C7. the global vision-model pin is preferred during probing
+  C8. the pin comes from field_values['vision']['vision_model']
 """
 
 from __future__ import annotations
@@ -48,8 +49,9 @@ class _FakeHttpx:
     """Scenario-driven fake.
 
     `candidate_scenario` is "multimodal" | "textonly" | "down".
-    The IRIS-owned default port (18181) is ALWAYS down, so the fast path fails
-    and discovery is actually exercised.
+    The DEFAULT endpoint (vl._VISION_PORT — the shared local model server,
+    whose port moved with the spec) is ALWAYS treated as down, so the fast
+    path fails and discovery is actually exercised.
     """
 
     def __init__(self, candidate_scenario: str = "down"):
@@ -59,7 +61,7 @@ class _FakeHttpx:
         self.post_headers: list = []
 
     def _is_owned(self, url: str) -> bool:
-        return "18181" in url
+        return str(vl._VISION_PORT) in url
 
     def get(self, url: str, timeout: float = 1.0, headers=None) -> _FakeResponse:
         if self._is_owned(url):
@@ -98,22 +100,23 @@ def isolated_vl(monkeypatch):
     # Keep tests hermetic: never let discovery probe real iris_config providers
     # (which would hit the network). Registered endpoints are still exercised.
     monkeypatch.setattr(vl, "_load_candidate_endpoints_from_config", lambda: [])
+    # P3 (session-342): autoload can only fire on the user's PINNED vision
+    # model, but this machine HAS that pin persisted — without this isolation
+    # the fake text-only world would qualify for a REAL gigabyte model load.
+    # Same hermetic-stub class as the config-endpoint stub above: the
+    # assertions below are unchanged, the new machine-dependent surface is
+    # simply neutralized.
+    monkeypatch.setattr(vl, "_VISION_AUTOLOAD_ENABLED", False)
     saved = {
         "extra": vl._EXTRA_VISION_ENDPOINTS,
         "cache": dict(vl._VISION_CAPABILITY_CACHE),
-        "pid": vl._VISION_SERVER_PID,
-        "attempt": vl._spawn_attempt,
     }
     vl.clear_vision_capability_cache()  # also resets reused-selection globals
     vl._EXTRA_VISION_ENDPOINTS = []
-    vl._VISION_SERVER_PID = None
-    vl._spawn_attempt = None
     yield
     vl._EXTRA_VISION_ENDPOINTS = saved["extra"]
     vl._VISION_CAPABILITY_CACHE.clear()
     vl._VISION_CAPABILITY_CACHE.update(saved["cache"])
-    vl._VISION_SERVER_PID = saved["pid"]
-    vl._spawn_attempt = saved["attempt"]
 
 
 def _install_httpx(monkeypatch, scenario: str) -> _FakeHttpx:
@@ -135,19 +138,14 @@ class TestTextOnlyCandidateNotReused:
         assert vl._discover_reusable_vision_server("") is None
 
     def test_ensure_returns_false_no_spawn_for_text_only(self, monkeypatch, isolated_vl):
-        fake = _install_httpx(monkeypatch, "textonly")
+        _install_httpx(monkeypatch, "textonly")
         vl.set_vision_candidate_endpoints(["http://localhost:1234/v1"])
-        spawned = []
-        monkeypatch.setattr(
-            vl, "_spawn_vision_server_now", lambda base_url="": spawned.append(base_url) or False
-        )
-        # base_url="" -> owned port down -> fast path fails; candidate is
-        # text-only -> not reused; falls through to spawn, which we stub False.
+        # Owned default port down -> fast path fails; candidate is text-only ->
+        # not reused. There is no spawn to fall through to anymore.
         result = vl._ensure_vision_server_running("")
         assert result is False
-        # Spawn WAS attempted (because no reusable server was found) — proving
-        # the text-only candidate was correctly rejected, not silently reused.
-        assert spawned == [""]
+        # Structural proof: no spawn surface exists in the module.
+        assert getattr(vl, "_spawn_vision_server_now", None) is None
 
 
 # ---------------------------------------------------------------------------
@@ -164,16 +162,10 @@ class TestMultimodalCandidateReused:
     def test_ensure_reuses_without_spawn(self, monkeypatch, isolated_vl):
         _install_httpx(monkeypatch, "multimodal")
         vl.set_vision_candidate_endpoints(["http://localhost:1234/v1"])
-        spawned = []
-        monkeypatch.setattr(
-            vl, "_spawn_vision_server_now", lambda base_url="": spawned.append(base_url) or True
-        )
         result = vl._ensure_vision_server_running("")
         assert result is True
-        # The whole point: a borrowed server was reused, so NO subprocess spawn.
-        assert spawned == []
-        # And the borrowed server is NOT registered as owned.
-        assert vl._VISION_SERVER_PID is None
+        # The whole point: the borrowed server is selected and routed.
+        assert vl._reused_vision_base_url == "http://localhost:1234/v1"
 
     def test_capability_verdict_is_cached(self, monkeypatch, isolated_vl):
         fake = _install_httpx(monkeypatch, "multimodal")
@@ -192,77 +184,61 @@ class TestMultimodalCandidateReused:
         proves the normalised path is what gets probed."""
         fake = _install_httpx(monkeypatch, "multimodal")
         vl.set_vision_candidate_endpoints(["http://localhost:1234"])
-        spawned: list = []
-        monkeypatch.setattr(
-            vl, "_spawn_vision_server_now", lambda base_url="": spawned.append(base_url) or True
-        )
         assert vl._ensure_vision_server_running("") is True
-        assert spawned == []
         # The probe must have targeted the /v1 path.
-        assert any("/v1/models" in c for c in fake.post_calls) or True  # post is chat/completions
         assert any("localhost:1234/v1/chat/completions" in c for c in fake.post_calls)
 
 
 # ---------------------------------------------------------------------------
-# C3 — borrowed endpoint is never killed by disable() or the idle watchdog
+# C3 — disable() drops the reuse selection and touches NO process
 # ---------------------------------------------------------------------------
 
 
-class TestBorrowedServerNeverKilled:
-    def test_disable_does_not_kill_borrowed(self, monkeypatch, isolated_vl):
+class TestDisableNeverTouchesProcesses:
+    def test_disable_clears_reuse_selection(self, monkeypatch, isolated_vl):
         _install_httpx(monkeypatch, "multimodal")
         vl.set_vision_candidate_endpoints(["http://localhost:1234/v1"])
-        killed: list = []
-        monkeypatch.setattr(vl, "_kill_process_tree", lambda pid: killed.append(pid))
-        monkeypatch.setattr(
-            vl, "_spawn_vision_server_now", lambda base_url="": True
-        )
         assert vl._ensure_vision_server_running("") is True
-        assert vl._VISION_SERVER_PID is None  # borrowed -> not owned
+        assert vl._reused_vision_base_url == "http://localhost:1234/v1"
 
         vl.get_lfm_vl_provider().disable()
-        # disable() -> _stop_owned_vision_server() which only acts if PID set.
-        assert killed == []
+        assert vl._reused_vision_base_url is None
 
-    def test_idle_watchdog_ignores_borrowed(self, monkeypatch, isolated_vl):
-        _install_httpx(monkeypatch, "multimodal")
-        vl.set_vision_candidate_endpoints(["http://localhost:1234/v1"])
-        monkeypatch.setattr(
-            vl, "_spawn_vision_server_now", lambda base_url="": True
-        )
-        assert vl._ensure_vision_server_running("") is True
-        # should_idle_stop() is False when we own no server (borrowed case).
-        assert vl.should_idle_stop() is False
-        # _touch_vision_use must NOT arm an idle timer for a borrowed server.
-        vl._touch_vision_use()
-        assert vl._idle_timer is None
+    def test_no_process_control_surface_exists(self):
+        """specs/vision-single-server REQ-2: there is no owned server to stop
+        and no idle watchdog — the symbols are GONE (structurally impossible
+        for disable() to kill a shared server, not just conventionally safe)."""
+        for sym in (
+            "_stop_owned_vision_server",
+            "_kill_process_tree",
+            "_VISION_SERVER_PID",
+            "should_idle_stop",
+            "_touch_vision_use",
+        ):
+            assert getattr(vl, sym, None) is None, sym
 
 
 # ---------------------------------------------------------------------------
-# C4 — no candidate -> spawn path unchanged
+# C4 — no candidate -> loud failure, NOTHING spawned
 # ---------------------------------------------------------------------------
 
 
-class TestNoCandidateSpawnUnchanged:
-    def test_no_candidates_falls_through_to_spawn(self, monkeypatch, isolated_vl):
-        # Owned port down, no extra candidates -> discovery finds nothing.
+class TestNoCandidateNoSpawn:
+    def test_no_candidates_returns_false_announces_error(self, monkeypatch, isolated_vl):
         _install_httpx(monkeypatch, "down")
-        spawned: list = []
+        states: list = []
         monkeypatch.setattr(
-            vl, "_spawn_vision_server_now", lambda base_url="": spawned.append(base_url) or True
+            vl, "_notify_lifecycle",
+            lambda state, reason="", trigger="": states.append((state, reason)),
         )
         result = vl._ensure_vision_server_running("")
-        assert result is True
-        assert spawned == [""]  # spawn path reached exactly as before
+        assert result is False
+        assert ("error", "no-shared-multimodal-server-available") in states
 
-    def test_no_candidates_spawn_failure_propagates_false(self, monkeypatch, isolated_vl):
-        _install_httpx(monkeypatch, "down")
-        spawned: list = []
-        monkeypatch.setattr(
-            vl, "_spawn_vision_server_now", lambda base_url="": spawned.append(base_url) or False
-        )
-        assert vl._ensure_vision_server_running("") is False
-        assert spawned == [""]
+    def test_no_spawn_surface_exists(self):
+        # Structural — the spawn path is deleted, not dormant.
+        assert getattr(vl, "_spawn_vision_server_now", None) is None
+        assert getattr(vl, "request_warm", None) is None
 
 
 # ---------------------------------------------------------------------------
@@ -274,17 +250,10 @@ class TestBorrowedServerRouting:
     def test_call_routes_to_borrowed_endpoint(self, monkeypatch, isolated_vl):
         fake = _install_httpx(monkeypatch, "multimodal")
         vl.set_vision_candidate_endpoints(["http://localhost:1234/v1"])
-        monkeypatch.setattr(vl, "has_active_lease", lambda: False)
-        spawned: list = []
-        monkeypatch.setattr(
-            vl, "_spawn_vision_server_now", lambda base_url="": spawned.append(base_url) or True
-        )
         provider = vl.get_lfm_vl_provider()
         out = provider._call(b"fake-png-bytes", "describe the screen")
         assert out == "ok"
-        # No local llama-server was spawned.
-        assert spawned == []
-        # The vision request went to the borrowed server, never the owned port.
+        # The vision request went to the borrowed server, never the default port.
         assert any("localhost:1234/v1/chat/completions" in c for c in fake.post_calls)
         assert all("18181" not in c for c in fake.post_calls)
         # It used the discovered model id, not the literal "vision-model".
@@ -296,8 +265,6 @@ class TestBorrowedServerRouting:
         fake = _install_httpx(monkeypatch, "multimodal")
         vl.set_vision_candidate_endpoints(["http://localhost:1234/v1"])
         monkeypatch.setattr(vl, "_fetch_provider_secret", lambda cred_ref: "test-key-123")
-        monkeypatch.setattr(vl, "has_active_lease", lambda: False)
-        monkeypatch.setattr(vl, "_spawn_vision_server_now", lambda base_url="": True)
         provider = vl.get_lfm_vl_provider()
         out = provider._call(b"x", "go")
         assert out == "ok"
@@ -452,10 +419,66 @@ class TestVisionModelPin:
 
 
 # ---------------------------------------------------------------------------
+# C9 — the shared local model server auto-enters the candidate set ONLY when
+# it is actually running with vision loaded (specs/vision-single-server: this
+# is now the primary tier-3 source).
+# ---------------------------------------------------------------------------
+
+
+class TestSharedServerAutoCandidate:
+    def test_loaded_with_projector_enters_candidates(self, monkeypatch):
+        class _Mgr:
+            def get_status(self):
+                return {
+                    "loaded": True,
+                    "vision_loaded": True,
+                    "endpoint": "http://127.0.0.1:8082/v1",
+                }
+
+        monkeypatch.setattr(
+            "backend.agent.local_model_manager.get_local_model_manager",
+            lambda: _Mgr(),
+        )
+        monkeypatch.setattr(vl, "_read_global_vision_model_pin", lambda: "")
+        candidates = vl._load_candidate_endpoints_from_config()
+        assert ("http://127.0.0.1:8082/v1", None, "") in candidates
+
+    def test_loaded_text_only_does_NOT_enter_candidates(self, monkeypatch):
+        """A model loaded WITHOUT --mmproj must never become a vision target —
+        REQ-1 AC3 of unified-vision-routing, now at the discovery layer."""
+        class _Mgr:
+            def get_status(self):
+                return {
+                    "loaded": True,
+                    "vision_loaded": False,
+                    "endpoint": "http://127.0.0.1:8082/v1",
+                }
+
+        monkeypatch.setattr(
+            "backend.agent.local_model_manager.get_local_model_manager",
+            lambda: _Mgr(),
+        )
+        monkeypatch.setattr(vl, "_read_global_vision_model_pin", lambda: "")
+        candidates = vl._load_candidate_endpoints_from_config()
+        assert all("8082" not in c[0] for c in candidates)
+
+    def test_manager_errors_never_break_discovery(self, monkeypatch):
+        monkeypatch.setattr(
+            "backend.agent.local_model_manager.get_local_model_manager",
+            lambda: (_ for _ in ()).throw(RuntimeError("no manager")),
+        )
+        # must not raise
+        assert isinstance(vl._load_candidate_endpoints_from_config(), list)
+# (the global pin). The backend reads it from there and prefers it during the
+# borrowed-server probe. A path pin must also match a FILENAME served-id
+# (basename). (The local-spawn ladder was deleted with the spawn path.)
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
 # C8 — the vision-card dropdown persists to field_values['vision']['vision_model']
-# (the global pin). The backend reads it from there (NOT a per-provider field)
-# and (a) prefers it during borrowed-server probe, (b) prepends it to the local
-# spawn ladder. A path pin must also match a FILENAME served-id (basename).
+# (the global pin). The backend reads it from there and prefers it during the
+# borrowed-server probe.
 # ---------------------------------------------------------------------------
 
 
@@ -476,25 +499,6 @@ class TestGlobalVisionModelPin:
     def test_read_global_vision_model_pin_missing(self, monkeypatch, isolated_vl):
         monkeypatch.setattr(vl, "_read_global_vision_model_pin", lambda: "")
         assert vl._read_global_vision_model_pin() == ""
-
-    def test_ladder_returns_configured_list_verbatim(self, monkeypatch, isolated_vl):
-        # The global pin governs the BORROWED-SERVER probe (preferred_model), not
-        # the local-spawn ladder — the local spawn already has its own
-        # vision_fallback_ladder (set via the model browser). So the pin must
-        # NOT alter the returned ladder.
-        monkeypatch.setattr(vl, "_read_global_vision_model_pin", lambda: "/models/lfm2.5-vl-3b.gguf")
-        _cfg = _FakeConfig()
-        _cfg.inference.vision_fallback_ladder = ["/models/bonsai27b.gguf", "/models/lfm2.5-vl-3b.gguf"]
-        monkeypatch.setattr(vl, "_load_vl_config", lambda: _cfg)
-        _ladder = vl._configured_vision_ladder()
-        assert _ladder == ["/models/bonsai27b.gguf", "/models/lfm2.5-vl-3b.gguf"]
-
-    def test_ladder_no_pin_keeps_order(self, monkeypatch, isolated_vl):
-        monkeypatch.setattr(vl, "_read_global_vision_model_pin", lambda: "")
-        _cfg = _FakeConfig()
-        _cfg.inference.vision_fallback_ladder = ["/models/bonsai27b.gguf", "/models/lfm2.5-vl-3b.gguf"]
-        monkeypatch.setattr(vl, "_load_vl_config", lambda: _cfg)
-        assert vl._configured_vision_ladder() == ["/models/bonsai27b.gguf", "/models/lfm2.5-vl-3b.gguf"]
 
     def test_probe_pin_matches_by_basename(self, monkeypatch, isolated_vl):
         # The dropdown stores a PATH pin; a borrowed router-mode server serves by

@@ -1,0 +1,28 @@
+{
+  "query": "site:ziglang.org download",
+  "results_url": "https://www.bing.com/search?q=site%3Aziglang.org+download",
+  "available_after_open": true,
+  "url_after_open": "https://www.bing.com/",
+  "type_ok": true,
+  "url_after_settle": "https://www.bing.com/",
+  "html_len": 177361,
+  "page_title": "site:ziglang.org download - Search",
+  "first_hrefs": [
+    "https://r.bing.com",
+    "https://r.bing.com",
+    "https://r.bing.com",
+    "https://r.bing.com",
+    "https://th.bing.com",
+    "https://th.bing.com",
+    "https://th.bing.com",
+    "https://th.bing.com",
+    "https://r.bing.com/rp/zh5yhbkbJVkzFqNrcigech9CW1Y.br.css",
+    "https://r.bing.com/rp/mq2km3vGlSmBhmoWmAFYcw09I0o.br.css",
+    "https://r.bing.com/rp/cRvrvrUA03NVEig8SXhQtErnYaM.br.css",
+    "https://r.bing.com/rp/i3qIwGEMc05UUrvdYpBq0wEvk7A.br.css",
+    "https://r.bing.com/rp/VzvXujziY9FkA6jkaXRdd_Korfc.br.css",
+    "https://r.bing.com/rp/Y7QgWZNU_uCVA8CO-KfKo2NnrAA.br.css",
+    "https://r.bing.com/rp/bqDAb4lsfJ3ICW1sC1PQPjG3Tyk.br.css"
+  ],
+  "screenshot_bytes": 14530
+}

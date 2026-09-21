@@ -1,0 +1,19 @@
+# Cline ignore - keeps session startup fast in this large workspace.
+# Added 2026-09-17 to fix >30s session.create hangs (hub command timeout).
+node_modules/
+.next/
+.next.bloated/
+.next.bloated-20260915/
+.next.old/
+.git/
+build/
+.iris-worktree/
+.iris-logs/
+.iris-pids/
+.venv/
+venv/
+.mcm/
+data/
+bootstrap/
+.pytest_cache/
+.playwright-mcp/
