@@ -996,6 +996,44 @@ def register_builtin_tools() -> None:
             category="memory", executor="internal", requires_internet=False,
             permission_tier="read_only", parallel_safe=False,
         ),
+        # REQ-16 (specs/reply-surface-contract T25): render-as-tool. The
+        # tool_choice consumer can now SELECT rendering; the `show` envelope
+        # stays the wire transport (CT-1 unchanged). When this layer is absent
+        # the envelope remains the sole card trigger (AC5).
+        ToolSpec(
+            name="render_document",
+            description=(
+                "Render content as a document card (prism glass) in the chat. "
+                "Use for artifacts the user wants KEPT — a report, a plan, a "
+                "table, code, a dataset — never for ordinary conversational "
+                "answers. The document is stored (reformattable, rehydratable) "
+                "and the chat carries the conversational line."
+            ),
+            parameters={
+                "format": {
+                    "type": "string",
+                    "enum": ["markdown", "html", "table", "diagram", "text", "json"],
+                    "description": "Render format for the card",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "The full document body",
+                },
+                "document_id": {
+                    "type": "string",
+                    "description": "Optional: revise an existing document in place (same card)",
+                    "optional": True,
+                },
+                "alternatives": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Other formats available for instant switch",
+                    "optional": True,
+                },
+            },
+            category="memory", executor="internal", requires_internet=False,
+            permission_tier="read_only", parallel_safe=False,
+        ),
     ]
 
     # ── Internet-gated web tools (aliased to fix the legacy name mismatch) ───

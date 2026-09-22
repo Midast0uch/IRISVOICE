@@ -1830,6 +1830,17 @@ export function useIRISWebSocket(
         break
       }
 
+      // REQ-17 (reply-surface-contract T27/T28): response to a
+      // `get_document_body` request — the lazy body read for a rehydrated
+      // (metadata-only) card being expanded. Forwarded to iris:document_body;
+      // chat-view fills the card's body in place.
+      case "document_body": {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:document_body', { detail: payload }))
+        }
+        break
+      }
+
       // ── Card re-hydration (T7a, REQ-4 AC2/AC4/AC5) ───────────────────────
       // Response to a `get_cards` request. Forwarded to iris:cards so
       // useTaskProgress can merge persisted cards back into its per-conversation

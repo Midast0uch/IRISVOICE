@@ -155,6 +155,11 @@ class AskUserTool:
                 "options": options or [],
                 "allow_other": allow_other,
                 "timeout_seconds": timeout_seconds,
+                # REQ-11 AC2 (reply-surface-contract T21): the turn id must ride
+                # the DATA payload — the event-envelope turn_id is dropped by
+                # the WS bridge (ws_event_bridge only forwards `data`), and the
+                # frontend anchors the rendered card to its turn with this.
+                "turn_id": turn_id,
                 **({"conversation_id": conversation_id} if conversation_id else {}),
                 **({"context": context} if context else {}),
             },
@@ -210,6 +215,10 @@ class AskUserTool:
 
         data: Dict[str, Any] = {
             "set_id": qset.set_id,
+            # REQ-11 AC2 (reply-surface-contract T21): carry turn_id in DATA —
+            # the WS bridge drops the event-envelope turn_id, and the frontend
+            # anchors question cards to their turn with this field.
+            "turn_id": turn_id,
             "questions": [
                 {
                     "question_id": q.question_id,

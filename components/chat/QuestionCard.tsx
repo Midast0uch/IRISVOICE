@@ -1,6 +1,6 @@
 "use client"
 
-import React, { useState, useEffect, useCallback, useMemo } from "react"
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { Clock, Send, Check } from "lucide-react"
 import { useBrandColor } from "@/contexts/BrandColorContext"
 import { CardChassis, ChassisBadge } from "@/components/chat/CardChassis"
@@ -44,6 +44,10 @@ export interface QuestionCardProps {
   /** `answer` is a plain string for a single-select question and a list of
    *  option strings for a `multiSelect` one (REQ-5 AC3). */
   onAnswer: (questionId: string, answer: string | string[], source?: string) => void
+  /** REQ-12 AC4 (reply-surface-contract T22): fired ONCE when the countdown
+   *  reaches zero so the parent removes the card — a self-dismissing card
+   *  never waits on a backend timeout broadcast that may be lost. */
+  onTimeout?: () => void
 }
 
 /**
@@ -65,6 +69,7 @@ export function QuestionCard({
   questions,
   timeoutSeconds = 30,
   onAnswer,
+  onTimeout,
 }: QuestionCardProps) {
   const { getThemeConfig } = useBrandColor()
   const brandTheme = getThemeConfig()
@@ -89,12 +94,21 @@ export function QuestionCard({
   const [locallyAnswered, setLocallyAnswered] = useState<Record<string, string | string[]>>({})
   const [selections, setSelections] = useState<Record<string, string[]>>({})
   const [customAnswers, setCustomAnswers] = useState<Record<string, string>>({})
+  // REQ-12 AC4: at countdown zero the card notifies the parent to dismiss
+  // itself — fired exactly once (the ref is the guard).
+  const timeoutFiredRef = useRef(false)
 
   useEffect(() => {
     if (timeLeft <= 0) return
     const timer = setInterval(() => setTimeLeft((t) => Math.max(0, t - 1)), 1000)
     return () => clearInterval(timer)
   }, [timeLeft])
+
+  useEffect(() => {
+    if (timeLeft > 0 || timeoutFiredRef.current) return
+    timeoutFiredRef.current = true
+    onTimeout?.()
+  }, [timeLeft, onTimeout])
 
   // A question is locked once WE resolved it locally, or the backend already
   // reports it as non-pending (e.g. a rehydrated set with one question

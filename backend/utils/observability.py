@@ -134,6 +134,10 @@ class TurnMetrics:
     map_events: int = 0
     step_prompt_tokens: int = 0  # REQ-3 AC5: total prompt tokens across DER steps
     ttft_ms: Optional[float] = None
+    # REQ-13 AC4 (reply-surface-contract T18): time-to-card — when the first
+    # DOCUMENT_RENDER of this turn landed. Append-only so existing [LAYERS]
+    # field pins keep passing.
+    card_ms: Optional[float] = None
     e2e_ms: Optional[float] = None
     # REQ-5 AC1 (T8): semantic-gate telemetry rides the [LAYERS] line —
     # gate_domain (winning IntentDomain), gate_lanes (comma-joined capability
@@ -147,6 +151,7 @@ class TurnMetrics:
     gate_widen_scope: str = ""
     _start_ts: float = field(default_factory=time.perf_counter)
     _ttft_marked: bool = field(default=False, repr=False)
+    _card_marked: bool = field(default=False, repr=False)
 
     def record_gate(
         self,
@@ -178,6 +183,12 @@ class TurnMetrics:
         if not self._ttft_marked:
             self.ttft_ms = round((time.perf_counter() - self._start_ts) * 1000, 1)
             self._ttft_marked = True
+
+    def mark_card(self) -> None:
+        """Call when this turn's first DOCUMENT_RENDER lands (REQ-13 AC4)."""
+        if not self._card_marked:
+            self.card_ms = round((time.perf_counter() - self._start_ts) * 1000, 1)
+            self._card_marked = True
 
     def finalize(self) -> None:
         """Compute e2e_ms (and ttft_ms if streaming never happened)."""
@@ -220,7 +231,7 @@ class TurnMetrics:
             f"step_tokens={self.step_prompt_tokens} "
             f"gov_past={self.gov_past} gov_live={self.gov_live} "
             f"gov_both={self.gov_both} gov_ratio={_gov_ratio} "
-            f"ttft_ms={self.ttft_ms} e2e_ms={self.e2e_ms} "
+            f"ttft_ms={self.ttft_ms} card_ms={self.card_ms} e2e_ms={self.e2e_ms} "
             f"gate_domain={self.gate_domain} gate_lanes={self.gate_lanes} "
             f"gate_latency_ms={_gate_lat} gate_widen_scope={self.gate_widen_scope}"
         )

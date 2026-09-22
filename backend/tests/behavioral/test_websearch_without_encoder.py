@@ -4,7 +4,8 @@ specs/long-horizon-der-execution REQ-10 (AC1-AC4) — tasks.md T22 / T32.
 This is the TOP-LEVEL ACCEPTANCE GATE for the REQ-10-REQ-18 extension:
 
     evidence gathered -> verification reached -> synthesis reached ->
-    ONE Prism card with sources -> no re-gather loop
+    full synthesis in the bubble (NO card without `show`, see below) ->
+    no re-gather loop
 
 ...with the encoder forcibly absent: ``_load_default_encoder`` returns
 None AND the cached ``AgentKernel._VERIFIER`` class instance is cleared,
@@ -24,8 +25,15 @@ The drive is REAL end-to-end through the production success path:
   - ``_der_finalize_step``        real success finalize -> mark_complete,
                                   no split (REQ-13 fold-forward guard)
   - ``_der_synthesize_success_outcome``  real REQ-12 success synthesis
-  - ``_process_structured_response``     real REQ-6 Prism-card render with
-                                  inherited sources + har_path
+  - ``_process_structured_response``     real show-presence surface routing
+                                  (specs/reply-surface-contract REQ-2)
+
+NOTE (2026-09-21, reply-surface-contract T1): this drive used to END on an
+auto-rendered prism card (length/zone heuristic, plain synthesis >= 300 chars
+-> fabricated card with inherited sources). That behavior is DELETED — REQ-2
+makes `show`-presence the sole card trigger; step 5 below now pins NO card
+plus the full synthesis in the bubble, and format escalation (QuestionCard)
+is the downstream affordance via ``_maybe_escalate_web_format``.
 
 Only the I/O boundary the test cannot reach is stubbed: the router
 (planner/proposer text), the tool bridge (crawl content), and the event
@@ -316,7 +324,14 @@ class TestWebsearchCompletesWithoutEncoder:
         assert "Python 3.13" in synth
         assert synth != step_result, "synthesized, not raw concatenation"
 
-        # ── 5. RENDER: ONE Prism card with sources (REQ-6) ──────────────
+        # ── 5. SURFACE: plain synthesis renders NO card (REQ-2, successor) ──
+        # `show`-presence is the sole card trigger (specs/reply-surface-contract
+        # REQ-2 / REQ-14 AC3). A >= 300-char plain synthesis with no `show`
+        # payload emits NO DOCUMENT_RENDER and lands FULL in the bubble. (This
+        # step formerly pinned the deleted length/zone auto-render: one prism
+        # card inheriting CRAWL_SOURCES/CRAWL_HAR. Sources/har_path remain
+        # persisted on the captured web document; format escalation is the
+        # downstream QuestionCard path, not driven here.)
         returned = k._process_structured_response(
             synth, turn_id="turn-1", conversation_id=k.conversation_id
         )
@@ -324,18 +339,10 @@ class TestWebsearchCompletesWithoutEncoder:
             e for e in bus.events
             if e["type"] == IRISStreamEvent.DOCUMENT_RENDER
         ]
-        assert len(_renders) == 1, "exactly ONE Prism card (REQ-6 AC1)"
-        data = _renders[0]["data"]
-        assert data["sources"] == CRAWL_SOURCES, (
-            "card inherits captured source URLs (REQ-6 AC1)"
+        assert _renders == [], (
+            "no prism card without a `show` payload (reply-surface-contract REQ-2)"
         )
-        assert data["har_path"] == CRAWL_HAR, (
-            "card inherits HAR provenance (REQ-6 AC1)"
-        )
-        assert data["document_id"] and data["turn_id"] == "turn-1"
-        assert data["conversation_id"] == k.conversation_id
-        # REQ-6 AC2: normal text/speech response accompanies the card.
-        assert returned and returned.strip()
+        assert returned == synth, "full synthesis text returned to the bubble"
 
         # ── 6. T32 RIPPLE: record latency, scorer-tag distribution, and
         #    whether any re-gather loop occurred (REQ-18 trace substrate) ──

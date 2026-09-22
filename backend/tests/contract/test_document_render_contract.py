@@ -22,6 +22,8 @@ Frontend contract (components/chat/QuestionCard.tsx) requires:
 
 from __future__ import annotations
 
+import json
+
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -143,4 +145,92 @@ class TestWebFormatEscalationContract:
         questions = _collect(IRISStreamEvent.QUESTION_ASK)
         kernel._maybe_escalate_web_format("turn-1", "conv-1")
         assert len(questions) == 0
+
+
+class TestPrismCardIdentity:
+    """CT-7 (specs/reply-surface-contract REQ-10, task T23): prism cards carry
+    a stable card_id in addition to the document_id store key. The card_id is
+    minted once at emit and reused across updates and reformats; an unknown
+    card_id is inert — never an error (AC5)."""
+
+    def _kernel_with_render(self):
+        kernel = _make_kernel()
+        # update_document/_card_envelope read these OFF the bare kernel.
+        kernel.conversation_id = "conv-1"
+        kernel._memory = None
+        kernel._memory_interface = None
+        kernel._pacman_zone_for_turn = lambda: "chat"
+        renders = _collect(IRISStreamEvent.DOCUMENT_RENDER)
+        out = AgentKernel._process_structured_response(
+            kernel,
+            json.dumps({
+                "speak": "on the card",
+                "show": {"format": "markdown", "content": "# Doc\n\nbody"},
+            }),
+            turn_id="turn-id7",
+            conversation_id="conv-1",
+        )
+        assert out == "on the card"
+        assert len(renders) == 1
+        return kernel, renders[0]
+
+    def test_render_carries_a_stable_card_id(self):
+        _kernel, render = self._kernel_with_render()
+        assert render.data.get("card_id", "").startswith("card_doc_")
+        assert render.data["document_id"], "document_id remains the store key"
+
+    def test_update_and_reformat_reuse_the_same_card_id(self, monkeypatch):
+        kernel, render = self._kernel_with_render()
+        document_id = render.data["document_id"]
+        card_id = render.data["card_id"]
+
+        class _FakeStore:
+            """Minimal document store: one row as returned by `get()`."""
+
+            def __init__(self):
+                self.row = {
+                    "format": "markdown",
+                    "content": "# Doc\n\nbody",
+                    "alternatives": [],
+                    "trust": "trusted",
+                    "turn_id": "turn-id7",
+                    "sources": [],
+                    "har_path": None,
+                    "revision": 1,
+                }
+
+            def get(self, _id):
+                return dict(self.row)
+
+            def update(self, **kw):
+                self.row["content"] = kw.get("content", self.row["content"])
+                self.row["revision"] += 1
+
+            def get_variant(self, _id, fmt):
+                return "# as table" if fmt == "table" else None
+
+        store = _FakeStore()
+        monkeypatch.setattr(
+            "backend.agent.document_store.DocumentDataStore.get_for",
+            classmethod(lambda cls, _mem: store),
+        )
+
+        renders = _collect(IRISStreamEvent.DOCUMENT_RENDER)
+        assert kernel.update_document(document_id, content="new body") == document_id
+        assert kernel.reformat_document(
+            document_id=document_id, target_format="table"
+        ) == "# as table"
+        assert len(renders) == 2
+        for r in renders:
+            assert r.data["card_id"] == card_id, (
+                "update/reformat must reuse the minted card_id (AC4)"
+            )
+
+    def test_unknown_card_id_is_inert(self):
+        """Unknown card_id resolves to None, never an error (AC5)."""
+        kernel = _make_kernel()
+        kernel.conversation_id = "conv-1"
+        env = kernel._card_envelope(document_id="no-such-document")
+        assert env["card_id"] is None
+        assert "conversation_id" in env
         assert kernel._pending_web_doc_id is None

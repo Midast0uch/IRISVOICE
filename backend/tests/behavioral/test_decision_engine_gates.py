@@ -130,6 +130,13 @@ class TestCtDe6EventShapes:
         pinned = {"format", "content", "alternatives", "trust",
                   "document_id", "turn_id", "conversation_id", "sources",
                   "har_path"}
+        # 2026-09-21 (specs/reply-surface-contract): TWO additive keys join the
+        # pin. `card_id` (REQ-10 AC2 — stable prism-card lifecycle id, additive
+        # per AC5: unknown = inert) and `partial` (REQ-13 AC5 — streaming
+        # discriminator, additive: absent means final). The test still rejects
+        # any OTHER key; only these two documented contract extensions were
+        # added to the set, each pinned by its own CT (CT-7 / CT-11).
+        pinned |= {"card_id", "partial"}
         for ks in keys_seen:
             assert ks <= pinned, f"event shape drifted: {ks - pinned}"
 

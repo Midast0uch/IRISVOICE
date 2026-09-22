@@ -308,9 +308,12 @@ interface DocRender {
   // document in place, so the card can show an "Updated" indicator.
   updated?: boolean
   error?: string | null
-  // Trust-routing W3: "trusted" vs anything else (web/crawler-sourced).
-  trust?: string
-  // Document-rehydration provenance (REQ-5/REQ-6): source URLs + HAR path so a
+      // Trust-routing W3: "trusted" vs anything else (web/crawler-sourced).
+      trust?: string
+      // REQ-13 AC5 (T18b): true while the body is streaming in; the card
+      // renders open so the fill is visible, and no "Updated" badge shows.
+      partial?: boolean
+      // Document-rehydration provenance (REQ-5/REQ-6): source URLs + HAR path so a
   // re-hydrated research doc re-renders WITH its citations, never as bare [n].
   sources?: { url: string; title: string }[]
   harPath?: string | null
@@ -455,6 +458,74 @@ export function ChatWing({
   // Each document:render WS event appends or updates a DocRender within the
   // active conversation; the expand action opens it full-panel via DocumentPanel.
   const [expandedDocId, setExpandedDocId] = useState<string | null>(null)
+  // REQ-17 (reply-surface-contract T27/T28): a rehydrated card's body is
+  // fetched LAZILY when the user expands it — hydration stays metadata-only
+  // (AC4); nothing ships wholesale with history. Retry clears the status so
+  // the effect re-fires.
+  const [docBodyStatus, setDocBodyStatus] = useState<
+    Record<string, 'loading' | 'ok' | 'missing' | 'error'>
+  >({})
+
+  const retryDocumentBody = useCallback((documentId: string) => {
+    setDocBodyStatus(prev => {
+      const next = { ...prev }
+      delete next[documentId]
+      return next
+    })
+  }, [])
+
+  // The fetch trigger: fires only for an expanded, body-less, store-backed doc.
+  useEffect(() => {
+    if (!expandedDocId) return
+    const doc = conversations
+      .find(c => c.id === activeConversationId)
+      ?.documents.find(d => d.id === expandedDocId)
+    if (!doc?.documentId) return
+    if ((doc.content || '').trim().length > 0) return
+    if (docBodyStatus[doc.documentId]) return
+    setDocBodyStatus(prev => ({ ...prev, [doc.documentId!]: 'loading' }))
+    sendMessage?.('get_document_body', {
+      document_id: doc.documentId,
+      conversation_id: activeConversationId,
+    })
+  }, [expandedDocId, conversations, activeConversationId, docBodyStatus, sendMessage])
+
+  // REQ-17 AC3: the body fills the EXISTING card in place — no fresh
+  // DOCUMENT_RENDER, no new card, no duplicate.
+  useEffect(() => {
+    function onBody(e: Event) {
+      const detail = (e as CustomEvent<{
+        document_id?: string; conversation_id?: string; status?: string
+        content?: string; format?: string; sources?: DocRender['sources']
+        har_path?: string | null; trust?: string
+      }>).detail
+      if (!detail?.document_id) return
+      setDocBodyStatus(prev => ({
+        ...prev,
+        [detail.document_id as string]: detail.status === 'ok' ? 'ok' : 'missing',
+      }))
+      if (detail.status !== 'ok' || !detail.content) return
+      setConversations(prev => prev.map(conv => {
+        const cid = detail.conversation_id || activeConversationIdRef.current
+        if (conv.id !== cid) return conv
+        const documents = conv.documents.map(d =>
+          d.documentId === detail.document_id
+            ? {
+                ...d,
+                content: detail.content as string,
+                format: detail.format || d.format,
+                sources: detail.sources,
+                harPath: detail.har_path ?? d.harPath,
+                trust: detail.trust || d.trust,
+              }
+            : d
+        )
+        return { ...conv, documents }
+      }))
+    }
+    window.addEventListener('iris:document_body', onBody)
+    return () => window.removeEventListener('iris:document_body', onBody)
+  }, [])
   // turnId -> normalized content of every document rendered under that turn.
   // This exists so the text_response handlers can tell "a card exists for this
   // turn" apart from "this card IS the answer". The old check only had the turn
@@ -561,22 +632,38 @@ export function ChatWing({
   // handlers (see the card's onApprove/onDeny/onConfirm). Mirrors the backend
   // permission_granted/denied removal path so a click always clears the card,
   // even if the broadcast is missing or mis-routed.
-  const removePendingPermission = useCallback((id: string) => {
-    setPendingPermissions(prev => {
-      const next = new Map(prev)
-      next.delete(id)
-      return next
-    })
-  }, [])
+      const removePendingPermission = useCallback((id: string) => {
+        setPendingPermissions(prev => {
+          const next = new Map(prev)
+          next.delete(id)
+          return next
+        })
+      }, [])
 
-  // Pending agent questions state — rendered as QuestionCards
-  interface PendingQuestion {
-    questionId: string
-    text: string
-    options?: string[]
-    allowOther?: boolean
-    timeoutSeconds?: number
-  }
+      // REQ-12 AC1/AC2 (reply-surface-contract T22): optimistic removal for
+      // question cards — same pattern as the permission card above. A ref so
+      // the []-memoized event handlers always call the latest instance.
+      const removePendingQuestion = useCallback((id: string) => {
+        setPendingQuestions(prev => {
+          const next = new Map(prev)
+          next.delete(id)
+          return next
+        })
+      }, [])
+      const removePendingQuestionRef = useRef(removePendingQuestion)
+      removePendingQuestionRef.current = removePendingQuestion
+
+      // Pending agent questions state — rendered as QuestionCards
+      interface PendingQuestion {
+        questionId: string
+        text: string
+        options?: string[]
+        allowOther?: boolean
+        timeoutSeconds?: number
+        // REQ-11 AC2 (reply-surface-contract T21): the asking turn; the card
+        // anchors to it in the thread instead of pinning at the bottom.
+        turnId?: string
+      }
   const [pendingQuestions, setPendingQuestions] = useState<Map<string, PendingQuestion>>(new Map())
 
   // Window width for responsive both-open layout
@@ -823,9 +910,62 @@ export function ChatWing({
     return () => window.removeEventListener("iris:context_usage", onUsage)
   }, [])
 
-  // Get active conversation messages
-  const activeConversation = conversations.find(c => c.id === activeConversationId);
-  const messages = activeConversation?.messages || [];
+      // Get active conversation messages
+      const activeConversation = conversations.find(c => c.id === activeConversationId);
+      const messages = activeConversation?.messages || [];
+
+      // REQ-11/REQ-12 (reply-surface-contract T21/T22): a question whose turn
+      // already has a message renders INLINE at that turn; the bottom block is
+      // the fallback while the turn's reply has not landed yet (AC3). Reload
+      // reconcile (AC5) falls out: pendingQuestions is in-memory only, so a
+      // reload starts with an empty map — a stale card can never rehydrate.
+      const anchoredQuestionIds = useMemo(() => {
+        const turnOwners = new Set(
+          messages.flatMap((m) => (m.turn_id ? [m.id, m.turn_id] : [m.id]))
+        )
+        const anchored = new Set<string>()
+        for (const q of pendingQuestions.values()) {
+          if (q.turnId && turnOwners.has(q.turnId)) anchored.add(q.questionId)
+        }
+        return anchored
+      }, [messages, pendingQuestions])
+
+      // T22: one render helper used by BOTH the bottom block (unanchored
+      // fallback) and the in-turn join (T21). The optimistic removal on answer
+      // lands BEFORE the backend round trip (AC1); self-dismiss at countdown
+      // zero covers AC4.
+      const questionCardFor = (q: {
+        questionId: string
+        text: string
+        options?: string[]
+        allowOther?: boolean
+        timeoutSeconds?: number
+        turnId?: string
+      }) => (
+        <QuestionCard
+          key={q.questionId}
+          questionId={q.questionId}
+          text={q.text}
+          options={q.options}
+          allowOther={q.allowOther}
+          timeoutSeconds={q.timeoutSeconds}
+          onAnswer={(id, answer, source) => {
+            sendMessage?.('question_response', {
+              question_id: id,
+              answer,
+              // Forward the card's answer provenance ("click" | "text") so
+              // GUI answers stay distinguishable from terminal answers
+              // (source:'cli') end-to-end. Backend ignores unknown fields.
+              source,
+            })
+            // REQ-12 AC1: optimistic removal — the card disappears on the
+            // click itself, before any backend broadcast, and a lost broadcast
+            // can no longer leave it rendered (session-331 permission parity).
+            removePendingQuestion(id)
+          }}
+          onTimeout={() => removePendingQuestion(q.questionId)}
+        />
+      )
 
   // Conversation chips — derived from user messages, front-end only, no LLM.
   // Session 246 (user directive): TASK CARDS register here too — each card
@@ -1110,6 +1250,23 @@ export function ChatWing({
       }
       if (turnId) {
         seenTurnIds.current.add(turnId)
+        // REQ-12 AC3 (reply-surface-contract T22): a finalized reply makes any
+        // question card of THAT turn superseded — dismiss it. Idempotent, and
+        // scoped to this exact turn so a genuinely pending question of another
+        // turn stays (edge case: actively-blocking question must NOT vanish —
+        // this only fires when ITS OWN turn's answer arrived).
+        setPendingQuestions(prev => {
+          if (prev.size === 0) return prev
+          let changed = false
+          const next = new Map(prev)
+          for (const [qid, q] of prev) {
+            if (q.turnId === turnId) {
+              next.delete(qid)
+              changed = true
+            }
+          }
+          return changed ? next : prev
+        })
       }
 
       const isUserVoice = sender === "user"
@@ -1284,6 +1441,11 @@ export function ChatWing({
         // Phase 4 (chat-card-redesign): backend sets this when it revises an
         // existing document in place, so the card can show an "Updated" indicator.
         updated?: boolean
+        // REQ-13 AC5 (reply-surface-contract T18b): a PARTIAL emit is a
+        // streaming card body filling in. It updates the SAME card in place and
+        // must never be rendered as a revision — no "Updated" badge while
+        // partial is set.
+        partial?: boolean
         trust?: string
         sources?: { url: string; title: string }[]
         har_path?: string | null
@@ -1306,11 +1468,13 @@ export function ChatWing({
         turnId: detail.turn_id,
         documentId: detail.document_id,
         reformatted: detail.reformatted || false,
-        updated: detail.updated || false,
+        // Partial emits are a stream, not a revision — suppress the badge.
+        updated: detail.partial ? false : (detail.updated || false),
         error: null,
         trust: detail.trust,
         sources: detail.sources,
         harPath: detail.har_path ?? null,
+        partial: detail.partial || false,
       }
       // Per-conversation document store — updates the active conversation's
       // documents array instead of a flat global array.
@@ -1633,7 +1797,7 @@ export function ChatWing({
     function handleQuestionAsk(e: Event) {
       const detail = (e as CustomEvent<{
         question_id: string; text: string; options?: string[];
-        allow_other?: boolean; timeout_seconds?: number
+        allow_other?: boolean; timeout_seconds?: number; turn_id?: string
       }>).detail
       if (!detail?.question_id || !detail?.text) return
       setPendingQuestions(prev => {
@@ -1644,18 +1808,17 @@ export function ChatWing({
           options: detail.options,
           allowOther: detail.allow_other,
           timeoutSeconds: detail.timeout_seconds,
+          turnId: detail.turn_id,
         })
         return next
       })
     }
+    // REQ-12 AC2 (reply-surface-contract T22): resolution is idempotent — a
+    // duplicate backend broadcast after the optimistic removal is a no-op.
     function handleQuestionResolved(e: Event) {
       const detail = (e as CustomEvent<{ question_id: string }>).detail
       if (!detail?.question_id) return
-      setPendingQuestions(prev => {
-        const next = new Map(prev)
-        next.delete(detail.question_id)
-        return next
-      })
+      removePendingQuestionRef.current(detail.question_id)
     }
     window.addEventListener('iris:question_ask', handleQuestionAsk)
     window.addEventListener('iris:question_answered', handleQuestionResolved)
@@ -3633,29 +3796,231 @@ ${message.text}`;
                     // else is conversation and stays in the thread, in full, with
                     // truncate/expand for length.
                     const isDocumentMode = (isExplicitFile || contentType === 'email' || contentType === 'picture' || contentType === 'video') && charCount > MESSAGE_THRESHOLDS.DOCUMENT_MODE_AT;
+
+                    // Per-bubble content-type icon+label REMOVED 2026-09-21
+                    // (reply-surface-contract T14 / REQ-5): the badge was chrome
+                    // the owner does not want. `getContentType` stays — it still
+                    // drives isDocumentMode and other routing.
                     
-                    // Content type icon mapping
-                    const ContentTypeIcon = ({ size = 12 }: { size?: number }) => {
-                      const style = { color: glowColor };
-                      switch (contentType) {
-                        case 'markdown': return <FileText size={size} style={style} />;
-                        case 'email': return <Mail size={size} style={style} />;
-                        case 'video': return <Video size={size} style={style} />;
-                        case 'picture': return <Image size={size} style={style} />;
-                        default: return <File size={size} style={style} />;
-                      }
-                    };
-                    
+                    // T15 (reply-surface-contract REQ-3 AC3): suppress the
+                    // supportive bubble when the agent's line literally repeats
+                    // the card's opening — the card then already carries it.
+                    // Guards: only when a turn-joined doc EXISTS and its body
+                    // starts with the bubble text, and never when they are
+                    // equal (equality means the emit failed and the bubble is
+                    // the only copy — see backend seam emit-failure fallback).
+                    const _bubbleText = (message.text || '').trim()
+                    const bubbleDuplicatesCard =
+                      message.sender === 'assistant' &&
+                      _bubbleText.length > 0 &&
+                      (activeConversation?.documents || []).some(
+                        (d) =>
+                          d.turnId &&
+                          (d.turnId === message.id || d.turnId === message.turn_id) &&
+                          (d.content || '').trim().length > _bubbleText.length &&
+                          (d.content || '').trim().startsWith(_bubbleText),
+                      )
+
                     return (
                     <div key={message.id} id={`msg-${message.id}`}>
                       {/* Horizontal separator */}
                       {index > 0 && (
-                        <div 
+                        <div
                           className="h-px w-full my-3"
                           style={{ backgroundColor: `${glowColor}10` }}
                         />
                       )}
-                      
+
+                      {/* Inline RichDocument cards for this turn. T15
+                          (reply-surface-contract REQ-3 AC3): cards render ABOVE
+                          the supportive bubble so the artifact leads and the
+                          conversational line follows. Joined on
+                          doc.turnId === message.id (same key the message itself
+                          carries — see handleTextResponse chat-view.tsx:1033).
+                          Sources-carrier logic is identical to the previous
+                          bottom-stacked block; only the placement changed.
+                          A websearch turn emits multiple `show` payloads (one
+                          per crawler_query step as a JSON card, then the final
+                          markdown synthesis), and only the markdown card carries
+                          the merged sources for the turn — same-turn siblings
+                          contribute to that carrier's source list. Bodyless
+                          entries (a store miss or a truncated row) degrade to
+                          "no card" rather than an empty glass rectangle. */}
+                      {(() => {
+                        const _allDocs = activeConversation?.documents || []
+                        if (message.sender !== 'assistant') return null
+                        // Join on turn: live messages carry id === turn_id
+                        // (anchor rule in handleTextResponse), rehydrated
+                        // ones carry the DB row id and expose the turn via
+                        // message.turn_id. Matching BOTH keeps a prism card
+                        // attached to its turn after a history reload —
+                        // without this the card fell to the orphan pile the
+                        // moment openHistory() replaced the messages
+                        // (session 296: "cards vanish when I switch threads").
+                        const _myTurnDocs = _allDocs.filter(
+                          (d) =>
+                            d.turnId &&
+                            (d.turnId === message.id || d.turnId === message.turn_id) &&
+                            // REQ-17 T28: a rehydrated card may have NO in-memory
+                            // body (metadata-only hydration) but its document_id
+                            // is resolvable — admit it so the card renders and the
+                            // body fetches on expand. Truly empty docs still drop.
+                            ((d.content || '').trim().length > 0 || !!d.documentId),
+                        )
+                        if (_myTurnDocs.length === 0) return null
+                        // Empty-result websearch should NOT be a prism card — it is
+                        // conversational plain text. The agent sometimes wraps a
+                        // "no usable results" synthesis as markdown with an empty
+                        // source list (observed live 2026-08-27: "I wasn't able to
+                        // pull any direct image URLs..." rendered as MARKDOWN|WEB).
+                        // That is the "plain text renders as prism" report. Detect
+                        // it structurally (no sources + failure phrasing) and
+                        // downgrade to an inline MarkdownMessage so it scrolls as
+                        // text, not as a glass artifact.
+                        const _isEmptyResultDoc = (doc: (typeof _myTurnDocs)[number], sources: unknown): boolean => {
+                          const srcLen = Array.isArray(sources) ? sources.length : 0
+                          if (srcLen > 0) return false
+                          const lc = (doc.content || '').toLowerCase()
+                          // Fast structural signal: the card claims "0 URLs
+                          // retrieved" or explicitly says it pulled nothing.
+                          // Checked case-insensitively; kept narrow so a legit
+                          // empty-source markdown (e.g. a generated table) does
+                          // NOT match.
+                          return (
+                            lc.includes("wasn't able to pull") ||
+                            lc.includes("wasn't able to retrieve") ||
+                            lc.includes("no usable direct image") ||
+                            lc.includes("no usable content") ||
+                            lc.includes("no candidate urls") ||
+                            lc.includes("retry produced no usable content") ||
+                            (lc.includes("image urls retrieved") && lc.includes(" 0")) ||
+                            (lc.includes("what failed") && lc.includes("no usable"))
+                          )
+                        }
+                        // Build the per-turn source map once (markdown carrier
+                        // merges sources from same-turn siblings).
+                        const _turnSources = new Map<string, { url: string; title: string }[]>()
+                        for (const d of _allDocs) {
+                          if (!d.turnId) continue
+                          const cur = _turnSources.get(d.turnId) || []
+                          const merged = [...cur]
+                          for (const s of d.sources || []) {
+                            if (!merged.some((m) => m.url === s.url)) merged.push(s)
+                          }
+                          _turnSources.set(d.turnId, merged)
+                        }
+                        const carrierId =
+                          _myTurnDocs.find((d) => d.format === 'markdown')?.id ??
+                          _myTurnDocs.find(
+                            (d) =>
+                              (d.sources && d.sources.length > 0) ||
+                              (d.turnId && d.turnId === taskProgress.turnId),
+                          )?.id ??
+                          null
+                        return _myTurnDocs.map((doc) => {
+                          const isMarkdown = doc.format === 'markdown'
+                          const isSourcesCarrier = doc.id === carrierId
+                          const docSources: {
+                            url: string
+                            title: string
+                            status?: "planned" | "reading" | "read" | "blocked" | "parked"
+                            discovered?: boolean
+                            reason?: string
+                            jobId?: string
+                            capturePage?: number
+                          }[] | undefined =
+                            isSourcesCarrier
+                              ? doc.turnId && doc.turnId === taskProgress.turnId &&
+                                crawlState.sources.length > 0
+                                ? crawlState.sources.map((s) => ({
+                                    url: s.url,
+                                    title: s.title || s.host || s.url,
+                                    status: s.status,
+                                    discovered: s.discovered,
+                                    reason: s.reason,
+                                    jobId: s.jobId ?? undefined,
+                                    capturePage: s.capturePage ?? undefined,
+                                  }))
+                                : isMarkdown
+                                  ? _turnSources.get(doc.turnId || '') || doc.sources
+                                  : doc.sources
+                              : undefined
+                          // Empty-result websearch → plain text, not a prism.
+                          // Keeps the "no information" answer in the bubble
+                          // stream where it scrolls inline, instead of a
+                          // glass card at the bottom.
+                          if (_isEmptyResultDoc(doc, docSources)) {
+                            return (
+                              <div key={`doc-${doc.id}`} className="my-2 max-w-[90%]">
+                                <MarkdownMessage
+                                  text={doc.content}
+                                  variant={isDeveloper ? 'cli' : 'markdown'}
+                                />
+                                {doc.error && (
+                                  <p className="text-[9px] mt-1" style={{ color: '#ef4444' }}>{doc.error}</p>
+                                )}
+                              </div>
+                            )
+                          }
+                          return (
+                            <div key={`doc-${doc.id}`} className="my-3 relative">
+                              {doc.updated && (
+                                <span
+                                  className="absolute -top-2 right-2 z-10 rounded-full px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider"
+                                  style={{
+                                    color: glowColor,
+                                    border: `1px solid ${glowColor}55`,
+                                    background: "rgba(10,11,22,0.75)",
+                                  }}
+                                >
+                                  Updated
+                                </span>
+                              )}
+                              <RichDocument
+                                content={doc.content}
+                                format={doc.format as "markdown" | "html" | "table" | "diagram" | "text" | "json" | "image"}
+                                glowColor={glowColor}
+                                alternatives={doc.alternatives}
+                                trust={doc.trust}
+                                partial={doc.partial}
+                                onFormatChange={(newFormat) =>
+                                  sendMessage?.('reformat_document', {
+                                    document_id: doc.documentId,
+                                    format: newFormat,
+                                    turn_id: doc.turnId,
+                                    original_format: doc.format,
+                                    trust: doc.trust,
+                                  })
+                                }
+                                onExpand={() => setExpandedDocId(doc.id)}
+                                expandable={
+                                  (doc.content || '').trim().length === 0 &&
+                                  !!doc.documentId
+                                }
+                                sources={docSources}
+                                harPath={doc.harPath}
+                              />
+                              {doc.error && (
+                                <p className="text-[9px] mt-1" style={{ color: '#ef4444' }}>{doc.error}</p>
+                              )}
+                            </div>
+                          )
+                        })
+                      })()}
+
+                      {/* T21 (reply-surface-contract REQ-11 AC1/AC3): question
+                          cards asked in THIS turn anchor here — in the thread,
+                          at their turn, not pinned at the bottom block. */}
+                      {message.sender === 'assistant' &&
+                        Array.from(pendingQuestions.values())
+                          .filter(
+                            (q) =>
+                              q.turnId &&
+                              anchoredQuestionIds.has(q.questionId) &&
+                              (q.turnId === message.id || q.turnId === message.turn_id)
+                          )
+                          .map((q) => questionCardFor(q))}
+
                       <div
                         className={`flex justify-start`}
                       >
@@ -3732,12 +4097,12 @@ ${message.text}`;
                                 </div>
                               </div>
                             ) : shouldTruncate ? (
-                              // Truncated message with expand option
+                              // Truncated message with expand option. The
+                              // content-type badge (icon + label) was removed
+                              // 2026-09-21 (reply-surface-contract REQ-5 /
+                              // T14): type is conveyed by the rendering itself,
+                              // not by chrome.
                               <div className="mt-1">
-                                <div className="flex items-center gap-1 mb-1">
-                                  <ContentTypeIcon size={12} />
-                                  <span className="text-[9px] text-white/50 uppercase tracking-wide">{contentType}</span>
-                                </div>
                                 <div className="relative">
                                   {isDeveloper ? (
                                     <pre className="font-mono text-[11px] leading-[1.5] whitespace-pre-wrap break-words" style={{ color: 'rgba(255,255,255,0.88)' }}>
@@ -3939,8 +4304,10 @@ ${message.text}`;
                               </div>
                             )}
 
-                            {/* Message content with smart length handling and TTS highlighting */}
-                            {isDocumentMode ? (
+                            {/* Message content with smart length handling and TTS highlighting.
+                                T15 (REQ-3 AC3): suppressed when it duplicates the card opening —
+                                the card above already carries those words. */}
+                            {!bubbleDuplicatesCard && (isDocumentMode ? (
                               // Document mode for long messages
                               <div className="mt-1">
                                 <p className="text-[13px] leading-relaxed text-white/85 line-clamp-3">
@@ -3999,10 +4366,6 @@ ${message.text}`;
                             ) : shouldTruncate ? (
                               // Truncated message with expand option
                               <div className="mt-1">
-                                <div className="flex items-center gap-1 mb-1">
-                                  <ContentTypeIcon size={12} />
-                                  <span className="text-[9px] text-white/50 uppercase tracking-wide">{contentType}</span>
-                                </div>
                                 <div className="relative">
                                   {/* Body: markdown, never word-highlighted.
                                       A long answer is READ, not spoken — the
@@ -4072,7 +4435,7 @@ ${message.text}`;
                                 highlightIndex={ttsWordIndex}
                                 variant={isDeveloper ? 'cli' : 'markdown'}
                               />
-                            )}
+                            ))}
                             
                             {/* Feedback action bar */}
                             <div className="flex items-center gap-2 mt-2 pt-2 border-t border-white/5">
@@ -4174,170 +4537,11 @@ ${message.text}`;
                           </motion.div>
                         )}
                       </div>
-                      {/* Inline RichDocument cards for this turn. Joined on
-                          doc.turnId === message.id (same key the message itself
-                          carries — see handleTextResponse chat-view.tsx:1033).
-                          Sources-carrier logic is identical to the previous
-                          bottom-stacked block; only the placement changed.
-                          A websearch turn emits multiple `show` payloads (one
-                          per crawler_query step as a JSON card, then the final
-                          markdown synthesis), and only the markdown card carries
-                          the merged sources for the turn — same-turn siblings
-                          contribute to that carrier's source list. Bodyless
-                          entries (a store miss or a truncated row) degrade to
-                          "no card" rather than an empty glass rectangle. */}
-                      {(() => {
-                        const _allDocs = activeConversation?.documents || []
-                        if (message.sender !== 'assistant') return null
-                        // Join on turn: live messages carry id === turn_id
-                        // (anchor rule in handleTextResponse), rehydrated
-                        // ones carry the DB row id and expose the turn via
-                        // message.turn_id. Matching BOTH keeps a prism card
-                        // attached to its turn after a history reload —
-                        // without this the card fell to the orphan pile the
-                        // moment openHistory() replaced the messages
-                        // (session 296: "cards vanish when I switch threads").
-                        const _myTurnDocs = _allDocs.filter(
-                          (d) =>
-                            d.turnId &&
-                            (d.turnId === message.id || d.turnId === message.turn_id) &&
-                            (d.content || '').trim().length > 0,
-                        )
-                        if (_myTurnDocs.length === 0) return null
-                        // Empty-result websearch should NOT be a prism card — it is
-                        // conversational plain text. The agent sometimes wraps a
-                        // "no usable results" synthesis as markdown with an empty
-                        // source list (observed live 2026-08-27: "I wasn't able to
-                        // pull any direct image URLs..." rendered as MARKDOWN|WEB).
-                        // That is the "plain text renders as prism" report. Detect
-                        // it structurally (no sources + failure phrasing) and
-                        // downgrade to an inline MarkdownMessage so it scrolls as
-                        // text, not as a glass artifact.
-                        const _isEmptyResultDoc = (doc: (typeof _myTurnDocs)[number], sources: unknown): boolean => {
-                          const srcLen = Array.isArray(sources) ? sources.length : 0
-                          if (srcLen > 0) return false
-                          const lc = (doc.content || '').toLowerCase()
-                          // Fast structural signal: the card claims "0 URLs
-                          // retrieved" or explicitly says it pulled nothing.
-                          // Checked case-insensitively; kept narrow so a legit
-                          // empty-source markdown (e.g. a generated table) does
-                          // NOT match.
-                          return (
-                            lc.includes("wasn't able to pull") ||
-                            lc.includes("wasn't able to retrieve") ||
-                            lc.includes("no usable direct image") ||
-                            lc.includes("no usable content") ||
-                            lc.includes("no candidate urls") ||
-                            lc.includes("retry produced no usable content") ||
-                            (lc.includes("image urls retrieved") && lc.includes(" 0")) ||
-                            (lc.includes("what failed") && lc.includes("no usable"))
-                          )
-                        }
-                        // Build the per-turn source map once (markdown carrier
-                        // merges sources from same-turn siblings).
-                        const _turnSources = new Map<string, { url: string; title: string }[]>()
-                        for (const d of _allDocs) {
-                          if (!d.turnId) continue
-                          const cur = _turnSources.get(d.turnId) || []
-                          const merged = [...cur]
-                          for (const s of d.sources || []) {
-                            if (!merged.some((m) => m.url === s.url)) merged.push(s)
-                          }
-                          _turnSources.set(d.turnId, merged)
-                        }
-                        const carrierId =
-                          _myTurnDocs.find((d) => d.format === 'markdown')?.id ??
-                          _myTurnDocs.find(
-                            (d) =>
-                              (d.sources && d.sources.length > 0) ||
-                              (d.turnId && d.turnId === taskProgress.turnId),
-                          )?.id ??
-                          null
-                        return _myTurnDocs.map((doc) => {
-                          const isMarkdown = doc.format === 'markdown'
-                          const isSourcesCarrier = doc.id === carrierId
-                          const docSources: {
-                            url: string
-                            title: string
-                            status?: "planned" | "reading" | "read" | "blocked" | "parked"
-                            discovered?: boolean
-                            reason?: string
-                            jobId?: string
-                            capturePage?: number
-                          }[] | undefined =
-                            isSourcesCarrier
-                              ? doc.turnId && doc.turnId === taskProgress.turnId &&
-                                crawlState.sources.length > 0
-                                ? crawlState.sources.map((s) => ({
-                                    url: s.url,
-                                    title: s.title || s.host || s.url,
-                                    status: s.status,
-                                    discovered: s.discovered,
-                                    reason: s.reason,
-                                    jobId: s.jobId ?? undefined,
-                                    capturePage: s.capturePage ?? undefined,
-                                  }))
-                                : isMarkdown
-                                  ? _turnSources.get(doc.turnId || '') || doc.sources
-                                  : doc.sources
-                              : undefined
-                          // Empty-result websearch → plain text, not a prism.
-                          // Keeps the "no information" answer in the bubble
-                          // stream where it scrolls inline, instead of a
-                          // glass card at the bottom.
-                          if (_isEmptyResultDoc(doc, docSources)) {
-                            return (
-                              <div key={`doc-${doc.id}`} className="my-2 max-w-[90%]">
-                                <MarkdownMessage
-                                  text={doc.content}
-                                  variant={isDeveloper ? 'cli' : 'markdown'}
-                                />
-                                {doc.error && (
-                                  <p className="text-[9px] mt-1" style={{ color: '#ef4444' }}>{doc.error}</p>
-                                )}
-                              </div>
-                            )
-                          }
-                          return (
-                            <div key={`doc-${doc.id}`} className="my-3 relative">
-                              {doc.updated && (
-                                <span
-                                  className="absolute -top-2 right-2 z-10 rounded-full px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider"
-                                  style={{
-                                    color: glowColor,
-                                    border: `1px solid ${glowColor}55`,
-                                    background: "rgba(10,11,22,0.75)",
-                                  }}
-                                >
-                                  Updated
-                                </span>
-                              )}
-                              <RichDocument
-                                content={doc.content}
-                                format={doc.format as "markdown" | "html" | "table" | "diagram" | "text" | "json" | "image"}
-                                glowColor={glowColor}
-                                alternatives={doc.alternatives}
-                                trust={doc.trust}
-                                onFormatChange={(newFormat) =>
-                                  sendMessage?.('reformat_document', {
-                                    document_id: doc.documentId,
-                                    format: newFormat,
-                                    turn_id: doc.turnId,
-                                    original_format: doc.format,
-                                    trust: doc.trust,
-                                  })
-                                }
-                                onExpand={() => setExpandedDocId(doc.id)}
-                                sources={docSources}
-                                harPath={doc.harPath}
-                              />
-                              {doc.error && (
-                                <p className="text-[9px] mt-1" style={{ color: '#ef4444' }}>{doc.error}</p>
-                              )}
-                            </div>
-                          )
-                        })
-                      })()}
+                      {/* Prism cards for this turn now render ABOVE the bubble
+                          (T15, reply-surface-contract REQ-3 AC3): the card is the
+                          artifact, the bubble that follows is the supportive
+                          speak line. The doc-join block itself lives directly
+                          after the separator at the top of this message row. */}
                     </div>
                   );
                 })}
@@ -4361,7 +4565,7 @@ ${message.text}`;
                       const m = (e as Extract<(typeof renderTimeline)[number], { kind: 'message' }>).message
                       return m.turn_id ? [m.id, m.turn_id] : [m.id]
                     }))
-                    const _orphans = _all.filter((d) => (d.content || '').trim().length > 0 && d.turnId && !_msgIds.has(d.turnId))
+                    const _orphans = _all.filter((d) => (((d.content || '').trim().length > 0) || !!d.documentId) && d.turnId && !_msgIds.has(d.turnId))
                     if (_orphans.length === 0) return null
                     return _orphans.map((doc) => (
                       <div key={`orphan-${doc.id}`} className="my-3 relative">
@@ -4381,6 +4585,10 @@ ${message.text}`;
                             })
                           }
                           onExpand={() => setExpandedDocId(doc.id)}
+                          expandable={
+                            (doc.content || '').trim().length === 0 &&
+                            !!doc.documentId
+                          }
                           sources={doc.sources}
                           harPath={doc.harPath}
                         />
@@ -4511,32 +4719,17 @@ ${message.text}`;
                     ))}
                   </AnimatePresence>
 
-                  {/* Agent Question Cards */}
+                  {/* Agent Question Cards — UNANCHORED fallback only (T21).
+                      A question whose asking turn already has a message renders
+                      INLINE at that turn (see the doc-join join above); this
+                      block covers the live pre-answer window (REQ-11 AC3) and
+                      hides nothing the thread has already anchored. */}
                   <AnimatePresence>
-                    {Array.from(pendingQuestions.values()).map((q) => (
-                      <QuestionCard
-                        key={q.questionId}
-                        questionId={q.questionId}
-                        text={q.text}
-                        options={q.options}
-                        allowOther={q.allowOther}
-                        timeoutSeconds={q.timeoutSeconds}
-                        onAnswer={(id, answer, source) => {
-                          sendMessage?.('question_response', {
-                            question_id: id,
-                            answer,
-                            // T11-adjacent (REQ-8): forward the card's answer
-                            // provenance ("click" | "text") so GUI answers are
-                            // distinguishable from terminal answers
-                            // (source:'cli') end-to-end. Backend ignores
-                            // unknown fields — additive only.
-                            source,
-                          })
-                        }}
-                      />
-                     ))}
+                    {Array.from(pendingQuestions.values())
+                      .filter((q) => !anchoredQuestionIds.has(q.questionId))
+                      .map((q) => questionCardFor(q))}
                    </AnimatePresence>
-                 </div>
+                  </div>
                )}
              </div>
 
@@ -4669,6 +4862,18 @@ ${message.text}`;
               {expandedDocId && (() => {
                 const doc = activeConversation?.documents.find((d) => d.id === expandedDocId)
                 if (!doc) return null
+                // REQ-17 (T28): a rehydrated card whose body is not in memory
+                // shows loading / unavailable (+retry) rather than a blank
+                // panel; the body arrives via the iris:document_body merge.
+                const _hasBody = (doc.content || '').trim().length > 0
+                const _status = doc.documentId
+                  ? docBodyStatus[doc.documentId]
+                  : undefined
+                const bodyState: 'ready' | 'loading' | 'unavailable' = _hasBody
+                  ? 'ready'
+                  : _status === 'missing' || _status === 'error'
+                    ? 'unavailable'
+                    : 'loading'
                 return (
                   <motion.div
                     key="doc-panel"
@@ -4689,6 +4894,12 @@ ${message.text}`;
                       alternatives={doc.alternatives}
                       glowColor={glowColor}
                       trust={doc.trust}
+                      bodyState={bodyState}
+                      onRetry={
+                        doc.documentId
+                          ? () => retryDocumentBody(doc.documentId!)
+                          : undefined
+                      }
                       onClose={() => setExpandedDocId(null)}
                       onFormatChange={(newFormat) =>
                         sendMessage?.('reformat_document', {

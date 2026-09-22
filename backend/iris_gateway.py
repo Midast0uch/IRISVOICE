@@ -786,6 +786,9 @@ class IRISGateway:
             elif msg_type == "get_documents":
                 await self._handle_get_documents(session_id, client_id, message)
 
+            elif msg_type == "get_document_body":
+                await self._handle_get_document_body(session_id, client_id, message)
+
             elif msg_type == "get_cards":
                 await self._handle_get_cards(session_id, client_id, message)
 
@@ -5753,7 +5756,11 @@ class IRISGateway:
                                         client_id,
                                         {
                                             "type": "chat_chunk",
-                                            "payload": {"chunk": chunk},
+                                            # REQ-13 AC6 (reply-surface-contract
+                                            # T18c): turn_id rides every text-path
+                                            # chunk so the frontend can attach the
+                                            # delta to this turn's message.
+                                            "payload": {"chunk": chunk, "turn_id": turn_id},
                                         },
                                     ),
                                     _loop,
@@ -5768,7 +5775,7 @@ class IRISGateway:
                                             session_id,
                                             {
                                                 "type": "chat_chunk",
-                                                "payload": {"chunk": chunk},
+                                                "payload": {"chunk": chunk, "turn_id": turn_id},
                                             },
                                         )
                                     )
@@ -5776,7 +5783,7 @@ class IRISGateway:
                             except Exception:
                                 self._ws_manager.buffer_message(
                                     session_id,
-                                    {"type": "chat_chunk", "payload": {"chunk": chunk}},
+                                    {"type": "chat_chunk", "payload": {"chunk": chunk, "turn_id": turn_id}},
                                 )
 
                     def _reasoning_cb(chunk: str):
@@ -10335,6 +10342,70 @@ class IRISGateway:
                 await self._ws_manager.send_to_client(
                     client_id,
                     {"type": "documents", "payload": {"documents": documents}},
+                )
+        except Exception:
+            pass
+
+    async def _handle_get_document_body(
+        self, session_id: str, client_id: str, message: dict
+    ) -> None:
+        """REQ-17 AC2 (reply-surface-contract T27): single-document body read,
+        scoped to the requesting conversation.
+
+        The `get_documents` hydration payload stays metadata-only (AC4,
+        CT-DOC-1) — this is the lazy body fetch the frontend issues on expand
+        of a rehydrated card with no in-memory body. Returns the stored
+        ``content``/``variants`` for one ``document_id``; a blob-backed image
+        card resolves through ``get_blob`` (docs whose stored row lacks an
+        inline body). Unknown or out-of-scope documents return
+        ``status: "missing"`` so the card shows an explicit unavailable state
+        instead of a silent blank. Never raises.
+        """
+        payload = (message or {}).get("payload", {})
+        conversation_id = payload.get("conversation_id") or session_id
+        document_id = payload.get("document_id")
+        body: dict = {
+            "document_id": document_id,
+            "conversation_id": conversation_id,
+            "status": "missing",
+        }
+        try:
+            if document_id and conversation_id:
+                from backend.agent.agent_kernel import get_agent_kernel
+
+                kernel = get_agent_kernel(conversation_id, session_id)
+                store = kernel._get_document_store() if kernel is not None else None
+                row = store.get(document_id) if store is not None else None
+                # Conversation scope guard: a body only crosses to its own
+                # thread (mirrors get_documents' scoping; REQ-17 AC2).
+                if row and (row.get("conversation_id") or "default") == conversation_id:
+                    content = row.get("content")
+                    if not content and getattr(store, "get_blob", None) is not None:
+                        blob_path = store.get_blob(document_id)
+                        content = blob_path or None
+                    body = {
+                        "document_id": document_id,
+                        "conversation_id": conversation_id,
+                        "status": "ok" if content else "missing",
+                        "content": content,
+                        "format": row.get("format"),
+                        "sources": row.get("sources") or [],
+                        "har_path": row.get("har_path"),
+                        "trust": row.get("trust"),
+                        "variants": row.get("variants") or {},
+                    }
+        except Exception as exc:
+            self._logger.warning("[iris_gateway] get_document_body failed: %s", exc)
+            body = {
+                "document_id": document_id,
+                "conversation_id": conversation_id,
+                "status": "error",
+            }
+        try:
+            if self._ws_manager:
+                await self._ws_manager.send_to_client(
+                    client_id,
+                    {"type": "document_body", "payload": body},
                 )
         except Exception:
             pass

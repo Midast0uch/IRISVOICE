@@ -25,6 +25,18 @@ interface RichDocumentProps {
   alternatives?: string[]
   onFormatChange?: (newFormat: string) => void
   onExpand?: () => void
+  /** REQ-13 AC5 (reply-surface-contract T18b): true while the body is
+   * streaming in. A partial card renders OPEN (not collapsed) so the fill is
+   * visible, and the caller suppresses the "Updated" badge. */
+  partial?: boolean
+  /** REQ-17 (reply-surface-contract T28): the document exists server-side but
+   * its body is not in memory (rehydrated, metadata-only). The sticky expand
+   * affordance then shows even before the body arrives — the caller fetches
+   * the body when the user expands. */
+  expandable?: boolean
+  /** Controls the default collapsed state; the inline thread card collapses
+   * (REQ-6), a DocumentPanel body does not. */
+  defaultCollapsed?: boolean
   // Trust-routing W3: "trusted" renders raw HTML; anything else is sanitized
   // with DOMPurify before being injected (untrusted = web/crawler-sourced).
   trust?: string
@@ -92,6 +104,9 @@ export function RichDocument({
   alternatives = [],
   onFormatChange,
   onExpand,
+  partial = false,
+  expandable = false,
+  defaultCollapsed = true,
   trust,
   sources,
   harPath,
@@ -175,10 +190,24 @@ export function RichDocument({
     return () => ro.disconnect()
   }, [truncatedContent, format])
 
+  // REQ-6 AC5 (specs/reply-surface-contract): a card with NO body renders
+  // header-only — no chevron, no Expand affordance, preserving the existing
+  // "no chrome at all" intent for an empty artifact.
+  const hasBody = truncatedContent.trim().length > 0
+
   return (
     <CardChassis
       veinColor={glowColor}
-      collapsible={false}
+      // REQ-6 (specs/reply-surface-contract, T12): collapsed to the header row
+      // BY DEFAULT (AC1). The chassis chevron is the in-place PEEK affordance
+      // (AC2/AC4); it reveals the body capped at COLLAPSED_MAX_HEIGHT = 460
+      // (AC7), where the existing "Show more" lift still applies. The Expand
+      // icon below stays as the second disclosure tier -> DocumentPanel
+      // (AC3/AC4). No new component, no new visual language (AC6).
+      // REQ-13 AC5 (T18b): a PARTIAL (streaming) card renders OPEN — the whole
+      // point of a stream is to watch the body fill.
+      collapsible={hasBody}
+      defaultCollapsed={partial ? false : defaultCollapsed}
       aria-label={`${format} document`}
       header={
         <>
@@ -201,7 +230,7 @@ export function RichDocument({
               web
             </span>
           )}
-          {onExpand && (
+          {onExpand && (hasBody || expandable) && (
             <button
               onClick={onExpand}
               className="ml-auto p-1 rounded transition-all duration-150 hover:brightness-125 opacity-60 hover:opacity-100"
@@ -218,6 +247,7 @@ export function RichDocument({
         </>
       }
     >
+      {hasBody ? (
       <div className="relative">
         {/* Document body. `overflowWrap: anywhere` is the actual fix for text
               disappearing at the right edge: a long URL or an unbroken token in
@@ -472,7 +502,12 @@ export function RichDocument({
               )}
             </div>
           )}
+
+      {/* REQ-6 AC5 end of the has-body body: when `content` is empty the
+          chassis receives `null` children — header-only, no chevron, no
+          Expand, matching the "no chrome at all" intent. */}
       </div>
+      ) : null}
 
       {/* The body used the browser's default scrollbar — a ~17px opaque bar on
           Windows, sitting inside a 4px-scrollbar design. It both looked wrong

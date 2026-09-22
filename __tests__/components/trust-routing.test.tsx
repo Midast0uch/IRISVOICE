@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom"
-import { render, waitFor } from "@testing-library/react"
+import { render, screen, fireEvent, waitFor } from "@testing-library/react"
 import { RichDocument } from "@/components/chat/RichDocument"
 import MermaidDiagram from "@/components/chat/MermaidDiagram"
 
@@ -67,6 +67,16 @@ jest.mock("mermaid", () => ({
 const mockMermaid = require("mermaid").default
 
 // ── T4: RichDocument untrusted HTML sanitization ──────────────────────────
+
+// SETUP ADJUSTMENT 2026-09-21 (reply-surface-contract T12 / REQ-6 AC1):
+// RichDocument now renders COLLAPSED to its header row by default, so the
+// body — and the sanitized HTML under test — does not exist in the DOM until
+// the chassis chevron unfolds it. The sanitization ASSERTIONS are unchanged;
+// these tests now unfold the card first, exactly as a user does.
+function unfoldCard() {
+  fireEvent.click(screen.getByLabelText("Expand card"))
+}
+
 describe("T4 RichDocument untrusted HTML sanitization", () => {
   it("strips <script> from untrusted html via DOMPurify", () => {
     const { container } = render(
@@ -76,6 +86,7 @@ describe("T4 RichDocument untrusted HTML sanitization", () => {
         trust="untrusted"
       />
     )
+    unfoldCard()
     const html = container.innerHTML
     expect(html).not.toContain("<script>")
     expect(html).toContain("<p>hello</p>")
@@ -89,6 +100,7 @@ describe("T4 RichDocument untrusted HTML sanitization", () => {
         trust="trusted"
       />
     )
+    unfoldCard()
     const html = container.innerHTML
     expect(html).toContain("<script>")
   })

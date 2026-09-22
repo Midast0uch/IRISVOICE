@@ -2164,8 +2164,12 @@ class AgentKernel:
             "  - a revision of a document you already stored (pass its "
             "`document_id`)\n"
             "If the user is simply asking you something and you are answering "
-            "them â€” however long the answer â€” that is CONVERSATION. Use plain "
+            "them — however long the answer — that is CONVERSATION. Use plain "
             "text. A document card is not a way to present a reply.\n"
+            "The kernel NEVER infers a card from length or structure. A table, "
+            "code block, or list you want KEPT must go in the JSON `show` "
+            "payload yourself — plain text containing a table stays plain text "
+            "and is NOT promoted to a card.\n"
             "\n"
             "When it IS a document, respond with JSON:\n"
             '{"speak": "<2-3 sentence conversational summary of what you say>", '
@@ -4215,12 +4219,11 @@ class AgentKernel:
         empty                           ``""``                      no
         tool envelope (``spoken``)      written answer, else        no
                                         the spoken text IN FULL
-        plain text, no card             the text unchanged          no
-        plain text + auto-render        supportive excerpt          yes
+        plain text                      the text unchanged          no
         ``show`` revising a document    ``""``                      revised
         ``show`` + ``speak``            the ``speak`` line          yes
         ``show``, card emit failed      the full show content       no
-        ``show`` with no ``speak``      ``""``                      yes
+        ``show`` with no ``speak``      supportive excerpt          yes
         ==============================  ==========================  ===========
 
         The distinction that drives it is decided by the AGENT, not inferred
@@ -4268,135 +4271,40 @@ class AgentKernel:
 
         if show is None:
             # ── Plain-text response ─────────────────────────────────────────
-            # The LLM did not produce structured JSON.  Normally return the
-            # full text as-is so the frontend renders it in the normal chat
-            # bubble path (chat-view.tsx short-message branch) with TTS word
-            # highlighting — no DOCUMENT_RENDER, no prism card.
+            # `show`-PRESENCE IS THE SOLE CARD TRIGGER (specs/reply-surface-
+            # contract REQ-2 / REQ-14 AC2). No length heuristic, no zone check,
+            # no structural inference: the text goes to the thread unchanged
+            # and no DOCUMENT_RENDER is emitted on this path — ever. The
+            # 2026-07-31 length/zone auto-render fabricated prism cards for
+            # long answers AND excerpted the bubble, which threw the full
+            # answer away; it was deleted 2026-09-21. A card appears only
+            # when the AGENT produced a `show` payload (the branch below).
             #
-            # pin (user decision 2026-07-31): when this turn gathered
-            # web/reference content and the response IS the synthesized
-            # markdown answer (substantial), auto-render it as a markdown
-            # prism card AND return the text — the agent's response accompanies
-            # the card instead of the card popping on every web-tool commit
-            # (the old capture-time deterministic render). The agent's explicit
-            # `show` choice above still wins when it renders deliberately; this
-            # fallback only covers the "forgot show" case. Marking
-            # _last_render_emitted suppresses the format-escalation QuestionCard
-            # (pin_9e97e21340e7) for this turn.
-            try:
-                # specs/tool-decision-engine REQ-11: the engine gate decides
-                # card-worthiness when available+enforced+confident; the raw
-                # heuristic below is the documented degrade path (AC11.2/11.3).
-                _surface_gate = self._engine_gate_surface(response, turn_id)
-                _heuristic_ok = (
-                    self._pacman_zone_for_turn() == "reference"
-                    and len(response) >= 300
+            # Structural signal = CALIBRATION ONLY (REQ-14 AC3): when the text
+            # looks like an artifact (fenced code / table / list) but carries
+            # no `show`, log `show_omitted_on_artifact` so prompt drift is
+            # measurable. The detector must NEVER trigger a render.
+            if any(m in response for m in ("```", "\n|", "\n- ", "\n# ", "\n1. ")):
+                logger.info(
+                    "[AgentKernel] show_omitted_on_artifact turn=%s len=%d",
+                    turn_id or "unknown",
+                    len(response),
                 )
-                _want_card = (
-                    _heuristic_ok
-                    if _surface_gate is None
-                    else _surface_gate == "card"
-                )
-                if _want_card:
-                    # Empty-result websearch — suppress auto-render. The
-                    # synthesis ("I wasn't able to pull...") has no usable
-                    # sources and belongs in the bubble, not as a prism.
-                    _auto_src: list = []
-                    try:
-                        _pend = getattr(self, "_pending_web_doc_id", None)
-                        if _pend:
-                            _st = self._get_document_store()
-                            _rw = _st.get(_pend) if _st is not None else None
-                            if _rw:
-                                _auto_src = _rw.get("sources") or []
-                    except Exception:
-                        pass
-                    if self._is_empty_websearch_synthesis(response, _auto_src):
-                        pass
-                    else:
-                        trust = "untrusted"
-                        import uuid as _uuid
-
-                        _doc_id = str(_uuid.uuid4())
-                        try:
-                            self._store_document_data(
-                                document_id=_doc_id,
-                                show={"format": "markdown", "content": response},
-                                trust=trust,
-                                turn_id=turn_id,
-                                conversation_id=conversation_id,
-                            )
-                        except Exception as _store_exc:  # noqa: BLE001
-                            logger.debug(
-                                "[AgentKernel] auto-render store failed: %s", _store_exc
-                            )
-                        # REQ-6 (specs/long-horizon-der-execution): inherit the
-                        # captured web evidence's source URLs + HAR path into the
-                        # final synthesized card instead of emitting empty
-                        # provenance. The pending web document (if any) holds the
-                        # crawl's saved URLs; union them so the answer's card is
-                        # verifiable.
-                        _render_sources: List[Dict[str, str]] = _auto_src
-                        _render_har: Optional[str] = None
-                        try:
-                            _pending2 = getattr(self, "_pending_web_doc_id", None)
-                            if _pending2:
-                                _store2 = self._get_document_store()
-                                _row2 = _store2.get(_pending2) if _store2 is not None else None
-                                if _row2:
-                                    _render_sources = _row2.get("sources") or []
-                                    _render_har = _row2.get("har_path")
-                        except Exception:  # noqa: BLE001 â€” provenance is best-effort
-                            pass
-                        try:
-                            from backend.agent.event_bus import (
-                                get_event_bus,
-                                IRISStreamEvent,
-                            )
-
-                            get_event_bus().emit(
-                                IRISStreamEvent.DOCUMENT_RENDER,
-                                data={
-                                    "format": "markdown",
-                                    "content": response[:12000],
-                                    "alternatives": [],
-                                    "trust": trust,
-                                    "document_id": _doc_id,
-                                    "turn_id": turn_id,
-                                    "conversation_id": conversation_id,
-                                    "sources": _render_sources,
-                                    "har_path": _render_har,
-                                },
-                                turn_id=turn_id,
-                                conversation_id=conversation_id,
-                            )
-                            self._last_render_emitted = True
-                        except Exception as _emit_exc:  # noqa: BLE001
-                            logger.warning(
-                                "[AgentKernel] synthesized-answer auto-render failed: %s",
-                                _emit_exc,
-                            )
-            except Exception:  # noqa: BLE001 â€” auto-render must never block the response
-                pass
-            # UX contract (user 2026-07-31): when a prism card IS the document,
-            # the text/speech response must SUPPORT it, not duplicate it â€” a
-            # short excerpt so the bubble and the card show complementary
-            # content.
-            #
-            # ONLY when a card actually rendered (user rule 2026-08-16: the
-            # text must never be truncated and a document render must not be
-            # REQUIRED). This excerpt used to run unconditionally, so every
-            # plain answer over ~200 chars was cut down to its first sentence
-            # with nothing else holding the rest. `_last_render_emitted` is set
-            # at the real emit above, so this asks "did a card really render?".
-            _support = (
-                self._supportive_text(response)
-                if getattr(self, "_last_render_emitted", False)
-                and getattr(self, "_last_surface_choice", "card_plus_summary")
-                == "card_plus_summary"  # REQ-11: "prism_card" = card only
-                else ""
+            # REQ-15: the `presentation` decision-engine consumer runs as an
+            # ASYNC OBSERVER off the reply path — its verdict is recorded for
+            # calibration, never consulted for the live surface ("plain").
+            self._observe_surface_async(response, turn_id, live_surface="plain")
+            self._log_surface(
+                turn_id=turn_id,
+                lane="plain",
+                had_show=False,
+                bubble_source="full_text",
+                card_suppressed_reason="no_show_payload",
             )
-            return self._finalize_response(_support or response)
+            # T4 (REQ-8): pass `speak` through so the TTS lane is the agent's
+            # own line when it supplied one; the gateway's prepare_spoken_text
+            # fallback (:4036) covers the common plain case.
+            return self._finalize_response(response, speak)
 
         # â”€â”€ Structured response â€” emit DOCUMENT_RENDER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         # Trust-routing W3: 'untrusted' when this turn touched external/web
@@ -4461,6 +4369,10 @@ class AgentKernel:
             # spoken line still reaches TTS.
             return self._finalize_response("", speak)
         document_id = str(uuid.uuid4())
+        # REQ-10 AC1/AC2 (reply-surface-contract T20): every prism card carries
+        # a stable lifecycle id alongside the document store key, minted once
+        # here and reused by update/reformat (`_prism_card_id_for`).
+        card_id = self._prism_card_id_for(document_id)
         # W4: persist the canonical DATA (underlying structured content),
         # keyed by document_id, BEFORE the render so provenance (sources /
         # har_path, possibly inherited from a linked raw row in T2) is
@@ -4501,6 +4413,13 @@ class AgentKernel:
             # No DOCUMENT_RENDER, so the message renders via MarkdownMessage
             # and scrolls inline per the chat-view fix.
             _plain = (show.get("content", "") or "").strip() or (speak or "")
+            self._log_surface(
+                turn_id=turn_id,
+                lane="plain",
+                had_show=True,
+                bubble_source="full_text",
+                card_suppressed_reason="empty_websearch_synthesis",
+            )
             return self._finalize_response(_plain, speak)
         try:
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
@@ -4515,8 +4434,17 @@ class AgentKernel:
                     "document_id": document_id,
                     "turn_id": turn_id,
                     "conversation_id": conversation_id,
+                    "card_id": card_id,  # REQ-10 AC2: stable lifecycle id
                     "sources": _render_sources or [],
                     "har_path": _render_har,
+                    # REQ-13 AC5 / T18b (reply-surface-contract): the partial
+                    # channel discriminator. False here = the FINAL whole-body
+                    # emit (providers do not stream a partial card in this path).
+                    # A future partial emit MUST carry the same stable
+                    # document_id on its FIRST partial so the frontend updates
+                    # the card in place and never shows the "Updated" badge
+                    # while streaming.
+                    "partial": False,
                 },
                 turn_id=turn_id,
                 conversation_id=conversation_id,
@@ -4525,6 +4453,14 @@ class AgentKernel:
             # format). Used by _maybe_escalate_web_format to detect when the
             # agent returned a web result without choosing a format.
             self._last_render_emitted = True
+            # REQ-13 AC4: time-to-card on this turn's [LAYERS] line.
+            _metrics = getattr(self, "_active_turn_metrics", None)
+            _mark = getattr(_metrics, "mark_card", None)
+            if callable(_mark):
+                try:
+                    _mark()
+                except Exception:  # noqa: BLE001 — telemetry never blocks
+                    pass
         except Exception as exc:
             logger.warning("[AgentKernel] DOCUMENT_RENDER emit failed: %s", exc)
 
@@ -4553,20 +4489,58 @@ class AgentKernel:
             #
             # `_last_render_emitted` is set at the actual emit above, so this
             # asks "did a card really render?" rather than assuming one did.
+            # Bubble = the agent's `speak` line (specs/reply-surface-contract
+            # REQ-3 / T3): the card owns the content, the bubble carries the
+            # conversational line — never an excerpt of the card body. Only
+            # when the emit itself failed does the full show content fall
+            # back into the thread (it is the only copy then).
             if getattr(self, "_last_render_emitted", False):
+                self._log_surface(
+                    turn_id=turn_id,
+                    lane="card_plus_summary",
+                    had_show=True,
+                    bubble_source="speak",
+                )
                 return self._finalize_response(speak or "", speak)
+            self._log_surface(
+                turn_id=turn_id,
+                lane="card",
+                had_show=True,
+                bubble_source="full_text",
+            )
             return self._finalize_response(
                 (show.get("content") or "").strip() or speak, speak
             )
         # speak is None and a `show` payload exists. The card carries the
-        # content; returning the raw JSON here would speak it and show it as the
-        # assistant's message.
+        # content; returning the raw JSON here would speak it and show it as
+        # the assistant's message.
         #
-        # The speak-tool "spoken" handler that used to sit here was DEAD CODE â€”
+        # The speak-tool "spoken" handler that used to sit here was DEAD CODE —
         # reaching it required `show` to be a dict AND the same JSON to carry a
         # top-level "spoken", which the speak tool never produces. Its real
         # payload is unwrapped at the top of this function now.
-        return self._finalize_response("")
+        #
+        # REQ-3 / T3 (reply-surface-contract): `_supportive_text` is used ONLY
+        # when no `speak` line exists. With a card rendered, the bubble gets a
+        # short supportive excerpt so the thread is not empty; with the emit
+        # failed, the full show content reaches the thread instead.
+        if getattr(self, "_last_render_emitted", False):
+            self._log_surface(
+                turn_id=turn_id,
+                lane="card_plus_summary",
+                had_show=True,
+                bubble_source="derived_excerpt",
+            )
+            return self._finalize_response(
+                self._supportive_text(show.get("content") or "")
+            )
+        self._log_surface(
+            turn_id=turn_id,
+            lane="card",
+            had_show=True,
+            bubble_source="full_text",
+        )
+        return self._finalize_response(show.get("content") or "")
 
     # â”€â”€ W4: canonical document-data storage â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     def _get_document_store(self):
@@ -4891,6 +4865,32 @@ class AgentKernel:
         except Exception as exc:
             logger.warning("[AgentKernel] document_data Immortus dispatch failed: %s", exc)
 
+    def _prism_card_id_for(self, document_id: str) -> str:
+        """REQ-10 (reply-surface-contract T20): the prism card_id for a
+        document, minted ONCE and reused across every event of that card's
+        lifetime (update, reformat). ``document_id`` stays the artifact-store
+        key (AC3); ``card_id`` is the lifecycle key. Distinct namespace from
+        task cards (``card_doc_*``) so the two systems can never collide.
+        In-memory + bounded (200 docs): a reload mints fresh ids; content
+        identity survives via document_id. Never raises.
+        """
+        try:
+            mapping = getattr(self, "_prism_card_by_doc", None)
+            if mapping is None:
+                mapping = {}
+                self._prism_card_by_doc = mapping
+            existing = mapping.get(document_id)
+            if existing:
+                return existing
+            card_id = f"card_doc_{uuid.uuid4().hex[:16]}"
+            mapping[document_id] = card_id
+            if len(mapping) > 200:
+                for old in list(mapping)[:50]:
+                    mapping.pop(old, None)
+            return card_id
+        except Exception:  # noqa: BLE001 — ids must never block a render
+            return f"card_doc_{document_id}"
+
     def update_document(self, document_id, content, fmt=None, trust=None, turn_id=None, conversation_id=None, alternatives=None):
         """Phase 4 (chat-card-redesign): revise an already-rendered document.
 
@@ -4927,6 +4927,9 @@ class AgentKernel:
                 "document_id": document_id,
                 "turn_id": turn_id or existing.get("turn_id"),
                 "conversation_id": conversation_id or self.conversation_id,
+                # REQ-10 AC4 (reply-surface-contract T20): an in-place revision
+                # reuses the SAME prism card_id minted at the original emit.
+                "card_id": self._prism_card_id_for(document_id),
                 "updated": True,
                 "revision": revision,
                 "sources": existing.get("sources") or [],
@@ -5071,13 +5074,13 @@ class AgentKernel:
         # Track external/web results for the post-response escalation check.
         # If the agent's final response does not render this document (no `show`
         # payload), _maybe_escalate_web_format() asks the user which format they
-        # want via a QuestionCard (pin_9e97e21340e7) â€” UNLESS the response was
-        # substantial synthesized markdown, which _process_structured_response
-        # auto-renders (see the show-is-None branch there).
+        # want via a QuestionCard (pin_9e97e21340e7). Since 2026-09-21
+        # (specs/reply-surface-contract REQ-2) the kernel no longer auto-renders
+        # substantial markdown — `show`-presence is the sole card trigger — so a
+        # plain-text synthesis reliably lands here and escalates.
         # pin: the capture-time deterministic DOCUMENT_RENDER (old pin
-        # 517dfcbda150) was REMOVED by user decision â€” it popped a card on EVERY
+        # 517dfcbda150) was REMOVED by user decision — it popped a card on EVERY
         # web-tool commit (every crawl mid-research), not just the final answer.
-        # The synthesized-answer auto-render lives at response time instead.
         if is_external and tool_name in self._WEB_CONTENT_TOOLS:
             self._pending_web_doc_id = document_id
         return document_id
@@ -5187,6 +5190,8 @@ class AgentKernel:
                     "turn_id": turn_id,
                     "conversation_id": conversation_id,
                     "reformatted": True,
+                    # REQ-10 AC4 (T20): a reformat reuses the SAME card_id.
+                    "card_id": self._prism_card_id_for(document_id),
                     "sources": doc.get("sources") or [],
                     "har_path": doc.get("har_path"),
                 }
@@ -5242,6 +5247,8 @@ class AgentKernel:
         # T6: reformat payload preserves document_id + trust.
         if document_id:
             payload["document_id"] = document_id
+            # REQ-10 AC4 (T20): the reformat rides the same prism card_id.
+            payload["card_id"] = self._prism_card_id_for(document_id)
         try:
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
 
@@ -6832,6 +6839,11 @@ class AgentKernel:
 
         task_id = turn_id or str(uuid.uuid4())
         metrics = TurnMetrics(turn_id=task_id)
+        # REQ-13 AC4 (reply-surface-contract T18): give the reply seam a cheap,
+        # fire-and-forget handle on this turn's metrics so the first
+        # DOCUMENT_RENDER emit can stamp `card_ms` (time-to-card). Attribute
+        # copy only; the seam getattr-guards it, so a missing handle is safe.
+        self._active_turn_metrics = metrics
         # REQ-5 AC1 (T8): stamp the semantic-gate compilation onto this turn's
         # [LAYERS] emit (off the hot path â€” attribute copies only).
         self._stamp_gate_telemetry(metrics)
@@ -7590,8 +7602,9 @@ class AgentKernel:
                     f"der_response_len={len(_der_response) if _der_response else 0}"
                 )
                 if chunk_callback and _der_response:
-                    chunk_callback(_der_response)
-                    chunk_callback("")  # force-flush end-of-stream
+                    self._emit_reply_progressively(
+                        _der_response, task_id, chunk_callback=chunk_callback
+                    )
                     logger.info("[DER-TTS-FIX] chunk_callback invoked OK")
                 else:
                     logger.warning(
@@ -10039,16 +10052,27 @@ Respond with a JSON object:
             )
             return f"card_{task_id or 'unknown'}", "new"
 
-    def _card_envelope(self, task_id: Optional[str]) -> dict:
+    def _card_envelope(
+        self,
+        task_id: Optional[str] = None,
+        document_id: Optional[str] = None,
+    ) -> dict:
         """REQ-3 AC6 (T2): keep ``card_id`` stable across every event of a
         card's lifetime, not just ``task:start``. LOOKS UP (never registers)
         the card already bound to ``task_id`` and returns the pair to merge
         into a lifecycle emit dict (tool:call, tool:result, task:done/fail,
-        task:progress). Unknown ``task_id`` -> ``card_id`` is None â€” a wrong
-        id is worse than a missing one. Never raises.
+        task:progress). Unknown id -> ``card_id`` is None — a wrong id is
+        worse than a missing one (REQ-10 AC5: unknown is inert, never an
+        error). Never raises.
+
+        REQ-10 (reply-surface-contract T20): prism cards resolve through
+        ``_prism_card_by_doc`` — pass ``document_id`` so the same envelope
+        machinery can address a document card's lifecycle.
         """
         try:
             card_id = self._card_by_task.get(task_id) if task_id else None
+            if card_id is None and document_id:
+                card_id = getattr(self, "_prism_card_by_doc", {}).get(document_id)
         except Exception:
             card_id = None
         return {"card_id": card_id, "conversation_id": self.conversation_id}
@@ -13731,6 +13755,135 @@ Respond with a JSON object:
             return None  # shadow / unconfident → heuristic still decides
         self._last_surface_choice = ds.chosen
         return "plain" if ds.chosen == "plain_text" else "card"
+
+    def _observe_surface_async(
+        self,
+        response: str,
+        turn_id: Optional[str] = None,
+        live_surface: str = "plain",
+    ) -> None:
+        """Async presentation observer (specs/reply-surface-contract REQ-15).
+
+        The `presentation` decision-engine consumer is PRESERVED but DEMOTED
+        (owner decision OQ-3, option C): it no longer gates the live surface —
+        REQ-14 AC2 keeps `show`-presence as the sole live trigger. This spawns
+        a daemon thread that runs :meth:`_engine_gate_surface` as a pure
+        observer (its own `record_decision` ledger row still lands, so the
+        consumer's calibration data keeps flowing) and logs a
+        `surface_observer_disagreement` line whenever the engine's verdict
+        differs from the live surface — the evidence needed to promote the
+        consumer again later. Never raises; never blocks the reply.
+        """
+
+        def _observe() -> None:
+            try:
+                verdict = self._engine_gate_surface(response, turn_id or "")
+            except Exception:  # noqa: BLE001 — observer must never surface
+                return
+            try:
+                if verdict is not None and verdict != live_surface:
+                    logger.info(
+                        "[AgentKernel] surface_observer_disagreement turn=%s "
+                        "live=%s observer=%s",
+                        turn_id or "unknown",
+                        live_surface,
+                        verdict,
+                    )
+            except Exception:  # noqa: BLE001 — observer must never surface
+                pass
+
+        try:
+            threading.Thread(
+                target=_observe,
+                name="iris-surface-observer",
+                daemon=True,
+            ).start()
+        except Exception:  # noqa: BLE001 — instrumentation never blocks
+            pass
+
+    def _log_surface(
+        self,
+        *,
+        turn_id: Optional[str],
+        lane: str,
+        had_show: bool,
+        bubble_source: str,
+        card_suppressed_reason: Optional[str] = None,
+    ) -> None:
+        """Per-turn surface decision log (specs/reply-surface-contract REQ-9).
+
+        One structured line per reply: the lane chosen (plain / card /
+        card_plus_summary), whether a `show` payload was present, and where
+        the bubble text came from. `card_suppressed_reason` marks the distinct
+        "card suppressed" signals (AC2) — "no_show_payload" on plain turns and
+        "empty_websearch_synthesis" on the show-downgrade path. Logging only:
+        REQ-9 AC3 keeps instrumentation off the critical path. Never raises.
+        """
+        try:
+            logger.info(
+                "[AgentKernel] surface_decision turn=%s lane=%s had_show=%s "
+                "bubble_source=%s card_suppressed_reason=%s",
+                turn_id or "unknown",
+                lane,
+                had_show,
+                bubble_source,
+                card_suppressed_reason or "-",
+            )
+        except Exception:  # noqa: BLE001 — instrumentation never blocks
+            pass
+
+    def _emit_reply_progressively(
+        self,
+        response: str,
+        turn_id: str,
+        chunk_callback=None,
+    ) -> None:
+        """Speak-first progressive reply (specs/reply-surface-contract REQ-13
+        AC1/AC3, task T18).
+
+        The bubble and TTS must NOT wait for the document. So the agent's
+        `speak` line is the FIRST chunk downstream; the `show` body follows as
+        the seam's DOCUMENT_RENDER (single whole-body emit — the bound
+        providers do not stream a partial card, per the spec's fallback rules;
+        the partial channel in T18b exists for when they do).
+
+        Chunk discipline:
+          - plain text (no `show`): the full text is the ONE chunk (unchanged
+            from the previous single-chunk path).
+          - `show` + `speak`: `speak` is the FIRST (and only) text chunk; the
+            card body streams via the render event, never in the text stream —
+            pre-contract this path sent the raw structured JSON into the TTS
+            sentence queue.
+          - `show` without `speak`: no text chunk; the seam supplies the
+            supportive excerpt as the final bubble.
+
+        Always emits the force-flush sentinel (``""``) last — the sentence
+        queue terminates on it. Never raises.
+        """
+        if not response or chunk_callback is None:
+            return
+        try:
+            chunk_text: Optional[str] = None
+            try:
+                from backend.agent.structured_response import (
+                    parse_structured_response,
+                )
+
+                speak, show = parse_structured_response(response)
+                if speak:
+                    chunk_text = speak
+                elif show is None:
+                    chunk_text = response
+            except Exception:  # noqa: BLE001 — parse failure -> plain fallback
+                chunk_text = response
+            if chunk_text:
+                chunk_callback(chunk_text)
+            chunk_callback("")  # force-flush end-of-stream
+        except Exception:  # noqa: BLE001 — a streaming failure never kills a turn
+            logger.warning(
+                "[AgentKernel] progressive reply emit failed turn=%s",
+                turn_id or "unknown",
+            )
 
     @staticmethod
     def _supportive_text(text: str, max_chars: int = 200) -> str:

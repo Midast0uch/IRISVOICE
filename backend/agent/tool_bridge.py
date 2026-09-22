@@ -1591,6 +1591,11 @@ class AgentToolBridge:
             if tool_name == "combine_documents":
                 return await self._execute_combine_documents(params, session_id)
 
+            # REQ-16 (reply-surface-contract T25): render as a tool decision;
+            # emits the same DOCUMENT_RENDER the `show` envelope produces.
+            if tool_name == "render_document":
+                return await self._execute_render_document(params, session_id)
+
             if tool_name in vision_tools:
                     result = await self.execute_vision_tool(tool_name, params, session_id)
                     screenshot_blob = self._capture_screenshot_blob()
@@ -3384,6 +3389,71 @@ class AgentToolBridge:
             return {"success": True, **combined}
         except Exception as exc:
             logger.warning("[ToolBridge] combine_documents failed: %s", exc)
+            return {"success": False, "error": str(exc)}
+
+    async def _execute_render_document(self, params: Dict, session_id: str) -> Dict:
+        """REQ-16 (reply-surface-contract T25): tool-decision render surface.
+
+        Emits the SAME DOCUMENT_RENDER event the `show` envelope produces, with
+        the same store + stable card_id — a tool render and a show render are
+        indistinguishable downstream (AC2: the envelope stays the wire
+        transport; CT-1 unchanged). Never steals the bubble/speak lanes (the
+        tool result only reports "rendered"; the agent's own reply text carries
+        the conversation). Never raises into the caller.
+        """
+        params = params or {}
+        content = params.get("content")
+        if not (isinstance(content, str) and content.strip()):
+            return {"success": False, "error": "render_document requires content"}
+        fmt = params.get("format") or "markdown"
+        conversation_id = (
+            params.get("conversation_id")
+            or self._active_conversation_id.get(session_id)
+            or "default"
+        )
+        try:
+            import uuid as _uuid
+            from backend.agent.agent_kernel import get_agent_kernel
+            from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+
+            kernel = get_agent_kernel(conversation_id, session_id)
+            if kernel is None:
+                return {"success": False, "error": "kernel unavailable"}
+            document_id = params.get("document_id") or str(_uuid.uuid4())
+            card_id = kernel._prism_card_id_for(document_id)
+            kernel._store_document_data(
+                document_id=document_id,
+                show={"format": fmt, "content": content},
+                trust=params.get("trust") or "trusted",
+                turn_id=params.get("turn_id"),
+                conversation_id=conversation_id,
+            )
+            get_event_bus().emit(
+                IRISStreamEvent.DOCUMENT_RENDER,
+                data={
+                    "format": fmt,
+                    "content": content,
+                    "alternatives": params.get("alternatives") or [],
+                    "trust": params.get("trust") or "trusted",
+                    "document_id": document_id,
+                    "turn_id": params.get("turn_id"),
+                    "conversation_id": conversation_id,
+                    "card_id": card_id,
+                    "sources": params.get("sources") or [],
+                    "har_path": params.get("har_path"),
+                    # REQ-13 AC5: tool renders are final whole-body emits.
+                    "partial": False,
+                },
+                turn_id=params.get("turn_id"),
+                conversation_id=conversation_id,
+            )
+            logger.info(
+                "[ToolBridge] render_document conv=%s doc=%s card=%s",
+                conversation_id, document_id, card_id,
+            )
+            return {"success": True, "document_id": document_id, "card_id": card_id}
+        except Exception as exc:
+            logger.warning("[ToolBridge] render_document failed: %s", exc)
             return {"success": False, "error": str(exc)}
 
     async def _execute_web_search(self, params: Dict, session_id: str) -> Dict:

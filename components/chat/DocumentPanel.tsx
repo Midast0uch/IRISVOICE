@@ -18,6 +18,13 @@ interface DocumentPanelProps {
   onFormatChange: (newFormat: string) => void
   // Trust-routing W3: forwarded to RichDocument for HTML sanitization.
   trust?: string
+  /** REQ-17 (reply-surface-contract T28): the body-fetch lifecycle when this
+   *  panel opens a REHYDRATED card whose body is not in memory —
+   *  "ready" (content present), "loading" (fetch in flight), "unavailable"
+   *  (store miss). Default "ready" keeps every pre-REQ-17 caller unchanged. */
+  bodyState?: "ready" | "loading" | "unavailable"
+  /** REQ-17 edge: retry affordance for the unavailable state. */
+  onRetry?: () => void
 }
 
 /**
@@ -37,6 +44,8 @@ export function DocumentPanel({
   onClose,
   onFormatChange,
   trust,
+  bodyState = "ready",
+  onRetry,
 }: DocumentPanelProps) {
   const { getThemeConfig } = useBrandColor()
   const theme = getThemeConfig()
@@ -157,13 +166,47 @@ export function DocumentPanel({
       className="h-full"
       aria-label="Expanded document"
     >
-      <RichDocument
-        content={content}
-        format={format as "markdown" | "html" | "table" | "diagram" | "text"}
-        glowColor={glowColor}
-        alternatives={[]}
-        trust={trust}
-      />
+      {bodyState === "loading" ? (
+        // REQ-17 AC1: the body fetch is in flight.
+        <div className="flex-1 flex items-center justify-center">
+          <span className="text-[10px] text-white/35 italic">
+            Loading the stored document…
+          </span>
+        </div>
+      ) : bodyState === "unavailable" ? (
+        // REQ-17 edge: a rehydrated card whose body no longer exists in the
+        // store shows this explicitly — never a silent blank panel.
+        <div className="flex-1 flex flex-col items-center justify-center gap-2">
+          <span className="text-[11px] text-white/45 italic">
+            The stored document is unavailable — it may have been evicted.
+          </span>
+          {onRetry && (
+            <button
+              onClick={onRetry}
+              className="px-2.5 py-1 rounded text-[10px] font-semibold transition-all duration-150 hover:brightness-125"
+              type="button"
+              style={{
+                color: glowColor,
+                backgroundColor: `${glowColor}14`,
+                border: `1px solid ${glowColor}33`,
+              }}
+            >
+              Retry
+            </button>
+          )}
+        </div>
+      ) : (
+        // The panel renders the card EXPANDED (T28 pins: the panel is the
+        // full view, never a second collapsed card).
+        <RichDocument
+          content={content}
+          format={format as "markdown" | "html" | "table" | "diagram" | "text"}
+          glowColor={glowColor}
+          alternatives={[]}
+          trust={trust}
+          defaultCollapsed={false}
+        />
+      )}
     </CardChassis>
   )
 }

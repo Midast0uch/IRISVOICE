@@ -91,31 +91,40 @@ class TestSpeakToolEnvelope:
         assert _run(k, payload) == payload
 
 
-class TestPlainTextIsOnlyExcerptedWhenACardHoldsTheRest:
+class TestPlainTextIsNeverExcerpted:
+    """Renamed 2026-09-21 (was TestPlainTextIsOnlyExcerptedWhenACardHoldsTheRest):
+    the reference-zone auto-render it referenced is deleted — plain text is now
+    NEVER excerpted on this seam; only a `show` card turn excerpts (via
+    _supportive_text when no `speak` line exists)."""
+
     def test_a_long_plain_answer_with_no_card_is_returned_in_full(self):
         k = _kernel(zone="chat")
         out = _run(k, LONG)
         assert k._last_render_emitted is False
         assert out == LONG, f"plain answer truncated to {len(out)} chars"
 
-    def test_an_auto_rendered_answer_is_excerpted_because_the_card_has_it_all(
+    def test_no_card_and_no_excerpt_without_show_even_in_reference_zone(
         self, monkeypatch
     ):
-        """The reference-zone auto-render puts the full markdown on the card,
-        so the bubble carries a complementary excerpt — not a duplicate."""
-        emitted = {}
+        """`show`-presence is the SOLE card trigger (specs/reply-surface-contract
+        REQ-2 / REQ-14 AC3): a long reference-zone plain answer emits NO
+        DOCUMENT_RENDER and the full text stays in the bubble.
+
+        SUCCESSOR TEST (2026-09-21): this replaces the test that pinned the
+        length/zone auto-render (one fabricated prism card + an excerpted
+        bubble). reply-surface-contract T1 deleted that behavior; CT-3 is the
+        authoritative contract test for the replacement rule."""
+        emitted = []
 
         class _Bus:
             def emit(self, event, data=None, **kw):
-                emitted["data"] = data
+                emitted.append((event, data))
 
         monkeypatch.setattr(
             "backend.agent.event_bus.get_event_bus", lambda: _Bus()
         )
         k = _kernel(zone="reference")
-        k._store_document_data = lambda **kw: None
         out = _run(k, LONG)
-        assert k._last_render_emitted is True, "reference turn rendered no card"
-        assert emitted["data"]["content"] == LONG, "the card lost the full text"
-        assert 0 < len(out) < len(LONG), "excerpt should complement the card"
-        assert LONG.startswith(out.rstrip("…").strip()[:40])
+        assert k._last_render_emitted is False, "plain text must not render a card"
+        assert emitted == [], "no DOCUMENT_RENDER without a `show` payload"
+        assert out == LONG, "the full answer lives in the bubble"

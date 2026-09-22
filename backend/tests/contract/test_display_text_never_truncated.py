@@ -174,3 +174,83 @@ class TestCardsAreForArtifactsNotConversation:
             assert k._last_spoken_text.strip() == SHORT.strip(), (
                 f"TTS lost the agent's spoken line on a {zone} turn"
             )
+
+
+class TestShowPresenceIsTheSoleCardTrigger:
+    """specs/reply-surface-contract REQ-2 / REQ-14 AC1-AC3 — CT-3 (task T7).
+
+    A card appears IFF the agent produced a ``show`` artifact — never because
+    the reply was long, never because it looked structural, never because of
+    the conversation zone. The pre-spec length/zone auto-render was deleted
+    2026-09-21 (T1); this class pins the replacement rule on the REAL seam.
+    """
+
+    class _CaptureBus:
+        """Records every event the seam emits."""
+
+        def __init__(self):
+            self.events = []
+
+        def emit(self, event, data=None, **kw):
+            self.events.append((event, data))
+
+    def _k(self, monkeypatch, zone):
+        k = _kernel()
+        monkeypatch.setattr(k, "_pacman_zone_for_turn", lambda: zone,
+                            raising=False)
+        monkeypatch.setattr(k, "_store_document_data", lambda **kw: None,
+                            raising=False)
+        bus = self._CaptureBus()
+        monkeypatch.setattr(
+            "backend.agent.event_bus.get_event_bus", lambda: bus
+        )
+        return k, bus
+
+    def test_a_plain_reply_never_emits_document_render(self, monkeypatch):
+        k, bus = self._k(monkeypatch, "chat")
+        text = "A short conversational answer."
+        out = _ak.AgentKernel._process_structured_response(
+            k, text, turn_id="t", conversation_id="c",
+        )
+        assert out == text
+        assert bus.events == [], "a plain reply emitted a card"
+        assert k._last_render_emitted is False
+
+    def test_a_show_markdown_reply_emits_exactly_one_card(self, monkeypatch):
+        k, bus = self._k(monkeypatch, "reference")
+        show = {"format": "markdown", "content": "# Report\n\n- A\n- B\n"}
+        out = _ak.AgentKernel._process_structured_response(
+            k, json.dumps({"speak": SHORT, "show": show}),
+            turn_id="t", conversation_id="c",
+        )
+        renders = [
+            d for e, d in bus.events
+            if str(e).endswith("DOCUMENT_RENDER") or "DOCUMENT_RENDER" in str(e)
+        ]
+        assert len(renders) == 1, "a `show` payload must render exactly one card"
+        assert renders[0]["content"] == show["content"]
+        assert out == SHORT, "the bubble on a card turn is the speak line"
+
+    def test_a_long_structured_plain_reply_still_does_not(self, monkeypatch):
+        """1500+ chars, reference zone, table + fence + list + heading: every
+        pre-spec trigger present (length, zone, structure). The answer stays
+        plain text in full — the structural signal is calibration-only
+        (REQ-14 AC3) and never fabricates a card."""
+        k, bus = self._k(monkeypatch, "reference")
+        text = (
+            "# Findings\n\n"
+            "| Item | Value |\n|---|---|\n| RAM | 32 GB |\n\n"
+            "```sh\npython --version\n```\n\n"
+            "- first point with a fair amount of accompanying detail text\n"
+            "- second point with a fair amount of accompanying detail text\n"
+            "1. third point with a fair amount of accompanying detail text\n\n"
+        ) * 8  # ~1800 chars, every structural marker present
+        assert len(text) >= 1500
+        out = _ak.AgentKernel._process_structured_response(
+            k, text, turn_id="t", conversation_id="c",
+        )
+        assert out == text, "a long plain answer was shortened"
+        assert bus.events == [], (
+            "length/zone/structure must NEVER trigger a card (REQ-2)"
+        )
+        assert k._last_render_emitted is False
