@@ -6987,11 +6987,26 @@ class AgentKernel:
         )
 
         # â”€â”€ Direct path (default): skip planning for non-tool messages â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # Route shadow (REQ-18, T30): record the fork for every turn, ahead
+        # of either branch so both route choices land in the log. The gate
+        # answer is computed ONCE here and reused by the branch below — the
+        # shadow must add no work to the reply path (REQ-18 AC2/AC5).
+        # REQ-24: the USER's own phrasing exists only here - the
+        # tool-decision ladder sees model-rewritten step goals, so stash
+        # the turn text for the bounded-ask veto below.
+        self._current_turn_text = text or ""
+        _needs_planning = self._needs_planning(text, context)
+        self._log_route_shadow(
+            turn_id=task_id,
+            text=text,
+            planned=_needs_planning,
+            web_mode=self._web_mode_on(),
+        )
         # Planning only runs when the message explicitly requests a tool-backed
-        # action (search, open, create, etc.).  Everything else â€” greetings,
-        # questions, conversation â€” goes straight to _respond_direct() which
+        # action (search, open, create, etc.).  Everything else — greetings,
+        # questions, conversation — goes straight to _respond_direct() which
         # calls the model with no JSON schema overhead.
-        if not self._needs_planning(text, context):
+        if not _needs_planning:
             logger.info("[AgentKernel] Direct response path (no planning needed)")
             try:
                 _t_llm_start = time.perf_counter()
@@ -13812,6 +13827,61 @@ Respond with a JSON object:
         except Exception:  # noqa: BLE001 — instrumentation never blocks
             pass
 
+    def _turn_is_bounded_content_ask(self) -> bool:
+        """REQ-24: is the CURRENT turn a bounded content ask?
+
+        The gate owns the rule (``semantic_gate.is_bounded_content_ask``);
+        this is the kernel-side read of the stashed turn text. Never
+        raises - an unknown turn is NOT bounded, so no veto is applied and
+        the crawl lane stays exactly as it was before REQ-24.
+        """
+        try:
+            from backend.agent.semantic_gate import is_bounded_content_ask
+
+            return bool(is_bounded_content_ask(getattr(self, "_current_turn_text", "")))
+        except Exception:
+            return False
+
+    def _log_route_shadow(
+        self,
+        *,
+        turn_id: Optional[str],
+        text: Optional[str],
+        planned: bool,
+        web_mode: bool,
+    ) -> None:
+        """Route shadow (REQ-18 AC1, task T30) — one JSONL row per turn.
+
+        This is the EVIDENCE for the unified-routing flip (T33): every turn
+        records which branch ran and whether the gate judged it trivial, so
+        direct-vs-DER parity is measured before the direct branch is deleted.
+        The classification itself is the semantic gate's answer already
+        computed at the fork — zero extra work on the reply path. A write
+        failure here must never cost a reply.
+        """
+        try:
+            import json as _json
+            import time as _time
+            from pathlib import Path as _Path
+
+            row = {
+                "ts": _time.time(),
+                "turn_id": turn_id or "unknown",
+                "route_taken": "der" if planned else "direct",
+                "would_be_trivial": not planned,
+                "chars": len(text or ""),
+                "web_mode": bool(web_mode),
+            }
+            path = (
+                _Path(__file__).resolve().parents[2]
+                / "data" / "route_shadow.jsonl"
+            )
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(_json.dumps(row, ensure_ascii=False) + "\n")
+        except Exception:  # noqa: BLE001 — shadow logging never blocks a reply
+            pass
+
     def _log_surface(
         self,
         *,
@@ -14319,6 +14389,26 @@ Respond with a JSON object:
                         }
                 except Exception:  # noqa: BLE001 â€” steering is advisory
                     pass
+
+                # REQ-24: a bounded content ask never acquires the research
+                # lane. The user asked for reasoning ("compare OLED versus
+                # LCD displays for me"), not for fresh facts, so the heavy web
+                # gather tools are vetoed for THIS turn - whatever the planner's
+                # step goal says (a rewritten goal like "research X vs Y" must
+                # not re-open a crawl the user never asked for).
+                # Freshness markers, explicit web phrasing and named evidence
+                # objects are handled in the predicate: any of them means the
+                # ask is NOT bounded, and the crawl lane stays open (AC3).
+                if self._turn_is_bounded_content_ask():
+                    logger.info(
+                        "[DER] bounded content ask -> veto web gather tools "
+                        "(REQ-24) goal=%r", goal[:60],
+                    )
+                    return {
+                        "tool": None,
+                        "veto": sorted(self._WEB_CONTENT_TOOLS),
+                        "rationale": "bounded_content_ask",
+                    }
 
                 # Memory pre-filter (REQ-4 AC6) â€” mycelium consulted only
                 # after the physics gate, which needs no memory.

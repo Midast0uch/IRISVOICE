@@ -385,6 +385,52 @@ kill the live-observed defects from the 2026-09-23 app drive (see the pin
 
 ---
 
+## Wave 9 — REQ-24: a bounded content ask keeps no research lane (2026-09-24)
+
+**Goal:** a reasoning ask ("compare OLED versus LCD displays for me") must not
+silently acquire a crawl. The live drive (conv-green-tea) put that ask in the
+tool lane and the DER announced "We need to invoke web-search", although the
+user never asked for fresh facts.
+
+**Where the pivot lives — and where it does not:** NOT the `ACTION_VERBS` list.
+Commit 528a9435 had removed `analyze/compare/calculate/convert/test` from it,
+which broke the pinned gate proof (`test_behavioral_intent_routing.py`, 69
+cases) — restored by this wave. The pivot is the TOOL-DECISION ladder: that
+ladder only ever sees the planner's (model-rewritten) step goal, never the
+user's phrasing, so the turn text is stashed at the routing fork and the gate's
+rule is read there.
+
+### Code
+
+- [x] T39 (REQ-24 AC1): `semantic_gate.is_bounded_content_ask` — the single
+      deterministic rule (no LLM call, no I/O): bounded only when the ask has
+      no tool prefix, no explicit web phrasing, no fresh-data marker and no
+      named evidence OBJECT. ✅ DONE 2026-09-24 — `agent_kernel` stashes
+      `_current_turn_text` at the fork; `_mem_lookup` returns
+      `{"veto": _WEB_CONTENT_TOOLS}` for a bounded turn BEFORE the web-intent
+      sanction, so both resolution paths (engine-first and legacy) lose the
+      heavy gather tools through the shared `_apply_pre_filter`. The first-crawl
+      sanction, the per-task budget veto and the synthesis read-steering are
+      untouched.
+- [x] T40 (528a9435 regression repair): `ACTION_VERBS` carries
+      `analyze/compare/calculate/convert/test` again (the pre-528a9435 state),
+      and the dead `CONTENT_VERBS` tuple plus the contradictory NOTE are gone.
+      ✅ DONE 2026-09-24.
+
+### Verify
+
+- `backend/tests/contract/test_bounded_content_ask_contract.py` (10 checks):
+  the live trace, REQ-24's own examples, freshness markers, named objects, the
+  kernel-side read, and the veto at the shared pre-filter.
+- Pinned bases stay green: `test_turn_triviality_battery.py` (T30/T31/T32),
+  `test_behavioral_intent_routing.py` (69-case gate proof),
+  `test_t36_web_mode_der_contract.py` — 101 passed together.
+- NOT YET VERIFIED LIVE: both services were down for this wave. A live
+  "compare OLED vs LCD" drive with internet access ON is still owed (REQ-24
+  AC1 end-to-end).
+
+---
+
 ## Appendix B — Contract locks (interface shapes pinned by a test)
 
 | Shape | CT | Requirement |

@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -144,24 +145,18 @@ ACTION_VERBS = (
     "run", "execute", "deploy", "install", "configure", "toggle",
     "turn on", "turn off", "switch", "navigate", "go to", "browse",
     "scrape", "fetch", "pull", "sync", "backup", "translate", "summarize",
-    # REQ-24 (2026-09-24 live, conv-green-tea / conv-compare-oled): analyze,
-    # compare, calculate, convert moved out of ACTION_VERBS entirely — they
-    # were landing content-only questions on the search-first lane. "Analyze"
-    # is a meaning verb, not a research one; "compare X versus Y" asks the
-    # model to think, not to crawl a sources roll.
-    #
-    # Only EVIDENCE that has object-level presence (records, indexes, named
-    # knowledge of *SOMETHING THE USER ASKED FOR*) gets tools; meaning-level
-    # comparison/what-does-it-mean topics take the direct answer route. The
-    # document store may consult this same set — the rows only ever use it
-    # transitively via `analyze: {outbound}, requiresTB: false` results.
-    # Session-334 (live append defect): "append" was the one file-write verb
-    # missing here. An explicit "Append a second line ..." classified as
-    # QUESTION and took the direct path, so the model narrated a successful
-    # append with zero execution and the file stayed unchanged. Same class as
-    # the T3 routing gap.
+    # REQ-24 (2026-09-24 live, conv-green-tea / conv-compare-oled): analyze/
+    # compare/calculate/convert are CONTENT-level verbs — "compare OLED vs
+    # LCD" needs reasoning, not a crawl — but the pinned suite (W0.2) owns
+    # them as same-frame anchors for compound prompts ("compare X then write
+    # it to Y"), so they cannot be unloaded from the verb list without
+    # breaking the gate proof. The REQ-24 fix therefore lives at the lane
+    # composition, not here: a content ask that carries no fresh-data marker
+    # must never acquire the research lane.
     "append", "prepend", "merge into", "insert into",
+    "analyze", "compare", "calculate", "convert", "test",
 )
+
 
 # Follow-up / anaphora markers — signal the user is continuing a PRIOR task
 # ("now do it for the sales team", "yes, schedule that", "what about the
@@ -178,6 +173,46 @@ ANAPHORA_PRONOUNS = ("it", "that", "this", "them", "they", "those", "these", "hi
 
 # Explicit tool-request prefixes (REQ-1 AC5 / ask_first policy).
 TOOL_PREFIXES = ("tool:", "run:", "execute:", "plan:")
+
+# ── REQ-24 (specs/reply-surface-contract) — bounded-ask markers ────────────
+# A fresh-data / time marker means the user WANTS current facts: the ask stays
+# a research ask and keeps the crawl lane (REQ-24 AC3).
+FRESH_DATA_MARKERS = (
+    "latest", "newest", "today", "tonight", "tomorrow", "yesterday",
+    "current", "currently", "recent", "recently", "news", "right now",
+    "this week", "this month", "this year", "so far", "up to date",
+    "up-to-date", "breaking", "score", "scores", "price", "prices",
+    "stock", "weather", "forecast", "who won",
+)
+
+# A named evidence OBJECT means the ask is ABOUT that object — it needs the
+# object (file, URL, log, screen), not a fact search for it. Word forms match on
+# WORD BOUNDARIES: "log" must not fire on "ontology", nor "site" on "opposite".
+_EVIDENCE_OBJECT_WORDS = (
+    "file", "files", "folder", "directory", "path", "url", "link",
+    "website", "web page", "site", "database", "db", "log", "repo",
+    "repository", "codebase", "script", "email", "inbox", "screen",
+    "screenshot", "image", "attachment", "spreadsheet",
+)
+# A filename suffix or a URL is unambiguous wherever it appears.
+_EVIDENCE_OBJECT_RAW = (
+    ".txt", ".json", ".py", ".md", ".ts", ".rs", ".csv", ".pdf", "http",
+)
+_EVIDENCE_OBJECT_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(w) for w in _EVIDENCE_OBJECT_WORDS) + r")\b"
+)
+
+# Answer verbs: they produce meaning (or a document), never a fact search.
+# They stay in ACTION_VERBS — the pinned gate proof (W0.2) requires it — but a
+# sentence whose action verb comes from this set only is answered by reasoning
+# (REQ-24 AC1). "list" is deliberately absent: "list files" names an object and
+# "list" the noun is a pinned ambiguity (test_behavioral_intent_routing).
+CONTENT_ASK_VERBS = (
+    "analyze", "analyse", "compare", "calculate", "compute", "convert",
+    "explain", "describe", "summarize", "summarise", "outline", "draft",
+    "review", "translate", "discuss", "write",
+)
+
 
 # Web-search trigger phrases (migrated from _is_web_search_request, 4540-4560).
 WEB_SEARCH_TRIGGERS = [
@@ -273,6 +308,42 @@ def is_web_search_request(text: str) -> bool:
         return False
     _lower = text.lower().strip()
     return any(t in _lower for t in WEB_SEARCH_TRIGGERS)
+
+
+def is_bounded_content_ask(text: str) -> bool:
+    """REQ-24: is this ask answerable by reasoning, with no fact search?
+
+    The user asked for meaning, not for fresh facts — "compare OLED versus
+    LCD displays for me", "explain how recursion works", "write a short note
+    about sleep". A bounded ask must NOT silently enter the research loop:
+    the model answers from its own trained knowledge, or from a light recall
+    read (specs/reply-surface-contract REQ-24 AC1).
+
+    Returns True ONLY when every one of these holds:
+      * not empty / whitespace,
+      * no explicit tool prefix ("Tool:", "RUN:", ...),
+      * no explicit web phrasing (``is_web_search_request``),
+      * no fresh-data / time marker (latest, news, today, price, weather, ...),
+      * no named evidence OBJECT (a file, folder, URL, log, screen, ...).
+
+    A named object means the ask needs that object, and a fresh-data marker
+    means the user WANTS the crawl — both stay research asks (REQ-24 AC3).
+
+    Pure and free: no I/O, no model call, no state. Callers may consult it on
+    the reply path.
+    """
+    t = (text or "").lower().strip()
+    if not t:
+        return False
+    if t.startswith(TOOL_PREFIXES):
+        return False
+    if is_web_search_request(text):
+        return False
+    if any(m in t for m in FRESH_DATA_MARKERS):
+        return False
+    if _EVIDENCE_OBJECT_RE.search(t) or any(m in t for m in _EVIDENCE_OBJECT_RAW):
+        return False
+    return any(v in t for v in CONTENT_ASK_VERBS)
 
 
 class Tier0Intent(str, Enum):
