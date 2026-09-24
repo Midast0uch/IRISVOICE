@@ -30,6 +30,13 @@ WHAT NEEDS WORK RIGHT NOW (quick read for session start)
        TrailingDirector emit goal-only (resolver picks tool); failures stored in TRUSTED PACMAN
        membrane (trusted://episodic/failures), not off-membrane der_failure. Model/provider routing
        is config-independent — resolver path identical across providers/modes. 44 DER tests pass.
+       NOTE 2026-09-24 (session 352): the live resolver is ToolDecisionBox
+         (backend/agent/tool_decision.py, called from _der_run_step_execution); the kernel has
+         never imported explorer.propose (`git log -S` finds no such line in its history), so
+         any doc that names propose as the wired authority is stale. The INVARIANT still
+         holds — ONE resolver, no second authority at execution time — only the module name
+         moved (engine-first, commit dffd1bd4). test_der_phase1.py::test_single_authority had
+         asserted the old name and was therefore always red; it now asserts the live one.
      NEW NORTH STAR: Domain 17 — Self-Coding Agent (agent inside IRIS).
     Complete G1.6→G1.7→G1.8 e2e → then Gate 2 → then Domain 17.
     ⚠️ BLOCKER: Domain 20 (Agent Multi-Step Tool Execution) must ship first —

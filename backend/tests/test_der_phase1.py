@@ -83,9 +83,17 @@ def test_single_authority(monkeypatch):
     # conversational query. Confirm that override is gone.
     assert 'crawler_query' not in src.split("# Phase 1 (D1.4)")[0][-4000:], \
         "web-intent regex override must be deleted (D1.4)"
-    # The only runtime resolver entry point is explorer.propose.
-    assert "from backend.agent.explorer import propose" in src, \
-        "resolver must be wired via explorer.propose"
+    # The runtime resolver is ONE authority. Its module is ToolDecisionBox
+    # (the engine-first chooser, commit dffd1bd4), reached from the DER step.
+    # OWNER DECISION 2026-09-24: this assertion used to name explorer.propose,
+    # the D1.2 name for the role — but this file has never imported propose
+    # (`git log -S 'propose('` finds no such line in its history), so the test
+    # had always been red. The INVARIANT is unchanged — "one resolver, no
+    # second authority at execution time" — only the module name is corrected.
+    assert "from backend.agent.tool_decision import ToolDecisionBox" in src, \
+        "the runtime resolver must be ToolDecisionBox"
+    assert "_box.resolve(" in src, \
+        "the DER step must resolve its tool through the single authority"
 
 
 # ── Test 3: planner emits goals only (no tool field) ───────────────────────
