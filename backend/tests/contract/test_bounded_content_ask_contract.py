@@ -175,3 +175,36 @@ class TestTheVetoIsWiredIntoTheGatherHint:
         assert "if self._turn_is_bounded_content_ask():" in src
         assert '"rationale": "bounded_content_ask",' in src
         assert '"veto": sorted(self._WEB_CONTENT_TOOLS),' in src
+
+
+class TestVetoOrderInTheGatherHint:
+    """ORDER pin — live finding 2026-09-24: the veto must come FIRST.
+
+    ``_mem_lookup`` sanctions ``crawler_query`` for a web-phrased goal and
+    RETURNS. The planner rewrites a bounded ask into exactly that phrasing
+    ("Search the web for recent comparisons of OLED and LCD displays..."), so a
+    veto placed AFTER the sanction is unreachable: the live turn resolved
+    ``crawler_query`` with ``source=memory`` and read 5 pages of the web for an
+    ask whose user never asked for fresh facts. A guard must precede the branch
+    it pre-empts — a logic test cannot see that, a source-order test can.
+    """
+
+    def test_the_veto_precedes_the_web_intent_sanction(self):
+        src = Path(ak.__file__).read_text(encoding="utf-8", errors="replace")
+        veto = src.index("if self._turn_is_bounded_content_ask():")
+        sanction = src.index('"rationale": "web-intent (memory pre-filter)"')
+        assert veto < sanction, (
+            "the bounded-ask veto must precede the web-intent sanction, or a "
+            "web-phrased step goal crawls anyway (live 2026-09-24)"
+        )
+
+    def test_the_veto_precedes_the_synthesis_read_steering(self):
+        src = Path(ak.__file__).read_text(encoding="utf-8", errors="replace")
+        veto = src.index("if self._turn_is_bounded_content_ask():")
+        steering = src.index(
+            "REQ-3 AC4 / REQ-5 (specs/long-horizon-der-execution)"
+        )
+        assert veto < steering, (
+            "a bounded turn has no gathered evidence to read, so the veto must "
+            "not sit behind the read-steering either"
+        )

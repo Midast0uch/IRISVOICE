@@ -14285,6 +14285,26 @@ Respond with a JSON object:
                         "rationale": _veto_reason,
                     }
 
+                # REQ-24: a bounded content ask never acquires the research
+                # lane. The user asked for reasoning ("compare OLED versus
+                # LCD displays for me"), not for fresh facts, so the heavy web
+                # gather tools are vetoed for THIS turn - whatever the planner's
+                # step goal says (a rewritten goal like "research X vs Y" must
+                # not re-open a crawl the user never asked for).
+                # Freshness markers, explicit web phrasing and named evidence
+                # objects are handled in the predicate: any of them means the
+                # ask is NOT bounded, and the crawl lane stays open (AC3).
+                if self._turn_is_bounded_content_ask():
+                    logger.info(
+                        "[DER] bounded content ask -> veto web gather tools "
+                        "(REQ-24) goal=%r", goal[:60],
+                    )
+                    return {
+                        "tool": None,
+                        "veto": sorted(self._WEB_CONTENT_TOOLS),
+                        "rationale": "bounded_content_ask",
+                    }
+
                 # Web-intent → crawler_query (capability-gated, not a silent fallback)
                 if _is_web_goal:
                     # Session-345 (live finding conv-124): do NOT mark the
@@ -14409,26 +14429,6 @@ Respond with a JSON object:
                         }
                 except Exception:  # noqa: BLE001 â€” steering is advisory
                     pass
-
-                # REQ-24: a bounded content ask never acquires the research
-                # lane. The user asked for reasoning ("compare OLED versus
-                # LCD displays for me"), not for fresh facts, so the heavy web
-                # gather tools are vetoed for THIS turn - whatever the planner's
-                # step goal says (a rewritten goal like "research X vs Y" must
-                # not re-open a crawl the user never asked for).
-                # Freshness markers, explicit web phrasing and named evidence
-                # objects are handled in the predicate: any of them means the
-                # ask is NOT bounded, and the crawl lane stays open (AC3).
-                if self._turn_is_bounded_content_ask():
-                    logger.info(
-                        "[DER] bounded content ask -> veto web gather tools "
-                        "(REQ-24) goal=%r", goal[:60],
-                    )
-                    return {
-                        "tool": None,
-                        "veto": sorted(self._WEB_CONTENT_TOOLS),
-                        "rationale": "bounded_content_ask",
-                    }
 
                 # Memory pre-filter (REQ-4 AC6) â€” mycelium consulted only
                 # after the physics gate, which needs no memory.
