@@ -355,6 +355,15 @@ kill the live-observed defects from the 2026-09-23 app drive (see the pin
       `recovery_stopped_turn_finalized`. Also: the amendment / user-steering
       task:start emits now carry the REAL turn id in the event envelope
       (they used the conversation id — the "second agent" phantom).
+      ⚠️ CORRECTION 2026-09-24: the settle marker was WRITTEN but never READ.
+      `_der_amend_graph` had no turn-finalized cause — only `amendment_bound`,
+      `budget_exceeded`, `invalid_dependency` — and the string
+      `recovery_stopped_turn_finalized` appeared nowhere in the kernel, so the
+      DONE above described behaviour the code did not have. The read now
+      exists: the guard is keyed by turn, the production graft caller passes
+      `_turn_id`, and
+      `backend/tests/contract/test_turn_finalized_stop_work_contract.py` pins
+      the refusal, the live-apply path and the per-turn keying.
 - [x] T35 (REQ-20): card settle is final — `TaskCard.settled` marks the ✅ DONE 2026-09-23.
       terminal event; task:progress / task:learning / tool:call must not
       re-arm a settled card; mergeStart (a real task:start revision) clears

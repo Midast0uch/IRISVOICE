@@ -11041,6 +11041,7 @@ Respond with a JSON object:
         queue,
         _token_budget: int = 0,
         _tokens_used: int = 0,
+        _turn_id: str = "",
     ) -> bool:
         """Extend the executing graph with *new_steps* (REQ-5).
 
@@ -11059,6 +11060,25 @@ Respond with a JSON object:
         _task_id = getattr(self, "conversation_id", None) or _session
         try:
             if not new_steps:
+                return False
+            # REQ-19 (T34): a turn whose card already reached its terminal state
+            # is CLOSED — recovery must not extend the graph after the answer is
+            # public. The settle emitter (_der_emit_card_settle) marks that
+            # moment in _der_card_terminal_emitted; without this guard the graft
+            # loop kept crawling long after the reply (live conv-139/141: ~40
+            # minutes of activity the user read as a second agent). Refusal is
+            # the documented safe path: the cause is recorded and the existing
+            # graph keeps running — never a hang, never a silent skip.
+            _settled = getattr(self, "_der_card_terminal_emitted", None) or ()
+            if _settled and (
+                (_turn_id and _turn_id in _settled)
+                or getattr(self, "_current_turn_id", None) in _settled
+            ):
+                log_amendment(
+                    task_id=_task_id, kind="refused",
+                    cause="recovery_stopped_turn_finalized",
+                    detail=f"turn={_turn_id or getattr(self, '_current_turn_id', '')}",
+                )
                 return False
             # AC3: per-task bound on amendments.
             _used = getattr(self, "_der_amendment_count", 0)
@@ -11923,7 +11943,7 @@ Respond with a JSON object:
                     # checking, the per-task bound, and telemetry for every
                     # applied AND refused amendment (REQ-5 AC5, REQ-9 AC3).
                     if not self._der_amend_graph(
-                        _children, _session, plan, queue,
+                        _children, _session, plan, queue, _turn_id=_turn_id,
                     ):
                         logger.info(
                             "[DER] amendment refused for failed %s â€” continuing "
