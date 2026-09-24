@@ -309,6 +309,82 @@ touched.
 `detectContentType` (`chat-view.tsx:2480`); `inference/router.py:895`
 `chunk_callback`; `decision_engine.py:456` `decide`.
 
+## Wave 7 — Unified routing, shadow first (REQ-18, 2026-09-22)
+
+**Goal:** every turn enters the DER routing story; the direct branch becomes a
+logged shadow, then is deleted. The executor (`_respond_direct`) is NOT
+rewritten — it becomes the body of the trivial step.
+
+### Code
+
+- [x] T30 (REQ-18 AC1/AC2): Route-shadow writer + kernel hook at the ✅ DONE 2026-09-22 — one JSONL row
+      `process_text_message` fork — one JSONL row per turn
+      (`data/route_shadow.jsonl`), appended off-path, never raising. The
+      classification IS the gate answer (`requires_der_kernel`); no LLM call,
+      no extra blocking work. — `backend/agent/agent_kernel.py`
+- [x] T31 (REQ-18 AC2): Prompt battery pins the classification contract ✅ DONE 2026-09-22 — 8 tests green.
+      (`backend/tests/contract/test_turn_triviality_battery.py`) — chitchat/
+      questions/short commands → trivial; websearch/multi-tool/files/
+      reminders/compound → DER. Drives the REAL gate (`_needs_planning`).
+- [x] T32 (REQ-18 AC3): Contract test: a trivial turn emits NO task card, ✅ DONE 2026-09-22 — pinned.
+      before and after flip scaffolding exists. Pins the owner's rule:
+      cards only for real multi-tool tasks.
+- [ ] T33 (REQ-18 AC4–AC7, FUTURE — flip wave, after shadow parity evidence):
+      DER loop admits a `trivial` queue item executing `_respond_direct`;
+      direct branch deleted; `IRIS_UNIFIED_ROUTING=1` rollback flag during
+      the evidence window. Verify: battery + live shadow agreement rate +
+      overhead bound vs the direct path.
+
+### Verify
+
+- T30 logs visible on both routes; T31/T32 green; existing suites stay green.
+
+---
+
+## Wave 8 — Live-found fixes (2026-09-23, REQ-19 … REQ-22)
+
+**Goal:**
+kill the live-observed defects from the 2026-09-23 app drive (see the pin
+`pin_19889f7af5fe`). Each requirement is in requirements.md under the
+2026-09-22 review-notes wave.
+
+### Code
+
+- [x] T34 (REQ-19): turn-finalized stop-work — `_der_amend_graph` refuses ✅ DONE 2026-09-23.
+      grafts/amendments once the turn's settle marker fired; refusals log
+      `recovery_stopped_turn_finalized`. Also: the amendment / user-steering
+      task:start emits now carry the REAL turn id in the event envelope
+      (they used the conversation id — the "second agent" phantom).
+- [x] T35 (REQ-20): card settle is final — `TaskCard.settled` marks the ✅ DONE 2026-09-23.
+      terminal event; task:progress / task:learning / tool:call must not
+      re-arm a settled card; mergeStart (a real task:start revision) clears
+      it. Fixes the "Active Execution 23:59" on a failed run.
+- [x] T36 (REQ-21 AC1): TTS first-chunk consumer budget 60s → 180s given the ✅ DONE 2026-09-23.
+      measured ~90s lazy worker cold boot. (Boot stays lazy per the earlier
+      REQ-5 decision; `_async_preload_tts` now also pre-warms the worker for
+      the callers that do use it.)
+- [x] T37 (REQ-22): (a) [RESPONSE FORMAT] now names document intent ✅ DONE 2026-09-23.
+      directly ("write/make/create/draft a note/list/report/plan/document →
+      produce `show`; never fence the whole answer in markdown"); (b) a
+      whole-reply fenced answer is unwrapped at ingest — plain bubbles can
+      no longer show raw `**` markers or clip a fence at the right edge.
+- [x] T38 (REQ-22 + REQ-23 follow-up, 2026-09-23): the success-synthesis ✅ DONE 2026-09-23.
+      fallback apology (": success, unclear — proceed" plan-step fragments)
+      no longer lands in the bubble after a `show` runs; the same-stem retry
+      graft is refused before `_split_step` runs. Bubble shows `speak`, the
+      card is the artifact.
+
+### Verify
+
+- Backend targeted suites green (56 tests incl. all REQ-18 audit suites);
+  frontend `prism-card-collapse`, `chat-view-surface`, `QuestionCard.lifecycle`,
+  `DocumentPanel.bodystate`, `trust-routing`, `rich-document-expandable`,
+  `chat-view-rehydration`, `chat-final-turnid` all green (50 tests); `tsc
+  --noEmit` clean; `py_compile` clean. Live reinvents: restart the app and
+  re-drive the green-tea/document prompt to confirm the card path engages.
+
+---
+
 ## Appendix B — Contract locks (interface shapes pinned by a test)
 
 | Shape | CT | Requirement |

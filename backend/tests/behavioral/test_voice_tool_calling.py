@@ -23,6 +23,28 @@ from backend.agent.agent_kernel import (
 )
 
 
+class _FakeRouter:
+    """Role-router stand-in (2026-09-22 audit note): `_respond_direct` has
+    generated through `self._router.generate(role, ...)` since the
+    2026-09-03 model-selection-authority commit; this fixture's old
+    `_dispatch_api` seam is never consulted anymore. This adapter forwards the
+    router call onto the same fake dispatch functions — the test ASSERTIONS
+    (tool loop, bounding, tool gating) are unchanged."""
+
+    def __init__(self, dispatch):
+        self._dispatch = dispatch
+        self.last_usage = None
+
+    def generate(self, role, messages, tools=None, max_tokens=None,
+                 temperature=None, chunk_callback=None, reasoning_callback=None,
+                 **_kw):
+        return self._dispatch(
+            messages, max_tokens, temperature,
+            chunk_callback=chunk_callback,
+            reasoning_callback=reasoning_callback, tools=tools,
+        )
+
+
 class _FakeToolBridge:
     def __init__(self):
         self.calls = []
@@ -41,9 +63,18 @@ class _FakeToolBridge:
 def _make_kernel():
     kernel = AgentKernel.__new__(AgentKernel)
     kernel._config_mode = "SINGLE_API"
-    kernel._selected_reasoning_model = "test-model"
-    kernel._model_provider = "test"
-    kernel._model_router = None
+    # 2026-09-22 audit note: `_selected_reasoning_model` is a READ-ONLY
+    # property since the 2026-09-03 model-selection-authority commit; it
+    # resolves through `_model_for_role("reasoning")`. Stubbing the resolver
+    # is the test seam now — assigning the property raises AttributeError.
+    kernel._model_for_role = lambda role: "test-model"
+    # `_model_provider` is read-only too (same commit). The old fixture value
+    # "test" was already an unknown provider for every consumer of it — with
+    # no `_router` the property now reports "uninitialized", which is the
+    # identical code path (unknown -> default). Nothing to assign.
+    # `_router` is assigned per-test via _FakeRouter below — the router is
+    # the generation seam since 2026-09-03 (role-based `router.generate`).
+    kernel._router = None
     kernel.session_id = "test-session"
     kernel.conversation_id = "test-conv"
     kernel._pending_thinking = ""
@@ -99,7 +130,7 @@ def test_voice_tool_calling_executes_search_when_tools_present():
             )
         return ("Here is the answer using RESULT_MARKER.", "", [])
 
-    kernel._dispatch_api = fake_dispatch
+    kernel._router = _FakeRouter(fake_dispatch)
 
     result = kernel._respond_direct("what is the latest news?", [])
 
@@ -132,7 +163,7 @@ def test_voice_tool_loop_bounded_at_max_rounds():
             }],
         )
 
-    kernel._dispatch_api = fake_dispatch_always_tool
+    kernel._router = _FakeRouter(fake_dispatch_always_tool)
     result = kernel._respond_direct("loop me", [])
 
     # Bounded: initial call + up to 3 tool rounds = 4 dispatch calls max
@@ -152,7 +183,7 @@ def test_voice_no_tool_calls_when_model_answers_directly():
         state["n"] += 1
         return ("A direct answer with no tools.", "", [])
 
-    kernel._dispatch_api = fake_dispatch_direct
+    kernel._router = _FakeRouter(fake_dispatch_direct)
     result = kernel._respond_direct("hello", [])
 
     assert result == "A direct answer with no tools."
@@ -172,7 +203,7 @@ def test_voice_web_tools_excluded_when_internet_off():
         state["tools"] = tools
         return ("No web for me.", "", [])
 
-    kernel._dispatch_api = fake_dispatch
+    kernel._router = _FakeRouter(fake_dispatch)
     kernel._respond_direct("anything", [])
 
     assert state["tools"] is not None

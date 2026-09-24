@@ -62,7 +62,12 @@ def _make_direct_path_kernel(tokens_used: int, max_tokens: int) -> AgentKernel:
     )
     # Response-shaping is out of scope for REQ-6 — identity passthrough.
     k._process_structured_response = lambda response, turn_id=None, conversation_id=None: response
-    k._maybe_escalate_web_format = lambda task_id, conv_id: None
+    # Session-345 signature note (2026-09-22 audit): the production call is
+    # now `_maybe_escalate_web_format(task_id, conv_id, response_text)` — the
+    # third argument is the ANSWER text so reformat operates on it, not a
+    # crawl dump. The stub accepts and ignores it; the assertion load of this
+    # file (context:usage emission) is unchanged.
+    k._maybe_escalate_web_format = lambda task_id, conv_id, response_text="": None
     k.clear_turn_trust_flag = lambda: None
     return k
 

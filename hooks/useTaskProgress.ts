@@ -276,6 +276,11 @@ export interface TaskCard {
    * transported here verbatim rather than re-derived on the frontend.
    */
   terminalState?: string
+  /** REQ-20 (2026-09-23 live): the card has received its terminal event
+   * (task:done / task:fail). Trailing progress/learning/tool frames must NOT
+   * re-arm the working state; only a new task:start clears this latch
+   * (mergeStart). Distinct from `terminalState`, which is rehydration-only. */
+  settled?: boolean
   /** Session 246: total wall-clock seconds the run took (rehydrated cards
    *  only — derived from the persisted created_at/updated_at pair). */
   durationSec?: number
@@ -696,6 +701,9 @@ function mergeStart(existing: TaskCard, incoming: TaskStep[], d: TaskUpdateDetai
   return {
     ...existing,
     isWorking: true,
+    // REQ-20 (2026-09-23): a revision IS a new start — clear the terminal
+    // latch so the working state may run again for a real task:start.
+    settled: false,
     steps: sortSteps(merged),
     totalSteps: Math.max(merged.length, existing.currentStep),
     mode: d.mode ?? existing.mode,
@@ -981,6 +989,9 @@ function reduceTaskUpdate(prev: CardsState, d: TaskUpdateDetail): CardsState {
 
     case "tool:call": {
       return applyToCard(prev, d, (card) => {
+        // REQ-20 (2026-09-23): settled cards do not re-arm — same latch as
+        // the task:progress/task:learning guards above.
+        if (card.settled === true) return card
         let steps = card.steps
         let currentStep = card.currentStep
         if (d.step_number != null) {
@@ -1077,6 +1088,11 @@ function reduceTaskUpdate(prev: CardsState, d: TaskUpdateDetail): CardsState {
 
     case "task:progress": {
       return applyToCard(prev, d, (card) => {
+        // REQ-20 (2026-09-23): a SETTLED card does not come back. Trailing
+        // progress frames after task:done/fail used to re-spin the card into
+        // "Active Execution" forever (live conv-140); the terminal event is
+        // the authority and only a fresh task:start may re-arm it.
+        if (card.settled === true) return card
         // DER finished a step - check it off in the to-do list.
         if (d.step_done) {
           // pin_517dfcbda150 (F3): look up by the backend's unique step_id
@@ -1324,6 +1340,11 @@ function reduceTaskUpdate(prev: CardsState, d: TaskUpdateDetail): CardsState {
         return {
           ...card,
           isWorking: false,
+          // REQ-20 (reply-surface-contract, 2026-09-23 live): mark terminal —
+          // trailing progress/learning frames for a settled card must NOT
+          // re-arm "Active Execution" (the card kept spinning after
+          // task:fail; the latch lives here, only `task:start` re-opens it).
+          settled: true,
           currentStep: deriveCurrentStep(steps),
           currentAction: undefined,
           phase: undefined,
@@ -1335,13 +1356,17 @@ function reduceTaskUpdate(prev: CardsState, d: TaskUpdateDetail): CardsState {
     }
 
     case "task:learning": {
-      // REQ-8: honest learning signal. Surface it for the card border
-      // particles; do NOT clear steps or working state.
-      return applyToCard(prev, d, (card) => ({
-        ...card,
-        learningSignal: (d.signal ?? null) as TaskCard["learningSignal"],
-        isWorking: true,
-      }))
+      // REQ-20 (2026-09-23): learning frames after settle must not re-arm the
+      // card's working state either (isWorking: true below was one of the
+      // paths that resurrected a failed card live).
+      return applyToCard(prev, d, (card) => {
+        if (card.settled === true) return card
+        return {
+          ...card,
+          learningSignal: (d.signal ?? null) as TaskCard["learningSignal"],
+          isWorking: true,
+        }
+      })
     }
 
     case "memory:event": {

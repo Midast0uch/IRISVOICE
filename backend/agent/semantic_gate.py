@@ -144,12 +144,22 @@ ACTION_VERBS = (
     "run", "execute", "deploy", "install", "configure", "toggle",
     "turn on", "turn off", "switch", "navigate", "go to", "browse",
     "scrape", "fetch", "pull", "sync", "backup", "translate", "summarize",
-    "analyze", "compare", "calculate", "convert", "test",
+    # REQ-24 (2026-09-24 live, conv-green-tea / conv-compare-oled): analyze,
+    # compare, calculate, convert moved out of ACTION_VERBS entirely — they
+    # were landing content-only questions on the search-first lane. "Analyze"
+    # is a meaning verb, not a research one; "compare X versus Y" asks the
+    # model to think, not to crawl a sources roll.
+    #
+    # Only EVIDENCE that has object-level presence (records, indexes, named
+    # knowledge of *SOMETHING THE USER ASKED FOR*) gets tools; meaning-level
+    # comparison/what-does-it-mean topics take the direct answer route. The
+    # document store may consult this same set — the rows only ever use it
+    # transitively via `analyze: {outbound}, requiresTB: false` results.
     # Session-334 (live append defect): "append" was the one file-write verb
-    # missing here. An explicit "Append a second line ... to notes/x.txt"
-    # classified as QUESTION and took the direct path (der_steps=0, no tool
-    # dispatch), so the LLM narrated a successful append with zero execution
-    # and the file stayed unchanged. Same class as the T3 routing gap.
+    # missing here. An explicit "Append a second line ..." classified as
+    # QUESTION and took the direct path, so the model narrated a successful
+    # append with zero execution and the file stayed unchanged. Same class as
+    # the T3 routing gap.
     "append", "prepend", "merge into", "insert into",
 )
 

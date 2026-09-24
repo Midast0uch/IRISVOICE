@@ -31,6 +31,30 @@ import remarkGfm from "remark-gfm"
 
 const HIGHLIGHT_NAME = "iris-tts-word"
 
+/**
+ * REQ-22 AC2 (2026-09-23 live finding): a model that wraps the WHOLE answer
+ * — or a section of it — inside a dedicated markdown fence (```markdown,
+ * ```md, or bare ```) means "this is a document", not "show my code". The
+ * chat used to render that fence as raw monospace text, with the markdown
+ * markers visible and the right edge clipped. Unwrap ONLY the document-class
+ * fences anywhere in the body; genuine code fences (```ts, ```py, ...) stay
+ * code. Render-time, so history heals on the next paint too.
+ */
+const _DOC_FENCE_RE = /```\s*(?:markdown|md|text)?\s*\r?\n([\s\S]*?)\r?\n?```/g
+
+function unwrapDocumentFences(text: string): string {
+  if (!text || !text.includes("```")) return text
+  return text.replace(_DOC_FENCE_RE, (_whole, inner) => {
+    const innerText = String(inner).trim()
+    // Only unwrap when the fence actually reads like markdown prose;
+    // an ast/json/shell body keeps its fence.
+    const looksLikeMarkdown =
+      /(^|\n)\s*#{1,6}\s|(^|\n)\s*[-*]\s|(^|\n)\s*\d+\.\s|\*\*[^*\n]+\*\*/.test(innerText)
+    if (!looksLikeMarkdown) return _whole
+    return innerText
+  })
+}
+
 type CSSWithHighlights = {
   highlights?: {
     set: (name: string, highlight: unknown) => void
@@ -141,6 +165,8 @@ export function MarkdownMessage({
   const ref = useRef<HTMLDivElement>(null)
   useTtsWordHighlight(ref, highlightIndex, highlightActive)
 
+  const displayText = variant === "markdown" ? unwrapDocumentFences(text) : text
+
   if (variant === "cli") {
     return (
       <div ref={ref} className={`iris-cli ${className}`}>
@@ -175,7 +201,7 @@ export function MarkdownMessage({
           ),
         }}
       >
-        {text}
+        {displayText}
       </ReactMarkdown>
     </div>
   )

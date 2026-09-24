@@ -2861,6 +2861,17 @@ async def _async_preload_tts(tts_manager) -> None:
                 f"(model=None). TTS will produce silence. "
                 f"Check 'TTSManager' error logs above for the reason."
             )
+        # Audit 2026-09-23 (live finding): the in-process model warm-up above
+        # does NOT warm the persistent WORKER subprocess that synthesis
+        # actually runs on — the first reply of the day paid the worker's
+        # ~90s cold load while the playback consumer's 60s first-chunk budget
+        # had already lapsed, so the answer was synthesized but skipped
+        # (silent). Spawn the worker here too, off-loop.
+        try:
+            _wk = await asyncio.to_thread(tts_manager._ensure_worker)
+            logger.info(f"[TTS] Pocket-TTS worker pre-warmed (ready={_wk})")
+        except Exception as _wk_exc:
+            logger.warning(f"[TTS] Worker pre-warm failed (non-fatal): {_wk_exc}")
     except Exception as e:
         logger.error(
             f"[TTS] Pocket-TTS pre-load crashed: {e}",

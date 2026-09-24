@@ -104,7 +104,16 @@ class DocumentDataStore:
             # its card both render (neither knowing about the other) and the
             # agent cannot tell which exchange a previous render belongs to.
             # Idempotent — each ADD COLUMN is a no-op once the column exists.
-            for col in ("source_document_id", "sources", "har_path", "turn_id"):
+            for col in (
+                "source_document_id",
+                "sources",
+                "har_path",
+                "turn_id",
+                # 2026-09-22 (reply-surface-contract audit, REQ-10): persist the
+                # prism card lifecycle id so it survives a reload instead of a
+                # fresh in-memory mint replacing it while the document survives.
+                "card_id",
+            ):
                 try:
                     self._conn.execute(
                         f"ALTER TABLE document_data ADD COLUMN {col} TEXT"
@@ -130,6 +139,7 @@ class DocumentDataStore:
         sources: Optional[list] = None,
         har_path: Optional[str] = None,
         turn_id: Optional[str] = None,
+        card_id: Optional[str] = None,
     ) -> None:
         """Upsert a document's canonical data + variants (idempotent by id)."""
         try:
@@ -139,8 +149,8 @@ class DocumentDataStore:
                 self._conn.execute(
                     "INSERT INTO document_data "
                 "(document_id, conversation_id, fmt, content, variants, alternatives, trust, revision, "
-                " source_document_id, sources, har_path, turn_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                " source_document_id, sources, har_path, turn_id, card_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(document_id) DO UPDATE SET "
                 "conversation_id=excluded.conversation_id, fmt=excluded.fmt, "
                 "content=excluded.content, variants=excluded.variants, "
@@ -151,7 +161,10 @@ class DocumentDataStore:
                 # COALESCE, not excluded: a later write that does not know the
                 # turn (a reformat, a variant refresh) must not erase the
                 # attribution the original render established.
-                "turn_id=COALESCE(excluded.turn_id, document_data.turn_id)",
+                "turn_id=COALESCE(excluded.turn_id, document_data.turn_id), "
+                # Same rule for the lifecycle id: an existing card_id is a
+                # contract with any client that already saw it (REQ-10 AC1/AC4).
+                "card_id=COALESCE(excluded.card_id, document_data.card_id)",
                 (
                     document_id,
                     conversation_id,
@@ -165,6 +178,7 @@ class DocumentDataStore:
                     json.dumps(sources or [], ensure_ascii=False) if sources is not None else None,
                     har_path,
                     turn_id,
+                    card_id,
                 ),
             )
                 self._conn.commit()
@@ -367,7 +381,7 @@ class DocumentDataStore:
             row = self._conn.execute(
                 "SELECT document_id, conversation_id, fmt, content, variants, "
                 "alternatives, trust, revision, source_document_id, sources, har_path, "
-                "turn_id "
+                "turn_id, card_id "
                 "FROM document_data WHERE document_id = ?",
                 (document_id,),
             ).fetchone()
@@ -386,6 +400,7 @@ class DocumentDataStore:
                 "sources": json.loads(row[9] or "[]"),
                 "har_path": row[10],
                 "turn_id": row[11],
+                "card_id": row[12],
             }
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("[DocumentDataStore] get failed: %s", exc)
@@ -404,7 +419,7 @@ class DocumentDataStore:
             if metadata_only:
                 rows = self._conn.execute(
                     "SELECT document_id, fmt, conversation_id, sources, har_path, created_at, "
-                    "turn_id "
+                    "turn_id, card_id "
                     "FROM document_data WHERE conversation_id = ? ORDER BY created_at ASC",
                     (conversation_id,),
                 ).fetchall()
@@ -417,13 +432,16 @@ class DocumentDataStore:
                         "har_path": r[4],
                         "created_at": r[5],
                         "turn_id": r[6],
+                        # REQ-10 (audit 2026-09-22): the lifecycle id rides
+                        # metadata so a rehydrated card keeps its identity.
+                        "card_id": r[7],
                     }
                     for r in rows
                 ]
-            rows = self._conn.execute(
+            row = self._conn.execute(
                 "SELECT document_id, conversation_id, fmt, content, variants, "
                 "alternatives, trust, revision, source_document_id, sources, har_path, "
-                "turn_id "
+                "turn_id, card_id "
                 "FROM document_data WHERE conversation_id = ? ORDER BY created_at ASC",
                 (conversation_id,),
             ).fetchall()
@@ -441,6 +459,7 @@ class DocumentDataStore:
                     "sources": json.loads(r[9] or "[]"),
                     "har_path": r[10],
                     "turn_id": r[11],
+                    "card_id": r[12],
                 }
                 for r in rows
             ]

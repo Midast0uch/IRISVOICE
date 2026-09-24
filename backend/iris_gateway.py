@@ -3403,6 +3403,11 @@ class IRISGateway:
                         chunk_callback=chunk_callback,
                         reasoning_callback=reasoning_callback,
                         from_voice=True,
+                        # Audit 2026-09-22 (F1): share the TURN id with the
+                        # kernel so questions and tool renders anchor to this
+                        # turn in the UI — without it the kernel minted its own
+                        # and nothing the voice path rendered could be joined.
+                        turn_id=_turn_id,
                     )
                     _log_timing("llm_end")
                     self._logger.info(
@@ -3437,25 +3442,17 @@ class IRISGateway:
                     # â”€â”€ D2: GUARANTEED UTTERANCE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
                     # A rendered answer must never be silently unspoken.
                     #
-                    # The DER path calls chunk_callback(_der_response) with the
-                    # RAW response (agent_kernel.py ~:5081, before
-                    # _process_structured_response runs), so for a structured
-                    # reply chunk_callback sees text starting with '{' and
-                    # deliberately returns early without queuing â€” on the
-                    # promise that the final flush above will parse it and
-                    # speak the `speak` field.
-                    #
-                    # That promise has no fallback. If parse_structured_response
-                    # returns no `speak`, or raises (the except sets _speak =
-                    # None), then `_speak is not None` is False AND the elif is
-                    # rejected for starting with '{' â€” so NOTHING is queued and
-                    # the turn is silent. Observed live in the T36 smoke test:
-                    # der_response_len=2601, "chunk_callback invoked OK", card
-                    # rendered with data, and zero SPEAK / synthesize_stream /
-                    # PLAYBACK entries for the final answer.
+                    # Since reply-surface-contract T18 (2026-09-21) the DER
+                    # path streams the agent's `speak` line first
+                    # (_emit_reply_progressively in agent_kernel.py), never the
+                    # raw structured JSON this block was written for. The
+                    # remaining silent case is a `show` turn WITHOUT a `speak`
+                    # line: the progressive emit queues no text chunk, so
+                    # `_spoken_queued` stays False and this backstop speaks the
+                    # prepared line (the supportive excerpt) instead.
                     #
                     # `spoken` above is the correctly normalised companion-style
-                    # form and was already being computed here â€” it was simply
+                    # form and was already being computed here — it was simply
                     # returned and never queued. Use it as the backstop.
                     #
                     # Gated on _spoken_queued (set at every real put, including
@@ -4648,14 +4645,16 @@ class IRISGateway:
                     # Fast timeout (0.5s) after streaming starts so barge-in
                     # (interrupt_speech) is detected promptly.
                     #
-                    # Before the first chunk: was 300s. This consumer runs
-                    # _speak_response's `finally` â€” the block that clears
-                    # _tts_active and hands the mic back â€” so a 300s wait was
-                    # a 300s mic outage whenever TTS stalled. Bounded to 60s:
-                    # comfortably more than a cold worker spawn (~35s), and the
-                    # pipeline's own stall backstop now releases the mic after
-                    # 10s anyway.
-                    _timeout = 60 if not _sd_stream_started else 0.5
+                    # Before the first chunk: asymmetric by design — the TTS
+                    # worker loads lazily (REQ-5, ~90s measured cold on
+                    # 2026-09-23) while this consumer previously waited only
+                    # 60s, so the FIRST voice answer of every cold session was
+                    # skipped entirely. 180s covers worker boot plus model
+                    # prompting (~15s) plus contention headroom; the
+                    # pipeline's own 10s stall backstop still releases the mic
+                    # when the producer is genuinely dead, so this is a
+                    # completeness budget, not a hang risk.
+                    _timeout = 180 if not _sd_stream_started else 0.5
                     try:
                         chunk = audio_queue.get(timeout=_timeout)
                     except queue.Empty:
@@ -4672,8 +4671,8 @@ class IRISGateway:
                     if chunk is _TTS_END_STREAM:
                         break
                     if chunk is None:
-                        self._logger.error(
-                            f"[Voice] TTS audio queue timed out after {_timeout}s Ã¢â‚¬â€ skipping TTS, continuing conversation"
+                        self._logger.warning(
+                            f"[Voice] TTS audio queue timed out after {_timeout}s — skipping TTS, continuing conversation"
                         )
                         break
 
@@ -5747,7 +5746,25 @@ class IRISGateway:
                 _t_exec_start = _time.perf_counter()
 
                 def _execute_agent():
+                    _chunk_buf: list = []
+                    _chunk_json = [None]  # None = undecided, one-element box
+
                     def _chunk_cb(chunk: str):
+                        # Audit 2026-09-22 (F8): a structured (speak/show) reply
+                        # can stream RAW JSON on the direct (non-DER) path —
+                        # the UI paints every chunk live, so the bubble briefly
+                        # showed the envelope until the final chat_message
+                        # replaced it. Same guard as the voice path: once the
+                        # accumulated response is a JSON envelope, drop the
+                        # chunks; the seam's speak line / card carries the turn.
+                        # The verdict is decided once, on the first non-ws text.
+                        if _chunk_json[0] is None:
+                            _chunk_buf.append(chunk)
+                            _joined = "".join(_chunk_buf).lstrip()
+                            if _joined:
+                                _chunk_json[0] = _joined.startswith("{")
+                        if _chunk_json[0]:
+                            return
                         _loop = self._main_loop
                         if _loop and _loop.is_running():
                             try:
@@ -10380,15 +10397,32 @@ class IRISGateway:
                 # thread (mirrors get_documents' scoping; REQ-17 AC2).
                 if row and (row.get("conversation_id") or "default") == conversation_id:
                     content = row.get("content")
-                    if not content and getattr(store, "get_blob", None) is not None:
-                        blob_path = store.get_blob(document_id)
-                        content = blob_path or None
+                    fmt = row.get("format")
+                    if not content:
+                        # Audit 2026-09-22 (F2): get_blob returns
+                        # {mime, data(bytes), byte_len} — putting THAT in
+                        # `content` breaks JSON serialization on the wire and,
+                        # if it arrived, crashes the frontend merge
+                        # (doc.content.trim on a dict). Hand the card the blob's
+                        # SERVE URL instead — the same route a live screenshot
+                        # card uses, rendered by RichDocument's image branch.
+                        from urllib.parse import quote as _quote
+
+                        _blob = None
+                        if getattr(store, "get_blob", None) is not None:
+                            try:
+                                _blob = store.get_blob(document_id)
+                            except Exception:
+                                _blob = None
+                        if _blob:
+                            content = f"/api/documents/{_quote(document_id)}/image"
+                            fmt = "image"
                     body = {
                         "document_id": document_id,
                         "conversation_id": conversation_id,
                         "status": "ok" if content else "missing",
                         "content": content,
-                        "format": row.get("format"),
+                        "format": fmt,
                         "sources": row.get("sources") or [],
                         "har_path": row.get("har_path"),
                         "trust": row.get("trust"),

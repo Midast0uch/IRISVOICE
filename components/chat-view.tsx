@@ -114,6 +114,22 @@ function newMessageId(): string {
 }
 
 /**
+ * REQ-22 AC2 (2026-09-23 live finding): when a model answers with its whole
+ * reply inside ONE fenced code block ("```markdown\n# Title\n...\n```"), the
+ * plain bubble rendered the FENCE source as literal code — monospace with
+ * visible `**`/`- ` markers and right-edge clipping. A fenced WHOLE-REPLY
+ * wrapper is presentation, not content: unwrap it so the markdown renders
+ * readably. A reply that CONTAINS code inside prose (multiple fences, fence
+ * mid-text) is untouched — only an all-fence body unwraps.
+ */
+function unwrapWholeReplyFence(text: string): string {
+  if (!text) return text
+  const t = text.trim()
+  const m = t.match(/^```(?:[\w-]*)?\s*\r?\n([\s\S]*?)\r?\n?```$/)
+  return m ? m[1].trim() : text
+}
+
+/**
  * Coarse key for "is this the same content?". Used to detect that a rendered
  * prism card already displays the turn's plain text, so the text bubble can be
  * skipped without dropping the message that the card attaches to.
@@ -303,6 +319,12 @@ interface DocRender {
   turnId?: string
   // W4/W5: stable id so reformat can retrieve canonical data by id (no client content).
   documentId?: string
+  // REQ-10 (audit 2026-09-22, F7): the lifecycle id, persisted backend-side and
+  // now rehydrated with the metadata — same id across edits and reloads.
+  cardId?: string
+  /** REQ-22 (2026-09-23 live): card header identity — first markdown heading
+   * derived from the body at ingest; a closed card must never read blank. */
+  title?: string
   reformatted?: boolean
   // Phase 4 (chat-card-redesign): true when the backend revised an existing
   // document in place, so the card can show an "Updated" indicator.
@@ -474,6 +496,24 @@ export function ChatWing({
     })
   }, [])
 
+  // Audit 2026-09-22 (F11): the lazy body fetch as ONE call — the panel-expand
+  // effect below and the rehydrated card's chevron peek both route through it.
+  // The docBodyStatus guard prevents duplicate sends for the same document.
+  const requestDocumentBody = useCallback((documentId: string) => {
+    let shouldSend = false
+    setDocBodyStatus(prev => {
+      if (prev[documentId]) return prev
+      shouldSend = true
+      return { ...prev, [documentId]: 'loading' }
+    })
+    if (shouldSend) {
+      sendMessage?.('get_document_body', {
+        document_id: documentId,
+        conversation_id: activeConversationIdRef.current,
+      })
+    }
+  }, [sendMessage])
+
   // The fetch trigger: fires only for an expanded, body-less, store-backed doc.
   useEffect(() => {
     if (!expandedDocId) return
@@ -482,13 +522,8 @@ export function ChatWing({
       ?.documents.find(d => d.id === expandedDocId)
     if (!doc?.documentId) return
     if ((doc.content || '').trim().length > 0) return
-    if (docBodyStatus[doc.documentId]) return
-    setDocBodyStatus(prev => ({ ...prev, [doc.documentId!]: 'loading' }))
-    sendMessage?.('get_document_body', {
-      document_id: doc.documentId,
-      conversation_id: activeConversationId,
-    })
-  }, [expandedDocId, conversations, activeConversationId, docBodyStatus, sendMessage])
+    requestDocumentBody(doc.documentId)
+  }, [expandedDocId, conversations, activeConversationId, requestDocumentBody])
 
   // REQ-17 AC3: the body fills the EXISTING card in place — no fresh
   // DOCUMENT_RENDER, no new card, no duplicate.
@@ -517,6 +552,12 @@ export function ChatWing({
                 sources: detail.sources,
                 harPath: detail.har_path ?? d.harPath,
                 trust: detail.trust || d.trust,
+                title:
+                  d.title ||
+                  (() => {
+                    const m = (detail.content || "").match(/^\s*#\s+(.+)$/m)
+                    return m ? m[1].trim() : "Document"
+                  })(),
               }
             : d
         )
@@ -693,7 +734,10 @@ export function ChatWing({
   // Thinking block expand/collapse — collapsed by default
   const [expandedThinking, setExpandedThinking] = useState<Set<string>>(new Set());
   const [documentModalMessage, setDocumentModalMessage] = useState<Message | null>(null);
-  const [messageContentTypes, setMessageContentTypes] = useState<Record<string, ContentType>>({});
+  // Audit 2026-09-22 (F12): messageContentTypes state REMOVED — the old
+  // getContentType wrote to it during render (setState-in-render, which React
+  // flags and which only stopped looping because of the cache). The detector
+  // is a cheap pure regex pass; compute it per call instead.
   
   // File upload drag-and-drop state
   const [isDraggingFile, setIsDraggingFile] = useState(false);
@@ -1195,7 +1239,11 @@ export function ChatWing({
         text: string; sender?: 'user' | 'assistant' | 'error'; thinking?: string;
         turn_id?: string; spoken?: string
       }
-      const { text, sender = 'assistant', thinking, spoken } = detail
+      const { text: rawText, sender = 'assistant', thinking, spoken } = detail
+      // REQ-22 AC2 (2026-09-23): unwrap a whole-reply fence once, at ingest —
+      // a model that wraps its answer in ```markdown made the plain bubble
+      // render raw syntax and clip; the inner markdown is the reply.
+      const text = unwrapWholeReplyFence(rawText ?? '')
       if (!text) return
       // `words` must be the SPOKEN words — tts_word indices count those. When
       // the backend sent no spoken line, fall back to the body (short answers,
@@ -1437,6 +1485,8 @@ export function ChatWing({
         alternatives?: string[]
         turn_id?: string
         document_id?: string
+        // REQ-10 (F7): the persisted lifecycle id rides every render emit.
+        card_id?: string
         reformatted?: boolean
         // Phase 4 (chat-card-redesign): backend sets this when it revises an
         // existing document in place, so the card can show an "Updated" indicator.
@@ -1467,6 +1517,12 @@ export function ChatWing({
         alternatives: detail.alternatives || [],
         turnId: detail.turn_id,
         documentId: detail.document_id,
+        cardId: detail.card_id,
+        // REQ-22: card header identity — first markdown heading, else "Document".
+        title: (() => {
+          const m = (detail.content || "").match(/^\s*#\s+(.+)$/m)
+          return m ? m[1].trim() : "Document"
+        })(),
         reformatted: detail.reformatted || false,
         // Partial emits are a stream, not a revision — suppress the badge.
         updated: detail.partial ? false : (detail.updated || false),
@@ -2649,13 +2705,12 @@ export function ChatWing({
   }, []);
 
   const getContentType = useCallback((message: Message): ContentType => {
-    if (!messageContentTypes[message.id]) {
-      const detected = detectContentType(message.text);
-      setMessageContentTypes(prev => ({ ...prev, [message.id]: detected }));
-      return detected;
-    }
-    return messageContentTypes[message.id];
-  }, [messageContentTypes, detectContentType]);
+    // Audit 2026-09-22 (F12): this used to back a messageContentTypes state
+    // map and call `setMessageContentTypes` DURING RENDER (an uncached message
+    // triggered a state write mid-render, relying on the cache to halt the
+    // loop). Pure regex detection is microseconds — just compute it.
+    return detectContentType(message.text);
+  }, [detectContentType]);
 
   const toggleMessageExpanded = useCallback((messageId: string) => {
     setExpandedMessages(prev => {
@@ -3887,6 +3942,12 @@ ${message.text}`;
                           // empty-source markdown (e.g. a generated table) does
                           // NOT match.
                           return (
+                            // Audit 2026-09-22 (F10): aligned with the backend
+                            // _is_empty_websearch_synthesis verdict list — the
+                            // "what was attempted + what failed" pair was missing
+                            // here, so a stale card shaped that way slipped
+                            // through this second-tier guard.
+                            (lc.includes("what was attempted") && lc.includes("what failed")) ||
                             lc.includes("wasn't able to pull") ||
                             lc.includes("wasn't able to retrieve") ||
                             lc.includes("no usable direct image") ||
@@ -3979,6 +4040,7 @@ ${message.text}`;
                               <RichDocument
                                 content={doc.content}
                                 format={doc.format as "markdown" | "html" | "table" | "diagram" | "text" | "json" | "image"}
+                                title={doc.title}
                                 glowColor={glowColor}
                                 alternatives={doc.alternatives}
                                 trust={doc.trust}
@@ -3996,6 +4058,13 @@ ${message.text}`;
                                 expandable={
                                   (doc.content || '').trim().length === 0 &&
                                   !!doc.documentId
+                                }
+                                // Peek on a bodyless rehydrated card triggers
+                                // the same lazy body fetch the panel does (F11).
+                                onPeek={
+                                  doc.documentId
+                                    ? () => requestDocumentBody(doc.documentId!)
+                                    : undefined
                                 }
                                 sources={docSources}
                                 harPath={doc.harPath}

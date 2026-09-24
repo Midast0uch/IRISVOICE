@@ -707,7 +707,269 @@ blank-body failure more visible, so the contract must be closed here.
 - Offline / fetch failure → panel shows a retry affordance; the card header stays.
 - Card already rendered live this session (body in memory) → no fetch is issued.
 
+## Review Notes (2026-09-22 audit, session 349)
+
+Post-implementation audit against every REQ and the per-wave landmarks. All
+spec tests were re-run green first (55 backend CT/BT, 13/13 CDD harness
+checks, 35+3 frontend contract tests), then the following defects were fixed
+in code and pinned by NEW regression tests (no existing test weakened; the
+two deliberate successions below are loudly documented there and here).
+
+### Fixed in this audit
+
+- **F1 (REQ-11 AC1/AC3, REQ-12 AC3) — question cards never anchored in
+  production.** `tool_bridge._handle_ask_user_question` passed
+  `turn_id=session_id` (`tool_bridge.py`); the frontend anchors on per-turn
+  message ids (`chat-view.tsx:4020`, supersession prune `:1263`), so the two
+  namespaces never matched. CT-8/CT-9 are source-regex pins and could not see
+  this. Fix: the kernel stamps `self._current_turn_id = task_id` at
+  `process_text_message` entry, the gateway now passes its turn id on the
+  voice path too (`iris_gateway.py`), and the bridge resolves the live turn
+  id for `ask()` / `ask_non_blocking()`. Question session linkage moved to an
+  explicit `Question.session_id` field (`ask_user_tool.pending_for_session`
+  matches it, with a legacy fallback). Regression:
+  `backend/tests/contract/test_question_turn_anchor.py` (4 tests).
+- **F2 (REQ-17 edge) — blob-backed body fetch returned the raw blob dict.**
+  `get_blob` returns `{mime, data(bytes), byte_len}`; stuffing it into the
+  JSON `content` field breaks serialization on the wire or crashes the
+  frontend merge (`.trim()` on a dict). The handler now returns the blob's
+  serve URL (`/api/documents/<id>/image`, same route a live screenshot card
+  uses) with `format="image"`. Regression:
+  `backend/tests/contract/test_get_document_body_blob.py` (2 tests).
+- **F3 (REQ-16 edge / AC11.4) — `render_document` could double-card a turn.**
+  The tool path never consulted the one-card rule. A per-turn
+  `turn_id -> document_id` map (`_record_turn_render`, bounded 100) now backs
+  both directions: a repeat tool render revises the turn's card in place, and
+  a trailing `show` envelope after a tool render revisions the same card
+  instead of minting a second one. Regression:
+  `backend/tests/contract/test_render_tool_one_card_per_turn.py` (2 tests).
+- **F4 (REQ-15 AC4) — the observer only saw plain turns.** On card turns no
+  calibration verdict was produced at all, biasing the promotion data. The
+  seam now calls `_observe_surface_async(..., live_surface="card")` after a
+  successful card emit, and the gate's frame reports
+  `card_already_rendered` truthfully.
+- **F5/F6 — dead steering field and stale docs.** `_last_surface_choice` was
+  write-only; both writes removed from `_engine_gate_surface`, which is now a
+  pure observer (verdict returned for calibration only). The AC11.4
+  early-return inside the gate was removed (enforcement lives at the render
+  sites — see F3). The stale "guaranteed utterance" preamble in
+  `iris_gateway.py` (described the pre-T18 raw-JSON chunk flow) was rewritten.
+  **Two tests were replaced with loudly-documented successors** (same loads,
+  stricter meaning): `test_shadow_records_but_heuristics_decide` →
+  `test_shadow_verdict_returned_for_calibration_never_steers` and
+  `test_already_rendered_never_consults` →
+  `test_card_turn_still_observed_with_truthful_frame`, in
+  `backend/tests/behavioral/test_decision_engine_gates.py`.
+- **F7 (REQ-10, reload edge) — card_id now persists.** `DocumentDataStore`
+  gained a `card_id` column (idempotent migrate; COALESCE so a later write
+  cannot erase it), `store()/get()/list_for_conversation` return it,
+  `_store_document_data` writes it, and `_prism_card_id_for` consults the
+  store before minting — a reload rehydrates the SAME lifecycle id. The
+  metadata-only hydration payload carries it and the frontend threads it into
+  `DocRender.cardId` (`documentMerge.ts`, `chat-view.tsx`). Regression:
+  `backend/tests/contract/test_card_id_reload_persistence.py` (5 tests).
+- **F8 — direct-path raw-JSON flash.** The WS text-path chunk stream adopts
+  the voice path's envelope guard: once the accumulated reply starts with
+  `{` (a speak/show envelope), raw chunks are dropped and the seam's speak
+  line / card carries the turn. (Broader question on unifying the non-DER
+  path is open below.)
+- **F9 — empty-websearch second-tier guard aligned.** The frontend
+  `_isEmptyResultDoc` gained the backend's "what was attempted + what failed"
+  pair so stale historical cards of that shape downgrade to plain text too.
+- **F11 — rehydrated bodyless cards can peek.** `RichDocument` gets
+  `onPeek`; `expandable` (rehydrated, server-backed) cards show the chevron,
+  and unfolding fires the same lazy body fetch the panel uses
+  (`requestDocumentBody`). Truly bodyless artifacts stay chromeless
+  (REQ-6 AC5 unchanged). Regression:
+  `__tests__/components/rich-document-expandable.test.tsx` (3 tests).
+- **F12 — setState-during-render removed.** `getContentType` wrote to a
+  `messageContentTypes` state map mid-render; it now computes the pure regex
+  detection directly.
+
+## REQ-18: Unified routing — the DER loop is the only execution contract
+
+**User Story:** One turn, one contract. The direct path was a second engine
+around `_respond_direct` with its own turn ids and guarantees; every audit
+finding of 2026-09-22 (F1/F4/F8) was a drift between the two. The DER loop
+becomes the only routing surface, and a trivial turn is one DER step whose
+executor is the same `_respond_direct` engine — speed preserved by removing
+planning, not by removing the loop.
+
+**Owner decisions (session 349):**
+
+- **Classification:** rules first (the semantic gate's
+  `requires_der_kernel`; Tier-0/Tier-2 inside), the decision engine MAY
+  shadow-vote later — classification itself is an extension of the engine,
+  and routing/execution/engine are one surface. **No extra LLM call is
+  allowed in the triviality decision.**
+- **Speed is the budget.** A trivial turn must add no measurable path work
+  ("prioritize speed") — the asserted bound is set from shadow measurements
+  (target: classification + bookkeeping ≤ 50 ms over today's direct path).
+- **Ledger:** a trivial turn writes a ledger row like any DER turn (AC6).
+- **Task cards belong to tasks.** A trivial turn NEVER emits a task card —
+  cards stay for real multi-tool turns (AC3). The current direct path
+  already satisfies this and the flip must not regress it.
+- **Rollout:** shadow first; the same prompt battery drives evidence; the
+  flip deleting the direct branch happens only after parity
+  (`IRIS_UNIFIED_ROUTING` env flag for a rollback window).
+
+**Verified foundation:** the fork is `process_text_message` →
+`_needs_planning` → `compile_dag().requires_der_kernel` (agent_kernel.py);
+the direct executor is `_respond_direct` (agent_kernel.py:3061); the seam
+`_process_structured_response` already terminates both; task cards mint only
+from the DER lifecycle emitters.
+
+**Acceptance Criteria:**
+
+- AC1: THE SYSTEM SHALL record a route shadow row per turn
+  (`{turn_id, route_taken, would_be_trivial, chars, web_mode}`), off the
+  critical path, never raising into the reply.
+- AC2: THE SYSTEM SHALL decide triviality with the existing semantic gate
+  only; the shadow phase adds zero LLM calls and zero blocking work to the
+  reply path.
+- AC3: THE SYSTEM SHALL NOT emit a task card for a trivial turn, before or
+  after the flip.
+- AC4: WHEN the flip occurs THEN THE SYSTEM SHALL run a trivial turn as one
+  DER step whose executor is `_respond_direct` — streaming, the speak/show
+  seam, context assembly, and TTS behavior identical to today's direct path.
+- AC5: THE SYSTEM SHALL measure trivial-turn overhead against the direct
+  path; a flip that regresses the budget is rejected.
+- AC6: THE SYSTEM SHALL write a ledger row per trivial turn after the flip
+  (same auditability as any DER turn).
+- AC7: THE SYSTEM SHALL remove the direct branch only after the shadow
+  battery (the prompt matrix) and live shadow logs show parity, documented
+  in this spec.
+
+**Prompt battery (the classification contract, driven live):** chitchat,
+questions, factual asks, short commands → trivial; websearch, multi-tool,
+file ops, reminders, compound prompts → DER. Pinned by
+`backend/tests/contract/test_turn_triviality_battery.py`.
+
+## REQ-19: Turn-finalized stop-work (recovery loops end with the answer)
+
+**Live finding 2026-09-23 (conv-139/140 drives):** a grafted recovery sub-loop
+kept executing for ~40 minutes AFTER the final reply had been delivered to
+the user — the card kept updating, sources kept crawling, "second agent"
+perception. A turn that has produced its final answer must not spawn or
+continue recovery work.
+
+- AC1: WHEN the DER turn has produced its final response THEN no further
+  graft, amendment, or subloop-child dispatch may execute; any in-flight
+  recovery work for that turn stops at its next dispatch boundary.
+- AC2: THE SYSTEM SHALL log a `recovery_stopped_turn_finalized` event when a
+  subloop is halted this way so it is measurable, not silent.
+
+## REQ-20: Card settle is final (no re-arm after task:done/task:fail)
+
+**Live finding 2026-09-23:** a card showed "Active Execution 23:59+" after
+its task had been failed and after the reply had landed. (Relates to the
+2026-09-14 known-open issue.) A settled card's working state must not be
+re-armed by trailing frames.
+
+- AC1: WHEN a card has received its terminal event (`task:done` /
+  `task:fail`) THEN any later `task:progress` / `task:learning` frame for the
+  SAME card does not set it working again; only a new `task:start` (a real
+  revision) may.
+- AC2: The fix lives in the frontend reducer (payload carries the terminal
+  marker); the backend keeps emitting as today.
+
+## REQ-21: TTS playback viability on real sessions
+
+**Live finding 2026-09-23:** the first voice reply after backend boot was
+silent (60s first-chunk budget < ~90s cold worker load; boot stays lazy by
+design, REQ-5 ancestor), and generated audio sounded sped up.
+
+- AC1: THE SYSTEM SHALL size the first-chunk consumer budget to comfortably
+  exceed a cold worker boot (DONE 2026-09-23: 60s → 180s at iris_gateway).
+- AC2: THE SYSTEM SHALL play synthesized audio at the sample rate the
+  producer emitted; a mismatch is a defect, not a stylistic choice.
+
+## REQ-22: Document intent must become a card without the user saying "card"
+
+**Live finding 2026-09-23:** "write me a markdown note listing 3 benefits"
+answered with fenced raw markdown in a plain bubble (raw `**`-markers
+visible, right-edge clipped) and NEVER emitted `show`. The model must declare
+documents itself when the asked-for thing IS a document; and even a fenced
+plain answer must render readably.
+
+- AC1: WHEN the user's ask is to create a persistent artifact (write/make/
+  create/draft a document, note, report, plan, list-for-keeping) THEN the
+  system prompt MUST tell the model so, and the `show_omitted_on_artifact`
+  calibration signal MUST confirm compliance in real use.
+- AC2: WHEN a plain reply is entirely one fenced code block THEN the bubble
+  renders the INNER content as markdown, never the fence as literal code —
+  no raw `**`/`- ` characters, no right-edge clipping of prose.
+
+## REQ-23: Task cards only gate long-running, multi-tool work; never vanish on settle
+
+**Owner decision 2026-09-23.** A task card exists for work that is genuinely
+multi-step or long-running — never for a one-shot write/compose/echo answer
+that completes in a single turn.
+
+**Acceptance Criteria:**
+
+- AC1: THE SYSTEM SHALL NOT emit a task card for a turn whose plan has one
+  step and requires no tool calls ("write me a note", "compose a doc",
+  single-answer asks). Those stay in the direct/`show` lane.
+- AC2: WHEN a task card's run terminates (`task:done`/`task:fail`) THEN the
+  card STAYS in the thread in a collapsed/brief summary state with its
+  outcome visible; it must notdrop out or show a spinning state.
+- AC3: THE SYSTEM SHALL keep the historical card readable after a thread
+  reload — the settled card hydrates from its stored snapshot, it is not
+  reconstructed from nothing.
+
+## REQ-24: No fact search for a bounded ask ("compare this vs that", "write about X")
+
+**User Story (from the owner's 2026-09-24 note):** in a purely-conversational
+turn the model must be allowed to answer from its own trained knowledge
+without falling through into web research. The turn's surface IS the
+message; the agent treats "compare [A] vs [B]"; "explain [thing]";
+"summarize [memory topic]"; "write [topic]" as answerable via reasoning, not
+as requiring a crawl unless the user explicitly asks for freshness or the
+model's own gate chooses to escalate. Today these prompts ended up in the
+tool lane because the room decision ladder (web first, model second) run on
+the wrong tiebreaker.
+
+**Verified live 2026-09-24 (conv-green-tea):** "compare OLED versus LCD
+displays for me" produced two mid-change turns (state transitions from
+KIND=research to someone in existing memory) then "We need to invoke
+web-search" — yet the bounds weren't set by the user. That's the false
+positive this whole change is about.
+
+**Acceptance Criteria:**
+
+- AC1: WHEN the user's ask has no fresh-data time marker (GNU/find/inform)?THE
+  SYSTEM SHALL NOT silently route into the research loop; it SHALL answer
+  with the model's own reasoning or a light recall read.
+- AC3: WHEN the user explicitly asks for current/news research THEN THE
+  allowed lane handoff happens, with the state visible to the user. (RTAL
+  subsection continues whether to change.)
+
+### Open items from the audit (owner decision)
+
+- **Direct (non-DER) streaming path — RESOLVED 2026-09-22.** Follow-up A+B
+  landed in this audit: the F8 envelope guard stops the raw-JSON flash, and
+  the direct path now emits the speak-first progressive chunk for `show`
+  replies before the seam (agent_kernel.py, direct-path completion). Plain
+  replies keep token streaming unchanged (no double-emit). The remaining
+  open question is follow-up C: whether the direct path should be folded
+  into DER wholesale (one routing contract, one set of turn guarantees).
+  That is a routing-layer change — it moves the "direct vs agentic" decision
+  into the DER loop, shifts token budgets, deadlines, and turn metrics — so
+  it needs its own requirement row and wave. It does NOT need a new spec
+  folder; it can land here as a new REQ + wave when the owner calls for it.
+- **Environment note:** 4 pre-existing tests that copy the LIVE
+  `data/memory.db` (test_chain_coordinate_store_contract, test_der_chain_landing,
+  test_der_t24_ontology_walk_behavioral, test_failed_step_writes_commit_row)
+  were environment-blocked during the audit: first by the running backend's
+  open DB handle (fixed by stopping the backend), then by **C: having only
+  2.09 GB free while memory.db is 2.75 GB** (worked around by pointing
+  TEMP/TMP at D:\tmp for the run). The disk pressure itself is a live
+  operational risk (WAL growth, .next builds, npm caches all grow on C:) and
+  needs owner attention.
+
 ## Non-Requirements (Out of Scope)
+
 
 - Changing the model prompt to require a richer typed object. The owner's
   constraint: "we don't want the model's job to be more complex." `show.format`

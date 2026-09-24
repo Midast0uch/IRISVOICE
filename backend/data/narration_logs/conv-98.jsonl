@@ -1,3 +1,0 @@
-{"ts": 1788976723.435846, "conversation_id": "conv-98", "step_id": "s1", "decision": "silence", "signal": null, "u": -0.127961042029971, "xi": 4.199999999999999, "text": "", "tts_played": false}
-{"ts": 1788976804.4686806, "conversation_id": "conv-98", "step_id": "s2", "decision": "silence", "signal": null, "u": -0.29955232949921606, "xi": 5.249999999999999, "text": "", "tts_played": false}
-{"ts": 1788976815.8388095, "conversation_id": "conv-98", "step_id": "s3", "decision": "brief", "signal": "retried", "u": 0.001074743200091266, "xi": 0.016814692820412702, "text": "Now moving into a sub-task — splitting into 3 parts.", "tts_played": true}

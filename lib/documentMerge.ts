@@ -18,6 +18,9 @@ export interface HydratedDoc {
    * its turn — and lets the agent say which question a previous markdown was
    * answering when it compares old findings with new ones. */
   turn_id?: string | null
+  /** REQ-10 (audit 2026-09-22, F7): persisted lifecycle id, rehydrated with the
+   * metadata so a reloaded card keeps the SAME card_id. */
+  card_id?: string | null
 }
 
 export interface MergedRenderedDoc {
@@ -26,6 +29,7 @@ export interface MergedRenderedDoc {
   content: string
   alternatives: string[]
   documentId?: string
+  cardId?: string
   turnId?: string
   error: string | null
   trust?: string
@@ -63,6 +67,7 @@ export function mergeRenderedDocuments(
       content: existing?.content || d.content || '',
       alternatives: existing?.alternatives ?? [],
       documentId: d.document_id,
+      cardId: d.card_id ?? existing?.cardId,
       turnId: d.turn_id ?? existing?.turnId,
       error: null,
       trust: existing?.trust,

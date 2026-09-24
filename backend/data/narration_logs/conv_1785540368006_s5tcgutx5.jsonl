@@ -1,8 +1,0 @@
-{"ts": 1785540620.94281, "conversation_id": "conv_1785540368006_s5tcgutx5", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
-{"ts": 1785540622.8538682, "conversation_id": "conv_1785540368006_s5tcgutx5", "step_id": "s2", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
-{"ts": 1785540929.3138373, "conversation_id": "conv_1785540368006_s5tcgutx5", "step_id": "gap-s2-1", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
-{"ts": 1785540932.3645737, "conversation_id": "conv_1785540368006_s5tcgutx5", "step_id": "gap-s2-2", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
-{"ts": 1785541252.315745, "conversation_id": "conv_1785540368006_s5tcgutx5", "step_id": "gap-gap-s2-1-1", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
-{"ts": 1785541255.1889346, "conversation_id": "conv_1785540368006_s5tcgutx5", "step_id": "gap-gap-s2-1-2", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
-{"ts": 1785541259.3230863, "conversation_id": "conv_1785540368006_s5tcgutx5", "step_id": "gap-gap-s2-2-0", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}
-{"ts": 1785541382.1171057, "conversation_id": "conv_1785540368006_s5tcgutx5", "step_id": "gap-gap-s2-2-1", "decision": "silence", "signal": null, "u": 0.0, "xi": 0.0, "text": "", "tts_played": false}

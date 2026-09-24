@@ -1,4 +1,0 @@
-{"ts": 1786990057.0156474, "conversation_id": "conv-30", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.010257492524994527, "xi": 0.033629385640825404, "text": "", "tts_played": false}
-{"ts": 1786990063.250962, "conversation_id": "conv-30", "step_id": "s2", "decision": "silence", "signal": null, "u": 0.3600595974503462, "xi": 1.0836293856408252, "text": "", "tts_played": false}
-{"ts": 1786990109.3310308, "conversation_id": "conv-30", "step_id": "s3", "decision": "silence", "signal": null, "u": 0.5239031031265853, "xi": 2.133629385640825, "text": "", "tts_played": false}
-{"ts": 1786990115.8786337, "conversation_id": "conv-30", "step_id": "s4", "decision": "silence", "signal": null, "u": 0.3371485678203945, "xi": 3.183629385640825, "text": "", "tts_played": false}

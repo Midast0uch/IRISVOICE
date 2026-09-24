@@ -1,0 +1,9 @@
+{"ts": 1790185244.222139, "conversation_id": "conv-141", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.5241498667621045, "xi": 2.0999999999999996, "text": "", "tts_played": false}
+{"ts": 1790197039.645488, "conversation_id": "conv-141", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.35, "xi": 1.0499999999999998, "text": "", "tts_played": false}
+{"ts": 1790202643.8509905, "conversation_id": "conv-141", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.5241498667621045, "xi": 2.0999999999999996, "text": "", "tts_played": false}
+{"ts": 1790203281.3736875, "conversation_id": "conv-141", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.3474537301521545, "xi": 3.1499999999999995, "text": "", "tts_played": false}
+{"ts": 1790203851.7439537, "conversation_id": "conv-141", "step_id": "s1", "decision": "silence", "signal": null, "u": -0.0025339003128151405, "xi": 4.199999999999999, "text": "", "tts_played": false}
+{"ts": 1790203864.5994778, "conversation_id": "conv-141", "step_id": "explorer_2", "decision": "silence", "signal": null, "u": -0.1741251877820602, "xi": 5.249999999999999, "text": "", "tts_played": false}
+{"ts": 1790203878.3347409, "conversation_id": "conv-141", "step_id": "explorer_3", "decision": "silence", "signal": null, "u": 0.005104729252583762, "xi": 0.016814692820412702, "text": "", "tts_played": false}
+{"ts": 1790203894.5963707, "conversation_id": "conv-141", "step_id": "explorer_4", "decision": "silence", "signal": null, "u": 0.35505525198677906, "xi": 1.0668146928204125, "text": "", "tts_played": false}
+{"ts": 1790257665.822378, "conversation_id": "conv-141", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.35, "xi": 1.0499999999999998, "text": "", "tts_played": false}

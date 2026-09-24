@@ -1,6 +1,0 @@
-{"ts": 1785862489.7128878, "conversation_id": "derprobe", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.35, "xi": 1.0499999999999998, "text": "", "tts_played": false}
-{"ts": 1785862493.196366, "conversation_id": "derprobe", "step_id": "s2", "decision": "silence", "signal": null, "u": 0.5241498667621045, "xi": 2.0999999999999996, "text": "", "tts_played": false}
-{"ts": 1785862601.6451173, "conversation_id": "derprobe", "step_id": "gap-s2-1", "decision": "silence", "signal": null, "u": -0.44325421383992114, "xi": 4.55, "text": "", "tts_played": false}
-{"ts": 1785865717.2605565, "conversation_id": "derprobe", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.35, "xi": 1.0499999999999998, "text": "", "tts_played": false}
-{"ts": 1785874362.213174, "conversation_id": "derprobe", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.35, "xi": 1.0499999999999998, "text": "", "tts_played": false}
-{"ts": 1785874415.2459326, "conversation_id": "derprobe", "step_id": "s2", "decision": "silence", "signal": null, "u": 0.5241498667621045, "xi": 2.0999999999999996, "text": "", "tts_played": false}

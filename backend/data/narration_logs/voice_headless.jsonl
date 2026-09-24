@@ -1,2 +1,0 @@
-{"ts": 1788617947.6616192, "conversation_id": "voice_headless", "step_id": "s1", "decision": "silence", "signal": null, "u": 0.35, "xi": 1.0499999999999998, "text": "", "tts_played": false}
-{"ts": 1788618081.266451, "conversation_id": "voice_headless", "step_id": "s2_s0", "decision": "brief", "signal": "avoided", "u": 0.5241498667621045, "xi": 2.0999999999999996, "text": "Sub-task done; folding back into the main thread.", "tts_played": true}

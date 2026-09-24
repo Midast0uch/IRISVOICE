@@ -1176,6 +1176,26 @@ class AgentToolBridge:
             if not text:
                 return {"success": False, "error": "Question text is required"}
 
+            # Audit 2026-09-22 (F1, reply-surface-contract REQ-11): the question
+            # must carry the LIVE turn id, not the WS session id — the frontend
+            # anchors the card to its message turn (chat-view.tsx join on
+            # message.id / message.turn_id), and a session id never matches, so
+            # questions fell to the bottom block and turn-supersession never
+            # fired. Fall back to session_id only outside a known turn.
+            _turn_id = session_id
+            try:
+                from backend.agent.agent_kernel import get_agent_kernel
+
+                _conv_id = (
+                    self._active_conversation_id.get(session_id) or "default"
+                )
+                _kernel = get_agent_kernel(_conv_id, session_id)
+                _turn_id = (
+                    getattr(_kernel, "_current_turn_id", None) or session_id
+                )
+            except Exception:  # noqa: BLE001 — never block a question on it
+                pass
+
             # T14 (REQ-13): park-and-continue. When the caller passes
             # non_blocking=True (with optional parked_url/run_id), the question
             # card is raised and the tool returns IMMEDIATELY with a handle —
@@ -1188,10 +1208,11 @@ class AgentToolBridge:
                     text=text,
                     options=params.get("options"),
                     allow_other=params.get("allow_other", True),
-                    turn_id=session_id,
+                    turn_id=_turn_id,
                     run_id=params.get("run_id"),
                     parked_url=params.get("parked_url"),
                     wall_kind=params.get("wall_kind", "unknown"),
+                    session_id=session_id,
                 )
                 return {
                     "success": True,
@@ -1204,7 +1225,10 @@ class AgentToolBridge:
                 text=text,
                 options=params.get("options"),
                 allow_other=params.get("allow_other", True),
-                turn_id=session_id,
+                turn_id=_turn_id,
+                # Session linkage is explicit now (F1) — voice answers resolve
+                # the pending question through this, not through turn_id.
+                session_id=session_id,
             )
 
             # Wait for answer (this blocks until user responds or timeout)
@@ -3419,14 +3443,51 @@ class AgentToolBridge:
             kernel = get_agent_kernel(conversation_id, session_id)
             if kernel is None:
                 return {"success": False, "error": "kernel unavailable"}
+            # Audit 2026-09-22 (F1): the tool layer does not receive the turn id
+            # from the model — resolve it from the kernel that owns the turn,
+            # so the card joins the live turn in the UI.
+            turn_id = params.get("turn_id") or getattr(
+                kernel, "_current_turn_id", None
+            )
+            # AC11.4 (audit 2026-09-22, F3): one card per turn. A second render
+            # intent for the SAME turn revises the existing card in place
+            # instead of minting a second card with a second card_id.
+            if not params.get("document_id") and turn_id:
+                _prior = (getattr(kernel, "_render_doc_for_turn", None) or {}).get(
+                    turn_id
+                )
+                if _prior:
+                    _upd = getattr(kernel, "update_document", None)
+                    if callable(_upd):
+                        _revised = _upd(
+                            _prior,
+                            content=content,
+                            fmt=fmt,
+                            trust=params.get("trust") or "trusted",
+                            turn_id=turn_id,
+                            conversation_id=conversation_id,
+                            alternatives=params.get("alternatives") or [],
+                        )
+                        if _revised:
+                            logger.info(
+                                "[ToolBridge] render_document revised the turn's "
+                                "card in place (AC11.4): turn=%s doc=%s",
+                                turn_id, _prior,
+                            )
+                            return {
+                                "success": True,
+                                "document_id": _prior,
+                                "revised": True,
+                            }
             document_id = params.get("document_id") or str(_uuid.uuid4())
             card_id = kernel._prism_card_id_for(document_id)
             kernel._store_document_data(
                 document_id=document_id,
                 show={"format": fmt, "content": content},
                 trust=params.get("trust") or "trusted",
-                turn_id=params.get("turn_id"),
+                turn_id=turn_id,
                 conversation_id=conversation_id,
+                card_id=card_id,
             )
             get_event_bus().emit(
                 IRISStreamEvent.DOCUMENT_RENDER,
@@ -3436,7 +3497,7 @@ class AgentToolBridge:
                     "alternatives": params.get("alternatives") or [],
                     "trust": params.get("trust") or "trusted",
                     "document_id": document_id,
-                    "turn_id": params.get("turn_id"),
+                    "turn_id": turn_id,
                     "conversation_id": conversation_id,
                     "card_id": card_id,
                     "sources": params.get("sources") or [],
@@ -3444,9 +3505,12 @@ class AgentToolBridge:
                     # REQ-13 AC5: tool renders are final whole-body emits.
                     "partial": False,
                 },
-                turn_id=params.get("turn_id"),
+                turn_id=turn_id,
                 conversation_id=conversation_id,
             )
+            _record = getattr(kernel, "_record_turn_render", None)
+            if callable(_record):
+                _record(turn_id, document_id)
             logger.info(
                 "[ToolBridge] render_document conv=%s doc=%s card=%s",
                 conversation_id, document_id, card_id,

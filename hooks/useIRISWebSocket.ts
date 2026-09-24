@@ -1011,10 +1011,16 @@ export function useIRISWebSocket(
             sender: "assistant",
             ...(thinking ? { thinking } : {}),
           })
-          // Also dispatch CustomEvent so chat-view synchronous listener catches it
+          // Also dispatch CustomEvent so chat-view synchronous listener catches it.
+          // AUDIT FIX (2026-09-23, found live): this detail used to OMIT
+          // turn_id — but plain replies stream `chat_chunk` frames that create
+          // the bubble keyed by turn_id, and chat-view replaces that streaming
+          // bubble only when the final text_response carries the SAME turn_id.
+          // Without it, the final landed as a NEW message: one turn, two
+          // identical bubbles (observed live on a "hi there" turn).
           if (typeof window !== 'undefined') {
             window.dispatchEvent(new CustomEvent('iris:text_response', {
-              detail: { text: content, sender: 'assistant', thinking, spoken }
+              detail: { text: content, sender: 'assistant', thinking, spoken, turn_id: _turnId }
             }))
           }
         }

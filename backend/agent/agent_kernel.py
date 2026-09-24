@@ -4882,6 +4882,17 @@ class AgentKernel:
             existing = mapping.get(document_id)
             if existing:
                 return existing
+            # 2026-09-22 (audit): after a reload the map is empty — the
+            # stored row can carry the id. Consult the store first.
+            try:
+                store = self._get_document_store()
+                row = store.get(document_id) if store is not None else None
+                _stored_id = (row or {}).get("card_id")
+                if row is not None and isinstance(_stored_id, str) and _stored_id:
+                    mapping[document_id] = _stored_id
+                    return _stored_id
+            except Exception:
+                pass
             card_id = f"card_doc_{uuid.uuid4().hex[:16]}"
             mapping[document_id] = card_id
             if len(mapping) > 200:

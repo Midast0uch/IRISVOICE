@@ -58,6 +58,11 @@ class Question:
     answer: Optional[Any] = None  # str, or list[str] for multi_select (REQ-5 AC3)
     filler_count: int = 0
     turn_id: Optional[str] = None
+    # Audit 2026-09-22 (F1): the session link used to ride `turn_id`
+    # (tool_bridge passed turn_id=session_id), which made the frontend's
+    # per-turn card anchor a namespace mismatch. turn_id now carries the REAL
+    # turn id; session linkage lives here instead.
+    session_id: Optional[str] = None
     set_id: Optional[str] = None  # REQ-5: the QuestionSet this belongs to, if any
     header: str = ""              # REQ-5 AC4: per-question label
     multi_select: bool = False    # REQ-5 AC3
@@ -122,6 +127,7 @@ class AskUserTool:
         turn_id: Optional[str] = None,
         conversation_id: Optional[str] = None,
         context: Optional[dict] = None,
+        session_id: Optional[str] = None,
     ) -> Question:
         """Ask a question and return immediately (non-blocking).
 
@@ -140,6 +146,7 @@ class AskUserTool:
             allow_other=allow_other,
             timeout_seconds=timeout_seconds,
             turn_id=turn_id,
+            session_id=session_id,
         )
         if conversation_id:
             question.conversation_id = conversation_id
@@ -323,6 +330,7 @@ class AskUserTool:
         run_id: Optional[str] = None,
         parked_url: Optional[str] = None,
         wall_kind: str = "unknown",
+        session_id: Optional[str] = None,
     ) -> Question:
         """Ask and return immediately with a handle (REQ-13 AC1).
 
@@ -334,6 +342,7 @@ class AskUserTool:
         question = self.ask(
             text=text, options=options, allow_other=allow_other,
             timeout_seconds=timeout_seconds, turn_id=turn_id,
+            session_id=session_id,
         )
         if parked_url:
             from urllib.parse import urlparse
@@ -395,12 +404,15 @@ class AskUserTool:
         """Most-recent pending question for a session (REQ-14 edge:
         two questions pending -> most recent wins; the other stays pending).
 
-        Questions are linked to a session via ``turn_id == session_id`` (set by
-        tool_bridge when it asks). Returns the newest, or None.
+        Questions are linked to a session via the explicit ``session_id``
+        field (audit 2026-09-22, F1 — before that, tool_bridge abused
+        ``turn_id`` as the session link, which broke the frontend's per-turn
+        card anchoring). Returns the newest, or None.
         """
         candidates = [
             q for q in self._pending.values()
-            if q.turn_id == session_id and q.status == "pending"
+            if (q.session_id or q.turn_id) == session_id
+            and q.status == "pending"
         ]
         if not candidates:
             return None
