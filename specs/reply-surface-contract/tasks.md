@@ -434,9 +434,14 @@ rule is read there.
 - Pinned bases stay green: `test_turn_triviality_battery.py` (T30/T31/T32),
   `test_behavioral_intent_routing.py` (69-case gate proof),
   `test_t36_web_mode_der_contract.py` — 101 passed together.
-- NOT YET VERIFIED LIVE: both services were down for this wave. A live
-  "compare OLED vs LCD" drive with internet access ON is still owed (REQ-24
-  AC1 end-to-end).
+- LIVE STATUS 2026-09-24: the backend was restarted on this build and a text
+  turn was driven over the WS (frame shape `{"type":"text_message","payload":
+  {"text":...}}`). The route-shadow row for the turn landed
+  (`data/route_shadow.jsonl`: `route_taken=der`, `would_be_trivial=false`), so
+  the routing layer is live. The end-to-end drive ("compare OLED vs LCD" with
+  internet access ON) is BLOCKED, not skipped: `api.cerebras.ai` returns
+  `401 Wrong API Key`, so the planner and the answer model both fail and no DER
+  turn can complete. Owner action: re-enter the Cerebras key in the OS keyring.
 
 ---
 
