@@ -199,6 +199,28 @@ def test_der_entry_consults_the_gate_before_it_emits_a_card():
     )
 
 
+def test_the_gate_is_decided_before_the_first_task_start_emit():
+    """LIVE 2026-09-25: order matters, and it was wrong.
+
+    The DER-internal decision ran AFTER the earlier task:start emit, so a
+    card-free turn still showed a card — and because the terminal events were
+    withheld, that card never reached DONE. The decision must come first.
+    """
+    import inspect
+
+    from backend.agent import agent_kernel as _mod
+
+    src = inspect.getsource(_mod)
+    gate_at = src.find("card_warranted(")
+    first_emit_at = src.find("IRISStreamEvent.TASK_START")
+    assert gate_at != -1, "no card decision found in the kernel"
+    assert first_emit_at != -1, "no task:start emit found in the kernel"
+    assert gate_at < first_emit_at, (
+        "the card decision must be taken BEFORE the first task:start emit, or a "
+        "card-free turn shows a card that can never reach DONE"
+    )
+
+
 # ── the frames that slipped through live (2026-09-25) ──────────────────────
 
 def test_card_event_turn_id_reads_every_naming():

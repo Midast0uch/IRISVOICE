@@ -7449,6 +7449,27 @@ class AgentKernel:
                             len(_steps),
                             " | ".join(s["description"] for s in _steps)[:300],
                         )
+                        # ── Card gate (owner bound, 2026-09-25) ──────────────
+                        # Decided BEFORE the first task:start emit. Live
+                        # 2026-09-25: the DER-internal decision ran AFTER this
+                        # emit, so a card-free turn still showed a card whose
+                        # terminal events were then withheld — the card appeared
+                        # and never reached DONE. Registering here (and again in
+                        # DER, which also arms the persist gate) closes that gap.
+                        try:
+                            from backend.agent.artifact_policy import (
+                                card_warranted,
+                                suppress_card_for_turn,
+                            )
+
+                            if not card_warranted(
+                                _plan.steps, getattr(_plan, "original_task", "") or ""
+                            ):
+                                suppress_card_for_turn(
+                                    task_id or getattr(self, "_current_turn_id", None)
+                                )
+                        except Exception:
+                            pass  # the gate must never block a turn
                         _card_task_id = task_id or _plan.original_task[:40]
                         _card_id, _card_relation = self._resolve_card_identity(
                             _card_task_id, "initial"
