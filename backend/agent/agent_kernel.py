@@ -13801,7 +13801,13 @@ Respond with a JSON object:
                     depends_on=[item.step_id],
                     critical=False,
                     objective_anchor=_task_text[:200],
-                    expected_output="%s exists and is not empty" % _name,
+                    # Mirror the PARENT step's expected output: the run grade
+                    # reads each step's expected_output against its result, and a
+                    # bespoke claim here ("X exists and is not empty") matched
+                    # neither the result nor the parent's, capping the whole run
+                    # and telling the user the task had failed when the files
+                    # were on disk. Same claim shape, same verdict.
+                    expected_output=getattr(item, "expected_output", None),
                     declared_criticality="supporting",
                     node_record=getattr(item, "node_record", None),
                 )
@@ -13909,7 +13915,13 @@ Respond with a JSON object:
                 _failed.append(f"- {_desc}" + (f": {_reason}" if _reason else ""))
             _failed_txt = "\n".join(_failed) or "(unknown step)"
             _done = len(completed_items)
-            _total = len(getattr(plan, "steps", []) or [])
+            # Same graft-aware denominator as the success summary — a run that
+            # extended itself must not report "7/4 steps".
+            _total = max(
+                len(getattr(plan, "steps", []) or []),
+                len(getattr(queue, "items", []) or []),
+                _done,
+            )
             return (
                 f"I couldn't complete that task. {_done}/{_total} steps finished, "
                 f"but the following step(s) failed:\n{_failed_txt}\n\n"
@@ -13944,7 +13956,15 @@ Respond with a JSON object:
                 )
             _done_txt = "\n".join(_done_lines) or "(no step output)"
             _done = len(completed_items)
-            _total = len(getattr(plan, "steps", []) or [])
+            # Grafted steps extend the run beyond the plan, so the plan's step
+            # count is not the whole story: "7/4 steps finished" is what a user
+            # saw when two artifact grafts completed. Count what the run
+            # actually held.
+            _total = max(
+                len(getattr(plan, "steps", []) or []),
+                len(getattr(queue, "items", []) or []),
+                _done,
+            )
             # AC5.6: report done + grade — recomputed statelessly from the
             # envelopes (this is a @staticmethod; no instance state, no
             # shared mutable state). A load-bearing mismatch caps the run
