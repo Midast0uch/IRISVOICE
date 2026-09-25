@@ -11199,12 +11199,18 @@ Respond with a JSON object:
                             {
                                 "id": it.step_id,
                                 "description": it.description,
-                                "status": "pending",
+                                "status": (
+                                    "done"
+                                    if it.step_id in set(queue.completed_ids)
+                                    else "failed"
+                                    if it.step_id in set(queue.failed_ids)
+                                    else "pending"
+                                ),
                                 "toolName": it.tool,
                             }
-                            for it in _fresh
+                            for it in list(queue.items)
                         ],
-                        total_steps=len(_fresh),
+                        total_steps=len(queue.items),
                         origin="amendment",
                         # REQ-3 (T2): backend-declared card identity.
                         card_id=_card_id,
