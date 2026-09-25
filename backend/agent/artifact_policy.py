@@ -122,23 +122,48 @@ def card_title_from_content(content: Optional[str]) -> str:
     it is.
     """
     text = (content or "").strip()
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped.startswith("#"):
-            continue
-        rest = stripped.lstrip("#")
-        # A heading needs whitespace after the hashes (^#\s+(.+)$ live).
-        if not rest[:1].isspace():
-            continue
-        title = rest.strip().strip("*_`")
-        if title:
-            return title[:60]
+    heading = _first_heading(text)
+    if heading:
+        return heading
     # No heading: the first substantive line names the artifact.
     for line in text.splitlines():
         stripped = line.strip().strip("*_`#> -").strip()
         if len(stripped) >= 3:
             return stripped[:60]
     return "Document"
+
+
+def _first_heading(content: Optional[str]) -> str:
+    """The first markdown heading (any level), or "" when there is none."""
+    for line in (content or "").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("#"):
+            continue
+        rest = stripped.lstrip("#")
+        if not rest[:1].isspace():
+            continue
+        title = rest.strip().strip("*_`")
+        if title:
+            return title[:60]
+    return ""
+
+
+def card_title_for(content: str, ask: str = "") -> str:
+    """The card label for a freshly minted artifact: heading, else the ask, else
+    the first substantive line.
+
+    A heading is the artifact's own name. Without one, the ASK names it far
+    better than an excerpt ("Markdown Report About The Water Cycle" beats "The
+    water cycle is a continuous process"). Owner, 2026-09-25: "All titles and
+    labels should be unique to the artifact created".
+    """
+    heading = _first_heading(content)
+    if heading:
+        return heading
+    from_ask = title_from_ask(ask)
+    if from_ask and from_ask != "Document":
+        return from_ask
+    return card_title_from_content(content)
 
 
 def title_from_ask(text: str) -> str:
@@ -168,6 +193,32 @@ def title_from_ask(text: str) -> str:
         t = t[: t.lower().index(" around ")].strip()
     t = t.strip(" .")
     return (t[:60].strip().title() or "Document")
+
+
+def is_substantial_markdown(content: str, *, min_chars: int = 400) -> bool:
+    """A report-length body with markdown structure (bullets, bold, paragraphs).
+
+    Owner bound 2026-09-25: "artifacts are really only for mds and reports" —
+    the line is about TYPE, not about a heading. Live proof: "write a markdown
+    report about the water cycle, around 250 words" produced a proper 250-word
+    report with bold lead-ins and bullets, NO heading, and it stayed a scrolling
+    bubble because the shape test wanted a heading.
+
+    Consulted only when the ASK was already an artifact ask, so it cannot turn a
+    long chat answer into a card — the deleted 2026-07-31 length heuristic had no
+    such gate, which is exactly why it painted cards over long answers.
+    """
+    text = content or ""
+    if len(text) < min_chars:
+        return False
+    markers = 0
+    if "\n- " in text or "\n* " in text or text.startswith(("- ", "* ")):
+        markers += 1
+    if "**" in text or "__" in text:
+        markers += 1
+    if "\n\n" in text.strip():
+        markers += 1
+    return markers >= 2
 
 
 def is_artifact_document(content: str) -> bool:

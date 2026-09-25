@@ -4307,11 +4307,14 @@ class AgentKernel:
             # Scoped to a document ASK plus a document SHAPE: no length
             # heuristic, which is what the deleted 2026-07-31 auto-render (and
             # the bubble with "Show more" a report landed in) got wrong.
-            from backend.agent.artifact_policy import is_artifact_ask
+            from backend.agent.artifact_policy import is_artifact_ask, is_substantial_markdown
 
             if (
                 is_artifact_ask(getattr(self, "_current_task_text", "") or "")
-                and is_artifact_document(response)
+                and (
+                    is_artifact_document(response)
+                    or is_substantial_markdown(response)
+                )
                 and self._mint_artifact_card(response, turn_id, conversation_id)
             ):
                 _lead = (response.strip().split("\n\n", 1)[0] or response.strip())[:240]
@@ -10317,13 +10320,11 @@ Respond with a JSON object:
                     document_id, _conv, "markdown", content, {}, [], "trusted",
                     turn_id=turn_id, card_id=card_id,
                 )
-            _title = card_title_from_content(content)
-            if _title == "Document":
-                # No heading in the body: name the card from the ask instead of
-                # leaving the generic fallback label (owner: title labels).
-                from backend.agent.artifact_policy import title_from_ask
+            from backend.agent.artifact_policy import card_title_for
 
-                _title = title_from_ask(getattr(self, "_current_task_text", "") or "")
+            _title = card_title_for(
+                content, getattr(self, "_current_task_text", "") or ""
+            )
             get_event_bus().emit(
                 IRISStreamEvent.DOCUMENT_RENDER,
                 data={
