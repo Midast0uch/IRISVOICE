@@ -31,10 +31,20 @@ class CapabilitySet:
     # Developer mode gets everything
     _DEVELOPER: Set[str] = {TTS, VOICE, CHAT, TERMINAL, REPO_ACCESS}
 
-    # Tools that require REPO_ACCESS in developer mode
-    _REPO_TOOLS: Set[str] = {
+    # File-write tools. OWNER DECISION 2026-09-24: personal mode MAY write
+    # files — "it's part of the allowed permissions". These used to sit inside
+    # _REPO_TOOLS, so personal mode offered NO write tool at all: the planner
+    # still planned "create a file", the step fell back to reasoning, nothing
+    # was written, the card claimed "step 1 completed", the read then failed and
+    # the DER grafted three times (live conv-144, pin_27c15924f5ab). Destructive
+    # file operations KEEP their gate: delete_file stays in _REPO_TOOLS.
+    _FILE_WRITE_TOOLS: Set[str] = {
         "write_file",
         "create_directory",
+    }
+
+    # Tools that require REPO_ACCESS in developer mode
+    _REPO_TOOLS: Set[str] = {
         "delete_file",
         "git_status",
         "git_diff",

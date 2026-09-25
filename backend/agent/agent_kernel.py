@@ -11866,7 +11866,31 @@ Respond with a JSON object:
                         logger.debug("[DER] failure-evidence record failed: %s", _led_exc)
         except Exception:  # noqa: BLE001 â€” classification must never break recovery
             _split_ok = True
-        if _split_ok and item.critical and queue.graft_attempts < DER_MAX_GRAFTS:
+        # Item 3 (2026-09-24, owner-approved): an UNRECOVERABLE failure is not
+        # grafted. Live conv-144: a read step failed with "[Errno 2] No such
+        # file or directory" and the loop grafted THREE times — every sub-loop
+        # failed the same way — because no retry can create a missing file. One
+        # honest failure is the correct outcome; the failure stays recorded and
+        # shown (never hidden). Any error here falls through to the graft,
+        # preserving the pre-existing behaviour exactly.
+        try:
+            from backend.agent.tool_decision import _goal_records_terminal_failure
+
+            _terminal_failure = _goal_records_terminal_failure(_res_text)
+        except Exception:  # noqa: BLE001 — classification must never break recovery
+            _terminal_failure = False
+        if _terminal_failure:
+            logger.info(
+                "[DER] critical step %s failed with an unrecoverable cause — "
+                "no graft, finalizing honestly: %s",
+                item.step_id, (_res_text or "")[:120],
+            )
+        if (
+            _split_ok
+            and item.critical
+            and not _terminal_failure
+            and queue.graft_attempts < DER_MAX_GRAFTS
+        ):
             # ── Session 247: GOAL-SUFFICIENCY GATE ──────────────────────────
             # Before grafting another round of gather children, ask the one
             # question the loop never asked: do the findings ALREADY collected
