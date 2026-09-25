@@ -83,6 +83,23 @@ _BRIDGED_EVENTS: Tuple[IRISStreamEvent, ...] = (
 # static for import-time safety.
 _BRIDGED_EVENTS_EXT: List[IRISStreamEvent] = []
 
+# Card-lifecycle events. Owner bound 2026-09-25: a turn below the card bound
+# (fewer than three tool steps, or an artifact ask) must reach the UI as a plain
+# exchange, so EVERY event of the card's life is withheld for that turn — not
+# just task:start. A trailing progress frame with no card is what fabricated a
+# phantom card before (see the note at the terminal emit in agent_kernel).
+_CARD_EVENTS: Tuple[IRISStreamEvent, ...] = (
+    IRISStreamEvent.TASK_START,
+    IRISStreamEvent.TASK_PROGRESS,
+    IRISStreamEvent.TASK_MILESTONE,
+    IRISStreamEvent.TASK_DONE,
+    IRISStreamEvent.TASK_FAIL,
+    IRISStreamEvent.TASK_PAUSED,
+    IRISStreamEvent.TASK_RESUMED,
+    IRISStreamEvent.MEMORY_EVENT,
+    IRISStreamEvent.TASK_LEARNING,
+)
+
 
 class WSEventBridge:
     """Subscribes to EventBus events and broadcasts them to the WebSocket.
@@ -128,9 +145,31 @@ class WSEventBridge:
         self._subs.clear()
         self._started = False
 
+    @staticmethod
+    def _card_event_withheld(evt: IRISStreamEvent, payload) -> bool:
+        """True when this card event belongs to a card-free turn.
+
+        Owner bound 2026-09-25: a turn below the card bound (fewer than three
+        tool steps, or an artifact ask) is a plain exchange. The whole card
+        lifecycle is withheld — dropping only task:start would let a later
+        progress frame fabricate a phantom card.
+        """
+        if evt not in _CARD_EVENTS:
+            return False
+        data = getattr(payload, "data", None) or {}
+        turn_id = getattr(payload, "turn_id", None) or data.get("turn_id")
+        from backend.agent.artifact_policy import card_suppressed
+
+        return card_suppressed(turn_id)
+
     def _make_handler(self, evt: IRISStreamEvent):
         def handler(payload) -> None:
             try:
+                if self._card_event_withheld(evt, payload):
+                    logger.debug(
+                        "[WSEventBridge] %s withheld (card-free turn)", evt.value
+                    )
+                    return
                 session_id = getattr(payload, "session_id", None)
                 data = getattr(payload, "data", None) or {}
                 # REQ-6 AC3: carry conversation_id on every bridged event so the

@@ -4284,7 +4284,14 @@ class AgentKernel:
             # looks like an artifact (fenced code / table / list) but carries
             # no `show`, log `show_omitted_on_artifact` so prompt drift is
             # measurable. The detector must NEVER trigger a render.
-            if any(m in response for m in ("```", "\n|", "\n- ", "\n# ", "\n1. ")):
+            #
+            # Owner bound 2026-09-25: an artifact is a markdown DOCUMENT or a
+            # report. Notes and lists are conversation, so a list answered in
+            # the bubble is compliance, not drift — the signal uses the SAME
+            # predicate the render path uses, so the two cannot disagree.
+            from backend.agent.artifact_policy import is_artifact_document
+
+            if is_artifact_document(response):
                 logger.info(
                     "[AgentKernel] show_omitted_on_artifact turn=%s len=%d",
                     turn_id or "unknown",
@@ -4421,6 +4428,31 @@ class AgentKernel:
                 card_suppressed_reason="empty_websearch_synthesis",
             )
             return self._finalize_response(_plain, speak)
+
+        # ── Artifact policy (owner bound, 2026-09-25) ─────────────────────
+        # A prism card is for a markdown DOCUMENT or a report. A note or a list
+        # is not "a lot of content" and belongs in the reply bubble, so a
+        # `show` payload carrying one is answered as text instead of minting a
+        # card. Only markdown/text bodies are judged this way: an explicit
+        # non-markdown artifact (html, table, diagram, json, image) is exactly
+        # what the model asked to render, so it passes through untouched.
+        _show_fmt = str(show.get("format") or "markdown").strip().lower()
+        from backend.agent.artifact_policy import is_artifact_document
+
+        if _show_fmt in ("markdown", "text", "") and not is_artifact_document(
+            show.get("content", "") or ""
+        ):
+            _plain = (show.get("content", "") or "").strip() or (speak or "")
+            if _plain:
+                self._log_surface(
+                    turn_id=turn_id,
+                    lane="plain",
+                    had_show=True,
+                    bubble_source="full_text",
+                    card_suppressed_reason="not_an_artifact_document",
+                )
+                return self._finalize_response(_plain, speak)
+
         try:
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
 
@@ -8599,6 +8631,41 @@ Respond with a JSON object:
             initial_mode.value, from_voice, task_class, _token_budget,
         )
 
+        # ── Card gate (owner bound, 2026-09-25) ──────────────────────────
+        # A card is for THREE OR MORE tool steps, and never for an artifact ask
+        # (the artifact IS the visible result). Below the bound the turn still
+        # runs through DER, the tools still fire and a real artifact still
+        # renders — only card-lifecycle events are withheld, by the WS bridge
+        # and by _persist_card_snapshot, both keyed on artifact_policy's gate.
+        try:
+            from backend.agent.artifact_policy import (
+                MIN_TOOL_STEPS_FOR_CARD,
+                card_warranted,
+                is_artifact_ask,
+                suppress_card_for_turn,
+                tool_step_count,
+            )
+
+            _artifact_ask = is_artifact_ask(plan.original_task or "")
+            if card_warranted(items, plan.original_task or ""):
+                # This turn may have a card — clear the conversation-scoped
+                # marker a previous short turn left behind.
+                self._suppressed_card_turn = None
+            else:
+                suppress_card_for_turn(_turn_id)
+                self._suppressed_card_turn = _turn_id
+                logger.info(
+                    "[AgentKernel] task card suppressed: tool_steps=%d (bound "
+                    ">=%d) artifact_ask=%s turn=%s — the turn runs, the artifact "
+                    "still renders",
+                    tool_step_count(items),
+                    MIN_TOOL_STEPS_FOR_CARD,
+                    _artifact_ask,
+                    _turn_id,
+                )
+        except Exception as _gate_exc:  # never block the turn on the gate
+            logger.debug("[AgentKernel] card gate skipped: %s", _gate_exc)
+
         # â”€â”€ EventBus: emit task:start â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         try:
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
@@ -10205,7 +10272,18 @@ Respond with a JSON object:
         card) is a no-op â€” there is nothing to persist. Never raises: a
         persistence failure must never block a card emit or a user
         response.
+
+        Card gate (owner bound, 2026-09-25): a turn below the card bound writes
+        NOTHING here, at any lifecycle moment, so a short exchange cannot
+        reappear as a card after a reload. The marker is set per conversation
+        when the DER plan is known, and the next card-bearing turn clears it.
         """
+        _suppressed_turn = getattr(self, "_suppressed_card_turn", None)
+        if _suppressed_turn:
+            from backend.agent.artifact_policy import card_suppressed
+
+            if card_suppressed(_suppressed_turn):
+                return
         try:
             if not card_id or not conversation_id:
                 return
