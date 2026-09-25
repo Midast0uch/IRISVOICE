@@ -1499,6 +1499,9 @@ export function ChatWing({
         trust?: string
         sources?: { url: string; title: string }[]
         har_path?: string | null
+        /** Card header label supplied by the backend (the artifact fallback names
+         * the card from the user's ask when the body carries no heading). */
+        title?: string
       } | undefined
       if (!detail?.content) return
       const doc: DocRender = {
@@ -1518,8 +1521,12 @@ export function ChatWing({
         turnId: detail.turn_id,
         documentId: detail.document_id,
         cardId: detail.card_id,
-        // REQ-22: card header identity — first markdown heading, else "Document".
+        // REQ-22: card header identity. A backend-supplied title WINS (the
+        // artifact fallback names the card from the user's ask when the body has
+        // no heading); else the first markdown heading; else "Document".
         title: (() => {
+          const given = typeof detail.title === "string" ? detail.title.trim() : ""
+          if (given) return given
           const m = (detail.content || "").match(/^\s*#\s+(.+)$/m)
           return m ? m[1].trim() : "Document"
         })(),

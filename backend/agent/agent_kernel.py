@@ -10317,6 +10317,13 @@ Respond with a JSON object:
                     document_id, _conv, "markdown", content, {}, [], "trusted",
                     turn_id=turn_id, card_id=card_id,
                 )
+            _title = card_title_from_content(content)
+            if _title == "Document":
+                # No heading in the body: name the card from the ask instead of
+                # leaving the generic fallback label (owner: title labels).
+                from backend.agent.artifact_policy import title_from_ask
+
+                _title = title_from_ask(getattr(self, "_current_task_text", "") or "")
             get_event_bus().emit(
                 IRISStreamEvent.DOCUMENT_RENDER,
                 data={
@@ -10328,6 +10335,7 @@ Respond with a JSON object:
                     "turn_id": turn_id,
                     "conversation_id": _conv,
                     "card_id": card_id,
+                    "title": _title,
                     "sources": [],
                     "har_path": None,
                     "partial": False,
@@ -10338,7 +10346,7 @@ Respond with a JSON object:
             logger.info(
                 "[AgentKernel] artifact card minted from the response: turn=%s "
                 "doc=%s title=%r (document ask answered without `show`)",
-                turn_id, document_id, card_title_from_content(content)[:60],
+                turn_id, document_id, _title[:60],
             )
             return True
         except Exception as exc:  # a card is never worth a failed reply

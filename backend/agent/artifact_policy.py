@@ -128,6 +128,35 @@ def card_title_from_content(content: Optional[str]) -> str:
     return "Document"
 
 
+def title_from_ask(text: str) -> str:
+    """A card title derived from the user's ask, for a body with no heading.
+
+    Live 2026-09-25: a 250-word report ask produced a card titled "Document"
+    (the fallback label) because the model's body had no H1. The ask itself says
+    what the document is, so it supplies the label: "write a markdown report
+    about the water cycle" -> "Markdown Report About The Water Cycle".
+    """
+    t = (text or "").strip()
+    lowered = t.lower()
+    for lead in (
+        "write me ", "write a ", "write an ", "write ", "create a ", "create an ",
+        "create ", "make a ", "make an ", "make ", "draft a ", "draft an ",
+        "draft ", "generate a ", "generate ", "produce a ", "produce ",
+        "compose a ", "compose ", "prepare a ", "prepare ", "build a ", "build ",
+        "author a ", "author ", "give me a ", "give me ",
+    ):
+        if lowered.startswith(lead):
+            t = t[len(lead):]
+            break
+    # The trailing size request is not part of the name; the SUBJECT is kept
+    # ("a report about the water cycle, around 250 words" -> the water cycle).
+    t = t.split(",")[0].strip()
+    if " around " in t.lower():
+        t = t[: t.lower().index(" around ")].strip()
+    t = t.strip(" .")
+    return (t[:60].strip().title() or "Document")
+
+
 def is_artifact_document(content: str) -> bool:
     """True when a body reads as a document worth keeping (markdown/report).
 

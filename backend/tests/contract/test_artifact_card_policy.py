@@ -279,6 +279,18 @@ def test_store_does_not_offer_a_tool_receipt_for_rehydration():
     assert docs[0]["title"] == "Weekly plan"
 
 
+def test_title_from_ask_names_the_card_when_the_body_has_no_heading():
+    """A report body with no H1 still gets a real label (owner: title labels)."""
+    from backend.agent.artifact_policy import title_from_ask
+
+    assert title_from_ask("write a markdown report about the water cycle, around 250 words") == \
+        "Markdown Report About The Water Cycle"
+    assert title_from_ask("draft a detailed report on the top 5 AI chip startups").startswith(
+        "Detailed Report"
+    )
+    assert title_from_ask("") == "Document"
+
+
 def test_a_conversation_scoped_frame_is_withheld_too():
     """LIVE 2026-09-25: the live action frames name only their conversation.
 
