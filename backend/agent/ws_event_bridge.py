@@ -98,6 +98,13 @@ _CARD_EVENTS: Tuple[IRISStreamEvent, ...] = (
     IRISStreamEvent.TASK_RESUMED,
     IRISStreamEvent.MEMORY_EVENT,
     IRISStreamEvent.TASK_LEARNING,
+    # LIVE 2026-09-25: these three carry `card_id`/`task_id` too, and the
+    # frontend rebuilds the card from them when no task:start arrived. They are
+    # the step rows of a card and nothing else, so a card-free turn withholds
+    # them as well.
+    IRISStreamEvent.TOOL_CALL,
+    IRISStreamEvent.TOOL_RESULT,
+    IRISStreamEvent.TOOL_ERROR,
 )
 
 
@@ -153,14 +160,19 @@ class WSEventBridge:
         tool steps, or an artifact ask) is a plain exchange. The whole card
         lifecycle is withheld — dropping only task:start would let a later
         progress frame fabricate a phantom card.
+
+        LIVE 2026-09-25: resolving the turn from the envelope alone was not
+        enough. ``task:progress`` and ``tool:result`` frames carry only a
+        ``card_id``, so they slipped through and the frontend rebuilt the card
+        from that id. ``card_event_turn_id`` reads every naming the emit sites
+        use, and the frame set below includes the tool frames that carry card
+        identity.
         """
         if evt not in _CARD_EVENTS:
             return False
-        data = getattr(payload, "data", None) or {}
-        turn_id = getattr(payload, "turn_id", None) or data.get("turn_id")
-        from backend.agent.artifact_policy import card_suppressed
+        from backend.agent.artifact_policy import card_event_turn_id, card_suppressed
 
-        return card_suppressed(turn_id)
+        return card_suppressed(card_event_turn_id(payload))
 
     def _make_handler(self, evt: IRISStreamEvent):
         def handler(payload) -> None:

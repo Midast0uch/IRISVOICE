@@ -19,12 +19,17 @@ the bounded, turn-scoped card gate at the bottom.
 """
 from __future__ import annotations
 
+import json
 import threading
 from collections import OrderedDict
 from typing import Any, Iterable, Optional
 
 # Owner bound: three or more TOOL steps earn a card.
 MIN_TOOL_STEPS_FOR_CARD = 3
+
+# Card ids are minted as "card_<turn_id>", which is what lets a frame carrying
+# only a card_id still be traced back to its turn (see card_event_turn_id).
+_CARD_ID_PREFIX = "card_"
 
 # Steps that are EXPLICITLY not work. A plan is allowed to carry speak steps
 # (they voice the answer) without turning the turn into a project.
@@ -96,6 +101,29 @@ def card_warranted(steps: Iterable[Any], task_text: str = "") -> bool:
     return tool_step_count(steps) >= MIN_TOOL_STEPS_FOR_CARD
 
 
+def card_title_from_content(content: Optional[str]) -> str:
+    """The prism card's title label (REQ-22), derived from a body preview.
+
+    Mirrors the LIVE rule exactly (chat-view.tsx: first markdown heading, else
+    ``Document``) so a card reads the same before and after a reload. Owner
+    report 2026-09-25: "prism cards are still missing title labels on
+    rehydrate" — the live path derived the title from the body, the hydration
+    payload carries no body (CT-DOC-1), so the label simply vanished.
+    """
+    for line in (content or "").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("#"):
+            continue
+        rest = stripped[1:]
+        # One '#' + whitespace, matching the live regex ^\s*#\s+(.+)$.
+        if not rest[:1].isspace():
+            continue
+        title = rest.strip()
+        if title:
+            return title
+    return "Document"
+
+
 def is_artifact_document(content: str) -> bool:
     """True when a body reads as a document worth keeping (markdown/report).
 
@@ -121,6 +149,60 @@ def is_artifact_document(content: str) -> bool:
         if s.startswith("|") and s.count("|") >= 3:
             return True
     return False
+
+
+def is_tool_result_envelope(content: str) -> bool:
+    """True when ``content`` is a bare tool-RESULT envelope, not an artifact.
+
+    The shape every tool returns: a single JSON object with a ``success`` key
+    ({'success': true, 'message': 'Written to X'}). Such a body is a receipt,
+    never an artifact, so it must not become a prism card — live 2026-09-25 the
+    model passed tool results to render_document once per step, so every write
+    and read minted a card whose body was the receipt ("prism cards are
+    rendering with just json output").
+    """
+    if not isinstance(content, str):
+        return False
+    text = content.strip()
+    if not (text.startswith("{") and text.endswith("}")):
+        return False
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return False
+    return isinstance(parsed, dict) and "success" in parsed
+
+
+def card_event_turn_id(payload: Any) -> Optional[str]:
+    """The turn a card-lifecycle frame belongs to, however the emit site named it.
+
+    LIVE 2026-09-25: only ``task:start``/``task:done`` carry ``turn_id``, so a
+    ``task:progress`` frame for a card-free turn slipped past the gate and the
+    frontend rebuilt the card from its ``card_id``. Every way an emit site
+    identifies the turn is accepted here: the envelope's turn_id, the payload's
+    turn_id, the task_id (the turn id under which the card was minted), and the
+    card_id (``card_<turn_id>``).
+    """
+    if payload is None:
+        return None
+    data = getattr(payload, "data", None)
+    if not isinstance(data, dict):
+        data = {}
+    candidates = (
+        getattr(payload, "turn_id", None),
+        data.get("turn_id"),
+        data.get("task_id"),
+        data.get("card_id"),
+    )
+    for cand in candidates:
+        if not cand:
+            continue
+        text = str(cand)
+        if text.startswith(_CARD_ID_PREFIX):
+            text = text[len(_CARD_ID_PREFIX):]
+        if text:
+            return text
+    return None
 
 
 # ── turn-scoped card gate ───────────────────────────────────────────────────

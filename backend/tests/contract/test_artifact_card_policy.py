@@ -197,3 +197,52 @@ def test_der_entry_consults_the_gate_before_it_emits_a_card():
         "_persist_card_snapshot must honour the gate, or a card-free turn comes "
         "back as a card after a reload"
     )
+
+
+# ── the frames that slipped through live (2026-09-25) ──────────────────────
+
+def test_card_event_turn_id_reads_every_naming():
+    """task:progress carries no turn_id, so the turn is read from its card_id.
+
+    This is the exact gap that let the card appear: the gate resolved nothing
+    from the envelope, so a progress frame with `card_id` rebuilt the card.
+    """
+    from backend.agent.artifact_policy import card_event_turn_id
+
+    assert card_event_turn_id(_Payload("turn-1", {})) == "turn-1"
+    assert card_event_turn_id(_Payload(None, {"turn_id": "turn-2"})) == "turn-2"
+    assert card_event_turn_id(_Payload(None, {"task_id": "turn-3"})) == "turn-3"
+    assert card_event_turn_id(_Payload(None, {"card_id": "card_turn-4"})) == "turn-4"
+    assert card_event_turn_id(None) is None
+    assert card_event_turn_id(_Payload(None, {})) is None
+
+
+def test_bridge_withholds_a_progress_frame_that_carries_only_a_card_id():
+    """The captured frame: {"type":"task:progress", ..., "card_id":"card_..."}"""
+    suppress_card_for_turn("turn-free")
+    payload = _Payload(None, {"step_done": True, "card_id": "card_turn-free"})
+    assert WSEventBridge._card_event_withheld(IRISStreamEvent.TASK_PROGRESS, payload)
+    # The tool frames carry card identity too, so they are covered as well.
+    for evt in (IRISStreamEvent.TOOL_CALL, IRISStreamEvent.TOOL_RESULT,
+                IRISStreamEvent.TOOL_ERROR):
+        assert WSEventBridge._card_event_withheld(evt, payload), evt.value
+    # A card-free turn must still get its ARTIFACT (only card frames are gated).
+    assert not WSEventBridge._card_event_withheld(
+        IRISStreamEvent.DOCUMENT_RENDER, payload
+    )
+
+
+def test_store_does_not_offer_a_tool_receipt_for_rehydration():
+    """A stored tool receipt is not an artifact: not offered, so not rendered."""
+    import sqlite3
+
+    from backend.agent.document_store import DocumentDataStore
+
+    store = DocumentDataStore(sqlite3.connect(":memory:"))
+    store.store("receipt", "c1", "json",
+                '{"success": true, "message": "Written to note.md"}', {}, [], "trusted")
+    store.store("real", "c1", "markdown", "# Weekly plan\n\n- one\n- two", {}, [], "trusted")
+    docs = store.list_for_conversation("c1", metadata_only=True)
+    assert [d["document_id"] for d in docs] == ["real"]
+    assert docs[0]["title"] == "Weekly plan"
+

@@ -20,6 +20,11 @@ import sqlite3
 import time
 from typing import Any, Dict, Optional
 
+from backend.agent.artifact_policy import (
+    card_title_from_content,
+    is_tool_result_envelope,
+)
+
 logger = logging.getLogger(__name__)
 
 # Global bound on stored documents; oldest by created_at are evicted.
@@ -29,29 +34,6 @@ _MAX_DOCUMENTS = 500
 # metadata-only BY DESIGN (CT-DOC-1 pins "no content"), but the title label has
 # to come from somewhere — so the store reads a bounded preview and derives it.
 _TITLE_PREVIEW_CHARS = 400
-
-
-def card_title_from_content(content: Optional[str]) -> str:
-    """The prism card's title label (REQ-22), derived from a body preview.
-
-    Mirrors the LIVE rule exactly (chat-view.tsx: first markdown heading, else
-    ``Document``) so a card reads the same before and after a reload. Owner
-    report 2026-09-25: "prism cards are still missing title labels on
-    rehydrate" — the live path derived the title from the body, the hydration
-    payload carries no body, so the label simply vanished.
-    """
-    for line in (content or "").splitlines():
-        stripped = line.strip()
-        if not stripped.startswith("#"):
-            continue
-        rest = stripped[1:]
-        # One '#' + whitespace, matching the live regex ^\s*#\s+(.+)$.
-        if not rest[:1].isspace():
-            continue
-        title = rest.strip()
-        if title:
-            return title
-    return "Document"
 
 _SQL_CREATE = """
 CREATE TABLE IF NOT EXISTS document_data (
@@ -469,6 +451,14 @@ class DocumentDataStore:
                         "title": card_title_from_content(r[8]),
                     }
                     for r in rows
+                    # Owner bound 2026-09-25: a tool RESULT is not an artifact,
+                    # so a stored receipt ({'success': true, ...}) is not offered
+                    # for rehydration at all. Rows written before that bound
+                    # (conv-151 held four) rendered as prism cards whose body was
+                    # raw JSON and whose title was the "Document" fallback — the
+                    # "prism cards are rendering with just json output" report.
+                    # Not offered = not rendered, and nothing is deleted.
+                    if not is_tool_result_envelope(r[8])
                 ]
             # Pre-existing bug fixed 2026-09-25: this branch assigned `row`
             # (singular) and then iterated `rows`, so the agent-side full-data

@@ -270,25 +270,14 @@ def _unexpanded_placeholder(value, _depth: int = 0, _budget: Optional[list] = No
 
 
 def _is_tool_result_envelope(content: str) -> bool:
-    """True when ``content`` is a bare tool-result envelope, not an artifact.
+    """Back-compat name for the shared predicate (artifact_policy).
 
-    Owner report 2026-09-25: "prism cards are rendering with just json output".
-    The model called ``render_document`` with the PREVIOUS tool's JSON result as
-    the body and format "json", so every write/read step minted a prism card
-    whose content was ``{"success": true, "message": "Written to X"}`` — conv-151
-    held four such rows, one pair per turn. A tool result belongs to the
-    step/ledger lane; a card is for an artifact the user asked to keep.
+    One definition, used by both this bridge and the reply-surface artifact
+    policy, so the two can never disagree about what a tool receipt is.
     """
-    if not isinstance(content, str):
-        return False
-    text = content.strip()
-    if not (text.startswith("{") and text.endswith("}")):
-        return False
-    try:
-        parsed = json.loads(text)
-    except Exception:
-        return False
-    return isinstance(parsed, dict) and "success" in parsed
+    from backend.agent.artifact_policy import is_tool_result_envelope
+
+    return is_tool_result_envelope(content)
 
 
 class AgentToolBridge:
