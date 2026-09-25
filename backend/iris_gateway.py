@@ -137,6 +137,18 @@ _RE_SENTENCE_SPLIT = re.compile(r"(?<=[.!?Ã¢â‚¬Â¦])\s+|\n+")
 # returns on timeout, making the two cases indistinguishable).
 _TTS_END_STREAM = object()
 
+# TTS audio delivery budgets (live 2026-09-24). A chunk that takes seconds to
+# synthesize must not end the turn's audio: the measured worst single synthesis
+# was 13.81 s (214560 samples = 8.9 s of audio), and the old 0.5 s wait threw
+# queue.Empty mid-reply, so the whole voice answer was skipped ("TTS audio queue
+# timed out after 0.5s"). The 25 s post-stream budget is that worst case with
+# headroom; the 0.25 s poll slice keeps barge-in as fast as it ever was.
+# Before the first chunk the wait is the worker's cold-boot budget instead
+# (~90 s measured cold, REQ-5).
+_TTS_CHUNK_BUDGET_S = 25.0
+_TTS_CHUNK_POLL_S = 0.25
+_TTS_FIRST_CHUNK_BUDGET_S = 180.0
+
 
 logger = logging.getLogger(__name__)
 
@@ -3781,6 +3793,26 @@ class IRISGateway:
             stalled_s, turn_key,
         )
 
+    def _tts_wait_for_chunk(self, audio_queue, *, budget_s: float, interrupted_fn=None):
+        """Take the next TTS chunk within ``budget_s``, polling in short slices.
+
+        Returns ``(chunk, timed_out, barge_in)``. The two non-chunk outcomes are
+        told apart deliberately: a barge-in is the USER acting, a timeout is the
+        producer failing. Barge-in is decided by the INTERRUPTION callback — never
+        by the queue going briefly empty — so a slow synthesis cannot cost the
+        turn its audio (live 2026-09-24: a 6 s chunk tripped a 0.5 s wait and the
+        whole voice answer was skipped).
+        """
+        waited = 0.0
+        while waited < budget_s:
+            try:
+                return audio_queue.get(timeout=_TTS_CHUNK_POLL_S), False, False
+            except queue.Empty:
+                waited += _TTS_CHUNK_POLL_S
+                if interrupted_fn is not None and interrupted_fn():
+                    return None, False, True
+        return None, True, False
+
     def _play_reply_node(self, node) -> None:
         """Play a REPLY/ALERT node through the contract-locked `_speak_response`
         path (T7, REQ-7 AC7.1). Called by the lane scheduler's worker thread.
@@ -4060,7 +4092,11 @@ class IRISGateway:
             # How long a continuously-full audio queue is tolerated before the
             # producer gives up. A live consumer drains the 4-deep queue far
             # faster than this, so tripping it means the consumer is gone.
-            _PUT_STALL_LIMIT = 5.0
+            # Live 2026-09-24: raised from 5 s. A SLOW consumer is not a GONE
+            # consumer — under load the synthesis path measured single chunks up
+            # to 6 s, so a 5 s full-queue stall latched the turn off and silenced
+            # the rest of the reply ('consumer gone after 5.1s').
+            _PUT_STALL_LIMIT = 20.0
 
             def _put_chunk(audio_chunk: np.ndarray) -> bool:
                 """Enqueue a chunk for the consumer, never blocking forever.
@@ -4642,40 +4678,42 @@ class IRISGateway:
                 self._word_monitor_stop = threading.Event()
 
                 while True:
-                    # Fast timeout (0.5s) after streaming starts so barge-in
-                    # (interrupt_speech) is detected promptly.
-                    #
-                    # Before the first chunk: asymmetric by design — the TTS
-                    # worker loads lazily (REQ-5, ~90s measured cold on
-                    # 2026-09-23) while this consumer previously waited only
-                    # 60s, so the FIRST voice answer of every cold session was
-                    # skipped entirely. 180s covers worker boot plus model
-                    # prompting (~15s) plus contention headroom; the
-                    # pipeline's own 10s stall backstop still releases the mic
-                    # when the producer is genuinely dead, so this is a
-                    # completeness budget, not a hang risk.
-                    _timeout = 180 if not _sd_stream_started else 0.5
-                    try:
-                        chunk = audio_queue.get(timeout=_timeout)
-                    except queue.Empty:
-                        # Check for interruption during the wait
-                        if _sd_stream_started and engine.is_speech_interrupted():
-                            interrupted.set()
-                            while not audio_queue.empty():
-                                try:
-                                    audio_queue.get_nowait()
-                                except queue.Empty:
-                                    break
-                            break
-                        chunk = None
+                    # Wait for the next chunk. Two budgets, one reason each:
+                    #  - before the first chunk: the TTS worker's cold boot
+                    #    (REQ-5, ~90 s measured 2026-09-23) - a shorter wait
+                    #    skipped the FIRST voice answer of every cold session;
+                    #  - after streaming starts: 25 s, the worst single synthesis
+                    #    measured live (13.81 s for 8.9 s of audio) with headroom:
+                    #    a slow chunk must never end the reply.
+                    # Both poll every 0.25 s, so barge-in (interrupt_speech) is
+                    # detected as promptly as it was with the old 0.5 s wait.
+                    _budget = (
+                        _TTS_CHUNK_BUDGET_S if _sd_stream_started
+                        else _TTS_FIRST_CHUNK_BUDGET_S
+                    )
+                    chunk, _timed_out, _barge_in = self._tts_wait_for_chunk(
+                        audio_queue,
+                        budget_s=_budget,
+                        interrupted_fn=(
+                            engine.is_speech_interrupted if _sd_stream_started
+                            else None
+                        ),
+                    )
+                    if _barge_in:
+                        interrupted.set()
+                        while not audio_queue.empty():
+                            try:
+                                audio_queue.get_nowait()
+                            except queue.Empty:
+                                break
+                        break
                     if chunk is _TTS_END_STREAM:
                         break
-                    if chunk is None:
+                    if _timed_out or chunk is None:
                         self._logger.warning(
-                            f"[Voice] TTS audio queue timed out after {_timeout}s — skipping TTS, continuing conversation"
+                            f"[Voice] TTS audio queue timed out after {_budget}s — skipping TTS, continuing conversation"
                         )
                         break
-
                     if engine.is_speech_interrupted():
                         interrupted.set()
                         while not audio_queue.empty():

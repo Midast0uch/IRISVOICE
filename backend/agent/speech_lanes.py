@@ -101,6 +101,12 @@ BOUNCED_OPENINGS_MAX = 64    # bounced-opening set cap
 # names, no mechanics — same class as the AC8.2 failure notice).
 WAIT_ENTRY_TEXT = "This step takes a while — still working."
 WAIT_MISS_TEXT = "Still on it — taking longer than expected."
+# Minimum gap between WAIT_MISS_TEXT lines for ONE turn. Several waits can
+# start inside the same turn (one per grafted sub-step) and each crosses its
+# own budget, so a per-wait latch still spoke the same reassurance four times
+# in six seconds (live 2026-09-24). The line reassures the user; it does not
+# notify per wait. Every crossing is still recorded as a wait_miss beat.
+WAIT_MISS_COOLDOWN_S = 20.0
 
 # Narration-beat kinds (session-305): immutable nodes.
 KIND_PLANNED = "planned"
@@ -731,6 +737,9 @@ class SpeechScheduler:
         self._recent_openings: deque = deque(maxlen=BEAT_RECENT_OPENINGS)
         self._bounced_openings: Dict[str, None] = {}
         self._waits: Dict[str, dict] = {}
+        # Last WAIT_MISS_TEXT emission as (turn_id, time.monotonic()). A single
+        # tuple keeps this bounded — never a dict that grows with turn count.
+        self._wait_miss_last: Tuple[str, float] = ("", 0.0)
         # Held-audio free callback (REQ-10 AC10.7, T14): wired by the kernel
         # to TTSManager.free_held. Every non-play exit of a node carrying an
         # audio_ref frees its held buffer through here (None in tests).
@@ -852,6 +861,7 @@ class SpeechScheduler:
             self._drained_turns.clear()
             # ...and their waits (REQ-10): a fresh turn re-announces its own.
             self._waits.clear()
+            self._wait_miss_last = ("", 0.0)
             self._bounced_openings.clear()
         # Reopen the half-duplex mic gate immediately (REQ-7 AC7.2) so the new
         # turn's recording starts capturing without waiting for the worker to
@@ -902,6 +912,7 @@ class SpeechScheduler:
             self._turn_failed_nodes.pop(turn_id, None)
             self._failure_notice_turns.discard(turn_id)
             self._drained_turns.discard(turn_id)
+            self._wait_miss_last = ("", 0.0)
             # ...and its waits (REQ-10, T13).
             self._waits = {
                 wid: w for wid, w in self._waits.items()
@@ -1183,6 +1194,15 @@ class SpeechScheduler:
                 session_id=wait.get("session_id", ""),
                 detail=f"{wait_id} crossed stated budget",
             )
+            # One reassurance per turn per WAIT_MISS_COOLDOWN_S (fix (c)): the
+            # beat event above still records every crossing. time.monotonic() so
+            # a wall-clock step cannot widen or close the window.
+            _miss_turn = wait.get("turn_id", "")
+            _miss_now = time.monotonic()
+            _last_turn, _last_ts = self._wait_miss_last
+            if _miss_turn == _last_turn and (_miss_now - _last_ts) < WAIT_MISS_COOLDOWN_S:
+                continue
+            self._wait_miss_last = (_miss_turn, _miss_now)
             try:
                 self.admit_reactive(
                     WAIT_MISS_TEXT, turn_id=wait.get("turn_id", ""),

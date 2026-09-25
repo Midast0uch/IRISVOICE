@@ -251,6 +251,58 @@ class TestWaitStateTriggers:
         finally:
             sched.stop()
 
+    def test_many_waits_in_one_turn_speak_one_miss_line(self):
+        """Live 2026-09-24: a grafted task opened four waits inside ONE turn
+        (one per sub-step) and each crossed its own budget, so the user heard
+        the SAME reassurance four times in six seconds. The line reassures; it
+        does not notify per wait. ONE line per turn — while every crossing is
+        still recorded as its own wait_miss beat event.
+        """
+        sched, obs, played, lock = _make_sched()
+        try:
+            for n in range(4):
+                sched.note_wait(
+                    f"w{n}", turn_id="t1", session_id="s1",
+                    budget_s=0.3, long_wait=False,
+                )
+            assert _wait_until(lambda: WAIT_MISS_TEXT in played, timeout=10.0)
+            time.sleep(1.2)  # room for a second line to slip through
+            with lock:
+                spoken = " ".join(played)
+            assert spoken.count(WAIT_MISS_TEXT) == 1, (
+                f"four waits in one turn must speak ONE reassurance, got {spoken!r}"
+            )
+            assert obs.counters.get("beat:wait_miss") == 4, (
+                "every crossing must still be recorded as its own beat event"
+            )
+        finally:
+            sched.stop()
+
+    def test_a_later_turn_speaks_its_own_miss_line(self):
+        """The latch is per turn, never global: a later turn's wait must reach
+        the user even seconds after the previous turn's line."""
+        sched, obs, played, lock = _make_sched()
+        try:
+            sched.note_wait(
+                "a1", turn_id="t1", session_id="s1",
+                budget_s=0.3, long_wait=False,
+            )
+            assert _wait_until(lambda: WAIT_MISS_TEXT in played, timeout=10.0)
+            sched.end_wait("a1")
+            sched.note_wait(
+                "b1", turn_id="t2", session_id="s1",
+                budget_s=0.3, long_wait=False,
+            )
+            assert _wait_until(
+                lambda: " ".join(played).count(WAIT_MISS_TEXT) == 2, timeout=10.0
+            )
+            with lock:
+                spoken = " ".join(played)
+            assert spoken.count(WAIT_MISS_TEXT) == 2
+            assert obs.counters.get("beat:wait_miss") == 2
+        finally:
+            sched.stop()
+
 
 class TestBeatKinds:
     def test_planned_and_reactive_kinds_preserved(self):
