@@ -9561,6 +9561,15 @@ Respond with a JSON object:
                 from_voice,
             )
 
+            # ── Partial-artifact completion (live 2026-09-25) ────────────────
+            # A step is ONE tool call, so a step naming several files writes only
+            # one. Detect the remainder and graft a step per missing file BEFORE
+            # the loop settles, so the user gets the files that were asked for.
+            self._der_graft_missing_artifacts(
+                item, plan, queue, _session, _turn_id,
+                _token_budget=_token_budget, _tokens_used=_tokens_used,
+            )
+
             # â”€â”€ Phase 4: concurrently execute any ADDITIONAL ready
             # parallel_safe steps this cycle, then finalize them with the
             # same helper. The primary `item` above is already finalized.
@@ -13671,6 +13680,121 @@ Respond with a JSON object:
         except Exception as _e:
             logger.warning("[DER] success synthesis failed: %s", _e)
             return ""
+
+    # ── Partial-artifact completion (live 2026-09-25) ───────────────────────
+    # One step is ONE tool call (ToolDecisionBox.resolve is single-shot), so a
+    # step that names several files can only ever write one of them. Measured:
+    # "create three files ... each with one bullet" wrote ONE file, the other two
+    # were silently missing, and the user was told the files had been created.
+    _ARTIFACT_NAME_RE = re.compile(
+        r"\b[\w][\w.\-]*\.(?:md|markdown|txt|json|csv|tsv|ya?ml|py|js|ts|tsx|html|log|rst|tex)\b",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _declared_file_names(cls, text: str) -> list:
+        """File names named in the text — ordered, deduped, bounded to 8.
+
+        Pure: the caller decides which of them are actually missing.
+        """
+        out: list = []
+        seen: set = set()
+        for match in cls._ARTIFACT_NAME_RE.finditer(text or ""):
+            name = match.group(0)
+            low = name.lower()
+            if low in seen:
+                continue
+            seen.add(low)
+            out.append(name)
+        return out[:8]
+
+    @staticmethod
+    def _artifact_missing(name: str) -> bool:
+        """True when the named artifact is absent, or present but empty."""
+        try:
+            from pathlib import Path
+
+            p = Path(name)
+            return not (p.exists() and p.stat().st_size > 0)
+        except OSError:
+            return True
+
+    def _der_graft_missing_artifacts(
+        self,
+        item,
+        plan,
+        queue,
+        _session: str,
+        _turn_id: str,
+        _token_budget: int = 0,
+        _tokens_used: int = 0,
+    ) -> None:
+        """Graft a step per artifact the task named but nothing wrote.
+
+        Called after a FILE-WRITING step finalizes. Bounded three ways: only for
+        file-writing tools, at most DER_MAX_GRAFTS steps per run, and each file
+        name is attempted at most once (``_artifact_graft_attempted``). Never
+        raises — a missed graft must not break the turn.
+        """
+        try:
+            _tool = str(getattr(item, "tool", "") or "").lower()
+            if _tool not in ("write_file", "create_directory", "edit_file", "append_file"):
+                return
+            from backend.agent.der_constants import DER_MAX_GRAFTS
+
+            _attempted = getattr(self, "_artifact_graft_attempted", None)
+            if _attempted is None:
+                _attempted = set()
+                self._artifact_graft_attempted = _attempted
+            if len(_attempted) >= DER_MAX_GRAFTS:
+                return
+            _task_text = str(getattr(plan, "original_task", "") or "")
+            _text = " ".join([_task_text, str(getattr(item, "description", "") or "")])
+            _missing = [
+                n for n in self._declared_file_names(_text)
+                if n not in _attempted and self._artifact_missing(n)
+            ][: max(DER_MAX_GRAFTS - len(_attempted), 0)]
+            if not _missing:
+                return
+            from backend.agent.der_loop import QueueItem
+
+            _base = len(getattr(queue, "items", []) or [])
+            _new_steps = [
+                QueueItem(
+                    step_id="%s_art%d" % (item.step_id, _i),
+                    step_number=_base + _i,
+                    description=(
+                        "Create the file %s with the content the user asked for in "
+                        "this task: %s" % (_name, _task_text[:300])
+                    ),
+                    tool="write_file",
+                    depends_on=[item.step_id],
+                    critical=False,
+                    objective_anchor=_task_text[:200],
+                    expected_output="%s exists and is not empty" % _name,
+                    declared_criticality="supporting",
+                    node_record=getattr(item, "node_record", None),
+                )
+                for _i, _name in enumerate(_missing, start=1)
+            ]
+            if not self._der_amend_graph(
+                _new_steps, _session, plan, queue,
+                _token_budget=_token_budget, _tokens_used=_tokens_used,
+                _turn_id=_turn_id,
+            ):
+                return
+            _attempted.update(_missing)
+            try:
+                queue.graft_attempts += 1
+            except Exception:
+                pass
+            logger.info(
+                "[DER] partial artifacts: grafted %d step(s) for %s "
+                "(one step = one tool call, so a multi-file step needs the rest)",
+                len(_missing), _missing,
+            )
+        except Exception as _graft_exc:
+            logger.warning("[DER] artifact graft skipped: %s", _graft_exc)
 
     @staticmethod
     def _humanize_evidence(text: str) -> str:
