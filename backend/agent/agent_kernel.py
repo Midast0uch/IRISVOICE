@@ -8658,7 +8658,7 @@ Respond with a JSON object:
         )
 
         # ── Card gate (owner bound, 2026-09-25) ──────────────────────────
-        # A card is for THREE OR MORE tool steps, and never for an artifact ask
+        # A card is for MORE THAN THREE tool steps, and never for an artifact ask
         # (the artifact IS the visible result). Below the bound the turn still
         # runs through DER, the tools still fire and a real artifact still
         # renders — only card-lifecycle events are withheld, by the WS bridge

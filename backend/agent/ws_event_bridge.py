@@ -84,7 +84,7 @@ _BRIDGED_EVENTS: Tuple[IRISStreamEvent, ...] = (
 _BRIDGED_EVENTS_EXT: List[IRISStreamEvent] = []
 
 # Card-lifecycle events. Owner bound 2026-09-25: a turn below the card bound
-# (fewer than three tool steps, or an artifact ask) must reach the UI as a plain
+# (three or fewer tool steps, or an artifact ask) must reach the UI as a plain
 # exchange, so EVERY event of the card's life is withheld for that turn — not
 # just task:start. A trailing progress frame with no card is what fabricated a
 # phantom card before (see the note at the terminal emit in agent_kernel).
@@ -156,10 +156,10 @@ class WSEventBridge:
     def _card_event_withheld(evt: IRISStreamEvent, payload) -> bool:
         """True when this card event belongs to a card-free turn.
 
-        Owner bound 2026-09-25: a turn below the card bound (fewer than three
-        tool steps, or an artifact ask) is a plain exchange. The whole card
-        lifecycle is withheld — dropping only task:start would let a later
-        progress frame fabricate a phantom card.
+        Owner bound 2026-09-25: a turn below the card bound (three or fewer tool
+        steps, or an artifact ask) is a plain exchange. The whole card lifecycle
+        is withheld — dropping only task:start would let a later progress frame
+        fabricate a phantom card.
 
         LIVE 2026-09-25: resolving the turn from the envelope alone was not
         enough. ``task:progress`` and ``tool:result`` frames carry only a

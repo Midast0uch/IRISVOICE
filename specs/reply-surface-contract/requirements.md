@@ -925,9 +925,9 @@ that completes in a single turn.
   reload — the settled card hydrates from its stored snapshot, it is not
   reconstructed from nothing.
 - AC4 (owner decision 2026-09-25): a task card SHALL be emitted only when the
-  plan holds THREE OR MORE steps that call a tool (speak/tts steps are not work),
+  plan holds MORE THAN THREE steps that call a tool (speak/tts steps are not work),
   and NEVER for an artifact ask, however many steps it takes - the artifact is
-  the visible result. Below the bound the turn still runs through DER, the tools
+  the visible result. Below the bound (three or fewer tool steps) the turn still runs through DER, the tools
   still fire and a real artifact still renders; card-lifecycle events are
   withheld (WSEventBridge) and no card snapshot is written, so a short exchange
   cannot come back as a card after a reload. Bound:

@@ -24,8 +24,12 @@ import threading
 from collections import OrderedDict
 from typing import Any, Iterable, Optional
 
-# Owner bound: three or more TOOL steps earn a card.
-MIN_TOOL_STEPS_FOR_CARD = 3
+# Owner bound: a card needs MORE THAN three tool steps. The owner's words,
+# verbatim, on 2026-09-25: "task cards should only appear for 3 more steps with
+# tools ... its genuinely long multi tool work" and then, tightening it,
+# "not have task cards pop up for things that are not more than 3 steps".
+# Four or more tool steps, therefore — three or fewer is a conversation.
+MIN_TOOL_STEPS_FOR_CARD = 4
 
 # Card ids are minted as "card_<turn_id>", which is what lets a frame carrying
 # only a card_id still be traced back to its turn (see card_event_turn_id).
