@@ -21,6 +21,11 @@ export interface HydratedDoc {
   /** REQ-10 (audit 2026-09-22, F7): persisted lifecycle id, rehydrated with the
    * metadata so a reloaded card keeps the SAME card_id. */
   card_id?: string | null
+  /** REQ-22 title label, derived server-side from a bounded body preview. The
+   * live render derives it from the full body; the hydration payload has no
+   * body, so without this a reloaded card showed no title at all (owner report
+   * 2026-09-25). */
+  title?: string | null
 }
 
 export interface MergedRenderedDoc {
@@ -31,6 +36,8 @@ export interface MergedRenderedDoc {
   documentId?: string
   cardId?: string
   turnId?: string
+  /** Card header label (REQ-22). */
+  title?: string
   error: string | null
   trust?: string
   sources?: { url: string; title: string }[]
@@ -69,6 +76,10 @@ export function mergeRenderedDocuments(
       documentId: d.document_id,
       cardId: d.card_id ?? existing?.cardId,
       turnId: d.turn_id ?? existing?.turnId,
+      // The LIVE title wins: it was derived from the full body, while the
+      // payload's copy is derived from a bounded preview. Falling back to the
+      // payload's is what keeps the label after a reload (REQ-22).
+      title: existing?.title || d.title || undefined,
       error: null,
       trust: existing?.trust,
       sources: d.sources ?? existing?.sources ?? [],

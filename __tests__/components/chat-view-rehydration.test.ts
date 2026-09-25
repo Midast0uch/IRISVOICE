@@ -43,6 +43,31 @@ describe('mergeRenderedDocuments (document re-hydration)', () => {
     expect(out).toHaveLength(0)
   })
 
+  it('carries the server-derived title through hydration (REQ-22)', () => {
+    // Owner report 2026-09-25: "prism cards are still missing title labels on
+    // rehydrate". The live render derived the title from the body; the
+    // hydration payload carries no body, so the label vanished on reload.
+    const out = mergeRenderedDocuments([], [
+      { document_id: 'e', format: 'markdown', title: 'Weekly plan' } as any,
+    ])
+    expect(out[0].title).toBe('Weekly plan')
+  })
+
+  it('keeps the live title when a later payload carries none', () => {
+    const base = mergeRenderedDocuments([], [
+      { document_id: 'f', format: 'markdown', title: 'Weekly plan' } as any,
+    ])
+    const after = mergeRenderedDocuments(base, [{ document_id: 'f', format: 'markdown' }])
+    expect(after[0].title).toBe('Weekly plan')
+  })
+
+  it('carries the persisted card_id through hydration (REQ-10)', () => {
+    const out = mergeRenderedDocuments([], [
+      { document_id: 'g', format: 'markdown', card_id: 'card-abc' } as any,
+    ])
+    expect(out[0].cardId).toBe('card-abc')
+  })
+
   it('does NOT blank a card that already has its content', () => {
     // The live failure this guards: hydration is metadata-light BY DESIGN (no
     // content — the body is fetched on expand), and it used to overwrite the

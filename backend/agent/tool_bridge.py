@@ -17,6 +17,7 @@ Requirements: 8.1, 8.2, 8.3, 8.4, 8.5, 8.6
 
 import asyncio
 import contextvars
+import json
 import logging
 import os
 import re
@@ -266,6 +267,28 @@ def _unexpanded_placeholder(value, _depth: int = 0, _budget: Optional[list] = No
         return None
     except Exception:  # noqa: BLE001 — the guard must never break dispatch
         return None
+
+
+def _is_tool_result_envelope(content: str) -> bool:
+    """True when ``content`` is a bare tool-result envelope, not an artifact.
+
+    Owner report 2026-09-25: "prism cards are rendering with just json output".
+    The model called ``render_document`` with the PREVIOUS tool's JSON result as
+    the body and format "json", so every write/read step minted a prism card
+    whose content was ``{"success": true, "message": "Written to X"}`` — conv-151
+    held four such rows, one pair per turn. A tool result belongs to the
+    step/ledger lane; a card is for an artifact the user asked to keep.
+    """
+    if not isinstance(content, str):
+        return False
+    text = content.strip()
+    if not (text.startswith("{") and text.endswith("}")):
+        return False
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        return False
+    return isinstance(parsed, dict) and "success" in parsed
 
 
 class AgentToolBridge:
@@ -3502,6 +3525,20 @@ class AgentToolBridge:
         if not (isinstance(content, str) and content.strip()):
             return {"success": False, "error": "render_document requires content"}
         fmt = params.get("format") or "markdown"
+        # A tool result is not an artifact (see _is_tool_result_envelope): it
+        # must not become a prism card, or the thread fills with JSON bodies.
+        if _is_tool_result_envelope(content):
+            logger.info(
+                "[ToolBridge] render_document refused: content is a tool-result "
+                "envelope, not an artifact (len=%d)", len(content),
+            )
+            return {
+                "success": False,
+                "error": (
+                    "render_document content is a tool-call result envelope, not "
+                    "an artifact — keep it in your reply text"
+                ),
+            }
         conversation_id = (
             params.get("conversation_id")
             or self._active_conversation_id.get(session_id)

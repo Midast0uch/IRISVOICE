@@ -129,6 +129,62 @@ def test_ct_doc_1_get_documents_empty_on_unknown_conv():
     assert response["payload"]["documents"] == []
 
 
+def test_ct_doc_1_get_documents_carries_title_and_card_id():
+    """REQ-22/REQ-10 (owner report 2026-09-25): a rehydrated prism card keeps
+    its header label and its stable card_id.
+
+    Both values lived in the store and were dropped by the payload mapping
+    between them, so after a reload every card rendered with no title at all —
+    the live path derived the title from the body, and the hydration payload
+    carries no body (CT-DOC-1). The payload stays metadata-only: the title is
+    derived server-side from a bounded preview.
+    """
+    conn = sqlite3.connect(":memory:")
+    store = DocumentDataStore(conn)
+    store.store("t1", "c1", "markdown", "# Weekly plan\n\n- one\n- two",
+                {}, [], "trusted", turn_id="turn-1", card_id="card-abc")
+    store.store("t2", "c1", "markdown", "- no heading here\n- just bullets",
+                {}, [], "trusted", turn_id="turn-1", card_id="card-def")
+    gw, ws = _make_gateway()
+    msg = {"type": "get_documents", "payload": {"conversation_id": "c1"}}
+
+    async def run():
+        with patch("backend.agent.agent_kernel.get_agent_kernel",
+                   return_value=_FakeKernel(store)):
+            await gw._handle_get_documents("sess1", "client1", msg)
+
+    _run(run())
+
+    docs = ws.sent[-1][1]["payload"]["documents"]
+    assert {d["document_id"] for d in docs} == {"t1", "t2"}
+    by_id = {d["document_id"]: d for d in docs}
+    # REQ-22: the title label survives the reload.
+    assert by_id["t1"]["title"] == "Weekly plan"
+    # ...and a body with no heading still labels itself, exactly as live does.
+    assert by_id["t2"]["title"] == "Document"
+    # REQ-10 AC1: identity survives too.
+    assert by_id["t1"]["card_id"] == "card-abc"
+    assert by_id["t2"]["card_id"] == "card-def"
+    # The metadata-only promise still holds (CT-DOC-1).
+    for d in docs:
+        assert "content" not in d
+
+
+def test_card_title_rule_matches_the_live_render():
+    """The derived label uses the SAME rule as the live render (chat-view.tsx:
+    first markdown heading, else "Document"), so a card does not change its
+    label when the thread is reloaded."""
+    from backend.agent.document_store import card_title_from_content
+
+    assert card_title_from_content("# Title\nbody") == "Title"
+    assert card_title_from_content("intro\n\n# Later title\nbody") == "Later title"
+    # Mirrors ^\s*#\s+(.+)$: exactly one '#', then whitespace.
+    assert card_title_from_content("## Not an H1\nbody") == "Document"
+    assert card_title_from_content("body with no heading") == "Document"
+    assert card_title_from_content("") == "Document"
+    assert card_title_from_content(None) == "Document"
+
+
 import json
 
 

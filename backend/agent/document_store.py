@@ -25,6 +25,34 @@ logger = logging.getLogger(__name__)
 # Global bound on stored documents; oldest by created_at are evicted.
 _MAX_DOCUMENTS = 500
 
+# How much of a body is read to derive a card title. The hydration payload is
+# metadata-only BY DESIGN (CT-DOC-1 pins "no content"), but the title label has
+# to come from somewhere — so the store reads a bounded preview and derives it.
+_TITLE_PREVIEW_CHARS = 400
+
+
+def card_title_from_content(content: Optional[str]) -> str:
+    """The prism card's title label (REQ-22), derived from a body preview.
+
+    Mirrors the LIVE rule exactly (chat-view.tsx: first markdown heading, else
+    ``Document``) so a card reads the same before and after a reload. Owner
+    report 2026-09-25: "prism cards are still missing title labels on
+    rehydrate" — the live path derived the title from the body, the hydration
+    payload carries no body, so the label simply vanished.
+    """
+    for line in (content or "").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("#"):
+            continue
+        rest = stripped[1:]
+        # One '#' + whitespace, matching the live regex ^\s*#\s+(.+)$.
+        if not rest[:1].isspace():
+            continue
+        title = rest.strip()
+        if title:
+            return title
+    return "Document"
+
 _SQL_CREATE = """
 CREATE TABLE IF NOT EXISTS document_data (
     document_id TEXT PRIMARY KEY,
@@ -419,9 +447,9 @@ class DocumentDataStore:
             if metadata_only:
                 rows = self._conn.execute(
                     "SELECT document_id, fmt, conversation_id, sources, har_path, created_at, "
-                    "turn_id, card_id "
+                    "turn_id, card_id, substr(content, 1, ?) "
                     "FROM document_data WHERE conversation_id = ? ORDER BY created_at ASC",
-                    (conversation_id,),
+                    (_TITLE_PREVIEW_CHARS, conversation_id),
                 ).fetchall()
                 return [
                     {
@@ -435,10 +463,21 @@ class DocumentDataStore:
                         # REQ-10 (audit 2026-09-22): the lifecycle id rides
                         # metadata so a rehydrated card keeps its identity.
                         "card_id": r[7],
+                        # REQ-22 (owner report 2026-09-25): the title label rides
+                        # metadata too — derived from a bounded preview, never
+                        # the body itself.
+                        "title": card_title_from_content(r[8]),
                     }
                     for r in rows
                 ]
-            row = self._conn.execute(
+            # Pre-existing bug fixed 2026-09-25: this branch assigned `row`
+            # (singular) and then iterated `rows`, so the agent-side full-data
+            # read raised UnboundLocalError, was swallowed by the except below,
+            # and returned []. The agent could never retrieve its OWN rendered
+            # documents by conversation — CT-DOC-3 (REQ-7/T5) was red because of
+            # it, and a model that cannot see its earlier cards mints new ones
+            # instead (the "prism cards render as raw JSON" shape).
+            rows = self._conn.execute(
                 "SELECT document_id, conversation_id, fmt, content, variants, "
                 "alternatives, trust, revision, source_document_id, sources, har_path, "
                 "turn_id, card_id "

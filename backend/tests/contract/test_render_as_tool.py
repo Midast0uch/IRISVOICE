@@ -108,6 +108,79 @@ def test_render_document_emits_the_same_document_render_shape():
     assert data["partial"] is False
 
 
+def test_render_document_refuses_a_tool_result_envelope():
+    """Owner report 2026-09-25: "prism cards are rendering with just json output".
+
+    The model called ``render_document`` with the PREVIOUS tool's JSON result as
+    the body, so every write/read step minted a prism card whose content was
+    ``{"success": true, "message": "Written to X"}`` — conv-151 held four such
+    rows (two per turn, format=json). A tool result belongs to the step lane; a
+    card is for an artifact. The refusal must mint nothing and emit nothing.
+    """
+    store = DocumentDataStore(sqlite3.connect(":memory:"))
+    kernel = _Kernel(store)
+    bridge = _bridge()
+
+    captured = []
+    get_event_bus().subscribe(
+        IRISStreamEvent.DOCUMENT_RENDER, lambda payload, **kw: captured.append(payload.data)
+    )
+    envelope = '{"success": true, "message": "Written to tts_check.md", "bytes": 189}'
+
+    async def run():
+        with patch(
+            "backend.agent.agent_kernel.get_agent_kernel", return_value=kernel
+        ):
+            return await bridge._execute_render_document(
+                {"format": "json", "content": envelope, "conversation_id": "c1"},
+                "sess",
+            )
+
+    loop = asyncio.new_event_loop()
+    try:
+        result = loop.run_until_complete(run())
+    finally:
+        loop.close()
+
+    assert result["success"] is False
+    assert captured == [], "a tool result must never become a prism card"
+    assert store.list_for_conversation("c1", metadata_only=False) == []
+
+
+def test_render_document_still_accepts_a_real_artifact():
+    """The refusal is narrow: a real artifact renders exactly as before."""
+    store = DocumentDataStore(sqlite3.connect(":memory:"))
+    kernel = _Kernel(store)
+    bridge = _bridge()
+    captured = []
+    get_event_bus().subscribe(
+        IRISStreamEvent.DOCUMENT_RENDER, lambda payload, **kw: captured.append(payload.data)
+    )
+
+    async def run():
+        with patch(
+            "backend.agent.agent_kernel.get_agent_kernel", return_value=kernel
+        ):
+            return await bridge._execute_render_document(
+                {
+                    "format": "markdown",
+                    "content": "{\"note\": \"a JSON artifact the user asked to keep\"}",
+                    "conversation_id": "c2",
+                },
+                "sess",
+            )
+
+    loop = asyncio.new_event_loop()
+    try:
+        result = loop.run_until_complete(run())
+    finally:
+        loop.close()
+
+    # A JSON body WITHOUT a tool-result 'success' key is a legitimate artifact.
+    assert result["success"] is True
+    assert len(captured) == 1
+
+
 def test_render_document_requires_content():
     bridge = _bridge()
 

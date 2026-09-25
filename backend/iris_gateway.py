@@ -10392,6 +10392,14 @@ class IRISGateway:
                             # question a previous markdown was answering when it
                             # compares old findings against new ones.
                             "turn_id": r.get("turn_id"),
+                            # REQ-10/REQ-22: the store has always returned these
+                            # two and this mapping dropped BOTH — so a reloaded
+                            # prism card lost its title label and its stable
+                            # card_id although the row still carried them (owner
+                            # report 2026-09-25: "prism cards are still missing
+                            # title labels on rehydrate").
+                            "card_id": r.get("card_id"),
+                            "title": r.get("title"),
                         }
                         for r in rows
                     ]
