@@ -555,32 +555,22 @@ class ToolExecutor:
     # Built-in tool implementations
     @staticmethod
     def _path_from_params(params: Dict) -> str:
-        """The file path under any of the spellings the model uses.
+        """The file path under any spelling the model uses (shared resolver).
 
-        The registry names it ``path``, but live 2026-09-25 the model sent
-        ``file_path`` (and this very file has a handler that reads only
-        ``file_path``), so ``write_file`` opened ``""`` and crashed with
-        "[Errno 2] No such file or directory: ''". Same family as the
-        content/contents mismatch: one name is assumed, the model uses another,
-        and the failure is opaque. Every file handler resolves the path here.
+        See ``backend/tool_args.py``: the MCP file_manager server — the path the
+        agent actually reaches — reads the same names, so one definition serves
+        both and they cannot drift.
         """
-        if not isinstance(params, dict):
-            return ""
-        for key in ("path", "file_path", "filepath", "filename", "file",
-                    "target_path", "directory", "dir"):
-            val = params.get(key)
-            if isinstance(val, str) and val.strip():
-                return val.strip()
-        return ""
+        from backend.tool_args import path_arg
+
+        return path_arg(params)
 
     @staticmethod
     def _missing_path_error(tool: str, params: Dict) -> Dict[str, Any]:
         """An explicit error instead of `open("")`."""
-        keys = ", ".join(sorted(str(k) for k in (params or {})))
-        return {
-            "success": False,
-            "error": f"{tool} requires a path — pass 'path'. Keys received: {keys}",
-        }
+        from backend.tool_args import missing_arg_error
+
+        return missing_arg_error(tool, "path", params)
 
     def _read_file(self, params: Dict, context: Dict) -> Dict[str, Any]:
         """Read a file."""
@@ -612,19 +602,11 @@ class ToolExecutor:
         path = self._path_from_params(params)
         if not path:
             return self._missing_path_error("write_file", params)
-        content = params.get("content")
+        from backend.tool_args import body_arg, missing_arg_error
+
+        content = body_arg(params)
         if content is None:
-            content = params.get("contents")
-        if content is None:
-            content = params.get("text")
-        if content is None:
-            return {
-                "success": False,
-                "error": (
-                    "write_file requires a body — pass 'content'. Keys received: "
-                    + ", ".join(sorted(str(k) for k in params))
-                ),
-            }
+            return missing_arg_error("write_file", "content", params)
         if not isinstance(content, str):
             content = str(content)
         try:

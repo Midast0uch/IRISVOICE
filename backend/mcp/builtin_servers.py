@@ -397,25 +397,56 @@ class FileManagerServer(BuiltinServer):
         ]
 
     async def execute_tool(self, name: str, arguments: Dict[str, Any]) -> Any:
+        # Argument names are resolved centrally (backend/tool_args.py): the schema
+        # says `path`/`content`, the model sends `file_path`/`contents`, and each
+        # of these handlers used to read one name with a "" default — which wrote
+        # EMPTY files and answered success, or crashed opening "".
+        from backend.tool_args import body_arg, missing_arg_error, path_arg
+
         if name == "read_file":
-            path = arguments.get("path", "")
+            path = path_arg(arguments)
+            if not path:
+                return missing_arg_error("read_file", "path", arguments)
             try:
                 content = await asyncio.to_thread(self._sync_read_file, path)
-                return {"success": True, "content": content, "path": path}
+                return {"success": True, "content": content, "path": path,
+                        "bytes": len(content)}
             except Exception as e:
                 return {"success": False, "error": str(e), "path": path}
 
         elif name == "write_file":
-            path = arguments.get("path", "")
-            content = arguments.get("content", "")
+            path = path_arg(arguments)
+            if not path:
+                return missing_arg_error("write_file", "path", arguments)
+            content = body_arg(arguments)
+            if content is None:
+                return missing_arg_error("write_file", "content", arguments)
             try:
                 await asyncio.to_thread(self._sync_write_file, path, content)
-                return {"success": True, "message": f"Written to {path}", "bytes": len(content)}
+                # A non-empty body that produced an empty file is a BUG, not
+                # success: it is how the user was told a file had been written
+                # while nothing landed on disk.
+                try:
+                    _on_disk = Path(path).stat().st_size
+                except OSError:
+                    _on_disk = len(content.encode("utf-8"))
+                if content and _on_disk == 0:
+                    return {
+                        "success": False,
+                        "error": f"write_file wrote 0 bytes to {path} "
+                                 f"(body had {len(content)} chars)",
+                    }
+                return {
+                    "success": True,
+                    "message": f"Written to {path}",
+                    "bytes": len(content),
+                    "bytes_on_disk": _on_disk,
+                }
             except Exception as e:
                 return {"success": False, "error": str(e)}
 
         elif name == "list_directory":
-            path = arguments.get("path", ".")
+            path = path_arg(arguments) or "."
             recursive = arguments.get("recursive", False)
             try:
                 listing = await asyncio.to_thread(
@@ -434,7 +465,9 @@ class FileManagerServer(BuiltinServer):
                 return {"success": False, "error": str(e)}
 
         elif name == "create_directory":
-            path = arguments.get("path", "")
+            path = path_arg(arguments)
+            if not path:
+                return missing_arg_error("create_directory", "path", arguments)
             try:
                 await asyncio.to_thread(self._sync_create_directory, path)
                 return {"success": True, "message": f"Created directory {path}"}
@@ -442,7 +475,9 @@ class FileManagerServer(BuiltinServer):
                 return {"success": False, "error": str(e)}
 
         elif name == "delete_file":
-            path = arguments.get("path", "")
+            path = path_arg(arguments)
+            if not path:
+                return missing_arg_error("delete_file", "path", arguments)
             try:
                 await asyncio.to_thread(self._sync_delete_file, path)
                 return {"success": True, "message": f"Deleted {path}"}
