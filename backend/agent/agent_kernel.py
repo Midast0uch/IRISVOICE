@@ -13673,15 +13673,60 @@ Respond with a JSON object:
             return ""
 
     @staticmethod
+    def _humanize_evidence(text: str) -> str:
+        """A tool result the user can read.
+
+        A tool's ``summary`` is often its own JSON envelope. Unwrap it to the
+        human field (message / content / text) so the user sees
+        ``Written to zz_a.md`` rather than ``{"success": true, ...}``. Anything
+        that is not a JSON object passes through unchanged.
+        """
+        t = (text or "").strip()
+        if not (t.startswith("{") and t.endswith("}")):
+            return t
+        try:
+            import json as _json
+
+            _obj = _json.loads(t)
+        except Exception:
+            return t
+        if not isinstance(_obj, dict):
+            return t
+        for _key in ("message", "content", "text", "result"):
+            _val = _obj.get(_key)
+            if isinstance(_val, str) and _val.strip():
+                return _val.strip()
+        return t
+
+    @staticmethod
     def _der_user_facing_evidence(item) -> str:
         """T8 / fix 7 (specs/tool-result-envelope REQ-2 AC2.3): user-facing
-        evidence is the ENVELOPE LINE when the step carries one — raw gather
-        text MUST NOT be user-visible. Legacy edge (pre-envelope item): the
-        node-record evidence capped to 400 chars, never the 8000-char gather
-        window."""
+        evidence is the OUTCOME, never internal mechanics.
+
+        This used to return ``ToolEnvelope.line()``, whose own docstring reads
+        'success, mismatched, repeat of step_1 — try_different, doc ab12ef34'.
+        It is a DIAGNOSTIC string, and live 2026-09-25 the user was shown
+
+            - Create zz_a.md ...: success — proceed, doc b2299b91-2c3 | {"success": true, ...}
+            - Read the contents ...: success, [idling] — try_different, doc 43de69cd-343 | - Tea ...
+
+        Verdicts (proceed/retry_same/try_different), stuck shapes ([idling]) and
+        doc ids belong in the ledger. The user gets the status and what the step
+        actually produced. The envelope's own diagnostics stay available through
+        ``ToolEnvelope.to_dict()`` for the ledger and the metrics.
+        """
         _env = getattr(item, "envelope", None)
         if _env is not None:
-            return _env.line()
+            _summary = AgentKernel._humanize_evidence(
+                str(getattr(_env, "summary", "") or "")
+            )
+            _error = str(getattr(_env, "error_type", "") or "").strip()
+            if _summary:
+                _out = f"{_summary} (error: {_error})" if _error else _summary
+                return AgentKernel._smart_excerpt(_out, 400)
+            _status = str(getattr(_env, "status", "") or "").strip()
+            if _status:
+                return _status
         _ev = AgentKernel._der_node_record_evidence(item)
         return AgentKernel._smart_excerpt(_ev, 400) if _ev else ""
 
