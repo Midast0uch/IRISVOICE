@@ -7459,14 +7459,19 @@ class AgentKernel:
                         try:
                             from backend.agent.artifact_policy import (
                                 card_warranted,
-                                suppress_card_for_turn,
+                                clear_card_free_conversation,
+                                suppress_card_for_conversation,
                             )
 
-                            if not card_warranted(
+                            if card_warranted(
                                 _plan.steps, getattr(_plan, "original_task", "") or ""
                             ):
-                                suppress_card_for_turn(
-                                    task_id or getattr(self, "_current_turn_id", None)
+                                # This turn HAS a card: stop gating the thread.
+                                clear_card_free_conversation(self.conversation_id)
+                            else:
+                                suppress_card_for_conversation(
+                                    self.conversation_id,
+                                    task_id or getattr(self, "_current_turn_id", None),
                                 )
                         except Exception:
                             pass  # the gate must never block a turn
@@ -8662,8 +8667,9 @@ Respond with a JSON object:
             from backend.agent.artifact_policy import (
                 MIN_TOOL_STEPS_FOR_CARD,
                 card_warranted,
+                clear_card_free_conversation,
                 is_artifact_ask,
-                suppress_card_for_turn,
+                suppress_card_for_conversation,
                 tool_step_count,
             )
 
@@ -8672,8 +8678,9 @@ Respond with a JSON object:
                 # This turn may have a card — clear the conversation-scoped
                 # marker a previous short turn left behind.
                 self._suppressed_card_turn = None
+                clear_card_free_conversation(self.conversation_id)
             else:
-                suppress_card_for_turn(_turn_id)
+                suppress_card_for_conversation(self.conversation_id, _turn_id)
                 self._suppressed_card_turn = _turn_id
                 logger.info(
                     "[AgentKernel] task card suppressed: tool_steps=%d (bound "

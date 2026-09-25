@@ -190,8 +190,9 @@ def test_der_entry_consults_the_gate_before_it_emits_a_card():
         "the DER entry must call artifact_policy.card_warranted on the plan's "
         "items before emitting task:start"
     )
-    assert "suppress_card_for_turn(_turn_id)" in src, (
-        "the DER entry must register a card-free turn on the gate"
+    assert "suppress_card_for_conversation(self.conversation_id, _turn_id)" in src, (
+        "the DER entry must register a card-free turn (and its conversation) on "
+        "the gate"
     )
     assert "card_suppressed(_suppressed_turn)" in src, (
         "_persist_card_snapshot must honour the gate, or a card-free turn comes "
@@ -267,4 +268,29 @@ def test_store_does_not_offer_a_tool_receipt_for_rehydration():
     docs = store.list_for_conversation("c1", metadata_only=True)
     assert [d["document_id"] for d in docs] == ["real"]
     assert docs[0]["title"] == "Weekly plan"
+
+
+def test_a_conversation_scoped_frame_is_withheld_too():
+    """LIVE 2026-09-25: the live action frames name only their conversation.
+
+    {"type":"task:progress","payload":{"description":"Editing x.md",
+    "conversation_id":"conv-151"}} set the frontend's phase/status
+    ("SYNTHESIZING ANSWER") while the matching clear (task:done) was withheld for
+    a card-free turn, so the status stayed lit after the answer arrived.
+    Withholding by conversation removes that too.
+    """
+    from backend.agent.artifact_policy import (
+        clear_card_free_conversation,
+        suppress_card_for_conversation,
+    )
+
+    suppress_card_for_conversation("conv-151", "turn-free")
+    frame = _Payload(None, {"description": "Editing x.md", "conversation_id": "conv-151"})
+    assert WSEventBridge._card_event_withheld(IRISStreamEvent.TASK_PROGRESS, frame)
+    # Another conversation in the same process is untouched.
+    other = _Payload(None, {"description": "Editing y.md", "conversation_id": "conv-9"})
+    assert not WSEventBridge._card_event_withheld(IRISStreamEvent.TASK_PROGRESS, other)
+    # A turn that EARNS a card clears the conversation gate again.
+    clear_card_free_conversation("conv-151")
+    assert not WSEventBridge._card_event_withheld(IRISStreamEvent.TASK_PROGRESS, frame)
 

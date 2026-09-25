@@ -170,9 +170,23 @@ class WSEventBridge:
         """
         if evt not in _CARD_EVENTS:
             return False
-        from backend.agent.artifact_policy import card_event_turn_id, card_suppressed
+        from backend.agent.artifact_policy import (
+            card_event_turn_id,
+            card_suppressed,
+            card_suppressed_for_conversation,
+        )
 
-        return card_suppressed(card_event_turn_id(payload))
+        turn_id = card_event_turn_id(payload)
+        if turn_id:
+            return card_suppressed(turn_id)
+        # A frame that names only its conversation (the live action frames do)
+        # is withheld while that conversation runs a card-free turn — otherwise
+        # it lights the frontend's phase/status with no card to complete it.
+        data = getattr(payload, "data", None)
+        if not isinstance(data, dict):
+            data = {}
+        conv_id = getattr(payload, "conversation_id", None) or data.get("conversation_id")
+        return card_suppressed_for_conversation(conv_id)
 
     def _make_handler(self, evt: IRISStreamEvent):
         def handler(payload) -> None:

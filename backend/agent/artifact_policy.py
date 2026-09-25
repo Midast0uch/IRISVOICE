@@ -237,3 +237,45 @@ def card_suppressed(turn_id: Optional[str]) -> bool:
 def clear_card_gate_for_testing() -> None:
     with _GATE_LOCK:
         _CARD_SUPPRESSED.clear()
+        _CONVERSATION_CARD_FREE.clear()
+
+
+# Turns are the precise scope, but a few card frames name only their
+# conversation: live 2026-09-25 the "Editing tts_check5.md" progress frames carry
+# just {"conversation_id": "conv-151"}. Those set the frontend's phase/status
+# ("SYNTHESIZING ANSWER") while the matching clear signal (task:done) is withheld
+# for a card-free turn — so the status stayed lit after the answer arrived. The
+# conversation is therefore gated too, and cleared the moment a turn in that
+# conversation EARNS a card.
+_CONVERSATION_CARD_FREE: "OrderedDict[str, None]" = OrderedDict()
+_MAX_CARD_FREE_CONVERSATIONS = 32
+
+
+def suppress_card_for_conversation(
+    conversation_id: Optional[str], turn_id: Optional[str] = None
+) -> None:
+    """Mark a conversation as currently running a card-free turn (bounded)."""
+    suppress_card_for_turn(turn_id)
+    if not conversation_id:
+        return
+    with _GATE_LOCK:
+        _CONVERSATION_CARD_FREE[conversation_id] = None
+        _CONVERSATION_CARD_FREE.move_to_end(conversation_id)
+        while len(_CONVERSATION_CARD_FREE) > _MAX_CARD_FREE_CONVERSATIONS:
+            _CONVERSATION_CARD_FREE.popitem(last=False)
+
+
+def clear_card_free_conversation(conversation_id: Optional[str]) -> None:
+    """A turn in this conversation earned a card — stop gating the conversation."""
+    if not conversation_id:
+        return
+    with _GATE_LOCK:
+        _CONVERSATION_CARD_FREE.pop(conversation_id, None)
+
+
+def card_suppressed_for_conversation(conversation_id: Optional[str]) -> bool:
+    """True when this conversation is currently running a card-free turn."""
+    if not conversation_id:
+        return False
+    with _GATE_LOCK:
+        return conversation_id in _CONVERSATION_CARD_FREE
