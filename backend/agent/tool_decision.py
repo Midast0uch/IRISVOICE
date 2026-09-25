@@ -65,6 +65,76 @@ def _vision_relevant(goal: str) -> bool:
     return bool(toks & _VISION_TOKENS)
 
 
+# Gather signals for OQ-2: these mean "go and fetch something". A step that
+# carries one always climbs the ladder, whatever else the goal text says.
+_GATHER_SIGNALS = (
+    "search", "crawl", "look up", "find", "google", "browse", "download",
+    "upload", "fetch", "research",
+)
+# Remaining action signals. Substring matching is deliberate: a token match would
+# miss "searching", "searches", "downloads". A false positive costs nothing but
+# the old behaviour (escalate), so the lists lean inclusive.
+_ACTION_SIGNALS = _GATHER_SIGNALS + (
+    # mutate
+    "write", "save", "create", "delete", "move", "rename", "copy",
+    "install", "execute", "run ", "send", "email",
+    # machine control
+    "screenshot", "click", "type ", "capture", "record", "deploy",
+    # file-system objects
+    "file", "folder", "directory", "dir ", "path",
+)
+_PATH_SIGNALS = (
+    ":\\", ":/", "http",
+    ".txt", ".json", ".py", ".md", ".csv", ".pdf", ".ts", ".rs", ".log",
+    ".yaml", ".yml", ".toml", ".html", ".xml",
+)
+# Outcomes no tool can change. Kept narrow on purpose: each phrase states that
+# the file system already answered.
+_TERMINAL_FAILURE_SIGNALS = (
+    "no such file", "does not exist", "not found", "no such directory",
+    "permission denied", "access denied", "cannot find",
+)
+
+
+def _goal_needs_action(goal: str) -> bool:
+    """Does this step goal give any reason to touch a tool? (OQ-2, 2026-09-24)
+
+    A confident NONE may stop the step ONLY when the goal carries no gather and
+    no action signal. The signal is lexical and deterministic on purpose: it is
+    cheap, it is auditable, and its false-positive direction is the SAFE one —
+    when in doubt it returns True, which keeps the old escalate path exactly as
+    it was. Session-345's live regression (conv-128) was a websearch goal where
+    a confident NONE was wrong, and "search" is one of these signals, so that
+    case still climbs the ladder.
+    """
+    g = (goal or "").lower()
+    if not g:
+        return False
+    if any(s in g for s in _ACTION_SIGNALS):
+        return True
+    return any(s in g for s in _PATH_SIGNALS)
+
+
+def _goal_needs_gather(goal: str) -> bool:
+    """True when the goal asks for something to be fetched or researched."""
+    g = (goal or "").lower()
+    return bool(g) and any(s in g for s in _GATHER_SIGNALS)
+
+
+def _goal_records_terminal_failure(goal: str) -> bool:
+    """True when the goal RECORDS an outcome that no tool can change.
+
+    A recovery step whose text says the file does not exist cannot be fixed by
+    asking for a tool again — the filesystem already answered. Live case (turn
+    b0da0d28-8ba, engine NONE@0.936): the goal was "RESOLVE: result was not
+    verified against the expected output: [Errno 2] No such file or directory:
+    'C:/dev/IRISVOICE/does_not_exist_42.txt'", and the escalation still produced
+    a full workspace browse.
+    """
+    g = (goal or "").lower()
+    return bool(g) and any(s in g for s in _TERMINAL_FAILURE_SIGNALS)
+
+
 # ── Propose prompt ──────────────────────────────────────────────────────────
 
 _PROPOSE_PROMPT = """You are the tool-selection policy for one agent step.
@@ -613,6 +683,40 @@ class ToolDecisionBox:
                     if _c is not None:
                         _c.memory_fallbacks += 1
                     return md
+                # ── OQ-2 RESOLVED 2026-09-24 ────────────────────────────────
+                # A NONE at or above threshold now COMMITS as REASON when the
+                # goal carries no gather/action signal. Live finding (turn
+                # b0da0d28-8ba, recovery step after a failed read_file): the
+                # engine answered NONE@0.936 and NONE@0.918, both escalations
+                # asked the model again with the tool schemas bound, and the
+                # model named `list_directory` anyway — a browse of the whole
+                # workspace for a file that does not exist. A correct "no tool
+                # needed" could not stop the step. It can now. DELEGATE still
+                # escalates, memory still outranks the engine, and a goal with
+                # any action/gather signal still climbs the ladder (session-345,
+                # conv-128: a confident-wrong NONE on a websearch goal).
+                if (
+                    chosen == self._DE_NONE
+                    and conf >= self._decision_threshold
+                    and not _goal_needs_gather(goal)
+                    and (
+                        not _goal_needs_action(goal)
+                        or _goal_records_terminal_failure(goal)
+                    )
+                ):
+                    logger.info(
+                        "[TOOL_DECISION] engine NONE@%.3f committed as REASON "
+                        "(goal needs no action) conv=%s goal=%r",
+                        conf, conversation_id, (goal or "")[:60],
+                    )
+                    _d = Decision(
+                        kind=DecisionKind.REASON, source="engine-none",
+                        rationale=(
+                            f"engine NONE@{conf:.3f}; the goal needs no tool"
+                        ),
+                    )
+                    _d.meta = _m("engine-none", args_valid=None, retried=False)
+                    return _d
                 self._engine_meta = _m(
                     "escalated", args_valid=None, retried=False)
                 return None

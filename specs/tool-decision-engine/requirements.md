@@ -139,6 +139,17 @@ and uncertain ones to cost a big-model call, so that quality is spent where need
 - AC3.2: WHEN `confidence < threshold` or `chosen ∈ {DELEGATE, NONE}` THEN the box SHALL
   try the existing memory fallback; IF memory also fails THEN it SHALL escalate to the
   reasoning model via the existing generation path (the big model decides tool + args).
+  AMENDED 2026-09-24 (OQ-2, item-1): the `NONE` half carries one exception — a NONE at
+  or above threshold on a goal with NO gather/action signal SHALL commit as REASON
+  instead of escalating. Reason: the escalation re-asks the model with the tool schemas
+  bound, and it named a tool anyway (live turn b0da0d28-8ba: NONE@0.936 committed to
+  escalation and then `list_directory` browsed the whole workspace for a file that does
+  not exist). `DELEGATE` still escalates; a memory suggestion still outranks the engine;
+  and a goal carrying any action/gather signal still escalates (the session-345 conv-128
+  guard) — with ONE narrow exception: a goal that RECORDS a terminal failure ("No such
+  file", "does not exist", "not found", "permission denied") commits as REASON even when
+  it names a path, because the file system already answered; a gather signal in the same
+  goal still wins and escalates.
 - AC3.3: THE DEFAULT threshold SHALL be 0.85, configurable via agent config, and the
   calibration tool (REQ-6) SHALL be able to write a measured override.
 - AC3.4: DELEGATE SHALL never leave `resolve()` as a new visible kind: the kernel-facing
@@ -390,8 +401,11 @@ engine's load, locking, or ledger code again.
 
 ## Open Questions
 
-- OQ-2: Whether `NONE` (no tool applies) maps to REASON directly or passes the memory
-  fallback first — implementer records the choice in this spec on amendment.
+- OQ-2 (RESOLVED 2026-09-24): `NONE` passes the memory fallback first, then commits as
+  REASON when it is at or above threshold AND the goal carries no gather/action signal;
+  otherwise it escalates. Implemented as `_goal_needs_action` + the `engine-none` route
+  in `tool_decision.py`; pinned by
+  `backend/tests/contract/test_engine_none_commits_contract.py`.
 
 ### REQ-17: Hierarchical choice — lane then leaf
 **User Story:** As the operator I want the engine to choose a lane first (file,
@@ -515,5 +529,8 @@ shows and says — not against API-replay artifacts.
 
 ## Open Questions
 
-- OQ-2: Whether `NONE` (no tool applies) maps to REASON directly or passes the memory
-  fallback first — implementer records the choice in this spec on amendment.
+- OQ-2 (RESOLVED 2026-09-24): `NONE` passes the memory fallback first, then commits as
+  REASON when it is at or above threshold AND the goal carries no gather/action signal;
+  otherwise it escalates. Implemented as `_goal_needs_action` + the `engine-none` route
+  in `tool_decision.py`; pinned by
+  `backend/tests/contract/test_engine_none_commits_contract.py`.

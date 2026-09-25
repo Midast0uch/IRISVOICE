@@ -19,6 +19,7 @@ import asyncio
 import contextvars
 import logging
 import os
+import re
 import sys
 import subprocess
 import time  # used by _on_page_done; absent until now, see below
@@ -220,6 +221,51 @@ def _plain_permission_description(tool_name, params, tier_value):
         )
     except Exception:
         return "The assistant wants to do something that needs your OK."
+
+
+# ── Item-3 (2026-09-24): unexpanded template placeholders ───────────────────
+# The repo root carries two junk folders, `${workspaceDir}` and `{workspaceDir}`,
+# each holding only a `.mcm` directory: a tool received the literal text
+# `${workspaceDir}` as a path and the MCM SDK created its store there. An
+# argument that still contains `${...}` was never expanded — refusing it costs
+# one string scan and prevents a real write at a nonsense path.
+_PLACEHOLDER_RE = re.compile(r"\$\{[^}]{1,60}\}")
+
+
+def _unexpanded_placeholder(value, _depth: int = 0, _budget: Optional[list] = None) -> Optional[str]:
+    """Return the first `${...}` placeholder found in a tool argument, or None.
+
+    Walks strings only, at most 4 levels deep and at most 200 values per call,
+    so the check stays free on the dispatch hot path. Never raises.
+    """
+    try:
+        if _budget is None:
+            _budget = [200]
+        if _budget[0] <= 0 or _depth > 4:
+            return None
+        if isinstance(value, str):
+            _budget[0] -= 1
+            m = _PLACEHOLDER_RE.search(value)
+            return m.group(0) if m else None
+        if isinstance(value, dict):
+            for k, v in list(value.items())[:50]:
+                _budget[0] -= 1
+                found = _unexpanded_placeholder(k, _depth + 1, _budget)
+                if found:
+                    return found
+                found = _unexpanded_placeholder(v, _depth + 1, _budget)
+                if found:
+                    return found
+            return None
+        if isinstance(value, (list, tuple)):
+            for v in list(value)[:50]:
+                found = _unexpanded_placeholder(v, _depth + 1, _budget)
+                if found:
+                    return found
+            return None
+        return None
+    except Exception:  # noqa: BLE001 — the guard must never break dispatch
+        return None
 
 
 class AgentToolBridge:
@@ -1292,6 +1338,32 @@ class AgentToolBridge:
         calibrated decision that produced this call. It rides the single tool
         event row as the ``decision`` payload block — never a second event.
         """
+        # Item-3 (2026-09-24): refuse an argument that still holds a template
+        # placeholder. Prevention decides here; the envelope testifies below.
+        _ph = _unexpanded_placeholder(params)
+        if _ph:
+            logger.warning(
+                "[TOOL_BRIDGE] refusing %s: unexpanded placeholder %r in params",
+                tool_name, _ph,
+            )
+            result = {
+                "success": False,
+                "error": (
+                    f"Argument {_ph!r} reached the tool as literal text. "
+                    "Resolve the real value first."
+                ),
+                "error_type": "invalid_argument",
+                "retryable": False,
+                "blame": "model",
+                "details": {"placeholder": _ph, "tool": tool_name},
+            }
+            try:
+                from backend.agent.tool_errors import normalize_failure
+                result = normalize_failure(result)
+            except Exception:  # noqa: BLE001 — taxonomy must never break execution
+                pass
+            return result
+
         result = await self._execute_tool_dispatch(
             tool_name, params, session_id, plan_title, _skip_resilience,
             decision_meta=decision_meta,
