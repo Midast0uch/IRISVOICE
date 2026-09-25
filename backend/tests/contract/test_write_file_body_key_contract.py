@@ -32,6 +32,26 @@ def test_content_spelling_still_works(tmp_path):
     assert p.read_text(encoding="utf-8") == "# Title\nbody"
 
 
+def test_file_path_spelling_is_accepted(tmp_path):
+    """LIVE 2026-09-25: the model sent `file_path`, the handler read `path`, and
+    write_file crashed with "[Errno 2] No such file or directory: ''"."""
+    p = tmp_path / "note4.md"
+    res = _executor()._write_file({"file_path": str(p), "content": "# hi\nbody"}, {})
+    assert res["success"] is True
+    assert p.read_text(encoding="utf-8") == "# hi\nbody"
+    # read_file resolves the same spellings.
+    read = _executor()._read_file({"file_path": str(p)}, {})
+    assert read["success"] is True and read["content"] == "# hi\nbody"
+
+
+def test_a_missing_path_is_an_explicit_error(tmp_path):
+    for handler, name in ((_executor()._write_file, "write_file"),
+                          (_executor()._read_file, "read_file")):
+        res = handler({"content": "x"}, {})
+        assert res["success"] is False
+        assert name in res["error"] and "path" in res["error"]
+
+
 def test_missing_body_is_an_error_not_an_empty_write(tmp_path):
     """The whole defect was silence: no error, success reported, no content."""
     p = tmp_path / "note3.md"

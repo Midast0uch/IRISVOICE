@@ -553,10 +553,41 @@ class ToolExecutor:
         }
 
     # Built-in tool implementations
+    @staticmethod
+    def _path_from_params(params: Dict) -> str:
+        """The file path under any of the spellings the model uses.
+
+        The registry names it ``path``, but live 2026-09-25 the model sent
+        ``file_path`` (and this very file has a handler that reads only
+        ``file_path``), so ``write_file`` opened ``""`` and crashed with
+        "[Errno 2] No such file or directory: ''". Same family as the
+        content/contents mismatch: one name is assumed, the model uses another,
+        and the failure is opaque. Every file handler resolves the path here.
+        """
+        if not isinstance(params, dict):
+            return ""
+        for key in ("path", "file_path", "filepath", "filename", "file",
+                    "target_path", "directory", "dir"):
+            val = params.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+        return ""
+
+    @staticmethod
+    def _missing_path_error(tool: str, params: Dict) -> Dict[str, Any]:
+        """An explicit error instead of `open("")`."""
+        keys = ", ".join(sorted(str(k) for k in (params or {})))
+        return {
+            "success": False,
+            "error": f"{tool} requires a path — pass 'path'. Keys received: {keys}",
+        }
+
     def _read_file(self, params: Dict, context: Dict) -> Dict[str, Any]:
         """Read a file."""
         import os
-        path = params.get("path", "")
+        path = self._path_from_params(params)
+        if not path:
+            return self._missing_path_error("read_file", params)
         try:
             with open(path, "r", encoding="utf-8") as f:
                 content = f.read()
@@ -578,7 +609,9 @@ class ToolExecutor:
         an explicit error instead of a silent empty write.
         """
         import os
-        path = params.get("path", "")
+        path = self._path_from_params(params)
+        if not path:
+            return self._missing_path_error("write_file", params)
         content = params.get("content")
         if content is None:
             content = params.get("contents")
@@ -620,7 +653,7 @@ class ToolExecutor:
     def _list_directory(self, params: Dict, context: Dict) -> Dict[str, Any]:
         """List directory contents."""
         from pathlib import Path
-        path = params.get("path", ".")
+        path = self._path_from_params(params) or "."
         recursive = params.get("recursive", False)
         try:
             items = []
@@ -646,7 +679,9 @@ class ToolExecutor:
     def _create_directory(self, params: Dict, context: Dict) -> Dict[str, Any]:
         """Create a directory."""
         from pathlib import Path
-        path = params.get("path", "")
+        path = self._path_from_params(params)
+        if not path:
+            return self._missing_path_error("create_directory", params)
         try:
             Path(path).mkdir(parents=True, exist_ok=True)
             return {"success": True, "message": f"Created directory {path}"}
@@ -657,7 +692,9 @@ class ToolExecutor:
         """Delete a file or directory."""
         from pathlib import Path
         import shutil
-        path = params.get("path", "")
+        path = self._path_from_params(params)
+        if not path:
+            return self._missing_path_error("delete_file", params)
         try:
             p = Path(path)
             if p.is_dir():
