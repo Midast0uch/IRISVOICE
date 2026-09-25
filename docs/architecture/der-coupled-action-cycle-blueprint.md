@@ -123,7 +123,7 @@ web-regex override**. All of those collapsed into the one operator.
 |---|-------|------------------|----------|-------|
 | L1 | Planner | `agent_kernel._plan_task` | emits `QueueItem(tool=None)` → Step | 1 (D1.3) |
 | L2 | Evidence | `evidence.assemble_evidence` | Mycelium (`_store._conn`, `_registry`), episodic, FFI `u/ξ` → Resolver prompt | 1 (D1.1) |
-| L3 | Resolver | `explorer.propose` | `tool_registry.validate_tool_call`, `BehavioralPredictor` (pheromone), `evidence` | 1 (D1.2/F1,F6) |
+| L3 | Resolver | `ToolDecisionBox.resolve` | `tool_registry.validate_tool_call`, `BehavioralPredictor` (pheromone), `evidence` | 1 (D1.2/F1,F6) |
 | L4 | Tool Bridge | `tool_bridge.execute_tool` (async) | external tools / MCP | — |
 | L5 | Verifier (det) | `agent_kernel._verify_step_result` | `_verified_fraction` (assertion match) | 0 (D0.1) |
 | L6 | Verifier (LLM) | `verify_rubric.call` | `infer` (mid-`\|u\|` band only) | 3 (D3.1) |
@@ -173,7 +173,7 @@ Key takeaways from the matrix:
 |------|------|-------------|---------|
 | 1 | Binary bookkeeping | `agent_kernel` / `caducean_trajectory` | stub→FAILED (G1), honest veto (G2), commit-only-on-VERIFIED (G5) |
 | 2 | Physics-based (hard rule) | `_split_step` / `_growth_width` / `_verify_step_result` | `|u|`-band verify, `work_units` termination, MAX_DEPTH/DER_MAX_GRAFTS caps |
-| 3 | Subjective/empowered | `verify_rubric.call` / `explorer.propose` | LLM rubric verdict, tool proposal |
+| 3 | Subjective/empowered | `verify_rubric.call` / `ToolDecisionBox.resolve` | LLM rubric verdict, tool proposal |
 
 Anti-patterns (explicitly avoided): standing context injection, nudges, fan_traces-in-prompt, treating Tier-2 as binary.
 

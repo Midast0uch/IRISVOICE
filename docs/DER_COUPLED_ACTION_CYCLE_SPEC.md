@@ -496,8 +496,15 @@ Resolver handles web intent via evidence + registry. Verify `crawler_query` stil
 
 ### D1.6 Empowered `_run_step_direct`
 `agent_kernel.py:5789-5826`: build prompt WITH evidence block. If step needs a tool →
-call `explorer.propose` → `validate_tool_call` → execute via `tool_bridge.execute_tool`
+call `ToolDecisionBox.resolve` → `validate_tool_call` → execute via `tool_bridge.execute_tool`
 (bridge already exists, registry-aware). Verify result.
+
+> NOTE 2026-09-24 (session 352): the live resolver is `ToolDecisionBox.resolve`
+> (`backend/agent/tool_decision.py`, reached from `_der_run_step_execution`). The
+> kernel has never imported `explorer.propose` — `git log -S` finds no such line.
+> The invariant above is unchanged (ONE tool-resolution authority); only the module
+> moved, when the engine-first chooser landed (commit dffd1bd4).
+> `test_der_phase1.py::test_single_authority` now asserts the live module.
 
 ### Phase 1 hard requirements (ALL must pass to gate Phase 2)
 F1 fixed: evidence block present in acting prompt for ≥1 step in multi-step task

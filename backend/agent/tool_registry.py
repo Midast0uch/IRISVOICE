@@ -48,6 +48,12 @@ class ToolSpec:
     name: str
     description: str
     parameters: Dict[str, Any] = field(default_factory=dict)
+    # Names of parameters the tool cannot run without. validate_tool_call
+    # enforces this ONLY for specs that list a name here, so a spec that declares
+    # no requirements behaves exactly as it did before. The parameter dicts
+    # already mark optionality with "optional": True; this field is the
+    # enforcement switch, not a second schema (item-4, 2026-09-24).
+    required: List[str] = field(default_factory=list)
     category: str = "system"
     aliases: List[str] = field(default_factory=list)
     requires_internet: bool = False
@@ -255,19 +261,32 @@ def validate_tool_call(
     tool the registry has never heard of can never succeed, so it is routed to
     graft recovery before execution instead of failing at runtime.
 
-    NOTE: parameter *requiredness* is intentionally NOT enforced here. The
-    registry's ``ToolSpec.parameters`` dict does not distinguish required from
-    optional parameters (e.g. ``speak`` declares ``text``/``priority``/
-    ``interrupt`` but only ``text`` is meaningfully required), so treating every
-    declared parameter as required would wrongly reject valid calls. Tool
-    existence is the safe, high-leverage check; parameter shaping remains the
-    LLM planner's responsibility.
+    NOTE (amended 2026-09-24, item-4): parameter requiredness IS enforced, but
+    only where a spec declares it in ``ToolSpec.required``. Live evidence: the
+    escalation twice named ``ask_user_question`` with NO arguments, the call
+    passed this check, was dispatched, and the handler refused it
+    (``invalid_params: 'Question text is required'``) — a paid round trip and a
+    graft chain for a call that could never run. A spec that lists no required
+    name keeps the old behaviour exactly, so nothing is newly rejected without
+    its own declaration.
     """
     spec = resolve_tool(tool_name)
     if spec is None:
         return False, f"Tool '{tool_name}' not found in registry"
     if params is not None and not isinstance(params, dict):
         return False, f"Tool '{tool_name}' params must be a dict, got {type(params).__name__}"
+    _required = [p for p in (getattr(spec, "required", None) or []) if p]
+    if _required:
+        _p = params or {}
+        _missing = [
+            name for name in _required
+            if _p.get(name) in (None, "") or name not in _p
+        ]
+        if _missing:
+            return False, (
+                f"Tool '{tool_name}' is missing required parameter(s): "
+                + ", ".join(_missing)
+            )
     return True, ""
 
 
@@ -917,6 +936,11 @@ def register_builtin_tools() -> None:
                 "run_id": {"type": "string", "description": "Research run id for the parked-source registry (REQ-13 AC6)", "optional": True},
                 "wall_kind": {"type": "string", "enum": ["captcha", "login", "paywall", "unknown"], "description": "Wall that blocked the source (REQ-13)", "optional": True},
             },
+            # Item-4 (2026-09-24): the handler requires `text` — see
+            # _handle_ask_user_question. Declaring it here refuses an args-less
+            # call BEFORE dispatch (live: two turns named this tool with no
+            # arguments, and the failure cost a round trip plus a graft chain).
+            required=["text"],
             category="system", executor="internal", permission_tier="read_only", parallel_safe=False,
         ),
         ToolSpec(
