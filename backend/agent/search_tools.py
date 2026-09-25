@@ -109,6 +109,27 @@ def grep_files(
         return {"success": False, "error": f"unknown output_mode '{output_mode}' (use files_with_matches | content | count)"}
 
     args = ["--no-messages", "--no-require-git"]
+    # Live 2026-09-25: an agent step called grep_files with NO path, so it walked
+    # the whole repo root — node_modules, .next, data/har, screenshots/captures
+    # and a 2.75 GB memory.db — and hit the 60 s guard:
+    #   "grep_files timed out after 60s searching 'C:\dev\IRISVOICE'"
+    # That one self-inflicted timeout failed a run whose user request (three
+    # files created and read back) was already satisfied, so the user was told
+    # the task was incomplete. A ROOT-wide search now excludes the heavy trees
+    # and caps file size; a caller that names a directory keeps full access.
+    _scope_is_root = False
+    try:
+        _scope_is_root = os.path.abspath(scope) == os.path.abspath(os.getcwd())
+    except OSError:
+        _scope_is_root = path is None
+    if _scope_is_root:
+        for _skip in (
+            "node_modules", ".git", ".next", "data", "screenshots", ".venv",
+            "venv", "__pycache__", "dist", "build", "target", ".mcm", "logs",
+        ):
+            args += ["--glob", "!%s/**" % _skip]
+        args += ["--glob", "!*.db", "--glob", "!*.db-*", "--glob", "!*.har"]
+        args += ["--max-filesize", "2M"]
     # --no-require-git: honour .gitignore even OUTSIDE a git repo — a project
     # directory with a .gitignore but no .git still gets ignore semantics.
     if not case_sensitive:
