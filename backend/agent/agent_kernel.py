@@ -13756,6 +13756,25 @@ Respond with a JSON object:
             ][: max(DER_MAX_GRAFTS - len(_attempted), 0)]
             if not _missing:
                 return
+            # A template helps the model produce the same shape the user asked for
+            # ("each with one bullet about tea") and guarantees a body is written.
+            _template = ""
+            for _n in self._declared_file_names(_text):
+                if not self._artifact_missing(_n):
+                    try:
+                        from pathlib import Path
+
+                        _template = Path(_n).read_text(
+                            encoding="utf-8", errors="replace"
+                        )[:200]
+                    except OSError:
+                        _template = ""
+                    if _template:
+                        _sibling = _n
+                        break
+            else:
+                _sibling = ""
+
             from backend.agent.der_loop import QueueItem
 
             _base = len(getattr(queue, "items", []) or [])
@@ -13763,11 +13782,22 @@ Respond with a JSON object:
                 QueueItem(
                     step_id="%s_art%d" % (item.step_id, _i),
                     step_number=_base + _i,
+                    # tool stays UNSET: ToolDecisionBox.resolve is
+                    # description-driven (tool_decision.resolve reads
+                    # step["description"] as its goal). A preset tool with no
+                    # params produced no call at all in the first live attempt.
                     description=(
-                        "Create the file %s with the content the user asked for in "
-                        "this task: %s" % (_name, _task_text[:300])
+                        "Create the file {name} with the content the user asked for "
+                        "in this task: {task}{like}".format(
+                            name=_name,
+                            task=_task_text[:300],
+                            like=(
+                                ". Write the same style of content as {sib}, which "
+                                "contains: {tpl}".format(sib=_sibling, tpl=_template)
+                                if _template else ""
+                            ),
+                        )
                     ),
-                    tool="write_file",
                     depends_on=[item.step_id],
                     critical=False,
                     objective_anchor=_task_text[:200],
