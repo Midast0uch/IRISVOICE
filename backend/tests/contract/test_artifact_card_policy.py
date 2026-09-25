@@ -127,7 +127,10 @@ def test_artifact_document_needs_a_document_shape():
     # Notes and lists are conversation, not artifacts (owner bound).
     assert not is_artifact_document("- Sleep helps memory.\n- Keep a schedule.")
     assert not is_artifact_document("1. one\n2. two")
-    assert not is_artifact_document("## A subheading alone\n\nprose that is not a document")
+    # ANY heading level counts as a document shape: a report uses H2s. The TITLE
+    # rule is separate and still prefers an H1 (card_title_from_content).
+    assert is_artifact_document("## A section heading\n\nprose.")
+    assert not is_artifact_document("no heading here, just prose\nand more prose")
     assert not is_artifact_document("Just a sentence.")
     assert not is_artifact_document("")
 

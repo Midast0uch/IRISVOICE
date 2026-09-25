@@ -4297,6 +4297,31 @@ class AgentKernel:
                     turn_id or "unknown",
                     len(response),
                 )
+
+            # ── Artifact ask answered without `show` (owner bound, 2026-09-25) ─
+            # A report or a markdown document IS an artifact, and the owner's
+            # rule is that artifacts render as cards. When the ASK was for one
+            # and the model answered with a document-shaped body but forgot the
+            # `show` payload, the card is minted from the response itself — the
+            # calibration signal above turned into action instead of a log line.
+            # Scoped to a document ASK plus a document SHAPE: no length
+            # heuristic, which is what the deleted 2026-07-31 auto-render (and
+            # the bubble with "Show more" a report landed in) got wrong.
+            from backend.agent.artifact_policy import is_artifact_ask
+
+            if (
+                is_artifact_ask(getattr(self, "_current_task_text", "") or "")
+                and is_artifact_document(response)
+                and self._mint_artifact_card(response, turn_id, conversation_id)
+            ):
+                _lead = (response.strip().split("\n\n", 1)[0] or response.strip())[:240]
+                self._log_surface(
+                    turn_id=turn_id,
+                    lane="card",
+                    had_show=True,
+                    bubble_source="artifact_fallback",
+                )
+                return self._finalize_response(_lead, speak)
             # REQ-15: the `presentation` decision-engine consumer runs as an
             # ASYNC OBSERVER off the reply path — its verdict is recorded for
             # calibration, never consulted for the live surface ("plain").
@@ -7462,7 +7487,9 @@ class AgentKernel:
                                 clear_card_free_conversation,
                                 suppress_card_for_conversation,
                             )
-
+                            self._current_task_text = (
+                                getattr(_plan, "original_task", "") or ""
+                            )
                             if card_warranted(
                                 _plan.steps, getattr(_plan, "original_task", "") or ""
                             ):
@@ -8674,6 +8701,7 @@ Respond with a JSON object:
             )
 
             _artifact_ask = is_artifact_ask(plan.original_task or "")
+            self._current_task_text = plan.original_task or ""
             if card_warranted(items, plan.original_task or ""):
                 # This turn may have a card — clear the conversation-scoped
                 # marker a previous short turn left behind.
@@ -10265,6 +10293,57 @@ Respond with a JSON object:
             ]
         except Exception:
             return []
+
+    def _mint_artifact_card(self, content: str, turn_id, conversation_id) -> bool:
+        """Store a markdown document and emit its prism card. True on success.
+
+        Used when a document ASK was answered with a document-shaped body but no
+        ``show`` payload (owner bound 2026-09-25: a report or a markdown document
+        IS an artifact, so it renders as a card rather than as a scrolling
+        bubble). Mirrors the `show` path's store + emit pair; never raises.
+        """
+        try:
+            import uuid as _uuid
+
+            from backend.agent.artifact_policy import card_title_from_content
+            from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+
+            _conv = conversation_id or self.conversation_id
+            document_id = str(_uuid.uuid4())
+            card_id = self._prism_card_id_for(document_id)
+            _store = self._get_document_store()
+            if _store is not None:
+                _store.store(
+                    document_id, _conv, "markdown", content, {}, [], "trusted",
+                    turn_id=turn_id, card_id=card_id,
+                )
+            get_event_bus().emit(
+                IRISStreamEvent.DOCUMENT_RENDER,
+                data={
+                    "format": "markdown",
+                    "content": content,
+                    "alternatives": [],
+                    "trust": "trusted",
+                    "document_id": document_id,
+                    "turn_id": turn_id,
+                    "conversation_id": _conv,
+                    "card_id": card_id,
+                    "sources": [],
+                    "har_path": None,
+                    "partial": False,
+                },
+                turn_id=turn_id,
+                conversation_id=_conv,
+            )
+            logger.info(
+                "[AgentKernel] artifact card minted from the response: turn=%s "
+                "doc=%s title=%r (document ask answered without `show`)",
+                turn_id, document_id, card_title_from_content(content)[:60],
+            )
+            return True
+        except Exception as exc:  # a card is never worth a failed reply
+            logger.warning("[AgentKernel] artifact card mint failed: %s", exc)
+            return False
 
     def _persist_card_snapshot(
         self,

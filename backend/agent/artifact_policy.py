@@ -131,11 +131,11 @@ def card_title_from_content(content: Optional[str]) -> str:
 def is_artifact_document(content: str) -> bool:
     """True when a body reads as a document worth keeping (markdown/report).
 
-    A structural test, not a length heuristic: a single-'#' heading, a markdown
-    table with at least two columns, or a fenced block. A plain note or a bullet
-    list returns False — that is exactly the owner's line, and it is the same
-    test the calibration log uses (REQ-14 AC3), so the signal and the behaviour
-    cannot drift apart.
+    A structural test, not a length heuristic: a markdown heading of ANY level
+    (a report uses H2s), a markdown table with at least two columns, or a fenced
+    block. A plain note or a bullet list with no heading returns False — that is
+    the owner's line, and the same test is used by the render path and by the
+    `show_omitted_on_artifact` calibration log, so the two cannot drift.
     """
     text = content or ""
     if not text.strip():
@@ -144,9 +144,9 @@ def is_artifact_document(content: str) -> bool:
         return True
     for line in text.splitlines():
         s = line.strip()
-        # One '#' + whitespace = an H1, the markdown heading of a document.
-        if s.startswith("#") and not s.startswith("##"):
-            rest = s[1:]
+        if s.startswith("#"):
+            # Any heading level: '# Report' and '## Section' both mean document.
+            rest = s.lstrip("#")
             if rest[:1].isspace() and rest.strip():
                 return True
         # A table row with two or more cells = tabular content.
