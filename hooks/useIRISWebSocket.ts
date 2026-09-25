@@ -182,6 +182,15 @@ let _sharedTauriListenersReady = false
 // in-flight thread"). One socket ⇒ one liveness clock. The watchdog below reads
 // this, and handleMessage/onopen bump it for every instance at once.
 let _sharedLastFrameAt = 0
+// A turn is IN FLIGHT from the moment we send a text/voice command until a
+// terminal frame comes back. The model can legitimately be silent for a minute
+// or more (measured 69-95 s on ollama/gpt-oss:120b-cloud), and the liveness
+// watchdog below used to force-close a healthy socket mid-generation and drop
+// the finished reply (live 2026-09-24, turn b9658f0d-723: backend answered, UI
+// showed nothing). The grace is bounded so a genuinely wedged backend is still
+// detected and recovered.
+let _sharedTurnInFlightAt = 0
+const TURN_SILENCE_GRACE_MS = 300_000
 const _connSubs = new Set<() => void>()
 
 function _emitSharedConn(next: ConnectionState) {
@@ -728,6 +737,17 @@ export function useIRISWebSocket(
     // still answering. Recorded here (not per-path) because both the browser
     // socket and the Tauri Rust client funnel through this one function.
     _sharedLastFrameAt = Date.now()
+    // A terminal frame ends the in-flight turn, so the ordinary silence rule
+    // applies again from here.
+    if (
+      type === "chat_message" ||
+      type === "text_response" ||
+      type === "error" ||
+      type === "task:done" ||
+      type === "task:fail"
+    ) {
+      _sharedTurnInFlightAt = 0
+    }
     // Proof of life for the typing watchdog: any frame from the backend means
     // it is still working, so the "stuck indicator" timer restarts. Cheap —
     // a counter bump, and the watchdog is the only reader.
@@ -2026,6 +2046,11 @@ export function useIRISWebSocket(
   const SUPPLY_IF_MISSING = new Set(['voice_command_start', 'sync_state'])
 
   const sendMessage = useCallback((type: string, payload: Record<string, unknown> = {}) => {
+    // Mark the turn in flight BEFORE the socket write, so the liveness watchdog
+    // never judges the backend on a gap it caused itself by generating.
+    if (type === "text_message" || type === "voice_command_start") {
+      _sharedTurnInFlightAt = Date.now()
+    }
     // ── CONVERSATION IDENTITY IS OWNED BY THE SOCKET, NOT BY A COMPONENT ──
     // chat-view.tsx keeps its own activeConversationId in component state and
     // sends that on text_message. This app is a HANDS-FREE WIDGET: ChatView is
@@ -2489,6 +2514,15 @@ export function useIRISWebSocket(
     const timer = setInterval(() => {
       const last = _sharedLastFrameAt;
       if (!last) return;                       // no frame yet — nothing to judge
+      // A turn in flight may legitimately be quiet for a minute or more (the
+      // model is thinking). Bounded by TURN_SILENCE_GRACE_MS so a truly wedged
+      // backend is still detected and recovered.
+      if (
+        _sharedTurnInFlightAt &&
+        Date.now() - _sharedTurnInFlightAt < TURN_SILENCE_GRACE_MS
+      ) {
+        return;
+      }
       if (Date.now() - last < SILENCE_TIMEOUT_MS) return;
 
       console.warn(

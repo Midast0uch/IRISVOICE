@@ -5342,15 +5342,26 @@ class IRISGateway:
 
     async def _chat_heartbeat(self, client_id: str, interval: float = 5.0):
         """Send periodic chat_heartbeat messages to keep the TCP layer alive
-        during long inference.  The frontend ignores this type."""
+        during long inference.  The frontend ignores this type.
+
+        Keep-alive contract (live finding 2026-09-24): this task exists ONLY to
+        prove the socket is alive while the agent works. One failed send must NOT
+        end it. It used to `break` on the first exception, so a single failure
+        silenced the keep-alive for the REST of the turn: a 69-95 s generation
+        left the frontend with 78-90 s of total silence, its liveness watchdog
+        force-closed the socket, and the finished reply was never rendered
+        (turn b9658f0d-723: backend answered, UI showed nothing). The task is
+        cancelled with the turn, so retrying costs nothing.
+        """
         while True:
             await asyncio.sleep(interval)
             try:
                 await self._ws_manager.send_to_client(
                     client_id, {"type": "chat_heartbeat", "payload": {}}
                 )
-            except Exception:
-                break
+            except Exception as _hb_err:
+                logger.debug("[Chat] heartbeat send failed: %r", _hb_err)
+                continue
 
     def _on_client_replace(self, client_id: str) -> None:
         """REQ-8 AC5: a stale socket for client_id was replaced by a new one.
