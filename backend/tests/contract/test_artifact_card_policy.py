@@ -279,6 +279,49 @@ def test_store_does_not_offer_a_tool_receipt_for_rehydration():
     assert docs[0]["title"] == "Weekly plan"
 
 
+def test_internal_narration_is_recognised_but_an_answer_is_not():
+    """Live 2026-09-25: two strings reached the user that are the agent's own
+    thinking, not answers."""
+    from backend.agent.artifact_policy import looks_like_internal_narration
+
+    # The failed three-file turn, verbatim.
+    assert looks_like_internal_narration(
+        "We haven't performed the read yet. Need to call read_file for the three "
+        "files.Let's run read_file."
+    )
+    # The report card's opening line, verbatim.
+    assert looks_like_internal_narration(
+        "The tool only returned a partial draft; it omitted full sections on "
+        "condensation, precipitation and collection."
+    )
+    # Real answers are untouched.
+    assert not looks_like_internal_narration(
+        "Here are the three bullet points about tea you asked for."
+    )
+    assert not looks_like_internal_narration(
+        "# Water cycle\n\nWater moves between land, sea and sky."
+    )
+    assert not looks_like_internal_narration("")
+
+
+def test_a_leading_narration_paragraph_is_dropped_when_an_answer_follows():
+    """The report that opened with meta-commentary keeps its report."""
+    from backend.agent.artifact_policy import strip_leading_narration
+
+    body = (
+        "The tool only returned a partial draft; it omitted full sections.\n\n"
+        "# The water cycle\n\nWater evaporates, condenses and precipitates."
+    )
+    out = strip_leading_narration(body)
+    assert out.startswith("# The water cycle")
+    # A real answer that merely mentions "let me" keeps its first paragraph,
+    # and a single-paragraph text is never touched.
+    single = "Let me explain the water cycle: water moves between land and sky."
+    assert strip_leading_narration(single) == single
+    lead_only = "Need to call read_file for the three files."
+    assert strip_leading_narration(lead_only) == lead_only
+
+
 def test_a_report_without_a_heading_is_still_an_artifact():
     """Live 2026-09-25: a 250-word report with bold lead-ins and bullets, NO
     heading, stayed a scrolling bubble. The ask was a report and the body is a

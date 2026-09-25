@@ -4264,6 +4264,18 @@ class AgentKernel:
         # spot-fix appeared to "return raw JSON": the branch it patched was
         # dead. Unwrapping HERE â€” before any return â€” is the fix. The dead
         # branch is gone.
+        # Internal narration never reaches the user, on any lane. A leading
+        # planning paragraph is dropped when a real answer follows it — the
+        # thread text AND a card body both (a report card used to open with
+        # "The tool only returned a partial draft; it omitted full sections ...",
+        # and a failed turn showed "Need to call read_file ... Let's run
+        # read_file." as if it were an answer). Owner, 2026-09-25.
+        from backend.agent.artifact_policy import strip_leading_narration
+
+        response = strip_leading_narration(response or "")
+        if isinstance(show, dict) and isinstance(show.get("content"), str):
+            show = {**show, "content": strip_leading_narration(show["content"])}
+
         if speak is None and show is None:
             _display, _spoken = self._unwrap_tool_envelope(response)
             if _spoken is not None:
@@ -13534,6 +13546,20 @@ Respond with a JSON object:
                         len(_out.strip()), _stub_floor,
                     )
                     return ""
+            # Shield 4 (live 2026-09-25): internal narration is not a summary.
+            # A failed three-file turn showed the user "We haven't performed the
+            # read yet. Need to call read_file for the three files.Let's run
+            # read_file." — the model narrated its next move instead of telling
+            # the user what happened. Reject it so the deterministic failure
+            # close (which names each failed step) answers instead.
+            from backend.agent.artifact_policy import looks_like_internal_narration
+
+            if looks_like_internal_narration(_out):
+                logger.warning(
+                    "[DER] failure synthesis is internal narration — "
+                    "deterministic close instead: %r", _out.strip()[:140],
+                )
+                return ""
             return _out
         except Exception as _e:
             logger.warning("[DER] outcome synthesis failed: %s", _e)
@@ -13627,6 +13653,19 @@ Respond with a JSON object:
                     "[DER] success synthesis ran (REQ-12 AC1) — steps=%d",
                     len(completed_items),
                 )
+                # Shield 4 (live 2026-09-25): the success summary must be an
+                # answer, not the model narrating its own tools. A report card
+                # opened with "The tool only returned a partial draft; it omitted
+                # full sections ...". Reject narration so the deterministic
+                # per-step close answers instead.
+                from backend.agent.artifact_policy import looks_like_internal_narration
+
+                if looks_like_internal_narration(_syn_text):
+                    logger.warning(
+                        "[DER] success synthesis is internal narration — "
+                        "deterministic close instead: %r", _syn_text[:140],
+                    )
+                    return ""
                 return _syn_text
             return ""
         except Exception as _e:

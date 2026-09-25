@@ -106,6 +106,57 @@ def card_warranted(steps: Iterable[Any], task_text: str = "") -> bool:
     return tool_step_count(steps) >= MIN_TOOL_STEPS_FOR_CARD
 
 
+_NARRATION_MARKERS = (
+    "need to call", "needs to call", "let's run", "lets run", "let's call",
+    "i'll call", "i will call", "i will now", "next step",
+    "the tool only returned", "we haven't", "i haven't", "i need to ",
+    "we need to ", "let me ", "i should ", "let's use", "lets use", "let us ",
+)
+
+
+def looks_like_internal_narration(text: str) -> bool:
+    """True when the text is the agent thinking out loud about its own next move.
+
+    Live 2026-09-25, twice:
+      * a failed three-file turn showed the user
+        "We haven't performed the read yet. Need to call read_file for the three
+        files.Let's run read_file." — that is a plan, not an answer;
+      * a report card carried "The tool only returned a partial draft; it omitted
+        full sections ..." — meta-commentary about its own tools.
+    Neither is a user-facing message. The failure/success synthesis paths already
+    reject tool-args JSON and stubs; this is the third shape.
+    """
+    t = (text or "").lower()
+    if not t.strip():
+        return False
+    return any(marker in t for marker in _NARRATION_MARKERS)
+
+
+def strip_leading_narration(text: str, *, max_lead_chars: int = 320) -> str:
+    """Drop a leading narration paragraph when a real answer follows it.
+
+    Conservative on purpose: the first paragraph must be short AND read as
+    narration, and at least 40 characters must remain, so a genuine answer that
+    merely mentions "let me explain" is left alone. Only the lead goes; the
+    answer the user asked for is untouched.
+    """
+    t = (text or "").strip()
+    if not t:
+        return t
+    parts = t.split("\n\n", 1)
+    if len(parts) != 2:
+        return t
+    head, rest = parts[0].strip(), parts[1].strip()
+    if (
+        head
+        and len(head) <= max_lead_chars
+        and looks_like_internal_narration(head)
+        and len(rest) >= 40
+    ):
+        return rest
+    return t
+
+
 def card_title_from_content(content: Optional[str]) -> str:
     """The prism card's title label (REQ-22), derived from a body preview.
 
