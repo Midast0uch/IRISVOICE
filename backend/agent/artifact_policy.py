@@ -26,9 +26,15 @@ from typing import Any, Iterable, Optional
 # Owner bound: three or more TOOL steps earn a card.
 MIN_TOOL_STEPS_FOR_CARD = 3
 
-# Steps that are not "work" for this rule. A plan is allowed to carry speak
-# steps (they voice the answer) without turning the turn into a project.
-_NON_WORK_TOOLS = frozenset({"", "speak", "speak_tool", "tts", "no_tool", "none"})
+# Steps that are EXPLICITLY not work. A plan is allowed to carry speak steps
+# (they voice the answer) without turning the turn into a project.
+#
+# An EMPTY/unknown tool field is NOT in this set, on purpose. Live 2026-09-25:
+# a write+read plan reached the card decision with every tool field empty
+# ("tool_steps=0") and then dispatched write_file and read_file seconds later —
+# the planner resolves tools at execution time. Counting unknown as non-work
+# would have removed the card from every long turn.
+_NON_WORK_TOOLS = frozenset({"speak", "speak_tool", "tts", "no_tool", "none"})
 
 # An artifact ask asks for a KEEPABLE DOCUMENT. The nouns that make one.
 _DOC_NOUNS = (

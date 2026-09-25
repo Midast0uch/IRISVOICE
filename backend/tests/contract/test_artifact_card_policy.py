@@ -59,11 +59,20 @@ def test_card_requires_three_tool_steps():
     assert not card_warranted([_Step("write_file")])
 
 
-def test_speak_steps_are_not_work():
-    """A plan of four steps that only speak is not a project."""
-    steps = [_Step("speak"), _Step("speak_tool"), _Step("tts"), _Step("")]
-    assert tool_step_count(steps) == 0
-    assert not card_warranted(steps)
+def test_speak_steps_are_not_work_but_unresolved_tools_are():
+    """Explicit speak/tts steps are not work.
+
+    An EMPTY tool field is work-in-waiting, not a speaking step: the planner
+    resolves tools at execution time, so the decision must not read "no tool
+    name yet" as "not a tool step". Live 2026-09-25 proved it — the gate saw
+    tool_steps=0 on a turn that then dispatched write_file and read_file.
+    """
+    assert tool_step_count([_Step("speak"), _Step("speak_tool"), _Step("tts")]) == 0
+    assert tool_step_count([_Step(""), _Step("")]) == 2
+    # The live two-step write+read turn: two work steps, so no card.
+    assert not card_warranted([_Step(""), _Step("")])
+    # ...and a five-step turn keeps its card even before tools are resolved.
+    assert card_warranted([_Step("")] * 5)
 
 
 def test_dict_shaped_steps_count_too():
