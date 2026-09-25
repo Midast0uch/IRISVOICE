@@ -364,6 +364,18 @@ kill the live-observed defects from the 2026-09-23 app drive (see the pin
       `_turn_id`, and
       `backend/tests/contract/test_turn_finalized_stop_work_contract.py` pins
       the refusal, the live-apply path and the per-turn keying.
+      LIVE 2026-09-24 (turn b0da0d28-8ba: "read the file ...does_not_exist_42.txt
+      and then summarize what it contains"): the graft path ran MID-turn and was
+      correctly ALLOWED — `[AMEND] ... cause=planner_driven detail=steps=1 count=1`,
+      step `amend-3`, then a `list_directory` recovery step. The turn settled at
+      40.1s (`task:done outcome=partial`, the failed step listed), the answer was
+      delivered at 40.7s, and NOTHING ran in the 30s after it: no crawl, no further
+      tool call. The refusal itself did not fire live because no amendment was
+      attempted after a settle; the contract test pins that behaviour.
+      OBSERVATION: the amendment frame and its telemetry carry the SESSION id as
+      `task_id` (`task=session_smoke-req19`), not the turn id. The card identity
+      still continues the existing card, so no phantom card appears — but the
+      envelope is not turn-scoped.
 - [x] T35 (REQ-20): card settle is final — `TaskCard.settled` marks the ✅ DONE 2026-09-23.
       terminal event; task:progress / task:learning / tool:call must not
       re-arm a settled card; mergeStart (a real task:start revision) clears
@@ -434,14 +446,22 @@ rule is read there.
 - Pinned bases stay green: `test_turn_triviality_battery.py` (T30/T31/T32),
   `test_behavioral_intent_routing.py` (69-case gate proof),
   `test_t36_web_mode_der_contract.py` — 101 passed together.
-- LIVE STATUS 2026-09-24: the backend was restarted on this build and a text
-  turn was driven over the WS (frame shape `{"type":"text_message","payload":
-  {"text":...}}`). The route-shadow row for the turn landed
-  (`data/route_shadow.jsonl`: `route_taken=der`, `would_be_trivial=false`), so
-  the routing layer is live. The end-to-end drive ("compare OLED vs LCD" with
-  internet access ON) is BLOCKED, not skipped: `api.cerebras.ai` returns
-  `401 Wrong API Key`, so the planner and the answer model both fail and no DER
-  turn can complete. Owner action: re-enter the Cerebras key in the OS keyring.
+- LIVE PROOF 2026-09-24 (backend on port 8090, provider ollama / gpt-oss:120b-cloud,
+  internet access ON, one text turn per drive over the WS frame
+  `{"type":"text_message","payload":{"text":...}}`):
+  * BOUNDED ASK, AFTER the order fix — prompt "compare OLED versus LCD displays
+    for me": the log carries
+    `[DER] bounded content ask -> veto web gather tools (REQ-24) goal='Produce a
+    concise comparison of OLED and LCD technologies...'`, the single step is
+    `tool:call tool_name="direct"`, and there is NO `crawler_query`, no
+    `TOOL_DISPATCH`, and no crawl event. `task:done outcome=success der_steps=1`.
+  * SAME PROMPT, BEFORE the order fix (turn ef183bf4-97e) — the defect's live
+    trace, which is why the order pins exist:
+    `[DER] box resolved tool='crawler_query' for step 1 (source=memory)`, then
+    "Searching the web", "Searching for sources", "Reading <url> (1/5)".
+  * BLOCKED EARLIER the same day: with the previous provider set, no turn could
+    complete at all (Cerebras 401 "Wrong API Key"; the Cohere key is a Trial key
+    with its 1000 calls/month spent). Both are credential facts, not code.
 
 ---
 
