@@ -9805,7 +9805,24 @@ Respond with a JSON object:
             # Test the COUNT, never truthiness: a non-sequence (or any object
             # with a permissive __bool__) would otherwise trip this branch with
             # zero open facts and suppress a legitimate success claim.
-            if len(_gc_open_final) > 0:
+            #
+            # Item 2 (2026-09-24, owner-approved): this guard must not narrate a
+            # FAILURE for a turn that succeeded. Live conv-145 ("create a file
+            # eyes_note3.md ... then read it back to me"): write_file and
+            # read_file both returned success, the file on disk matched the
+            # request, no step failed — and the contract still reported one open
+            # required fact (counters: seeded=1 mapped=0 readded=1 covered=0), so
+            # this branch appended "I couldn't fully complete the task — still
+            # open: ..." to a correct, successful answer. A success claim is only
+            # FALSE when a step failed, so the suppression now also requires
+            # that. The mismatch is still recorded (WARNING above) and the fact
+            # stays in the contract — nothing is hidden, and no false success
+            # can slip through, because any failed or missing step keeps the
+            # original suppression.
+            _open_ok = bool(completed_items) and not list(
+                getattr(queue, "failed_ids", None) or []
+            )
+            if len(_gc_open_final) > 0 and not _open_ok:
                 logger.warning(
                     "[goal-contract] finalize with %d open unblocked fact(s) — "
                     "suppressing success claim: %r",
