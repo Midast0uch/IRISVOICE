@@ -52,14 +52,14 @@ def _clean_gate():
 
 # ── the card bound: three or more TOOL steps ───────────────────────────────
 
-def test_card_requires_more_than_three_tool_steps():
-    """Owner bound 2026-09-25: a card needs MORE than three tool steps."""
-    assert MIN_TOOL_STEPS_FOR_CARD == 4
-    assert card_warranted([_Step("web_search"), _Step("write_file"),
-                           _Step("read_file"), _Step("edit_file")])
-    # Three tool steps is still a conversation, not a project.
+def test_card_requires_more_than_four_tool_steps():
+    """Owner bound 2026-09-25, final: "keep it >4 steps"."""
+    assert MIN_TOOL_STEPS_FOR_CARD == 5
+    assert card_warranted([_Step("web_search"), _Step("write_file"), _Step("read_file"),
+                           _Step("edit_file"), _Step("list_directory")])
+    # Four tool steps is still a conversation, not a project.
     assert not card_warranted([_Step("web_search"), _Step("write_file"),
-                               _Step("read_file")])
+                               _Step("read_file"), _Step("edit_file")])
     assert not card_warranted([_Step("write_file"), _Step("read_file")])
     assert not card_warranted([_Step("write_file")])
 
@@ -82,8 +82,8 @@ def test_speak_steps_are_not_work_but_unresolved_tools_are():
 
 def test_dict_shaped_steps_count_too():
     steps = [{"tool": "web_search"}, {"tool_name": "write_file"},
-             {"tool": "read_file"}, {"tool": "edit_file"}]
-    assert tool_step_count(steps) == 4
+             {"tool": "read_file"}, {"tool": "edit_file"}, {"tool": "list_directory"}]
+    assert tool_step_count(steps) == 5
     assert card_warranted(steps)
 
 

@@ -24,12 +24,13 @@ import threading
 from collections import OrderedDict
 from typing import Any, Iterable, Optional
 
-# Owner bound: a card needs MORE THAN three tool steps. The owner's words,
-# verbatim, on 2026-09-25: "task cards should only appear for 3 more steps with
-# tools ... its genuinely long multi tool work" and then, tightening it,
-# "not have task cards pop up for things that are not more than 3 steps".
-# Four or more tool steps, therefore — three or fewer is a conversation.
-MIN_TOOL_STEPS_FOR_CARD = 4
+# Owner bound, final reading (2026-09-25). Earlier the same day: "task cards only
+# appear for 3 more steps with tools" and "not have task cards pop up for things
+# that are not more than 3 steps". Asked to choose between counting plan steps and
+# counting tool calls, the owner answered: "keep it >4 steps" — so the unit stays
+# PLAN STEPS and the threshold is MORE THAN FOUR: five or more tool steps.
+# A coarse plan (2 steps holding 6 tool calls) therefore gets no card, by choice.
+MIN_TOOL_STEPS_FOR_CARD = 5
 
 # Card ids are minted as "card_<turn_id>", which is what lets a frame carrying
 # only a card_id still be traced back to its turn (see card_event_turn_id).
@@ -108,23 +109,35 @@ def card_warranted(steps: Iterable[Any], task_text: str = "") -> bool:
 def card_title_from_content(content: Optional[str]) -> str:
     """The prism card's title label (REQ-22), derived from a body preview.
 
-    Mirrors the LIVE rule exactly (chat-view.tsx: first markdown heading, else
-    ``Document``) so a card reads the same before and after a reload. Owner
-    report 2026-09-25: "prism cards are still missing title labels on
-    rehydrate" — the live path derived the title from the body, the hydration
-    payload carries no body (CT-DOC-1), so the label simply vanished.
+    Order: the first markdown heading (H1..H6), else the first substantive line,
+    else ``Document``. Mirrors the LIVE rule (chat-view.tsx) so a card reads the
+    same before and after a reload. Owner report 2026-09-25: "prism cards are
+    still missing title labels on rehydrate" — the live path derived the title
+    from the body, the hydration payload carries no body (CT-DOC-1), so the
+    label vanished.
+
+    Owner, later the same day: "All titles and labels should be unique to the
+    artifact created". That is why the first substantive line is used when there
+    is no heading: a card labelled "Document" says nothing about which artifact
+    it is.
     """
-    for line in (content or "").splitlines():
+    text = (content or "").strip()
+    for line in text.splitlines():
         stripped = line.strip()
         if not stripped.startswith("#"):
             continue
-        rest = stripped[1:]
-        # One '#' + whitespace, matching the live regex ^\s*#\s+(.+)$.
+        rest = stripped.lstrip("#")
+        # A heading needs whitespace after the hashes (^#\s+(.+)$ live).
         if not rest[:1].isspace():
             continue
-        title = rest.strip()
+        title = rest.strip().strip("*_`")
         if title:
-            return title
+            return title[:60]
+    # No heading: the first substantive line names the artifact.
+    for line in text.splitlines():
+        stripped = line.strip().strip("*_`#> -").strip()
+        if len(stripped) >= 3:
+            return stripped[:60]
     return "Document"
 
 

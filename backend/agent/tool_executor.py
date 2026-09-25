@@ -565,15 +565,55 @@ class ToolExecutor:
             return {"success": False, "error": str(e), "path": path}
 
     def _write_file(self, params: Dict, context: Dict) -> Dict[str, Any]:
-        """Write to a file."""
+        """Write to a file.
+
+        BODY KEY (fixed 2026-09-25). The registry names it ``content``, and the
+        model frequently emits ``contents`` instead. Reading only ``content``
+        meant a missing key silently became ``""``: the file was created EMPTY
+        and the tool still answered ``success: True, bytes: 0``. Live proof:
+        tts_check6.md was 0 bytes while the audit log held the real body under
+        ``"arguments": {"path": "tts_check6.md", "contents": "- Snow is ..."}"``,
+        the agent then read nothing back, and the user was told the file had
+        been written. Both spellings are accepted now, and a missing body key is
+        an explicit error instead of a silent empty write.
+        """
         import os
         path = params.get("path", "")
-        content = params.get("content", "")
+        content = params.get("content")
+        if content is None:
+            content = params.get("contents")
+        if content is None:
+            content = params.get("text")
+        if content is None:
+            return {
+                "success": False,
+                "error": (
+                    "write_file requires a body — pass 'content'. Keys received: "
+                    + ", ".join(sorted(str(k) for k in params))
+                ),
+            }
+        if not isinstance(content, str):
+            content = str(content)
         try:
             os.makedirs(os.path.dirname(path) if os.path.dirname(path) else ".", exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
                 f.write(content)
-            return {"success": True, "message": f"Written to {path}", "bytes": len(content)}
+            # A non-empty body that produced an empty file is a bug, not success.
+            try:
+                _bytes_on_disk = os.path.getsize(path)
+            except OSError:
+                _bytes_on_disk = len(content.encode("utf-8"))
+            if content and _bytes_on_disk == 0:
+                return {
+                    "success": False,
+                    "error": f"write_file wrote 0 bytes to {path} (body had {len(content)} chars)",
+                }
+            return {
+                "success": True,
+                "message": f"Written to {path}",
+                "bytes": len(content),
+                "bytes_on_disk": _bytes_on_disk,
+            }
         except Exception as e:
             return {"success": False, "error": str(e)}
 

@@ -1523,12 +1523,20 @@ export function ChatWing({
         cardId: detail.card_id,
         // REQ-22: card header identity. A backend-supplied title WINS (the
         // artifact fallback names the card from the user's ask when the body has
-        // no heading); else the first markdown heading; else "Document".
+        // no heading); else the first markdown heading; else the first
+        // substantive line; else "Document". The last two keep a label UNIQUE to
+        // this artifact — owner, 2026-09-25: "All titles and labels should be
+        // unique to the artifact created".
         title: (() => {
           const given = typeof detail.title === "string" ? detail.title.trim() : ""
           if (given) return given
           const m = (detail.content || "").match(/^\s*#\s+(.+)$/m)
-          return m ? m[1].trim() : "Document"
+          if (m) return m[1].trim().slice(0, 60)
+          const first = (detail.content || "")
+            .split("\n")
+            .map((l) => l.replace(/^[\s*_`#>|-]+/, "").replace(/[\s*_`]+$/, ""))
+            .find((l) => l.trim().length >= 3)
+          return first ? first.trim().slice(0, 60) : "Document"
         })(),
         reformatted: detail.reformatted || false,
         // Partial emits are a stream, not a revision — suppress the badge.
