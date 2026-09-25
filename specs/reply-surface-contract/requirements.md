@@ -900,6 +900,13 @@ plain answer must render readably.
   renders the INNER content as markdown, never the fence as literal code —
   no raw `**`/`- ` characters, no right-edge clipping of prose.
 
+- AC3 (owner decision 2026-09-25): an artifact is a MARKDOWN DOCUMENT or a
+  REPORT. A note or a list is conversation: it stays in the reply bubble and
+  MUST NOT mint a card. A `show` payload carrying one is answered as text
+  (`card_suppressed_reason="not_an_artifact_document"`), judged by one shared
+  predicate that the `show_omitted_on_artifact` calibration signal also uses, so
+  a list answered in the bubble counts as compliance rather than as drift.
+
 ## REQ-23: Task cards only gate long-running, multi-tool work; never vanish on settle
 
 **Owner decision 2026-09-23.** A task card exists for work that is genuinely
@@ -917,6 +924,15 @@ that completes in a single turn.
 - AC3: THE SYSTEM SHALL keep the historical card readable after a thread
   reload — the settled card hydrates from its stored snapshot, it is not
   reconstructed from nothing.
+- AC4 (owner decision 2026-09-25): a task card SHALL be emitted only when the
+  plan holds THREE OR MORE steps that call a tool (speak/tts steps are not work),
+  and NEVER for an artifact ask, however many steps it takes - the artifact is
+  the visible result. Below the bound the turn still runs through DER, the tools
+  still fire and a real artifact still renders; card-lifecycle events are
+  withheld (WSEventBridge) and no card snapshot is written, so a short exchange
+  cannot come back as a card after a reload. Bound:
+  `backend/agent/artifact_policy.py`. Guards:
+  `backend/tests/contract/test_artifact_card_policy.py`.
 
 ## REQ-24: No fact search for a bounded ask ("compare this vs that", "write about X")
 
