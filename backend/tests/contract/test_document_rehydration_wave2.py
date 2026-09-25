@@ -160,8 +160,10 @@ def test_ct_doc_1_get_documents_carries_title_and_card_id():
     by_id = {d["document_id"]: d for d in docs}
     # REQ-22: the title label survives the reload.
     assert by_id["t1"]["title"] == "Weekly plan"
-    # ...and a body with no heading still labels itself, exactly as live does.
-    assert by_id["t2"]["title"] == "Document"
+    # ...and a body with no heading still labels itself from its first line,
+    # which is what the live render does too (owner, 2026-09-25: labels must be
+    # unique to the artifact — a generic "Document" tells the reader nothing).
+    assert by_id["t2"]["title"] == "no heading here"
     # REQ-10 AC1: identity survives too.
     assert by_id["t1"]["card_id"] == "card-abc"
     assert by_id["t2"]["card_id"] == "card-def"
@@ -171,16 +173,23 @@ def test_ct_doc_1_get_documents_carries_title_and_card_id():
 
 
 def test_card_title_rule_matches_the_live_render():
-    """The derived label uses the SAME rule as the live render (chat-view.tsx:
-    first markdown heading, else "Document"), so a card does not change its
-    label when the thread is reloaded."""
+    """The derived label uses the SAME rule as the live render (chat-view.tsx):
+    a heading of any level, else the first substantive line, else "Document".
+
+    UPDATED 2026-09-25, called out on purpose: this test previously pinned a
+    STRICT H1 rule (a '## Section' body was labelled "Document"). The owner then
+    said "All titles and labels should be unique to the artifact created", so
+    any heading level names the card and a heading-less body is named by its
+    first substantive line. The rule is now the same on both sides of a reload.
+    """
     from backend.agent.document_store import card_title_from_content
 
     assert card_title_from_content("# Title\nbody") == "Title"
     assert card_title_from_content("intro\n\n# Later title\nbody") == "Later title"
-    # Mirrors ^\s*#\s+(.+)$: exactly one '#', then whitespace.
-    assert card_title_from_content("## Not an H1\nbody") == "Document"
-    assert card_title_from_content("body with no heading") == "Document"
+    # Any level: a report uses H2s.
+    assert card_title_from_content("## Not an H1\nbody") == "Not an H1"
+    assert card_title_from_content("body with no heading") == "body with no heading"
+    # Only a body with nothing usable keeps the generic fallback.
     assert card_title_from_content("") == "Document"
     assert card_title_from_content(None) == "Document"
 
