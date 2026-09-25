@@ -15429,6 +15429,18 @@ Respond with a JSON object:
             # render steps) â€” the assertion fraction is meaningless; the verdict
             # rests on SUBSTANCE: a substantial result VERIFIEDs, short text
             # commits honestly as UNVERIFIED. Only an explicit error/stub FAILs.
+            # Live fix 2026-09-24 (conv-145): a real TOOL that reported
+            # SUCCESS is verified BY that success - the tool performed its
+            # action and said so. write_file returned
+            # {"success": true, "message": "Written to eyes_note4.md",
+            # "bytes": 103} - 71 chars - and the 80-char substance rule
+            # marked the step UNVERIFIED even though the file was on disk and
+            # the read-back succeeded. The contract then never covered its
+            # required fact (covered=0) and the turn was narrated as an
+            # incomplete task. The length rule still governs TOOL-LESS steps
+            # (REASON/synthesis), where substance really is the only signal.
+            if success and tool:
+                return "VERIFIED"
             return "VERIFIED" if len(_without_marker) >= 80 else "UNVERIFIED"
         if _frac >= 0.8:
             return "VERIFIED"
