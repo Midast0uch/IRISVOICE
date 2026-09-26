@@ -78,7 +78,9 @@ def test_fallback_ingest_event_without_screenshot_is_null():
 def test_capture_screenshot_blob_returns_bytes_when_vision_available():
     bridge = AgentToolBridge()
     vision_server = MagicMock()
-    vision_server.screenshot_to_bytes.return_value = b"PNG_BYTES"
+    # AC5.1/5.2: the code tries recent_image() first (the just-analyzed frame).
+    # Mock it to return the bytes directly — this is the buffer-reuse path.
+    vision_server.recent_image.return_value = b"PNG_BYTES"
     bridge._mcp_servers = {"vision": vision_server}
     assert bridge._capture_screenshot_blob() == b"PNG_BYTES"
 
