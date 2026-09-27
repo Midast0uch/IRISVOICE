@@ -78,14 +78,25 @@ from backend.agent.consumer_bar import (  # noqa: E402
 from scripts.calibrate_decision_threshold import _ece_brier  # noqa: E402
 
 
-def load_rows(db: str) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
+def load_rows(
+    db: str, backend_id: Optional[str] = None
+) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
     """Every labelled decision row, plus the skip counters.
 
     Skips are counted, never hidden: a row without a label cannot produce a
     precision number and must not be silently read as a success.
+
+    ``backend_id`` scopes the sample to ONE engine when given (2026-09-27). A
+    threshold belongs to the backend it was measured on (AC25.8), so a row
+    measured on a DIFFERENT backend cannot speak for this one. Measured: 457 of
+    522 tool_choice rows came from the retired LFM2-350M-Extract engine and held
+    the reported precision at 0.442 while the active engine had 65 rows of its
+    own. Rows from another backend are counted under ``other_backend`` - never
+    dropped in silence. None keeps every row (the pre-existing behaviour).
     """
     rows: List[Dict[str, Any]] = []
-    skipped = {"unreadable": 0, "no_confidence": 0, "no_label": 0}
+    skipped = {"unreadable": 0, "no_confidence": 0, "no_label": 0,
+               "other_backend": 0}
     c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     c.row_factory = sqlite3.Row
     try:
@@ -106,6 +117,10 @@ def load_rows(db: str) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
             conf = d.get("confidence")
             if cid is None or conf is None:
                 skipped["no_confidence"] += 1
+                continue
+            # One engine's rows, when a backend was named (see load_rows).
+            if backend_id and d.get("engine") and str(d["engine"]) != backend_id:
+                skipped["other_backend"] += 1
                 continue
             shadow = bool(d.get("shadow")) or str(d.get("route") or "") == "shadow"
             if shadow:
@@ -283,7 +298,9 @@ def _print_report(rep: Dict[str, Any]) -> None:
     sk = rep["skipped"]
     print(f"skipped rows: no_label={sk.get('no_label', 0)} "
           f"no_confidence={sk.get('no_confidence', 0)} "
-          f"unreadable={sk.get('unreadable', 0)}")
+          f"unreadable={sk.get('unreadable', 0)} "
+          f"other_backend={sk.get('other_backend', 0)} "
+          f"(measured on a different engine; this report scores the active one)")
     print(f"consumers measured: {rep['n_consumers']}")
     for cid, m in rep["consumers"].items():
         print(f"\n[{cid}] rows={m['rows']} above_threshold={m['rows_above_threshold']} "
@@ -311,13 +328,15 @@ def main() -> int:
     if not db.is_file():
         print(f"UNVERIFIED: db not found: {db}")
         return 4
+    thresholds, config = thresholds_by_consumer()
     try:
-        rows, skipped = load_rows(str(db))
+        # Scoped to the ACTIVE backend: rows from a retired engine cannot speak
+        # for the model actually deployed (AC25.8).
+        rows, skipped = load_rows(str(db), config.get("backend_id"))
     except sqlite3.Error as e:
         print(f"UNVERIFIED: cannot read ledger ({e})")
         return 4
 
-    thresholds, config = thresholds_by_consumer()
     measured = measure(rows, thresholds)
     rep = build_report(measured, skipped, config)
 
