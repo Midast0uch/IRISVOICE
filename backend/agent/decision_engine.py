@@ -639,6 +639,7 @@ class DecisionEngine:
         consumer_id: str,
         options: Sequence[str],
         frame: Dict[str, Any],
+        instruction: Optional[str] = None,
     ) -> Optional[DecisionScore]:
         """Score every option in one schema pass; softmax; return winner +
         distribution.
@@ -647,9 +648,23 @@ class DecisionEngine:
         scoring fails — callers treat None as "degrade to legacy path" (AC1.3,
         AC2.4). Never raises.
         """
+        # The DECLARED-SET GATE is gone (2026-09-27). It refused every consumer
+        # outside the frozen CONSUMERS tuple, which meant a new decision point
+        # could not be measured at all until someone hand-wrote a ConsumerSpec
+        # and edited that tuple - the ceremony the owner asked to remove. The
+        # application should evolve with use.
+        #
+        # This is safe because REGISTERING IS NOT ENFORCING: the backend
+        # auto-registers the consumer's criteria with the options the caller
+        # already passes, and an uncalibrated consumer has no threshold for the
+        # active backend, so it cannot steer anything. The bar still demands 100
+        # rows, precision >= 0.90 and ECE <= 0.05 before a flip.
         if consumer_id not in CONSUMERS:
-            logger.error("decision_engine: unknown consumer %r", consumer_id)
-            return None
+            logger.info(
+                "decision_engine: consumer=%r is outside the declared set - "
+                "measuring it in shadow (no threshold => no enforcement)",
+                consumer_id,
+            )
         opts = [o for o in options if isinstance(o, str) and o][
             : self._cfg.candidate_cap
         ]
@@ -668,7 +683,10 @@ class DecisionEngine:
             # AC30.5 (T42): the model work runs on the dedicated inference
             # thread, never on the caller's step thread.
             ds = self._run_inference(
-                lambda: backend.decide(consumer_id, opts, frame))
+                lambda: backend.decide(
+                    consumer_id, opts, frame, instruction=instruction
+                )
+            )
             scoring_ms = int((self._clock() - t0) * 1000)
             if ds is None:
                 return None

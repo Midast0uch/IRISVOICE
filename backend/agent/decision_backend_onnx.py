@@ -96,6 +96,62 @@ CONSUMER_TASKS: Dict[str, ConsumerSpec] = {
 }
 
 
+# The question used for a consumer that registers ITSELF (2026-09-27). A new
+# decision point that never declared its question can still be MEASURED this
+# way; the bar then decides whether it deserves a better question. Deliberately
+# generic: an honest vague question beats no measurement, and an uncalibrated
+# consumer can never enforce.
+AUTO_INSTRUCTION = (
+    "Choose the single best option for the goal below. The options are the "
+    "candidate answers to one question about the current step."
+)
+
+
+def ensure_consumer_spec(
+    consumer_id: str,
+    options: Sequence[str],
+    instruction: Optional[str] = None,
+) -> Optional[ConsumerSpec]:
+    """Return *consumer_id*'s criteria, REGISTERING them on first sight.
+
+    WHY (2026-09-27): a new decision point could not be measured at all until
+    someone hand-wrote a ``ConsumerSpec``, and ``DecisionEngine.decide`` refused
+    any id outside the frozen CONSUMERS tuple - so the application could not
+    evolve with use, and every new consumer needed manual creation. Measured
+    consequence: `recovery_strategy` scored nothing for its whole life, and
+    `narration` produced no row until a registration block was written by hand.
+
+    The caller already passes the option set on EVERY call, so the labels need no
+    declaration. ``instruction`` is taken from the caller when given (the best
+    question), else a generic one is used so the consumer is still measured.
+
+    SAFETY: REGISTERING IS NOT ENFORCING. An uncalibrated consumer has no
+    threshold for the active backend, so it cannot steer anything. The report
+    shows it fail-closed ("no threshold for the active backend") until a
+    threshold is calibrated for it, and the bar still requires 100 rows,
+    precision >= 0.90 and ECE <= 0.05 before a flip.
+    """
+    spec = CONSUMER_TASKS.get(consumer_id)
+    if spec is not None:
+        return spec
+    labels = tuple(o for o in options if isinstance(o, str) and o)
+    if not labels:
+        return None
+    logger.info(
+        "decision_backend_onnx: auto-registered consumer=%s labels=%d "
+        "(no declared criteria; measuring in shadow)",
+        consumer_id,
+        len(labels),
+    )
+    return register_consumer_spec(ConsumerSpec(
+        consumer_id=consumer_id,
+        task_name=consumer_id,
+        instruction=instruction or AUTO_INSTRUCTION,
+        # Menu-shaped: the caller's own options supply the labels.
+        labels=(),
+    ))
+
+
 def register_consumer_spec(spec: ConsumerSpec) -> ConsumerSpec:
     """Register (or replace) a consumer's criteria (REQ-19 AC19.3)."""
     CONSUMER_TASKS[spec.consumer_id] = spec
@@ -514,6 +570,7 @@ class GlinerOnnx:
         consumer_id: str,
         options: Sequence[str],
         frame: Dict[str, Any],
+        instruction: Optional[str] = None,
     ) -> Optional[DecisionScore]:
         """Score the option set via one exclusive schema Task; softmax over
         labels — the menu-wide softmax the 0.40 curve was derived at (D13).
@@ -528,6 +585,9 @@ class GlinerOnnx:
             # REQ-19 (T25): the Task comes from the consumer's OWN registered
             # criteria. No criteria → refuse (None) and let the caller degrade
             # rather than scoring under another consumer's head.
+            # Auto-register on first sight (2026-09-27): a NEW decision point
+            # measures itself from its first run. See ensure_consumer_spec.
+            ensure_consumer_spec(consumer_id, options, instruction)
             task = build_task(consumer_id, options)
             if task is None:
                 logger.info(
