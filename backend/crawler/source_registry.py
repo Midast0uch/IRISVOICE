@@ -188,11 +188,17 @@ class SourceRegistry:
         return [query.lower().strip()[:60]]
 
     def _call_llm(self, prompt: str) -> str:
-        """Synchronous LLM call via agent kernel (runs in executor pool)."""
+        """Synchronous LLM call via agent kernel (runs in executor pool).
+
+        `tools=False`: this is a CLASSIFICATION call, not an action. Attaching
+        function definitions made the model answer with a tool call that the
+        provider rejected (422), so the topic extraction failed on every crawl
+        even when the model was right about the topics.
+        """
         from backend.agent import get_agent_kernel  # lazy import
 
         kernel = get_agent_kernel("source_registry")
-        return kernel._respond_direct(text=prompt, context={})  # noqa: SLF001
+        return kernel._respond_direct(text=prompt, context={}, tools=False)  # noqa: SLF001
 
     # ── Store helpers ───────────────────────────────────────────────────
 

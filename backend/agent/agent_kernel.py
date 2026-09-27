@@ -3168,6 +3168,7 @@ class AgentKernel:
         context: List[Dict],
         chunk_callback: Optional[Callable[[str], None]] = None,
         reasoning_callback: Optional[Callable[[str], None]] = None,
+        tools: Optional[bool] = None,
     ) -> str:
         """
         Respond directly to the user without planning or tool execution.
@@ -3211,7 +3212,15 @@ class AgentKernel:
         # crawler_query; when OFF, those are omitted. The agent decides when to
         # use them via the ReAct loop below. See plan Issue E.
         import json as _json
-        _tools = self._get_openai_tools(text)
+        # REQ-30 edge (2026-09-26): `tools=False` is the TEXT path. A caller
+        # that wants a classification, not an action, must not ship a dozen
+        # function definitions with its prompt: the model answers a pure
+        # "sort this into topics" question with a tool call, Cohere rejects it
+        # (422 HALLUCINATED_ALL_TOOL_CALLS / INVALID_TOOL_GENERATION) and the
+        # caller pays a wasted request every time. Measured live in
+        # SourceRegistry._extract_topics. None keeps the historical behaviour,
+        # so no existing caller changes.
+        _tools = self._get_openai_tools(text) if tools is not False else []
 
         # Local dispatch wrapper â€” routes to the correct backend provider and
         # returns (response_text, thinking_text, tool_calls).
