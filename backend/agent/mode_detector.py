@@ -170,7 +170,18 @@ class ModeDetector:
                 # reference and could never be scored.
                 "chosen": ds.chosen,
                 "brain_choice": keyword_mode.value,
-                "confidence": round(dist[keyword_mode.value], 4),
+                # ECE pairs a row's confidence with THAT ROW'S `chosen`, and this
+                # row's `chosen` is the ENGINE's pick. Reporting the probability
+                # of the KEYWORD mode here was incoherent: the engine is often
+                # right while giving its own pick only a modest probability, so
+                # every correct row read as under-confident and the calibration
+                # error came out at 0.268 against a 0.05 bar (measured
+                # 2026-09-27, 102 rows).
+                "confidence": round(dist.get(ds.chosen, dist[keyword_mode.value]), 4),
+                # The LIVE branch's number is unchanged: it reports the engine's
+                # probability for the mode that actually runs, as its docstring
+                # requires. Two callers, two coherent meanings.
+                "keyword_confidence": round(dist[keyword_mode.value], 4),
                 "engine_latency_ms": ds.engine_latency_ms,
                 "shadow": True,
             }
@@ -222,7 +233,13 @@ class ModeDetector:
             _shadow = self._engine_mode_shadow(task_lower, mode)
             if _shadow is not None:
                 self.last_mode_shadow = _shadow
-                confidence = _shadow["confidence"]
+                # The live confidence stays the engine's probability for the mode
+                # that RUNS (the keyword mode). The row's own `confidence` is now
+                # the engine's probability for the engine's PICK, because that is
+                # what its `chosen` is and what ECE must be computed against.
+                confidence = _shadow.get(
+                    "keyword_confidence", _shadow["confidence"]
+                )
 
             # 3. Complexity detection
             complexity = self._detect_complexity(task_lower)
