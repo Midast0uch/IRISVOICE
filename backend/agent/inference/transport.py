@@ -1319,6 +1319,24 @@ class InProcessTransport:
                 mgr = router.get_reasoning_model()
             except Exception:
                 mgr = None
+            # LAST RESORT (2026-09-27): the PROCESS-WIDE local model manager.
+            # A router can be built before the manager is attached to it (or
+            # rebuilt afterwards), and the old behaviour then raised
+            # "No local model loaded for in-process inference" on every call.
+            # Measured cost: the planner timed out, retried, fell back to HTTP
+            # and only then answered - roughly 1.8 minutes per message for a
+            # 2.6B model that is fully offloaded to the GPU and answers in well
+            # under a second. Resolving the singleton here removes the failure
+            # mode instead of depending on attach ordering.
+            if mgr is None:
+                try:
+                    from backend.agent.local_model_manager import (
+                        get_local_model_manager,
+                    )
+
+                    mgr = get_local_model_manager()
+                except Exception:  # noqa: BLE001 — stay None, caller degrades
+                    mgr = None
 
         if mgr is None:
             raise RuntimeError("No local model loaded for in-process inference")
