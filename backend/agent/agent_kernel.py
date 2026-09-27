@@ -1589,6 +1589,23 @@ class AgentKernel:
         ("local", "gpt-oss", 131_072),
         ("local", "nemotron-3-nano", 262_144),
         ("local", "glm-5.1", 202_752),
+        # ADDED 2026-09-27. Value read from the running Ollama server's own
+        # /api/show on 2026-09-27: gemma4.context_length = 262144 -- same method
+        # and same rule as the rows above (the server is the authority, not a
+        # model card or memory).
+        #
+        # What it cost while missing: this is the model the reasoning role is
+        # bound to, and no "local" row matched it, so both roles logged
+        # "WARN source=default: no context window known for provider=local
+        # model=gemma4:31b-cloud -- falling back to 8192" and a 262144-token
+        # window was budgeted as 8192, a 32x under-provision. Under-sizing does
+        # not truncate, but it ends a long task early with "Token budget
+        # exhausted" -- the same failure the gpt-oss note above describes at the
+        # same ratio, which is the evidence that this row is worth having.
+        #
+        # Row order: "gemma2" (above) and "gemma4" do not collide -- first match
+        # wins on a substring test, and neither string contains the other.
+        ("local", "gemma4", 262_144),
     ]
 
     # Known vision-capable API models. Keyed (provider_id, model_substring),

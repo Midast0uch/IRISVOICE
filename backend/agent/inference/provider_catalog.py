@@ -207,12 +207,20 @@ PROVIDER_MODEL_CATALOG: Dict[str, List[Dict[str, str]]] = {
         # VERIFIED against ollama.com 2026-08-16: every id below pulls cleanly
         # (`ollama pull` succeeds). The previous list was ~80% fabricated —
         # nemotron-3-super-cloud, nemotron-3-ultra-cloud, glm-5.2-cloud,
-        # kimi-k3-cloud, kimi-k2.6-cloud, kimi-k2.7-code-cloud, gpt-oss:20b-cloud,
-        # minimax-*, gemma4:31b-cloud, qwen3.5:397b-cloud, mistral-large-3:675b-cloud
+        # kimi-k3-cloud, kimi-k2.6-cloud, kimi-k2.7-code-cloud,
+        # minimax-*, qwen3.5:397b-cloud, mistral-large-3:675b-cloud
         # and all deepseek-v4-* variants return "pull model manifest: file does
         # not exist" and 404 at inference. IDs use the ollama `:` tag format
         # (glm-5.1:cloud, NOT glm-5.1-cloud).
+        #
+        # CORRECTED 2026-09-27: gemma4:31b-cloud was in the fabricated list above
+        # and is NOT fabricated — it is present on this machine (`ollama list`:
+        # id ef09f235533c) and serves `/api/show` normally. The 2026-08-16 check
+        # was a `pull` probe, which fails for a model already resident and is not
+        # evidence about a model that exists. Measured live: it binds as a role
+        # model and answers. Moved out of the list and into the catalog below.
         {"id": "gpt-oss:120b-cloud", "name": "GPT-OSS (120B, cloud)"},
+        {"id": "gemma4:31b-cloud", "name": "Gemma 4 (31B, cloud)"},
         {"id": "nemotron-3-nano:30b-cloud", "name": "Nemotron 3 Nano (30B, cloud)"},
         {"id": "glm-5.1:cloud", "name": "GLM 5.1 (cloud)"},
         {"id": "kimi-k2.5:cloud", "name": "Kimi K2.5 (cloud)"},

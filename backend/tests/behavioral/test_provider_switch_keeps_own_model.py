@@ -517,14 +517,22 @@ class TestKernelCatalogSanitizer:
         rejected, and the role then fell back to the PREVIOUS instance model, so
         a Brain/Tool split across two models could not be set at all.
 
-        The model below is deliberately NOT in the ollama catalog section of
-        provider_catalog.py; assert that first, or this test proves nothing.
+        INPUT CHANGED 2026-09-27, called out deliberately: this test used
+        `gemma4:31b-cloud`, and that id is now a catalog entry (the user asked
+        for it to be listed). A model that IS listed cannot exercise the
+        unlisted-model path, so the case would have gone vacuous. It drives
+        `llama3.2:latest` instead -- a real model on this machine (`ollama
+        list`, 2.0 GB) whose catalog neighbours are the different ids
+        `llama3.2` and `llama3.2:1b`. Same load, same assertion, same intent:
+        a model the provider has and the catalog does not must be accepted.
+        The `assert requested not in listed` below fails loudly if a future
+        catalog edit ever lists this id, rather than letting the test rot.
         """
         from backend.agent.inference.provider_catalog import (
             get_catalog_for_provider,
         )
 
-        requested = "gemma4:31b-cloud"
+        requested = "llama3.2:latest"
         listed = {m["id"] for m in get_catalog_for_provider("ollama")}
         assert requested not in listed, (
             "the model is now in the catalog, so this test no longer covers the "
