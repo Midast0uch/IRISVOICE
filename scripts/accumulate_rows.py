@@ -160,6 +160,18 @@ async def send_messages(
                     if msg_type in ("task:done", "task:fail", "chat_message"):
                         logger.info("[%d/%d] Received: %s", i + 1, len(messages_to_send), msg_type)
                         break
+                    elif msg_type == "ping":
+                        # ANSWER THE HEARTBEAT (2026-09-27). The server pings
+                        # every client and drops it after 30 s without a pong:
+                        #   [WARNING] ws_manager: Client z1 did not respond to
+                        #   ping within 30s, disconnecting
+                        # This script never replied, so the client was cut off
+                        # mid-turn, waited out its own 120 s recv timeout, and
+                        # moved on. Measured cost: SIX messages took 4-6 minutes
+                        # while the model answered each one in ~20 s - the app
+                        # was idle for most of the wall clock. The gateway
+                        # handles a client "pong" at iris_gateway.py:905.
+                        await ws.send(json.dumps({"type": "pong", "payload": {}}))
                     elif msg_type == "task:progress":
                         pass  # Ignore progress events
                     else:

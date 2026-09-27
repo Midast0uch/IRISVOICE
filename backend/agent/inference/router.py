@@ -349,6 +349,78 @@ class InferenceRouter:
             chars += len(str(tools))
         return int(chars / 3.5) + 1
 
+    @staticmethod
+    def _local_http_endpoint() -> Optional[str]:
+        """The local model server's endpoint when it serves over HTTP, else None.
+
+        `LocalModelManager` serves a loaded GGUF two ways. An IN-PROCESS load
+        (llama-cpp-python) exposes `get_inprocess_client()`; a SERVER load spawns
+        llama-server on `LocalModelManager.PORT` (8082) and leaves that adapter
+        None. The router must ASK which one it is rather than assume - assuming
+        wrong cost a failed attempt plus an HTTP fallback on every model call.
+        """
+        try:
+            from backend.agent.local_model_manager import (
+                LocalModelManager,
+                get_local_model_manager,
+            )
+
+            mgr = get_local_model_manager()
+            if mgr is None or not mgr.is_loaded():
+                return None
+            if mgr.get_inprocess_client() is not None:
+                return None  # in-process works; do not add an HTTP hop
+            return f"http://127.0.0.1:{LocalModelManager.PORT}"
+        except Exception as exc:  # noqa: BLE001 — fall back to the existing path
+            logger.debug("[InferenceRouter] local endpoint probe failed: %r", exc)
+            return None
+
+    @staticmethod
+    def _is_local_provider_instance(inst: Any) -> bool:
+        """True when this provider serves a model ON THIS MACHINE.
+
+        Covers the local bindings by kind and by id, and an Ollama provider whose
+        model is not a `-cloud` one. A `-cloud` model runs on ollama.com and IS
+        rate limited, so it keeps its phase gate.
+        """
+        try:
+            kind = getattr(inst, "kind", None)
+            if kind in (ProviderKind.INPROCESS, ProviderKind.LOCAL_OPENAI):
+                return True
+            _id = str(getattr(inst, "id", "") or "")
+            if _id == "iris_local" or _id.startswith("local:"):
+                return True
+            if kind is ProviderKind.OLLAMA:
+                return not str(getattr(inst, "model", "") or "").endswith(
+                    "-cloud"
+                )
+        except Exception:  # noqa: BLE001 — an unknown provider keeps its gate
+            pass
+        return False
+
+    @staticmethod
+    def _accepts_num_ctx(transport: Any) -> bool:
+        """True when this transport's ``generate()`` takes ``num_ctx``.
+
+        Not every transport lives in ``transport.py``: the vision path and any
+        future implementation only have to satisfy the call shape they need. A
+        blanket ``num_ctx=`` would raise TypeError inside a live turn, so the
+        keyword goes only to a signature that advertises it, or that accepts
+        ``**kwargs``. A transport that does not take it cannot honour a window
+        anyway — the router's prompt cap still applies to it.
+        """
+        import inspect
+
+        try:
+            params = inspect.signature(transport.generate).parameters
+        except (TypeError, ValueError):
+            return False
+        if "num_ctx" in params:
+            return True
+        return any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+        )
+
     @classmethod
     def _cap_messages_to_window(
         cls,
@@ -948,6 +1020,33 @@ class InferenceRouter:
         key = _transport_cache_key(kind, inst)
 
         if kind == ProviderKind.INPROCESS:
+            # A model loaded by SPAWNING llama-server has NO in-process handle:
+            # `get_inprocess_client()` returns None by design, because the
+            # adapter routes to a llama-cpp-python object that a server load
+            # never creates. Building an InProcessTransport for it made every
+            # call raise "No local model loaded for in-process inference", after
+            # which the planner retried and fell back to HTTP. Measured
+            # 2026-09-27: ~30-60 s per turn for a 2.6B model that is fully
+            # GPU-offloaded and answers in well under a second.
+            # Serve such a provider over its OWN HTTP endpoint instead; the
+            # in-process path stays for a genuinely in-process load.
+            _local_endpoint = self._local_http_endpoint()
+            if _local_endpoint:
+                _http_key = ("local-http", _local_endpoint)
+                _cached_http = self._transports.get(_http_key)
+                if _cached_http is None:
+                    _cached_http = OpenAICompatTransport(
+                        endpoint=_local_endpoint, quota_id=quota_key(inst)
+                    )
+                    self._transports[_http_key] = _cached_http
+                    logger.info(
+                        "[InferenceRouter] provider=%s serves a SERVER-loaded "
+                        "local model - using %s/v1 instead of the in-process "
+                        "transport",
+                        inst.id,
+                        _local_endpoint,
+                    )
+                return _cached_http
             # In-process transports are not cached; build fresh each call
             # because the model manager may change between calls.
             return InProcessTransport(
@@ -1078,10 +1177,24 @@ class InferenceRouter:
         # Phase gate: block until this oscillator is past its firing point
         # (T3.6 / REQ-13).  Fail-open: returns 0.0 if disabled or errored.
         # F9+F15: pass oscillator_id and quota_id explicitly.
-        acquire(
-            oscillator_id=f"{inst.id}:{call_class().value}",
-            quota_id=getattr(transport, "_quota_id", None),
-        )
+        #
+        # SKIPPED ENTIRELY FOR A LOCAL MODEL (owner instruction 2026-09-27). The
+        # gate paces calls against a provider's rate limit, and a model on this
+        # machine has none - so for a local provider it can only ADD delay.
+        # Measured live: it logged
+        #   GATE_DECISION osc=local:LFM2.5-2.6B-QAD-Q4_0:user_turn
+        #                 quota=http://localhost:11434|nocred wait=...
+        # on the local planner path.
+        if self._is_local_provider_instance(inst):
+            logger.debug(
+                "[InferenceRouter] phase gate skipped for local provider %s",
+                inst.id,
+            )
+        else:
+            acquire(
+                oscillator_id=f"{inst.id}:{call_class().value}",
+                quota_id=getattr(transport, "_quota_id", None),
+            )
 
         # ── Context window (2026-09-27) ─────────────────────────────────
         # Resolve the window for THIS role, then do both halves of the job:
@@ -1100,16 +1213,21 @@ class InferenceRouter:
                 messages, normalized_tools, _window, max_tokens
             )
 
+        _gen_kwargs: Dict[str, Any] = {
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "chunk_callback": chunk_callback,
+            "reasoning_callback": reasoning_callback,
+            "timeout_s": timeout_s,
+        }
+        if _window is not None and self._accepts_num_ctx(transport):
+            _gen_kwargs["num_ctx"] = _window
+
         result = transport.generate(
             effective_model,
             messages,
             normalized_tools,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            chunk_callback=chunk_callback,
-            reasoning_callback=reasoning_callback,
-            timeout_s=timeout_s,
-            num_ctx=_window,
+            **_gen_kwargs,
         )
 
         # Remap sanitized tool names back to the originals (see above) so
