@@ -153,14 +153,18 @@ outcome. Pinned by `backend/tests/unit/test_tool_decision_threshold_resolution.p
 `CONSUMERS` in `decision_engine.py` is the enumeration; the enforcement default
 is `tool_choice` only (`IRIS_DECISION_ENFORCE`).
 
-| Group | Consumers | Status 2026-09-26 |
+| Group | Consumers | Status 2026-09-27 |
 |---|---|---|
-| Core | `tool_choice`, `presentation`, `narration` | live; enforcement per the measured bar |
-| Recovery | `recovery_strategy`, `retry_same` | shadow |
-| Reviewer | `review_verdict` | shadow (scored live) |
-| Monitor (Noul) | `sufficient`, `done`, `on_track` | shadow |
-| Routing | `mode`, `web_intent` | shadow |
-| Surface (REQ-29) | `has_gaps`, `use_thinking`, `escalate_incomplete`, `needs_action` | shadow (scored live) |
+| Core | `tool_choice`, `presentation`, `narration` | `tool_choice` 65 rows on the ACTIVE engine, precision 1.0 (§16); `presentation` 123 rows, all written before the reference fix; `narration` newly wired (§14.3) |
+| Recovery | `recovery_strategy`, `retry_same` | `recovery_strategy` scoring since its criteria were registered; `retry_same` has NO row of its own — it rides `recovery_strategy` as `retry_same_offered` |
+| Reviewer | `review_verdict` | scoring; fires per step, so it needs completed work |
+| Monitor (Noul) | `sufficient`, `done`, `on_track` | NO ROWS YET — they fire on completion, and the traffic's web steps were failing (§15) |
+| Routing | `mode`, `web_intent` | `mode` past 100 rows with precision 1.0; `web_intent` scoring since its row path was wired |
+| Surface (REQ-29) | `has_gaps`, `use_thinking`, `escalate_incomplete`, `needs_action` | `escalate_incomplete` scoring; the other three have no rows yet (they need a completed step or a reasoning-style prompt) |
+
+**`CONSUMERS` is DOCUMENTATION, not a gate** (2026-09-27). Reading it as "the
+only consumers that can exist" is what made this list look like a wall. A new
+decision point now measures itself without being added here — see §17.2.
 
 Two shapes are used: a **Choice** (an option menu) and a **Noul** (a single
 calibrated probability of truth, for the bool monitors). A 2-way softmax is a
@@ -329,19 +333,32 @@ python scripts/accumulate_rows.py --count 5 --delay 30 --web
 Enforcement flags: `IRIS_DECISION_ENFORCE` (comma list; default `tool_choice`).
 An empty value means full shadow — record but never act.
 
-## 11. Open items (honest, 2026-09-26)
+## 11. Open items (honest, 2026-09-27)
 
 1. **ORT thread tuning** — CLOSED 2026-09-26. It was already tuned in an earlier
    session, and this session RE-MEASURED it on this box: intra=4 → p50 153.9 ms
    is the optimum, intra=8 regresses to 186.6/273.2 ms. The shipped default
    stands; `scripts/bench_oracle_threads.py` re-derives it per host (§8.1).
-2. **Row volume.** The bar needs >= 100 rows per consumer. The pipeline now
-   works, so this is about running real tasks, not about code.
+2. **Row volume.** 8 of the 15 consumers have rows as of 2026-09-27. The seven
+   without are NOT broken: they fire on COMPLETED work, and the traffic's web
+   steps fail on this box, so no step ever reached a completion check. The
+   traffic list now leads with prompts that use tools which succeed locally.
+   See §15 before investigating any zero-row consumer.
 3. **`test_unparseable_json`** was reported as a pre-existing stale red by an
    earlier session. NOT re-verified in this session — do not treat it as
    confirmed either way.
-4. **One owner decision outstanding:** batched rows could still be collected as
-   shadow-only evidence someday, but nothing should enforce on them.
+4. **Batched rows** could still be collected as shadow-only evidence someday, but
+   nothing should enforce on them.
+5. **`retry_same`** is still listed as a consumer but has no row of its own: its
+   data rides `recovery_strategy` as `retry_same_offered`. The owner agreed it
+   should be treated as a FIELD of that consumer. Removing it from `CONSUMERS`
+   means updating the pinned enumerations and their tests in ONE change — not
+   done yet, deliberately, so the declared set is never left half-changed.
+6. **`mode`'s ECE is converging, not fixed.** The reported number is dominated by
+   rows written before the confidence-pairing fix (`175a0774`), so it falls as
+   fresh rows arrive: 0.268 → 0.263 → 0.258 so far. Do not read the current value
+   as the fix having failed.
+7. **`narration`** is wired with a three-answer menu and needs volume (§14.3).
 
 ## 12. Evidence index (verified this session)
 
@@ -493,7 +510,138 @@ the report shows precision 0 as though it were a measurement.
   problem, not a plumbing one.
 
 
-## 15. Superseded material
+## 15. The planner is the gate everything depends on
+
+Read this BEFORE concluding that a consumer is broken.
+
+Measured 2026-09-27: eight of the fifteen consumers had rows; seven had none.
+Every one of the seven looked broken and none of them was. The cause was one
+layer upstream: **`_plan_task` could not reach a model**, so no plan was ever
+produced, so the DER branch was never taken, so the step consumers never ran.
+`[DER]` stayed 0 across more than forty turns while the consumers sat there
+correct and idle.
+
+The log told the story in four lines:
+
+```
+[AgentKernel._plan_task] router planning failed: No local model loaded for in-process inference
+[AgentKernel._plan_task] router planning failed: 'LocalModelManager' object has no attribute 'generate'
+[AgentKernel.infer] inference failed: 'LocalModelManager' object has no attribute 'generate'
+openai._base_client: Raising connection error
+[AgentKernel._plan_task] planner returned no valid plan for: <every prompt>
+```
+
+Five separate defects, each fixed (commits `074da0b9`, `a113ac3c`):
+
+| Defect | Consequence | Fix |
+|---|---|---|
+| The OpenAI client for a local provider was built for `http://localhost:1234` (the LM Studio default) | the app's own server for the loaded GGUF, on `127.0.0.1:8082`, was never called | a local provider now points at `LocalModelManager.PORT` (§15.1) |
+| `LocalModelManager` had no `generate()` | three call sites raised `AttributeError` and degraded | `generate()` wraps the manager's own adapter |
+| `InProcessTransport` called `mgr.generate()` | same error down the transport path | it prefers the manager's `get_inprocess_client()` |
+| The kernel's own router never received the local manager | a kernel created AFTER a load had `_inprocess_mgr = None` | the kernel attaches it at construction |
+| `recovery_strategy` never registered criteria | the engine logged `no criteria ... refusing to score` | criteria registered on first use (now automatic, §17.2) |
+
+**The rule to carry forward:** a consumer with zero rows has four candidate
+causes, and they are in this order — the decision point never ran, the engine
+refused it (no criteria), the row had no reference (§14), or the traffic never
+produced the trigger. Check the log for the consumer's own name before reading
+its code.
+
+### 15.1 Where a local model actually lives
+
+| Nothing | Value |
+|---|---|
+| The app's own OpenAI-compatible server | `http://127.0.0.1:{LocalModelManager.PORT}/v1` — 8082 by default |
+| The configured LM Studio endpoint | `http://localhost:1234` — served by LM Studio, NOT by this app |
+
+Pointing a local provider at the second one produces `Connection error` and a
+planner with no plan. `AgentKernel._is_local_provider()` accepts both the legacy
+literal `iris_local` and the modern `local:<model>` naming; a hard-coded literal
+there is what silently routed every locally-loaded model to the wrong port.
+
+## 16. Score one engine at a time
+
+A threshold belongs to the backend it was measured on (AC25.8), so a row
+measured on a different engine cannot speak for the model actually deployed.
+The report now scopes its sample to the ACTIVE backend and COUNTS the rest as
+`other_backend` — never dropped in silence.
+
+Measured effect of that one change:
+
+| | before | after |
+|---|---|---|
+| `tool_choice` rows | 522 | 65 |
+| `tool_choice` precision | 0.442 | **1.0** |
+
+457 of those 522 rows came from the retired `LFM2-350M-Extract` engine. The
+0.442 was the retired model's report card, presented as the current model's, and
+it hid a deployed engine that was right every time. This is the same class of
+error as scoring an old row FORMAT (§14): mixing two populations in one number
+produces a figure that describes neither.
+
+**Before quoting any precision, check `engines=[...]` in the report line.**
+
+## 17. How a consumer gets enforced
+
+Three gates, all required. Gates 1 and 2 are the protection; gate 3 is the switch.
+
+| Gate | What it checks | Enforced by |
+|---|---|---|
+| 1. The measured bar | rows >= 100 **AND** precision >= 0.90 **AND** ECE <= 0.05 — never a partial flip | `consumer_bar.derive_status`, recorded in `benchmarks/consumer_bar_record.json` |
+| 2. A threshold for the ACTIVE engine | keyed per backend (AC25.8). Missing → `no threshold for the active backend (fail-closed)`. A configuration that differs from the calibrated one turns enforcement OFF for **every** consumer | `EngineConfig.threshold_for`, plus `enforced_consumers()` |
+| 3. The switch | the consumer is in the bar record as `enforced`, **measured on the current engine**, or named in `IRIS_DECISION_ENFORCE` | `enforced_consumers()` |
+
+Gate 3 became **record-driven** on 2026-09-27 (owner decision, option B): passing
+the bar turns the consumer on with no config edit. The record must name the engine
+it was measured on, so a flip earned on a retired model is refused —
+and logged, naming both engines. The env list remains as a manual override for the
+declared set.
+
+Enforcement is per consumer and reversible, and every failure path is closed: no
+record, an unreadable record, an empty record, and an unresolvable engine identity
+all enforce **nothing**.
+
+### 17.1 Reading a status line
+
+```
+[mode] rows=104 above_threshold=24 shadow_rows=104
+  threshold=0.4 precision=1.0 ece=0.263 brier=0.138
+  status=shadow  gap: ECE 0.263 > 0.05
+```
+
+`rows` is every labelled row; `above_threshold` is the subset above the calibrated
+threshold, and precision is computed on THAT subset. The `gap` names the single
+clause that failed — the flip needs the gap to read `(flip allowed)`.
+
+Before quoting a precision, check `engines=[...]`: a line that averages several
+engines describes none of them (§16).
+
+### 17.2 Adding a consumer
+
+A new decision point **measures itself** — no entry in `CONSUMERS`, no separate
+registration block:
+
+```python
+ds = eng.decide("my_consumer", options, frame, instruction="...the question...")
+```
+
+`ensure_consumer_spec` registers the criteria on first sight, taking the labels
+from the `options` you already pass. The `instruction` is the question the model
+scores against; omitted, a generic one is used so the consumer is still measured
+(and the bar will say honestly whether the question was good enough).
+
+Add one only when **all four** hold:
+
+1. a repeated decision is currently made by a keyword list, a timer, or a Brain call;
+2. it is a choice among a few named options (or a yes/no);
+3. what actually happened is observable, so the row has a reference (§14);
+4. it happens often enough to collect 100 rows, and being wrong is cheap or gated.
+
+**Two costs to weigh before adding.** A shadow consumer spends one scoring call on
+every occurrence, and one that never reaches the bar spends it forever.
+`tier0_classify` is the recorded **non-fit** for exactly this reason (§9).
+
+## 18. Superseded material
 
 **Superseded material.** The previous revision of this document described the
 LFM2-350M-Extract build (`llama-cpp-python`, `softmax_tau=0.5` sharpening, an
