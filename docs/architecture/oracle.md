@@ -428,7 +428,72 @@ tensor 'output.weight' has invalid ggml type 143. should be in [0, 43)
 A standard quant (Q4_K_M, Q3_K_M, and so on) loads fine. See
 `.install_prismml.bat` and the rebuild note in the graph for the ternary path.
 
-## 14. Superseded material
+## 14. The parity reference — why a row that looks complete is not scoreable
+
+Found and fixed 2026-09-27. Read this before adding a consumer.
+
+Every shadow row must carry TWO halves: the engine's answer (`chosen`) and the
+Brain's ACTUAL answer. Without the second half the row has no label, and the
+enforcement report counts it as **skipped** rather than scoring it. A row that
+looks complete but carries no reference is worse than a missing row: it looks
+like evidence.
+
+Measured on the live ledger before the fix:
+
+| consumer | rows | chosen | brain_bool | brain_choice | scorable |
+|---|---|---|---|---|---|
+| tool_choice | 459 | 459 | 0 | 0 | dispatched (judged on outcome) |
+| presentation | 123 | 123 | 0 | 0 | **no** |
+| escalate_incomplete | 4 | 4 | 4 | 0 | yes |
+| mode | 2 | 0 | 0 | 0 | **no** |
+| probe | 1 | 1 | 0 | 0 | n/a |
+
+Five consumer ids had ever written a row. Only one was scoreable.
+
+### 14.1 Two shapes, and why the name matters
+
+| Reference | Compared as | Consumers |
+|---|---|---|
+| `brain_bool` | bool against bool | `sufficient`, `done`, `on_track`, `has_gaps`, `use_thinking`, `escalate_incomplete`, `needs_action` |
+| `brain_choice` | name against name | `mode`, `review_verdict`, `presentation`, `web_intent`, `recovery_strategy` |
+
+A LABEL consumer answers with a name. Collapsing that name to a bool to reuse
+`brain_bool` would manufacture agreement and inflate precision, so the name is
+recorded and compared as a name.
+
+### 14.2 The whitelist is the trap
+
+`tool_bridge._DECISION_META_KEYS` is a whitelist: `record_decision` builds the
+ledger's decision block from it, so **a key that is not on the list is dropped in
+transit**. Four consumers were writing their reference under a key that was not
+on it, and each row arrived with no reference:
+
+| consumer | was writing | now writes |
+|---|---|---|
+| `mode` | `engine_mode` / `keyword_mode` | `chosen` / `brain_choice` |
+| `review_verdict` | `brain_verdict` | `brain_choice` (kept `brain_verdict` for callers) |
+| `recovery_strategy` | `counter_choice` | `brain_choice` (kept `counter_choice`) |
+| `presentation` | nothing | `brain_choice` from the live surface |
+
+**Rule for the next consumer:** write `chosen` plus `brain_bool` or
+`brain_choice`, and confirm the reference key is on `_DECISION_META_KEYS`. If the
+engine and the live path speak different vocabularies, TRANSLATE before recording
+(`presentation` maps `plain` to `plain_text`), or the comparison never matches and
+the report shows precision 0 as though it were a measurement.
+
+### 14.3 What is still missing
+
+- **`narration`** is declared as a consumer and has no scoring site: nothing in
+  the backend calls the engine for it, so it can never produce a row. Wiring it
+  needs a decision about what it gates.
+- **`retry_same`** rows land under `recovery_strategy` (with `retry_same_offered`
+  as a field). It has no separate row path of its own.
+- **The bar itself** needs live traffic. The wiring is not the limit: `tool_choice`
+  has 459 rows and precision 0.405 against a 0.90 bar, which is a decision-quality
+  problem, not a plumbing one.
+
+
+## 15. Superseded material
 
 **Superseded material.** The previous revision of this document described the
 LFM2-350M-Extract build (`llama-cpp-python`, `softmax_tau=0.5` sharpening, an
