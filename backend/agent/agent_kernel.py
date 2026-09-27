@@ -837,14 +837,20 @@ class AgentKernel:
         # structurally unreachable. The sink is the SAME single-writer ledger
         # the dispatched decisions use, so one reader sees every consumer.
         try:
+            from backend.agent import explorer as _ex_rows
             from backend.agent import monitor_shadow as _ms_rows
             from backend.agent import surface_shadow as _ss_rows
 
             _shadow_sink = self._shadow_row_sink
             _ms_rows.set_row_sink(_shadow_sink)
             _ss_rows.set_row_sink(_shadow_sink)
+            # web_intent (2026-09-27): this consumer had criteria and a live call
+            # site but no row path at all, so it could never be scored however
+            # often it ran. Same single-writer sink as the other two.
+            _ex_rows.set_row_sink(_shadow_sink)
             logger.info(
-                "[AgentKernel] shadow row sink installed (monitor + surface)"
+                "[AgentKernel] shadow row sink installed "
+                "(monitor + surface + web_intent)"
             )
         except Exception as _sink_err:  # noqa: BLE001 — advisory
             logger.warning(
