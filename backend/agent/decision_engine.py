@@ -1,16 +1,38 @@
-"""Calibrated small-model decision engine (Jev/RLCD pattern reproduction).
+"""Calibrated small-model decision engine — ORACLE (Jev/RLCD pattern reproduction).
 
-Spec: specs/tool-decision-engine (REQ-1, REQ-2, REQ-4, REQ-7, REQ-13).
+Spec: specs/tool-decision-engine-improvements (REQ-21, REQ-22, REQ-25, REQ-26).
 
-One resident LFM-sized model, loaded in-process via llama_cpp on CPU. It never
-writes to memory, never emits events, never touches the 8082 server or the VRAM
-ledger. Its only job: score a caller-provided option set against a caller-provided
-feature frame and return a calibrated probability distribution. Consumers:
-`tool_choice` (Wave 2), `presentation` and `narration` (Wave 4).
+NAME vs KEY (read this before renaming anything). ``Oracle`` is the engine's
+DISPLAY name — what a human reads in logs, telemetry and the UI. The technical
+keys stay exactly as they are, because they carry meaning that a rename would
+destroy:
+  * the config block id ``decision_driver`` (agent_config.yaml) is what
+    ``load_engine_config`` looks up; and
+  * the backend identity ``gliner25-decide-onnx-int8`` KEYS THE CALIBRATED
+    THRESHOLD (``backend_thresholds``, REQ-22 AC22.1 / REQ-25 AC25.8). Renaming
+    that key marks every measured curve unaddressable and enforcement
+    fail-closes — a rename there is a configuration migration, not a label
+    change.
 
-Two primitives, both return DecisionScore or None (None = degrade to legacy path):
-  - decide(consumer_id, options, frame)      — Jev "Choice" (parallel scoring)
+One resident decision backend, loaded in-process: GLiNER2.5-Decide via its
+torch-free ONNX export (REQ-21/D12 — replaced LFM2-350M-Extract; measured
+71.7% @119 ms vs 60.0% @1172 ms, with all errors <= 0.352 confidence). It
+never writes to memory, never emits events, never touches the 8082 server or
+the VRAM ledger. Its only job: score a caller-provided option set against a
+caller-provided feature frame and return a probability distribution.
+Consumers: `tool_choice` (Wave 2), `presentation` and `narration` (Wave 4).
+
+Two primitives, both return DecisionScore/ArgsResult or None (None = degrade
+to legacy path):
+  - decide(consumer_id, options, frame)      — Jev "Choice" (schema scoring)
   - generate_args(consumer_id, option, schema, frame) — constrained args JSON
+
+The ONNX backend scores labels; it does not generate arguments (D12), so
+``generate_args`` has no generative backend in production and degrades to
+``ArgsResult(args=None)`` — the box then escalates to the legacy ladder, where
+the Brain does schema-constrained generation via function-calling (AC2.4).
+The generative path stays behind the ``llama_factory`` test seam so the args
+stage stays testable.
 
 Everything here is single-writer-of-nothing: read set is the args passed in;
 write set is the return value, counters, and log lines. CT-DE-5 enforces it.
@@ -20,27 +42,63 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Optional, Sequence, Tuple
 
 logger = logging.getLogger("decision_engine")
+
+# The engine's DISPLAY name. Logs, telemetry and the UI read THIS; the config
+# block id and the backend identity stay untouched (see the module docstring:
+# the backend identity keys the calibrated threshold).
+ENGINE_NAME = "Oracle"
 
 # ---------------------------------------------------------------------------
 # Data model (CT-DE-1 pins this shape)
 # ---------------------------------------------------------------------------
 
-CONSUMERS: Tuple[str, ...] = ("tool_choice", "presentation", "narration")
+CONSUMERS: Tuple[str, ...] = (
+    "tool_choice",
+    "presentation",
+    "narration",
+    # REQ-11 AC11.3 (T15): the graft-recovery triage consumer. Consulted BEFORE
+    # Brain planning spend — the Brain plans only on DELEGATE / below threshold.
+    # REQ-13 AC13.1 (T17): the per-step Reviewer verdict consumer, SHADOW only
+    # (the Brain verdict still decides until AC13.3's measured bar is met).
+    # NOTE: this grows the pinned consumer set; the two CT-DE-7 enumerations
+    # were updated as a STALE-BY-SPEC change (the spec mandates the consumers).
+    "recovery_strategy",
+    "review_verdict",
+    # REQ-14 AC14.1 (T18): the three loop-monitor bool consumers, answered with
+    # a `Noul` (P(statement true)) rather than a two-option Choice (AC14.6).
+    "sufficient",
+    "done",
+    "on_track",
+    # REQ-15 AC15.1 (T19): mode + web_intent shadow the ModeDetector keyword
+    # branch and the duplicated web-trigger lists.
+    "mode",
+    "web_intent",
+    # REQ-17 AC17.1 (T21): the retry_same triage extension.
+    "retry_same",
+    # REQ-29 (T46–T49): the remaining decision surface — four choice-shaped
+    # Brain decisions scored in shadow. `has_gaps` is the highest-value miss
+    # (an 800-token Brain call per completed step). `tier0_classify` is a
+    # recorded NON-FIT and is deliberately absent (AC29.5).
+    "has_gaps",
+    "use_thinking",
+    "escalate_incomplete",
+    "needs_action",
+)
 
 
 @dataclass(frozen=True)
 class CandidateScore:
     name: str        # option name (tool name, surface name, or DELEGATE/NONE)
-    logprob: float   # summed continuation logprob under the decision prompt
+    logprob: float   # raw label logit under the schema prompt (ONNX backend)
     prob: float      # softmax-normalized probability
 
 
@@ -52,8 +110,10 @@ class DecisionScore:
     distribution: Tuple[CandidateScore, ...]
     engine_latency_ms: int
     retried: bool = False
-    # REQ-17 hierarchical detail: stage scores when decide_tree() was used.
-    # {"lane": "file", "lane_p": 0.97, "leaf_p": 0.92} — absent on flat decide().
+    # REQ-17 hierarchical detail: stage scores when a two-stage tree was used.
+    # The tree is retired (REQ-22 AC22.3 — flat scoring is the only path), so
+    # this is always None today; the field stays because the envelope shape is
+    # pinned unchanged (AC21.2).
     stage_detail: Optional[Dict[str, Any]] = None
 
     def confident(self, threshold: float) -> bool:
@@ -62,9 +122,49 @@ class DecisionScore:
 
 
 @dataclass(frozen=True)
+class Noul:
+    """REQ-14 AC14.6 (T18): a single calibrated probability of TRUTH.
+
+    Deliberately NOT a two-option ``DecisionScore``. JEV's ``Noul`` returns
+    P(statement true) with no separate confidence field, and REQ-14 AC14.4's
+    fail-closed advisory gate depends on that probability meaning exactly what
+    it claims: "is the statement true", not "which of two labels won".
+
+    The measurement may be a two-label softmax (the schema backend scores
+    ``yes``/``no`` and we take P(yes)) — the ENVELOPE is what changes: one
+    probability, no winner, no confidence, so a caller cannot mistake a
+    2-way choice for a calibrated belief.
+    """
+
+    consumer_id: str
+    probability: float                # P(statement is true), in [0, 1]
+    engine_latency_ms: int
+
+    def true(self, threshold: float = 0.5) -> bool:
+        """The boolean judgment at *threshold*."""
+        return self.probability >= threshold
+
+    def confident(self, threshold: float) -> bool:
+        """True when the belief is decisively on ONE side of the flip point.
+
+        ``threshold`` is a probability margin, and the test is TWO-SIDED:
+        ``p >= threshold`` (confidently true) or ``p <= 1 - threshold``
+        (confidently false). A one-sided ``p >= threshold`` would let the
+        engine assert "true" but never "false" — an asymmetry that would leave
+        a fail-closed gate permanently open.
+        """
+        return self.probability >= threshold or self.probability <= (1.0 - threshold)
+
+
+@dataclass(frozen=True)
 class ArgsResult:
     args: Optional[Dict[str, Any]]    # None = invalid/empty after retry
     retried: bool
+    # REQ-10 AC10.3 (T13): which deterministic pattern filled the args, when a
+    # fast path was taken ("" = the LLM/generation path). ADDITIVE field — the
+    # envelope shape is otherwise unchanged (AC21.2). It is the calibration
+    # join key, so a pattern id is a STABLE name, never a re-worded one.
+    fast_path: str = ""
 
 
 @dataclass
@@ -88,10 +188,48 @@ class EngineCounters:
 # non-binding — and flip to enforce only after the calibration gate. Override
 # with IRIS_DECISION_ENFORCE="tool_choice,presentation,narration".
 def enforced_consumers() -> frozenset:
+    """The consumers currently enforced (REQ-13..17, REQ-31 AC31.4).
+
+    FAIL-CLOSED ON A STALE CONFIGURATION. `EngineConfig.threshold_for` already
+    refuses to hand out a threshold when the deployed cap differs from the
+    calibrated width, but that only makes an enforcing caller see `None` — a
+    caller that forgets to check would still steer. This closes the hole at the
+    SOURCE: when the deployed configuration differs from the calibrated one, NO
+    consumer is enforced, so no flip measured at a superseded configuration can
+    stand (AC31.4/AC31.6). A match is the normal case and enforcement proceeds
+    exactly as before.
+    """
     raw = os.environ.get("IRIS_DECISION_ENFORCE", "tool_choice")
-    return frozenset(
+    wanted = frozenset(
         c.strip() for c in raw.split(",") if c.strip() in CONSUMERS
     )
+    if not wanted:
+        return frozenset()
+    # Reading staleness must NEVER be able to break the reply path. A config
+    # object without the attribute (a stub, a partially-built engine) means
+    # "not stale" — and the real fail-closed guarantee is unaffected, because
+    # `threshold_for` independently returns None on a stale configuration, so
+    # an enforcing caller still cannot steer on a superseded curve.
+    try:
+        cfg = getattr(get_decision_engine(), "_cfg", None)
+        _stale_attr = (
+            getattr(cfg, "threshold_stale", None) if cfg is not None else None
+        )
+        stale = bool(_stale_attr() if callable(_stale_attr) else _stale_attr)
+    except Exception as e:  # noqa: BLE001 — an unreadable config changes nothing
+        logger.debug("decision_engine: staleness unreadable (%r)", e)
+        return wanted
+    if stale:
+        logger.warning(
+            "decision_engine: deployed configuration differs from the "
+            "calibrated one (candidate_cap=%s, calibrated_cap=%s) — thresholds "
+            "are STALE, refusing enforcement for %s (AC31.4)",
+            getattr(cfg, "candidate_cap", None),
+            getattr(cfg, "calibrated_cap", None),
+            sorted(wanted),
+        )
+        return frozenset()
+    return wanted
 
 
 # ---------------------------------------------------------------------------
@@ -101,87 +239,152 @@ def enforced_consumers() -> frozenset:
 
 @dataclass
 class EngineConfig:
-    model_path: Optional[str] = None     # explicit path wins
-    n_ctx: int = 1024
-    max_answer_tokens: int = 8           # option name only
+    model_dir: Optional[str] = None      # explicit ONNX model dir wins
     max_args_tokens: int = 192
     acquire_timeout_s: float = 2.0
-    default_threshold: float = 0.85
+    # The ACTIVE backend identity (AC25.8). Set from the loaded backend at
+    # load time; thresholds resolve against it.
+    backend_id: Optional[str] = None
+    # THRESHOLDS ARE KEYED BY BACKEND IDENTITY (REQ-22 AC22.1, REQ-25 AC25.8).
+    # A probability threshold is only meaningful for the distribution it was
+    # measured on: 0.85 suits LFM's sharpened softmax, 0.40 suits GLiNER's
+    # menu-wide softmax. Keyed by backend, a model swap degrades to SHADOW
+    # (no entry for the new backend = fail-closed) instead of silently
+    # enforcing on the previous model's curve.
+    backend_thresholds: Dict[str, float] = None  # set in __post_init__ below
     # Per-consumer thresholds (REQ-13): tools that execute external side effects
     # sit higher than display gates; calm narration anti-spamming sits lower.
-    # Ordered: explicit per-consumer → default_threshold → env knobs at thaw.
+    # Ordered: explicit per-consumer → backend threshold (by active identity).
     thresholds: Dict[str, float] = None  # set in __post_init__ below
-    # Bounded cost per decision. Lives as the linter against the 350M's
-    # discrimination floor: measured 2026-09-20, 20-option letter scoring
-    # collapsed to uniform and 4-6 option scoring was correct at high conf
-    # (crawler 0.94, vision 0.99). Six is the discriminating cap.
+    # Bounded cost per decision. Ships at 6 — the menu width the 0.40
+    # accuracy/coverage curve was derived at (Decision C, REQ-25 AC25.7).
+    # Changing it marks the calibrated threshold STALE (AC25.5).
     candidate_cap: int = 6
-    # Hierarchical selection (REQ-17): exercise the lane stage when the menu
-    # width exceeds this; below it the flat path is as good and cheaper.
-    hierarchy_trigger: int = 5
-    # Softmax temperature for option scoring. LIVE MEASUREMENT (2026-09-20,
-    # LFM2-350M-Extract CPU): raw continuation softmax spreads across
-    # 0.28-0.53 — rarely crossing 0.85 even on clear cases. tau < 1 sharpens
-    # without reordering; the calibration gate measures the right value.
-    softmax_tau: float = 0.5
-    # GPU offload. DEFAULT 0 (AC1.2 holds — owner's locked decision: the GPU
-    # carries the brain + VLM). IRIS_DECISION_GPU_LAYERS=-1 flips it
-    # explicitly when the harvested latency data justifies it.
-    n_gpu_layers: int = 0
+    # The menu width the current threshold curve was derived at (AC25.7).
+    # A candidate_cap that differs from this marks the threshold STALE
+    # (AC25.5): enforcement is refused until the curve is re-derived.
+    calibrated_cap: int = 6
 
     def __post_init__(self) -> None:
+        if self.backend_thresholds is None:
+            self.backend_thresholds = {}
         if self.thresholds is None:
             self.thresholds = {}
 
-    def threshold_for(self, consumer_id: str) -> float:
-        return float(self.thresholds.get(consumer_id, self.default_threshold))
+    def threshold_stale(self) -> bool:
+        """AC25.5: True when the deployed cap differs from the calibrated
+        width — the threshold is stale and enforcement is refused until the
+        curve is re-derived (REQ-31 AC31.4)."""
+        return self.candidate_cap != self.calibrated_cap
+
+    def threshold_for(self, consumer_id: str) -> Optional[float]:
+        """Threshold for one consumer, keyed by ACTIVE BACKEND IDENTITY.
+
+        Resolution (AC22.1/AC25.8): explicit per-consumer override → the
+        active backend's ``backend_thresholds`` entry. Returns None when the
+        active backend has no entry, or when the deployed cap differs from
+        the calibrated width (AC25.5 stale → fail-closed) — callers REFUSE
+        ENFORCEMENT: the consumer stays shadow rather than enforcing on an
+        unknown curve.
+        """
+        if self.threshold_stale():
+            return None
+        if consumer_id in (self.thresholds or {}):
+            return float(self.thresholds[consumer_id])
+        bt = self.backend_thresholds or {}
+        if self.backend_id in bt:
+            return float(bt[self.backend_id])
+        return None
 
 
-# Default search: explicit env var, then LM Studio dir glob for a 350M chat GGUF
-# (encoder-only "Embedding" variant explicitly excluded).
-_ENV_MODEL = "IRIS_DECISION_MODEL"
-_GLOB_PATTERNS = ("LFM2*350M*.gguf",)
+# ---------------------------------------------------------------------------
+# Config authority (REQ-25): the decision_driver block parsed into EngineConfig
+# ---------------------------------------------------------------------------
+
+_DEFAULT_CONFIG_PATH = "./backend/agent/agent_config.yaml"
+_config_fallback_logged = False
 
 
-def resolve_model_path(explicit: Optional[str] = None) -> Optional[str]:
-    """Find the decision model file. Returns None when nothing usable exists.
+def _log_config_fallback(why: str) -> None:
+    global _config_fallback_logged
+    if not _config_fallback_logged:
+        _config_fallback_logged = True
+        logger.warning(
+            "decision_driver config fallback (%s) — code defaults apply", why
+        )
 
-    An explicit/explicit-env path is authoritative: configured-and-missing
-    means "unavailable", never "silently substitute another model".
+
+def load_engine_config(
+    config_path: str = _DEFAULT_CONFIG_PATH,
+) -> EngineConfig:
+    """Parse the ``decision_driver`` block into EngineConfig (REQ-25 AC25.1).
+
+    Every documented key is parsed or removed (AC25.6). A missing or malformed
+    key falls back to the code default and logs the fallback ONCE (AC25.3) —
+    never crashes, never silently accepts a partial config. The block is
+    located by id, not by position. Never raises.
     """
-    env = os.environ.get(_ENV_MODEL)
-    for c in (explicit, env):
-        if c:
-            p = Path(c)
-            return str(p) if p.is_file() else None
-    roots: List[Path] = []
-    lmstudio = Path.home() / ".lmstudio" / "models"
-    if lmstudio.is_dir():
-        roots.append(lmstudio)
+    global _config_fallback_logged
+    cfg = EngineConfig()
     try:
-        from backend.agent.local_model_manager import MODELS_DIR
+        import yaml  # lazy — config parsing is not on the decision hot path
 
-        mm = Path(MODELS_DIR)
-        if mm.is_dir() and mm not in roots:
-            roots.append(mm)
-    except Exception:
-        pass
-    for root in roots:
-        for pat in _GLOB_PATTERNS:
-            hits = [h for h in sorted(root.rglob(pat))
-                    if not any(
-                        bad in h.name.lower()
-                        for bad in ("embedding", "encoder", "vl-")  # unusable
-                    )
-            ]
-            # Task-tuned variants beat base models: Extract > Instruct > base.
-            for pref in ("extract", "instruct"):
-                for h in hits:
-                    if pref in h.name.lower():
-                        return str(h)
-            if hits:
-                return str(hits[0])
-    return None
+        p = Path(config_path)
+        if not p.is_file():
+            if config_path == _DEFAULT_CONFIG_PATH:
+                # The default path is CWD-relative; try the module-relative
+                # location before giving up (robustness, not substitution).
+                p = Path(__file__).resolve().parent / "agent_config.yaml"
+            if not p.is_file():
+                _log_config_fallback("config file not found")
+                return cfg
+        with open(p, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        block = None
+        for m in data.get("models", []) or []:
+            if isinstance(m, dict) and m.get("id") == "decision_driver":
+                block = m
+                break
+        if block is None:
+            _log_config_fallback("decision_driver block not found")
+            return cfg
+        constraints = block.get("constraints")
+        if not isinstance(constraints, dict):
+            _log_config_fallback("constraints malformed")
+            constraints = {}
+        path = block.get("path")
+        if path:
+            cfg.model_dir = str(path)
+        cap = constraints.get("candidate_cap")
+        if isinstance(cap, int) and not isinstance(cap, bool) and cap > 0:
+            cfg.candidate_cap = cap
+        elif cap is not None:
+            _log_config_fallback(f"candidate_cap malformed: {cap!r}")
+        ato = constraints.get("acquire_timeout_s")
+        if isinstance(ato, (int, float)) and not isinstance(ato, bool) and ato > 0:
+            cfg.acquire_timeout_s = float(ato)
+        elif ato is not None:
+            _log_config_fallback(f"acquire_timeout_s malformed: {ato!r}")
+        bt = constraints.get("backend_thresholds")
+        if isinstance(bt, dict) and all(
+            isinstance(v, (int, float)) and not isinstance(v, bool)
+            for v in bt.values()
+        ):
+            cfg.backend_thresholds = {str(k): float(v) for k, v in bt.items()}
+        elif bt is not None:
+            _log_config_fallback("backend_thresholds malformed")
+        th = constraints.get("thresholds")
+        if isinstance(th, dict) and all(
+            isinstance(v, (int, float)) and not isinstance(v, bool)
+            for v in th.values()
+        ):
+            cfg.thresholds = {str(k): float(v) for k, v in th.items()}
+        elif th is not None:
+            _log_config_fallback("thresholds malformed")
+        return cfg
+    except Exception as e:
+        _log_config_fallback(f"parse failed: {e!r}")
+        return cfg
 
 
 # ---------------------------------------------------------------------------
@@ -189,99 +392,189 @@ def resolve_model_path(explicit: Optional[str] = None) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 
+# AC30.5 (T42): the name every dedicated-inference worker carries. The engine
+# detects "already on the inference thread" by this prefix, so it must stay in
+# sync with the pool's `thread_name_prefix`.
+_INFER_THREAD_PREFIX = "iris-decision-inference"
+
+
 class DecisionEngine:
-    """One serialized llama_cpp context. CPU only. Lazy load. Never raises."""
+    """One serialized ONNX scoring backend. CPU only. Lazy load. Never raises."""
 
     def __init__(
         self,
         config: Optional[EngineConfig] = None,
-        llama_factory: Optional[Callable[..., Any]] = None,  # test seam
+        backend_factory: Optional[Callable[..., Any]] = None,  # test seam
+        llama_factory: Optional[Callable[..., Any]] = None,    # args test seam
         clock: Callable[[], float] = time.perf_counter,
     ) -> None:
         self._cfg = config or EngineConfig()
+        self._backend_factory = backend_factory
         self._llama_factory = llama_factory
         self._clock = clock
         self._lock = threading.Lock()
+        # AC30.5 (T42): ONE dedicated inference thread. Step execution already
+        # runs on a shared pool (`agent_kernel.py:9421`, `:15690`); letting
+        # each of those threads drive ONNX directly made the engine's intra-op
+        # threads contend with step scheduling and oversubscribed the CPU when
+        # several steps resolved at once. Lazily created, so an engine that
+        # never scores pays nothing.
+        self._infer_pool: Any = None
+        self._infer_pool_lock = threading.Lock()
+        # The ONNX scoring backend (lazy; the only scorer — no fallback model).
+        self._backend: Any = None
+        # Generative args model. Test seam ONLY: production injects no factory
+        # (the ONNX backend scores labels, it does not generate arguments),
+        # so this stays None and generate_args degrades (AC2.4 escalates).
         self._llm: Any = None
         self._load_attempted = False
         self._notice_logged = False
         self.counters = EngineCounters()
         self.model_id: Optional[str] = None
-        # Head-KV cache for one-pass scoring (D16 speedup tail): snapshot of
-        # the static instruction/example head evaluated once at load; each
-        # decision evaluates only its own short tail. Fake models in tests
-        # leave these None and take the full-eval path (identical result).
-        self._head_state: Any = None
-        self._n_head_tokens: int = 0
-        # Letter token ids are FIXED per tokenizer — tokenized once at load
-        # (_warm_letter_ids), not three times per option per decision.
-        self._letter_token_ids: Dict[str, int] = {}
+
+    # -- dedicated inference thread (AC30.5 / T42) -------------------------
+
+    def _get_infer_pool(self) -> Any:
+        """The single-worker pool that owns model inference, or None.
+
+        Created once, lazily. Returns None when the pool cannot be built, so
+        the caller can fall back to an inline call rather than lose a decision.
+        Never raises.
+        """
+        if self._infer_pool is not None:
+            return self._infer_pool
+        with self._infer_pool_lock:
+            if self._infer_pool is None:
+                try:
+                    from concurrent.futures import ThreadPoolExecutor
+
+                    self._infer_pool = ThreadPoolExecutor(
+                        max_workers=1,
+                        thread_name_prefix=_INFER_THREAD_PREFIX,
+                    )
+                except Exception as e:  # noqa: BLE001 — plumbing, not the work
+                    logger.debug(
+                        "decision_engine: inference pool unavailable (%r)", e
+                    )
+                    return None
+        return self._infer_pool
+
+    def _run_inference(self, fn: Callable[[], Any]) -> Any:
+        """AC30.5 (T42): run backend inference on the dedicated engine thread.
+
+        Serialises the model work (which the engine lock already did) while
+        keeping ONNX's intra-op threads off the step scheduler's CPU budget and
+        out of a step thread's stack.
+
+        Degradation is deliberate and total: an unusable pool runs the work
+        inline (today's behaviour), while a pool that accepted the work but
+        overran its budget returns None — the same "no verdict, use the legacy
+        path" contract every other engine failure uses (AC26.1). The work is
+        NEVER retried after submission, because a retry would score twice.
+        Runs inline when already on the inference thread, so a nested call
+        cannot deadlock. Never raises.
+        """
+        if threading.current_thread().name.startswith(_INFER_THREAD_PREFIX):
+            return fn()
+        pool = self._get_infer_pool()
+        if pool is None:
+            return fn()
+        try:
+            return pool.submit(fn).result(
+                timeout=float(self._cfg.acquire_timeout_s) * 2.0 + 5.0
+            )
+        except Exception as e:  # noqa: BLE001 — never lose a decision to plumbing
+            from concurrent.futures import TimeoutError as _FuturesTimeout
+
+            if isinstance(e, _FuturesTimeout):
+                self.counters.lock_timeouts += 1
+                logger.warning(
+                    "decision_engine: inference overran its budget on the "
+                    "dedicated thread — returning no verdict"
+                )
+            else:
+                logger.warning(
+                    "decision_engine: inference on the dedicated thread "
+                    "failed: %r", e,
+                )
+            return None
 
     # -- lifecycle ---------------------------------------------------------
 
     @property
     def loaded(self) -> bool:
-        return self._llm is not None
+        return self._backend is not None
+
+    @property
+    def model_hash(self) -> Optional[str]:
+        """The deployed model file's sha256 (AC6.5/AC22.5 attribution) —
+        delegated to the backend; None before load."""
+        backend = self._backend
+        if backend is None:
+            return None
+        return getattr(backend, "model_hash", None)
 
     def availability(self) -> Tuple[bool, str]:
         """(usable, reason). Never raises."""
-        if self._llm is not None:
+        if self._backend is not None:
             return True, "loaded"
         if self._load_attempted:
             return False, "load_failed_or_missing"
-        path = resolve_model_path(self._cfg.model_path)
-        if path is None:
-            return False, "model_not_found"
-        return True, "loadeable_pending"
+        try:
+            from backend.agent.decision_backend_onnx import resolve_model_dir
+
+            if resolve_model_dir(self._cfg.model_dir) is None:
+                return False, "model_dir_not_found"
+        except Exception:
+            pass
+        return True, "loadable_pending"
 
     def _load(self) -> bool:
-        if self._llm is not None:
+        """Load the ONNX scoring backend. Lazy, once. Never raises.
+
+        Also creates the generative args model from an injected factory
+        (test seam only — production has none).
+        """
+        if self._backend is not None:
             return True
         if self._load_attempted:
             return False
         self._load_attempted = True
-        path = resolve_model_path(self._cfg.model_path)
-        if path is None:
-            self._log_unavailable("model file not found")
-            return False
+        if self._llama_factory is not None and self._llm is None:
+            try:
+                self._llm = self._llama_factory()
+            except Exception as e:
+                self.counters.load_failures += 1
+                self._log_unavailable(f"args model load failed: {e!r}")
         try:
-            factory = self._llama_factory
+            factory = self._backend_factory
             if factory is None:
-                from llama_cpp import Llama  # heavy import kept lazy
+                from backend.agent.decision_backend_onnx import (
+                    GlinerOnnx,  # heavy import kept lazy
+                )
 
                 def factory(**kwargs: Any) -> Any:
-                    return Llama(**kwargs)
+                    return GlinerOnnx(**kwargs)
 
-            import os as _os
-
-            # threads: CPU prefill scales with cores; cap at 8 by default but
-            # IRIS_DECISION_THREADS overrides for tuning (bench used 2026-09-20).
-            n_threads = int(_os.environ.get(
-                "IRIS_DECISION_THREADS",
-                str(max(2, min((_os.cpu_count() or 4) - 2, 8))),
-            ))
-            gpu_layers = int(_os.environ.get(
-                "IRIS_DECISION_GPU_LAYERS", str(self._cfg.n_gpu_layers)) or 0)
-            self._llm = factory(
-                model_path=path,
-                n_ctx=self._cfg.n_ctx,
-                n_gpu_layers=gpu_layers,     # default 0 — AC1.2 stands
-                logits_all=True,             # continuation scoring needs full logits
-                n_threads=n_threads,
-                n_batch=256,
-                verbose=False,
+            backend = factory(model_dir=self._cfg.model_dir)
+            if backend is None or not backend.load():
+                self._log_unavailable(
+                    "onnx model dir not found or incomplete — no fallback model"
+                )
+                return False
+            self._backend = backend
+            self.model_id = getattr(backend, "backend_id", None) or getattr(
+                backend, "model_id", None
             )
-            self.model_id = Path(path).stem
-            logger.info("decision_engine loaded model=%s n_ctx=%d device=%s",
-                        self.model_id, self._cfg.n_ctx,
-                        "gpu" if gpu_layers else "cpu")
-            self._warm_head_state()
+            self._cfg.backend_id = self.model_id  # AC25.8: active identity
+            logger.info(
+                "%s loaded backend=%s", ENGINE_NAME, self.model_id
+            )
             return True
         except Exception as e:  # load failure must never escape (AC1.3)
-            self._load_attempted = True
-            self._llm = None
+            self._backend = None
             self.counters.load_failures += 1
-            self._log_unavailable(f"load failed: {e!r}")
+            self._log_unavailable(f"backend load failed: {e!r}")
             return False
 
     def _log_unavailable(self, why: str) -> None:
@@ -290,168 +583,56 @@ class DecisionEngine:
             self.counters.unavailable_events += 1
             logger.warning("decision_engine unavailable (%s) — using legacy path", why)
 
-    def _warm_head_state(self) -> None:
-        """Evaluate the static prompt head once and snapshot its KV state.
+    @property
+    def name(self) -> str:
+        """The engine's DISPLAY name (telemetry, logs, UI).
 
-        Failure is non-fatal: without the snapshot every decision evaluates
-        the whole prompt (correct, slower). Also pre-tokenizes the candidate
-        letter forms once — every tokenized string ending is reused verbatim
-        across all decisions until unload.
+        Deliberately separate from ``model_id``: this is a label, while
+        ``model_id`` is the backend identity that KEYS the calibrated
+        threshold. Renaming this changes nothing about enforcement.
         """
-        if self._llm is None:
-            return
-        try:
-            head, _ = self._build_prompt_parts("tool_choice", ["A", "B"], {})
-            self._llm.reset()
-            toks = self._llm.tokenize(head.encode("utf-8"), add_bos=True)
-            self._llm.eval(toks)
-            self._head_state = self._llm.save_state()
-            self._n_head_tokens = len(toks)
-        except Exception as _e:
-            self._head_state = None
-            self._n_head_tokens = 0
-            logger.debug("decision_engine: head-state warm skipped (%r)", _e)
-        try:
-            for i in range(26):
-                letter = chr(ord("A") + i)
-                self._letter_token_ids[letter] = self._llm.tokenize(
-                    f" {letter}".encode("utf-8"), add_bos=False
-                )[0]
-        except Exception as _e:
-            logger.debug("decision_engine: letter id warm skipped (%r)", _e)
+        return ENGINE_NAME
+
+    def effective_config(self) -> Dict[str, Any]:
+        """AC25.2: the effective configuration, observable.
+
+        Returns the resolved engine config as a plain dict — backend identity
+        included — so a config round-trip can prove a non-default value
+        actually takes effect. Never raises.
+        """
+        return {
+            "name": ENGINE_NAME,
+            "model_dir": self._cfg.model_dir,
+            "backend_id": self.model_id or self._cfg.backend_id,
+            "candidate_cap": self._cfg.candidate_cap,
+            "acquire_timeout_s": self._cfg.acquire_timeout_s,
+            "backend_thresholds": dict(self._cfg.backend_thresholds or {}),
+            "thresholds": dict(self._cfg.thresholds or {}),
+        }
 
     def shutdown(self) -> None:
-        """Free the context. Idempotent. Called from the lifespan teardown."""
+        """Free the backend. Idempotent. Called from the lifespan teardown."""
         with self._lock:
-            llm, self._llm = self._llm, None
+            backend, self._backend = self._backend, None
+            self._llm = None
             self._load_attempted = False
-        if llm is not None:
+        # AC30.5 (T42): the dedicated inference thread is engine-owned, so it
+        # must not outlive the engine.
+        pool, self._infer_pool = self._infer_pool, None
+        if pool is not None:
             try:
-                del llm
+                pool.shutdown(wait=False)
+            except Exception:
+                pass
+        if backend is not None:
+            try:
+                shutdown = getattr(backend, "shutdown", None)
+                if callable(shutdown):
+                    shutdown()
             except Exception:
                 pass
 
     # -- scoring (Jev Choice over a caller-provided option set) ------------
-
-    @staticmethod
-    def _build_prompt(consumer_id: str, options: Sequence[str], frame: Dict[str, Any]) -> str:
-        """Letter-enumerated prompt; splits into a static HEAD + per-decision TAIL.
-
-        The head (instructions + worked example, ~90 tokens) is identical for
-        every decision, so it is evaluated once and its KV state cached; the
-        tail (task/state/options, ~40-60 tokens) is the only per-decision eval.
-        Thermal outcome measured 2026-09-20: tail-only eval turns ~260ms CPU
-        decisions into ~10-60ms latency (prelude cost amortized to load time).
-        """
-        head, tail = DecisionEngine._build_prompt_parts(consumer_id, options, frame)
-        return head + tail
-
-    @staticmethod
-    def _build_prompt_parts(consumer_id: str, options: Sequence[str], frame: Dict[str, Any]) -> Tuple[str, str]:
-        """(head, tail). Options listed by name; the answer continues with the
-        chosen option's exact name — semantic continuation scoring reads
-        meaning, not a letter symbol."""
-        if len(options) > 26:
-            raise ValueError("candidate_cap even here")
-        head = (
-            "Choose the best tool for each task. Answer with the exact tool name.\n\n"
-            "Task: read the file README\n"
-            "Options: crawler_query, read_file, speak, NONE\n"
-            "Answer: read_file\n\n"
-            "Task: find the current price of a product online\n"
-            "Options: crawler_query, read_file, speak, NONE\n"
-            "Answer: crawler_query\n\n"
-            "Task: what did we decide about the design yesterday\n"
-            "Options: read_file, recall_memory, list_directory, NONE\n"
-            "Answer: recall_memory\n\n"
-            "Task: list every file in the workspace\n"
-            "Options: read_file, list_directory, recall_memory, NONE\n"
-            "Answer: list_directory\n\n"
-            "Task: tell me a joke\n"
-            "Options: read_file, recall_memory, crawler_query, NONE\n"
-            "Answer: NONE\n\n"
-        )
-        goal = str(frame.get("goal", "")).split("\n")[0][:160]
-        state_bits = [
-            f"{k}={v}" for k, v in frame.items()
-            if k != "goal" and v is not None
-        ]
-        state = "; ".join(str(b)[:80] for b in state_bits[:10])
-        # Descriptions turn bare names into semantic criteria — a 350M cannot
-        # read meaning out of a bare "recall_memory" token, but it can read it
-        # from "recall_memory: recall past conversation memory".
-        desc_map = frame.get("option_descriptions") or {}
-        listed = []
-        for o in options:
-            d = str(desc_map.get(o, "")).strip()[:80]
-            listed.append(f"{o}: {d}" if d else o)
-        opts = "\n".join(f"- {line}" for line in listed)
-        tail = (
-            f"Task ({consumer_id}): {goal}\n"
-            + (f"State: {state}\n" if state else "")
-            + f"Available options:\n{opts}\nAnswer:"
-        )
-        return head, tail
-
-    def _score_options_one_pass(
-        self, consumer_id: str, options: Sequence[str], frame: Dict[str, Any],
-    ) -> List[Tuple[str, float]]:
-        """First-token semantic scoring.
-
-        Evidence basis (live probes, 2026-09-20): the model's answer position
-        distributes over the CONTENT tokens of candidate names (' recall',
-        ' read', ' DE', ' N'), not letters. Scoring reads the logprob of the
-        FIRST token of each candidate name — semantic discrimination at one
-        forward pass. For shared first tokens (vision_*) the tie is broken by
-        a full-continuation eval of just the tied candidates.
-        """
-        head, tail = self._build_prompt_parts(consumer_id, options, frame)
-        prompt = head + tail
-        tokens = self._llm.tokenize(prompt.encode("utf-8"), add_bos=True)
-        self._llm.reset()
-        self._llm.eval(tokens)
-        try:
-            scores = self._llm.scores
-        except AttributeError as e:
-            raise ValueError("llm.scores unavailable (need logits_all=True)") from e
-        # scores buffer is n_ctx x vocab; only rows [0:n_tokens) are written.
-        # The logits that answer "what comes after the prompt?" sit at index
-        # n_tokens - 1, NOT scores[-1] (measured: padded rows are all zero).
-        row = scores[len(tokens) - 1]
-        raw: List[Tuple[str, float]] = []
-        per_first: Dict[int, List[str]] = {}
-        # First-token scoring — empirically the discriminating signal for this
-        # model: the logit of each candidate name's FIRST token at the answer
-        # position tracks task meaning (recall→' recall', vision→' vision').
-        for opt in options:
-            word = " " + opt.split("_")[0]
-            first_tok = self._llm.tokenize(word.encode("utf-8"), add_bos=False)
-            if not first_tok:
-                raw.append((opt, float("-inf")))
-                continue
-            raw.append((opt, float(row[first_tok[0]])))
-            per_first.setdefault(first_tok[0], []).append(opt)
-        # vision_* and other prefix-shared options got identical first-token
-        # mass; resolve real ties (>1 option, same first token) by full
-        # continuation for just the tied subgroup.
-        for tie in [g for g in per_first.values() if len(g) > 1]:
-            for opt in tie:
-                cont = self._llm.tokenize(f" {opt}".encode("utf-8"), add_bos=False)
-                self._llm.reset()
-                self._llm.eval(tokens + cont)
-                # rows are token positions in a preallocated (n_ctx, vocab)
-                # buffer; the continuation rows are [len(tokens) : len(tokens)+len(cont))
-                tail_rows = self._llm.scores[len(tokens):len(tokens) + len(cont)]
-                total = 0.0
-                for j, tid in enumerate(cont):
-                    total += float(tail_rows[j][tid])
-                # normalize per candidate token count so longer names are not
-                # artificially favored/disfavored
-                for k, (name, _) in enumerate(raw):
-                    if name == opt:
-                        raw[k] = (name, total / max(len(cont), 1))
-                        break
-        return raw
 
     def decide(
         self,
@@ -459,7 +640,8 @@ class DecisionEngine:
         options: Sequence[str],
         frame: Dict[str, Any],
     ) -> Optional[DecisionScore]:
-        """Score every option in one pass; softmax; return winner + distribution.
+        """Score every option in one schema pass; softmax; return winner +
+        distribution.
 
         Returns None when the engine is unavailable, the lock times out, or
         scoring fails — callers treat None as "degrade to legacy path" (AC1.3,
@@ -473,147 +655,254 @@ class DecisionEngine:
         ]
         if not opts:
             return None
+        t_start = self._clock()  # REQ-26: lock-wait separated from compute
         if not self._lock.acquire(timeout=self._cfg.acquire_timeout_s):
             self.counters.lock_timeouts += 1
             return None
+        lock_wait_ms = int((self._clock() - t_start) * 1000)
         try:
             if not self._load():
                 return None
+            backend = self._backend
             t0 = self._clock()
-            raw = self._score_options_one_pass(consumer_id, opts, frame)
-            m = max(lp for _, lp in raw)
-            tau = max(self._cfg.softmax_tau, 1e-3)
-            exps = [(name, math.exp((lp - m) / tau)) for name, lp in raw]
-            z = sum(e for _, e in exps) or 1.0
-            dist = tuple(
-                CandidateScore(name=n, logprob=lp, prob=e / z)
-                for (n, lp), (_, e) in zip(raw, exps)
-            )
-            best = max(dist, key=lambda c: c.prob)
+            # AC30.5 (T42): the model work runs on the dedicated inference
+            # thread, never on the caller's step thread.
+            ds = self._run_inference(
+                lambda: backend.decide(consumer_id, opts, frame))
+            scoring_ms = int((self._clock() - t0) * 1000)
+            if ds is None:
+                return None
             self.counters.decisions += 1
             self.counters.bump_consumer(consumer_id)  # REQ-13 per-consumer
-            lat_ms = int((self._clock() - t0) * 1000)
+            total_ms = int((self._clock() - t_start) * 1000)
             logger.info(
-                "decision_engine decide consumer=%s chosen=%s conf=%.3f "
-                "candidates=%d latency_ms=%d",
-                consumer_id, best.name, best.prob, len(dist), lat_ms,
+                "%s decide consumer=%s chosen=%s conf=%.3f "
+                "candidates=%d scoring_latency_ms=%d lock_wait_ms=%d "
+                "decision_latency_ms=%d backend=%s",
+                ENGINE_NAME, consumer_id, ds.chosen, ds.confidence,
+                len(ds.distribution),
+                scoring_ms, lock_wait_ms, total_ms, self.model_id,
             )
-            return DecisionScore(
-                consumer_id=consumer_id,
-                chosen=best.name,
-                confidence=best.prob,
-                distribution=dist,
-                engine_latency_ms=lat_ms,
-            )
+            return ds
         except Exception as e:
             logger.warning("decision_engine scoring failed: %r", e)
             return None
         finally:
             self._lock.release()
 
-    # ------------------------------------------------------------------
-    # REQ-17: hierarchical two-stage choice — lane, then leaf.
-    # ------------------------------------------------------------------
-    def decide_tree(
+    def noul(
         self,
         consumer_id: str,
-        lanes: Dict[str, List[str]],
-        frame: Dict[str, Any],
-    ) -> Optional[DecisionScore]:
-        """Decide a tool in two narrow stages instead of one wide one.
+        statement: str,
+        frame: Optional[Dict[str, Any]] = None,
+        *,
+        true_label: str = "yes",
+        false_label: str = "no",
+    ) -> Optional[Noul]:
+        """REQ-14 AC14.6 (T18): score a STATEMENT and return P(true).
 
-        Stage 1: choose the lane (registry category) + DELEGATE/NONE.
-        Stage 2: choose the leaf INSIDE the winning lane + DELEGATE/NONE.
-        Discrimination wins are narrow sets (2-6 options), which is the size
-        regime the 350M measures well at; the wide flat menu is where it
-        breaks down (proved live: 20-option flat = uniform 1/20 confidence).
+        The bool monitor consumers (``sufficient`` / ``done`` / ``on_track``)
+        ask "is this statement true", so they are answered with a ``Noul`` — a
+        single calibrated probability — rather than a two-option Choice.
 
-        Returns flat-style DecisionScore with stage_detail naming the lane
-        and its confidence, so the ledger keeps the whole structure.
-        Falls back to None when the lane stage is unusable — caller degrades.
+        Returns None when the engine is unavailable, the consumer has no
+        criteria, or scoring fails. Callers MUST treat None as fail-closed
+        (REQ-14 AC14.4) rather than as "true". Never raises.
         """
-        lanes_clean = {k: v for k, v in lanes.items() if v}
-        if not lanes_clean:
-            return None
-        lane_options = list(lanes_clean.keys()) + ["DELEGATE", "NONE"]
-        # Session-345 (live finding conv-128): the lane stage received BARE
-        # category names ("web", "vision", ...) while the worked examples only
-        # ever score tool names — live result: NONE at 0.99 confidence for a
-        # websearch goal with crawler_query on the menu. Give each lane a real
-        # description built from its member tools so the lane stage reads
-        # semantics, not bare words. No new constants: derived from the same
-        # option_descriptions the leaf stage already uses.
-        _src_descs = frame.get("option_descriptions") or {}
-        lane_descs: Dict[str, str] = {}
-        for _lane, _members in lanes_clean.items():
-            _parts = []
-            for _m in _members[:3]:
-                _md = str(_src_descs.get(_m, "")).strip()[:60]
-                _parts.append(f"{_m} ({_md})" if _md else _m)
-            lane_descs[_lane] = "lane with tools: " + ", ".join(_parts)
-        ds_lane = self.decide(consumer_id, lane_options, {
-            **frame,
-            "stage": "lane",
-            "option_descriptions": lane_descs,
-        })
-        if ds_lane is None:
-            return None
-        thr = self._cfg.default_threshold
-        chosen_lane = ds_lane.chosen
-        lane_p = ds_lane.confidence
-        if chosen_lane in ("DELEGATE", "NONE") or lane_p < thr:
-            # AC17.2 — below threshold at the lane stage; escalate directly.
-            return DecisionScore(
-                consumer_id=consumer_id,
-                chosen="DELEGATE" if lane_p < thr else chosen_lane,
-                confidence=lane_p if chosen_lane not in ("DELEGATE","NONE")
-                           else ds_lane.confidence,
-                distribution=ds_lane.distribution,
-                engine_latency_ms=ds_lane.engine_latency_ms,
-                retried=False,
-                stage_detail={"lane": chosen_lane, "lane_p": lane_p,
-                              "leaf_p": None},
+        try:
+            ds = self.decide(
+                consumer_id, [true_label, false_label],
+                frame if frame is not None else {"goal": statement},
             )
-        leaf_names = lanes_clean[chosen_lane]
-        if len(leaf_names) == 1 and leaf_names[0] not in ("DELEGATE", "NONE"):
-            # Lane contains exactly one tool — leaf stage is free.
-            return DecisionScore(
+            if ds is None:
+                return None
+            prob = 0.0
+            for c in (ds.distribution or ()):
+                if c.name == true_label:
+                    prob = float(c.prob)
+                    break
+            else:
+                return None  # the true label was not scored — refuse to guess
+            return Noul(
                 consumer_id=consumer_id,
-                chosen=leaf_names[0],
-                confidence=lane_p,
-                distribution=ds_lane.distribution,
-                engine_latency_ms=ds_lane.engine_latency_ms,
-                retried=False,
-                stage_detail={"lane": chosen_lane, "lane_p": lane_p,
-                              "leaf_p": None},
+                probability=prob,
+                engine_latency_ms=ds.engine_latency_ms,
             )
-        leaf_options = leaf_names + ["DELEGATE", "NONE"]
-        ds_leaf = self.decide(consumer_id, leaf_options, {
-            **frame, "stage": "leaf", "lane": chosen_lane,
-        })
-        if ds_leaf is None:
+        except Exception as e:  # noqa: BLE001 — fail-closed, never raises
+            logger.warning("decision_engine noul failed: %r", e)
             return None
-        # Joint confidence: both stages must be right — conservative product.
-        joint = lane_p * ds_leaf.confidence
-        # Rewrite distribution so consumers see the LEAF distribution (with
-        # lane-level candidates marked).
-        leaf_dist = ds_leaf.distribution
-        return DecisionScore(
-            consumer_id=consumer_id,
-            chosen=ds_leaf.chosen if ds_leaf.confident(thr) else "DELEGATE",
-            confidence=joint,
-            distribution=leaf_dist if leaf_dist else ds_lane.distribution,
-            engine_latency_ms=ds_lane.engine_latency_ms
-                              + ds_leaf.engine_latency_ms,
-            retried=False,
-            stage_detail={
-                "lane": chosen_lane, "lane_p": lane_p,
-                "leaf": ds_leaf.chosen, "leaf_p": ds_leaf.confidence,
-                "joint": joint,
-            },
-        )
+
+    def decide_many(
+        self,
+        questions: Sequence[Tuple[str, Sequence[str]]],
+        frame: Dict[str, Any],
+    ) -> Dict[str, Optional[DecisionScore]]:
+        """REQ-20 AC20.1/AC20.2 (T26): the batched scoring entry point.
+
+        ``questions`` is a sequence of ``(consumer_id, options)``; every
+        consumer is answered against ONE state in a single backend call (one
+        encoder pass, one ``session.run``), so adding questions does not
+        multiply latency.
+
+        Per-question isolation + graceful degradation (AC20.4): an unknown or
+        criteria-less consumer, a lock timeout, an unavailable engine, or a
+        batched failure returns None for the affected questions and leaves the
+        siblings' envelopes intact — the caller falls back to the per-consumer
+        path for those only. Never raises.
+        """
+        out: Dict[str, Optional[DecisionScore]] = {}
+        try:
+            wanted: List[Tuple[str, Sequence[str]]] = []
+            for consumer_id, options in questions:
+                if consumer_id not in CONSUMERS:
+                    logger.error(
+                        "decision_engine: unknown consumer %r", consumer_id)
+                    out[consumer_id] = None
+                    continue
+                opts = [o for o in options if isinstance(o, str) and o][
+                    : self._cfg.candidate_cap
+                ]
+                if not opts:
+                    out[consumer_id] = None
+                    continue
+                wanted.append((consumer_id, opts))
+            if not wanted:
+                return out
+
+            t_start = self._clock()
+            if not self._lock.acquire(timeout=self._cfg.acquire_timeout_s):
+                self.counters.lock_timeouts += 1
+                return {cid: None for cid, _ in wanted}
+            lock_wait_ms = int((self._clock() - t_start) * 1000)
+            try:
+                if not self._load():
+                    return {cid: None for cid, _ in wanted}
+                backend = self._backend
+                t0 = self._clock()
+                # AC30.5 (T42): the batch runs on the dedicated inference
+                # thread too — one encode, one session run, off the step pool.
+                results = self._run_inference(
+                    lambda: backend.decide_many(wanted, frame)) or {}
+                scoring_ms = int((self._clock() - t0) * 1000)
+                for cid, ds in results.items():
+                    out[cid] = ds
+                    if ds is not None:
+                        self.counters.decisions += 1
+                        self.counters.bump_consumer(cid)
+                total_ms = int((self._clock() - t_start) * 1000)
+                logger.info(
+                    "decision_engine decide_many questions=%d scored=%d "
+                    "scoring_latency_ms=%d lock_wait_ms=%d "
+                    "decision_latency_ms=%d backend=%s",
+                    len(wanted),
+                    sum(1 for v in out.values() if v is not None),
+                    scoring_ms, lock_wait_ms, total_ms, self.model_id,
+                )
+            finally:
+                self._lock.release()
+        except Exception as e:
+            logger.warning("decision_engine decide_many failed: %r", e)
+            return {cid: out.get(cid) for cid, _ in questions}
+        return out
 
     # -- constrained args generation (bounded empty retry, REQ-4) ----------
+    # REQ-2: single-parameter query tools — the goal text maps directly to
+    # the 'query' parameter in 0ms, bypassing generate_args token generation
+    # (+500-1,500ms of autoregressive generation saved).
+    _SINGLE_PARAM_QUERY_TOOLS = frozenset({"search", "crawler_query"})
+
+    # ── REQ-10 (T13): vision target fast path ──────────────────────────────
+    # Pattern ids are STABLE calibration join keys (AC10.3) — renaming one
+    # splits the historical rows into a different pattern.
+    _VISION_TARGET_TOOL = "vision_detect_element"
+    _VISION_TARGET_PARAM = "description"
+    _CLICK_VERB = re.compile(r"\b(?:click|tap|press)\b", re.IGNORECASE)
+    # Straight quotes (either style) and curly quotes (either orientation).
+    _QUOTED_TARGET = re.compile(
+        r'"([^"]+)"'
+        r"|'([^']+)'"
+        r"|\u201c([^\u201c\u201d]+)\u201d"
+        r"|\u201e([^\u201e\u201c]+)\u201c"
+    )
+    _THE_X_BUTTON = re.compile(
+        r"\bthe\s+([A-Za-z0-9][A-Za-z0-9 _\-]{0,60}?)\s+button\b", re.IGNORECASE
+    )
+    _MAX_TARGET_LEN = 120
+
+    def fast_path_args(
+        self,
+        option: str,
+        schema: Dict[str, Any],
+        frame: Dict[str, Any],
+    ) -> Optional[ArgsResult]:
+        """REQ-2 + REQ-10: deterministic fast-path slot filling.
+
+        REQ-2 — single-parameter query tools (search, crawler_query): the user
+        goal text maps directly to the 'query' parameter in 0ms.
+        REQ-10 (T13) — ``vision_detect_element``: a click/tap/press goal whose
+        target is quoted, or written as "the X button", fills the element
+        target in 0ms with zero LLM tokens.
+
+        Returns None when no fast path applies (a different tool, a multi-arg
+        schema, an empty goal, or no pattern match) — the caller falls back to
+        generate_args / the legacy ladder (AC2.4, AC10.2). Never raises.
+        """
+        try:
+            if option == self._VISION_TARGET_TOOL:
+                props = (schema.get("properties") or {})
+                if self._VISION_TARGET_PARAM not in props:
+                    return None  # never fabricate a param the schema lacks
+                return self._vision_target_fast_path(frame)
+            if option not in self._SINGLE_PARAM_QUERY_TOOLS:
+                return None
+            required = [
+                k for k, v in (schema.get("properties") or {}).items()
+                if not (v or {}).get("optional", False)
+            ]
+            if required != ["query"]:
+                return None  # multi-arg schema → AC2.4's generation path
+            goal = str(frame.get("goal", "")).strip()
+            if not goal:
+                return None  # empty/invalid goal → fallback
+            return ArgsResult(args={"query": goal}, retried=False,
+                              fast_path="goal_to_query")
+        except Exception:
+            return None
+
+    def _vision_target_fast_path(
+        self, frame: Dict[str, Any]
+    ) -> Optional[ArgsResult]:
+        """REQ-10 (T13): deterministic vision target extraction.
+
+        AC10.1 — a click/tap/press goal with a quoted target (or "the X
+        button") fills the element target with 0 LLM tokens.
+        AC10.2 — no pattern → None, so the caller's LLM resolution runs
+        unchanged.
+        Edge — a target that is empty or longer than 120 chars is NOT a fast
+        path: we never dispatch an empty or absurd target.
+        """
+        goal = str(frame.get("goal", "")).strip()
+        if not goal or not self._CLICK_VERB.search(goal):
+            return None  # not a click-shaped goal → LLM resolution unchanged
+
+        target, pattern = "", ""
+        _m = self._QUOTED_TARGET.search(goal)
+        if _m:
+            target = next((g for g in _m.groups() if g), "")
+            pattern = "quoted_target"
+        else:
+            _m = self._THE_X_BUTTON.search(goal)
+            if _m:
+                target, pattern = _m.group(1), "the_x_button"
+
+        target = (target or "").strip()
+        if not target or len(target) > self._MAX_TARGET_LEN:
+            return None  # edge: empty / over-long → fallback, never empty dispatch
+        return ArgsResult(
+            args={self._VISION_TARGET_PARAM: target},
+            retried=False,
+            fast_path=pattern,
+        )
 
     @staticmethod
     def _extract_json_obj(text: str) -> Optional[Dict[str, Any]]:
@@ -653,10 +942,35 @@ class DecisionEngine:
 
         Retry rule (REQ-4): empty/whitespace output is retried exactly once;
         invalid JSON or schema-violating args are NOT retried (escalates).
+
+        REQ-21/D12: the ONNX backend scores labels, it does not generate
+        arguments — production injects no generative factory, so this
+        degrades to ``ArgsResult(args=None, retried=False)`` and the box
+        escalates to the legacy ladder (the Brain does schema-constrained
+        generation there via function-calling, AC2.4). The generative path
+        stays behind the ``llama_factory`` test seam so the args stage stays
+        testable.
         """
-        with self._lock:
-            if not self._load():
-                return ArgsResult(args=None, retried=False)
+        if not self._lock.acquire(timeout=self._cfg.acquire_timeout_s):
+            self.counters.lock_timeouts += 1
+            return ArgsResult(args=None, retried=False)
+        t_start = self._clock()  # REQ-26: lock-wait separated from compute
+        lock_wait_ms = int((self._clock() - t_start) * 1000)
+        result = ArgsResult(args=None, retried=False)
+        try:
+            if self._llm is None:
+                if self._llama_factory is None:
+                    # No generative backend (production): degrade — the box
+                    # escalates to the legacy ladder (AC2.4).
+                    return result
+                try:
+                    self._llm = self._llama_factory()
+                except Exception as e:
+                    self.counters.load_failures += 1
+                    logger.warning(
+                        "decision_engine args model load failed: %r", e
+                    )
+                    return result
             allowed = set(schema.get("properties", {}).keys())
             required = set(schema.get("required", []))
             prompt = (
@@ -678,19 +992,32 @@ class DecisionEngine:
                     if attempt == 0:
                         self.counters.retries += 1
                         continue  # bounded empty retry (AC4.1)
-                    return ArgsResult(args=None, retried=True)
+                    result = ArgsResult(args=None, retried=True)
+                    return result
                 last_text = text
                 break
             else:
-                return ArgsResult(args=None, retried=True)
+                result = ArgsResult(args=None, retried=True)
+                return result
             parsed = self._extract_json_obj(last_text)
             if parsed is None:
-                return ArgsResult(args=None, retried=False)
+                return result
             if not required.issubset(parsed.keys()):
-                return ArgsResult(args=None, retried=False)
+                return result
             if allowed and not set(parsed.keys()).issubset(allowed | set()):
                 parsed = {k: v for k, v in parsed.items() if k in allowed}
-            return ArgsResult(args=parsed, retried=False)
+            result = ArgsResult(args=parsed, retried=False)
+            return result
+        finally:
+            # REQ-26 AC26.2: the args latency breakdown, emitted on every path.
+            args_ms = int((self._clock() - t_start) * 1000)
+            logger.info(
+                "decision_engine generate_args consumer=%s option=%s "
+                "args_latency_ms=%d lock_wait_ms=%d args_valid=%s retried=%s",
+                consumer_id, option, args_ms, lock_wait_ms,
+                result.args is not None, result.retried,
+            )
+            self._lock.release()
 
 
 # ---------------------------------------------------------------------------
@@ -703,13 +1030,24 @@ _ENGINE_LOCK = threading.Lock()
 
 def get_decision_engine(
     config: Optional[EngineConfig] = None,
+    backend_factory: Optional[Callable[..., Any]] = None,
     llama_factory: Optional[Callable[..., Any]] = None,
 ) -> DecisionEngine:
-    """Process-wide engine. Tests pass their own instance; production uses this."""
+    """Process-wide engine. Tests pass their own instance; production uses this.
+
+    With no config passed (production), the ``decision_driver`` block is
+    parsed into EngineConfig (REQ-25 AC25.1) — the block is LIVE, not
+    decorative.
+    """
     global _ENGINE
     with _ENGINE_LOCK:
         if _ENGINE is None:
-            _ENGINE = DecisionEngine(config=config, llama_factory=llama_factory)
+            if config is None:
+                config = load_engine_config()
+            _ENGINE = DecisionEngine(
+                config=config, backend_factory=backend_factory,
+                llama_factory=llama_factory,
+            )
         return _ENGINE
 
 

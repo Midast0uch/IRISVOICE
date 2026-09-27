@@ -54,6 +54,36 @@ _DECISION_META_KEYS = (
     "stage_detail", "cached",
     "brain_bool", "shadow",
 )
+
+# How long a ledger write may run before it is reported as stuck. A write that
+# has not returned by then is not slow, it is blocked, and the row will very
+# likely never land. Kept generous so a genuinely slow store does not cry wolf.
+_INGEST_WATCH_S = 10.0
+
+
+def _watch_ingest(thread: Any, tool_name: str) -> None:
+    """Warn when a ledger write never returns (2026-09-26).
+
+    Measured live: the app logged "[tool-event] meta set for crawler_query:
+    escalated", then no row ever reached system_events, and neither the
+    failure warning nor the "returned falsy" warning fired. A blocked daemon
+    thread is otherwise completely invisible, and a silently missing
+    calibration row is worse than a loud failure — every number derived from
+    the ledger (precision, ECE, the enforcement bar) quietly loses evidence.
+
+    Runs off the caller's thread, so the tool path is never delayed. Never
+    raises.
+    """
+    try:
+        thread.join(_INGEST_WATCH_S)
+        if thread.is_alive():
+            logger.warning(
+                "[tool-event] ledger write for %s has not returned after "
+                "%.0fs — the row may never land (writer blocked on the store?)",
+                tool_name, _INGEST_WATCH_S,
+            )
+    except Exception:  # noqa: BLE001 — a watchdog never breaks the caller
+        pass
 from urllib.parse import urlparse  # _on_page_done:1833, also never imported
 
 # NOTE: `time` was never imported here, yet `_on_page_done` opens with
@@ -2192,6 +2222,7 @@ class AgentToolBridge:
             }, default=str)
 
             def _ingest() -> None:
+                _t_ingest = time.monotonic()
                 try:
                     _ok = ffi_ingest_event(
                         session_id=session_id,
@@ -2210,9 +2241,31 @@ class AgentToolBridge:
                         )
                 except Exception as _exc:  # noqa: BLE001
                     logger.warning("[tool-event] ingest failed for %s: %s", tool_name, _exc)
+                # A COMPLETED write says so (2026-09-26). The row landing was
+                # previously invisible: only failures spoke, so "no log line" was
+                # indistinguishable from "row dropped".
+                logger.debug(
+                    "[tool-event] ingest for %s finished in %.3fs",
+                    tool_name, time.monotonic() - _t_ingest,
+                )
 
-            _threading.Thread(
+            _ingest_thread = _threading.Thread(
                 target=_ingest, daemon=True, name=f"tool-event-{tool_name}",
+            )
+            _ingest_thread.start()
+            # WATCHDOG (2026-09-26 live finding). This was a fire-and-forget
+            # daemon thread, so a write that BLOCKED left no trace at all: the
+            # ledger simply stopped gaining rows while every log line said the
+            # record was built. Measured live: "[tool-event] meta set for
+            # crawler_query: escalated" appeared and no row ever landed, with
+            # neither the failure warning nor the "returned falsy" warning —
+            # and NOT the WAL size that first looked like the cause. A silent
+            # drop is the worst possible failure mode for a calibration ledger,
+            # so the write now reports on itself. The watchdog waits off the
+            # caller's thread: the tool path is never delayed by it.
+            _threading.Thread(
+                target=_watch_ingest, args=(_ingest_thread, tool_name),
+                daemon=True, name=f"tool-event-watch-{tool_name}",
             ).start()
         except Exception as _rx_err:
             # Was `except Exception: pass` — a dropped audit row is a
