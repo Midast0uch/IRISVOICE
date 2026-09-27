@@ -771,6 +771,21 @@ class AgentKernel:
 
             # memory_interface wired later via set_memory_interface()
             self._reviewer = _Reviewer(adapter=self, memory_interface=None)
+            # REQ-13 AC13.1 (T17): hand the Reviewer the decision engine so its
+            # `review_verdict` shadow rows actually FLOW. Without this the
+            # consumer is INERT — the machinery and its tests exist, but the
+            # call site never arrived, so no calibration data accumulates and
+            # TG-6's parity clause can never be met. Resolving the singleton
+            # here is the same thing the ToolDecisionBox does (`_de`), and it
+            # is cheap: the model loads lazily on the first score, not here.
+            try:
+                from backend.agent.decision_engine import get_decision_engine
+
+                self._reviewer.set_review_engine(get_decision_engine())
+            except Exception as _rv_eng_err:  # noqa: BLE001 — advisory
+                logger.debug(
+                    f"[AgentKernel] Reviewer engine unavailable: {_rv_eng_err}"
+                )
             logger.info("[AgentKernel] Reviewer initialized (DER)")
         except Exception as _rv_err:
             logger.warning(f"[AgentKernel] Reviewer unavailable: {_rv_err}")
@@ -779,6 +794,18 @@ class AgentKernel:
             from backend.agent.mode_detector import ModeDetector as _MD
 
             self._mode_detector = _MD()
+            # REQ-15 AC15.2 (T19): same wiring for the `mode` consumer — the
+            # detector must be able to shadow-score, or its rows never flow
+            # (AC15.2's measured confidence is unreachable otherwise).
+            try:
+                from backend.agent.decision_engine import get_decision_engine
+
+                self._mode_detector.set_mode_engine(get_decision_engine())
+            except Exception as _md_eng_err:  # noqa: BLE001 — advisory
+                logger.debug(
+                    f"[AgentKernel] ModeDetector engine unavailable: "
+                    f"{_md_eng_err}"
+                )
             logger.info("[AgentKernel] ModeDetector initialized (DER)")
         except Exception as _md_err:
             logger.warning(f"[AgentKernel] ModeDetector unavailable: {_md_err}")
@@ -793,7 +820,72 @@ class AgentKernel:
         except Exception as _wu_err:
             logger.debug("[AgentKernel] LFM warm-up kick failed: %s", _wu_err)
 
+        # REQ-14 AC14.1 / REQ-29 (T18, T46-T49): install the shadow-row sink.
+        # The monitor and surface consumer modules emit their rows to a
+        # module-level sink, and NOTHING installed one in production — every
+        # row fell through to a log line, so no calibration row ever persisted
+        # and TG-6's parity clause plus Wave 7's >=100-row flip bar were
+        # structurally unreachable. The sink is the SAME single-writer ledger
+        # the dispatched decisions use, so one reader sees every consumer.
+        try:
+            from backend.agent import monitor_shadow as _ms_rows
+            from backend.agent import surface_shadow as _ss_rows
+
+            _shadow_sink = self._shadow_row_sink
+            _ms_rows.set_row_sink(_shadow_sink)
+            _ss_rows.set_row_sink(_shadow_sink)
+            logger.info(
+                "[AgentKernel] shadow row sink installed (monitor + surface)"
+            )
+        except Exception as _sink_err:  # noqa: BLE001 — advisory
+            logger.warning(
+                f"[AgentKernel] shadow row sink install failed: {_sink_err}"
+            )
+
         logger.info("[AgentKernel] Initialization complete")
+
+    def _shadow_row_sink(self, row: Optional[dict]) -> None:
+        """Persist ONE shadow-consumer row to the single-writer ledger.
+
+        REQ-14 AC14.1 / REQ-29 (T18, T46-T49). The monitor consumers
+        (`sufficient`, `done`, `on_track`) and the surface consumers
+        (`has_gaps`, `use_thinking`, `escalate_incomplete`, `needs_action`) are
+        SHADOW: they must write a calibration row and change no decision.
+
+        Why this method exists: the consumer modules emitted their rows to a
+        sink that no production code installed, so a live session produced log
+        lines and no rows. Wave 7 flips a consumer only on >= 100 measured
+        rows, so the enforcement gate was unreachable without it.
+
+        The parity pair (`chosen` vs `brain_bool`) rides the ledger's decision
+        block — that is what lets a reader compute precision and ECE for a
+        consumer that never dispatches a tool of its own.
+
+        Never raises: an observer must never block a step (AC14.4 shape).
+        """
+        if not row or not isinstance(row, dict):
+            return
+        try:
+            bridge = getattr(self, "_tool_bridge", None)
+            if bridge is None or not hasattr(bridge, "record_decision"):
+                return
+            meta = dict(row)
+            meta.setdefault("route", "shadow")
+            if not meta.get("engine"):
+                try:
+                    from backend.agent.decision_engine import get_decision_engine
+
+                    meta["engine"] = str(
+                        getattr(get_decision_engine(), "model_id", "") or ""
+                    )
+                except Exception:  # noqa: BLE001 — attribution is best-effort
+                    meta["engine"] = ""
+            bridge.record_decision(
+                meta, "shadow",
+                session_id=str(getattr(self, "session_id", "") or "shadow"),
+            )
+        except Exception as exc:  # noqa: BLE001 — a row never blocks a step
+            logger.debug("[AgentKernel] shadow row sink failed: %r", exc)
 
     def set_main_loop(self, loop: Any) -> None:
         """Capture the running event loop so background threads can dispatch broadcasts."""
@@ -2452,7 +2544,23 @@ class AgentKernel:
             "given that",
             "assuming",
         ]
-        return any(trigger in t for trigger in THINKING_TRIGGERS)
+        _lexical_thinking = any(trigger in t for trigger in THINKING_TRIGGERS)
+        # REQ-29 AC29.2 (T47): shadow-score `use_thinking`. The phrase list is
+        # RETAINED as the engine-unavailable fallback (AC29.7), and the user's
+        # explicit `concise`/`thorough` setting plus the social short-circuit
+        # above are untouched — those are rules, not heuristics to calibrate.
+        try:
+            from backend.agent import surface_shadow as _ss
+
+            _value, _row = _ss.surface_bool(
+                "use_thinking", text,
+                brain_bool_fn=lambda: _lexical_thinking,
+                engine=_ss.AUTO_ENGINE,
+            )
+            _ss.emit_row(_row)
+            return bool(_value)
+        except Exception:  # noqa: BLE001 — the phrase list is the fallback
+            return _lexical_thinking
 
     @staticmethod
     def _parse_thinking(text: str) -> tuple:
@@ -3145,6 +3253,28 @@ class AgentKernel:
                     _params = _json.loads(_args_raw) if _args_raw.strip() else {}
                 except Exception:
                     _params = {"__raw_arguments__": _args_raw}
+                # REQ-16 AC16.2 (T20): this ReAct loop picks tools with native
+                # function calling, OUTSIDE ToolDecisionBox.resolve() — so the
+                # engine never saw this traffic and the reliability curve was
+                # built on a biased subset. Shadow-score the same choice here
+                # (engine pick vs the tool the Brain actually called) and write
+                # the row through the box's single ledger writer. `async_=True`
+                # = a daemon thread, so the fast chat path pays ZERO added
+                # latency; the whole block is best-effort and cannot break it.
+                try:
+                    self._get_tool_box().record_shadow_tool_choice(
+                        goal=text,
+                        observed_tool=_name,
+                        observed_params=_params,
+                        session_id=self.conversation_id or "voice",
+                        conversation_id=self.conversation_id or "",
+                        async_=True,
+                    )
+                except Exception as _shadow_err:  # noqa: BLE001
+                    logger.debug(
+                        "[RespondDirect] shadow tool-choice row failed: %r",
+                        _shadow_err,
+                    )
                 try:
                     _raw = asyncio.run(
                         self._tool_bridge.execute_tool(
@@ -5975,7 +6105,15 @@ class AgentKernel:
     def _get_failure_warnings(self, task: str) -> str:
         """
         Fetch high-signal failure warnings from Mycelium via ResolutionEncoder.
-        Returns "None" on any error â€” never raises, never blocks.
+
+        REQ-24 (T34): builds the failure dict from recorded session state and
+        passes a DICT to ``encode_with_resolution`` — the signature is
+        ``(failure: Dict, conn=None)`` and the encoder's episode lookup uses
+        ``tool_name`` as the LIKE pattern against episode task summaries. The
+        old code passed the task STRING on the CLASS, the ``.get()`` raised,
+        and the ``except`` swallowed it, so this ALWAYS returned "None".
+        Returns the encoded header string, or the documented empty value
+        "None" on miss — never raises, never blocks.
         """
         try:
             from backend.memory.mycelium.interpreter import ResolutionEncoder
@@ -5986,10 +6124,22 @@ class AgentKernel:
                 and self._memory_interface._mycelium is not None
             ):
                 conn = self._memory_interface._mycelium.conn
-                encoded = ResolutionEncoder.encode_with_resolution(task, conn)
+                failure = {
+                    "task_summary": str(task or "")[:200],
+                    "tool_name": str(task or "")[:80],
+                    "session_id": getattr(self, "session_id", "") or "default",
+                }
+                encoded = ResolutionEncoder().encode_with_resolution(
+                    failure, conn
+                )
                 return encoded or "None"
-        except Exception:
-            pass
+        except Exception as _e:
+            # REQ-24 AC24.5: log the non-recoverable error WITH its exception
+            # type instead of silently returning "None".
+            logger.error(
+                "[AgentKernel] _get_failure_warnings failed (%s) — returning empty",
+                type(_e).__name__,
+            )
         return "None"
 
     def _der_recall_neighborhood(self, item, session_id: str = "") -> list:
@@ -6723,32 +6873,17 @@ class AgentKernel:
     def _is_web_search_request(self, text: str) -> bool:
         """Quick heuristic: does the user message explicitly request a web search?
 
-        Uses precise phrase triggers rather than broad keywords to avoid
-        blocking legitimate non-search queries. Only matches when the user
-        clearly intends to fetch content from the internet.
+        REQ-15 AC15.3 (T19): this method's private trigger list was a DUPLICATE
+        of ``explorer._WEB_INTENT_TRIGGERS``. Both are now one consumer —
+        delegated here so there is exactly one place the phrasing list lives,
+        with the engine's ``web_intent`` judgment consulted first when an engine
+        is available (AC15.4: the keywords remain the fallback).
         """
-        if not text:
+        try:
+            from backend.agent.explorer import _is_web_intent
+            return bool(_is_web_intent(text or ""))
+        except Exception:  # noqa: BLE001 — a failed check is simply "no"
             return False
-        _lower = text.lower().strip()
-        _triggers = [
-            "web search",
-            "websearch ",
-            "search the web",
-            "search on the internet",
-            "search online",
-            "look up online",
-            "look up on the",
-            "find on the web",
-            "find on the internet",
-            "browse the web",
-            "do a web search",
-            "research ",
-            "do research",
-            "do some research",
-            "find information about",
-            "look up information",
-        ]
-        return any(t in _lower for t in _triggers)
 
     def _looks_informational(self, text: str) -> bool:
         """Conservative fact-seeking intent signal (used ONLY with web mode ON).
@@ -11907,6 +12042,38 @@ Respond with a JSON object:
         """
         queue.mark_failed(item.step_id)
         aborted = queue.abort_descendants(item.step_id)
+        # ── REQ-17 AC17.1 + REQ-11 AC11.1/AC11.2 (T21/T14 wiring) ──────────
+        # This is the ONE failure-triage seam: a step that failed after its
+        # retry lands here from both loop sites (the main step loop and the
+        # extra-step loop). Two things must happen BEFORE the recovery
+        # sub-graph is planned below:
+        #   (a) seed the failure veto, so the graft child cannot re-pick the
+        #       tool that just failed (AC11.2). The veto is keyed on
+        #       `objective_anchor` — the overall task goal, which graft
+        #       children inherit (der_loop.py:230) — and the resolve() call
+        #       site passes it, so the veto is actually reachable.
+        #   (b) consult the `recovery_strategy` triage consumer (AC17.1). It is
+        #       SHADOW: the row is recorded and the counters / the existing
+        #       graft path still decide (AC17.2), so a confident `retry_same`
+        #       can never route a repeat the counters would have escalated.
+        # Best-effort — an advisory triage must never block a recovery.
+        try:
+            _triage_box = self._get_tool_box()
+            _triage_tool = str(getattr(item, "tool", "") or "")
+            _triage_obj = (
+                getattr(item, "objective_anchor", "")
+                or getattr(item, "description", "")
+                or ""
+            )
+            _triage_box.note_failure(
+                objective=_triage_obj, failed_tool=_triage_tool)
+            _triage_box.recovery_strategy(
+                failed_tool=_triage_tool,
+                error_snippet=str(step_result or "")[:200],
+                objective=_triage_obj,
+            )
+        except Exception as _triage_err:  # noqa: BLE001 — advisory only
+            logger.debug("[DER] failure triage consult failed: %r", _triage_err)
         # AC2.1/AC9.3 (session-319 fix): a failed step must still teach turn
         # memory the addresses it touched. Finalize (which used to be the only
         # writer) is skipped on this path, so without this call a partially
@@ -13408,10 +13575,29 @@ Respond with a JSON object:
             if not _m:
                 return False, ""
             _data = json.loads(_m.group())
-            return bool(_data.get("sufficient")), str(_data.get("missing", ""))[:300]
+            _brain_sufficient = bool(_data.get("sufficient"))
+            _brain_missing = str(_data.get("missing", ""))[:300]
         except Exception as _gate_exc:
             logger.debug("[DER] sufficiency gate inference failed: %s", _gate_exc)
             return False, ""
+
+        # REQ-14 AC14.1 (T18): shadow-score the `sufficient` consumer and emit
+        # the row. The BRAIN's answer still decides, and the gate stays
+        # advisory-FAIL-CLOSED (AC14.4): `sufficiency_gate` returns (False, "")
+        # on any failure, exactly the shape this method already had. The engine
+        # never writes the `missing` text (AC14.2).
+        try:
+            from backend.agent import monitor_shadow as _ms
+
+            _value, _missing = _ms.sufficiency_gate(
+                _prompt,
+                brain_bool_fn=lambda: _brain_sufficient,
+                brain_text_fn=lambda: _brain_missing,
+                engine=_ms.AUTO_ENGINE,
+            )
+            return _value, _missing
+        except Exception:  # noqa: BLE001 — the gate is advisory
+            return _brain_sufficient, _brain_missing
 
     @staticmethod
     def _smart_excerpt(text: str, cap: int) -> str:
@@ -14233,12 +14419,16 @@ Respond with a JSON object:
     def _engine_gate_surface(
         self, response: str, turn_id: str = ""
     ) -> Optional[str]:
-        """Presentation gate (specs/tool-decision-engine REQ-11).
+        """Presentation gate (specs/tool-decision-engine REQ-11, REQ-23).
 
-        Returns "card" / "plain" when the engine gate is decisive, else None
-        (caller uses the legacy heuristic). Gate-layer only — surface choice,
-        never content (content belongs to chat-communication-lanes). Never
-        raises.
+        Returns "card" / "plain" — the engine verdict — whenever the engine
+        answers, INCLUDING in shadow mode: the verdict SURFACES for the async
+        calibration observer (REQ-23 AC23.1) while steering remains
+        structurally impossible — nothing reads `_last_surface_choice` (the
+        writes are removed). Returns None only when the engine is unavailable
+        or an ENFORCED verdict is below threshold (the legacy heuristic
+        decides). Gate-layer only — surface choice, never content (content
+        belongs to chat-communication-lanes). Never raises.
         """
         try:
             from backend.agent.decision_engine import (
@@ -14247,11 +14437,16 @@ Respond with a JSON object:
             )
         except Exception:
             return None
-        # AC11.4: one card per turn — never consult for a second card.
-        if getattr(self, "_last_render_emitted", False):
+        try:
+            eng = get_decision_engine()
+        except Exception:
             return None
-        eng = get_decision_engine()
         n = len(response or "")
+        # REQ-23 AC23.2: AC11.4 (one card per turn) moved to the render sites,
+        # so a turn WITH a card already emitted must STILL yield an observer
+        # verdict — otherwise "engine wanted plain, live produced card" is
+        # never measured. The frame admits the card exists (truthful).
+        already = bool(getattr(self, "_last_render_emitted", False))
         frame = {
             "content_chars": (
                 "small" if n < 300 else "medium" if n < 1500 else "large"
@@ -14259,24 +14454,24 @@ Respond with a JSON object:
             "has_structure": any(
                 m in response for m in ("```", "\n|", "\n- ", "\n# ", "\n1. ")
             ),
-            "card_already_rendered": False,
+            "card_already_rendered": already,
             "zone": self._pacman_zone_for_turn(),
             "mode": getattr(self, "_launcher_mode", "personal"),
         }
         options = ["plain_text", "prism_card", "card_plus_summary"]
         ds = eng.decide("presentation", options, frame)
         if ds is None:
-            self._last_surface_choice = "card_plus_summary"  # legacy default
             return None
         enforced = "presentation" in enforced_consumers()
-        confident = ds.confidence >= eng._cfg.threshold_for("presentation")
+        _thr = eng._cfg.threshold_for("presentation")
+        confident = _thr is not None and ds.confidence >= _thr
         meta = {
             "engine": eng.model_id or "decision-engine",
             "consumer_id": "presentation",
             "chosen": ds.chosen,
             "confidence": round(ds.confidence, 4),
             "candidates": len(options),
-            "threshold": eng._cfg.threshold_for("presentation"),
+            "threshold": _thr,
             "args_valid": None,
             "retried": False,
             "engine_latency_ms": ds.engine_latency_ms,
@@ -14291,14 +14486,12 @@ Respond with a JSON object:
                          session_id=getattr(self, "session_id", "") or "")
             except Exception:
                 pass
-        # Session-345 (live finding: duplicate render): in SHADOW the engine
-        # must observe, never steer. Writing _last_surface_choice from a shadow
-        # decision made plain_text suppress the supportive-excerpt branch,
-        # duplicating the full answer in bubble AND prism card. Only an
-        # enforced+confident verdict may steer.
         if not (enforced and confident):
-            return None  # shadow / unconfident → heuristic still decides
-        self._last_surface_choice = ds.chosen
+            # Shadow / unconfident: the verdict RETURNS for the observer's
+            # calibration log while steering remains structurally impossible —
+            # nothing reads `_last_surface_choice` (the writes are removed,
+            # REQ-23). Only an enforced+confident verdict may steer.
+            return "plain" if ds.chosen == "plain_text" else "card"
         return "plain" if ds.chosen == "plain_text" else "card"
 
     def _observe_surface_async(
@@ -14820,14 +15013,24 @@ Respond with a JSON object:
                     if spec and capability_allowed(spec):
                         params: Dict[str, Any] = {"query": goal}
                         # Consult SourceRegistry for known URLs (learned knowledge)
+                        # REQ-12 (T16): OFF the DER thread and bounded. This was
+                        # `_asyncio.run(sr.resolve(goal, quick=True))` — building
+                        # and tearing down an event loop inside the step, before
+                        # the engine could even start. Now: TTL cache first, then
+                        # submit to the gateway's MAIN loop with a <=100ms budget;
+                        # over budget we proceed with an empty hint and the
+                        # in-flight lookup's result is cached for the next step.
                         try:
-                            from backend.crawler.source_registry import get_source_registry
-                            import asyncio as _asyncio
-                            sr = get_source_registry()
-                            # quick=True: no LLM topic-extraction on the gate's
-                            # hot path (per-step resolution would otherwise burn
-                            # a quota slot + up to 40s per call).
-                            sr_result = _asyncio.run(sr.resolve(goal, quick=True))
+                            from backend.agent.explorer import source_hint
+                            _sr_loop = None
+                            try:
+                                from backend.iris_gateway import get_iris_gateway
+                                _sr_loop = getattr(get_iris_gateway(), "_main_loop", None)
+                            except Exception:  # noqa: BLE001 — no gateway → empty hint
+                                _sr_loop = None
+                            sr_result = source_hint(goal, loop=_sr_loop)
+                        except Exception:  # noqa: BLE001 — a hint never fails a step
+                            sr_result = {}
                             if sr_result.get("hit") and sr_result.get("sources"):
                                 known_urls = [
                                     s["url"] for s in sr_result["sources"]
@@ -15198,6 +15401,14 @@ Respond with a JSON object:
                         step={
                             "description": item.description or item.objective_anchor or "",
                             "step_number": item.step_number,
+                            # REQ-11 AC11.1/AC11.2: the veto KEY. Without it,
+                            # resolve() falls back to the per-step description,
+                            # so a veto seeded by the parent's failure would be
+                            # unreachable for the graft child — which inherits
+                            # `objective_anchor` (the never-changing task goal,
+                            # der_loop.py:230) but carries a NEW description.
+                            "objective_anchor": getattr(
+                                item, "objective_anchor", None),
                         },
                         evidence=_evidence,
                         session_id=_session,
@@ -18303,6 +18514,22 @@ Respond with a JSON object:
                 return None
 
             data = _json.loads(m.group())
+            # REQ-14 AC14.1 (T18): shadow-score the `done` consumer and emit
+            # the row. The Brain's bit still decides — the goal-contract
+            # override below is PRESERVED (AC14.1) — and the engine only ever
+            # supplies the bool, never the next-goal text (AC14.2).
+            try:
+                from backend.agent import monitor_shadow as _ms
+
+                _done_value, _done_row = _ms.monitor_bool(
+                    "done", prompt,
+                    brain_bool_fn=lambda: data.get("done") is True,
+                    brain_text_fn=lambda: str(data.get("description", "") or ""),
+                    engine=_ms.AUTO_ENGINE,
+                )
+                _ms.emit_row(_done_row)
+            except Exception:  # noqa: BLE001 — advisory observer
+                pass
             if data.get("done") is True:
                 # Goal contract T6 (REQ-3 AC3.6): the turn SHALL NOT end while
                 # a required fact is open and unblocked — request work on the
@@ -18394,6 +18621,23 @@ Respond with a JSON object:
             m = _re.search(r"\{[\s\S]+\}", raw)
             if m:
                 data = _json.loads(m.group())
+                # REQ-14 AC14.1 (T18): shadow-score the `on_track` consumer and
+                # emit the row. The Brain's drift verdict still decides; the
+                # engine only observes (AC14.2 — it never writes the note or the
+                # suggestion).
+                try:
+                    from backend.agent import monitor_shadow as _ms
+
+                    _ot_value, _ot_row = _ms.monitor_bool(
+                        "on_track", prompt,
+                        brain_bool_fn=lambda: bool(data.get("on_track", True)),
+                        brain_text_fn=lambda: str(
+                            data.get("suggestion", "") or ""),
+                        engine=_ms.AUTO_ENGINE,
+                    )
+                    _ms.emit_row(_ot_row)
+                except Exception:  # noqa: BLE001 — advisory observer
+                    pass
                 if not data.get("on_track", True):
                     note = data.get("note", "")
                     suggestion = data.get("suggestion", "")

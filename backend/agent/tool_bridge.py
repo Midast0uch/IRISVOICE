@@ -34,6 +34,26 @@ from datetime import datetime
 _DECISION_META: contextvars.ContextVar = contextvars.ContextVar(
     "iris_decision_meta", default=None
 )
+
+# The keys the ledger keeps from a decision meta. Extracted from the payload
+# builder so the CONTRACT is checkable in a test (a field silently dropped by
+# filtering is a calibration row that reads as complete and is not).
+# `brain_bool`/`shadow` (REQ-14 AC14.1, REQ-29): a shadow row's parity pair —
+# the engine's answer and the Brain's ACTUAL answer. Without them a monitor or
+# surface row lands with no reference to judge it against, so no precision or
+# ECE can ever be computed from it.
+_DECISION_META_KEYS = (
+    "engine", "consumer_id", "route", "chosen",
+    "confidence", "candidates", "candidate_names", "threshold",
+    "args_valid", "retried", "escalated",
+    "engine_latency_ms", "decision_latency_ms",
+    "dag_node_id",
+    "previous_chosen", "previous_outcome", "step_index",
+    "needs_vision", "vision_candidates",
+    "final_choice", "engine_correct",
+    "stage_detail", "cached",
+    "brain_bool", "shadow",
+)
 from urllib.parse import urlparse  # _on_page_done:1833, also never imported
 
 # NOTE: `time` was never imported here, yet `_on_page_done` opens with
@@ -2057,13 +2077,24 @@ class AgentToolBridge:
 
         Used to attach a screenshot to the tool-execution event so vision /
         screenshot tool results are recallable from the application memory db.
-        Returns None if the vision server is unavailable or capture fails
-        (e.g. headless environment) — never raises.
+        REQ-5 (T5, tool-decision-engine-improvements): reuses the frame the
+        vision tool JUST analyzed (the server's last image, fresh within 5 s)
+        instead of executing a second synchronous screen capture — +100-250ms
+        of synchronous thread time saved per vision action. Falls back to a
+        fresh capture when no recent frame exists. Returns None if the vision
+        server is unavailable or capture fails (e.g. headless environment) —
+        never raises.
         """
         try:
             vision_server = self._mcp_servers.get("vision")
-            if vision_server is not None and hasattr(vision_server, "screenshot_to_bytes"):
-                return vision_server.screenshot_to_bytes()
+            if vision_server is not None:
+                recent = getattr(vision_server, "recent_image", None)
+                if callable(recent):
+                    blob = recent()
+                    if blob is not None:
+                        return blob  # the just-analyzed frame — no second capture
+                if hasattr(vision_server, "screenshot_to_bytes"):
+                    return vision_server.screenshot_to_bytes()
         except Exception as exc:  # noqa: BLE001
             logger.debug("screenshot capture for memory failed: %s", exc)
         return None
@@ -2136,17 +2167,7 @@ class AgentToolBridge:
             if isinstance(_dm, dict):
                 _decision_block = {
                     k: _dm.get(k)
-                    for k in (
-                        "engine", "consumer_id", "route", "chosen",
-                        "confidence", "candidates", "candidate_names", "threshold",
-                        "args_valid", "retried", "escalated",
-                        "engine_latency_ms", "decision_latency_ms",
-                        "dag_node_id",
-                        "previous_chosen", "previous_outcome", "step_index",
-                        "needs_vision", "vision_candidates",
-                        "final_choice", "engine_correct",
-                        "stage_detail", "cached",
-                    )
+                    for k in _DECISION_META_KEYS
                     if k in _dm
                 }
 
@@ -3736,6 +3757,20 @@ class AgentToolBridge:
                 elif ev == "CRAWLER_PHASE" and isinstance(pl, dict):
                     _emit_phase(pl.get("phase", "unknown"), pl.get("phase_sequence", 0))
 
+            # ── REQ-8 (T11): QUICK-SEARCH TIER — the provider layer ────────
+            # `search` is an INSTANT lookup, so it is served by
+            # backend/crawler/search_providers/ directly: ONE provider call,
+            # no crawl subprocess, no URL planning. The deep CrawlOrchestrator
+            # path below stays intact and is also this tier's FALLBACK
+            # (REQ-8 edge cases: no real provider configured, provider error,
+            # or zero results). `_quick_fallback` carries the reason into the
+            # deep path's envelope so a degradation is answerable from the
+            # result rather than only from logs.
+            _quick, _quick_fallback = await _quick_search_via_provider(
+                query, _QUICK_SEARCH_MAX_RESULTS, _ui_emit, _on_page)
+            if _quick is not None:
+                return _quick
+
             orch = CrawlOrchestrator()
             crawl_result = await orch.research(
                 query=query,
@@ -3767,7 +3802,7 @@ class AgentToolBridge:
 
         _sources = [getattr(_p, "url", "") for _p in getattr(crawl_result, "pages", []) if getattr(_p, "url", "")]
 
-        return {
+        _envelope = {
             "success": True,
             "query": query,
             "content": _combined,
@@ -3775,6 +3810,11 @@ class AgentToolBridge:
             "sources": _sources,
             "trust": "untrusted",  # external tool result — route to reference zone
         }
+        if _quick_fallback:
+            # REQ-8 edge case: the quick tier declined — record WHY in meta so
+            # a silent degradation is answerable from the result itself.
+            _envelope["meta"] = {"quick_search_fallback": _quick_fallback}
+        return _envelope
 
     async def _execute_open_url(self, params: Dict, session_id: str) -> Dict:
         """Agent tool: open a URL inside IRIS's in-app browser surface.
@@ -3880,6 +3920,150 @@ class AgentToolBridge:
 
 # Singleton
 _agent_tool_bridge: Optional[AgentToolBridge] = None
+
+
+# ── REQ-8 (T11): quick-search tier ─────────────────────────────────────────
+# How many provider results the instant-lookup tier asks for. Small on purpose:
+# `search` is a quick factual lookup (AC8.2 ≤ 500ms p50), not a research crawl —
+# depth is `crawler_query`'s job (AC8.3/AC8.4).
+_QUICK_SEARCH_MAX_RESULTS = 5
+
+# Content cap for the provider envelope, mirroring the deep path's cap so the
+# two tiers cannot return wildly different payload sizes for the same tool.
+_QUICK_SEARCH_CONTENT_CAP = 8_000
+
+
+async def _quick_search_via_provider(
+    query: str,
+    max_results: int,
+    ui_emit,
+    on_page,
+) -> "tuple[Optional[Dict[str, Any]], str]":
+    """REQ-8 (T11): serve ``search`` from ``backend/crawler/search_providers/``.
+
+    Returns ``(envelope, "")`` when the quick tier answered, or
+    ``(None, reason)`` when the caller must fall back to the deep
+    ``CrawlOrchestrator`` path.
+
+    Mirrors ``CrawlPlanner._plan_with_configured_provider``'s guard exactly:
+    the **LLM provider is never used here** (owner directive 2026-09-13 — the
+    LLM must never fabricate URLs), so "no real search backend configured" is
+    itself a fallback reason, not a success. Everything fails OPEN to the deep
+    path: a misbehaving provider must never fail the step (REQ-8 edge cases).
+
+    ``ui_emit`` / ``on_page`` are the caller's REQ-16 emitters — this function
+    emits the SAME browser-panel + TASK_PROGRESS vocabulary the orchestrator
+    path does (CT-DEI-4 locks it), just from the provider's result list instead
+    of from crawl progress events.
+    """
+    from types import SimpleNamespace as _NS
+
+    try:
+        from backend.crawler.search_providers import get_search_provider
+        from backend.crawler.search_providers.base import SearchProviderError
+        from backend.crawler.search_providers.llm import LLMSearchProvider
+    except Exception as exc:  # noqa: BLE001 — provider layer absent → deep path
+        logger.warning("[quick_search] provider layer unavailable: %s", exc)
+        return None, f"provider_layer_unavailable: {exc}"
+
+    try:
+        provider = get_search_provider()
+    except Exception as exc:  # noqa: BLE001 — fail open
+        logger.warning("[quick_search] get_search_provider() failed: %s", exc)
+        return None, f"provider_resolution_failed: {exc}"
+
+    if isinstance(provider, LLMSearchProvider):
+        # No real search backend (provider="llm", or "exa" already fell back
+        # internally because no key resolved). AC8.1 excludes LLM URL planning
+        # from this tier, so degrade to the deep path instead of planning URLs.
+        logger.info(
+            "[quick_search] no real search backend configured for %r — deep path",
+            query[:60],
+        )
+        return None, "no_provider_configured"
+
+    _cls = type(provider).__name__
+    source_name = (
+        _cls[: -len("SearchProvider")].lower()
+        if _cls.endswith("SearchProvider") else _cls.lower()
+    )
+
+    try:
+        result = await provider.search(query, max_results=max_results)
+    except SearchProviderError as exc:
+        logger.warning("[quick_search] source=%s failed for %r: %s",
+                       source_name, query[:60], exc)
+        return None, f"provider_error: {exc}"
+    except Exception as exc:  # noqa: BLE001 — fail open, never fail the step
+        logger.warning("[quick_search] source=%s raised unexpectedly for %r: %s",
+                       source_name, query[:60], exc)
+        return None, f"provider_exception: {type(exc).__name__}"
+
+    items = [i for i in (getattr(result, "results", None) or [])
+             if getattr(i, "url", "")]
+    if not items:
+        logger.info("[quick_search] source=%s urls=0 for %r — deep path",
+                    source_name, query[:60])
+        return None, "provider_zero_results"
+
+    logger.info("[quick_search] source=%s urls=%d for %r",
+                source_name, len(items), query[:60])
+
+    # ── REQ-16 frames (CT-DEI-4): the SAME vocabulary the crawl path speaks,
+    # emitted from the provider's result list. Best-effort throughout.
+    _urls = [i.url for i in items]
+    try:
+        ui_emit(_NS(event="CRAWLER_STARTED", payload={
+            "query": query, "url_count": len(_urls), "urls": _urls,
+        }))
+    except Exception:
+        pass
+    for _n, _item in enumerate(items, 1):
+        try:
+            on_page(_item.url, _n, len(items), title=_item.title or "")
+        except Exception:
+            pass
+        try:
+            ui_emit(_NS(event="CRAWLER_PAGE_FETCHED", payload={
+                "url": _item.url, "page_number": _n, "total": len(items),
+                "title": _item.title or "", "host": "",
+            }))
+        except Exception:
+            pass
+    try:
+        ui_emit(_NS(event="CRAWLER_COMPLETE", payload={
+            "page_count": len(items), "summary": "",
+        }))
+    except Exception:
+        pass
+
+    # ── Envelope: identical SHAPE to the deep path (the tool contract) ─────
+    _parts: List[str] = []
+    for _item in items:
+        _body = (_item.content or _item.snippet or "").strip()
+        if not _body:
+            _body = _item.title or _item.url
+        _parts.append(f"--- Source: {_item.url} ---\n{_body}")
+    _combined = "\n\n".join(_parts)
+    if len(_combined) > _QUICK_SEARCH_CONTENT_CAP:
+        _combined = _combined[:_QUICK_SEARCH_CONTENT_CAP] + "\n\n[...truncated...]"
+
+    return {
+        "success": True,
+        "query": query,
+        "content": _combined,
+        "url": _urls[0],
+        "sources": _urls,
+        "trust": "untrusted",  # external tool result — route to reference zone
+        # Additive attribution: which tier answered, and via which provider.
+        # The provider's SELF-DECLARED identity wins (SearchResult.provider is
+        # the same tag every log line uses); the class-derived tag is the
+        # fallback for a provider that leaves it empty.
+        "meta": {
+            "quick_search": True,
+            "provider": getattr(result, "provider", "") or source_name,
+        },
+    }, ""
 
 
 
