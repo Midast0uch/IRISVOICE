@@ -3089,8 +3089,24 @@ class LocalModelManager:
                             vram_budget_gb=max(0.0, ledger_budget - _mmproj_reserve),
                             file_size_gb=file_size_gb,
                             kv_cache_type=params.get("cache_type_k", "q8_0"),
+                            # Tool duty: let VRAM decide (2026-09-27).
+                            # This used to hand TOOL_CTX_CAP to the deriver as
+                            # its CEILING, so a local tool model could never be
+                            # sized above 16384 no matter how much VRAM was
+                            # free. Because DER budgets every turn from the
+                            # SMALLER window of the two roles (pinned by
+                            # test_ctb4_turn_budget_is_capped_by_the_smaller_
+                            # window), that flat literal throttled the whole
+                            # agent, not just the tool call. derive_config is
+                            # the only thing here that knows what fits, so give
+                            # it the model's native context and let it choose.
+                            # TOOL_CTX_CAP is now a FLOOR: the ceiling to
+                            # consider when the model reports no native context.
                             max_ctx=(
-                                min(int(params.get("n_ctx", MAX_CTX)), TOOL_CTX_CAP)
+                                max(
+                                    int(model_meta.get("context_length") or 0),
+                                    TOOL_CTX_CAP,
+                                )
                                 if purpose == "tool"
                                 else params.get("n_ctx")
                             ),
@@ -3098,10 +3114,23 @@ class LocalModelManager:
                         # The deriver may only NARROW a profile's context, never
                         # widen it past what the profile (and its KV type) was
                         # written for.
-                        params["n_ctx"] = min(
-                            int(params.get("n_ctx", derived["n_ctx"])),
-                            derived["n_ctx"],
-                        )
+                        if purpose == "tool":
+                            # VRAM-derived for tool duty: derive_config already
+                            # proved this fits the free budget, so take ITS
+                            # answer. The old min() against the profile's n_ctx
+                            # would have re-imposed the same small literal the
+                            # change above just removed (a 4096 profile would
+                            # clamp a comfortably-fitting 32768 back to 4096).
+                            # MIN_CTX stays as the floor.
+                            params["n_ctx"] = max(int(derived["n_ctx"]), MIN_CTX)
+                        else:
+                            # Reasoning/local duty: the deriver may only NARROW
+                            # a profile's context, never widen it past what the
+                            # profile and its KV type were written for.
+                            params["n_ctx"] = min(
+                                int(params.get("n_ctx", derived["n_ctx"])),
+                                derived["n_ctx"],
+                            )
                         params["n_batch"] = derived["n_batch"]
                         params["n_gpu_layers"] = derived["n_gpu_layers"]
                         config_source = "derived"
