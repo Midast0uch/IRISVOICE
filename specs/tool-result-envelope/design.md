@@ -164,7 +164,9 @@ Amendment additions (session-318 — same file, still stdlib-only, still zero I/
 # pivot rule; refusal/exclusion logic always uses the FULL in-memory set.
 # Identity (REQ-10): sha256(normalized extracted text); dead-address set per turn.
 # Deadlines (REQ-11, der_constants.py — UNVERIFIED defaults, tuned from REQ-12):
-DEADLINE_CRAWL_S = 150        # above conv-102 observed 82-110s max
+DEADLINE_CRAWL_S = 240        # RESOLVED 2026-09-26: was 150 ("above conv-102
+                              # observed 82-110s max"); two live crawls died at
+                              # 157-159s, so 240 covers the realistic wall
 DEADLINE_READ_S = 60
 DEADLINE_DEFAULT_S = 90
 STALL_WARN_S = 30             # heartbeat stall → warning only, never abort

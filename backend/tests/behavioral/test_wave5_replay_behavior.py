@@ -70,6 +70,13 @@ class _Kernel:
             "_der_streak_gate", "_der_visited_block",
             "_build_planning_prompt", "_der_maybe_open_recovery",
             "_der_report_run_grade", "_der_tool_deadline",
+            # Session-326 added the card-settle emit INSIDE _der_report_run_grade
+            # (agent_kernel.py:5976). The stub binds the REAL grade method, so it
+            # must carry that method's real dependency or the grade path raises
+            # AttributeError and the outer except at :5978 returns "" instead of
+            # the computed grade. Fixture drift, not a behavior change: no
+            # assertion in this file was touched.
+            "_der_emit_card_settle",
         ):
             if hasattr(AgentKernel, name):
                 setattr(self, name, getattr(AgentKernel, name).__get__(self))

@@ -245,7 +245,15 @@ def test_ct15_deadline_mapping_per_family():
 
     from backend.agent.agent_kernel import AgentKernel
 
-    assert AgentKernel._der_tool_deadline(SimpleNamespace(), "crawler_query") == 150
+    # AMENDED 2026-09-26: the gather deadline is 240s, not the spec's original
+    # 150s — specs/tool-result-envelope T18 recorded that triple as
+    # "150/60/90s UNVERIFIED", and measurement resolved it. Two live crawls
+    # died at 157-159s (at the finish line), so `der_constants.py` raised
+    # DEADLINE_CRAWL_S to 240 with the reason written in place; the sibling
+    # read (60) and default (90) values are unchanged. The assertion keeps its
+    # exact-equality strength against the current table — only the stale
+    # expected constant moved. This test-input change is reported, not silent.
+    assert AgentKernel._der_tool_deadline(SimpleNamespace(), "crawler_query") == 240
     assert AgentKernel._der_tool_deadline(SimpleNamespace(), "read_file") == 60
     assert AgentKernel._der_tool_deadline(SimpleNamespace(), "speak") == 90
 
