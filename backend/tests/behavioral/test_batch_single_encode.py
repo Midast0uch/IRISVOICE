@@ -1,161 +1,80 @@
-"""Behavioural tests: one encode, one session run per batch (REQ-30 AC30.3, T40).
+"""REQ-20 batched scoring is REMOVED — this file guards the removal.
 
-AC30.3 — WHEN multiple consumers are batched THEN THE SYSTEM SHALL perform ONE
-encode and ONE session run for the batch, VERIFIED rather than assumed.
+THE MEASUREMENT THAT REMOVED IT (2026-09-26, real model). Three DISTINCT
+questions (distinct instructions, distinct consumer ids, own labels) were
+scored two ways against the same state:
 
-REQ-20 claims this natively; the reference runner builds structure tokens per
-`Task`, so the claim needed counting. The runner now records `encode_calls` and
-`run_calls`, and this suite is what makes the numbers mean something.
+    in one batch of three, `bench_t40_m1` chose "no"
+    scored alone, the same question chose "yes"
+
+So batching MOVED a verdict. The pre-existing tests here only ever compared a
+batch of ONE against a solo run (equal within 1e-6), which is why this stayed
+invisible while the machinery looked healthy.
+
+WHY THAT MATTERS MORE THAN THE SPEED. The calibrated threshold is only valid
+for the distribution it was measured on (solo runs, one question per session
+run). A consumer enforced on a batched verdict is enforced on a curve nobody
+measured — the same silent mis-enforcement class as judging GLiNER at 0.85
+instead of 0.40.
+
+WHY IT COULD NOT BE FIXED CHEAPLY. JEV's fan-out property is INDEPENDENCE:
+"one answer is never hidden context for another, so adding or removing a
+question does not move the others." Sharing one encoder pass across questions
+is exactly what breaks that. With this ONNX export, one session run carries one
+question's context, so reading the state once AND isolating the questions is not
+available without re-exporting the model — which means a new backend identity
+and a fresh calibration.
+
+THE OWNER'S RULE (2026-09-26): no parallelism without a no-regression benefit.
+`decide_many` is therefore DELETED from both `GlinerOnnx` and `DecisionEngine`
+rather than left in place, because the temptation is the danger. These tests
+fail loudly if it comes back, and re-adding it requires a NEW calibration for
+the batch shape — not a call site.
 """
 
 from __future__ import annotations
 
-from backend.agent.decision_backend_onnx import (
-    ConsumerSpec,
-    build_task,
-    register_consumer_spec,
-)
+import inspect
+
+import backend.agent.decision_backend_onnx as backend_mod
+import backend.agent.decision_engine as engine_mod
+from backend.agent.decision_backend_onnx import GlinerOnnx
+from backend.agent.decision_engine import DecisionEngine
 
 
-def _register(consumer_id: str) -> None:
-    register_consumer_spec(ConsumerSpec(
-        consumer_id=consumer_id,
-        task_name=consumer_id,
-        instruction="Pick one.",
-        labels=("yes", "no"),
-    ))
-
-
-class TestOneEncodeOneSessionRun:
-    def test_one_encode_one_session_run(self, onnx_backend):
-        """AC30.3: N consumers → ONE encode, ONE session run."""
-        consumers = ("bench_t40_a", "bench_t40_b", "bench_t40_c")
-        for cid in consumers:
-            _register(cid)
-
-        runner = onnx_backend._runner
-        runner.encode_calls = 0
-        runner.run_calls = 0
-
-        out = onnx_backend.decide_many(
-            [(cid, ["yes", "no"]) for cid in consumers],
-            {"goal": "is this statement true"},
+class TestBatchingStaysRemoved:
+    def test_the_batched_entry_point_is_gone_from_the_backend(self):
+        assert not hasattr(GlinerOnnx, "decide_many"), (
+            "batched scoring came back on the ONNX backend — it was measured "
+            "to change verdicts, so the calibrated threshold does not apply "
+            "to a batched answer (see this file's docstring)"
         )
 
-        assert set(out) == set(consumers), out
-        assert all(v is not None for v in out.values()), (
-            f"a batched consumer returned no verdict: {out}"
-        )
-        assert runner.encode_calls == 1, (
-            f"the batch encoded {runner.encode_calls} times — REQ-20/AC30.3 "
-            "claims ONE encode for the batch"
-        )
-        assert runner.run_calls == 1, (
-            f"the batch ran the session {runner.run_calls} times — AC30.3 "
-            "claims ONE session run for the batch"
+    def test_the_batched_entry_point_is_gone_from_the_engine(self):
+        assert not hasattr(DecisionEngine, "decide_many"), (
+            "batched scoring came back on the engine — re-adding it needs a "
+            "NEW calibration for the batch shape, not a call site"
         )
 
-    def test_batch_returns_the_same_envelope_as_per_consumer(self, onnx_backend):
-        """AC20.4: batching is a latency optimisation, not a different answer."""
-        cid = "bench_t40_solo"
-        _register(cid)
-
-        batched = onnx_backend.decide_many(
-            [(cid, ["yes", "no"])], {"goal": "is this statement true"})
-        single = onnx_backend.decide(
-            cid, ["yes", "no"], {"goal": "is this statement true"})
-
-        assert batched[cid] is not None and single is not None
-        assert batched[cid].chosen == single.chosen
-        assert abs(batched[cid].confidence - single.confidence) < 1e-6
-
-    def test_a_consumer_without_criteria_does_not_break_the_batch(
-        self, onnx_backend,
-    ):
-        """AC20.4: per-question isolation — one un-scorable consumer is None
-        and the OTHERS still score in the same single run."""
-        good = "bench_t40_good"
-        _register(good)
-
-        runner = onnx_backend._runner
-        runner.encode_calls = 0
-        runner.run_calls = 0
-
-        out = onnx_backend.decide_many(
-            [(good, ["yes", "no"]), ("no_such_consumer_t40", ["yes", "no"])],
-            {"goal": "is this statement true"},
-        )
-
-        assert out["no_such_consumer_t40"] is None, (
-            "a criteria-less consumer was scored instead of refused (REQ-19)"
-        )
-        assert out[good] is not None, "the scorable consumer was lost with it"
-        assert runner.run_calls == 1, (
-            "the un-scorable consumer forced an extra session run"
-        )
-
-    def test_a_single_decide_encodes_and_runs_once(self, onnx_backend):
-        """The per-consumer path is one encode + one run, as before."""
-        runner = onnx_backend._runner
-        runner.encode_calls = 0
-        runner.run_calls = 0
-
-        assert onnx_backend.decide(
-            "tool_choice", ["alpha", "beta"], {"goal": "pick"}) is not None
-        assert (runner.encode_calls, runner.run_calls) == (1, 1)
-
-    def test_a_multi_consumer_batch_matches_its_single_runs(self, onnx_backend):
-        """T40 / BT-DEI-13 — the case that can invalidate the threshold.
-
-        Batching is a latency optimisation ONLY IF each question's verdict is
-        unchanged. `test_batch_returns_the_same_envelope_as_per_consumer` above
-        pins a batch of ONE. This pins a batch of THREE, where a single
-        encoder pass sees several questions at once — attention over the joint
-        input is exactly the mechanism that could shift a distribution and
-        silently invalidate the 0.40 threshold (AC20.2, AC30.3 edge).
-
-        Measured, not assumed: this is the answer to "can we score every
-        consumer in one run and still trust the mark?"
-        """
-        cids = ("bench_t40_m1", "bench_t40_m2", "bench_t40_m3")
-        for i, cid in enumerate(cids):
-            # DISTINCT questions, as production has: each consumer asks its own
-            # thing with its own labels. Three identical questions would only
-            # prove that a confused input is confused.
-            register_consumer_spec(ConsumerSpec(
-                consumer_id=cid, task_name=cid,
-                instruction=f"Question number {i + 1} for this state?",
-                labels=("yes", "no"),
-            ))
-        state = {"goal": "is this statement true"}
-
-        batched = onnx_backend.decide_many(
-            [(cid, ["yes", "no"]) for cid in cids], state)
-
-        for cid in cids:
-            single = onnx_backend.decide(cid, ["yes", "no"], state)
-            assert batched[cid] is not None and single is not None, cid
-            assert batched[cid].chosen == single.chosen, (
-                f"{cid}: the batch picked a different option than the solo run"
-            )
-            assert abs(batched[cid].confidence - single.confidence) < 1e-6, (
-                f"{cid}: batch confidence {batched[cid].confidence} != solo "
-                f"{single.confidence} — batching MOVES the distribution, so "
-                "the calibrated threshold does not transfer to a batch"
+    def test_the_removal_is_recorded_where_the_code_used_to_be(self):
+        """A future reader must find WHY, in the file they are editing, not
+        only in a spec or a graph."""
+        for module in (backend_mod, engine_mod):
+            src = inspect.getsource(module)
+            assert "decide_many" in src, "the removal note vanished"
+            assert "REMOVED 2026-09-26" in src, (
+                f"{module.__name__}: the removal note lost its date, so the "
+                "reason is no longer traceable to the decision"
             )
 
-
-class TestBatchSharesOneStructure:
-    def test_distinct_label_sets_share_one_encoder_pass(self, onnx_runner):
-        """AC30.3 edge: two DIFFERENT label sets still share one encode — the
-        structure cache makes the second task's assembly cheap, and the batch
-        does not fall back to N encodes."""
-        t1 = build_task("tool_choice", ["alpha", "beta"])
-        t2 = build_task("tool_choice", ["one", "two", "three"])
-        assert t1 is not None and t2 is not None
-
-        onnx_runner.encode_calls = 0
-        ids, positions = onnx_runner.encode("a goal", [t1, t2])
-
-        assert onnx_runner.encode_calls == 1
-        assert len(ids) > 0 and len(positions) >= 2
+    def test_no_production_module_asks_for_a_batch(self):
+        """The entry point is gone, so a call site would be a NameError at
+        runtime — this catches one at test time instead."""
+        for module in (backend_mod, engine_mod):
+            src = inspect.getsource(module)
+            code = "\n".join(
+                ln for ln in src.splitlines() if not ln.strip().startswith("#")
+            )
+            assert "decide_many(" not in code, (
+                f"{module.__name__}: a batch CALL site survived the removal"
+            )

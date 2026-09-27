@@ -565,70 +565,14 @@ class GlinerOnnx:
             logger.warning("decision_backend_onnx scoring failed: %r", e)
             return None
 
-    def decide_many(
-        self,
-        questions: Sequence[Tuple[str, Sequence[str]]],
-        frame: Dict[str, Any],
-    ) -> Dict[str, Optional[DecisionScore]]:
-        """REQ-20 AC20.1/AC20.2 (T26): N typed questions, ONE session run.
-
-        ``questions`` is a sequence of ``(consumer_id, options)``. Every
-        consumer's Task is passed in a SINGLE ``logits`` call, so one encoder
-        pass and one ``session.run`` answer all of them — the vendor property
-        REQ-20 is satisfied by, verified rather than assumed (T40).
-
-        Per-question isolation (AC20.4): a consumer with no criteria, or one
-        whose Task cannot be built, is returned as None and the OTHERS are
-        unaffected — the caller degrades that consumer to the per-consumer
-        path. Returns an empty dict when nothing could be built; never raises.
-        """
-        out: Dict[str, Optional[DecisionScore]] = {}
-        try:
-            if not self.load():
-                return {cid: None for cid, _ in questions}
-            tasks: List[Task] = []
-            owners: Dict[str, str] = {}   # task_name -> consumer_id
-            for consumer_id, options in questions:
-                task = build_task(consumer_id, options)
-                if task is None:
-                    out[consumer_id] = None
-                    continue
-                if task.name in owners:
-                    # Two consumers cannot share one Task name — the runner
-                    # keys its output by name and they would collide.
-                    out[consumer_id] = None
-                    continue
-                owners[task.name] = consumer_id
-                tasks.append(task)
-            if not tasks:
-                return out
-
-            t0 = self._clock()
-            all_logits = self._runner.logits(str(frame.get("goal", "")), tasks)
-            lat_ms = int((self._clock() - t0) * 1000)
-            for task in tasks:
-                cid = owners[task.name]
-                lg = all_logits.get(task.name) or {}
-                if not lg:
-                    out[cid] = None
-                    continue
-                x = np.array(list(lg.values()), dtype=np.float64)
-                p = np.exp(x - x.max()) / np.exp(x - x.max()).sum()
-                dist = tuple(
-                    CandidateScore(name=n, logprob=float(l), prob=float(pp))
-                    for n, l, pp in zip(lg.keys(), lg.values(), p)
-                )
-                best = max(dist, key=lambda c: c.prob)
-                out[cid] = DecisionScore(
-                    consumer_id=cid, chosen=best.name, confidence=best.prob,
-                    distribution=dist, engine_latency_ms=lat_ms,
-                )
-            logger.info(
-                "decision_backend_onnx decide_many questions=%d scored=%d "
-                "latency_ms=%d", len(questions),
-                sum(1 for v in out.values() if v is not None), lat_ms,
-            )
-        except Exception as e:  # a batched failure degrades per consumer
-            logger.warning("decision_backend_onnx decide_many failed: %r", e)
-            return {cid: None for cid, _ in questions}
-        return out
+    # ── decide_many REMOVED 2026-09-26 (REQ-20 retired by owner decision) ───
+    # The batched entry point used to live here. It is deleted rather than left
+    # in place, because the temptation is the danger: a caller wiring it up for
+    # speed would judge consumers on a distribution the threshold was never
+    # measured on. Measured with this model: three distinct questions in one
+    # session run changed a verdict (batch "no" vs solo "yes"), and JEV's
+    # fan-out guarantee ("one answer is never hidden context for another") is
+    # not reachable with an export where one run carries one question's
+    # context. See `decision_engine.py` (same note) and the pin
+    # `Decision: no batched scoring — enforcement stays on solo runs`.
+    # `decide()` (one consumer, one run) is the only scoring path.

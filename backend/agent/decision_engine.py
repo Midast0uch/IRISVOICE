@@ -732,78 +732,22 @@ class DecisionEngine:
             logger.warning("decision_engine noul failed: %r", e)
             return None
 
-    def decide_many(
-        self,
-        questions: Sequence[Tuple[str, Sequence[str]]],
-        frame: Dict[str, Any],
-    ) -> Dict[str, Optional[DecisionScore]]:
-        """REQ-20 AC20.1/AC20.2 (T26): the batched scoring entry point.
-
-        ``questions`` is a sequence of ``(consumer_id, options)``; every
-        consumer is answered against ONE state in a single backend call (one
-        encoder pass, one ``session.run``), so adding questions does not
-        multiply latency.
-
-        Per-question isolation + graceful degradation (AC20.4): an unknown or
-        criteria-less consumer, a lock timeout, an unavailable engine, or a
-        batched failure returns None for the affected questions and leaves the
-        siblings' envelopes intact — the caller falls back to the per-consumer
-        path for those only. Never raises.
-        """
-        out: Dict[str, Optional[DecisionScore]] = {}
-        try:
-            wanted: List[Tuple[str, Sequence[str]]] = []
-            for consumer_id, options in questions:
-                if consumer_id not in CONSUMERS:
-                    logger.error(
-                        "decision_engine: unknown consumer %r", consumer_id)
-                    out[consumer_id] = None
-                    continue
-                opts = [o for o in options if isinstance(o, str) and o][
-                    : self._cfg.candidate_cap
-                ]
-                if not opts:
-                    out[consumer_id] = None
-                    continue
-                wanted.append((consumer_id, opts))
-            if not wanted:
-                return out
-
-            t_start = self._clock()
-            if not self._lock.acquire(timeout=self._cfg.acquire_timeout_s):
-                self.counters.lock_timeouts += 1
-                return {cid: None for cid, _ in wanted}
-            lock_wait_ms = int((self._clock() - t_start) * 1000)
-            try:
-                if not self._load():
-                    return {cid: None for cid, _ in wanted}
-                backend = self._backend
-                t0 = self._clock()
-                # AC30.5 (T42): the batch runs on the dedicated inference
-                # thread too — one encode, one session run, off the step pool.
-                results = self._run_inference(
-                    lambda: backend.decide_many(wanted, frame)) or {}
-                scoring_ms = int((self._clock() - t0) * 1000)
-                for cid, ds in results.items():
-                    out[cid] = ds
-                    if ds is not None:
-                        self.counters.decisions += 1
-                        self.counters.bump_consumer(cid)
-                total_ms = int((self._clock() - t_start) * 1000)
-                logger.info(
-                    "decision_engine decide_many questions=%d scored=%d "
-                    "scoring_latency_ms=%d lock_wait_ms=%d "
-                    "decision_latency_ms=%d backend=%s",
-                    len(wanted),
-                    sum(1 for v in out.values() if v is not None),
-                    scoring_ms, lock_wait_ms, total_ms, self.model_id,
-                )
-            finally:
-                self._lock.release()
-        except Exception as e:
-            logger.warning("decision_engine decide_many failed: %r", e)
-            return {cid: out.get(cid) for cid, _ in questions}
-        return out
+    # ── REQ-20 BATCHED SCORING — REMOVED 2026-09-26 (owner decision) ───────
+    # `decide_many` used to live here. It is deleted, not disabled, so the
+    # mistake cannot be repeated by calling it:
+    #   * MEASURED with the real model: a batch of three distinct questions
+    #     CHANGED a verdict (batch "no" where the same question scored alone
+    #     answered "yes"). So the calibrated threshold, measured on solo runs,
+    #     does not transfer to a batched verdict.
+    #   * JEV's fan-out property is INDEPENDENCE ("one answer is never hidden
+    #     context for another"). This export cannot provide it: one session run
+    #     carries one question's context, so sharing the read while isolating
+    #     the questions is impossible without changing the model.
+    #   * The owner's rule: no parallelism without no-regression benefit.
+    # The speed this promised is therefore unavailable, and the honest levers
+    # left are: score fewer consumers, reuse the same-question cache, tune ORT
+    # threads, keep the engine warm. Re-adding a batch requires a NEW
+    # calibration for the batch shape, not a call site.
 
     # -- constrained args generation (bounded empty retry, REQ-4) ----------
     # REQ-2: single-parameter query tools — the goal text maps directly to

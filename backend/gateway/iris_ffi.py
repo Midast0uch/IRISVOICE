@@ -1191,22 +1191,44 @@ class IrisCoreEngine:
     ) -> bool:
         if not self._initialized:
             return False
-        # Screenshots must land in the SQLite system_events store, so route
-        # screenshot-bearing events through the fallback writer regardless of
-        # whether the C++ core is active.
-        if screenshot_blob is not None and self._fallback:
-            rc = self._fallback.ingest_event(
-                session_id, domain, event_type, actor, outcome, summary,
-                payload_json, screenshot_blob,
-            )
-            return rc == 0
+        # ROW DELIVERY — the Python writer is preferred for EVENTS (2026-09-26).
+        # The native C++ writer still serves every physics/Caducean path below;
+        # this preference is about rows only, and it has two grounds:
+        #   1. the Python writer is the one documented to land rows in the
+        #      SQLite `system_events` store — that is exactly why screenshot
+        #      bearing events were ALREADY forced through it (see the note that
+        #      used to live here) — and it carries the mediator/ontology columns
+        #      the fixed C struct cannot; and
+        #   2. MEASURED LIVE: the native call BLOCKED inside the running app. The
+        #      ledger watchdog reported "[tool-event] ledger write for
+        #      list_directory has not returned after 10s ... (writer blocked?)"
+        #      for a completed tool step, while the SAME native call wrote
+        #      successfully from an isolated process. A blocked row is a
+        #      silently missing calibration row, so the row path must not depend
+        #      on it.
+        # The native path remains the fallback when the Python engine is
+        # unavailable (it was never built, or it failed to open the store).
+        if self._fallback:
+            try:
+                rc = self._fallback.ingest_event(
+                    session_id, domain, event_type, actor, outcome, summary,
+                    payload_json, screenshot_blob,
+                )
+                if rc == 0:
+                    return True
+                logger.warning(
+                    "[iris_ffi] python event writer returned rc=%s for %s %s "
+                    "— trying the native writer",
+                    rc, event_type, outcome,
+                )
+            except Exception as _py_err:  # noqa: BLE001
+                logger.warning(
+                    "[iris_ffi] python event writer failed for %s %s (%r) — "
+                    "trying the native writer",
+                    event_type, outcome, _py_err,
+                )
         if self._ffi:
             rc = self._ffi.ingest_event(
-                session_id, domain, event_type, actor, outcome, summary, payload_json
-            )
-            return rc == 0
-        if self._fallback:
-            rc = self._fallback.ingest_event(
                 session_id, domain, event_type, actor, outcome, summary, payload_json
             )
             return rc == 0
