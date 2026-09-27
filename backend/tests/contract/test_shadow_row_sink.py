@@ -135,7 +135,75 @@ class TestSinkRoutesRowsToTheLedger:
         assert meta["route"] == "engine"
 
 
-class TestTheSinkNeverBlocksAStep:
+class TestExposedRowsAreForwarded:
+    """`mode` and `review_verdict` EXPOSE a row instead of emitting one.
+
+    Measured live 2026-09-26: both scored (`Oracle decide consumer=mode`,
+    `consumer=review_verdict`) and NEITHER produced a ledger row, because the
+    only thing that read `last_mode_shadow` / `last_shadow_verdict` was a test.
+    These pins keep the forwarding honest: write once, and never twice.
+    """
+
+    def _kernel(self, rec):
+        # The methods must be BOUND to the stub: an unbound `_shadow_row_sink`
+        # would receive the row as its `self`.
+        k = SimpleNamespace(
+            _tool_bridge=rec, session_id="s-fwd",
+            _EXPOSED_ROW_ATTRS=AgentKernel._EXPOSED_ROW_ATTRS,
+        )
+        k._shadow_row_sink = AgentKernel._shadow_row_sink.__get__(k)
+        k._forward_consumer_rows = AgentKernel._forward_consumer_rows.__get__(k)
+        return k
+
+    def test_an_exposed_row_is_written_once_and_then_cleared(self):
+        rec = _Recorder()
+        k = self._kernel(rec)
+        holder = SimpleNamespace(
+            last_mode_shadow={"consumer_id": "mode", "chosen": "quick"},
+            last_shadow_verdict=None,
+        )
+
+        k._forward_consumer_rows(holder)
+        assert [m["consumer_id"] for m, _k, _s in rec.calls] == ["mode"], (
+            "an exposed row was not written — this is the defect that left "
+            "`mode` with zero calibration rows"
+        )
+        assert holder.last_mode_shadow is None, (
+            "the row was not cleared, so the next turn would write it again "
+            "and inflate every rate derived from the ledger"
+        )
+
+        # Idempotent: nothing new on the second pass.
+        k._forward_consumer_rows(holder)
+        assert len(rec.calls) == 1
+
+    def test_both_holders_are_forwarded_in_one_pass(self):
+        rec = _Recorder()
+        k = self._kernel(rec)
+        k._forward_consumer_rows(
+            SimpleNamespace(last_mode_shadow={"consumer_id": "mode"}),
+            SimpleNamespace(last_shadow_verdict={"consumer_id": "review_verdict"}),
+        )
+        assert sorted(m["consumer_id"] for m, _k, _s in rec.calls) == [
+            "mode", "review_verdict",
+        ]
+
+    def test_a_none_holder_and_empty_rows_are_ignored(self):
+        rec = _Recorder()
+        k = self._kernel(rec)
+        k._forward_consumer_rows(None, SimpleNamespace(), SimpleNamespace(
+            last_mode_shadow=None, last_shadow_verdict={}))
+        assert rec.calls == []
+
+    def test_a_broken_holder_never_raises(self):
+        class _Boom:
+            @property
+            def last_mode_shadow(self):
+                raise RuntimeError("boom")
+
+        rec = _Recorder()
+        self._kernel(rec)._forward_consumer_rows(_Boom())  # must not raise
+
     def test_no_bridge_is_ignored(self):
         AgentKernel._shadow_row_sink(_kernel(None), {"consumer_id": "mode"})
 

@@ -887,6 +887,40 @@ class AgentKernel:
         except Exception as exc:  # noqa: BLE001 — a row never blocks a step
             logger.debug("[AgentKernel] shadow row sink failed: %r", exc)
 
+    # The two consumers that EXPOSE a row instead of emitting it through a
+    # module sink: `ModeDetector.last_mode_shadow` and
+    # `Reviewer.last_shadow_verdict`. Both were populating on every turn and
+    # NOTHING wrote them — the Reviewer's own docstring says the row exists "for
+    # the kernel's EXISTING single writer", and no caller did the writing. So
+    # `mode` and `review_verdict` could score forever and never produce a
+    # calibration row. Measured live 2026-09-26: the log showed
+    # `Oracle decide consumer=mode` and `consumer=review_verdict` while the
+    # ledger held no row for either. That is the same defect class as the
+    # missing monitor/surface sink, one layer further out.
+    _EXPOSED_ROW_ATTRS = ("last_mode_shadow", "last_shadow_verdict")
+
+    def _forward_consumer_rows(self, *holders: Any) -> None:
+        """Write any row the given holders EXPOSE, once, then clear it.
+
+        Clearing is what makes this idempotent: a forwarded row must not be
+        written again on the next turn, or the ledger gains duplicates and every
+        rate derived from it is inflated. Never raises.
+        """
+        for holder in holders:
+            if holder is None:
+                continue
+            for attr in self._EXPOSED_ROW_ATTRS:
+                try:
+                    row = getattr(holder, attr, None)
+                    if not row:
+                        continue
+                    setattr(holder, attr, None)
+                    self._shadow_row_sink(row)
+                except Exception as exc:  # noqa: BLE001 — an observer never blocks
+                    logger.debug(
+                        "[AgentKernel] forwarding %s failed: %r", attr, exc
+                    )
+
     def set_main_loop(self, loop: Any) -> None:
         """Capture the running event loop so background threads can dispatch broadcasts."""
         self._broadcast_loop = loop
@@ -7426,6 +7460,9 @@ class AgentKernel:
                         _confidence = _mode_result.confidence
                     except Exception as _md_exc:
                         loud_error(_md_exc, "mode_detector.detect")
+                    # `mode` scores here; without this the row was dropped on
+                    # the floor (see _forward_consumer_rows).
+                    self._forward_consumer_rows(self._mode_detector)
 
             _plan = None
             try:
@@ -9369,6 +9406,9 @@ Respond with a JSON object:
                     )
                 except Exception:
                     verdict, feedback = ReviewVerdict.PASS, None
+                # `review_verdict` scored inside review(); the row it exposed
+                # was never written (see _forward_consumer_rows).
+                self._forward_consumer_rows(self._reviewer)
 
                 if verdict == ReviewVerdict.VETO:
                     item.veto_count += 1

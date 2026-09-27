@@ -245,13 +245,38 @@ Honest levers that do NOT touch the pass mark:
 
 1. score fewer consumers per turn (each one is a full run);
 2. reuse the same-question cache (already built: a repeat is free);
-3. tune the ORT thread options (same maths, less waiting) — **agreed, not yet
-   implemented**;
+3. tune the ORT thread options (same maths, less waiting) — **already tuned and
+   RE-MEASURED 2026-09-26 on this box**; see below;
 4. keep the engine warm (already done, background daemon thread).
 
 Levers that DO invalidate the mark (a new identity + a fresh calibration): a
 smaller or differently quantised model, a different prompt/instruction shape,
 a different menu width.
+
+### 8.1 The intra-op thread count is already at its optimum
+
+`_OnnxRunner` sets `intra_op_num_threads = cpu_count // 2` (4 on an 8-logical-core
+host), `inter_op_num_threads = 1`, `ORT_ENABLE_ALL`, `ORT_SEQUENTIAL`,
+`CPUExecutionProvider`. Re-measured 2026-09-26 with
+`scripts/bench_oracle_threads.py` (20 runs per setting, shipped 6-tool menu,
+same box):
+
+| intra-op | p50 | p95 | vs the optimum |
+|---|---|---|---|
+| 1 | 316.9 ms | 338.8 ms | 2.06x slower |
+| 2 | 194.9 ms | 213.8 ms | 1.27x slower |
+| **4 (shipped)** | **153.9 ms** | **189.7 ms** | — |
+| 8 (all cores) | 186.6 ms | 273.2 ms | 1.21x slower at p50, 1.44x at p95 |
+
+Two facts worth keeping: `os.cpu_count()` reports LOGICAL processors while ORT's
+intra-op pool wants PHYSICAL cores (hence `// 2`), and "use every core" is a
+REGRESSION here, worst at p95. The shipped value stands; no code change was
+needed, and the earlier session's numbers were reproduced independently
+(181 ms then, 153.9 ms now — a faster box under the same settings).
+
+Threads do not change the maths, so this lever can never invalidate the
+threshold. `scripts/bench_oracle_threads.py` re-derives the optimum on any host.
+
 
 ## 9. What is deliberately NOT here
 
@@ -306,8 +331,10 @@ An empty value means full shadow — record but never act.
 
 ## 11. Open items (honest, 2026-09-26)
 
-1. **ORT thread tuning** — agreed, not implemented. Same maths, so it cannot
-   invalidate the mark; needs a measured before/after.
+1. **ORT thread tuning** — CLOSED 2026-09-26. It was already tuned in an earlier
+   session, and this session RE-MEASURED it on this box: intra=4 → p50 153.9 ms
+   is the optimum, intra=8 regresses to 186.6/273.2 ms. The shipped default
+   stands; `scripts/bench_oracle_threads.py` re-derives it per host (§8.1).
 2. **Row volume.** The bar needs >= 100 rows per consumer. The pipeline now
    works, so this is about running real tasks, not about code.
 3. **`test_unparseable_json`** was reported as a pre-existing stale red by an
