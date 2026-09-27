@@ -43,14 +43,21 @@ WS_URL = "ws://127.0.0.1:8090/ws/row-accumulator?session_id=row-accumulator"
 # - escalate_incomplete: any step with incomplete results
 # - needs_action: any message
 MESSAGES = [
-    # ── MULTI-STEP prompts FIRST (2026-09-27) ──
-    # The list below these is all one-shot lookups, and measured live they do
-    # NOT run DER: `[DER]` count stayed 0 across 40 turns, so every consumer
-    # wired into the step loop (review_verdict, sufficient, done, on_track,
-    # has_gaps, use_thinking, needs_action, recovery_strategy) wrote no row and
-    # the Wave 7 bar was unreachable however much traffic ran. Only `mode` and
-    # `tool_choice` ever fired. These prompts require plan -> act -> verify, so
-    # the DER lane runs and the step consumers produce rows.
+    # ── LOCAL-TOOL prompts FIRST (2026-09-27) ──
+    # The completion monitors (sufficient, done, on_track) and the per-step
+    # director (has_gaps) only fire when a step COMPLETES. The web prompts below
+    # fail on this box (search blocked), so those consumers never saw a
+    # completed step and had zero rows. These prompts use tools that succeed
+    # locally - file reads, directory listing, system info, memory - so steps
+    # actually finish and the completion checks run.
+    "List the files in the current directory and tell me how many there are.",
+    "Read the README file and summarise what the project is for.",
+    "Get the system info and tell me how much memory this machine has.",
+    "List the files in the scripts folder and pick the one with the longest name.",
+    "Remember that my project is called IRIS, then recall what my project is called.",
+    "Get the system info, then list the files in the current directory, and "
+    "compare the two results in one summary.",
+    # ── MULTI-STEP prompts ──
     "Research the three most popular electric cars of 2026, compare their "
     "prices and ranges, then write a short comparison table.",
     "Find the latest news about quantum computing, then look up one of the "
