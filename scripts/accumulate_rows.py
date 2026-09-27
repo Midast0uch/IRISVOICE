@@ -25,7 +25,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger("accumulate_rows")
 
-WS_URL = "ws://localhost:8090/ws/row-accumulator?session_id=row-accumulator"
+# 127.0.0.1, NOT localhost (2026-09-27). On this machine `localhost` resolves to
+# ::1 first (IPv6) and the backend binds 0.0.0.0 (IPv4), so every run died with
+# "WinError 1225 The remote computer refused the network connection" and produced
+# no traffic at all - which reads like a broken row pipeline rather than a name
+# resolution mismatch.
+WS_URL = "ws://127.0.0.1:8090/ws/row-accumulator?session_id=row-accumulator"
 
 # Messages that trigger different consumers:
 # - tool_choice: any message that needs a tool
@@ -38,6 +43,35 @@ WS_URL = "ws://localhost:8090/ws/row-accumulator?session_id=row-accumulator"
 # - escalate_incomplete: any step with incomplete results
 # - needs_action: any message
 MESSAGES = [
+    # ── MULTI-STEP prompts FIRST (2026-09-27) ──
+    # The list below these is all one-shot lookups, and measured live they do
+    # NOT run DER: `[DER]` count stayed 0 across 40 turns, so every consumer
+    # wired into the step loop (review_verdict, sufficient, done, on_track,
+    # has_gaps, use_thinking, needs_action, recovery_strategy) wrote no row and
+    # the Wave 7 bar was unreachable however much traffic ran. Only `mode` and
+    # `tool_choice` ever fired. These prompts require plan -> act -> verify, so
+    # the DER lane runs and the step consumers produce rows.
+    "Research the three most popular electric cars of 2026, compare their "
+    "prices and ranges, then write a short comparison table.",
+    "Find the latest news about quantum computing, then look up one of the "
+    "companies mentioned and summarise both findings.",
+    "Look up the population of Tokyo and of Osaka, compare them, and explain "
+    "which is larger and by how much.",
+    "Search for the best pasta recipes, pick the one with the fewest "
+    "ingredients, and list exactly what I need to buy.",
+    "Find the current price of Bitcoin and of Ethereum, compare the two, and "
+    "explain what drives the difference.",
+    "Research the top three Python async libraries, then find one working "
+    "example of the best one and summarise it.",
+    "Look up the distance from Earth to Mars and to Venus, compare them, and "
+    "tell me which is closer on average.",
+    "Find two recent articles about renewable energy, compare their main "
+    "claims, and tell me where they disagree.",
+    "Search for the best hiking trails in Colorado, pick three, and compare "
+    "their difficulty and length.",
+    "Research the current state of AI regulation in the EU and in the US, then "
+    "compare the two approaches in a short summary.",
+    # ── one-shot lookups ──
     "What's the weather in Seattle?",
     "Search for the latest news about AI",
     "Find information about climate change",
@@ -61,12 +95,25 @@ MESSAGES = [
 ]
 
 
-async def send_messages(count: int, delay: float, web: bool = False) -> None:
+def _ws_url(client: str) -> str:
+    """Build the WS URL for a distinct client.
+
+    The client id is a parameter (2026-09-27) so several accumulators can run at
+    once: two processes sharing one client id are the SAME client to the server,
+    so the second connection replaces the first and half the traffic is lost.
+    """
+    return f"ws://127.0.0.1:8090/ws/{client}?session_id={client}"
+
+
+async def send_messages(
+    count: int, delay: float, web: bool = False, client: str = "row-accumulator"
+) -> None:
     """Send messages to the backend via WS."""
+    ws_url = _ws_url(client)
     messages_to_send = MESSAGES[:count] if count > 0 else MESSAGES
 
-    logger.info("Connecting to %s", WS_URL)
-    async with websockets.connect(WS_URL) as ws:
+    logger.info("Connecting to %s", ws_url)
+    async with websockets.connect(ws_url) as ws:
         logger.info("Connected. Sending %d messages with %.0fs delay", len(messages_to_send), delay)
 
         if web:
@@ -132,10 +179,15 @@ def main() -> int:
         "--web", action="store_true",
         help="enable internet access first (required for tool-using rows)",
     )
+    parser.add_argument(
+        "--client", default="row-accumulator",
+        help="distinct WS client id, so several accumulators can run at once",
+    )
     args = parser.parse_args()
 
     try:
-        asyncio.run(send_messages(args.count, args.delay, web=args.web))
+        asyncio.run(send_messages(args.count, args.delay, web=args.web,
+                                  client=args.client))
         return 0
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
