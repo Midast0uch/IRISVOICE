@@ -19424,9 +19424,26 @@ Cover every part of the user's request. If the results lack some asked part, say
                     else None
                 )
                 _inst_model = reasoning_model or None
+                # ENFORCE ONLY FOR HOSTED API PROVIDERS (2026-09-26).
+                # The catalog is authoritative for an API preset, where the
+                # provider's own model list is fixed and a model from another
+                # provider's preset is stale. It is NOT authoritative for a
+                # LOCAL server: Ollama's model list belongs to the user's own
+                # install, and `provider_catalog.model_belongs_to_provider`
+                # documents exactly that ("a provider with NO catalog entry ...
+                # accepts anything ... never for local servers where the catalog
+                # is a suggestion list"). Including OLLAMA here contradicted that
+                # contract and silently dropped a model the user really has —
+                # measured live: `gemma4:31b-cloud` (present in `ollama list`,
+                # verified via /api/tags) was rejected, the warning said "not in
+                # provider 'ollama' catalog", and the role fell back to the
+                # PREVIOUS instance model, so the requested Brain/Tool split
+                # could not be set at all. Tests for this contract:
+                # tests/behavioral/test_provider_switch_keeps_own_model.py
+                # (rule 2's backstop, exercised for cohere).
                 if (
                     _inst_model
-                    and _kind in (ProviderKind.API, ProviderKind.OLLAMA)
+                    and _kind is ProviderKind.API
                     and not model_belongs_to_provider(model_provider, _inst_model)
                 ):
                     logger.warning(
@@ -19443,10 +19460,12 @@ Cover every part of the user's request. If the results lack some asked part, say
                     )
                 # A tool model from another provider's catalog is stale the same
                 # way; sanitize it before it can become a role override below.
+                # API providers only, for the same reason as the reasoning model
+                # above: a local server's list is the user's, not ours.
                 _tool_model = tool_execution_model or None
                 if (
                     _tool_model
-                    and _kind in (ProviderKind.API, ProviderKind.OLLAMA)
+                    and _kind is ProviderKind.API
                     and not model_belongs_to_provider(model_provider, _tool_model)
                 ):
                     _tool_model = None

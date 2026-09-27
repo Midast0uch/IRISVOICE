@@ -506,6 +506,54 @@ class TestKernelCatalogSanitizer:
         inst = kernel._router.registry.get("cohere")
         assert inst.model == "command-r-08-2024"
 
+    def test_kernel_accepts_an_ollama_model_outside_the_catalog(self, kernel):
+        """An OLLAMA model is the USER'S, not our catalog's (2026-09-26).
+
+        The check above is for HOSTED API presets. Ollama's list belongs to the
+        user's own install, and `model_belongs_to_provider` says so in its
+        docstring ("never for local servers where the catalog is a suggestion
+        list"). Enforcing it for OLLAMA silently dropped a model the user really
+        has: measured live, `gemma4:31b-cloud` (present in `ollama list`) was
+        rejected, and the role then fell back to the PREVIOUS instance model, so
+        a Brain/Tool split across two models could not be set at all.
+
+        The model below is deliberately NOT in the ollama catalog section of
+        provider_catalog.py; assert that first, or this test proves nothing.
+        """
+        from backend.agent.inference.provider_catalog import (
+            get_catalog_for_provider,
+        )
+
+        requested = "gemma4:31b-cloud"
+        listed = {m["id"] for m in get_catalog_for_provider("ollama")}
+        assert requested not in listed, (
+            "the model is now in the catalog, so this test no longer covers the "
+            "case it was written for"
+        )
+
+        kernel.set_model_selection(
+            reasoning_model=requested,
+            tool_execution_model="granite3.3:8b",
+            model_provider="ollama",
+            api_base_url="http://localhost:11434",
+        )
+        inst = kernel._router.registry.get("ollama")
+        assert inst is not None, "provider was never registered"
+        assert inst.model == requested, (
+            f"the user's own Ollama model was dropped: got {inst.model!r}"
+        )
+        # ...and the split survives: two roles, two models.
+        reasoning = next(
+            (b for b in kernel._router.roles.list() if b.role == "reasoning"),
+            None,
+        )
+        tools = next(
+            (b for b in kernel._router.roles.list() if b.role == "tool_execution"),
+            None,
+        )
+        assert reasoning is not None and reasoning.model_override == requested
+        assert tools is not None and tools.model_override == "granite3.3:8b"
+
 
 class TestCatalogOwnership:
     """The primitive the fix leans on: does this model belong to this provider?"""

@@ -357,6 +357,79 @@ An empty value means full shadow — record but never act.
 
 ---
 
+## 13. Oracle vs the Brain — and the two Brain roles
+
+This section exists because the two are easy to confuse, and the confusion costs
+real time.
+
+| Part | What it does | Where it runs |
+|---|---|---|
+| **Oracle** | scores a candidate menu and returns a calibrated probability | in-process, CPU, ONNX, one question per run |
+| **The Brain** | writes the plan, the prose, and the tool CALL arguments | a provider: hosted API, Ollama, or a local GGUF |
+
+Oracle never writes text and never calls a provider. The Brain never scores a
+menu. They meet at one point: `ToolDecisionBox` either accepts Oracle's pick or
+escalates the same choice to the Brain.
+
+### 13.1 Two roles, set independently
+
+The router resolves TWO roles through their own bindings, so the two can be
+different models, on different providers:
+
+| Role | Used for |
+|---|---|
+| `reasoning` | planning, synthesis, escalation answers |
+| `tool_execution` | producing tool-call arguments |
+
+Both messages below are the ones the UI sends. No CLI and no raw server.
+
+```text
+1. load a local GGUF (the Models card Load button):
+   {"type":"load_local_model","payload":{"model_path":"<abs .gguf>","with_projector":false}}
+
+2. bind one or both roles (the Models card selection):
+   {"type":"set_model_selection","payload":{
+      "reasoning_model":"gemma4:31b-cloud",
+      "tool_execution_model":"granite3.3:8b",
+      "model_provider":"ollama"}}
+```
+
+A working mixed setup, measured live 2026-09-26: reasoning on a hosted model
+(`gemma4:31b-cloud` through Ollama) and tool execution on a LOCAL model
+(`granite3.3:8b`), so the rate-limited provider only sees the planning calls.
+
+### 13.2 Where the models live, and the check that broke the split
+
+The app scans `C:\Users\<user>\.lmstudio\models` by default (env `IRIS_MODELS_DIR`
+wins, then the LM Studio default, then the repo's `models/gguf`, which is EMPTY).
+`.iris_model_settings.json` in that folder lists every model this app has loaded.
+
+**Fixed 2026-09-26.** `AgentKernel.set_model_selection` checked the requested
+model against a hard-coded catalog for BOTH `API` and `OLLAMA` providers. The
+catalog is authoritative for a hosted API preset, but NOT for a local server —
+`provider_catalog.model_belongs_to_provider` says so itself: "... never for local
+servers where the catalog is a suggestion list". The result was a model the user
+really has being silently dropped, and the role falling back to the PREVIOUS
+instance model, which made any Brain/Tool split impossible to set. The check is
+now `ProviderKind.API` only, pinned by
+`tests/behavioral/test_provider_switch_keeps_own_model.py::TestKernelCatalogSanitizer`.
+
+### 13.3 Local GGUF caveat: the quant must be in the build
+
+`llama.cpp-prismml\bin\llama-server.exe` is what the app finds first. A ternary
+(1-bit) GGUF needs `GGML_TYPE_PTQ1_0` (type 143) in that build. The bundled
+build is from the fork's July commit and does NOT have it, so a PTQ1_0 model
+fails immediately with:
+
+```text
+tensor 'output.weight' has invalid ggml type 143. should be in [0, 43)
+```
+
+A standard quant (Q4_K_M, Q3_K_M, and so on) loads fine. See
+`.install_prismml.bat` and the rebuild note in the graph for the ternary path.
+
+## 14. Superseded material
+
 **Superseded material.** The previous revision of this document described the
 LFM2-350M-Extract build (`llama-cpp-python`, `softmax_tau=0.5` sharpening, an
 0.85 global threshold, three consumers, a head-KV cache). All of it is retired:
