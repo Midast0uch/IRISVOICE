@@ -1169,7 +1169,18 @@ class OpenAICompatTransport:
         url: str,
         url_v1: str,
         body: Dict[str, Any],
+        timeout_s: Optional[float] = None,
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
+        # `timeout_s` was USED below (the client is built with
+        # `timeout_s or 60.0`) but was missing from this signature, so
+        # `generate()`'s call raised
+        #   OpenAICompatTransport._nonstream() got an unexpected keyword
+        #   argument 'timeout_s'
+        # and EVERY call through this transport failed before a request was sent
+        # (2026-09-27). It went unnoticed because no shipped provider used this
+        # kind until a SERVER-loaded local model started routing here - see
+        # InferenceRouter._local_http_endpoint. The parameter is restored rather
+        # than the caller changed, because the body already depends on it.
         import httpx as _httpx
         from backend.utils.ssl_context import get_ssl_context
 
