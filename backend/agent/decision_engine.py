@@ -187,6 +187,81 @@ class EngineCounters:
 # consumers (presentation cards, narration speech) start shadow — recorded but
 # non-binding — and flip to enforce only after the calibration gate. Override
 # with IRIS_DECISION_ENFORCE="tool_choice,presentation,narration".
+def _current_backend_identity() -> str:
+    """The ACTIVE engine's identity, resolved the way the report resolves it.
+
+    The loaded engine knows its own id; this process usually has not loaded one,
+    so the DECLARED ONNX variant is the fallback (constructing the backend does
+    not load its weights). "" when neither is available - and an unknown identity
+    must never unlock an enforcement.
+    """
+    try:
+        loaded = str(getattr(get_decision_engine(), "model_id", "") or "")
+        if loaded:
+            return loaded
+    except Exception:  # noqa: BLE001 — identity is best-effort, never fatal
+        pass
+    try:
+        from .decision_backend_onnx import GlinerOnnx, resolve_model_dir
+
+        return str(GlinerOnnx(model_dir=resolve_model_dir(None)).backend_id or "")
+    except Exception:  # noqa: BLE001 — unknown identity = no flips
+        return ""
+
+
+def _bar_record_enforced() -> frozenset:
+    """Consumers the BAR RECORD says are enforced, MEASURED ON THIS ENGINE.
+
+    Owner decision 2026-09-27 (option B): passing the bar turns a consumer on,
+    with no hand-edited list. Two conditions, both required:
+
+      * the record's status is ``enforced`` - which ``derive_status`` sets only
+        when rows >= 100 AND precision >= 0.90 AND ECE <= 0.05. Never a partial
+        flip (AC18.4/AC22.4);
+      * the record was measured against the CURRENT engine identity, so a flip
+        earned on a retired model cannot carry over. This mirrors the
+        stale-configuration guard, and it is the same mistake that let 457
+        retired-engine rows report as the current model's accuracy - see §16 of
+        docs/architecture/oracle.md.
+
+    NOT filtered by CONSUMERS: a consumer that registered itself is exactly the
+    case this exists for, and it still cannot be enforced without passing the
+    bar, which cannot happen without a calibrated threshold for the active
+    backend. An absent record (never written, unreadable, empty) enforces
+    nothing - the safe default.
+    """
+    try:
+        from .consumer_bar import load_bar_record
+
+        record = load_bar_record()
+    except Exception as e:  # noqa: BLE001 — an unreadable record enables nothing
+        logger.debug("decision_engine: bar record unreadable (%r)", e)
+        return frozenset()
+    if not record:
+        return frozenset()
+    current = _current_backend_identity()
+    out = set()
+    for cid, bar in record.items():
+        try:
+            if str(getattr(bar, "status", "") or "") != "enforced":
+                continue
+            measured_on = str(
+                (getattr(bar, "config", None) or {}).get("backend_id") or ""
+            )
+            if not current or measured_on != current:
+                logger.warning(
+                    "decision_engine: NOT enforcing %s - its bar was measured on "
+                    "%r while the active engine is %r (a flip must be re-earned "
+                    "on the deployed model)",
+                    cid, measured_on or "an unrecorded engine", current or "unknown",
+                )
+                continue
+            out.add(cid)
+        except Exception:  # noqa: BLE001 — a malformed bar is skipped
+            continue
+    return frozenset(out)
+
+
 def enforced_consumers() -> frozenset:
     """The consumers currently enforced (REQ-13..17, REQ-31 AC31.4).
 
@@ -203,6 +278,10 @@ def enforced_consumers() -> frozenset:
     wanted = frozenset(
         c.strip() for c in raw.split(",") if c.strip() in CONSUMERS
     )
+    # The bar record can enforce a consumer on its own evidence (option B,
+    # 2026-09-27). The env list stays as the manual override for the DECLARED
+    # set; the record is what lets a consumer earn its own flip.
+    wanted = wanted | _bar_record_enforced()
     if not wanted:
         return frozenset()
     # Reading staleness must NEVER be able to break the reply path. A config
