@@ -652,6 +652,27 @@ class AgentKernel:
         # the router would drift away from it. Router-side failures degrade to
         # "no window known" and never break a turn.
         self._router.set_window_resolver(self.resolve_context_window)
+        # In-process local models (2026-09-27). The gateway attaches the local
+        # model manager to the routers that EXIST when a model is loaded, so a
+        # kernel created LATER (a new WS session) starts with
+        # `_inprocess_mgr = None` and every `local:<model>` planning call dies:
+        #   [AgentKernel._plan_task] router planning failed:
+        #     No local model loaded for in-process inference
+        # No plan means no DER, so the step consumers (review_verdict,
+        # sufficient, done, on_track, has_gaps, use_thinking, needs_action,
+        # recovery_strategy) never ran and could never reach the Wave 7 bar no
+        # matter how much traffic was driven. The manager is a process-wide
+        # singleton, so attach it here instead of depending on load-time fan-out
+        # reaching every future kernel. get_local_model_manager() constructs the
+        # manager object only; it loads no weights.
+        try:
+            from .local_model_manager import get_local_model_manager
+
+            self._router.set_inprocess_manager(get_local_model_manager())
+        except Exception as _mgr_err:  # noqa: BLE001 — a missing manager is not fatal
+            logger.debug(
+                "[AgentKernel] in-process manager attach skipped: %s", _mgr_err
+            )
 
     def _initialize_components(self):
         """Initialize all core components with error handling."""
@@ -7596,8 +7617,16 @@ class AgentKernel:
                 # speak steps â€” the DER loop resolves speak steps via
                 # ToolDecisionBox â†’ _run_step_direct, which produces both
                 # voice and card output.
+                # NOTE (2026-09-27): the "" in this tuple is gone. The docstring
+                # of _should_skip_der (F6, 2026-08-12) records why: production
+                # plan steps are GOALS ONLY with tool=None, so counting "" as a
+                # speak step made EVERY planned task look voice-only and DER was
+                # skipped. That fix was applied inside the method but this
+                # call-site copy was left behind. It is dead code today (nothing
+                # reads it), which is exactly why it survived a review and why it
+                # is worth removing rather than leaving to be "reused" later.
                 _voice_only = bool(_plan.steps) and all(
-                    (s.tool or "").lower() in ("speak", "speak_tool", "tts", "")
+                    (s.tool or "").lower() in ("speak", "speak_tool", "tts")
                     for s in _plan.steps
                 )
                 _is_websearch = self._is_web_search_request(_task_clean)
