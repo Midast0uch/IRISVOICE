@@ -6444,6 +6444,95 @@ class AgentKernel:
             return []
         return beats
 
+    def _score_narration(
+        self,
+        *,
+        task: str,
+        beats: list,
+        authored: list,
+        n_steps: int,
+    ) -> None:
+        """Shadow-score the NARRATION decision, then record one row (2026-09-27).
+
+        WHY: narration timing and depth were decided by a stopwatch and a
+        keyword list (REQ-10 AC10.10: "narration earns airtime only when the task
+        outlives the reply"), which is why it feels robotic and deterministic.
+        The engine can judge the same question from CONTENT - how many steps the
+        task has, how many beats were authored, how long the reply will run -
+        and this records its answer so the Wave 7 bar can decide whether that
+        judgment beats the timer.
+
+        The engine stays a CHOOSER: it picks among three options that map onto
+        behaviour this kernel already has, and it never writes the words - the
+        Brain authors the beats. The candidate set is deliberately small so the
+        reference below is comparable like for like:
+
+            speak_all         speak every authored beat (today's behaviour when
+                              the gate admits them)
+            speak_first_only  speak only the headline beat
+            stay_silent       voice nothing; the reply and card carry it
+
+        The reference is what the gate ACTUALLY did, in the same vocabulary, so
+        the row is a real parity pair rather than a self-fulfilling one.
+
+        Shadow only: the gate's beats are what get spoken. Never raises, and
+        writes NO row when the planner authored no beats - that is not a
+        narration decision, so recording one would be junk evidence.
+        """
+        if not authored:
+            return
+        try:
+            from backend.agent.decision_backend_onnx import (
+                ConsumerSpec,
+                get_consumer_spec,
+                register_consumer_spec,
+            )
+            from backend.agent.decision_engine import get_decision_engine
+
+            options = ("speak_all", "speak_first_only", "stay_silent")
+            if get_consumer_spec("narration") is None:
+                register_consumer_spec(ConsumerSpec(
+                    consumer_id="narration",
+                    task_name="narration",
+                    instruction=(
+                        "How much of this plan's narration should be spoken "
+                        "aloud: every beat, only the first, or nothing?"
+                    ),
+                    labels=options,
+                ))
+            eng = get_decision_engine()
+            if eng is None:
+                return
+            frame = {
+                "goal": f"NARRATE: {(task or '')[:300]}",
+                "steps": int(n_steps),
+                "beats_authored": len(authored),
+                "beats_admitted": len(beats),
+                "multi_segment": n_steps >= 2,
+            }
+            ds = eng.decide("narration", list(options), frame)
+            if ds is None:
+                return
+            self._shadow_row_sink({
+                "consumer_id": "narration",
+                "engine": getattr(eng, "model_id", None) or "decision-engine",
+                "chosen": ds.chosen,
+                "confidence": round(float(ds.confidence), 4),
+                "candidates": [
+                    {"name": c.name, "prob": round(float(c.prob), 4)}
+                    for c in (ds.distribution or ())
+                ],
+                "engine_latency_ms": ds.engine_latency_ms,
+                # The gate's ACTUAL decision, in the same vocabulary: it admits
+                # every authored beat or drops them all. "speak_first_only" is a
+                # capability the engine could unlock later - the gate cannot do
+                # it today, so it never appears as the reference.
+                "brain_choice": "speak_all" if beats else "stay_silent",
+                "shadow": True,
+            })
+        except Exception as _e:  # noqa: BLE001 — a shadow never blocks a turn
+            logger.debug("[AgentKernel] narration shadow failed: %r", _e)
+
     @staticmethod
     def _classify_provider_error(err_text: str) -> Optional[Tuple[object, str]]:
         """Map a fatal provider failure to (ErrorCode, user message).
@@ -6841,6 +6930,20 @@ class AgentKernel:
                                 ),
                             )
                         )
+                    # NARRATION consumer (2026-09-27): the duration gate above
+                    # decides what gets spoken; this scores the same question in
+                    # shadow so content-aware narration can be judged later.
+                    _beats = self._planned_beats(data, len(steps))
+                    self._score_narration(
+                        task=text or "",
+                        beats=_beats,
+                        authored=[
+                            str(b).strip()
+                            for b in (data.get("beats", None) or [])
+                            if str(b or "").strip()
+                        ],
+                        n_steps=len(steps),
+                    )
                     return ExecutionPlan(
                         plan_id=str(_uuid.uuid4()),
                         original_task=text,
@@ -6848,7 +6951,7 @@ class AgentKernel:
                         reasoning=data.get("reasoning", ""),
                         plan_title=data.get("plan_title", ""),
                         steps=steps,
-                        beats=self._planned_beats(data, len(steps)),
+                        beats=_beats,
                     )
         except Exception as _parse_err:
             logger.warning(f"[AgentKernel._plan_task] parse failed: {_parse_err}")
