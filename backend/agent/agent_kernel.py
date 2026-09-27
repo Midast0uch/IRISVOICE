@@ -643,6 +643,15 @@ class AgentKernel:
         # provider / no key) are left uninitialized â€” the existing wait-for-user
         # (Models-card APPLY / model_selection confirm_card) behaviour is preserved.
         self._router = InferenceRouter(load_config())
+        # Context window (2026-09-27): the router asks us for the window of the
+        # role it is about to call, so it can (a) offer it to a provider that is
+        # able to set one - Ollama, as options.num_ctx - and (b) cap the prompt
+        # for the providers that cannot, where the window is fixed and the only
+        # thing we control is how much we send. The resolver is our own method
+        # on purpose: the window table lives in THIS class, and a copy inside
+        # the router would drift away from it. Router-side failures degrade to
+        # "no window known" and never break a turn.
+        self._router.set_window_resolver(self.resolve_context_window)
 
     def _initialize_components(self):
         """Initialize all core components with error handling."""

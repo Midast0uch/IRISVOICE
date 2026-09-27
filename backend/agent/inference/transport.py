@@ -320,8 +320,26 @@ class Transport(Protocol):
         chunk_callback: Optional[Callable[[str], None]] = None,
         reasoning_callback: Optional[Callable[[str], None]] = None,
         timeout_s: Optional[float] = None,
+        num_ctx: Optional[int] = None,
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
-        """Run inference and return ``(text, thinking, tool_calls)``."""
+        """Run inference and return ``(text, thinking, tool_calls)``.
+
+        ``num_ctx`` is the CONTEXT WINDOW the caller wants this model served
+        with, in tokens (2026-09-27). It is a HINT: only a provider whose
+        window the client actually owns can honour it.
+
+          - Ollama (local models): honoured as ``options.num_ctx``. This is
+            what makes the served window a fact we chose instead of the
+            server's default, which nothing here could see.
+          - in-process local GGUF: ignored. The window is fixed at load time
+            (``n_ctx``) and cannot be changed per request.
+          - hosted APIs and OpenAI-compatible endpoints: ignored. The provider
+            fixes the window with the model and no client parameter raises it.
+
+        For the ignore cases the ROUTER is responsible for the other half: it
+        caps the request's own input to the resolved window, so a call can
+        never be sent that is larger than the model can read.
+        """
         ...
 
     def _record_success(
@@ -524,6 +542,7 @@ class ApiHttpxTransport:
         chunk_callback: Optional[Callable[[str], None]] = None,
         reasoning_callback: Optional[Callable[[str], None]] = None,
         timeout_s: Optional[float] = None,
+        num_ctx: Optional[int] = None,
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         import httpx as _httpx
         from backend.utils.ssl_context import get_ssl_context
@@ -531,6 +550,10 @@ class ApiHttpxTransport:
         # D1: reset per-call so a call that gets no usage (e.g. a stream the
         # provider didn't annotate) never inherits a PREVIOUS call's numbers.
         self.last_usage = None
+
+        # num_ctx accepted and IGNORED (2026-09-27): a hosted API fixes the
+        # context window with the model, and no request field raises it. The
+        # router caps the input to the resolved window instead.
 
         # Guard against unset model
         if model in (
@@ -929,12 +952,18 @@ class OpenAICompatTransport:
         chunk_callback: Optional[Callable[[str], None]] = None,
         reasoning_callback: Optional[Callable[[str], None]] = None,
         timeout_s: Optional[float] = None,
+        num_ctx: Optional[int] = None,
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         import httpx as _httpx
         from backend.utils.ssl_context import get_ssl_context
 
         # D1: reset per-call (see ApiHttpxTransport.generate for rationale).
         self.last_usage = None
+
+        # num_ctx accepted and IGNORED (2026-09-27): an OpenAI-compatible
+        # endpoint fixes its window when the SERVER starts (llama-server
+        # --ctx-size, vLLM max_model_len), not per request. The router caps the
+        # input to the resolved window instead.
 
         _url = f"{self._endpoint}/v1/chat/completions"
         _url_v1 = f"{self._endpoint}/chat/completions"
@@ -1272,7 +1301,12 @@ class InProcessTransport:
         chunk_callback: Optional[Callable[[str], None]] = None,
         reasoning_callback: Optional[Callable[[str], None]] = None,
         timeout_s: Optional[float] = None,
+        num_ctx: Optional[int] = None,
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
+        # num_ctx accepted and IGNORED (2026-09-27): an in-process local GGUF
+        # has its window fixed at LOAD time (`n_ctx`, now VRAM-derived for tool
+        # duty) and llama.cpp cannot change it per request. Changing it means
+        # reloading the model, which the loader already does.
         # Lazy import to avoid circular dependency at module level
         if self._model_manager is not None:
             mgr = self._model_manager
@@ -1341,6 +1375,7 @@ class OllamaTransport:
         chunk_callback: Optional[Callable[[str], None]] = None,
         reasoning_callback: Optional[Callable[[str], None]] = None,
         timeout_s: Optional[float] = None,
+        num_ctx: Optional[int] = None,
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         import httpx as _httpx
 
@@ -1361,6 +1396,25 @@ class OllamaTransport:
             # then answers directly in content (faster, fewer tokens).
             "think": False,
         }
+
+        # CONTEXT WINDOW (2026-09-27). Ollama is one of the two providers whose
+        # window the CLIENT owns, and until now nothing here ever asked for
+        # one: `num_ctx` appeared nowhere in the backend. So the served window
+        # was whatever the server happened to default to, which no part of this
+        # app could see or record, and the resolver fell back to 8192 - which
+        # then capped the WHOLE DER turn, because the turn budget is the
+        # smaller window of the two roles.
+        #
+        # Guard: never send it for a `-cloud` model. Those run on ollama.com,
+        # where the window belongs to the server and a request field cannot
+        # raise it (the same reason the catalog marks them as cloud).
+        if num_ctx and num_ctx > 0 and not model.endswith("-cloud"):
+            payload["options"] = {"num_ctx": int(num_ctx)}
+            logger.info(
+                "[OllamaTransport] requesting num_ctx=%d for model=%s",
+                int(num_ctx),
+                model,
+            )
 
         try:
             with _httpx.Client(timeout=_httpx.Timeout(30.0)) as _client:

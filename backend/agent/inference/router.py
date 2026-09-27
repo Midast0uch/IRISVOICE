@@ -273,12 +273,131 @@ class InferenceRouter:
         # this immediately after generate() returns to credit the real token
         # count instead of an estimate.
         self.last_usage: Optional[Dict[str, int]] = None
+        # Context-window resolver (2026-09-27). AgentKernel injects its own
+        # resolve_context_window() here. The router must NOT resolve windows
+        # itself: the table lives in the kernel (importing it here would be a
+        # cycle) and copying it here would drift. Takes a role name, returns
+        # tokens. None = resolution disabled, and the router then behaves
+        # exactly as it did before this seam existed.
+        self._window_resolver: Optional[Callable[[str], int]] = None
+        # The window generate() last resolved, for callers, logs and tests.
+        self.last_num_ctx: Optional[int] = None
         # Swarm-defer seam (T4b): timestamped intent recorded while swarm was
         # active. Rehydrated from config in _apply_config below; None = none.
         self._deferred_selection: Optional[Dict[str, Any]] = None
 
         # ── Auto-apply config defaults ──────────────────────────────
         self._apply_config(config)
+
+    # -- Context window (2026-09-27) -------------------------------------
+
+    def set_window_resolver(self, resolver: Optional[Callable[[str], int]]) -> None:
+        """Inject the ``role -> context window`` resolver. See ``__init__``."""
+        self._window_resolver = resolver
+
+    def _window_for_role(self, role: str) -> Optional[int]:
+        """Resolved context window for *role* in tokens, or None if unknown.
+
+        A failing resolver must never break a turn: the window is an
+        optimisation and a safety net, so any error degrades to None and the
+        request proceeds exactly as it did before this seam existed.
+        """
+        # getattr, not self._window_resolver: routers are built with
+        # __new__ + setattr in several tests, bypassing __init__, and a missing
+        # attribute must mean "no window known" rather than an AttributeError
+        # inside a live turn.
+        resolver = getattr(self, "_window_resolver", None)
+        if resolver is None:
+            return None
+        try:
+            window = int(resolver(role) or 0)
+        except Exception as exc:
+            logger.warning(
+                "[InferenceRouter] window resolver failed for role=%s: %s",
+                role,
+                exc,
+            )
+            return None
+        return window if window > 0 else None
+
+    @staticmethod
+    def _estimate_prompt_tokens(
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]],
+    ) -> int:
+        """Cheap, deliberately CONSERVATIVE token estimate.
+
+        No tokenizer is loaded here. This runs on every call, and loading a
+        real tokenizer costs more than the check is worth. 3.5 characters per
+        token is used instead of the usual 4 because the dangerous direction is
+        UNDER-estimating: we would skip the trim and overrun the window.
+        Over-estimating only trims marginally early.
+        """
+        chars = 0
+        for message in messages or []:
+            content = message.get("content")
+            if isinstance(content, str):
+                chars += len(content)
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and isinstance(part.get("text"), str):
+                        chars += len(part["text"])
+            chars += 16  # role, name and JSON scaffolding per message
+            if message.get("tool_calls"):
+                chars += len(str(message["tool_calls"]))
+        if tools:
+            chars += len(str(tools))
+        return int(chars / 3.5) + 1
+
+    @classmethod
+    def _cap_messages_to_window(
+        cls,
+        messages: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]],
+        window: int,
+        max_tokens: int,
+    ) -> List[Dict[str, Any]]:
+        """Drop the OLDEST non-system messages until the prompt fits *window*.
+
+        Why this exists: for a provider whose window the client cannot set (a
+        hosted API, an OpenAI-compatible endpoint, an in-process GGUF), sending
+        a prompt larger than the window is the one failure we can still prevent
+        from our side. The window belongs to the model we are about to call, so
+        the prompt has to fit IT.
+
+        The system message and the LAST message are never dropped: the first
+        carries the instructions, the second is the request itself. If even
+        those two do not fit, the prompt goes as-is and the caller sees the
+        provider's own error, rather than a silently emptied request.
+        """
+        if not messages:
+            return messages
+        reserve = max(256, int(max_tokens or 0)) + 256
+        budget = max(256, int(window) - reserve)
+        if cls._estimate_prompt_tokens(messages, tools) <= budget:
+            return messages
+
+        kept = list(messages)
+        dropped = 0
+        while len(kept) > 2:
+            # Keep a leading system/developer message; otherwise drop from the
+            # front. Stop before the last message, which is never dropped.
+            index = 1 if kept[0].get("role") in ("system", "developer") else 0
+            if index >= len(kept) - 1:
+                break
+            kept.pop(index)
+            dropped += 1
+            if cls._estimate_prompt_tokens(kept, tools) <= budget:
+                break
+        logger.warning(
+            "[InferenceRouter] prompt over the window: window=%d budget=%d "
+            "dropped_messages=%d estimated_now=%d",
+            window,
+            budget,
+            dropped,
+            cls._estimate_prompt_tokens(kept, tools),
+        )
+        return kept
 
     # -- Config loading --------------------------------------------------
 
@@ -964,6 +1083,23 @@ class InferenceRouter:
             quota_id=getattr(transport, "_quota_id", None),
         )
 
+        # ── Context window (2026-09-27) ─────────────────────────────────
+        # Resolve the window for THIS role, then do both halves of the job:
+        #   (a) OFFER it to the transport. Only a provider whose window we own
+        #       can honour it (Ollama: options.num_ctx). The others ignore it.
+        #   (b) CAP our own prompt to it. That is the half that matters for
+        #       hosted APIs and in-process GGUF, where the window is fixed and
+        #       the only thing we control is how much we send. Without this a
+        #       long conversation could be sent to a model that cannot read it.
+        # A None window (no resolver, or nothing known) skips both, leaving the
+        # call exactly as it was before this seam existed.
+        _window = self._window_for_role(role)
+        self.last_num_ctx = _window
+        if _window:
+            messages = self._cap_messages_to_window(
+                messages, normalized_tools, _window, max_tokens
+            )
+
         result = transport.generate(
             effective_model,
             messages,
@@ -973,6 +1109,7 @@ class InferenceRouter:
             chunk_callback=chunk_callback,
             reasoning_callback=reasoning_callback,
             timeout_s=timeout_s,
+            num_ctx=_window,
         )
 
         # Remap sanitized tool names back to the originals (see above) so
