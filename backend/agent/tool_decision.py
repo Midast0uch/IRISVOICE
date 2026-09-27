@@ -18,6 +18,7 @@ import hashlib
 import json
 import logging
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -29,6 +30,243 @@ logger = logging.getLogger(__name__)
 # ── Idempotency (REQ-11) ───────────────────────────────────────────────────
 
 _IDEMPOTENCY_TTL = 86400  # seconds (24 hours)
+
+# REQ-27 AC27.2: the engine cache's documented bound. A long-lived backend
+# accumulates one entry per distinct question; past this the oldest entry is
+# evicted (LRU) rather than growing without limit.
+_ENGINE_CACHE_MAX = 256
+
+# REQ-22 AC22.1 / REQ-25 AC25.8: the threshold used with NO engine at all —
+# the legacy engine-free path. It is NOT a default for the engine path: an
+# engine whose active backend has no measured curve resolves to
+# `_NEVER_ENFORCE_THRESHOLD` instead (fail-closed).
+_LEGACY_THRESHOLD = 0.85
+
+# Above every possible probability, so a below-threshold comparison can never
+# pass: the honest encoding of "refuse enforcement" for a backend with no
+# measured entry. Read as "no curve → no confident pick → escalate".
+_NEVER_ENFORCE_THRESHOLD = 1.01
+
+
+def _evidence_cache_component(evidence: Optional[dict]) -> str:
+    """REQ-27 AC27.1/AC27.3: the evidence payload rides the cache key.
+
+    Empty sentinel when absent (the always-empty case until REQ-28 supplies a
+    payload); a stable content hash when present, so two different payloads
+    never collide on the same goal.
+    """
+    if not evidence:
+        return ""
+    try:
+        return hashlib.sha256(
+            json.dumps(evidence, sort_keys=True, default=str).encode()
+        ).hexdigest()[:16]
+    except Exception:
+        return ""
+
+
+def _evidence_prior_component(evidence: Optional[dict]) -> Dict[str, Any]:
+    """REQ-28 AC28.1/AC28.2/AC28.8 (T43): the per-candidate prior evidence block.
+
+    Ships UNPOPULATED. No caller supplies `evidence["prior"]` within this
+    spec's scope (`specs/wormhole-aperture/` is not implemented), so the block
+    is `{}` and behaviour is byte-identical to today (AC28.1 edge).
+
+    Shape — per candidate, SCOPED, never a bare global score (AC28.2/AC28.8)::
+
+        {name: {"lower_bound": float, "observations": int,
+                "region": str, "mediator": str, "freshness_s": float}}
+
+    The value is the posterior LOWER BOUND, not a point estimate: a prior is
+    allowed to be cautious, never optimistic. An entry that cannot be shaped is
+    DROPPED rather than guessed, and a candidate absent from the menu is
+    ignored by the applier (REQ-28 edge). Never raises.
+    """
+    if not evidence or not isinstance(evidence, dict):
+        return {}
+    prior = evidence.get("prior")
+    if not isinstance(prior, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    try:
+        for name, raw in prior.items():
+            if not isinstance(raw, dict):
+                continue
+            lb = raw.get("lower_bound")
+            if not isinstance(lb, (int, float)) or isinstance(lb, bool):
+                continue
+            try:
+                obs = int(raw.get("observations") or 0)
+            except Exception:  # noqa: BLE001
+                obs = 0
+            try:
+                fresh = float(raw.get("freshness_s") or 0.0)
+            except Exception:  # noqa: BLE001
+                fresh = 0.0
+            out[str(name)] = {
+                "lower_bound": float(lb),
+                "observations": obs,
+                "region": str(raw.get("region") or ""),
+                "mediator": str(raw.get("mediator") or ""),
+                "freshness_s": fresh,
+            }
+    except Exception:  # noqa: BLE001 — a prior is never worth a crash
+        return {}
+    return out
+
+
+# REQ-28 AC28.3 (T45): the prior's maximum share of the blended score. A
+# WEIGHTED PRIOR, never a filter and never a decider — a large weight would let
+# the graph outvote the model, which is exactly what the AC forbids.
+_EVIDENCE_PRIOR_WEIGHT = 0.25
+
+
+def apply_evidence_prior(
+    ds: Optional["DecisionScore"],
+    prior: Optional[Dict[str, Any]],
+    threshold: float,
+) -> Tuple[Optional["DecisionScore"], bool]:
+    """REQ-28 AC28.3/AC28.6/AC28.7 (T45): blend the prior into the distribution.
+
+    Returns ``(score, used)``. ``used`` is True only when the prior actually
+    CHANGED the outcome, so "retrieved" and "used" stay distinguishable and an
+    unused retrieval is never scored as a success (AC28.7).
+
+    Two safety properties, both required:
+      * the model's own evidence can OUTVOTE the prior — the blend is weighted,
+        so a candidate the model scores far lower is not rescued by a high
+        lower bound; and
+      * the prior CANNOT raise the winner above `threshold` on its own — when
+        the model's confidence was below the threshold, the blended confidence
+        is capped below it. A prior may reorder plausible candidates; it may
+        never manufacture confidence (AC28.3).
+
+    Absent/empty prior, or no menu candidate carrying evidence → the score is
+    returned UNCHANGED with ``used=False`` (AC28.1 edge: byte-identical).
+    Never raises.
+    """
+    if ds is None or not prior:
+        return ds, False
+    try:
+        from backend.agent.decision_engine import CandidateScore, DecisionScore
+
+        dist = tuple(ds.distribution or ())
+        if not dist:
+            return ds, False
+        hits = {c.name: prior[c.name] for c in dist if c.name in prior}
+        if not hits:
+            return ds, False   # evidence for absent candidates: ignored
+
+        w = _EVIDENCE_PRIOR_WEIGHT
+        # A candidate WITHOUT evidence gets a prior of 0.0 — it is not
+        # penalised, it simply carries no prior. (Using `hits[name]` directly
+        # raised KeyError for every un-evidenced candidate, which the fail-safe
+        # below then swallowed: the prior silently never applied.)
+        blended = {
+            c.name: (1.0 - w) * float(c.prob)
+            + w * (
+                float(hits[c.name]["lower_bound"]) if c.name in hits else 0.0
+            )
+            for c in dist
+        }
+        total = sum(blended.values())
+        if total <= 0:
+            return ds, False
+        probs = {n: v / total for n, v in blended.items()}
+        # AC28.7: the prior is a REORDERER. If the ranking is intact it changed
+        # nothing, so it must not touch the verdict — a renormalisation nudge
+        # is not "used", and an unused retrieval must not be scored a success.
+        model_order = [c.name for c in sorted(dist, key=lambda c: -float(c.prob))]
+        blended_order = sorted(probs, key=lambda n: -probs[n])
+        if model_order == blended_order:
+            return ds, False
+        best = blended_order[0]
+        conf = probs[best]
+        if ds.confidence < threshold and conf >= threshold:
+            # AC28.3: the prior may not cross the threshold by itself. Cap it
+            # just below and let the model's own score decide the ranking.
+            conf = max(0.0, threshold - 1e-6)
+        new_dist = tuple(
+            CandidateScore(
+                name=c.name,
+                logprob=c.logprob,
+                prob=round(float(probs[c.name]), 6),
+            )
+            for c in dist
+        )
+        return (
+            DecisionScore(
+                consumer_id=ds.consumer_id, chosen=best, confidence=conf,
+                distribution=new_dist,
+                engine_latency_ms=ds.engine_latency_ms,
+                retried=ds.retried,
+                stage_detail=ds.stage_detail,
+            ),
+            True,
+        )
+    except Exception as _e:  # noqa: BLE001 — a prior never breaks a decision
+        logger.debug("[TOOL_DECISION] evidence prior failed: %r", _e)
+        return ds, False
+
+
+def apply_ruled_out(
+    ds: Optional["DecisionScore"], ruled_out
+) -> Optional["DecisionScore"]:
+    """REQ-11 AC11.2 (T14): zero a ruled-out tool's probability, then re-pick.
+
+    A graft step resolving after a tool just failed must never be able to
+    choose that tool again. The veto is applied at the SCORE (not only as a
+    post-hoc refusal) so the recorded distribution is honest: the failed tool
+    carries probability 0.0, and the winner is the best SURVIVING candidate.
+
+    Returns None when every candidate is ruled out — the caller escalates to
+    the Brain with the veto set attached rather than force-picking a vetoed
+    tool (REQ-11 edge case). Pure; never raises.
+    """
+    if ds is None or not ruled_out:
+        return ds
+    try:
+        from backend.agent.decision_engine import (  # lazy — no import cycle
+            CandidateScore,
+            DecisionScore,
+        )
+
+        blocked = {str(n) for n in ruled_out if n}
+        if not blocked:
+            return ds
+        dist = tuple(
+            CandidateScore(name=c.name, logprob=-1e9 if c.name in blocked else c.logprob,
+                           prob=0.0 if c.name in blocked else c.prob)
+            for c in (ds.distribution or ())
+        )
+        survivors = [c for c in dist if c.name not in blocked]
+        if not survivors:
+            return None  # all candidates vetoed → escalate with the veto set
+        best = max(survivors, key=lambda c: c.prob)
+        return DecisionScore(
+            consumer_id=ds.consumer_id,
+            chosen=best.name,
+            confidence=best.prob,
+            distribution=dist,
+            engine_latency_ms=ds.engine_latency_ms,
+            retried=ds.retried,
+            stage_detail=ds.stage_detail,
+        )
+    except Exception:
+        return ds  # a veto rewrite must never lose the decision
+
+
+def _emit_truncation(field: str, original_len: int, kept_len: int) -> None:
+    """REQ-6 AC6.6: a structured truncation event for the silent cuts —
+    field + original length, so a truncated input is never decided silently.
+    Best-effort; never raises."""
+    try:
+        logger.info(
+            "[TOOL_DECISION] truncation field=%s original_len=%d kept_len=%d",
+            field, original_len, kept_len,
+        )
+    except Exception:
+        pass
 
 
 def _make_idempotency_key(turn_id: str, tool_name: str, params: dict) -> str:
@@ -48,21 +286,38 @@ def _is_write_tool(tool_name: str) -> bool:
 
 # specs/tool-decision-engine REQ-16: exact-token triggers for vision relevance.
 # Keeps 'view' OUT and 'screenshot' IN — a sighted decision must be earned.
+# REQ-3 (T3): the isolated token "what's" is REMOVED — it falsely fired on
+# factual search queries ("what's the capital of France" routed to a vision
+# menu instead of web search). A "what's" style prompt now triggers vision
+# only through a multi-word contextual phrase (below) or a real vision token.
 _VISION_TOKENS = frozenset({
     "screenshot", "screen", "screenshot,", "screens", "image", "photo",
     "picture", "pixels", "vision", "diagram", "banner", "logo",
-    "what's",  # "what's on screen" style prompts split to what's
 })
+
+# REQ-3 (T3): multi-word contextual phrases. An isolated "what's" fired on
+# any question; the phrase must match as a whole, so "what's on screen"
+# triggers vision while "what's the weather" does not.
+_VISION_PHRASES = (
+    "what's on screen", "whats on screen", "what is on screen",
+    "what's on my screen", "whats on my screen", "what is on my screen",
+    "look at screen", "look at the screen", "look at my screen",
+)
 
 
 def _vision_relevant(goal: str) -> bool:
-    """Deterministic vision-relevance feature (REQ-16).
+    """Deterministic vision-relevance feature (REQ-16, amended by REQ-3).
 
     Token-level match, never substring: 'screenshotting' and 'view' don't
-    fire; 'screenshot' / 'image' / 'diagram' do.
+    fire; 'screenshot' / 'image' / 'diagram' do. A "what's" style prompt
+    fires only through a multi-word contextual phrase — the isolated token
+    is gone (REQ-3: factual search queries must not trigger vision menus).
     """
     toks = {t.strip(",.?!\"'").lower() for t in (goal or "").split()}
-    return bool(toks & _VISION_TOKENS)
+    if toks & _VISION_TOKENS:
+        return True
+    g = (goal or "").lower()
+    return any(p in g for p in _VISION_PHRASES)
 
 
 # Gather signals for OQ-2: these mean "go and fetch something". A step that
@@ -110,9 +365,27 @@ def _goal_needs_action(goal: str) -> bool:
     g = (goal or "").lower()
     if not g:
         return False
-    if any(s in g for s in _ACTION_SIGNALS):
-        return True
-    return any(s in g for s in _PATH_SIGNALS)
+    _lexical = any(s in g for s in _ACTION_SIGNALS) or any(
+        s in g for s in _PATH_SIGNALS)
+    # REQ-29 AC29.4 (T49): shadow-score `needs_action` and record the row.
+    # The SAFE direction is STRUCTURAL, not calibrated: the engine may ADD a
+    # True ("when in doubt, act") but may never REMOVE one, so a model false
+    # negative can never stop a step that needs a tool. The lexical heuristic
+    # decides until a TG-13 measured bar says otherwise.
+    try:
+        from backend.agent import surface_shadow as _ss
+
+        _value, _row = _ss.surface_bool(
+            "needs_action", goal,
+            brain_bool_fn=lambda: _lexical,
+            engine=_ss.AUTO_ENGINE,
+        )
+        _ss.emit_row(_row)
+        if _lexical:
+            return True          # the safe direction is never narrowed
+        return bool(_value)
+    except Exception:  # noqa: BLE001 — the heuristic is the fallback
+        return _lexical
 
 
 def _goal_needs_gather(goal: str) -> bool:
@@ -330,7 +603,7 @@ class ToolDecisionBox:
         infer_fn: Optional[Callable[..., str]] = None,
         memory_lookup_fn: Optional[Callable[[str], Optional[dict]]] = None,
         decision_engine: Any = None,
-        decision_threshold: float = 0.85,
+        decision_threshold: Optional[float] = None,
         use_decision_engine: bool = True,
     ):
         """
@@ -363,19 +636,54 @@ class ToolDecisionBox:
         # permanently-failing call kept escaping its failure budget. Cleared
         # for a given call as soon as that call succeeds.
         self._permanent_failed_args: Dict[tuple, int] = {}
+        # REQ-11 AC11.2 (T14): objective -> the tools that have already FAILED
+        # for it. This is the SEED veto list the engine must respect when it
+        # resolves a graft step. Like _permanent_failed_args above it is
+        # deliberately NOT cleared by reset_failure_counters(): the DER calls
+        # that on every _split_step, and a veto that a split erases is exactly
+        # how recovery re-picks the tool that just failed.
+        self._ruled_out_seed: Dict[str, set] = {}
+        # REQ-11 AC11.3/AC11.5 (T15): the last `recovery_strategy` consumer
+        # verdict for this box ("" until the gate runs). Recorded in meta so
+        # calibration can join the strategy against the outcome.
+        self._recovery_strategy: str = ""
+        # REQ-17 AC17.1 (T21): the LAST failure-triage shadow row — the engine's
+        # verdict (with `retry_same` offered) PAIRED with what the counters
+        # actually decided. None when no triage row was produced (no engine, or
+        # the deterministic double-failure escalate, which pays no model call).
+        # Shadow only: the counters remain the deciders (AC17.2).
+        self.last_triage_shadow: Optional[Dict[str, Any]] = None
+        # REQ-11 AC11.4 (T15): objective -> the tools that failed for it, in
+        # order. Two consecutive identical entries means a third identical
+        # attempt must escalate instead of being grafted.
+        self._recovery_failures: Dict[str, list] = {}
         # specs/tool-decision-engine: resident decision engine (Jev-pattern
         # calibrated Choice). Injected or lazily resolved from the module
         # singleton; disabled entirely by use_decision_engine=False.
         self._decision_engine: Any = decision_engine
-        self._decision_threshold: float = float(decision_threshold)
+        # REQ-22 AC22.1 / REQ-25 AC25.8: the confidence threshold is keyed by
+        # the ACTIVE BACKEND. Resolved here, not defaulted: an explicit caller
+        # value wins; otherwise the active backend's measured entry; otherwise
+        # NO enforcement (fail-closed). The old hardcoded 0.85 was the RETIRED
+        # LFM curve and no caller ever passed a value, so every decision was
+        # judged against a curve the deployed model never produced. Measured
+        # live 2026-09-26: the ledger recorded threshold=0.85 against backend
+        # gliner25-decide-onnx-int8, whose measured entry is 0.40.
+        self._decision_threshold: float = self._resolve_decision_threshold(
+            decision_threshold
+        )
         self._use_decision_engine: bool = bool(use_decision_engine)
         self._engine_meta: Optional[Dict[str, Any]] = None  # set by _engine_try
         self._engine_retried: bool = False  # REQ-4 escalated-call retry marker
         # RE site: turn-scoped engine cache — same question (goal + options +
-        # class) inside one box lifetime does not re-evaluate the model. A
-        # change to any of those properties invalidates, so decisions stay
-        # honest; we pay the model once per distinct question per session,
-        # not once per step.
+        # class + evidence) inside one box lifetime does not re-evaluate the
+        # model. A change to any of those properties invalidates, so decisions
+        # stay honest; we pay the model once per distinct question per session,
+        # not once per step. REQ-27 (D16): the evidence payload rides the key
+        # FROM DAY ONE (empty sentinel until REQ-28 supplies a payload) — a
+        # cache hit must never return a verdict computed without it. Bounded
+        # with LRU eviction (_ENGINE_CACHE_MAX): the dict was unbounded
+        # against the project's own quality bar.
         self._engine_cache: Dict[tuple, Any] = {}
         # REQ-15 continuity: (chosen, kind.value) of the LAST engine-resolved
         # decision this conversation made — read-only frame input, never
@@ -446,6 +754,61 @@ class ToolDecisionBox:
     _DE_DELEGATE = "DELEGATE"  # engine says: below its pay grade
     _DE_NONE = "NONE"          # engine says: no tool applies
 
+    @staticmethod
+    def _compose_engine_menu(
+        names: list, delegate: str, none: str, cap: int,
+    ) -> list:
+        """AC21.8: registry names + the two control labels, total width = cap.
+
+        The engine applies its own ``candidate_cap`` truncation internally, so
+        the control labels must be RESERVED a slot before the cap, not appended
+        after it — appending after made the menu cap+2 wide and the engine's
+        internal truncation silently cut DELEGATE/NONE off entirely (neither
+        control label ever reached the scorer at the shipped width of 6).
+        Registry tools literally named NONE/DELEGATE are dropped first — no
+        duplicate labels. Vision-fronted names stay at the front, so they
+        survive whenever they fit inside the reserved width.
+        """
+        controls = [delegate, none]
+        reserved = max(cap - len(controls), 0)
+        clean = [n for n in names if n and n not in controls]
+        return clean[:reserved] + controls
+
+    def _resolve_decision_threshold(self, explicit: Optional[float]) -> float:
+        """The confidence threshold for THIS backend (AC22.1 / AC25.8).
+
+        Order:
+          1. an explicit caller value (tests and callers that know their curve);
+          2. the ACTIVE backend's entry via ``EngineConfig.threshold_for``;
+          3. ``_NEVER_ENFORCE_THRESHOLD`` when the active backend has NO entry.
+
+        Step 3 is the fail-closed rule, not a fallback: a probability threshold
+        is only meaningful for the distribution it was measured on, so an
+        unknown backend must never be judged against some other model's curve.
+        A stale calibrated width resolves to None inside ``threshold_for`` too
+        (AC25.5) and lands here as "do not enforce".
+
+        With NO engine at all the legacy 0.85 stands, so engine-free unit
+        suites keep the behaviour they were written against.
+        """
+        if explicit is not None:
+            return float(explicit)
+        cfg = getattr(self._decision_engine, "_cfg", None)
+        if cfg is None:
+            return _LEGACY_THRESHOLD
+        try:
+            resolved = cfg.threshold_for("tool_choice")
+        except Exception:  # noqa: BLE001 — an unusable config is no curve
+            resolved = None
+        if resolved is None:
+            logger.warning(
+                "[TOOL_DECISION] no threshold for the active backend (%s) — "
+                "refusing enforcement for tool_choice (AC25.8 fail-closed)",
+                getattr(cfg, "backend_id", None) or "unknown",
+            )
+            return _NEVER_ENFORCE_THRESHOLD
+        return float(resolved)
+
     def _engine(self):
         """The injected decision engine when enabled; None disables cleanly.
 
@@ -497,6 +860,8 @@ class ToolDecisionBox:
         start: float,
         session_id: str,
         conversation_id: str,
+        ruled_out: Optional[set] = None,
+        failed_tool: str = "",
     ) -> Optional[Decision]:
         """Calibrated Choice over the pre-filtered candidate set (REQ-2).
 
@@ -504,6 +869,11 @@ class ToolDecisionBox:
         None when the engine declined, degraded, or scored below threshold —
         the caller then runs the legacy ladder, which IS the escalation path
         (AC3.2). Never raises.
+
+        ``ruled_out`` (REQ-11 AC11.1/AC11.2, T14) is the graft failure veto:
+        the failed tool carries probability 0.0 and cannot win; when EVERY
+        candidate is ruled out the engine declines and the caller escalates to
+        the Brain with the veto set attached (never a force-picked vetoed tool).
         """
         try:
             all_tools: list[dict] = self._get_available_tools() or []
@@ -532,15 +902,16 @@ class ToolDecisionBox:
                 vision_front = vision_names
                 names = vision_names + [n for n in names if n not in vision_names]
             _cap = getattr(getattr(engine, "_cfg", None), "candidate_cap", 8)
-            _pre_cap_count = len(names)
             if vision_front:
-                # guaranteed in: vision names never fall off under the cap
-                names = vision_front[:_cap] + [
-                    n for n in names if n not in vision_front
-                ][:_cap]
-                names = names[:_cap + len(vision_front)]
-            else:
-                names = names[:_cap]
+                # guaranteed in: vision names stay at the front; the composed
+                # menu below reserves them a slot ahead of the control labels
+                names = vision_front + [n for n in names if n not in vision_front]
+            # AC21.8: compose the menu ONCE — registry names + DELEGATE/NONE,
+            # total width = cap. The engine truncates internally to the same
+            # cap, so a menu composed wider than cap would lose the control
+            # labels at the scorer (the defect this composition fixes).
+            names = self._compose_engine_menu(
+                names, self._DE_DELEGATE, self._DE_NONE, _cap)
 
             # REQ-15: cross-step continuity — the engine sees (only) its own
             # last verdict inside this conversation's run. Read-only: the
@@ -550,10 +921,19 @@ class ToolDecisionBox:
             # REQ-16/new-fix: frame carries option descriptions so the 350M can
             # ground its choice in MEANING of the name (cuddled-token read-out
             # alone collapsed to literal name matching — session 344 finding).
+            # REQ-6 AC6.6: a truncation that actually cuts content emits a
+            # structured event — never decided silently.
             desc_map = {
                 t.get("name"): (t.get("description") or "")[:90]
                 for t in all_tools if t.get("name")
             }
+            for t in all_tools:
+                _d = t.get("description") or ""
+                if len(_d) > 90:
+                    _emit_truncation("option_description", len(_d), 90)
+            _goal_raw = goal or ""
+            if len(_goal_raw) > 200:
+                _emit_truncation("goal", len(_goal_raw), 200)
             # Enumerated feature frame (D9): no prose, deterministic fields.
             frame = {
                 "goal": (goal or "")[:200],
@@ -569,61 +949,91 @@ class ToolDecisionBox:
                     if (t.get("category") or "").lower() == "vision"
                 ),
                 "option_descriptions": desc_map,
+                # REQ-11 AC11.1 (T14): the failure evidence the engine frame
+                # carries — the tools this objective has already ruled out.
+                "ruled_out": sorted(ruled_out or ()),
+                # REQ-28 AC28.1 (T43): the per-candidate prior evidence block.
+                # Ships UNPOPULATED — `{}` until a provider supplies
+                # `evidence["prior"]`, so the frame is byte-identical to today
+                # (AC28.1 edge). Shaped (AC28.2/AC28.8), never a bare score.
+                "evidence": _evidence_prior_component(evidence),
             }
             # Turn-scoped cache: a repeat of the identical engine question
             # inside this conversation reuses the measured distribution. The
             # ledger still gets the row (meta carries cache=True), because the
-            # second answer is the same decision, not a new one.
+            # second answer is the same decision, not a new one. REQ-27: the
+            # evidence payload rides the key (empty sentinel when absent).
             cache_key = (
                 (goal or "")[:200],
                 tuple(names),
                 (step or {}).get("task_class"),
                 needs_vision,
+                _evidence_cache_component(evidence),
+                # T14: the veto set changes the ANSWER, so it must change the
+                # key — otherwise a verdict computed without the veto is
+                # replayed for a vetoed resolution (same swallow as T37).
+                tuple(sorted(ruled_out or ())),
             )
             cached_hit = False
             if cache_key in self._engine_cache:
-                ds = self._engine_cache[cache_key]
+                # LRU: move the hit to the end so a repeat question stays hot
+                ds = self._engine_cache.pop(cache_key)
+                self._engine_cache[cache_key] = ds
                 cached_hit = True  # carried into meta as cached=True below
             else:
                 ds = None
             if ds is None:
-                # Session-345 (live A/B, conv-128 goal replay): the tree's lane
-                # stage scored NONE 0.94 for a websearch goal that the flat
-                # stage answers crawler_query 0.9988. Lane names carry no
-                # worked-example grounding, so the two-stage shape REGRESSES
-                # small menus. Rule: flat while nothing was lost to the cap
-                # (the measured, calibrated regime); the tree runs only when
-                # the pre-cap menu exceeded the cap — the only case where
-                # grouping real tools into lanes adds information.
-                name_to_cat = {
-                    t.get("name"): (t.get("category") or "misc")
-                    for t in (all_tools or [])
-                    if t.get("name")
-                }
-                lanes: Dict[str, list] = {}
-                for n in names:
-                    lanes.setdefault(name_to_cat.get(n, "misc"), []).append(n)
-                lanes_for_engine = dict(lanes)
-                if self._DE_DELEGATE not in lanes and self._DE_NONE not in lanes:
-                    lanes_for_engine["DELEGATE"] = [self._DE_DELEGATE]
-                    lanes_for_engine["NONE"] = [self._DE_NONE]
-                if _pre_cap_count > _cap and len(lanes_for_engine) > 1:
-                    _dt = getattr(engine, "decide_tree", None)
-                    if callable(_dt):
-                        ds = _dt("tool_choice", lanes_for_engine, frame)
-                    else:
-                        ds = engine.decide(
-                            "tool_choice",
-                            names + [self._DE_DELEGATE, self._DE_NONE], frame,
-                        )
-                else:
-                    ds = engine.decide(
-                        "tool_choice", names + [self._DE_DELEGATE, self._DE_NONE], frame
-                    )
+                # REQ-22 AC22.3: flat single-pass scoring over the candidate
+                # set is the ONLY path — the hierarchical two-stage tree is
+                # retired (measured: 26.7 accuracy points and 4.6x latency
+                # worse than flat; its lane construction existed solely to
+                # feed decide_tree and is deleted with it, which is what
+                # cancelled REQ-4/T4). The menu arrives already composed at
+                # the cap with both control labels reserved (AC21.8).
+                ds = engine.decide("tool_choice", names, frame)
                 if ds is not None:
                     self._engine_cache[cache_key] = ds
+                    # REQ-27 AC27.2: bounded with LRU eviction — the dict was
+                    # unbounded (no eviction) against the project's quality bar.
+                    while len(self._engine_cache) > _ENGINE_CACHE_MAX:
+                        self._engine_cache.pop(next(iter(self._engine_cache)))
             if ds is None:
                 return None  # engine unavailable/timeout — plain degrade
+            # REQ-11 AC11.2 (T14): the failed tool scores ZERO — applied to the
+            # verdict itself, not just as a post-hoc refusal, so the recorded
+            # distribution is honest. All candidates vetoed → decline and let
+            # the caller escalate with the veto set attached.
+            if ruled_out:
+                _vetoed_pick = ds.chosen in ruled_out
+                ds = apply_ruled_out(ds, ruled_out)
+                if ds is None:
+                    logger.info(
+                        "[TOOL_DECISION] every candidate ruled out %s -> "
+                        "escalate conv=%s", sorted(ruled_out), conversation_id,
+                    )
+                    self._engine_meta = {
+                        "ruled_out": sorted(ruled_out),
+                        "failed_tool": failed_tool,
+                    }
+                    return None
+                if _vetoed_pick:
+                    logger.info(
+                        "[TOOL_DECISION] engine pick vetoed by failure evidence "
+                        "-> %s conv=%s", ds.chosen, conversation_id,
+                    )
+            # REQ-28 AC28.3/AC28.6/AC28.7 (T45): blend the graph prior into the
+            # distribution. The veto (AC11.2) is applied FIRST so a ruled-out
+            # candidate can never be resurrected by evidence, and the prior is
+            # bounded so it cannot cross the threshold on its own. Absent
+            # evidence leaves `ds` untouched (AC28.1 edge: byte-identical).
+            _ev_prior = frame.get("evidence") or {}
+            _ev_present = bool(_ev_prior)
+            _ev_used = False
+            if _ev_present:
+                ds, _ev_used = apply_evidence_prior(
+                    ds, _ev_prior, self._decision_threshold)
+                if ds is None:
+                    return None
             chosen, conf = ds.chosen, ds.confidence
             base_meta: Dict[str, Any] = {
                 "engine": getattr(engine, "model_id", None) or "decision-engine",
@@ -632,10 +1042,11 @@ class ToolDecisionBox:
                 "confidence": round(conf, 4),
                 "candidates": len(names),
                 # Session-345: the candidate count alone cannot explain a wrong
-                # answer. Record the menu itself (bounded: <= cap+2 names) so a
+                # answer. Record the menu itself (bounded: <= cap names) so a
                 # live miss is auditable — today's NONE@0.935 was inexplicable
-                # until the menu could be reconstructed.
-                "candidate_names": list(names) + [self._DE_DELEGATE, self._DE_NONE],
+                # until the menu could be reconstructed. The composed menu
+                # already carries both control labels (AC21.8).
+                "candidate_names": list(names),
                 "threshold": self._decision_threshold,
                 "engine_latency_ms": ds.engine_latency_ms,
                 "previous_chosen": _prev.get("chosen"),
@@ -645,6 +1056,32 @@ class ToolDecisionBox:
                 "vision_candidates": frame["vision_candidates"],
                 "stage_detail": getattr(ds, "stage_detail", None),
                 "cached": cached_hit,
+                # REQ-6 AC6.4: the full distribution rides the row, so the
+                # reliability curve reads the whole menu, not just the winner.
+                "distribution": [
+                    {"name": c.name, "prob": round(c.prob, 4)}
+                    for c in (ds.distribution or ())
+                ],
+                # REQ-21 AC21.7/AC22.5: the deployed backend identity + model
+                # file hash — a variant swap is detectable, historical LFM
+                # rows stay distinguishable.
+                "model_hash": (
+                    engine.model_hash()
+                    if callable(getattr(engine, "model_hash", None))
+                    else getattr(engine, "model_hash", None)
+                ),
+                # REQ-11 AC11.5 (T14/T15): the recovery join keys. `failed_tool`
+                # is what just failed for this objective; `ruled_out` is the
+                # full veto set; `recovery_strategy` is the engine consumer's
+                # verdict (REQ-11 AC11.3) — "" until T15's gate runs.
+                "failed_tool": failed_tool or None,
+                "ruled_out": sorted(ruled_out or ()),
+                "recovery_strategy": self._recovery_strategy or None,
+                # REQ-28 AC28.6/AC28.7 (T45): PRESENT and USED are recorded
+                # separately, so an unused retrieval is never scored as a
+                # success and calibration can measure whether the prior helped.
+                "evidence_present": _ev_present,
+                "evidence_used": _ev_used,
             }
 
             def _m(route: str, **kw) -> Dict[str, Any]:
@@ -740,7 +1177,30 @@ class ToolDecisionBox:
                     if not (v or {}).get("optional", False)
                 ],
             }
-            ar = engine.generate_args("tool_choice", chosen, params_schema, frame)
+            # REQ-2 + REQ-10: the fast path first — the goal text maps directly
+            # to the 'query' parameter in 0ms for single-param query tools, and
+            # a click/tap/press goal maps to the vision element target (T13);
+            # complex schemas fall back to generate_args (AC2.4/AC10.2), which
+            # degrades to the legacy ladder in production (the ONNX backend
+            # scores labels, it does not generate arguments).
+            ar = None
+            is_fast_path = False
+            fast_path_pattern = ""
+            _fast = getattr(engine, "fast_path_args", None)
+            if callable(_fast):
+                ar = _fast(chosen, params_schema, frame)
+                is_fast_path = ar is not None
+                if is_fast_path:
+                    # AC10.3: the pattern id is the calibration join key.
+                    fast_path_pattern = getattr(ar, "fast_path", "") or ""
+                    logger.info(
+                        "[TOOL_DECISION] is_fast_path=true pattern=%s tool=%s "
+                        "conv=%s",
+                        fast_path_pattern or "unspecified", chosen,
+                        conversation_id,
+                    )
+            if ar is None:
+                ar = engine.generate_args("tool_choice", chosen, params_schema, frame)
             if ar.args is None:
                 # AC2.5: invalid structure/args escalates the whole decision.
                 self._engine_meta = _m(
@@ -754,7 +1214,11 @@ class ToolDecisionBox:
                 self._engine_meta = _m(
                     "escalated", args_valid=False, retried=ar.retried)
                 return None
-            decision.meta = _m("engine", args_valid=True, retried=ar.retried)
+            decision.meta = _m(
+                "engine", args_valid=True, retried=ar.retried,
+                is_fast_path=is_fast_path,
+                fast_path_pattern=fast_path_pattern,
+            )
             ms = int((time.perf_counter() - start) * 1000)
             logger.info(
                 "[TOOL_DECISION] kind=TOOL source=engine tool=%s conf=%.3f "
@@ -881,6 +1345,7 @@ class ToolDecisionBox:
         evidence: Optional[dict] = None,
         session_id: str = "",
         conversation_id: str = "",
+        failure: Optional[dict] = None,
     ) -> Decision:
         """Engine-first resolution (specs/tool-decision-engine REQ-2/3/4).
 
@@ -891,9 +1356,26 @@ class ToolDecisionBox:
         ``Decision.meta``; route-only rows (REASON/FAIL with meta) are recorded
         through the SAME tool-event writer as executions — one row, one writer
         (AC5.1, AC5.4).
+
+        ``failure`` (REQ-11 AC11.1, T14): optional graft failure evidence —
+        ``{"failed_tool": str, "error_snippet": str}``. The failed tool is
+        recorded against the objective and ruled out of this resolution, so
+        recovery cannot re-pick the tool that just failed. Absent = behaviour
+        byte-identical to today (the veto list is empty).
         """
         _start = time.perf_counter()
         goal = step.get("description", "") or ""
+        # AC11.1/AC11.2: seed the veto from the reported failure AND from any
+        # earlier failure for this objective (survives reset_failure_counters).
+        _objective = (
+            step.get("objective_anchor") or step.get("objective") or goal
+        ) or ""
+        _failed_tool = ""
+        if failure:
+            _failed_tool = str(failure.get("failed_tool") or "").strip()
+            if _failed_tool:
+                self._ruled_out_seed.setdefault(_objective, set()).add(_failed_tool)
+        _ruled_out = set(self._ruled_out_seed.get(_objective) or ())
         self._engine_meta = None
         eng = self._engine()
         if eng is not None:
@@ -901,6 +1383,7 @@ class ToolDecisionBox:
                 engine=eng, step=step, goal=goal, evidence=evidence,
                 start=_start, session_id=session_id,
                 conversation_id=conversation_id,
+                ruled_out=_ruled_out, failed_tool=_failed_tool,
             )
             if early is not None:
                 engine_counts = getattr(eng, "counters", None)
@@ -981,6 +1464,107 @@ class ToolDecisionBox:
             )
         except Exception as _e:
             logger.debug("[TOOL_DECISION] decision row write failed: %r", _e)
+
+    def record_shadow_tool_choice(
+        self,
+        *,
+        goal: str,
+        observed_tool: str,
+        observed_params: Optional[dict] = None,
+        candidates: Optional[list] = None,
+        session_id: str = "",
+        conversation_id: str = "",
+        threshold: Optional[float] = None,
+        async_: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        """REQ-16 AC16.2 (T20): shadow-score a tool choice made OUTSIDE the box.
+
+        The RespondDirect ReAct loop picks tools with native function calling
+        (`agent_kernel.py:3132-3176`), bypassing ``resolve()`` — so that traffic
+        never reached the ledger and the reliability curve was built on a biased
+        subset. This records the engine's OWN Choice over the same candidate
+        menu, PAIRED with the tool the Brain actually called (``brain_choice``),
+        so calibration sees 100% of tool-choice traffic (CT-DEI-7).
+
+        Shadow only: nothing here changes what runs. ``async_=True`` (the
+        kernel's mode) runs the scoring on a daemon thread, so the fast chat
+        path pays ZERO added latency (REQ-16 edge case). Returns the row in sync
+        mode; None when async, when there is no engine, or when no candidates
+        are known — a missing engine must never fabricate a row (T17/T18
+        convention). Never raises.
+
+        The frame deliberately does NOT carry ``observed_tool``: telling the
+        engine what the Brain picked would make the row a self-fulfilling
+        measurement instead of an independent one.
+        """
+        if async_:
+            try:
+                threading.Thread(
+                    target=self.record_shadow_tool_choice,
+                    kwargs={
+                        "goal": goal, "observed_tool": observed_tool,
+                        "observed_params": observed_params,
+                        "candidates": candidates, "session_id": session_id,
+                        "conversation_id": conversation_id,
+                        "threshold": threshold, "async_": False,
+                    },
+                    daemon=True, name="shadow-tool-choice",
+                ).start()
+            except Exception as _e:  # noqa: BLE001 — an observer never blocks
+                logger.debug("[TOOL_DECISION] shadow thread failed: %r", _e)
+            return None
+        try:
+            eng = self._engine()
+            if eng is None:
+                return None
+            names = [
+                n for n in (
+                    candidates if candidates is not None
+                    else [
+                        t.get("name")
+                        for t in (self._get_available_tools() or [])
+                    ]
+                ) if n
+            ]
+            if not names:
+                return None
+            _cap = getattr(getattr(eng, "_cfg", None), "candidate_cap", 6)
+            menu = self._compose_engine_menu(
+                names, self._DE_DELEGATE, self._DE_NONE, _cap)
+            frame = {
+                "goal": (goal or "")[:200],
+                "n_candidates": len(menu),
+                "source": "respond_direct",
+            }
+            ds = eng.decide("tool_choice", menu, frame)
+            if ds is None:
+                return None
+            row: Dict[str, Any] = {
+                "consumer_id": "tool_choice",
+                "engine": getattr(eng, "model_id", None) or "decision-engine",
+                "chosen": ds.chosen,
+                "confidence": round(float(ds.confidence), 4),
+                "candidates": [
+                    {"name": c.name, "prob": round(c.prob, 4)}
+                    for c in (ds.distribution or ())
+                ],
+                "threshold": (
+                    self._decision_threshold if threshold is None
+                    else float(threshold)
+                ),
+                "engine_latency_ms": ds.engine_latency_ms,
+                # The shadow PAIR: the engine's pick vs the Brain's actual call.
+                "brain_choice": observed_tool,
+                "brain_params": observed_params or {},
+                "conversation_id": conversation_id or None,
+                "source": "respond_direct",
+                "shadow": True,
+            }
+            self._record_shadow_row(row, session_id=session_id)
+            return row
+        except Exception as _e:  # noqa: BLE001 — a shadow never raises
+            logger.debug("[TOOL_DECISION] shadow tool-choice failed: %r", _e)
+            return None
 
     def _resolve_legacy(
         self,
@@ -1628,10 +2212,180 @@ class ToolDecisionBox:
 
         Called by the DER loop when a ``_split_step`` Sub-Loop is created,
         so the graft is not penalized as a continuation of the parent step.
+
+        NOTE: this deliberately does NOT clear ``_ruled_out_seed`` (REQ-11
+        AC11.2) — the failure veto must outlive the split, exactly as
+        ``_permanent_failed_args`` does.
         """
         self._tool_fails.clear()
         self._last_call.clear()
         self._tool_call_nodes.clear()
+
+    # ── REQ-11 AC11.3/AC11.4 (T15) + REQ-17 AC17.1/AC17.2 (T21) ────────────
+    # The triage menu. T21 (AC17.1) EXTENDS it with `retry_same`, so the engine
+    # can express the retry|graft|escalate distinction the heuristic counters
+    # used to own implicitly.
+    _RECOVERY_STRATEGIES = (
+        "retry_same", "retry_different_tool", "decompose", "escalate",
+    )
+
+    def _record_shadow_row(
+        self, row: Optional[Dict[str, Any]], session_id: str = "",
+    ) -> None:
+        """Write a shadow row through the box's single writer.
+
+        One row, one writer (D4): the same bridge method route-only decisions
+        already use. Best-effort — a ledger write never breaks a recovery or a
+        reply. Shared by the failure-triage row (REQ-17) and the RespondDirect
+        tool-choice row (REQ-16 AC16.2).
+        """
+        if not row:
+            return
+        recorder = getattr(self._tool_bridge, "record_decision", None)
+        if recorder is None:
+            return
+        try:
+            recorder(row, kind="shadow", session_id=session_id)
+        except Exception as _e:  # noqa: BLE001 — the row is an observer
+            logger.debug("[TOOL_DECISION] triage shadow row write failed: %r", _e)
+
+    def note_failure(self, *, objective: str = "", failed_tool: str = "") -> None:
+        """REQ-11 AC11.1/AC11.2 (T14 remainder): seed the graft failure veto.
+
+        ``resolve(failure=...)`` already seeds this, but the DER detects a step
+        failure in ``_der_handle_step_failure`` — a path that never calls
+        ``resolve()``. This is the seeding-ONLY half: no engine call, no
+        decision, no side effect beyond the veto set. Idempotent, never raises.
+
+        KEY CHOICE: the caller must pass the same ``objective`` string the next
+        ``resolve()`` will compute. ``resolve()`` derives it as
+        ``step["objective_anchor"] or step["objective"] or description``, so the
+        kernel passes ``item.objective_anchor`` (the overall task goal, which
+        graft children inherit — ``der_loop.py:230``) AND includes it in the
+        step dict at the resolve call site. Keying on the per-step description
+        would make the veto unreachable for the graft it exists to protect.
+
+        Like ``_permanent_failed_args``, the set is deliberately NOT cleared by
+        ``reset_failure_counters``: a veto a split erases is exactly how
+        recovery re-picks the tool that just failed.
+        """
+        try:
+            _tool = str(failed_tool or "").strip()
+            _key = str(objective or "")
+            if _tool and _key:
+                self._ruled_out_seed.setdefault(_key, set()).add(_tool)
+        except Exception as _e:  # noqa: BLE001 — a veto seed never raises
+            logger.debug("[TOOL_DECISION] note_failure failed: %r", _e)
+
+    def recovery_strategy(
+        self,
+        *,
+        failed_tool: str = "",
+        error_snippet: str = "",
+        objective: str = "",
+        threshold: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Triage a graft failure BEFORE the Brain is asked to plan recovery.
+
+        Returns ``{"strategy", "confidence", "delegate"}``. ``delegate=True``
+        means "this gate declined — run the Brain planning path"; the Brain is
+        consulted ONLY on DELEGATE or below threshold (AC11.3).
+
+        AC11.4 is decided DETERMINISTICALLY, ahead of the model: when the same
+        tool has failed twice consecutively for one objective, the strategy is
+        ``escalate`` — a third identical attempt is never grafted, and no model
+        call is spent to see a repeat. Never raises.
+
+        REQ-17 AC17.1/AC17.2 (T21): the menu now offers ``retry_same`` and a
+        shadow row is recorded on every MODEL-CONSULTED triage — the engine's
+        verdict PAIRED with the counters' decision (``counter_choice``). The
+        engine only records: the counters keep deciding, so a confident
+        ``retry_same`` is never returned (AC17.2). The deterministic
+        double-failure escalate stays model-free per AC11.4, so it records no
+        row rather than a fabricated one.
+        """
+        _key = objective or ""
+        try:
+            recent = self._recovery_failures.setdefault(_key, [])
+            if failed_tool:
+                recent.append(failed_tool)
+                if len(recent) >= 2 and recent[-1] == recent[-2]:
+                    logger.info(
+                        "[TOOL_DECISION] recovery: %s failed twice consecutively "
+                        "for one objective -> escalate", failed_tool,
+                    )
+                    self._recovery_strategy = "escalate"
+                    # AC11.4 forbids a model call here, so there is no engine
+                    # verdict to pair — the counters decided (AC17.2).
+                    self.last_triage_shadow = None
+                    return {"strategy": "escalate", "confidence": 1.0,
+                            "delegate": False}
+        except Exception:  # noqa: BLE001 — triage must never raise
+            pass
+
+        _thr = self._decision_threshold if threshold is None else float(threshold)
+        eng = self._engine()
+        _row: Optional[Dict[str, Any]] = None
+        if eng is not None:
+            try:
+                frame = {
+                    "goal": objective or f"recover from {failed_tool or 'a failure'}",
+                    # AC11.2: the failed tool is ruled out of the triage too.
+                    "ruled_out": [failed_tool] if failed_tool else [],
+                    "error_snippet": (error_snippet or "")[:200],
+                }
+                ds = eng.decide(
+                    "recovery_strategy",
+                    list(self._RECOVERY_STRATEGIES) + [self._DE_DELEGATE],
+                    frame,
+                )
+                if ds is not None:
+                    # The shadow PAIR: what the engine said vs what ran.
+                    _row = {
+                        "consumer_id": "recovery_strategy",
+                        "engine": getattr(eng, "model_id", None) or "decision-engine",
+                        "chosen": ds.chosen,
+                        "confidence": round(float(ds.confidence), 4),
+                        "candidates": [
+                            {"name": c.name, "prob": round(c.prob, 4)}
+                            for c in (ds.distribution or ())
+                        ],
+                        "threshold": _thr,
+                        "engine_latency_ms": ds.engine_latency_ms,
+                        "retry_same_offered": "retry_same" in self._RECOVERY_STRATEGIES,
+                        "failed_tool": failed_tool or None,
+                        "shadow": True,
+                    }
+                # AC17.2: `retry_same` is SHADOW-ONLY. A confident retry_same
+                # is recorded and then discarded — the counters own the
+                # retry-vs-graft call, so the engine can never route a repeat
+                # that the counters would have escalated.
+                if (ds is not None and ds.chosen != self._DE_DELEGATE
+                        and ds.chosen != "retry_same"
+                        and ds.confidence >= _thr):
+                    self._recovery_strategy = ds.chosen
+                    if _row is not None:
+                        # The engine and the counters agree on the outcome.
+                        _row["counter_choice"] = ds.chosen
+                        self.last_triage_shadow = _row
+                        self._record_shadow_row(_row)
+                    return {"strategy": ds.chosen,
+                            "confidence": round(ds.confidence, 4),
+                            "delegate": False}
+            except Exception as _e:  # noqa: BLE001 — degrade to Brain
+                logger.warning(
+                    "[TOOL_DECISION] recovery_strategy gate failed (%r) — "
+                    "delegating to Brain", _e,
+                )
+
+        self._recovery_strategy = ""
+        if _row is not None:
+            # AC17.2: the counters' decision stands (delegate = the Brain
+            # plans), whatever the engine picked.
+            _row["counter_choice"] = "delegate"
+            self.last_triage_shadow = _row
+            self._record_shadow_row(_row)
+        return {"strategy": "delegate", "confidence": 0.0, "delegate": True}
 
     def record_tool_call(
         self,

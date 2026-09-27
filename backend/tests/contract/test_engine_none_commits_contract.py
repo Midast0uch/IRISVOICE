@@ -37,6 +37,14 @@ class _EngineDecision:
         self.confidence = confidence
         self.engine_latency_ms = 1
         self.stage_detail = None
+        # REQ-28 (T43/T45): the evidence-prior applier reads `distribution`
+        # (tool_decision.py:153/240). The real DecisionScore always carries it,
+        # so the stub must too or the engine path raises AttributeError and the
+        # box silently falls back to the legacy ladder. Fixture drift, added
+        # 2026-09-26; no assertion in this file was touched. An empty tuple is
+        # the honest "no per-candidate probabilities" case the code already
+        # guards with `ds.distribution or ()`.
+        self.distribution = ()
 
 
 class _FakeEngine:
