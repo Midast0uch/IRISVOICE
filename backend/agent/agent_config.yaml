@@ -19,16 +19,35 @@ models:
   #   brain    → any ~9B reasoning model at Q4_K_M  (~5 GB VRAM)
   #   executor → any ~1B tool-call model at Q4_K_M  (~1 GB VRAM)
   # Select actual model names in the IRIS Settings → Configure → Models card.
-  - id: "decision_driver"
-    path: null             # resolved by backend/agent/decision_engine.resolve_model_path()
+  - id: "oracle"
+    # REQ-21 AC21.5: the ONNX model directory. null = the default shippable
+    # location (backend/models/gliner2.5-decide-onnx/, weights gitignored);
+    # resolved by backend/agent/decision_backend_onnx.resolve_model_dir().
+    # An explicit path is authoritative: configured-and-missing means
+    # "unavailable", never "silently substitute another model".
+    path: null
     capabilities: ["tool_decision", "surface_choice", "narration_gate"]
     constraints:
-      device: "cpu"
-      dtype: "q4_K_M"
-      n_ctx: 1024
-      candidate_cap: 32
+      # REQ-25 makes this block LIVE (it was never parsed — grep "oracle"
+      # returned zero hits, so every value here was decorative). This value ships at
+      # the menu width the 0.40 accuracy/coverage curve was derived at, so making the
+      # block live does NOT invalidate the calibration. Was 32, which was never read.
+      # Changing this value marks the calibrated threshold STALE and requires a curve
+      # re-derivation before anything enforces on the new width (REQ-25 AC25.5).
+      candidate_cap: 6
       acquire_timeout_s: 2.0
-      default_threshold: 0.85
+      # THRESHOLDS ARE KEYED BY BACKEND IDENTITY (REQ-25 AC25.8).
+      # A probability threshold is only meaningful for the distribution it was
+      # measured on: 0.85 is correct for LFM's sharpened softmax, 0.40 for GLiNER's
+      # menu-wide softmax. Holding one global number across a model swap is how a
+      # consumer ends up enforced on the wrong curve. The engine looks up the ACTIVE
+      # backend here and REFUSES ENFORCEMENT when there is no entry (fail-closed) —
+      # so a future model swap degrades to shadow rather than silently mis-enforcing.
+      backend_thresholds:
+        lfm2-350m-extract: 0.85           # retiring backend (REQ-21); historical rows only
+        gliner25-decide-onnx-int8: 0.40   # REQ-22 AC22.1 — the deployed operating point
+      # Per-consumer overrides sit ON TOP of the backend threshold (REQ-13).
+      thresholds: {}
     optional: true   # decision paths degrade to the legacy heuristics if missing
 
   - id: "executor"

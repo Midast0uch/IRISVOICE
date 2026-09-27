@@ -1020,6 +1020,43 @@ class InferenceRouter:
         return sane
 
     @staticmethod
+    def _json_schema(parameters: Any) -> Dict[str, Any]:
+        """Build a VALID JSON Schema from IRIS's flat parameter map.
+
+        MEASURED 2026-09-26 (the Cohere 422). Tools are declared in the bridge
+        as ``parameters={"path": {"type": "string"}}`` — a property MAP, not a
+        JSON Schema. It was passed through unchanged, so every provider
+        received `parameters` with no ``"type": "object"`` and no
+        ``"properties"``. Lenient providers ignore the shape; Cohere validates
+        the definitions and answers 422
+        HALLUCINATED_ALL_TOOL_CALLS / INVALID_TOOL_GENERATION, because a tool
+        call it generates can never match a schema it cannot read. The whole
+        request is rejected, so NO tool ever ran — which is what a live turn
+        showed.
+
+        A dict that already carries JSON-Schema keywords passes through
+        (idempotent), so an already-OpenAI-shaped tool is untouched.
+        """
+        if not isinstance(parameters, dict) or not parameters:
+            return {"type": "object", "properties": {}}
+        if any(k in parameters for k in (
+            "type", "properties", "$ref", "anyOf", "oneOf", "allOf",
+        )):
+            return parameters
+        props = parameters
+        # `optional: False` on a property is the only required-marker the
+        # bridge's flat shape carries; without it no `required` is declared
+        # (the local validator still enforces what it enforced before).
+        required = [
+            k for k, v in props.items()
+            if isinstance(v, dict) and v.get("optional") is False
+        ]
+        schema: Dict[str, Any] = {"type": "object", "properties": props}
+        if required:
+            schema["required"] = required
+        return schema
+
+    @staticmethod
     def _normalize_tools(tools: Optional[List[Dict[str, Any]]]) -> Optional[List[Dict[str, Any]]]:
         """
         Coerce a tools list into the OpenAI function-calling schema that all
@@ -1046,10 +1083,17 @@ class InferenceRouter:
                 out.append(t)
                 continue
             # IRIS internal format: {name, description, parameters, category, ...}
+            # The parameter map is wrapped into a real JSON Schema here — this
+            # is the single normalization point, so EVERY provider receives a
+            # schema it can validate against (the Cohere 422 fix, 2026-09-26).
+            schema = InferenceRouter._json_schema(t.get("parameters"))
+            declared = t.get("required")
+            if isinstance(declared, (list, tuple)) and declared:
+                schema = {**schema, "required": list(declared)}
             fn = {
                 "name": t.get("name", ""),
                 "description": t.get("description", ""),
-                "parameters": t.get("parameters") or {"type": "object", "properties": {}},
+                "parameters": schema,
             }
             out.append({"type": "function", "function": fn})
         return out or None

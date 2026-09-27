@@ -6,7 +6,7 @@ NAME vs KEY (read this before renaming anything). ``Oracle`` is the engine's
 DISPLAY name — what a human reads in logs, telemetry and the UI. The technical
 keys stay exactly as they are, because they carry meaning that a rename would
 destroy:
-  * the config block id ``decision_driver`` (agent_config.yaml) is what
+  * the config block id ``oracle`` (agent_config.yaml) is what
     ``load_engine_config`` looks up; and
   * the backend identity ``gliner25-decide-onnx-int8`` KEYS THE CALIBRATED
     THRESHOLD (``backend_thresholds``, REQ-22 AC22.1 / REQ-25 AC25.8). Renaming
@@ -298,7 +298,7 @@ class EngineConfig:
 
 
 # ---------------------------------------------------------------------------
-# Config authority (REQ-25): the decision_driver block parsed into EngineConfig
+# Config authority (REQ-25): the oracle block parsed into EngineConfig
 # ---------------------------------------------------------------------------
 
 _DEFAULT_CONFIG_PATH = "./backend/agent/agent_config.yaml"
@@ -310,14 +310,14 @@ def _log_config_fallback(why: str) -> None:
     if not _config_fallback_logged:
         _config_fallback_logged = True
         logger.warning(
-            "decision_driver config fallback (%s) — code defaults apply", why
+            "oracle config fallback (%s) — code defaults apply", why
         )
 
 
 def load_engine_config(
     config_path: str = _DEFAULT_CONFIG_PATH,
 ) -> EngineConfig:
-    """Parse the ``decision_driver`` block into EngineConfig (REQ-25 AC25.1).
+    """Parse the ``oracle`` block into EngineConfig (REQ-25 AC25.1).
 
     Every documented key is parsed or removed (AC25.6). A missing or malformed
     key falls back to the code default and logs the fallback ONCE (AC25.3) —
@@ -342,11 +342,11 @@ def load_engine_config(
             data = yaml.safe_load(f) or {}
         block = None
         for m in data.get("models", []) or []:
-            if isinstance(m, dict) and m.get("id") == "decision_driver":
+            if isinstance(m, dict) and m.get("id") == "oracle":
                 block = m
                 break
         if block is None:
-            _log_config_fallback("decision_driver block not found")
+            _log_config_fallback("oracle block not found")
             return cfg
         constraints = block.get("constraints")
         if not isinstance(constraints, dict):
@@ -1035,7 +1035,7 @@ def get_decision_engine(
 ) -> DecisionEngine:
     """Process-wide engine. Tests pass their own instance; production uses this.
 
-    With no config passed (production), the ``decision_driver`` block is
+    With no config passed (production), the ``oracle`` block is
     parsed into EngineConfig (REQ-25 AC25.1) — the block is LIVE, not
     decorative.
     """
