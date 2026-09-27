@@ -510,7 +510,25 @@ class DirectorQueue:
             "more work needed",
         ]
         summary_lower = tool_result_summary.lower()
-        if any(kw in summary_lower for kw in incomplete_keywords):
+        _lexical_incomplete = any(kw in summary_lower for kw in incomplete_keywords)
+        # REQ-29 AC29.3 (T48): shadow-score `escalate_incomplete`. Escalation
+        # and EVERY budget / veto-cap safety check stay unchanged — the
+        # `self.escalate` call below still owns them, and the engine may never
+        # permit an escalation. Shadow: the keyword list decides (it is also the
+        # engine-unavailable fallback, AC29.7).
+        try:
+            from backend.agent import surface_shadow as _ss
+
+            _value, _row = _ss.surface_bool(
+                "escalate_incomplete", tool_result_summary,
+                brain_bool_fn=lambda: _lexical_incomplete,
+                engine=_ss.AUTO_ENGINE,
+            )
+            _ss.emit_row(_row)
+            _incomplete = bool(_value)
+        except Exception:  # noqa: BLE001 — the keyword list is the fallback
+            _incomplete = _lexical_incomplete
+        if _incomplete:
             self.escalate(
                 reason=f"Tool result indicates more work: '{tool_result_summary[:80]}'",
                 turn_id=turn_id,
@@ -803,6 +821,43 @@ def reset_brain_vis_semaphore_for_testing() -> None:
     _brain_vis_sem = None
 
 
+def materialize_recipe(
+    recipe: "DynamicCompositeRecipe",
+    step_number: int = 1,
+    objective_anchor: str = "",
+) -> List["QueueItem"]:
+    """REQ-7 AC7.4 (T9): materialize a VALIDATED dynamic composite recipe
+    into DER QueueItems with resolved dependencies.
+
+    The recipe must have passed :func:`validate_composite_recipe` (pre-flight)
+    — this function does not re-validate (the caller owns the gate). Steps
+    become QueueItems in topological order; each carries its depends_on and
+    the recipe's params with ``{{step_id.output}}`` bindings intact —
+    ``resolve_dependent_params`` substitutes them as source steps complete.
+    Pure: never touches the queue, never executes anything.
+    """
+    from backend.agent.dynamic_recipe import (
+        DynamicCompositeRecipe as _Recipe,  # noqa: F401 — type anchor
+        _topological_order,
+    )
+
+    order = _topological_order(list(recipe.steps))
+    items: List["QueueItem"] = []
+    for i, s in enumerate(order):
+        items.append(QueueItem(
+            step_id=s.step_id,
+            step_number=step_number + i,
+            description=f"{s.tool}: {recipe.goal[:120]}",
+            tool=s.tool,
+            params=dict(s.params or {}),
+            depends_on=list(s.depends_on),
+            critical=True,
+            parallel_safe=False,
+            objective_anchor=objective_anchor or recipe.goal[:120],
+        ))
+    return items
+
+
 def expand_batch_node(item: "QueueItem") -> List["QueueItem"]:
     """REQ-24 AC24.1/AC24.4 (T37): expand a batch-carrying node into releasable items.
 
@@ -904,6 +959,12 @@ class Reviewer:
     def __init__(self, adapter, memory_interface):
         self.adapter = adapter
         self.memory = memory_interface
+        # REQ-13 AC13.1 (T17): the shadow verdict row for the last review (None
+        # when the engine is unavailable / has no criteria). The kernel's
+        # existing single writer is the row sink — never a second writer here.
+        self.last_shadow_verdict: Optional[dict] = None
+        self._review_engine_override = None
+        self._review_engine_set = False
 
     def review(
         self,
@@ -918,7 +979,9 @@ class Reviewer:
         """
         try:
             if not is_mature or not hasattr(context_package, "gradient_warnings"):
-                return self._heuristic_review(item, completed_steps)
+                verdict, out = self._heuristic_review(item, completed_steps)
+                self._shadow_review_verdict(item, completed_steps, verdict)
+                return verdict, out
 
             prompt = self._build_review_prompt(
                 item=item,
@@ -934,10 +997,118 @@ class Reviewer:
                 temperature=self.REVIEWER_TEMPERATURE,
             )
 
-            return self._parse_verdict(response.raw_text)
+            verdict, out = self._parse_verdict(response.raw_text)
+            # REQ-13 AC13.1 (T17): shadow-score the SAME question. The Brain
+            # verdict above still decides — this only produces the row.
+            self._shadow_review_verdict(item, completed_steps, verdict)
+            return verdict, out
 
         except Exception:
             return ReviewVerdict.PASS, None
+
+    # ── REQ-13 AC13.1 (T17): the review_verdict consumer, SHADOW mode ──────
+    REVIEW_CONSUMER = "review_verdict"
+    REVIEW_LABELS = ("pass", "refine", "veto")
+    REVIEW_INSTRUCTION = (
+        "Should this completed step pass, be refined, or be vetoed?"
+    )
+
+    def _shadow_review_verdict(
+        self,
+        item: QueueItem,
+        completed_steps: List[QueueItem],
+        brain_verdict: "ReviewVerdict",
+    ) -> Optional[dict]:
+        """Score the verdict with the engine and expose the row (AC13.1).
+
+        SHADOW ONLY: the Brain verdict is what the loop uses; this produces the
+        calibration row and nothing else. The row is stored on
+        ``self.last_shadow_verdict`` for the kernel's EXISTING single writer —
+        the shadow path must not open a second writer (one row, one writer).
+
+        Returns None (and writes no row) when the engine is unavailable, has no
+        criteria for this consumer, or fails — a shadow must never change
+        behaviour, and a missing engine must never fabricate a row.
+        """
+        self.last_shadow_verdict = None
+        try:
+            engine = self._review_engine()
+            if engine is None:
+                return None
+            # Register the consumer's criteria on first use (REQ-19: a consumer
+            # with no criteria is refused, never scored under another head).
+            try:
+                from backend.agent.decision_backend_onnx import (
+                    ConsumerSpec,
+                    get_consumer_spec,
+                    register_consumer_spec,
+                )
+                if get_consumer_spec(self.REVIEW_CONSUMER) is None:
+                    register_consumer_spec(ConsumerSpec(
+                        consumer_id=self.REVIEW_CONSUMER,
+                        task_name=self.REVIEW_CONSUMER,
+                        instruction=self.REVIEW_INSTRUCTION,
+                        labels=self.REVIEW_LABELS,
+                    ))
+            except Exception:  # noqa: BLE001 — criteria are best-effort here
+                pass
+
+            goal = (
+                f"STEP: {(item.description or '')[:300]}\n"
+                f"OBJECTIVE: {(getattr(item, 'objective_anchor', '') or '')[:200]}\n"
+                f"RECENT RESULTS: "
+                f"{' | '.join((s.result or '')[:120] for s in completed_steps[-3:])}"
+            )[:800]
+            ds = engine.decide(
+                self.REVIEW_CONSUMER, list(self.REVIEW_LABELS), {"goal": goal}
+            )
+            if ds is None:
+                return None
+            row = {
+                "consumer_id": self.REVIEW_CONSUMER,
+                "chosen": ds.chosen,
+                "confidence": round(float(ds.confidence), 4),
+                "candidates": [
+                    {"name": c.name, "prob": round(float(c.prob), 4)}
+                    for c in (ds.distribution or ())
+                ],
+                "engine_latency_ms": ds.engine_latency_ms,
+                # The Brain's actual verdict, so the row is a shadow PAIR
+                # (engine said X, reality ran Y) and the parity metric exists.
+                "brain_verdict": getattr(brain_verdict, "value", str(brain_verdict)),
+                # ...and the SAME fact under the name the ledger passes through
+                # and the report reads (2026-09-27). `brain_verdict` is kept for
+                # the caller and the log; it is not in the meta whitelist, so on
+                # its own the row reached the ledger with no reference and was
+                # counted as no_label instead of being scored.
+                "brain_choice": getattr(brain_verdict, "value", str(brain_verdict)),
+                "shadow": True,
+            }
+            self.last_shadow_verdict = row
+            return row
+        except Exception as _e:  # noqa: BLE001 — a shadow never breaks review
+            logger.debug("[Reviewer] shadow verdict failed: %r", _e)
+            return None
+
+    def _review_engine(self):
+        """The decision engine for the shadow consumer, or None."""
+        if self._review_engine_set:
+            return self._review_engine_override
+        try:
+            from backend.agent.decision_engine import get_decision_engine
+            return get_decision_engine()
+        except Exception:  # noqa: BLE001
+            return None
+
+    def set_review_engine(self, engine) -> None:
+        """Inject the shadow-scoring engine (tests / explicit wiring).
+
+        Passing None DISABLES shadow scoring explicitly — the module singleton
+        is adopted only when nothing has been injected at all, so a test can
+        never accidentally load the 651MB model.
+        """
+        self._review_engine_override = engine
+        self._review_engine_set = True
 
     def _heuristic_review(
         self,

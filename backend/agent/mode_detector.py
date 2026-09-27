@@ -11,9 +11,12 @@ Source: specs/director_mode_system.md
 Gate 1 Step 1.2
 """
 
+import logging
 from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, Tuple
+from typing import Any, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 class AgentMode(Enum):
@@ -93,12 +96,87 @@ class ModeDetector:
         "small", "quick", "minor", "simple", "just", "tiny",
         "tweak", "rename", "change the", "add a button", "update the",
     ]
-
     COMPLEXITY_COMPLEX = [
         "system", "architecture", "full", "complete", "production",
         "scalable", "redesign", "overhaul", "from scratch", "integrate",
         "end-to-end", "entire", "whole",
     ]
+
+    MODE_CONSUMER = "mode"
+    MODE_LABELS = ("spec", "research", "implement", "debug", "test", "review")
+    MODE_INSTRUCTION = "Which operating mode should this task run in?"
+
+    def __init__(self) -> None:
+        # REQ-15 (T19): the `mode` engine consumer, SHADOW. `None` means no
+        # engine is wired — `detect()` then behaves exactly as it did before
+        # (hand-set keyword confidence), so no call site changes.
+        self._mode_engine = None
+        self.last_mode_shadow: Optional[dict] = None
+
+    def set_mode_engine(self, engine) -> None:
+        """Wire the shadow-scoring engine. None disables it explicitly — the
+        module singleton is never adopted implicitly (a shadow must not be
+        able to load a 651MB model as a side effect of detecting a mode)."""
+        self._mode_engine = engine
+
+    def _engine_mode_shadow(
+        self, task_lower: str, keyword_mode: "AgentMode"
+    ) -> Optional[dict]:
+        """Score the mode with the engine; return the shadow row (AC15.1/AC15.2).
+
+        SHADOW ONLY: the returned dict carries the engine's own pick AND the
+        keyword's pick, so parity is measurable — the loop still runs the
+        keyword mode. The CONFIDENCE reported on the inference branch becomes
+        the engine's measured probability for the keyword-chosen mode: pairing
+        a mode with a foreign confidence would be incoherent.
+
+        Returns None (no row, no confidence change) when no engine is wired,
+        the engine cannot answer, or the engine's option set does not include
+        the keyword mode. Never raises.
+        """
+        try:
+            if self._mode_engine is None:
+                return None
+            from backend.agent.decision_backend_onnx import (
+                ConsumerSpec,
+                get_consumer_spec,
+                register_consumer_spec,
+            )
+            if get_consumer_spec(self.MODE_CONSUMER) is None:
+                register_consumer_spec(ConsumerSpec(
+                    consumer_id=self.MODE_CONSUMER,
+                    task_name=self.MODE_CONSUMER,
+                    instruction=self.MODE_INSTRUCTION,
+                    labels=self.MODE_LABELS,
+                ))
+
+            ds = self._mode_engine.decide(
+                self.MODE_CONSUMER, list(self.MODE_LABELS),
+                {"goal": task_lower[:400]},
+            )
+            if ds is None:
+                return None
+            dist = {c.name: float(c.prob) for c in (ds.distribution or ())}
+            if keyword_mode.value not in dist:
+                return None  # never pair a mode with a foreign confidence
+            return {
+                "consumer_id": self.MODE_CONSUMER,
+                # The canonical parity pair the report reads: the engine's pick,
+                # and the Brain's ACTUAL pick. `chosen`/`brain_choice` are the
+                # field names the single writer and the enforcement report both
+                # expect (2026-09-27). This row previously carried the same two
+                # facts under `engine_mode`/`keyword_mode`, which the ledger's
+                # meta whitelist does not pass, so the row landed with no parity
+                # reference and could never be scored.
+                "chosen": ds.chosen,
+                "brain_choice": keyword_mode.value,
+                "confidence": round(dist[keyword_mode.value], 4),
+                "engine_latency_ms": ds.engine_latency_ms,
+                "shadow": True,
+            }
+        except Exception as e:  # noqa: BLE001 — a shadow never breaks routing
+            logger.debug("[mode_detector] shadow failed: %r", e)
+            return None
 
     def detect(
         self,
@@ -134,6 +212,17 @@ class ModeDetector:
 
             # 2. Keyword inference
             mode, confidence = self._infer_mode(task_lower)
+
+            # REQ-15 AC15.2 (T19): on the INFERENCE branch the reported
+            # confidence is the ENGINE's measured probability for the chosen
+            # mode, not the hand-set keyword float — a claim is replaced by a
+            # measurement. The MODE stays keyword-decided (AC15.1 shadow: the
+            # engine's own pick is recorded, never applied, until AC15.4's
+            # measured bar is met). No engine → today's float, unchanged.
+            _shadow = self._engine_mode_shadow(task_lower, mode)
+            if _shadow is not None:
+                self.last_mode_shadow = _shadow
+                confidence = _shadow["confidence"]
 
             # 3. Complexity detection
             complexity = self._detect_complexity(task_lower)

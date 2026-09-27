@@ -2367,6 +2367,11 @@ class ToolDecisionBox:
                     if _row is not None:
                         # The engine and the counters agree on the outcome.
                         _row["counter_choice"] = ds.chosen
+                        # The parity reference under the name the ledger passes
+                        # through and the report reads (2026-09-27). The Brain's
+                        # ACTUAL decision here is the counters' one, so that is
+                        # what the engine's pick must be judged against.
+                        _row["brain_choice"] = ds.chosen
                         self.last_triage_shadow = _row
                         self._record_shadow_row(_row)
                     return {"strategy": ds.chosen,
@@ -2383,6 +2388,8 @@ class ToolDecisionBox:
             # AC17.2: the counters' decision stands (delegate = the Brain
             # plans), whatever the engine picked.
             _row["counter_choice"] = "delegate"
+            # ...and the same fact as the parity reference (2026-09-27).
+            _row["brain_choice"] = "delegate"
             self.last_triage_shadow = _row
             self._record_shadow_row(_row)
         return {"strategy": "delegate", "confidence": 0.0, "delegate": True}

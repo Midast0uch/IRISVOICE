@@ -26,11 +26,22 @@ THE LABEL (be explicit — a precision number is meaningless without it)
     instruments cannot disagree.
 
     A SHADOW row (the engine scored, the legacy path decided — `route="shadow"`)
-    is correct when the engine's `chosen` AGREES with the Brain's actual
-    `brain_bool`. That agreement IS the parity TG-7 measures (BT-DEI-8): the
-    row carries both halves, so the reference is recorded, not assumed. A
-    shadow row with no `brain_bool` carries NO label and is counted separately
-    as skipped — never silently scored as correct.
+    is correct when the engine's `chosen` AGREES with the Brain's ACTUAL answer.
+    That agreement IS the parity TG-7 measures (BT-DEI-8): the row carries both
+    halves, so the reference is recorded, not assumed. The reference arrives in
+    one of two shapes, because consumers answer in two kinds (2026-09-27):
+
+      - `brain_bool`  — a BOOL consumer (sufficient, done, on_track, has_gaps,
+        use_thinking, escalate_incomplete, needs_action). The Brain's answer IS
+        a boolean, so `chosen` is compared as a boolean.
+      - `brain_choice` — a LABEL consumer (mode, review_verdict, web_intent,
+        recovery_strategy, retry_same, tool_choice, presentation, narration).
+        Its answer is a NAME, and comparing names is the only honest test:
+        collapsing a name to a bool would manufacture agreement and inflate
+        precision.
+
+    A shadow row with neither reference carries NO label and is counted
+    separately as skipped — never silently scored as correct.
 
 READ-ONLY apart from `--write`. Never hits the network.
 
@@ -98,12 +109,25 @@ def load_rows(db: str) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
                 continue
             shadow = bool(d.get("shadow")) or str(d.get("route") or "") == "shadow"
             if shadow:
-                brain = d.get("brain_bool")
-                if brain is None:
-                    # No reference answer -> no label. Reported, not assumed.
+                # TWO reference shapes, because there are two kinds of consumer
+                # (2026-09-27):
+                #   - a BOOL consumer (sufficient, done, has_gaps, ...) records
+                #     the Brain's answer as `brain_bool`;
+                #   - a LABEL consumer (mode, review_verdict, web_intent, ...)
+                #     records it as `brain_choice`, because its answer is a NAME.
+                # Collapsing a name to a bool would manufacture agreement and
+                # inflate precision, so a name is compared with a name. A row
+                # carrying NEITHER reference still has no label and is counted
+                # separately as skipped, never assumed correct.
+                brain_bool = d.get("brain_bool")
+                brain_choice = d.get("brain_choice")
+                if brain_choice is not None:
+                    correct = str(d.get("chosen")) == str(brain_choice)
+                elif brain_bool is not None:
+                    correct = bool(d.get("chosen")) == bool(brain_bool)
+                else:
                     skipped["no_label"] += 1
                     continue
-                correct = bool(d.get("chosen")) == bool(brain)
             else:
                 # Identical to _load_decisions: a route-only row carries no
                 # outcome, so it is not evidence of a wrong pick.

@@ -53,6 +53,16 @@ _DECISION_META_KEYS = (
     "final_choice", "engine_correct",
     "stage_detail", "cached",
     "brain_bool", "shadow",
+    # brain_choice (2026-09-27): the parity reference for a LABEL consumer.
+    # brain_bool covers a consumer whose answer IS a boolean (sufficient, done,
+    # has_gaps...). A label consumer (mode, review_verdict, web_intent...) has a
+    # NAMED answer, and collapsing a name to a bool would manufacture agreement
+    # and inflate precision, so the Brain's actual pick is recorded as a name and
+    # the report compares names. Without this the mode and review_verdict rows
+    # landed unscoreable: each carried its parity data under a key this whitelist
+    # does not pass, so the ledger row reached the report with no reference and
+    # was counted as no_label instead of scored.
+    "brain_choice",
 )
 
 # How long a ledger write may run before it is reported as stuck. A write that

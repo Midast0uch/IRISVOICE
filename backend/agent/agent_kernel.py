@@ -14492,7 +14492,7 @@ Respond with a JSON object:
         return AgentKernel._format_tool_result(raw)
 
     def _engine_gate_surface(
-        self, response: str, turn_id: str = ""
+        self, response: str, turn_id: str = "", live_surface: Optional[str] = None
     ) -> Optional[str]:
         """Presentation gate (specs/tool-decision-engine REQ-11, REQ-23).
 
@@ -14504,6 +14504,11 @@ Respond with a JSON object:
         or an ENFORCED verdict is below threshold (the legacy heuristic
         decides). Gate-layer only — surface choice, never content (content
         belongs to chat-communication-lanes). Never raises.
+
+        ``live_surface`` is the surface that ACTUALLY ran, supplied by the
+        observer. It is recorded as the row's parity reference (2026-09-27):
+        without it the row carried `chosen` and nothing to judge it against, so
+        every presentation row landed unscorable and was counted as no_label.
         """
         try:
             from backend.agent.decision_engine import (
@@ -14552,6 +14557,23 @@ Respond with a JSON object:
             "engine_latency_ms": ds.engine_latency_ms,
             "route": "engine" if (enforced and confident) else "shadow",
             "escalated": False,
+            # The parity reference (2026-09-27). `chosen` speaks the engine's
+            # vocabulary (plain_text / prism_card / card_plus_summary) while the
+            # live surface is "plain"/"card", so the live value is TRANSLATED
+            # into that vocabulary before it is recorded. Recording the raw live
+            # string would compare "plain" with "plain_text", never match, and
+            # report precision 0 as though it were a measurement. None when the
+            # caller supplied no live surface: the row then carries no reference
+            # and the report counts it as skipped rather than scoring it.
+            "brain_choice": (
+                None
+                if live_surface is None
+                else "plain_text"
+                if live_surface == "plain"
+                else "prism_card"
+                if live_surface == "card"
+                else None
+            ),
         }
         bridge = getattr(self, "_tool_bridge", None)
         recorder = getattr(bridge, "record_decision", None)
@@ -14590,7 +14612,11 @@ Respond with a JSON object:
 
         def _observe() -> None:
             try:
-                verdict = self._engine_gate_surface(response, turn_id or "")
+                # live_surface is the Brain's ACTUAL answer for this turn, so it
+                # rides the row as the parity reference (2026-09-27).
+                verdict = self._engine_gate_surface(
+                    response, turn_id or "", live_surface=live_surface
+                )
             except Exception:  # noqa: BLE001 — observer must never surface
                 return
             try:
