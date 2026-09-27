@@ -1323,7 +1323,39 @@ class InProcessTransport:
         if mgr is None:
             raise RuntimeError("No local model loaded for in-process inference")
 
-        # In-process models typically take a single prompt string
+        # Preferred path (2026-09-27): a LocalModelManager does NOT expose a
+        # `generate(prompt)` method - the call below raised
+        #   'LocalModelManager' object has no attribute 'generate'
+        # on every planning call, which meant no plan, which meant the DER
+        # branch was never taken and the step consumers wrote no rows. What the
+        # manager DOES expose is an OpenAI-compatible adapter bound to the local
+        # server, so use it when it is available and keep `generate` as the
+        # legacy fallback for any manager that still implements it.
+        _adapter = None
+        _getter = getattr(mgr, "get_inprocess_client", None)
+        if callable(_getter):
+            try:
+                _adapter = _getter()
+            except Exception:  # noqa: BLE001 — fall back to the legacy call
+                _adapter = None
+
+        if _adapter is not None:
+            _resp = _adapter.chat.completions.create(
+                model=model or "local-model",
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=temperature,
+            )
+            _msg = _resp.choices[0].message
+            reply = (getattr(_msg, "content", None) or "")
+            _tool_calls = list(getattr(_msg, "tool_calls", None) or [])
+            if chunk_callback and reply:
+                chunk_callback(reply)
+                chunk_callback("")
+            thinking, clean = parse_thinking(reply)
+            return clean or "(I see.)", thinking, _tool_calls
+
+        # Legacy path: a manager that takes a single prompt string.
         prompt = (
             messages[-1].get("content", "") if messages else ""
         )

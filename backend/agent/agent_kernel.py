@@ -2072,6 +2072,41 @@ class AgentKernel:
         else:
             logger.info("[AgentKernel] In-process local binding active")
 
+    def _is_local_provider(self) -> bool:
+        """True when the selected provider serves a LOCAL model.
+
+        Covers the legacy literal ``iris_local`` AND the modern
+        ``local:<model>`` naming used when a GGUF is loaded through the Models
+        card (2026-09-27). A hard-coded literal here silently routed every
+        locally-loaded model to the LM Studio default endpoint instead.
+        """
+        _p = str(getattr(self, "_model_provider", "") or "")
+        return _p == "iris_local" or _p.startswith("local:")
+
+    def _local_openai_base(self) -> Optional[str]:
+        """Base URL of the app's OWN local model server, or None.
+
+        LocalModelManager serves the loaded GGUF over an OpenAI-compatible API
+        on its ``PORT`` (8082 by default). None when no local model is loaded,
+        so the caller falls through to the configured endpoint rather than
+        calling a port nothing is listening on.
+        """
+        if not self._is_local_provider():
+            return None
+        try:
+            from .local_model_manager import (
+                LocalModelManager,
+                get_local_model_manager,
+            )
+
+            mgr = get_local_model_manager()
+            if mgr is None or not mgr.is_loaded():
+                return None
+            return f"http://127.0.0.1:{LocalModelManager.PORT}/v1"
+        except Exception as _e:  # noqa: BLE001 — fall through to the configured path
+            logger.debug("[AgentKernel] local base lookup failed: %s", _e)
+            return None
+
     def _get_lmstudio_client(self) -> Any:
         """Return an OpenAI-compatible client.
 
@@ -2093,12 +2128,49 @@ class AgentKernel:
         """
         # Path 1: in-process adapter when iris_local + manager loaded.
         mgr = getattr(self, "_inprocess_local_mgr", None)
-        if mgr is not None and self._model_provider == "iris_local":
+        if mgr is not None and self._is_local_provider():
             adapter = mgr.get_inprocess_client()
             if adapter is not None:
                 return adapter
             # Manager was bound but model isn't loaded â†’ fall through to
             # HTTP path (which will 404 cleanly instead of silently hanging).
+
+        # Path 1.5: the app's OWN local model server (2026-09-27).
+        # A local GGUF is served over an OpenAI-compatible API on
+        # LocalModelManager.PORT (8082), and THAT is where a planning call must
+        # go. Path 1 covers only the legacy in-process adapter, and its literal
+        # name check meant a modern local provider ("local:<model>") skipped it
+        # and fell through to Path 2 - the configured LM Studio endpoint
+        # (http://localhost:1234), which this app does not serve. Measured
+        # consequence: every planning call logged
+        #   openai._base_client: Raising connection error
+        #   [AgentKernel._plan_task] planner returned no valid plan
+        # No plan means the DER branch is never taken, so [DER] stayed 0 and the
+        # step consumers wrote no rows. The messages were not reaching the loaded
+        # model: the endpoint was simply the wrong port.
+        _local_base = self._local_openai_base()
+        if _local_base:
+            _client = getattr(self, "_local_openai_client", None)
+            if _client is None or getattr(
+                self, "_local_openai_base_url", None
+            ) != _local_base:
+                from openai import OpenAI as _OpenAI
+                import httpx
+
+                _client = _OpenAI(
+                    base_url=_local_base,
+                    # The local server ignores the key; any non-empty string is
+                    # accepted. The read timeout is generous because a small
+                    # local model can be slow on a cold first call.
+                    api_key="local",
+                    timeout=httpx.Timeout(connect=10, read=300, write=10, pool=10),
+                )
+                self._local_openai_client = _client
+                self._local_openai_base_url = _local_base
+                logger.info(
+                    "[AgentKernel] local model server client -> %s", _local_base
+                )
+            return _client
 
         # Path 2: cached real OpenAI HTTP client.
         if self._lmstudio_client is None:

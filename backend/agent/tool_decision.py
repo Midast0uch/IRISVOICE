@@ -2334,6 +2334,36 @@ class ToolDecisionBox:
                     "ruled_out": [failed_tool] if failed_tool else [],
                     "error_snippet": (error_snippet or "")[:200],
                 }
+                # Criteria registration (2026-09-27). Without it the engine
+                # REFUSES to score this consumer - measured live:
+                #   decision_backend_onnx: no criteria for consumer=
+                #   recovery_strategy - refusing to score (legacy path)
+                # A refusal returns no Noul, so no row is written and the
+                # consumer can never reach the Wave 7 bar however often the
+                # triage runs. Registered on first use, mirroring the reviewer.
+                try:
+                    from backend.agent.decision_backend_onnx import (
+                        ConsumerSpec,
+                        get_consumer_spec,
+                        register_consumer_spec,
+                    )
+
+                    if get_consumer_spec("recovery_strategy") is None:
+                        register_consumer_spec(ConsumerSpec(
+                            consumer_id="recovery_strategy",
+                            task_name="recovery_strategy",
+                            instruction=(
+                                "A tool step failed. What should happen next: "
+                                "retry the same tool, try a different one, or "
+                                "escalate to a new plan?"
+                            ),
+                            labels=tuple(
+                                list(self._RECOVERY_STRATEGIES)
+                                + [self._DE_DELEGATE]
+                            ),
+                        ))
+                except Exception:  # noqa: BLE001 — criteria are best-effort
+                    pass
                 ds = eng.decide(
                     "recovery_strategy",
                     list(self._RECOVERY_STRATEGIES) + [self._DE_DELEGATE],

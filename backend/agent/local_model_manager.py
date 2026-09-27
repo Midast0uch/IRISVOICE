@@ -1240,6 +1240,31 @@ class LocalModelManager:
             for chunk in self._llm.create_chat_completion(**kwargs):
                 yield chunk
 
+    def generate(self, prompt: str) -> str:
+        """Single-prompt inference, for the callers that expect it (2026-09-27).
+
+        WHY THIS EXISTS: several call sites call ``mgr.generate(prompt)`` -
+        AgentKernel's synthesis path, ``inter_model_communication``, and
+        InProcessTransport's legacy branch - but this class never had that
+        method, so every one of them raised
+        ``'LocalModelManager' object has no attribute 'generate'`` and degraded.
+        Measured consequence: the planner produced no plan, the DER branch was
+        never taken, ``[DER]`` stayed 0, and the step consumers wrote no rows.
+
+        The real inference surface here is the OpenAI-compatible adapter bound to
+        the local server, so this wraps THAT rather than opening a second
+        inference path. Raises when no model is loaded, which is the same
+        contract the callers already handle.
+        """
+        client = self.get_inprocess_client()
+        if client is None:
+            raise RuntimeError("No local model loaded for in-process inference")
+        resp = client.chat.completions.create(
+            model="local-model",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return resp.choices[0].message.content or ""
+
     def get_inprocess_client(self) -> Optional["InProcessOpenAIAdapter"]:
         """Return an OpenAI-client shim bound to this manager, or None if no
         in-process model is loaded.
