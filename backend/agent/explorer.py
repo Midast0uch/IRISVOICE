@@ -157,6 +157,26 @@ def register_web_intent_consumer() -> bool:
         return False
 
 
+# Sentinel: adopt the module-level engine singleton. `engine=None` means NO
+# ENGINE (fail-safe) and never "resolve the singleton" — a shadow scorer must
+# not silently load the model. A CALLER that wants the engine passes this
+# explicitly. Same convention as surface_shadow.AUTO_ENGINE (2026-09-27): the
+# kernel's web-intent check passed no engine at all, so `_engine_web_intent`
+# returned None on every call, the consumer wrote no row, and it could never
+# reach the Wave 7 bar however much traffic ran.
+AUTO_ENGINE = object()
+
+
+def _default_engine():
+    """The process-wide decision engine, or None. Never raises."""
+    try:
+        from backend.agent.decision_engine import get_decision_engine
+
+        return get_decision_engine()
+    except Exception:  # noqa: BLE001 — a missing engine is simply no verdict
+        return None
+
+
 def _engine_web_intent(
     goal: str, engine: Any = None, keyword: Optional[bool] = None
 ) -> Optional[bool]:
@@ -168,6 +188,8 @@ def _engine_web_intent(
     alongside it. Without that reference the row has no label, so this consumer
     could never be scored however many times it ran.
     """
+    if engine is AUTO_ENGINE:
+        engine = _default_engine()
     if engine is None:
         return None
     try:
@@ -480,7 +502,7 @@ def _propose_brain(
     # Trigger on the GOAL text (carries the user's phrasing) OR the original
     # "research" task_class. The DER passes its mode name as task_class, so we
     # must not rely on task_class == "research" alone (see pin_9e97e21340e7).
-    if (myc is not None) and (_is_web_intent(goal) or task_class == "research"):
+    if (myc is not None) and (_is_web_intent(goal, engine=AUTO_ENGINE) or task_class == "research"):
         try:
             from backend.agent.tool_registry import resolve_tool, capability_allowed
 

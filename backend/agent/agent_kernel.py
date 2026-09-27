@@ -6955,8 +6955,12 @@ class AgentKernel:
         is available (AC15.4: the keywords remain the fallback).
         """
         try:
-            from backend.agent.explorer import _is_web_intent
-            return bool(_is_web_intent(text or ""))
+            from backend.agent.explorer import AUTO_ENGINE, _is_web_intent
+            # The engine is passed EXPLICITLY (2026-09-27). Without it the
+            # consumer's verdict is never asked for, so web_intent writes no row
+            # and can never reach the Wave 7 bar. `engine=None` still means "no
+            # engine" on purpose — this is the caller opting in.
+            return bool(_is_web_intent(text or "", engine=AUTO_ENGINE))
         except Exception:  # noqa: BLE001 — a failed check is simply "no"
             return False
 
@@ -15047,7 +15051,7 @@ Respond with a JSON object:
                 # a repeat is a read observation, not a new side effect.
                 _is_web_goal = False
                 try:
-                    _is_web_goal = bool(_is_web_intent(goal))
+                    _is_web_goal = bool(_is_web_intent(goal, engine=AUTO_ENGINE))
                 except Exception:  # noqa: BLE001
                     pass
                 _veto_reason: Optional[str] = None
