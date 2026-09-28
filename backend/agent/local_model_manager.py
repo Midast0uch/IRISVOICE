@@ -4104,6 +4104,32 @@ class LocalModelManager:
                 "--threads",
                 str(cpu_count()),
             ]
+            # ── Concurrency bound (2026-09-27, owner instruction) ──────────
+            # The app never set the slot count, so the server used its own
+            # default: `-np` defaults to -1 (auto), and AUTO CHOSE 4 on this box
+            # - measured in /props (`total_slots: 4`) with slots 0..3 all in use.
+            # Four concurrent generations share ONE GPU and one KV budget, and
+            # on an 8 GB card that thrashes. Measured consequence: a turn ran
+            # 143 s with the generation counter frozen and `print_timing` never
+            # appearing, while the model itself answered in about a second
+            # (prompt eval 724 ms, eval 288 ms, ~140 tok/s).
+            #
+            # ONE slot serialises the work with NO artificial delay and shrinks
+            # the KV footprint. Nothing chosen is given up: the old value was an
+            # unset default, not a decision. IRIS_LOCAL_PARALLEL overrides it on
+            # a card with room.
+            try:
+                _parallel = int(os.environ.get("IRIS_LOCAL_PARALLEL", "1"))
+            except Exception:  # noqa: BLE001 — a bad value must not block a load
+                _parallel = 1
+            if _parallel > 0:
+                cmd += ["--parallel", str(_parallel)]
+                logger.info(
+                    "[LocalModelManager] server slots bounded to %d "
+                    "(IRIS_LOCAL_PARALLEL overrides; -np auto picked 4 here "
+                    "and four concurrent generations thrash an 8GB card)",
+                    _parallel,
+                )
             # Verbosity 5 is what makes load progress observable. At the default
             # (3) the server prints no tensor or layer lines at all, so
             # _parse_load_progress matches nothing and the UI sees only the one
