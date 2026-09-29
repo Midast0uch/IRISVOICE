@@ -51,7 +51,13 @@ logger = logging.getLogger(__name__)
 # Session-326 default is 60s idle grace: back-to-back runs stay warm, idle
 # RAM frees on its own. Raise it if a short gap cold-starts twice in a row.
 # ---------------------------------------------------------------------------
-_IDLE_TIMEOUT: float = float(os.environ.get("IRIS_BROWSER_IDLE_TIMEOUT", "60"))
+# Session 366: 60 -> 180 to match the contract the crawler ALREADY documents
+# (capabilities.py and iris_gateway.py name 180 s in three places). MEASURED: at
+# 60 s the BOOT pre-warm started Chromium, the idle watchdog stopped it ~72 s
+# later, and the crawl then cold-started it anyway - so the pre-warm was pure
+# waste AND the cold acquire (1.7-9.5 s) was paid twice. 180 s keeps it warm
+# across the planning phase that precedes the first crawl of a turn.
+_IDLE_TIMEOUT: float = float(os.environ.get("IRIS_BROWSER_IDLE_TIMEOUT", "180"))
 
 # Session-326 (owner: 60s idle grace). The shell closes after 60s with no
 # live lease — back-to-back runs stay warm, idle RAM frees on its own.

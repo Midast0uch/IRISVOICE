@@ -744,16 +744,27 @@ async def lifespan(app: FastAPI):
         # ==========================================================================
         # MEMORY SEEDING [5.3] — transfer bootstrap landmarks to runtime Mycelium
         # ==========================================================================
-        try:
-            from backend.memory.bootstrap_seed import seed_mycelium_from_bootstrap
+        # SESSION 366 (owner): the BUILD memory must stay OUT of backend startup
+        # until a deliberate full migration. This step pulls landmarks out of
+        # bootstrap/coordinates.db (the MCM build DB) at every boot. Set
+        # IRIS_BOOTSTRAP_TRANSFER=1 when the migration is actually being done.
+        import os as _os
+        if _os.environ.get("IRIS_BOOTSTRAP_TRANSFER", "0") == "1":
+            try:
+                from backend.memory.bootstrap_seed import seed_mycelium_from_bootstrap
 
-            n = seed_mycelium_from_bootstrap()
-            if n > 0:
-                logger.info(
-                    f"    [BootstrapSeed] Seeded {n} permanent landmarks into Mycelium"
-                )
-        except Exception as _seed_err:
-            logger.debug(f"  - Bootstrap seed skipped: {_seed_err}")
+                n = seed_mycelium_from_bootstrap()
+                if n > 0:
+                    logger.info(
+                        f"    [BootstrapSeed] Seeded {n} permanent landmarks into Mycelium"
+                    )
+            except Exception as _seed_err:
+                logger.debug(f"  - Bootstrap seed skipped: {_seed_err}")
+        else:
+            logger.info(
+                "  - Bootstrap landmark seed DISABLED "
+                "(IRIS_BOOTSTRAP_TRANSFER != 1; build memory is out of startup)"
+            )
 
         app.state.ready = True
         logger.info("IRIS Backend startup completed successfully!")
@@ -860,8 +871,22 @@ async def lifespan(app: FastAPI):
 
                     eng = get_decision_engine()
                     if eng is not None:
-                        eng.decide("tool_choice", ["NONE", "DELEGATE"],
-                                   {"goal": "warm"})
+                        # AC30.4 (T41): warm at the EFFECTIVE candidate width,
+                        # not a 2-option menu. The encoder's cost is dominated
+                        # by the label-set structure length, so warming with
+                        # ["NONE","DELEGATE"] left the first real 6-label menu
+                        # paying the build — exactly the spike this warm-up
+                        # exists to remove. The label VALUES are irrelevant;
+                        # only the width is.
+                        _cap = int(
+                            getattr(
+                                getattr(eng, "_cfg", None), "candidate_cap", 6
+                            ) or 6
+                        )
+                        _menu = [
+                            f"WARM_LABEL_{i}" for i in range(max(2, _cap - 2))
+                        ] + ["NONE", "DELEGATE"]
+                        eng.decide("tool_choice", _menu, {"goal": "warm"})
                 except Exception:
                     pass
 

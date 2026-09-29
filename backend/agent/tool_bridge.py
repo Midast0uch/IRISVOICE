@@ -3130,7 +3130,18 @@ class AgentToolBridge:
         # stall detector twitchier: per-page bounds in capabilities.py are now
         # goto=8 s / networkidle=2 s, so 12 s clears a bounded page and still
         # fires well inside the 25 s run ceiling.
-        _STALL_S = float(os.environ.get("IRIS_CRAWL_STALL_S", "12"))
+        # SESSION 366 (live): 12 s was BELOW a measured legitimate quiet. The
+        # session-365 note argued 12 s clears a bounded page (goto 8 s +
+        # networkidle 2 s) - true for ONE page, but the pipeline has silences the
+        # per-page bounds do not cover: a COLD browser acquire measured 18.3 s
+        # ("browser acquired in 18345ms (cold pool)"), and the 'citing' /
+        # 'research-start' phases go quiet past 12 s. Live result: EVERY web turn
+        # died `crawler_query stalled: no progress for 12s` (error_type=permanent)
+        # after 24 s / 102 s / 37 s of retries. 60 s sits above the 18.3 s cold
+        # acquire and the 45 s nav the pre-365 comment named, and well below the
+        # original 120 s. The 25 s run ceiling stays the SPEED bound; this is the
+        # DEATH detector and must not be the tighter of the two.
+        _STALL_S = float(os.environ.get("IRIS_CRAWL_STALL_S", "60"))
         _stall_at = [time.monotonic()]
         _stall_stage = ["research-start"]
 

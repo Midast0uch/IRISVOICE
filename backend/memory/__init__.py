@@ -88,12 +88,25 @@ async def initialise_memory(
     # Memory transfer: if runtime DB doesn't exist yet, seed it from the
     # bootstrap coordinate DB so the app starts with a populated graph.
     # GOALS.md [5.3]: "bootstrap/coordinates.db transfers to data/memory.db"
+    #
+    # SESSION 366 (owner): DISABLED by default. The BUILD memory
+    # (bootstrap/coordinates.db, ~808 MB — the MCM coordinate graph) must stay
+    # OUT of backend startup until a deliberate full migration. As written, this
+    # block COPIES the entire build DB into data/memory.db, which is how the
+    # runtime DB acquired ~1M MCM-schema `graph_edges` rows the application never
+    # reads (Mycelium has its own tables) and inflated to 6.3 GB. Set
+    # IRIS_BOOTSTRAP_TRANSFER=1 to re-enable for the migration.
     try:
+        import os as _os
         import shutil
         from pathlib import Path as _Path
         _runtime = _Path(db_path)
         _bootstrap = _Path("bootstrap/coordinates.db")
-        if not _runtime.exists() and _bootstrap.exists():
+        if (
+            _os.environ.get("IRIS_BOOTSTRAP_TRANSFER", "0") == "1"
+            and not _runtime.exists()
+            and _bootstrap.exists()
+        ):
             _runtime.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(str(_bootstrap), str(_runtime))
             logger.info(

@@ -102,6 +102,12 @@ def _is_web_intent(goal: str, *, engine: Any = None) -> bool:
 
 WEB_INTENT_CONSUMER = "web_intent"
 
+# Session 366: the two-sided confidence margin for the JEV cascade (oracle.md
+# 17.3). A Noul whose probability sits inside the band is UNSURE and must NOT
+# act; the deterministic keyword path decides instead. 0.8 matches
+# monitor_shadow.monitor_bool's default and the project's other Noul gates.
+_WEB_INTENT_CONFIDENT_TAU = 0.8
+
 # Process-wide row sink for the web_intent consumer (2026-09-27). This consumer
 # had its criteria registered and a live call site but NO row path at all: the
 # engine scored every web goal and nothing was ever written, so the consumer
@@ -213,6 +219,22 @@ def _engine_web_intent(
                 "engine_latency_ms": getattr(noul, "engine_latency_ms", None),
                 "shadow": True,
             })
+        # SESSION 366: THE JEV CASCADE (oracle.md 17.3). `true(0.5)` turns an
+        # UNSURE belief into a verdict, and this consumer is unsure on most goals.
+        # MEASURED 2026-09-29: 303 rows, 289 "yes" (95%), 216/303 with
+        # 0.2 < p < 0.8 (many at p == 0.5014, a literal coin flip). `_mem_lookup`
+        # uses this verdict to HARD-return crawler_query, so a coin flip was
+        # dispatching a web crawl for local file reads - live: "box resolved
+        # tool='crawler_query' for step 2 (source=memory)" on the goal "Read the
+        # contents of backend/agent/der_constants.py to find the value of
+        # DER_BUDGET_MIN_FLOOR". An UNSURE Noul must not act: return None so the
+        # caller falls back to the deterministic keyword. This does NOT block the
+        # web (the tools stay on the menu); it only stops a WEAK verdict from
+        # PRE-COMMITTING the web through the memory hint. The row above still
+        # records the RAW verdict, so the report keeps showing this consumer as
+        # the non-fit it is (oracle.md 9's tier0_classify precedent).
+        if not noul.confident(_WEB_INTENT_CONFIDENT_TAU):
+            return None
         return verdict
     except Exception as e:  # noqa: BLE001 — fall back to the keywords
         logger.debug("[web_intent] engine scoring failed: %r", e)

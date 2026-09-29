@@ -276,12 +276,43 @@ class TTSManager:
         # (on-demand spawn in the synthesize path covers everything after).
         self._last_activity: Optional[float] = None
         self._connect_prewarm_done: bool = False
+        # SESSION 366 - REVERTED (owner: system memory climbed to ~9 GB and a
+        # python process had to be end-tasked). Setting the idle unload to 0
+        # (keep the worker resident forever) EXPOSED unbounded growth: the worker
+        # does not return to its idle baseline after a synthesis, so with no
+        # unload that growth ACCUMULATED across utterances instead of being
+        # reclaimed. The unload was MASKING a growth problem - turning it off was
+        # the wrong fix. Restored to 600 s.
+        # The owner's actual goal is: fast synthesis AND memory released when
+        # idle, with no spike. That needs the per-synthesis GROWTH fixed, not the
+        # unload removed - tracked as a separate defect below.
         try:
             self._idle_timeout_s: float = float(
                 os.environ.get("IRIS_TTS_IDLE_TIMEOUT_S", "600") or 600
             )
         except ValueError:
             self._idle_timeout_s = 600.0
+
+        # SESSION 366: the worker's COMMITTED memory grows per synthesis and
+        # never returns to its post-load baseline (measured: 1304MB -> 2001MB
+        # across ONE synthesis, then it stayed). `_compact_heap()` in the worker
+        # already runs gc.collect() + ucrt `_heapmin` + a working-set trim, so the
+        # retention is NOT the CRT heap - it is the ML runtime's own arena (the
+        # worker's own note names MKL's allocator). Chasing that allocator is
+        # fragile, so the growth is BOUNDED deterministically instead: when the
+        # worker has grown past this budget over its own baseline, it is unloaded
+        # (the existing graceful shutdown path) and the next request respawns it.
+        # That keeps synthesis fast while it is warm AND caps the footprint.
+        # 0 disables the check. Growth is measured from the baseline captured
+        # when the worker first becomes ready, so a large-but-constant footprint
+        # does not trigger a recycle loop.
+        try:
+            self._max_growth_mb: float = float(
+                os.environ.get("IRIS_TTS_MAX_GROWTH_MB", "500") or 500
+            )
+        except ValueError:
+            self._max_growth_mb = 500.0
+        self._baseline_commit_mb: float = 0.0
 
         TTSManager._initialized = True
 
@@ -477,6 +508,26 @@ class TTSManager:
                 self._ready = True
                 self._load_error = None
                 self._note_activity()
+                # SESSION 366: capture the memory baseline HERE, the moment the
+                # worker is READY with its model loaded. Capturing it on the first
+                # REAPER read was too late: the reaper's first sweep after a spawn
+                # can land after the worker has already grown, so the baseline
+                # absorbed the growth and the budget could never see it (measured:
+                # worker at 2083MB, baseline ~2000MB, growth ~0, no recycle ever
+                # fired). Read the child lock-free here - `_wait_ready` already
+                # runs inside `_spawn_worker`'s `_proc_lock`, and that lock is not
+                # reentrant, so `_worker_commit_mb()` must NOT be called from here.
+                try:
+                    import psutil
+
+                    _p = self._proc
+                    self._baseline_commit_mb = (
+                        psutil.Process(_p.pid).memory_info().private
+                        / (1024.0 * 1024.0)
+                        if _p is not None else 0.0
+                    )
+                except Exception:  # noqa: BLE001 - a baseline is best-effort
+                    self._baseline_commit_mb = 0.0
                 logger.info("[TTSManager] Worker ready")
                 return
             if status.get("status") == "error":
@@ -572,6 +623,41 @@ class TTSManager:
         except Exception:  # noqa: BLE001 — prewarm never breaks the caller
             pass
 
+    def _worker_commit_mb(self) -> float:
+        """The live worker's COMMITTED memory in MB, or 0.0 when unknown.
+
+        WorkingSet is deliberately NOT used: Windows pages an idle worker out,
+        so the same process reports ~10 MB WS while holding ~2 GB commit
+        (measured session 366) - a WS-based budget would never fire.
+        """
+        try:
+            import psutil
+
+            with self._proc_lock:
+                proc = self._proc
+                if proc is None or proc.poll() is not None:
+                    return 0.0
+                pid = proc.pid
+            return psutil.Process(pid).memory_info().private / (1024.0 * 1024.0)
+        except Exception:  # noqa: BLE001 - a budget read never breaks a turn
+            return 0.0
+
+    def _grown_too_big(self) -> bool:
+        """Session 366: has the worker's commit grown past its growth budget?
+
+        The baseline is captured on the first read, so a large-but-stable
+        footprint (the loaded model) never triggers a recycle - only GROWTH does.
+        """
+        if self._max_growth_mb <= 0:
+            return False
+        mb = self._worker_commit_mb()
+        if mb <= 0.0:
+            return False
+        if self._baseline_commit_mb <= 0.0:
+            self._baseline_commit_mb = mb
+            return False
+        return (mb - self._baseline_commit_mb) >= self._max_growth_mb
+
     def _should_unload(self, now: float) -> bool:
         """Pure decision: is the live worker quiet past its timeout?"""
         if self._idle_timeout_s <= 0:
@@ -587,7 +673,13 @@ class TTSManager:
         when a worker was unloaded. Best-effort: never raises, never reaps a
         worker with a synthesis in flight (non-blocking lock check)."""
         now = time.monotonic()
-        if not self._should_unload(now):
+        _idle = self._should_unload(now)
+        _fat = self._grown_too_big()
+        # Read the commit ONCE, BEFORE taking `_proc_lock` below: `_worker_commit_mb`
+        # takes the same lock, and threading.Lock is NOT reentrant, so calling it
+        # inside the `with` block would DEADLOCK the reaper thread.
+        _commit_mb = self._worker_commit_mb() if _fat else 0.0
+        if not _idle and not _fat:
             return False
         if not self._synthesis_lock.acquire(blocking=False):
             return False  # mid-synthesis — skip this cycle
@@ -596,11 +688,17 @@ class TTSManager:
                 proc = self._proc
                 if proc is None or proc.poll() is not None or not self._ready:
                     return False
-                logger.info(
-                    "[TTSManager] Idle %.0fs > %.0fs — unloading TTS worker",
-                    now - (self._last_activity or now),
-                    self._idle_timeout_s,
+                _why = (
+                    "idle %.0fs > %.0fs" % (
+                        now - (self._last_activity or now), self._idle_timeout_s
+                    )
+                    if _idle else
+                    "commit %.0fMB, baseline %.0fMB, growth budget %.0fMB" % (
+                        _commit_mb, self._baseline_commit_mb,
+                        self._max_growth_mb,
+                    )
                 )
+                logger.info("[TTSManager] unloading TTS worker (%s)", _why)
                 try:
                     self._send({"action": "shutdown"})
                 except Exception:  # noqa: BLE001 — pipes may already be gone
@@ -619,6 +717,7 @@ class TTSManager:
                         pass
                 self._proc = None
                 self._ready = False
+                self._baseline_commit_mb = 0.0  # new worker -> new baseline
                 return True
         finally:
             self._synthesis_lock.release()
@@ -747,12 +846,21 @@ class TTSManager:
     _INTER_SENTENCE_SILENCE: float = 0.50  # 500ms pause between sentences
     _TRAILING_SILENCE: float = 0.60  # 600ms silence after last word
 
-    # Overall budget for one synthesize_stream() call. Measured throughput is
-    # ~0.025 s/char (964 chars -> 23.8 s), so this is ~4x headroom — generous
-    # enough never to cut a healthy synthesis short, tight enough that a wedged
-    # worker cannot hold ``_synthesis_lock`` indefinitely. That lock is
-    # process-wide: on 2026-09-03 a single wedged synthesis held it for ~4 min
-    # and every other TTS caller on every thread blocked behind it.
+    # Overall budget for one synthesize_stream() call.
+    #
+    # SESSION 366, CORRECTED: a first attempt raised this 30 -> 60 to tolerate a
+    # slow COLD prompt, and that was WRONG. The very next run showed the real
+    # shape: `No chunk for 30s but worker is alive` then `Synthesis exceeded its
+    # 63s budget for 26 chars - worker is wedged, restarting` with NO "Prompting
+    # text" line at all - a GENUINE hang, not a cold model. After the restart the
+    # worker was healthy: "Prompting text took 192 ms", "Synthesis done: 39360
+    # samples in 0.82s". So a longer budget only makes a REAL wedge more
+    # expensive (63 s instead of 31 s) and does not fix it. 30 s is restored.
+    #
+    # The COLD-start problem is handled where it belongs: the idle UNLOAD is now
+    # OFF by default (see _idle_timeout_s), so the model loads once and stays -
+    # the cold prompt no longer recurs. The WEDGE itself is a separate, still-
+    # open bug (the worker hangs with no output) and 30 s bounds it.
     _SYNTHESIS_BASE_TIMEOUT: float = 30.0
     _SYNTHESIS_PER_CHAR_TIMEOUT: float = 0.10
 

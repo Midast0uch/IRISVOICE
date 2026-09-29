@@ -27,6 +27,19 @@ from .orchestrator import Passage
 # every search behind a cold local embedding model.
 _EMBED_BUDGET_S = float(os.environ.get("IRIS_RERANK_EMBED_BUDGET_S", "20"))
 
+# Session 366: bound the WORK, not just the wall clock. The pass embedded the
+# WHOLE page per passage, and `EmbeddingService.encode` slices text into
+# `EMBED_MAX_CHARS` (1024) chunks and encodes them SEQUENTIALLY against a
+# CPU-only sidecar (~400 ms/chunk measured). A single 50 KB page is therefore
+# ~50 encodes = the full 20 s budget blown, then the instant BM25 fallback -
+# measured live: "[rerank] embed budget 20s exceeded" on a crawl that had
+# exactly ONE usable page. A relevance signal does not need the whole document;
+# 2048 chars is the same order as the Pacman embedding bound (embedding.py).
+# This makes the pass O(passages), not O(total page bytes).
+_EMBED_MAX_TEXT_CHARS = int(
+    os.environ.get("IRIS_RERANK_EMBED_MAX_CHARS", "2048")
+)
+
 # Session 247: circuit-breaker cooldown. After one embed pass exceeds its
 # budget, embedding is skipped entirely for this many seconds — later reranks
 # in the same search run degrade to BM25 instantly instead of re-burning the
@@ -165,8 +178,37 @@ def _embed(texts: list[str], deadline: Optional[float] = None) -> Optional[list[
     try:
         from backend.memory.embedding import get_embedding_service
         svc = get_embedding_service()
+        # Session 366: ONE batched call, not one call per text. The sidecar
+        # client exposes `encode_batch`, which sends every chunk of every text in
+        # a SINGLE /v1/embeddings array request (embedding.py: "measured live:
+        # 6 texts = 88 ms total vs ~100 ms PER sequential single-text call").
+        # The per-text loop made this pass O(passages x chunks) HTTP round-trips
+        # against a CPU-only sidecar answering in ~1 s per call live - that is
+        # what blew the 20 s budget on a crawl with 4 usable pages. Chunking,
+        # max-pool and cache semantics are identical inside encode_batch.
+        _bounded = [
+            t[:_EMBED_MAX_TEXT_CHARS] if t else t for t in texts
+        ]
+        if deadline is not None and time.monotonic() > deadline:
+            _embed_disabled_until = time.monotonic() + _EMBED_BREAKER_COOLDOWN_S
+            logger.warning(
+                "[rerank] %s — falling back to BM25-only; embedding skipped "
+                "for the next %.0fs",
+                budget_note, _EMBED_BREAKER_COOLDOWN_S,
+            )
+            return None
+        try:
+            _batch = svc.encode_batch(_bounded) if texts else None
+            if _batch and len(_batch) == len(_bounded) and all(_batch):
+                return _batch
+        except Exception as _bexc:  # noqa: BLE001 — fall back to per-text
+            logger.debug(
+                "[rerank] encode_batch failed (%s) — per-text fallback", _bexc
+            )
+        # Fallback: the original per-text loop, still deadline-bounded, so a
+        # backend without embed_batch degrades exactly as before.
         out = []
-        for t in texts:
+        for t in _bounded:
             if deadline is not None and time.monotonic() > deadline:
                 _embed_disabled_until = time.monotonic() + _EMBED_BREAKER_COOLDOWN_S
                 logger.warning(

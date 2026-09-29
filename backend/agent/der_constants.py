@@ -120,7 +120,14 @@ DER_BUDGET_MIN_FLOOR = 4_000
 # Fraction of the real context window DER may spend on step execution. The
 # remainder is headroom for the system prompt, the final synthesis, and the
 # response itself.
-DER_WINDOW_UTILISATION = 0.9
+#
+# SESSION 366 (owner decision): raised 0.9 -> 1.0 so the CAP is the model's REAL
+# window, not 90% of it. A measured 16384-token local turn was budgeted 13270 and
+# could stop early with `plan:budget_exhausted` for no physical reason - the model
+# can hold what its own window says it can. The per-mode share below still applies
+# (a small task is not handed the whole window), so this is the ceiling raise, not
+# the removal of the two-tier design.
+DER_WINDOW_UTILISATION = 1.0
 
 
 def get_token_budget(mode: Optional[str]) -> int:

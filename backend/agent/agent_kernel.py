@@ -167,7 +167,10 @@ except Exception:
         # Mirrors der_constants.resolve_der_token_budget: mode value is a
         # CEILING, the window is the hard cap, the floor is applied last and is
         # itself clamped by the window so it can never overcommit.
-        _cap = max(int(context_window * 0.9), 1)
+        # SESSION 366: cap is the REAL window (DER_WINDOW_UTILISATION is 1.0 in
+        # der_constants; this fallback mirrors it so the import-guard path and the
+        # real path cannot disagree).
+        _cap = max(int(context_window), 1)
         _ceiling = DER_TOKEN_BUDGETS.get(task_class, DER_TOKEN_BUDGETS.get("full", 50000))
         return max(min(_ceiling, _cap), min(4000, _cap))
 
@@ -17190,9 +17193,13 @@ Respond with a JSON object:
         # window gets the SAME bounded excerpt the evidence path uses
         # (gather tools 8000, others 400). Raw text lives in memory, not in
         # the window.
-        step_outputs.append(
-            self._smart_excerpt(step_result, self._der_evidence_cap(item.tool))
+        # The SAME bounded text the window receives is what the budget must bill
+        # (session-366 track C): keep it in a local so the token meter below
+        # charges the excerpt, not the raw result.
+        _window_evidence = self._smart_excerpt(
+            step_result, self._der_evidence_cap(item.tool)
         )
+        step_outputs.append(_window_evidence)
         # Session 312 / Session-318 / Session-319: turn URL memory is harvested
         # by ONE shared helper so the FAILURE path records addresses too (that
         # path skips this function entirely — see _der_handle_step_failure).
@@ -17335,7 +17342,17 @@ Respond with a JSON object:
 
         # â”€â”€ TOKEN BUDGET: accumulate estimated tokens from step result â”€â”€
         # 4 chars â‰ˆ 1 token; also count prompt overhead per step (~200 tok)
-        _tokens_used += max(200, len(step_result) // 4)
+        # Session 366 (track C): bill the BOUNDED evidence the window actually
+        # receives, not the raw tool result. MEASURED: a 16384-token window
+        # yields a 13270-token budget; one crawl's RAW result charged ~12k
+        # tokens and exhausted the turn after 6 of 10 steps
+        # (`plan:budget_exhausted`, 15138/13270) while the window only ever got
+        # the bounded excerpt (_window_evidence: gather tools 8000 chars, others
+        # 400 - see the note above). Raw text lives in durable memory, not in the
+        # window, so metering raw charged the model for tokens it never reads and
+        # one large result killed the chain. 4 chars ~= 1 token, + ~200 prompt
+        # overhead per step.
+        _tokens_used += max(200, len(_window_evidence) // 4)
         # â”€â”€ EventBus: emit context:usage (token budget progress) â”€â”€â”€â”€â”€â”€
         try:
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
@@ -18467,9 +18484,22 @@ Respond with a JSON object:
                 _rec_now = ffi_caducean_recommend(_session)
             except Exception:
                 _rec_now = 2
-            if _rec_now != 1 and queue.mode in (
+            # Session 366: make the continuation gate VISIBLE. It was one compound
+            # condition, so a skipped consult left no trace at all - the same
+            # silent-skip class that hid seven consumers for a session. Logging the
+            # values lets "depth_route/done did not score" be told apart from "the
+            # consult never ran".
+            _cont_complete = queue.is_complete()
+            _cont_mode_ok = queue.mode in (
                 ExecutionMode.AGENTIC, ExecutionMode.FULL,
-            ) and queue.is_complete():
+            )
+            _cont_run = _cont_mode_ok and _cont_complete
+            logger.info(
+                "[DER] continuation gate: rec=%s mode=%s complete=%s -> %s",
+                _rec_now, getattr(queue.mode, "value", queue.mode),
+                _cont_complete, "RUN" if _cont_run else "SKIP",
+            )
+            if _cont_run:
                 _next_tool = self._der_plan_next_step(
                     plan.original_task,
                     completed_items,
@@ -18477,6 +18507,23 @@ Respond with a JSON object:
                     _turn_id,
                     step_outputs=step_outputs,
                 )
+                # Session 366: the consult now RUNS whenever the queue completes
+                # in an expanding mode. `rec == 1` (caducean COMPRESS) still stops
+                # the plan from GROWING - which is what the gate was written for
+                # ("do NOT expand the plan with new explorer steps") - but it must
+                # not stop the consult itself, because the consult is ALSO the
+                # "are we actually done?" check and the ONLY site that scores
+                # `depth_route` and `done`. MEASURED before this change: every
+                # completed turn logged `continuation gate: rec=1 ... SKIP`, so
+                # those consumers could never produce a row however much traffic
+                # was driven. The EXPANSION is discarded; the SCORE is kept.
+                if _next_tool and _rec_now == 1:
+                    logger.info(
+                        "[DER] continuation step SUPPRESSED during COMPRESS "
+                        "(rec=1) - consult ran and scored, plan does not expand: %r",
+                        str(_next_tool.get("description", ""))[:120],
+                    )
+                    _next_tool = None
                 if _next_tool:
                     # GOAL ONLY: the continuation step carries no tool/params.
                     # _der_run_step_execution resolves it via the single resolver
@@ -19434,9 +19481,14 @@ Respond with a JSON object:
 
             _desc = data.get("description")
             if not _desc or not str(_desc).strip():
+                # Not done, but the Brain named no next step, so the loop STOPS.
+                # That is the same "finalize" route as the done branch, declared
+                # here where it is decided - never predicted from state.
+                self._der_note_depth_route("finalize")
                 return None
 
             # GOAL ONLY â€” no tool/params. The resolver picks the tool on exec.
+            self._der_note_depth_route("next_step")
             return {"description": str(_desc).strip()}
 
         except Exception as exc:

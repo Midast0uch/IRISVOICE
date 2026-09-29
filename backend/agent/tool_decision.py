@@ -823,12 +823,20 @@ class ToolDecisionBox:
 
     def _memory_decision(
         self, all_tools: list[dict], goal: str, conversation_id: str,
+        vetoed: Optional[set] = None,
     ) -> Optional[Decision]:
         """Shared memory-fallback step (used by the engine ladder and legacy).
 
         Returns a TOOL Decision when memory names a valid, registered tool;
         None otherwise. Identical semantics to the inline memory fallback the
         legacy path has always run.
+
+        ``vetoed`` (session 366, track B): the same execution-policy veto the
+        engine pick already obeys (memory hint + local-workspace web tools).
+        MEMORY MUST OBEY IT TOO - a measured turn chose `crawler_query` for a
+        LOCAL goal via `source=memory` and bypassed the veto entirely, because
+        this method never saw the set. A vetoed tool is refused here and the
+        ladder continues (NONE-commit or escalate), so no route re-introduces it.
         """
         memory_result = (
             self._memory_lookup(goal) if callable(self._memory_lookup) else None
@@ -836,6 +844,12 @@ class ToolDecisionBox:
         if memory_result and isinstance(memory_result, dict):
             mtool = memory_result.get("tool")
             mparams = memory_result.get("params", {})
+            if mtool and mtool in (vetoed or ()):
+                logger.info(
+                    "[TOOL_DECISION] memory pick %s VETOED by execution policy "
+                    "conv=%s", mtool, conversation_id,
+                )
+                return None
             if mtool and mtool in {t.get("name") for t in all_tools}:
                 is_valid, _verr = self._validate_tool_call(mtool, mparams)
                 if is_valid:
@@ -910,6 +924,17 @@ class ToolDecisionBox:
             # total width = cap. The engine truncates internally to the same
             # cap, so a menu composed wider than cap would lose the control
             # labels at the scorer (the defect this composition fixes).
+            # Session 366, track B (2nd half): REMOVE the vetoed names from the
+            # MENU, not just guard the pick. Guarding the pick alone turned a
+            # low-confidence web pick into an immediate REASON, and for a LOCAL
+            # goal that means the step never tries the tool that WOULD work -
+            # measured: "engine pick crawler_query VETOED ... -> REASON", then the
+            # reply "unable to retrieve the list of files". With the web tools off
+            # the menu the engine can land on list_directory/read_file instead.
+            # The pick guard above stays as the backstop for any route that still
+            # proposes one, and the composed menu keeps its width (controls are
+            # reserved and names backfilled), so the calibrated threshold holds.
+            names = [n for n in names if n not in vetoed]
             names = self._compose_engine_menu(
                 names, self._DE_DELEGATE, self._DE_NONE, _cap)
 
@@ -1113,7 +1138,8 @@ class ToolDecisionBox:
                 return _d
             # Below threshold, DELEGATE, or NONE → memory fallback, then escalate (AC3.2).
             if chosen in (self._DE_DELEGATE, self._DE_NONE) or conf < self._decision_threshold:
-                md = self._memory_decision(all_tools, goal, conversation_id)
+                md = self._memory_decision(
+                    all_tools, goal, conversation_id, vetoed=vetoed)
                 if md is not None:
                     md.meta = _m("memory-fallback", args_valid=None, retried=False)
                     _c = getattr(engine, "counters", None)
@@ -1603,21 +1629,23 @@ class ToolDecisionBox:
         # enforced below even if the model proposes a vetoed tool anyway.
         _vetoed: set[str] = set((memory_hint or {}).get("veto") or [])
 
-        # Session 365: a LOCAL-workspace goal must not be dispatched to the WEB.
-        # Added to the SAME veto set the physics sanction uses, so it rides the
-        # existing enforcement (a model that proposes a web tool anyway is still
-        # blocked) and needs no new mechanism. See _is_local_workspace_goal for
-        # why the predicate is deliberately narrow.
-        try:
-            if self._is_local_workspace_goal(goal):
-                _vetoed |= set(self._WEB_GATHER_TOOLS)
+        def _memory_allowed(_mres):
+            """Session 366, track B: refuse a memory-suggested tool the execution
+            policy vetoed, so the memory fallbacks obey the SAME veto as the
+            engine path. Returns the result unchanged, or None when vetoed."""
+            if isinstance(_mres, dict) and _mres.get("tool") in _vetoed:
                 logger.info(
-                    "[TOOL_DECISION] local-workspace goal — vetoing web gather "
-                    "tools %s for: %r",
-                    sorted(self._WEB_GATHER_TOOLS), (goal or "")[:120],
+                    "[TOOL_DECISION] memory pick %s VETOED by execution policy "
+                    "conv=%s", _mres.get("tool"), conversation_id,
                 )
-        except Exception:  # noqa: BLE001 — a veto must never break resolution
-            pass
+                return None
+            return _mres
+
+        # (Session 366: the LOCAL-workspace phrase-list veto was REMOVED as debt.
+        # The arbiter is the Oracle's `web_intent` consumer through _mem_lookup,
+        # which only pre-commits crawler_query for a CONFIDENT web-intent goal.
+        # `_vetoed` now carries the memory/physics sanction only. See the removal
+        # note above _DEPTH_ROUTES.)
 
         # ── 3. Build propose prompt and call router ────────────────────
         tool_list = "\n".join(
@@ -1768,7 +1796,9 @@ class ToolDecisionBox:
                     "raw[:600]=%r",
                     conversation_id, text[:600],
                 )
-            memory_result = self._memory_lookup(goal) if callable(self._memory_lookup) else None
+            memory_result = _memory_allowed(
+                self._memory_lookup(goal) if callable(self._memory_lookup) else None
+            )
             if memory_result and isinstance(memory_result, dict):
                 mtool = memory_result.get("tool")
                 mparams = memory_result.get("params", {})
@@ -1843,7 +1873,9 @@ class ToolDecisionBox:
 
         except Exception as exc:
             # Exception during LLM call → consult memory before FAIL
-            memory_result = self._memory_lookup(goal) if callable(self._memory_lookup) else None
+            memory_result = _memory_allowed(
+                self._memory_lookup(goal) if callable(self._memory_lookup) else None
+            )
             if memory_result and isinstance(memory_result, dict):
                 mtool = memory_result.get("tool")
                 mparams = memory_result.get("params", {})
@@ -2252,50 +2284,33 @@ class ToolDecisionBox:
     # vocabulary, or "the comparison never matches and the report shows
     # precision 0 as though it were a measurement".
     #
+    # `next_step` was ADDED session 366 (handoff 3.4 / oracle.md 17.3.2). The
+    # first cut had only the four `done`-branch routes, and that branch needs the
+    # monitor consult to return done=True - which is rare - so the site could not
+    # fire often enough to collect one row. The not-done path is a real
+    # continuation decision too (the Brain named a next step), so it belongs in
+    # the menu. WITH IT, every consult that reaches a branch records exactly one
+    # row, and `brain_choice` still varies with state.
+    #
     # The richer "how to deepen" sub-routes (deepen_with_tool / reread_evidence
     # / verify_with_evidence / accept_partial) are NOT here yet: the incumbent
     # cannot pick them, so they could never agree with it, and adding them now
     # would deflate precision for no information. They become scoreable only
     # once `deepen` is enforced and the engine's pick actually RUNS.
     _DEPTH_ROUTES = (
-        "cover_open_fact", "bonus_ceiling", "deepen", "finalize",
+        "cover_open_fact", "bonus_ceiling", "deepen", "next_step", "finalize",
     )
 
-    # ── Session 365: a LOCAL goal must not be dispatched to the WEB ─────────
-    # MEASURED: the step goal "list the files in the current directory and tell
-    # me how many there are" resolved to `crawler_query`, which spent 157 s
-    # fetching Stack Overflow pages that returned 403 challenges, then failed
-    # the step permanently and took the whole chain down. A goal about the LOCAL
-    # workspace has no business spending a network round-trip.
-    _WEB_GATHER_TOOLS = frozenset({
-        "crawler_query", "web_search", "search", "fetch_url", "browser_read",
-    })
-
-    # Markers that make a goal EXPLICITLY about the local workspace.
-    _LOCAL_WORKSPACE_MARKERS = (
-        "current directory", "this directory", "current folder", "this folder",
-        "working directory", "in the repo", "in the project",
-        "local file", "local files", "the workspace", "this workspace",
-    )
-
-    @staticmethod
-    def _is_local_workspace_goal(goal: str) -> bool:
-        """True when *goal* is explicitly about the LOCAL workspace.
-
-        Deliberately NARROW. A false positive removes the web tools from a real
-        research step, and the two errors are not symmetric: a missed veto costs
-        one slow failing crawl (which now fails fast, see the browser latch),
-        whereas a wrong veto breaks the step outright. So only explicit local
-        phrasing counts, and a web goal that merely omits the word "web" keeps
-        its web tools.
-        """
-        try:
-            _g = (goal or "").lower()
-            return any(
-                m in _g for m in ToolDecisionBox._LOCAL_WORKSPACE_MARKERS
-            )
-        except Exception:  # noqa: BLE001 — a guard must never raise
-            return False
+    # ── REMOVED (session 366): the LOCAL-workspace web veto ────────────────
+    # `_WEB_GATHER_TOOLS`, `_LOCAL_WORKSPACE_MARKERS`, `_is_local_workspace_goal`
+    # and `_local_web_veto` were a phrase-list band-aid, now deleted as debt
+    # (owner decision 2026-09-29). The arbiter is the Oracle's `web_intent`
+    # consumer: `_mem_lookup` only pre-commits `crawler_query` when
+    # `_is_web_intent(goal)` is true, and since session 366 that verdict requires
+    # `noul.confident(0.8)` - an UNSURE engine falls back to the deterministic
+    # trigger list instead of flipping a coin into a crawl. The veto MACHINERY
+    # (the memory-hint `veto` set, the menu filter, `_memory_allowed`) STAYS: it
+    # is the physics sanction, not the local list.
 
     def _record_shadow_row(
         self, row: Optional[Dict[str, Any]], session_id: str = "",
@@ -2553,11 +2568,12 @@ class ToolDecisionBox:
                         consumer_id="depth_route",
                         task_name="depth_route",
                         instruction=(
-                            "The Brain says the task is done. What should the "
-                            "loop do next: cover a required fact that is still "
+                            "The loop is deciding how to continue. What should "
+                            "it do next: cover a required fact that is still "
                             "open, run the bounded bonus pass over the ceiling "
                             "facts, push for more depth because the work is only "
-                            "superficially complete, or finalize and answer?"
+                            "superficially complete, pursue the next step the "
+                            "Brain named, or finalize and answer?"
                         ),
                         labels=tuple(
                             list(self._DEPTH_ROUTES) + [self._DE_DELEGATE]

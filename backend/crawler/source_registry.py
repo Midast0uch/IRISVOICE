@@ -198,7 +198,17 @@ class SourceRegistry:
         from backend.agent import get_agent_kernel  # lazy import
 
         kernel = get_agent_kernel("source_registry")
-        return kernel._respond_direct(text=prompt, context={}, tools=False)  # noqa: SLF001
+        # Session 366: DIRECT reasoning call, NOT `_respond_direct`. The heavy
+        # path drags the whole agent pipeline (memory retrieval + MCM injection +
+        # phase gating + tool scaffolding) into a 3-5 keyword CLASSIFICATION -
+        # MEASURED live at 26 s per crawl in the CrawlPlanner, which is more than
+        # the registry cache saves (it hits 9/37, and Exa is now ~3 s). `infer`
+        # is the same model on the same router minus that pipeline, and it never
+        # raises (it returns an empty-text object on any backend failure).
+        resp = kernel.infer(
+            prompt, role="reasoning", max_tokens=64, temperature=0.0
+        )
+        return getattr(resp, "raw_text", "") or ""
 
     # ── Store helpers ───────────────────────────────────────────────────
 

@@ -147,6 +147,13 @@ class _FakeNoul:
     def true(self, threshold):
         return self.probability >= threshold
 
+    def confident(self, threshold):
+        # COMPLETED 2026-09-29 (session 366): this double predates the real
+        # Noul.confident (decision_engine.py:159) and omitted it, so the new
+        # JEV-cascade call in _engine_web_intent raised AttributeError on every
+        # test. Mirrors the REAL two-sided margin exactly - no assertion changed.
+        return self.probability >= threshold or self.probability <= (1.0 - threshold)
+
 
 class _FakeEngine:
     model_id = "fake-engine"
