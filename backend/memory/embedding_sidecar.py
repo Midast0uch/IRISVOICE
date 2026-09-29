@@ -66,6 +66,36 @@ def _model_path() -> Optional[str]:
         return None
 
 
+def _embeddings_capable(timeout_s: float = 3.0) -> bool:
+    """True when the server on the port actually SERVES /v1/embeddings.
+
+    SESSION 365 — LIVENESS IS NOT CAPABILITY, AND THE PROBE MUST USE THE METHOD
+    THAT MATTERS. `ensure_running` adopts whatever answers `/health` on this
+    port ("someone else's server on the port counts"), and this sidecar
+    deliberately SURVIVES backend restarts — so a stale server that cannot embed
+    can be adopted in place of a working one: every embed 404s,
+    `EmbeddingService` falls back to a hash, and step verification degrades.
+
+    THE PROBE MUST BE A POST. llama-server registers ONLY POST on
+    /v1/embeddings, so a GET returns 404 EVEN ON A PERFECTLY HEALTHY SERVER. The
+    first version of this gate used GET and therefore refused a working sidecar;
+    it looked correct only because it was validated against a server that was
+    broken on BOTH methods — a coincidence, not evidence. A one-token input keeps
+    the cost to a single cheap CPU embed, and this is only called on the
+    adoption path (never on every embed).
+    """
+    try:
+        import httpx
+        r = httpx.post(
+            f"http://127.0.0.1:{_SIDECAR_PORT}/v1/embeddings",
+            json={"input": "ping", "model": "probe"},
+            timeout=timeout_s,
+        )
+        return r.status_code == 200
+    except Exception:
+        return False
+
+
 def _health_ok(timeout_s: float = 2.0) -> bool:
     try:
         import httpx
@@ -110,17 +140,29 @@ def _spawn() -> bool:
     # Readiness loop — bounded.
     deadline = time.time() + 120.0
     while time.time() < deadline:
-        if _health_ok():
+        # OUR process FIRST. If it died (the usual cause is a bind failure
+        # because something already holds the port), health is being answered by
+        # that OTHER server — so trusting /health here would report success for
+        # a spawn that never took effect.
+        if _proc.poll() is not None:
+            logger.warning(
+                "[EmbSidecar] llama-server exited during startup (code=%s) — "
+                "if port %d is already held by another server, that one answers "
+                "/health and this spawn cannot take effect",
+                _proc.returncode, _SIDECAR_PORT,
+            )
+            _proc = None
+            return False
+        # ...and the server must be able to EMBED, not merely answer /health —
+        # otherwise a stale, embedding-incapable server on the port would look
+        # like a successful spawn.
+        if _health_ok() and _embeddings_capable():
             logger.info(
                 "[EmbSidecar] llama-server up on port %d (pid %s, cpu-only)",
                 _SIDECAR_PORT, _proc.pid,
             )
             _warm_inference()
             return True
-        if _proc.poll() is not None:
-            logger.warning("[EmbSidecar] llama-server exited during startup (code=%s)", _proc.returncode)
-            _proc = None
-            return False
         time.sleep(1.0)
     logger.warning("[EmbSidecar] llama-server did not become healthy in 120s")
     return False
@@ -152,9 +194,26 @@ def ensure_running() -> bool:
         if _disabled:
             return False
         if _health_ok():
-            _touch_locked()
-            return True
-        # Someone else's server on the port counts (same courtesy as VLM).
+            # A server we did NOT spawn is adopted only if it can actually
+            # EMBED. The sidecar deliberately SURVIVES backend restarts, so
+            # after a restart the thing on the port is usually the previous
+            # backend's server — and adopting on /health alone let a stale,
+            # embedding-incapable server hold the port forever while every embed
+            # 404'd (EmbeddingService then fell back to a hash and step
+            # verification degraded). Checking only when we do not own the
+            # process keeps the cost off the hot path.
+            if _proc is not None or _embeddings_capable():
+                _touch_locked()
+                return True
+            logger.warning(
+                "[EmbSidecar] a server answers /health on port %d but does NOT "
+                "serve /v1/embeddings — refusing to adopt it. Kill that process "
+                "if it is a stale sidecar, or embeddings stay on the hash "
+                "fallback.",
+                _SIDECAR_PORT,
+            )
+        # Someone else's server on the port counts (same courtesy as VLM) — but
+        # only once it has proved it can embed.
         if _spawn():
             _touch_locked()
             return True

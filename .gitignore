@@ -124,6 +124,10 @@ llama.cpp-prismml-src/
 # NOTE: models/wake_words/ is deliberately NOT ignored — the Porcupine
 # hey-iris .ppn is tracked and required at runtime. Only the weights go.
 models/gguf/
+# GLiNER2.5-Decide ONNX decision backend (REQ-21): 651 MB of weights, shipped
+# with the app but never committed. The runner (decision_backend_onnx.py) and
+# the config stay tracked; only the weights go.
+backend/models/gliner2.5-decide-onnx/
 venv/
 .venv/
 llama.cpp/

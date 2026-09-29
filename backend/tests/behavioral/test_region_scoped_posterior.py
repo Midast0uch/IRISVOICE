@@ -155,7 +155,6 @@ def _make_kernel(conn: sqlite3.Connection, verified_label: str) -> tuple:
         append_to_session=lambda *a, **kw: None,
         query=lambda *a, **kw: None,
     )
-    k._trailing_director = SimpleNamespace(register_observation=lambda *a, **kw: None)
     k._verify_step_result = lambda *a, **kw: verified_label
     k._emit_der_step_event = lambda *a, **kw: None
     k._der_ledger = None

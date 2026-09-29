@@ -354,10 +354,33 @@ class InterModelCommunicator:
                 request.prior_results, indent=2
             )[:600]
 
+        # GROUND THE MODEL IN THE REAL WORKING DIRECTORY (2026-09-27).
+        # This prompt used to list the tool signatures with NO path context, so
+        # the small local model invented one. Live evidence, a chain turn:
+        #   user: "List the files in the scripts folder ..."
+        #   model sent: '\\home\user\scripts'
+        #   Windows: [WinError 3] The system cannot find the path specified
+        # That failure was then classified TERMINAL - correctly, because no retry
+        # can create a missing path - so the turn ended with "I couldn't
+        # complete that task. 0/1 steps finished", AND the recovery_strategy
+        # triage (which lives on the graft path only) was never consulted and
+        # recorded no row. Naming the directory costs one line and removes that
+        # whole chain of damage.
+        try:
+            import os as _os
+
+            _workdir = _os.getcwd()
+        except Exception:
+            _workdir = ""
+
         return f"""You are a tool execution agent. Execute the requested tool and return the result.
 
 User's original request: {request.user_intent or "Not specified"}
 Step rationale: {request.step_rationale or "Execute as requested"}
+Working directory: {_workdir or "(unknown)"}
+Every path you pass MUST be this directory, or a path UNDER it, or a path
+relative to it. Never invent a path such as /home/user/... or C:\\Users\\you\\...
+- this machine has no such directory and the call will fail.
 {prior_context}
 
 Tool to execute:

@@ -19,6 +19,24 @@ class _FakeKernel(AgentKernel):
         self._bridge = MagicMock()
         self.captured = []
         self.adapter = MagicMock()
+        # The TOOL path calls _get_tool_box(), which constructs
+        # ToolDecisionBox(router=self._router, ...). The real __init__ sets
+        # self._router = InferenceRouter(...); this fixture skips it, so it
+        # must supply the attribute or every tool-path test dies with
+        # "object has no attribute '_router'" before the tool call is sent.
+        self._router = MagicMock()
+        # _resolve_legacy unpacks `text, thinking, tool_calls` straight out of
+        # router.generate() (tool_decision.py:1640). A bare MagicMock returns a
+        # MagicMock, which raises "not enough values to unpack (expected 3,
+        # got 0)". Configure the 3-tuple: non-empty text with no tool_calls is
+        # the "model replied without naming a tool" shape, which becomes
+        # DecisionKind.REASON -> the step runs direct (no tool).
+        self._router.generate.return_value = ("no tool needed", "", [])
+        # The exec helpers also read self.conversation_id directly (resolve()
+        # and dispatch() both take it; the web-content repeat guard keys on it).
+        # The real __init__ sets `conversation_id or session_id`; sibling DER
+        # fixtures use "test-conv".
+        self.conversation_id = "test-conv"
 
     @property
     def _tool_bridge(self):
@@ -37,7 +55,8 @@ class _FakeKernel(AgentKernel):
 def test_der_exec_steps_concurrent_runs_all():
     fake = _FakeKernel()
 
-    async def _fake_exec(tool_name=None, params=None, session_id=None, plan_title=None):
+    async def _fake_exec(tool_name=None, params=None, session_id=None, plan_title=None,
+                         decision_meta=None, _skip_resilience=False):
         await asyncio.sleep(0.02)
         return f"result-for-{tool_name}"
 
@@ -62,8 +81,13 @@ def test_der_exec_steps_concurrent_runs_all():
 def test_der_run_step_execution_serial_tool():
     fake = _FakeKernel()
 
-    async def _fake_exec(tool_name=None, params=None, session_id=None, plan_title=None):
-        return f"serial-result-{tool_name}"
+    async def _fake_exec(tool_name=None, params=None, session_id=None, plan_title=None,
+                         decision_meta=None, _skip_resilience=False):
+        # Real execute_tool returns a Dict (tool_bridge.py:1398) and
+        # ToolDecisionBox.dispatch rejects a non-dict as "Unexpected tool
+        # result type". Return the production shape; the assertion below
+        # (the result reaches step_result) is unchanged.
+        return {"success": True, "result": f"serial-result-{tool_name}"}
 
     fake._bridge.execute_tool = _fake_exec
 
@@ -88,7 +112,8 @@ def test_der_run_step_execution_direct_fallback():
 def test_der_run_step_execution_tool_error_is_caught():
     fake = _FakeKernel()
 
-    async def _boom(tool_name=None, params=None, session_id=None, plan_title=None):
+    async def _boom(tool_name=None, params=None, session_id=None, plan_title=None,
+                    decision_meta=None, _skip_resilience=False):
         raise RuntimeError("tool exploded")
 
     fake._bridge.execute_tool = _boom
@@ -171,7 +196,8 @@ def test_der_run_step_execution_applies_formatting():
     """The exec helper must route raw tool output through _format_tool_result."""
     fake = _FakeKernel()
 
-    async def _fake_exec(tool_name=None, params=None, session_id=None, plan_title=None):
+    async def _fake_exec(tool_name=None, params=None, session_id=None, plan_title=None,
+                         decision_meta=None, _skip_resilience=False):
         return {"success": True, "result": "cleaned output"}
 
     fake._bridge.execute_tool = _fake_exec

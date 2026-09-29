@@ -83,9 +83,16 @@ def test_single_authority(monkeypatch):
     # conversational query. Confirm that override is gone.
     assert 'crawler_query' not in src.split("# Phase 1 (D1.4)")[0][-4000:], \
         "web-intent regex override must be deleted (D1.4)"
-    # The only runtime resolver entry point is explorer.propose.
-    assert "from backend.agent.explorer import propose" in src, \
-        "resolver must be wired via explorer.propose"
+    # The only runtime resolver entry point is ToolDecisionBox.resolve(),
+    # reached through the kernel's cached box. RE-POINTED 2026-09-26 (session
+    # 357): this used to pin `from backend.agent.explorer import propose`, which
+    # was STALE — propose() has NO production caller (`grep -rn "propose("
+    # backend/` finds it only in tests). The live resolver is the box, and it is
+    # ALSO engine-first: _engine_try() runs before _resolve_legacy().
+    assert "from backend.agent.tool_decision import ToolDecisionBox" in src, \
+        "the single resolver (ToolDecisionBox) must be imported by the kernel"
+    assert "_box.resolve(" in src, \
+        "the runtime resolver must be wired through ToolDecisionBox.resolve()"
 
 
 # ── Test 3: planner emits goals only (no tool field) ───────────────────────

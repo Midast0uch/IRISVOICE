@@ -470,6 +470,13 @@ class IRISGateway:
                 ProviderKind,
             )
             from pathlib import Path as _Path
+            # Session 365 FIX: `_agent_kernel_instances` is used below to fan the
+            # re-hydrated provider out to the PEER kernels, but it was never
+            # imported into this scope — the NameError was swallowed by the `try`
+            # wrapping this whole method, so the peer fan-out silently never
+            # happened. Imported locally, like the module's other call sites, to
+            # avoid a module-level circular import.
+            from .agent.agent_kernel import _agent_kernel_instances
 
             _cfg = _lc()
             # local_model_status/local_model_path live on cfg.inference (see
@@ -3898,19 +3905,23 @@ class IRISGateway:
             )
             if ds is None:
                 return None
+            # AC25.8: the threshold resolves by ACTIVE BACKEND IDENTITY; None
+            # = no entry for the active backend → fail-closed (shadow).
+            _thr = eng._cfg.threshold_for("narration")
             meta = {
                 "engine": eng.model_id or "decision-engine",
                 "consumer_id": "narration",
                 "chosen": ds.chosen,
                 "confidence": round(ds.confidence, 4),
                 "candidates": 2,
-                "threshold": eng._cfg.threshold_for("narration"),
+                "threshold": _thr,
                 "args_valid": None,
                 "retried": False,
                 "engine_latency_ms": ds.engine_latency_ms,
                 "route": "engine" if (
                     enforced
-                    and ds.confident(eng._cfg.threshold_for("narration"))
+                    and _thr is not None
+                    and ds.confident(_thr)
                 ) else "shadow",
                 "escalated": False,
             }
@@ -3932,8 +3943,8 @@ class IRISGateway:
                     recorder(meta, kind="narration", session_id="unknown")
                 except Exception:
                     pass
-            if not enforced or not ds.confident(eng._cfg.threshold_for("narration")):
-                return None  # shadow / unconfident → legacy gates
+            if not enforced or _thr is None or not ds.confident(_thr):
+                return None  # shadow / unconfident / fail-closed → legacy gates
             return ds.chosen == "speak"
         except Exception:
             return None
@@ -3971,10 +3982,25 @@ class IRISGateway:
 
         import threading as _thr
         _tts_call_id = id(_thr.current_thread())
+        # SAY WHAT A QUEUE IS (2026-09-27). A queue input is the STREAMING
+        # voice-turn path: sentences arrive in real time and are consumed at the
+        # `isinstance(input_source, queue.Queue)` branch below (~line 4253), so
+        # nothing is ever mis-spoken. But this log printed
+        # `str(input_source)[:80]`, which for a Queue renders as
+        #     text_preview='<queue.Queue object at 0x000002528FDAEB70>'
+        # That reads as if a Python object were about to be SPOKEN. It was
+        # reported as exactly that and cost a false defect hunt - and this log
+        # line is the project's primary behavioural instrument for "what did
+        # IRIS actually say", so a misleading preview here is worse than noise.
+        _preview = (
+            "<streaming queue: sentences arrive as produced>"
+            if isinstance(input_source, queue.Queue)
+            else str(input_source)[:80]
+        )
         _root_log.info(
             f"[TTS] _speak_response #{_tts_call_id}: "
             f"input_type={type(input_source).__name__}, "
-            f"session={session_id}, text_preview={str(input_source)[:80]!r}"
+            f"session={session_id}, text_preview={_preview!r}"
         )
 
         # Track active TTS session for barge-in handler
@@ -4364,7 +4390,16 @@ class IRISGateway:
                                                     if hasattr(self, "_voice_timing")
                                                     else None
                                                 )
-                                                _first_audio_now = _time2.monotonic()
+                                                # Session 365 FIX: `_time2` is
+                                                # imported only INSIDE the two
+                                                # nested broadcast functions, so
+                                                # it was unbound here in
+                                                # `_producer` — the TTS-latency
+                                                # measurement below never ran.
+                                                # `time` is module-level (and
+                                                # `_put_chunk` in this same
+                                                # function already uses it).
+                                                _first_audio_now = time.monotonic()
                                                 if _synth_start:
                                                     _tts_ms = (_first_audio_now - _synth_start) * 1000.0
                                                     self._logger.info(
@@ -4623,7 +4658,16 @@ class IRISGateway:
                             try:
                                 _asyncio2.run_coroutine_threadsafe(
                                     self._ws_manager.send_to_client(
-                                        client_id,
+                                        # Session 365 FIX: `client_id` was never
+                                        # bound in this scope (the function takes
+                                        # no params), so EVERY word raised
+                                        # NameError into the `except` below and no
+                                        # tts_word event ever fired on the native
+                                        # path — word highlighting was dead. This
+                                        # is the same expression the fallback
+                                        # path uses for the same event, in this
+                                        # same method.
+                                        _client_id or session_id,
                                         {
                                             "type": "tts_word",
                                             "payload": {
@@ -6932,31 +6976,41 @@ class IRISGateway:
 
             elif inference_mode == "api":
                 # Query the user-configured API base URL for available models.
+                #
+                # NO-KEY GUARD: with no api_key there is nothing to authenticate,
+                # so the probe is a GUARANTEED 401 against the default base URL
+                # (measured live: `GET https://api.openai.com/v1/models` -> 401;
+                # see `.iris-logs/live/today.txt`). It also costs a 5s timeout on
+                # every model refresh. Skip it and serve the provider catalog.
                 models_url = f"{api_base_url.rstrip('/')}/models"
-                headers = {}
                 if openai_api_key:
-                    headers["Authorization"] = f"Bearer {openai_api_key}"
-                try:
-                    async with httpx.AsyncClient(timeout=5.0, verify=get_ssl_context()) as http_client:
-                        r = await http_client.get(models_url, headers=headers)
-                        if r.status_code == 200:
-                            models_data = r.json().get("data", [])
-                            available_models = [
-                                {
-                                    "id": m["id"],
-                                    "name": m.get("id", m["id"]),
-                                    "source": "api",
-                                }
-                                for m in models_data
-                                if not _is_vision_only(m.get("id", ""))
-                            ]
-                            self._logger.info(
-                                f"[Session: {session_id}] Found {len(available_models)} model(s) "
-                                f"from {api_base_url}"
-                            )
-                except Exception as api_err:
-                    self._logger.warning(
-                        f"[Session: {session_id}] API models query failed ({api_base_url}): {api_err}"
+                    try:
+                        headers = {"Authorization": f"Bearer {openai_api_key}"}
+                        async with httpx.AsyncClient(timeout=5.0, verify=get_ssl_context()) as http_client:
+                            r = await http_client.get(models_url, headers=headers)
+                            if r.status_code == 200:
+                                models_data = r.json().get("data", [])
+                                available_models = [
+                                    {
+                                        "id": m["id"],
+                                        "name": m.get("id", m["id"]),
+                                        "source": "api",
+                                    }
+                                    for m in models_data
+                                    if not _is_vision_only(m.get("id", ""))
+                                ]
+                                self._logger.info(
+                                    f"[Session: {session_id}] Found {len(available_models)} model(s) "
+                                    f"from {api_base_url}"
+                                )
+                    except Exception as api_err:
+                        self._logger.warning(
+                            f"[Session: {session_id}] API models query failed ({api_base_url}): {api_err}"
+                        )
+                else:
+                    self._logger.info(
+                        f"[Session: {session_id}] No API key for {api_base_url} - "
+                        "skipping the models probe; using the provider catalog"
                     )
 
                 # Fallback list â€” provider-aware based on api_base_url

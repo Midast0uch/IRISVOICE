@@ -75,7 +75,7 @@ from backend.agent.consumer_bar import (  # noqa: E402
 
 # REQ-18 AC18.1: reuse the project's ONE calibration implementation rather than
 # writing a second one that could disagree with it.
-from scripts.calibrate_decision_threshold import _ece_brier  # noqa: E402
+from scripts.calibrate_decision_threshold import _auroc, _ece_brier  # noqa: E402
 
 
 def load_rows(
@@ -235,6 +235,14 @@ def measure(
             "precision": round(precision, 4),
             "ece": ece,
             "brier": brier,
+            # oracle-addendum 25.4: does CONFIDENCE RANK errors? Precision and
+            # ECE describe the operating point; AUROC describes whether the
+            # confidence signal is usable at all - which is what the JEV cascade
+            # depends on, since it accepts/escalates ON confidence. Reported, NOT
+            # gated: adding a clause to derive_status would change enforcement
+            # semantics, and that is the owner's call, not a side effect of
+            # adding a metric.
+            "auroc": _auroc(grp),
             "threshold": th,
             "shadow_rows": sum(1 for r in grp if r["shadow"]),
             "engines": sorted({r["engine"] for r in grp if r["engine"]}),
@@ -307,6 +315,12 @@ def _print_report(rep: Dict[str, Any]) -> None:
               f"shadow_rows={m['shadow_rows']}")
         print(f"  threshold={m['threshold']} precision={m['precision']} "
               f"ece={m['ece']} brier={m['brier']}")
+        # oracle-addendum 25.4: AUROC belongs on the report line. A consumer can
+        # show healthy precision@threshold while its confidence ranks nothing -
+        # and the cascade's accept/escalate split is built entirely on that
+        # ranking. Reported, never gated here.
+        print(f"  auroc={m.get('auroc')}  (error-detection; None = one class "
+              f"only / no confidences)")
         print(f"  engines={m['engines']}")
         print(f"  status={m['status']}"
               + (f"  gap: {m['gap']}" if m["gap"] else "  (flip allowed)"))

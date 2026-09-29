@@ -11,6 +11,10 @@ Anchored to a PiN recording the enforced contract (see test below).
 from __future__ import annotations
 
 import asyncio
+# Session 365 FIX: `_process_alive` calls os.kill on its POSIX branch, but `os`
+# was never imported — the Windows path returns before reaching it, so this only
+# broke on Linux/macOS (or wherever the suite runs on CI).
+import os
 import sys
 from pathlib import Path
 

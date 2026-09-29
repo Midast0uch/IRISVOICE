@@ -59,7 +59,11 @@ _DEFAULT_MIN_PAGES = int(os.environ.get("CRAWL_MIN_PAGES", "3"))
 # D3 fix (T36 live smoke, 2026-08-09): kept in lockstep with crawl_runner.py's
 # _DEFAULT_TIMEOUT_S (same env var, same fallback) — see that module for the
 # cold-vs-warm browser-launch measurement behind the 45s->90s change.
-_DEFAULT_TIMEOUT_S = float(os.environ.get("CRAWL_SUBPROCESS_TIMEOUT_S", "90"))
+# Session 365 — the per-run subprocess bound, sized to fit INSIDE the 25 s run
+# ceiling above (it was 90 s, i.e. it could never be the thing that stopped a
+# run: the outer bound always won, and the failure surfaced as a bare
+# TimeoutError rather than an honest per-run limit).
+_DEFAULT_TIMEOUT_S = float(os.environ.get("CRAWL_SUBPROCESS_TIMEOUT_S", "25"))
 # REQ-10 AC1: max distinct URLs fetched concurrently by dispatch_urls().
 _DEFAULT_CONCURRENCY = int(os.environ.get("CRAWL_CONCURRENCY", "3"))
 
@@ -81,7 +85,14 @@ _DEFAULT_CONCURRENCY = int(os.environ.get("CRAWL_CONCURRENCY", "3"))
 # and spammed REQ-13 question cards for pseudo-walls. 150s still bounds the
 # worst case (a hung page cannot eat more than its share) while letting real
 # pages finish.
-_RUN_BUDGET_MS = int(os.environ.get("IRIS_WEBSEARCH_MAX_WALL_MS", "150000"))
+# Session 365 — THE RUN CEILING IS A CEILING, NOT A TARGET. This was 150000 ms
+# (2.5 min) and a failing crawl SPENT it: measured 254 s wall for a
+# crawler_query that then crashed with a bare TimeoutError, and 157 s before
+# that. The owner's requirement is explicit: a web step must finish well inside
+# 30 s or fail fast, because the user is waiting on a spoken answer. The budget
+# bounds the whole run, so it must be the OUTER bound — the per-source and
+# per-page limits below are sized to fit inside it, never the other way round.
+_RUN_BUDGET_MS = int(os.environ.get("IRIS_WEBSEARCH_MAX_WALL_MS", "25000"))
 
 # Problem-1 fix (REQ-10 escalation tier, REQ-6 AC1 edge): fresh-failure
 # reasons where an interactive vision session plausibly recovers content

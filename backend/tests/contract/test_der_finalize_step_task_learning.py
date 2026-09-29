@@ -42,7 +42,6 @@ def _base_kernel():
     # inert so this test isolates the REQ-8 emit path.
     kernel._memory_interface = None
     kernel._mcm_orch = None
-    kernel._trailing_director = None
     kernel._der_last_u_mag = 0.0
     return kernel
 

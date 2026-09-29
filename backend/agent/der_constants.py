@@ -198,7 +198,6 @@ DER_MAX_GRAFTS        = 3     # max LLM recovery-plan grafts after critical fail
 DER_MAX_CONCURRENT_STEPS = 3  # max in-flight LLM calls per DER fan-out (semaphore)
 DER_MAX_CYCLES        = 40    # hard cycle cap (secondary to token budget)
 DER_WRITE_LOCK_TIMEOUT = 5.0  # seconds — Mycelium write lock timeout
-TRAILING_GAP_MIN       = 2     # TrailingDirector gap-analysis cadence (steps)
 
 # REQ-1 AC3: an UNVERIFIED step may accrue edge-score partial credit for at
 # most one re-propose — i.e. 2 scored attempts total (the original commit plus
@@ -377,9 +376,11 @@ def is_shallow_verified(
 ) -> bool:
     """REQ-5 AC1: True when a VERIFIED step's measured depth — sub-step count
     (``depth_layer``) and token investment (``result_tokens``) — is below the
-    expected depth for its task class, so the caller should still run
-    ``TrailingDirector.analyze_gaps`` even though the step passed verification
-    (REQ-5 AC2: same gap-item queue path as a failure-triggered gap).
+    expected depth for its task class, so a caller MAY still want gap analysis
+    even though the step passed verification. NOTE (session 364): the
+    TrailingDirector that consumed this was DELETED, so no live caller remains -
+    this predicate is currently unused at runtime and is kept only as a pure,
+    tested helper (backend/tests/unit/test_depth_threshold.py).
 
     Returns False (never flags) for task classes documented as
     intentionally shallow (REQ-5 AC3) — see ``DEPTH_EXCLUDED_TASK_CLASSES``.

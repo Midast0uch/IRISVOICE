@@ -641,6 +641,102 @@ Add one only when **all four** hold:
 every occurrence, and one that never reaches the bar spends it forever.
 `tier0_classify` is the recorded **non-fit** for exactly this reason (§9).
 
+## 17.3 The Oracle's jobs and their routing (added session 365)
+
+Read this before changing any routing. It is the map of **every place the Oracle is
+asked a question**, what shape the question takes, and where the row goes. Tuning a
+route means changing one of these lines — not the engine.
+
+```
+                              THE ORACLE (GLiNER2.5-Decide, ONNX int8)
+                     one job: score a caller-supplied option set / statement.
+                     It NEVER writes prose and NEVER acts. ~137-560 ms per score.
+                                          |
+   ======================== ROUTING: WHO ASKS, AND WHAT THEY GET ========================
+                                          |
+  CHOICE shape (a menu)                   |  BOOL shape (a Noul: P(statement))
+  `eng.decide(cid, options, frame)`       |  `surface_bool(cid, stmt, ...)` / `eng.noul(...)`
+  reference = `brain_choice` (NAME vs NAME)|  reference = `brain_bool` (BOOL vs BOOL)
+  -> tool_bridge._DECISION_META_KEYS       |  -> same whitelist (or the row is dropped)
+                                          |
+  ----------------------------------------|--------------------------------------------
+  tool_choice        | ToolDecisionBox    |  sufficient    | _der_findings_sufficient
+   (the gate)        |  .resolve()        |   (loop)       |  called at the GRAFT decision
+                     |  menu = registry   |                |  (agent_kernel, _DER_GATHER_TOOLS)
+  mode               |  ModeDetector      |  done          | monitor consult in
+  web_intent         |  explorer          |                |  _der_plan_next_step
+  presentation       |  reply surface     |  on_track      | same consult
+  narration          |  NO LIVE SITE      |  has_gaps      | NO LIVE SITE (producer deleted
+                     |                    |                |  2026-08-06; kept for parity)
+  review_verdict     |  Reviewer          |  use_thinking  | _needs_thinking (needs a
+  recovery_strategy  |  ToolDecisionBox   |                |  THINKING_TRIGGERS phrase)
+   (retry_same rides |  .recovery_strategy|  escalate_     | incomplete-result keywords
+    it as a FIELD)   |                    |  incomplete    |
+                     |                    |  needs_action  | _goal_needs_action (a NONE
+  depth_route        |  ToolDecisionBox   |                |  decision, tool_decision:1140)
+   (session 365)     |  .depth_route      |  depth_met     | run-grade chokepoint
+   menu = the loop's |  called from the   |   (session 364)|  (agent_kernel, right after
+   real continuations|  CONTINUATION      |                |  "[DER] run grade:")
+                     |  decision          |                |
+  ----------------------------------------|--------------------------------------------
+                                          |
+   ============================ WHERE THE ROWS LAND (one path) ============================
+   emit_row / _record_shadow_row
+        -> AgentKernel._shadow_row_sink
+        -> bridge.record_decision(meta, 'shadow', session_id=...)
+        -> tool_bridge._ingest  ->  ffi_ingest_event  ->  IrisCoreEngine.ingest_event
+        -> PREFERS the PYTHON writer; the NATIVE writer BLOCKS (measured 889 s/row)
+        -> system_events.interaction_payload.decision  ->  scripts/consumer_enforcement_report.py
+        -> consumer_bar.derive_status  (rows>=100 AND precision>=0.90 AND ECE<=0.05)
+        -> enforced_consumers()  (bar record, or IRIS_DECISION_ENFORCE=<csv>)
+                                          |
+   ============================== THE JEV CASCADE (the shape of every gate) ==============
+   Noul.confident(tau) is TWO-SIDED (p >= tau or p <= 1-tau):
+        confident  -> the engine's verdict is ACCEPTED
+        unsure     -> ESCALATED to the stronger judge (the Brain)
+   So an uncalibrated consumer is SAFE: it only ever acts on cases it is sure about.
+   NEVER hand-roll `noul.true(0.5)` - that discards the escalation band.
+   CHECK AUROC BEFORE ENFORCING: `tool_choice` showed precision 1.0 with AUROC 0.5385
+   (chance) - a perfect precision at the threshold while the confidence ranks errors
+   at chance, which leaves the cascade with NO band to route on.
+```
+
+### 17.3.1 Measured consumer status (session 365, after the ledger was repaired)
+
+| consumer | rows | shape | note |
+|---|---|---|---|
+| `tool_choice` | 568 | CHOICE | MET; the only consumer enforced by default |
+| `mode` | 280 | CHOICE | MET; AUROC 0.7873 (the only usable ranking) |
+| `web_intent` | 233 | CHOICE | MET |
+| `presentation` | 232 | CHOICE | MET |
+| `review_verdict` | 228 | CHOICE | MET |
+| `narration` | 108 | CHOICE | MET; fires per step |
+| `escalate_incomplete` | 73 | BOOL | 27 to go |
+| `recovery_strategy` | 46 | CHOICE | 54 to go; `retry_same` is a FIELD of it, not a row |
+| `on_track` | 16 | BOOL | AUROC 0.0 (INVERTED) - investigate before trusting |
+| `depth_met` | 3 | BOOL | session 364; AUROC None (n=2) - do NOT enforce yet |
+| `depth_route` | 0 | CHOICE | session 365; **site never fires** - see §17.3.2 |
+| `sufficient` | 1 | BOOL | **first row ever** this session, after the gate became reachable |
+| `done`, `retry_same`, `has_gaps`, `use_thinking`, `needs_action` | 0 | - | see the gate table above for each one's trigger |
+
+### 17.3.2 The two things to fix before tuning any route
+
+1. **`depth_route`'s site is too narrow.** It is wired at the four returns of
+   `_der_plan_next_step`'s `done` branch, but that branch requires the monitor consult to
+   return `done is True` — and the `done` consumer has **0 rows**, so it essentially never
+   fires. Fix: score at the **monitor consult itself** (before the `if data.get("done") is
+   True:` check) and add `next_step` to the menu for the not-done path. Then the reference
+   still varies with state AND the site fires on every consult.
+2. **A local goal can still reach the web.** The session-365 veto
+   (`_is_local_workspace_goal` → `_WEB_GATHER_TOOLS` added to `_vetoed`) lives in
+   `ToolDecisionBox.resolve()`, but a measured turn chose the tool via a different route
+   (`[TOOL_DECISION] kind=TOOL source=memory`). Apply the veto where the **candidate menu**
+   is built so every route inherits it.
+
+**Cost warning before adding anything:** a shadow consumer spends one scoring call on every
+occurrence, and one that never reaches the bar spends it forever (§17.2). `tier0_classify`
+is the recorded non-fit for exactly this reason.
+
 ## 18. Superseded material
 
 **Superseded material.** The previous revision of this document described the

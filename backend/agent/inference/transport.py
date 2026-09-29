@@ -100,6 +100,7 @@ def _sleep_on_429(
     attempt: int,
     response_headers: Any,
     provider_id: str = "unknown",
+    budget_check: Optional[Callable[[], None]] = None,
 ) -> None:
     """Sleep before retrying a 429, per REQ-1 / REQ-2.
 
@@ -112,11 +113,20 @@ def _sleep_on_429(
 
     ``attempt`` is the 0-indexed loop counter from ``for attempt in range(3)``,
     so ``attempt >= 2`` means this was the last attempt.
+
+    ``budget_check`` (wedge fix, session 363 / pin_35af67d07c5f) is called
+    BEFORE the sleep. A server-supplied ``Retry-After`` is an UNBOUNDED
+    delay — a server under load can say "retry after 3600" and this sleep
+    would honor it for an hour while the DER turn's 600 s budget never fires
+    (the budget is only evaluated at the loop condition, between cycles).
+    The check raises on exhaustion, which unwinds the ladder immediately.
     """
     import random
 
     if attempt >= 2:
         return  # final attempt — do not sleep before failing (REQ-1 AC4)
+    if budget_check is not None:
+        budget_check()
     _retry_after = parse_retry_after(
         getattr(response_headers, "get", lambda _: None)("Retry-After")
         if response_headers is not None
@@ -321,6 +331,7 @@ class Transport(Protocol):
         reasoning_callback: Optional[Callable[[str], None]] = None,
         timeout_s: Optional[float] = None,
         num_ctx: Optional[int] = None,
+        budget_check: Optional[Callable[[], None]] = None,
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         """Run inference and return ``(text, thinking, tool_calls)``.
 
@@ -543,6 +554,7 @@ class ApiHttpxTransport:
         reasoning_callback: Optional[Callable[[str], None]] = None,
         timeout_s: Optional[float] = None,
         num_ctx: Optional[int] = None,
+        budget_check: Optional[Callable[[], None]] = None,
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         import httpx as _httpx
         from backend.utils.ssl_context import get_ssl_context
@@ -616,10 +628,17 @@ class ApiHttpxTransport:
                 chunk_callback,
                 reasoning_callback,
                 timeout_s=timeout_s,
+                budget_check=budget_check,
             )
         else:
             _text, _think, _tools = self._nonstream(
-                url, headers, body, model, messages, timeout_s=timeout_s
+                url,
+                headers,
+                body,
+                model,
+                messages,
+                timeout_s=timeout_s,
+                budget_check=budget_check,
             )
         self._record_success(_text, self.last_usage)
         return _text, _think, _tools
@@ -636,6 +655,7 @@ class ApiHttpxTransport:
         chunk_callback: Callable[[str], None],
         reasoning_callback: Optional[Callable[[str], None]] = None,
         timeout_s: Optional[float] = None,
+        budget_check: Optional[Callable[[], None]] = None,
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         import httpx as _httpx
         from backend.utils.ssl_context import get_ssl_context
@@ -649,6 +669,8 @@ class ApiHttpxTransport:
 
         for attempt in range(3):
             _record_attempt(self)
+            if budget_check is not None:
+                budget_check()  # wedge fix: raises if the turn budget expired
             _stream_ok = False
             try:
                 with _httpx.Client(
@@ -679,6 +701,7 @@ class ApiHttpxTransport:
                                 attempt,
                                 _resp.headers,
                                 getattr(self, "_provider_id", "unknown"),
+                                budget_check,
                             )
                             get_rate_meter().observe_429(
                                 self._quota_id, _retry_after
@@ -702,6 +725,11 @@ class ApiHttpxTransport:
                             )
 
                         for _line in _resp.iter_lines():
+                            if budget_check is not None:
+                                # wedge fix: the read timeout is PER-READ, so a
+                                # stream that drips one chunk every 50 s never
+                                # times out and the turn budget never fires.
+                                budget_check()
                             if not _line or not _line.startswith("data:"):
                                 continue
                             _data = _line[5:].strip()
@@ -791,6 +819,7 @@ class ApiHttpxTransport:
         model: str,
         messages: List[Dict[str, Any]],
         timeout_s: Optional[float] = None,
+        budget_check: Optional[Callable[[], None]] = None,
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         import httpx as _httpx
         from backend.utils.ssl_context import get_ssl_context
@@ -800,6 +829,8 @@ class ApiHttpxTransport:
         _rate_limited = False
         for attempt in range(3):
             _record_attempt(self)
+            if budget_check is not None:
+                budget_check()  # wedge fix: raises if the turn budget expired
             try:
                 with _httpx.Client(
                     timeout=_httpx.Timeout(timeout_s or 60.0), verify=get_ssl_context()
@@ -819,6 +850,7 @@ class ApiHttpxTransport:
                             attempt,
                             _resp.headers,
                             getattr(self, "_provider_id", "unknown"),
+                            budget_check,
                         )
                         get_rate_meter().observe_429(
                             self._quota_id, _retry_after
@@ -953,6 +985,7 @@ class OpenAICompatTransport:
         reasoning_callback: Optional[Callable[[str], None]] = None,
         timeout_s: Optional[float] = None,
         num_ctx: Optional[int] = None,
+        budget_check: Optional[Callable[[], None]] = None,
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         import httpx as _httpx
         from backend.utils.ssl_context import get_ssl_context
@@ -993,10 +1026,11 @@ class OpenAICompatTransport:
                 chunk_callback,
                 reasoning_callback,
                 timeout_s=timeout_s,
+                budget_check=budget_check,
             )
         else:
             _text, _think, _tools = self._nonstream(
-                _url, _url_v1, _body, timeout_s=timeout_s
+                _url, _url_v1, _body, timeout_s=timeout_s, budget_check=budget_check
             )
         self._record_success(_text, self.last_usage)
         return _text, _think, _tools
@@ -1011,6 +1045,7 @@ class OpenAICompatTransport:
         chunk_callback: Callable[[str], None],
         reasoning_callback: Optional[Callable[[str], None]] = None,
         timeout_s: Optional[float] = None,
+        budget_check: Optional[Callable[[], None]] = None,
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         import httpx as _httpx
         from backend.utils.ssl_context import get_ssl_context
@@ -1024,6 +1059,8 @@ class OpenAICompatTransport:
 
         for attempt in range(3):
             _record_attempt(self)
+            if budget_check is not None:
+                budget_check()  # wedge fix: raises if the turn budget expired
             _stream_ok = False
             try:
                 with _httpx.Client(
@@ -1045,7 +1082,7 @@ class OpenAICompatTransport:
                             continue
                     else:
                         raise RuntimeError(
-                            f"Could not connect to LM Studio at "
+                            f"Could not connect to "
                             f"{self._endpoint}"
                         )
 
@@ -1068,6 +1105,7 @@ class OpenAICompatTransport:
                                 attempt,
                                 _stream.headers,
                                 getattr(self, "_provider_id", "unknown"),
+                                budget_check,
                             )
                             get_rate_meter().observe_429(
                                 self._quota_id, _retry_after
@@ -1087,11 +1125,16 @@ class OpenAICompatTransport:
                             except Exception:
                                 _err_detail = "(could not read error body)"
                             raise RuntimeError(
-                                f"LM Studio returned "
+                                f"{self._endpoint} returned "
                                 f"{_stream.status_code}: "
                                 f"{_err_detail}"
                             )
                         for _line in _stream.iter_lines():
+                            if budget_check is not None:
+                                # wedge fix: the read timeout is PER-READ, so a
+                                # stream that drips one chunk every 50 s never
+                                # times out and the turn budget never fires.
+                                budget_check()
                             if not _line or not _line.startswith("data:"):
                                 continue
                             _data = _line[5:].strip()
@@ -1170,6 +1213,7 @@ class OpenAICompatTransport:
         url_v1: str,
         body: Dict[str, Any],
         timeout_s: Optional[float] = None,
+        budget_check: Optional[Callable[[], None]] = None,
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         # `timeout_s` was USED below (the client is built with
         # `timeout_s or 60.0`) but was missing from this signature, so
@@ -1188,6 +1232,8 @@ class OpenAICompatTransport:
         _rate_limited = False
         for attempt in range(3):
             _record_attempt(self)
+            if budget_check is not None:
+                budget_check()  # wedge fix: raises if the turn budget expired
             try:
                 with _httpx.Client(
                     timeout=_httpx.Timeout(timeout_s or 60.0), verify=get_ssl_context()
@@ -1215,6 +1261,7 @@ class OpenAICompatTransport:
                                     attempt,
                                     _resp.headers,
                                     getattr(self, "_provider_id", "unknown"),
+                                    budget_check,
                                 )
                                 get_rate_meter().observe_429(
                                     self._quota_id, _retry_after
@@ -1226,7 +1273,7 @@ class OpenAICompatTransport:
                             continue
                     else:
                         raise RuntimeError(
-                            f"Could not connect to LM Studio at "
+                            f"Could not connect to "
                             f"{self._endpoint}"
                         )
 
@@ -1237,7 +1284,7 @@ class OpenAICompatTransport:
                     _observe_advertised_limit(self, _resp.headers)
                     if _resp.status_code != 200:
                         raise RuntimeError(
-                            f"LM Studio returned "
+                            f"{self._endpoint} returned "
                             f"{_resp.status_code}: "
                             f"{_resp.text[:200]}"
                         )
@@ -1258,7 +1305,9 @@ class OpenAICompatTransport:
                 raise RateLimitedError(
                     getattr(self, "_provider_id", "unknown"), 3
                 )
-            raise RuntimeError("LM Studio request failed after retries")
+            raise RuntimeError(
+                f"Request to {self._endpoint} failed after retries"
+            )
 
         # D1: real usage (when the local server reports it).
         self.last_usage = _extract_usage(result)
@@ -1269,7 +1318,15 @@ class OpenAICompatTransport:
         _tool_calls = _msg.get("tool_calls") or []
 
         if not _reply and not _tool_calls:
-            raise RuntimeError("Empty response from LM Studio")
+            # NAME THE REAL PROVIDER (2026-09-27). This transport is generic — it
+            # serves llama-server (127.0.0.1:8082), llamafile, vLLM and LM Studio
+            # alike — but the message hardcoded "LM Studio". A live failure on the
+            # LOCAL 8082 model was therefore reported as an LM Studio problem and
+            # sent the investigation to port 1234, where nothing runs:
+            #   "[WARNING] LM Studio not reachable at http://localhost:1234"
+            # A wrong provider name in an error is worse than no name: it points
+            # at the one place the fault is NOT.
+            raise RuntimeError(f"Empty response from {self._endpoint}")
 
         thinking, clean = parse_thinking(_reply)
         return clean or "(I see.)", thinking, _tool_calls
@@ -1313,9 +1370,13 @@ class InProcessTransport:
         reasoning_callback: Optional[Callable[[str], None]] = None,
         timeout_s: Optional[float] = None,
         num_ctx: Optional[int] = None,
+        budget_check: Optional[Callable[[], None]] = None,
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
+        if budget_check is not None:
+            budget_check()  # wedge fix: choke point at the call entry
+
         # num_ctx accepted and IGNORED (2026-09-27): an in-process local GGUF
-        # has its window fixed at LOAD time (`n_ctx`, now VRAM-derived for tool
+        # has its window fixed at LOAD time (`n_ctx`, fixed by the profile
         # duty) and llama.cpp cannot change it per request. Changing it means
         # reloading the model, which the loader already does.
         # Lazy import to avoid circular dependency at module level
@@ -1437,8 +1498,12 @@ class OllamaTransport:
         reasoning_callback: Optional[Callable[[str], None]] = None,
         timeout_s: Optional[float] = None,
         num_ctx: Optional[int] = None,
+        budget_check: Optional[Callable[[], None]] = None,
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         import httpx as _httpx
+
+        if budget_check is not None:
+            budget_check()  # wedge fix: choke point at the call entry
 
         # D1: reset per-call (see ApiHttpxTransport.generate for rationale).
         self.last_usage = None

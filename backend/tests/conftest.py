@@ -244,3 +244,32 @@ def approval_ui_attached(monkeypatch):
 
     monkeypatch.setattr(_tb, "_approval_ui_attached", lambda _sid: True)
     yield
+
+
+# ── Real ONNX decision backend (specs/tool-decision-engine REQ-30) ──────────
+#
+# The Wave 10 tasks (T38–T42) tune the REAL runner: session options, the label
+# structure cache, and the encode/session-run counts only exist on a live
+# onnxruntime session. These fixtures load it once per session and skip cleanly
+# when the model directory is absent, so the suites stay runnable on a machine
+# without the 642 MB export (the engine's own contract is "degrade, never
+# raise" — a skipped tuning test is honest, a fabricated one is not).
+@_pytest.fixture(scope="session")
+def onnx_backend():
+    """A loaded `GlinerOnnx`, or skip when the model is unavailable."""
+    from backend.agent.decision_backend_onnx import GlinerOnnx
+
+    backend = GlinerOnnx()
+    if not backend.load():
+        _pytest.skip("ONNX decision model unavailable — tuning tests skipped")
+    yield backend
+    try:
+        backend.shutdown()
+    except Exception:  # noqa: BLE001 — teardown is best-effort
+        pass
+
+
+@_pytest.fixture(scope="session")
+def onnx_runner(onnx_backend):
+    """The live `_OnnxRunner` behind the loaded backend."""
+    return onnx_backend._runner

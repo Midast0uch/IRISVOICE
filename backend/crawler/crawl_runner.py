@@ -52,7 +52,11 @@ _REPO_ROOT = os.path.dirname(
 # amortized, and 45s left too little margin over it once page-fetch time is
 # added. Raised to give headroom for a cold launch (~25s conservative ceiling)
 # + up to 5 page fetches at the 10s per-page ceiling (_TIMEOUT_MS) + delays.
-_DEFAULT_TIMEOUT_S = float(os.environ.get("CRAWL_SUBPROCESS_TIMEOUT_S", "90"))
+# Session 365: 90 s -> 25 s so this bound sits INSIDE the orchestrator's run
+# ceiling (IRIS_WEBSEARCH_MAX_WALL_MS, 25 s). At 90 s it could never stop a run;
+# the outer bound always won and the failure surfaced as a bare TimeoutError
+# with no stage named.
+_DEFAULT_TIMEOUT_S = float(os.environ.get("CRAWL_SUBPROCESS_TIMEOUT_S", "25"))
 
 # D3 root cause: asyncio.create_subprocess_exec()'s StreamReader defaults to a
 # 64 KiB (65536-byte) line-length limit (asyncio default `limit=`). The worker
@@ -129,7 +133,13 @@ else:
 # machinery is retained behind IRIS_CRAWL_POOL=1 for explicit opt-in / tests.
 _POOL_SIZE = int(os.environ.get("IRIS_CRAWL_POOL", "0"))
 _POOL_IDLE_S = float(os.environ.get("IRIS_CRAWL_POOL_IDLE_S", "900"))
-_POOL_BOOT_TIMEOUT_S = float(os.environ.get("IRIS_CRAWL_POOL_BOOT_S", "120"))
+# Session 365: 120 s -> 15 s. This is the browser-pool BOOT wait, and it is the
+# one bound that could silently eat the whole run ceiling by itself: at 120 s
+# (and with a 30 s floor inside `effective_boot`) a cold pool could never finish
+# a run inside IRIS_WEBSEARCH_MAX_WALL_MS. It is a ONE-TIME cost — the pool
+# persists and later jobs skip it — so capping it is cheap, and a boot that
+# cannot make 15 s is a boot worth failing loudly rather than waiting out.
+_POOL_BOOT_TIMEOUT_S = float(os.environ.get("IRIS_CRAWL_POOL_BOOT_S", "15"))
 
 
 class _JobState:

@@ -1,16 +1,17 @@
 """Live-scale calibration generator for the decision engine.
 
-Drives the real engine (LFM2-350M-Extract, in-process, production path) over the
-labeled fixture scripts/fixtures/decision_engine_cases.json and records every
-decision to the live ledger (system_events) with final_choice/engine_correct
-resolved from the fixture's expect label. This produces the N>=50 calibrated
-sample that scripts/calibrate_decision_threshold.py needs — real model calls,
-real confidence, real latency, honest ground truth — in O(minutes), not hours
-of brain-bound chat turns.
+Drives the real engine (GLiNER2.5-Decide ONNX — REQ-21/D12 replaced
+LFM2-350M-Extract; flat single-pass scoring is the only path, REQ-22 AC22.3)
+in-process over the labeled fixture scripts/fixtures/decision_engine_cases.json
+and records every decision to the live ledger (system_events) with
+final_choice/engine_correct resolved from the fixture's expect label. This
+produces the N>=50 calibrated sample that scripts/calibrate_decision_threshold.py
+needs — real model calls, real confidence, real latency, honest ground truth —
+in O(minutes), not hours of brain-bound chat turns.
 
-Non-destructive: rows are marked with consumer="tool_choice",
-engine="LFM2-350M-Extract (fixture, live model, offline chain)" flag so they can
-be filtered from production traffic in the reliability report.
+Non-destructive: rows are marked with consumer="tool_choice" and the live
+backend identity so they can be filtered from production traffic in the
+reliability report.
 """
 from __future__ import annotations
 
@@ -39,9 +40,12 @@ OFFLINE_MENU = [
 
 
 def main() -> int:
-    from backend.agent.decision_engine import DecisionEngine, EngineConfig
+    from backend.agent.decision_engine import (
+        DecisionEngine,
+        load_engine_config,
+    )
 
-    cfg = EngineConfig()  # production defaults; tau=0.5, threshold=0.85
+    cfg = load_engine_config()  # REQ-25: the decision_driver block is LIVE
     eng = DecisionEngine(cfg)
     with open(FIXTURE, encoding="utf-8") as f:
         cases = json.load(f)["cases"]
@@ -103,32 +107,21 @@ def main() -> int:
             "previous_outcome": None,
             "step_index": 0,
         }
-        # REQ-17: hierarchy path — group the menu's extras by registry category
-        # (the information the live box gets from get_available_tools), then two
-        # stage decision: lane, then leaf.
-        lanes: dict[str, list] = {}
-        CATEGORY = {
-            "read_file": "file", "list_directory": "file",
-            "recall_memory": "memory", "get_rendered_documents": "memory",
-            "list_conversations": "memory", "combine_documents": "memory",
-            "get_system_info": "system", "speak": "system",
-            "ask_user_question": "system", "improve_self": "system",
-            "create_skill": "system", "vision_analyze_screen": "vision",
-            "vision_detect_element": "vision", "vision_validate_action": "vision",
-            "vision_get_context": "vision", "transcribe_media": "media",
-            "analyze_video_frames": "media", "clip_video": "media",
-            "DELEGATE": "DELEGATE", "NONE": "NONE",
-        }
-        for nm in menu_set:
-            lanes.setdefault(CATEGORY.get(nm, "misc"), []).append(nm)
+        # REQ-22 AC22.3: flat single-pass scoring is the ONLY path — the
+        # hierarchical two-stage tree is retired (measured 26.7 accuracy
+        # points and 4.6x latency worse than flat). The menu arrives already
+        # capped at 6 with both control labels included (AC21.8 shape).
         t0 = time.perf_counter()
-        ds = eng.decide_tree("tool_choice", lanes, frame)
+        ds = eng.decide("tool_choice", menu_set, frame)
         lat_ms = int((time.perf_counter() - t0) * 1000)
         if ds is None:
             continue
         chosen, conf = ds.chosen, round(ds.confidence, 4)
         correct = chosen == case["expect"]
-        route = "engine" if conf >= cfg.default_threshold else "escalated"
+        # AC25.8: the threshold resolves by ACTIVE BACKEND IDENTITY; no entry
+        # for the active backend = fail-closed (everything escalates).
+        thr = cfg.threshold_for("tool_choice")
+        route = "engine" if (thr is not None and conf >= thr) else "escalated"
         rows.append({
             "id": case["id"], "chosen": chosen, "expect": case["expect"],
             "conf": conf, "correct": correct, "route": route,
@@ -156,7 +149,7 @@ def main() -> int:
         n_conf += 1 if r["conf"] is not None else 0
         n_correct += 1 if (r["chosen"] == r["expect"]) else 0
         compiled.append({
-            "engine": "LFM2-350M-Extract",
+            "engine": eng.model_id or "decision-engine",
             "consumer_id": "tool_choice",
             "chosen": r["chosen"],
             "confidence": r["conf"],
@@ -213,8 +206,10 @@ def main() -> int:
     engine_rows = [r for r in rows if r["route"] == "engine"]
     if engine_rows:
         acc_enforce = sum(1 for r in engine_rows if r["correct"]) / len(engine_rows)
+    thr = cfg.threshold_for("tool_choice")
+    thr_s = f"{thr:.2f}" if thr is not None else "none (fail-closed)"
     print(f"\nwrote {event_rows} calibration rows to ledger (session={SESSION})")
-    print(f"coverage at t=0.85: {cov:.0%}; accuracy all: {acc:.1%}; "
+    print(f"coverage at t={thr_s}: {cov:.0%}; accuracy all: {acc:.1%}; "
           f"accuracy above-threshold: {acc_enforce:.1%}")
     return 0
 

@@ -1,7 +1,9 @@
 """
 RouteDecision, ColdStartStrategy, and the PIVOT helper.
 
-TrailingDirector.check_route_viability() returns one of:
+The route-viability decision returns one of (this used to be surfaced through
+the TrailingDirector, which was deleted in session 364 — the enum and the PIVOT
+helper below remain the contract):
   RouteDecision.CONTINUE   — stay on committed route, nothing to do
   PIVOT(route, anchor)     — replace queue from anchor, swap committed route
 

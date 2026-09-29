@@ -1,0 +1,27 @@
+{
+  "_meta": [
+    "REQ-9 AC9.2 (T12): the two WEB intent classes the engine must separate.",
+    "instant_lookup -> 'search' (one fast provider call); research -> 'crawler_query' (deep multi-page crawl).",
+    "Kept OUT of decision_engine_cases.json on purpose: that battery's _meta excludes internet-gated tools from its offline menu, and mixing the classes in would change its candidate sets (and therefore the BT-DEI-13 baseline).",
+    "Every case carries an explicit 'menu' so the two web tools are present and the rest of the menu is held constant across BOTH classes — the only thing that varies is intent, which is exactly what is being measured.",
+    "Run: python scripts/bench_decision_models.py --cases scripts/fixtures/decision_engine_web_intent_cases.json"
+  ],
+  "cases": [
+    {"id": "w01", "goal": "what is the current price of the rtx 5090", "expect": "search",
+     "menu": ["search", "crawler_query", "recall_memory", "speak", "DELEGATE", "NONE"]},
+    {"id": "w02", "goal": "who won the game last night", "expect": "search",
+     "menu": ["search", "crawler_query", "recall_memory", "speak", "DELEGATE", "NONE"]},
+    {"id": "w03", "goal": "what is the weather in tokyo right now", "expect": "search",
+     "menu": ["search", "crawler_query", "recall_memory", "speak", "DELEGATE", "NONE"]},
+    {"id": "w04", "goal": "what time does the train leave this evening", "expect": "search",
+     "menu": ["search", "crawler_query", "recall_memory", "speak", "DELEGATE", "NONE"]},
+    {"id": "w05", "goal": "research everything about the ai hardware market and gather sources", "expect": "crawler_query",
+     "menu": ["search", "crawler_query", "recall_memory", "speak", "DELEGATE", "NONE"]},
+    {"id": "w06", "goal": "do a deep dive across many pages on the state of solid state batteries", "expect": "crawler_query",
+     "menu": ["search", "crawler_query", "recall_memory", "speak", "DELEGATE", "NONE"]},
+    {"id": "w07", "goal": "crawl the web for the latest zig release notes and compare them", "expect": "crawler_query",
+     "menu": ["search", "crawler_query", "recall_memory", "speak", "DELEGATE", "NONE"]},
+    {"id": "w08", "goal": "gather a thorough report on the top three ev manufacturers", "expect": "crawler_query",
+     "menu": ["search", "crawler_query", "recall_memory", "speak", "DELEGATE", "NONE"]}
+  ]
+}

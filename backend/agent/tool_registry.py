@@ -1064,7 +1064,17 @@ def register_builtin_tools() -> None:
     specs += [
         ToolSpec(
             name="search",
-            description="Search the web for a quick factual answer. Returns fetched page content as markdown.",
+            # REQ-8 AC8.4: the two web tiers must be distinguishable from the
+            # description ALONE — the engine's option frame truncates at 90
+            # chars, so the discriminator sits in the first clause. `search` is
+            # the INSTANT tier (one provider call, no crawl); `crawler_query`
+            # is the deep multi-page research crawl.
+            description=(
+                "INSTANT web lookup — one fast search call for a quick factual "
+                "answer, no crawl and no multi-page research. Returns the top "
+                "sources with their content. Use 'crawler_query' instead when "
+                "the task needs deep research across many pages."
+            ),
             parameters={"query": {"type": "string"}},
             category="web", executor="internal", requires_internet=True,
             aliases=["web_search", "google_search"], parallel_safe=True, critical=True,
@@ -1072,14 +1082,15 @@ def register_builtin_tools() -> None:
         ToolSpec(
             name="crawler_query",
             description=(
-                "DEEP WEB RESEARCH CRAWL — the tool to use when the user wants real-world data "
-                "fetched from the internet (e.g. 'research companies', 'deep dive on a topic', "
-                "'gather everything about X', 'crawl the web for Y'). Plans source URLs from the "
-                "query, crawls them with Crawl4AI, and returns a structured summary PLUS the full "
-                "extracted page content (field 'content') with source links. Emits live progress "
-                "events to the UI (crawler_started, page_fetched, open_tab, crawler_complete) so the "
-                "user sees the search happening. Put 'content' in your 'show' field and 'summary' in "
-                "'speak'. NOT for a quick factual lookup (use 'search' for that). Requires internet access."
+                "DEEP MULTI-PAGE RESEARCH CRAWL (slow, thorough) — the tool to use when the user "
+                "wants real-world data fetched from the internet (e.g. 'research companies', 'deep "
+                "dive on a topic', 'gather everything about X', 'crawl the web for Y'). Plans source "
+                "URLs from the query, crawls them with Crawl4AI, and returns a structured summary "
+                "PLUS the full extracted page content (field 'content') with source links. Emits live "
+                "progress events to the UI (crawler_started, page_fetched, open_tab, crawler_complete) "
+                "so the user sees the search happening. Put 'content' in your 'show' field and "
+                "'summary' in 'speak'. NOT for a quick factual lookup — use 'search' for that. "
+                "Requires internet access."
             ),
             parameters={"query": {"type": "string", "description": "The research topic or question to investigate"}},
             category="web", executor="crawler", requires_internet=True, parallel_safe=False,

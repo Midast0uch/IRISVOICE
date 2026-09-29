@@ -645,25 +645,34 @@ class _PythonFallbackEngine:
         self._init_db()
 
     def _init_db(self):
-        try:
-            import sqlcipher3  # type: ignore[import]
+        # ── SESSION 365: ONE DECISION POINT FOR ENCRYPTION ──────────────────
+        # This used to DUPLICATE the "try sqlcipher3, fall back only on
+        # ImportError" logic, and that assumption is false on this machine:
+        # sqlcipher3 IS installed while data/memory.db is PLAINTEXT. So the
+        # connection was SQLCipher-KEYED OVER A PLAINTEXT FILE and the first
+        # read (executescript in _run_migrations) raised MemoryError. Note
+        # `str(MemoryError())` is '' — which is why the caller logged
+        # "Python engine unavailable alongside C++ core ()" with NO cause, and
+        # why this sat undiagnosed.
+        #
+        # The consequences were not local. `_fallback` stayed None, so
+        # `IrisCoreEngine.ingest_event` skipped the PYTHON writer — the one
+        # documented to land rows in system_events — and fell through to the
+        # NATIVE writer, which is MEASURED to block in-app: one row took
+        # **889 s**, with the ledger watchdog firing 35 times. Every
+        # calibration row was therefore written ~15 minutes late or never,
+        # which is why the Oracle's enforcement bar could not move no matter
+        # how much traffic was driven at it.
+        #
+        # Reusing `open_encrypted_memory` means ONE place decides encryption
+        # (by reading the file header), so the two can never disagree again.
+        # It also passes check_same_thread=False in both branches, which this
+        # connection needs: ingest runs on per-row threads.
+        from backend.memory.db import open_encrypted_memory
 
-            self._conn = sqlcipher3.connect(self.db_path)
-            self._conn.execute(f"PRAGMA key = \"x'{self.key_hex}'\";")
-        except ImportError:
-            import sqlite3
-
-            self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        # D4g: this connection writes system_events/memory_chain to the SAME
-        # file as EpisodicStore/SemanticStore/Mycelium's connections
-        # (backend/memory/db.py open_encrypted_memory, which sets the same
-        # PRAGMA). Without it, a write here racing one of those raised
-        # "database is locked" immediately (default busy_timeout=0) instead
-        # of waiting the other transaction out.
-        try:
-            self._conn.execute("PRAGMA busy_timeout=5000;")
-        except Exception:
-            pass
+        self._conn = open_encrypted_memory(
+            self.db_path, bytes.fromhex(self.key_hex)
+        )
         # Run migrations
         self._run_migrations()
 
@@ -1030,6 +1039,10 @@ class IrisCoreEngine:
     _ffi: Optional[_IrisFFI] = None
     _fallback: Optional[_PythonFallbackEngine] = None
     _initialized: bool = False
+    # Session 365: a refused ledger row must never be silent. See
+    # _note_ingest_failure.
+    _ingest_fail_count: int = 0
+    _ingest_fail_reason: Optional[str] = None
 
     def __new__(cls) -> "IrisCoreEngine":
         if cls._instance is None:
@@ -1178,6 +1191,37 @@ class IrisCoreEngine:
 
     # --- Event Ingestion ---
 
+    def _note_ingest_failure(self, reason: str) -> None:
+        """A refused ledger row must NEVER be silent (session 365).
+
+        Every row this engine refuses is a row the Oracle's enforcement bar can
+        never count — and this method used to return a bare ``False`` with no
+        log at all. Measured live: 14 ingest attempts in one turn, 14 refusals,
+        and the only trace was a generic "ffi ingest returned falsy ...
+        (row dropped by store)" from the CALLER, which cannot name the cause. A
+        completely inert ledger (``init()`` never ran) was therefore
+        indistinguishable from a healthy one that simply had no traffic.
+
+        Logs at ERROR the first time each distinct reason appears, then every
+        100th occurrence — loud on a systemic failure, without one line per row.
+        Never raises: a diagnostic must not be the thing that breaks a write.
+        """
+        try:
+            self._ingest_fail_count = int(
+                getattr(self, "_ingest_fail_count", 0)
+            ) + 1
+            _first_for_this_reason = (
+                getattr(self, "_ingest_fail_reason", None) != reason
+            )
+            self._ingest_fail_reason = reason
+            if _first_for_this_reason or self._ingest_fail_count % 100 == 0:
+                logger.error(
+                    "[iris_ffi] LEDGER ROW REFUSED (%d so far): %s",
+                    self._ingest_fail_count, reason,
+                )
+        except Exception:  # noqa: BLE001 — a diagnostic never blocks a write
+            pass
+
     def ingest_event(
         self,
         session_id: str,
@@ -1190,6 +1234,10 @@ class IrisCoreEngine:
         screenshot_blob: bytes = None,
     ) -> bool:
         if not self._initialized:
+            self._note_ingest_failure(
+                "engine NOT INITIALIZED — init() never ran or failed, so the "
+                "store was never opened and EVERY row is refused"
+            )
             return False
         # ROW DELIVERY — the Python writer is preferred for EVENTS (2026-09-26).
         # The native C++ writer still serves every physics/Caducean path below;
@@ -1231,7 +1279,13 @@ class IrisCoreEngine:
             rc = self._ffi.ingest_event(
                 session_id, domain, event_type, actor, outcome, summary, payload_json
             )
+            if rc != 0:
+                self._note_ingest_failure(f"native writer returned rc={rc}")
             return rc == 0
+        self._note_ingest_failure(
+            "no writer available — the Python fallback AND the native core are "
+            "both None (DLL not found and the fallback failed to open the store)"
+        )
         return False
 
     # --- Caducean ---
@@ -1478,6 +1532,31 @@ class IrisCoreEngine:
 
 _engine: Optional[IrisCoreEngine] = None
 
+# Session 365: the module-level helpers below ALSO refuse rows silently when
+# `_engine` is None (ffi_init_engine never called). Same rule as
+# IrisCoreEngine._note_ingest_failure — a refused ledger row is never silent.
+_module_ingest_fail_count = 0
+_module_ingest_fail_reason: Optional[str] = None
+
+
+def _note_module_ingest_failure(reason: str) -> None:
+    """Loud on the first occurrence of each reason, then every 100th.
+
+    Never raises: a diagnostic must not be the thing that breaks a write.
+    """
+    global _module_ingest_fail_count, _module_ingest_fail_reason
+    try:
+        _module_ingest_fail_count += 1
+        _first_for_this_reason = _module_ingest_fail_reason != reason
+        _module_ingest_fail_reason = reason
+        if _first_for_this_reason or _module_ingest_fail_count % 100 == 0:
+            logger.error(
+                "[iris_ffi] LEDGER ROW REFUSED (%d so far): %s",
+                _module_ingest_fail_count, reason,
+            )
+    except Exception:  # noqa: BLE001 — a diagnostic never blocks a write
+        pass
+
 
 def ffi_init_engine(db_path: str, key_hex: str) -> bool:
     """
@@ -1506,6 +1585,13 @@ def ffi_ingest_event(
     screenshot_blob: bytes = None,
 ) -> bool:
     if _engine is None:
+        # Session 365: was a bare `return False`. The caller could only report
+        # "row dropped by store" without ever naming this cause — the store was
+        # never even opened.
+        _note_module_ingest_failure(
+            "ffi_init_engine() was never called, so there is no engine at all "
+            "(the store was never opened and EVERY row is refused)"
+        )
         return False
     return _engine.ingest_event(
         session_id, domain, event_type, actor, outcome, summary, payload_json,

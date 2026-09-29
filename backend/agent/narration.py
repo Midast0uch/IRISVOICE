@@ -262,11 +262,15 @@ def may_narrate() -> bool:
         eng = get_decision_engine()
         ds, enforced = gate("narration", ["speak", "silent"],
                             {"kind": "progress"})
+        # AC25.8: the threshold resolves by ACTIVE BACKEND IDENTITY; None = no
+        # entry for the active backend → fail-closed (the timer gate stands).
+        _thr = eng._cfg.threshold_for("narration")
         if (
             enforced
             and ds is not None
             and ds.chosen == "silent"
-            and ds.confident(eng._cfg.threshold_for("narration"))
+            and _thr is not None
+            and ds.confident(_thr)
         ):
             return False
     except Exception:

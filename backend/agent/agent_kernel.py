@@ -137,7 +137,6 @@ try:
         DER_FOLD_BACK_MAX,
         DER_EMERGENCY_STOP,
         DER_TOKEN_BUDGETS,
-        TRAILING_GAP_MIN,
         AVG_STEP_COST,
         debit_work_units,
         derive_work_units_0,
@@ -159,7 +158,6 @@ except Exception:
         "full": 50000,
         "quick_edit": 8000,
     }
-    TRAILING_GAP_MIN = 2
     AVG_STEP_COST = 1500
 
     def derive_work_units_0(context_window: int) -> int:
@@ -187,6 +185,14 @@ except Exception:
 # See the DER main loop — last-resort bound only; the sufficiency gate and
 # zero-yield cutoff are the rational stops, this catches everything else.
 _DER_TURN_BUDGET_S = float(os.environ.get("IRIS_DER_TURN_BUDGET_S", "600"))
+
+# Session 364: how many times ONE turn may be sent back for more depth. The
+# depth_met consumer exists so the loop cannot settle for half work, but an
+# unbounded push is exactly the failure that killed the TrailingDirector
+# ("looped unbounded on gap-on-gap"). This is the cap that makes enforcement
+# safe to switch on: a wrong NO costs at most this many extra passes, which is
+# what satisfies oracle.md 17.2's "being wrong is cheap or gated".
+_DEPTH_PUSH_MAX = int(os.environ.get("IRIS_DEPTH_PUSH_MAX", "3"))
 
 # REQ-1 AC8 (T2b, Decision 13 â€” revised 2026-08-19): the user-facing copy for
 # the child steps of a sub-loop split. `branchLabel` is free text on the
@@ -652,6 +658,17 @@ class AgentKernel:
         # the router would drift away from it. Router-side failures degrade to
         # "no window known" and never break a turn.
         self._router.set_window_resolver(self.resolve_context_window)
+        # Wedge fix (session 363, pin_35af67d07c5f): the router calls us back
+        # at every model-dispatch entry and inside the transport retry
+        # ladders, so the turn budget + client check run INSIDE the blocking
+        # paths. The DER loop condition only evaluates BETWEEN cycles, so a
+        # turn blocked inside ONE operation never re-evaluated it and the
+        # 600 s budget never fired (chain client w1 ran 19+ min while the
+        # backend logged nothing for 18). The check is a bound method of THIS
+        # kernel — the router is per-kernel (not a singleton), so there is no
+        # cross-session leakage — and it reads per-turn state set in
+        # _execute_plan_der. Modeled on set_window_resolver directly above.
+        self._router.set_turn_budget_check(self._turn_choke_check)
         # In-process local models (2026-09-27). The gateway attaches the local
         # model manager to the routers that EXIST when a model is loaded, so a
         # kernel created LATER (a new WS session) starts with
@@ -784,7 +801,6 @@ class AgentKernel:
         # for spec compliance (Gap 11). Canonical values live in der_constants.
         self._task_classifier = None
         self._reviewer = None
-        self._trailing_director = None
         self._mode_detector = None
         self._der_tokens_used: int = 0
 
@@ -3868,7 +3884,7 @@ class AgentKernel:
                             except Exception:
                                 continue
                         else:
-                            raise RuntimeError(f"Could not connect to LM Studio at {_api_base}")
+                            raise RuntimeError(f"Could not connect to {_api_base}")
 
                         with _resp as _stream:
                             if _stream.status_code == 429:
@@ -3894,7 +3910,7 @@ class AgentKernel:
                                 except Exception:
                                     _err_detail = "(could not read error body)"
                                 raise RuntimeError(
-                                    f"LM Studio returned {_stream.status_code}: {_err_detail}"
+                                    f"{_api_base} returned {_stream.status_code}: {_err_detail}"
                                 )
                             for _line in _stream.iter_lines():
                                 if not _line or not _line.startswith("data:"):
@@ -3994,13 +4010,13 @@ class AgentKernel:
                             except Exception:
                                 continue
                         else:
-                            raise RuntimeError(f"Could not connect to LM Studio at {_api_base}")
+                            raise RuntimeError(f"Could not connect to {_api_base}")
 
                         if _resp.status_code == 429:
                             continue
                         if _resp.status_code != 200:
                             raise RuntimeError(
-                                f"LM Studio returned {_resp.status_code}: {_resp.text[:200]}"
+                                f"{_api_base} returned {_resp.status_code}: {_resp.text[:200]}"
                             )
                         _result = _resp.json()
                         break
@@ -4015,14 +4031,37 @@ class AgentKernel:
                     if _attempt == 2:
                         raise
             if _result is None:
-                raise RuntimeError("LM Studio request failed after retries")
+                raise RuntimeError(f"Request to {_api_base} failed after retries")
 
             _msg = _result.get("choices", [{}])[0].get("message", {})
             _reply = _msg.get("content", "")
             _tool_calls = _msg.get("tool_calls") or []
 
             if not _reply and not _tool_calls:
-                raise RuntimeError("Empty response from LM Studio")
+                # SELF-DIAGNOSING (2026-09-28). This raised a bare "Empty
+                # response from LM Studio" SIXTEEN times in one session and
+                # recorded nothing about the REQUEST, so the cause could not be
+                # established afterwards - the label even pointed at another
+                # product's port. The three fields below are the whole
+                # diagnosis, so the next occurrence carries its own evidence:
+                #   finish_reason  'length' -> the reply was cut off by
+                #                  max_tokens; 'stop' with empty content -> the
+                #                  model emitted EOS immediately, which is what a
+                #                  truncated/over-long prompt produces;
+                #   usage.prompt_tokens -> compare against the model's n_ctx to
+                #                  see whether llama-server truncated the prompt
+                #                  (prompt + tool schemas can exceed 16384);
+                #   the raw body -> what the server actually said.
+                _choice0 = (_result.get("choices") or [{}])[0] or {}
+                logger.warning(
+                    "[Dispatch] EMPTY completion from %s: messages=%d "
+                    "finish_reason=%r usage=%s raw=%r",
+                    _api_base, len(messages),
+                    _choice0.get("finish_reason"),
+                    _result.get("usage"),
+                    str(_result)[:300],
+                )
+                raise RuntimeError(f"Empty response from {_api_base}")
 
             # Record usage with real API tokens if available
             _usage = _result.get("usage", {})
@@ -5244,6 +5283,13 @@ class AgentKernel:
         In-memory + bounded (200 docs): a reload mints fresh ids; content
         identity survives via document_id. Never raises.
         """
+        # Session 365 FIX: `uuid.uuid4()` below was used without an import in
+        # this scope (every other `import uuid` in this module is local to a
+        # different function), so the outer `except` silently returned the
+        # `card_doc_<document_id>` fallback on every call and the mint-once
+        # mapping write below it never executed.
+        import uuid
+
         try:
             mapping = getattr(self, "_prism_card_by_doc", None)
             if mapping is None:
@@ -6196,6 +6242,216 @@ class AgentKernel:
                 ("; reasons: " + "; ".join(_reasons)) if _reasons else "",
                 _where,
             )
+            # Session 364 (owner request): the DEPTH question, run as a CASCADE.
+            # `sufficient`/`done` ask whether the objective is COVERED; this asks
+            # whether it is done to the DEPTH the success criteria require - the
+            # "the Brain settles for half work / does not over-deliver" complaint.
+            #
+            # THE SHAPE IS JEV'S (arXiv 2609.26550, "Accept When Confident,
+            # Escalate When Unsure"): the cheap decision-only scorer answers when
+            # its confidence clears a validated threshold, and anything less
+            # confident is ESCALATED to the stronger judge. `surface_bool` already
+            # implements exactly that, so this calls it rather than hand-rolling a
+            # `noul.true(0.5)` cut - a bare hard cut throws away the escalation
+            # band, and that band is precisely what removes the need for a fully
+            # calibrated engine before the consumer can be trusted to act.
+            #
+            # COST SAFETY: in shadow the fallback is the loop's own verdict, so NO
+            # extra model call is made. The Brain judge is constructed only when
+            # depth_met is ENFORCED, and even then it is paid only for the cases
+            # the engine was not confident about (the paper measured 53.7% of
+            # cases accepted at tau=0.9).
+            try:
+                from backend.agent import surface_shadow as _ss_depth
+                from backend.agent.decision_engine import (
+                    enforced_consumers as _enf_consumers,
+                )
+
+                _depth_enforced = "depth_met" in _enf_consumers()
+                # Workload-specific and NOT assumed to transfer - the paper's own
+                # caveat is that the threshold is selected on pilot data and
+                # validated per workload. Overridable so a pilot sweep can find
+                # the operating point without a code change.
+                _depth_tau = float(
+                    os.environ.get("IRIS_DEPTH_MET_THRESHOLD", "0.80")
+                )
+
+                _depth_req: List[str] = []
+                try:
+                    _depth_req = [
+                        str(_f) for _f in getattr(
+                            (_gc_state or {}).get("contract"), "required", []
+                        )
+                    ]
+                except Exception:
+                    _depth_req = []
+                _depth_criteria = "; ".join(_depth_req[:6]) or "none declared"
+                _depth_open = "; ".join(_gc_open[:6]) or "none"
+                _depth_blocked = "; ".join(_gc_blocked[:4]) or "none"
+                # ANCHOR THE JUDGMENT TO THE WORK PRODUCT (oracle-addendum 25.2).
+                # "Reference-free prose is near chance for every judge tested" -
+                # so the EVIDENCE goes in the frame, not just the criteria and
+                # the verdict. Without it the Oracle is asked "was that good?"
+                # with nothing to judge against, which is precisely the question
+                # the paper says a cheap judge cannot answer.
+                _depth_evidence: List[str] = []
+                try:
+                    for _ei, _eit in enumerate((completed_items or [])[-4:]):
+                        _er = getattr(_eit, "result", "") or ""
+                        if not _er:
+                            continue
+                        _depth_evidence.append(
+                            f"[{_ei + 1}] "
+                            f"{(getattr(_eit, 'description', '') or '')[:70]}: "
+                            f"{self._smart_excerpt(str(_er), 600)}"
+                        )
+                except Exception:
+                    _depth_evidence = []
+                _depth_ev_txt = (
+                    "\n".join(_depth_evidence)[:2400] or "(no step output captured)"
+                )
+                _depth_stmt = (
+                    f"SUCCESS CRITERIA: {_depth_criteria}\n"
+                    f"STILL OPEN: {_depth_open}\n"
+                    f"BLOCKED: {_depth_blocked}\n"
+                    f"COVERAGE: {_gc_c:.3f}\n"
+                    f"LOOP VERDICT: {_grade} (at {_where})\n"
+                    f"EVIDENCE (what was actually produced):\n{_depth_ev_txt}"
+                )
+                _depth_frame = {
+                    "goal": _depth_criteria,
+                    "grade": _grade,
+                    "coverage": _gc_c,
+                    "open_facts": list(_gc_open[:6]),
+                    "evidence": _depth_ev_txt[:1200],
+                    # oracle-addendum 25.6.3: one change at a time, and the
+                    # criteria version rides on EVERY row so a report can scope
+                    # to (Oracle, Brain, criteria version). Bump it whenever the
+                    # instruction or the frame SHAPE changes - a shape change is
+                    # a new calibrated identity (oracle.md 8).
+                    "criteria_version": "depth_met/v1",
+                }
+
+                def _depth_strong_judge() -> bool:
+                    """The ESCALATION target: the same strict depth question, asked
+                    of the reasoning model. Paid only when the engine is unsure."""
+                    _r = self.infer(
+                        "You are a strict editor. Judge ONLY whether the work is "
+                        "done to the DEPTH the success criteria require - not "
+                        "whether the criteria are merely present.\n\n"
+                        f"SUCCESS CRITERIA:\n{_depth_criteria}\n\n"
+                        "STILL OPEN (required facts neither covered nor blocked):\n"
+                        f"{_depth_open}\n\n"
+                        f"BLOCKED:\n{_depth_blocked}\n\n"
+                        f"COVERAGE: {_gc_c:.3f}\n\n"
+                        "Half-done work, placeholder content, or a criterion met "
+                        "only superficially is NOT deep enough. Being demanding is "
+                        "correct here: the cost of one more pass is small.\n"
+                        'Reply with JSON only: {"deep_enough": true or false}',
+                        role="reasoning", max_tokens=120, temperature=0.0,
+                    )
+                    import json as _json_depth
+                    import re as _re_depth
+
+                    _m = _re_depth.search(r"\{[\s\S]+\}", _r.raw_text or "")
+                    if not _m:
+                        return _grade == "pass"  # unparseable -> incumbent verdict
+                    try:
+                        return bool(_json_depth.loads(_m.group()).get("deep_enough"))
+                    except Exception:
+                        return _grade == "pass"
+
+                # Shadow -> cheap reference, no model call. Enforced -> unsure
+                # cases escalate to the Brain (JEV's fallback).
+                if _depth_enforced:
+                    _depth_fallback = _depth_strong_judge
+                else:
+                    _depth_fallback = lambda: _grade == "pass"  # noqa: E731
+
+                _depth_value, _depth_row = _ss_depth.surface_bool(
+                    "depth_met", _depth_stmt,
+                    brain_bool_fn=_depth_fallback,
+                    engine=_ss_depth.AUTO_ENGINE,
+                    enforced=_depth_enforced,
+                    threshold=_depth_tau,
+                    frame=_depth_frame,
+                )
+                # 25.6.3: the criteria version rides on every row (the key is on
+                # tool_bridge._DECISION_META_KEYS, or the ledger would drop it).
+                if _depth_row is not None:
+                    _depth_row["criteria_version"] = "depth_met/v1"
+                _ss_depth.emit_row(_depth_row)
+                # Share the verdict with the CONTINUATION decision, which is the
+                # only place that can make the loop actually do more work. The
+                # grade returned by this function is DISPLAY-ONLY: all three call
+                # sites discard it and _der_emit_card_settle uses it for the card
+                # ("the card is only a display"). So the downgrade below fixes the
+                # LABEL; the behavioural push lives in _der_plan_next_step.
+                # Session 365 FIX: this read `_depth_noul.probability`, but
+                # `surface_bool` returns `(value, row)` and keeps the Noul
+                # private — `_depth_noul` was never bound anywhere, so this
+                # raised NameError on EVERY grade site, the `except` below
+                # swallowed it, and the consequences were invisible:
+                # `_der_last_depth` was never set (so the enforcement push in
+                # `_der_plan_next_step` could never fire) and the pass->capped
+                # downgrade below never ran. The row is the honest source for
+                # the same number the ledger records, so the push log and the
+                # row can never disagree. A None row means no engine was
+                # available (`shadow_row` refuses to fabricate), so the
+                # confidence is genuinely unknown and stays None.
+                _depth_conf = None
+                if isinstance(_depth_row, dict):
+                    try:
+                        _depth_conf = float(_depth_row.get("confidence"))
+                    except (TypeError, ValueError):
+                        _depth_conf = None
+                self._der_last_depth = {
+                    "met": bool(_depth_value),
+                    "confidence": _depth_conf,
+                    "enforced": bool(_depth_enforced),
+                    "open_facts": list(_gc_open[:3]),
+                }
+
+                # THE REMEDY, and only when enforced: a depth failure does not
+                # accept the loop's "pass". Downgrading it to "capped" keeps the
+                # loop alive so it tries another route instead of settling.
+                #
+                # THE CAP (oracle-addendum's item F). Two independent brakes,
+                # because an unbounded push is exactly what killed the
+                # TrailingDirector ("looped unbounded on gap-on-gap"):
+                #   (a) DIRECTION - only push when there is a CONCRETE gap to
+                #       close (`_gc_open` non-empty). "Not deep enough" with
+                #       every required fact covered gives the loop nothing to do,
+                #       so it must not spend a pass on it.
+                #   (b) BUDGET - at most _DEPTH_PUSH_MAX pushes per turn.
+                if _depth_enforced and not _depth_value and _grade == "pass":
+                    _depth_pushes = int(
+                        getattr(self, "_depth_push_count", 0) or 0
+                    )
+                    if _gc_open and _depth_pushes < _DEPTH_PUSH_MAX:
+                        self._depth_push_count = _depth_pushes + 1
+                        _grade = "capped"
+                        _reasons = list(_reasons or []) + [
+                            "depth_met: NOT done to the depth the success "
+                            "criteria require - pushing for another route "
+                            f"({self._depth_push_count}/{_DEPTH_PUSH_MAX})"
+                        ]
+                        logger.info(
+                            "[DER] depth_met ENFORCED: pass -> capped, pushing "
+                            "for another route (tau=%.2f, push %d/%d, "
+                            "open_facts=%d) - %s",
+                            _depth_tau, self._depth_push_count, _DEPTH_PUSH_MAX,
+                            len(_gc_open), _reasons[-1],
+                        )
+                    else:
+                        logger.info(
+                            "[DER] depth_met said NOT deep enough but the push "
+                            "is CLOSED (pushes=%d/%d, open_facts=%d) - accepting "
+                            "the grade so the loop cannot spin",
+                            _depth_pushes, _DEPTH_PUSH_MAX, len(_gc_open),
+                        )
+            except Exception as _depth_exc:  # noqa: BLE001 - a shadow never blocks
+                logger.debug("[DER] depth_met shadow failed: %r", _depth_exc)
             # Session-326 (goal-contract terminal-signal diag): at every grade
             # chokepoint, settle the card. The grade helper was reachable from
             # three call sites — _execute_plan_der (failure-settled),
@@ -8781,6 +9037,14 @@ Respond with a JSON object:
                     f"[AgentKernel] Recovery failed, falling back to ReAct: {_recovery_err}"
                 )
                 return None
+        finally:
+            # Wedge fix (session 363, pin_35af67d07c5f): the turn is over -
+            # deactivate the choke check so a stale _der_start_time from this
+            # finished turn can never raise on a healthy non-DER call (a
+            # simple chat) that runs later. If the turn WEDGED (never
+            # returned), this finally never runs and the check stays active -
+            # which is the correct direction.
+            self._der_turn_active = False
 
     @restores_call_class
     def _save_card_footprint(self, plan, completed_items, outcome: str) -> None:
@@ -8847,6 +9111,92 @@ Respond with a JSON object:
             _write_counters.bump("footprint.write_failed")
             logger.warning("[DER] card footprint write FAILED: %s", _fp_exc)
 
+    def _session_has_client_for(self, session: Optional[str]) -> bool:
+        """WS disconnect check for *session* - True if at least one live
+        client, or on any failure (fail-open, "connected"). Wedge fix
+        (session 363): extracted from the closure inside _execute_plan_der so
+        _turn_choke_check (a method, which cannot see that closure) runs the
+        same check inside the transport retry ladders.
+        """
+        try:
+            from backend.ws_manager import get_websocket_manager
+
+            ws = get_websocket_manager()
+            if ws is None:
+                return True  # no WS manager: non-WS path, keep running
+            # Conversation / thread IDs used as kernel sessions:
+            # The WS handler (iris_gateway.py:4450) passes the WS client ID
+            # as session_id and the conversation/thread ID as conversation_id,
+            # so thread IDs never appear as the kernel session there.
+            # The REST handler (chat.py:305) uses the thread/conversation ID
+            # as the kernel session_id - these sessions have no WS client and
+            # must keep running (their output is returned synchronously).
+            if isinstance(session, str) and (
+                session.startswith("immortus:") or session.startswith("conv_")
+            ):
+                return True
+            # The prefix list above is a NAMING check, and it silently
+            # stopped matching: chat.py mints thread ids as "conv-1"
+            # (hyphen) while this only ever accepted "conv_" (underscore).
+            # Every REST search therefore hit the disconnect branch and the
+            # DER loop broke before executing step 1 - surfacing to the user
+            # as "no usable sources found", a network failure that never
+            # happened. e2e was ~536 ms with no crawl in the log.
+            #
+            # Test the STRUCTURE instead of the spelling. chat.py:308 passes
+            # session_id=thread_id=conversation_id, whereas the WS handler
+            # passes the client id as session_id and the thread id as
+            # conversation_id (see the comment above), so the two are equal
+            # only on the REST path. That holds regardless of how ids are
+            # spelled, so renaming them cannot silently re-break this.
+            if isinstance(session, str) and session == getattr(
+                self, "conversation_id", None
+            ):
+                return True
+            return len(ws.get_clients_for_session(session)) > 0
+        except Exception:
+            return True
+
+    def _turn_choke_check(self) -> None:
+        """Wedge fix (session 363, pin_35af67d07c5f): choke-point check called
+        at every model-dispatch entry (InferenceRouter.generate) and inside
+        the transport retry ladders and stream chunk loops. The DER loop
+        condition only evaluates BETWEEN cycles, so a turn blocked inside ONE
+        operation never re-evaluated it and the 600 s budget never fired
+        (chain client w1 ran 19+ min; the backend logged nothing for 18).
+        Latches _der_stop_requested BEFORE raising so the loop exits to
+        synthesis over completed steps even if a caller catches the error -
+        the same contract the loop condition already assumes. Inert unless a
+        DER turn is active (_der_turn_active), so a stale start time from a
+        finished turn can never raise on a healthy non-DER call.
+        """
+        if not getattr(self, "_der_turn_active", False):
+            return
+        start = getattr(self, "_der_start_time", None)
+        if start is not None and (time.perf_counter() - start) >= _DER_TURN_BUDGET_S:
+            self._der_stop_requested = True
+            raise RuntimeError(
+                f"[DER] turn budget ({_DER_TURN_BUDGET_S:.0f}s) exhausted - "
+                "aborting to synthesis over completed steps"
+            )
+        session = getattr(self, "_der_session", None)
+        if session is None:
+            return
+        # The client check is throttled: the stream chunk loops call this per
+        # SSE line, so the WS lookup must not run per line. Re-check at most
+        # every 5 s; the budget half above is nanoseconds-cheap and always
+        # runs.
+        now = time.perf_counter()
+        if now - getattr(self, "_der_last_client_check", 0.0) < 5.0:
+            return
+        self._der_last_client_check = now
+        if not self._session_has_client_for(session):
+            self._der_stop_requested = True
+            raise RuntimeError(
+                "[DER] session has no connected clients - aborting to "
+                "synthesis over completed steps"
+            )
+
     def _execute_plan_der(
         self,
         plan,
@@ -8878,6 +9228,11 @@ Respond with a JSON object:
         # recovery in a conversation, silently killing DER's existing recovery
         # path. One plan run is one task, so the counter resets here.
         self._der_amendment_count = 0
+        # Session 364: the depth_met push budget is PER TURN, like the amendment
+        # bound above. It lives on the kernel, which is cached per CONVERSATION,
+        # so letting it accumulate would permanently stop depth-pushes after the
+        # third one in a conversation. One turn = one budget.
+        self._depth_push_count = 0
         # T6.4: mark the call class as USER_TURN at the real turn entry so the
         # phase gate admits it immediately (high-priority lane).
         set_call_class(CallClass.USER_TURN)
@@ -8906,6 +9261,18 @@ Respond with a JSON object:
         completed_items: List[Any] = []
         step_outputs: List[str] = []
         _der_start_time = time.perf_counter()
+        # Wedge fix (session 363, pin_35af67d07c5f): the turn start lives on
+        # the INSTANCE too — _turn_choke_check is reached from the router and
+        # the transports, which cannot see this local. _der_session and
+        # _der_turn_active scope the check to THIS turn: without the active
+        # flag a stale start time from a FINISHED turn would raise on a
+        # healthy non-DER call that runs more than the budget after the turn
+        # ended. _der_last_client_check throttles the WS lookup in
+        # _turn_choke_check — the stream chunk loops call it per SSE line.
+        self._der_start_time = _der_start_time
+        self._der_session = _session
+        self._der_turn_active = True
+        self._der_last_client_check = 0.0
 
         # Token budget â€” spec [1.2]: enforce DER_TOKEN_BUDGETS[task_class]
         # Tokens are estimated from step result length (4 chars â‰ˆ 1 token).
@@ -9237,47 +9604,14 @@ Respond with a JSON object:
         # Reviewer â€” falls back to PASS on any failure (membrane, not gate)
         reviewer = self._reviewer
 
-        # WS disconnect helper â€” checks if the originating session still has
+        # WS disconnect helper - checks if the originating session still has
         # at least one live client. Never raises; defaults to "connected".
+        # Wedge fix (session 363): the body moved to _session_has_client_for
+        # so _turn_choke_check - a METHOD, which cannot see this closure -
+        # runs the same check inside the transport retry ladders. This
+        # delegate keeps the loop call site unchanged.
         def _session_has_client() -> bool:
-            try:
-                from backend.ws_manager import get_websocket_manager
-
-                ws = get_websocket_manager()
-                if ws is None:
-                    return True  # no WS manager â†’ non-WS path, keep running
-                # â”€â”€ Conversation / thread IDs used as kernel sessions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-                # The WS handler (iris_gateway.py:4450) passes the WS client ID
-                # as session_id and the conversation/thread ID as conversation_id,
-                # so thread IDs never appear as the kernel session there.
-                # The REST handler (chat.py:305) uses the thread/conversation ID
-                # as the kernel session_id â€” these sessions have no WS client and
-                # must keep running (their output is returned synchronously).
-                if isinstance(_session, str) and (
-                    _session.startswith("immortus:") or _session.startswith("conv_")
-                ):
-                    return True
-                # The prefix list above is a NAMING check, and it silently
-                # stopped matching: chat.py mints thread ids as "conv-1"
-                # (hyphen) while this only ever accepted "conv_" (underscore).
-                # Every REST search therefore hit the disconnect branch and the
-                # DER loop broke before executing step 1 â€” surfacing to the user
-                # as "no usable sources found", a network failure that never
-                # happened. e2e was ~536 ms with no crawl in the log.
-                #
-                # Test the STRUCTURE instead of the spelling. chat.py:308 passes
-                # session_id=thread_id=conversation_id, whereas the WS handler
-                # passes the client id as session_id and the thread id as
-                # conversation_id (see the comment above), so the two are equal
-                # only on the REST path. That holds regardless of how ids are
-                # spelled, so renaming them cannot silently re-break this.
-                if isinstance(_session, str) and _session == getattr(
-                    self, "conversation_id", None
-                ):
-                    return True
-                return len(ws.get_clients_for_session(_session)) > 0
-            except Exception:
-                return True
+            return self._session_has_client_for(_session)
 
         # â”€â”€ REQ-15 (T25/T26): per-task steering state reset â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         self._der_stop_requested = False
@@ -12579,6 +12913,36 @@ Respond with a JSON object:
                 "no graft, finalizing honestly: %s",
                 item.step_id, (_res_text or "")[:120],
             )
+            # ── FEED recovery_strategy ON THE TERMINAL PATH TOO (2026-09-27) ──
+            # The triage consult lives ONLY on the graft path above, so a
+            # terminal failure recorded NO row for recovery_strategy. Measured
+            # live: [WinError 3] on an invented path -> "unrecoverable cause -
+            # no graft" -> zero recovery rows while TTS announced "I couldn't
+            # complete that task. 0/1 steps finished". The consumer was blind to
+            # exactly the failures it exists to triage.
+            # Safe to consult here: the triage is SHADOW (AC17.1/AC17.2/The
+            # documented contract at the graft seam) - it records a row and its
+            # verdict decides nothing - so a terminal failure still finalizes
+            # honestly, unchanged. A failure that happened is a failure that
+            # gets triaged.
+            try:
+                _tt_box = self._get_tool_box()
+                _tt_tool = str(getattr(item, "tool", "") or "")
+                _tt_obj = (
+                    getattr(item, "objective_anchor", "")
+                    or getattr(item, "description", "")
+                    or ""
+                )
+                _tt_box.note_failure(objective=_tt_obj, failed_tool=_tt_tool)
+                _tt_box.recovery_strategy(
+                    failed_tool=_tt_tool,
+                    error_snippet=str(_res_text or "")[:200],
+                    objective=_tt_obj,
+                )
+            except Exception as _tt_err:  # noqa: BLE001 — advisory only
+                logger.debug(
+                    "[DER] terminal-failure triage consult failed: %r", _tt_err
+                )
         if (
             _split_ok
             and item.critical
@@ -12609,7 +12973,24 @@ Respond with a JSON object:
                     # of the SAME query, and double the search time. The
                     # failing step's own result is appended to the digest so
                     # the gate sees everything the loop has actually seen.
-                    _gate_items = list(completed_items) + [item]
+                    # Session 365 FIX: `completed_items` is NOT a parameter of
+                    # this method — it is a local of `_execute_plan_der` — so
+                    # this line raised NameError on EVERY failed gather step.
+                    # The bare `except` below swallowed it, so the gate
+                    # silently returned False forever: `_der_findings_sufficient`
+                    # was never actually called and the `sufficient` consumer
+                    # could never emit a row, no matter how much gather traffic
+                    # was driven at it. Reconstruct the completed items from the
+                    # queue, exactly as the rest of this file does
+                    # (`step_id in queue.completed_ids`, cf. the step-status
+                    # derivation and the budget-exhausted remaining count).
+                    _completed_ids = set(
+                        getattr(queue, "completed_ids", None) or ()
+                    )
+                    _gate_items = [
+                        _gi for _gi in (getattr(queue, "items", None) or ())
+                        if getattr(_gi, "step_id", None) in _completed_ids
+                    ] + [item]
                     _suff, _missing = self._der_findings_sufficient(
                         plan.original_task or "", _gate_items
                     )
@@ -15188,7 +15569,9 @@ Respond with a JSON object:
         # (REQ-4 AC6: memory as pre-filter, not fallback; SourceRegistry-like).
         def _mem_lookup(goal: str) -> Optional[Dict[str, Any]]:
             try:
-                from backend.agent.explorer import _pheromone_top1, _is_web_intent
+                from backend.agent.explorer import (
+                    AUTO_ENGINE, _is_web_intent, _pheromone_top1,
+                )
 
                 # â”€â”€ pin_517dfcbda150: physics-driven gather sanction â”€â”€
                 # pin_42ddd255162d: the gate runs BEFORE the memory checks â€”
@@ -15702,6 +16085,16 @@ Respond with a JSON object:
                     logger.debug("[DER] prior-result gather failed: %s", _prio_err)
 
             # ── Phase 1 (D1.6): resolve via ToolDecisionBox ─────────────
+            # Session-345 correction (2026-09-28): _decision is assigned
+            # ONLY on this no-tool path. A step that arrives with its tool
+            # already chosen (planner / graft) skips this block, so the
+            # provenance preservation at the dispatch below referenced an
+            # UNASSIGNED local and every such dispatch died with
+            #   NameError: cannot access local variable '_decision'
+            # before the tool call was even sent (caught by the explorer
+            # except, surfaced as "[STEP ERROR: ...]" - 3 DER concurrent
+            # tests red). Initialize to None and guard the preservation.
+            _decision = None
             if not item.tool:
                 try:
                     _box = self._get_tool_box()
@@ -15953,8 +16346,9 @@ Respond with a JSON object:
                         tool=item.tool,
                         params=item.params,
                     )
-                    _dispatch_decision.meta = getattr(_decision, "meta", None)
-                    _dispatch_decision.source = getattr(_decision, "source", "")
+                    if _decision is not None:
+                        _dispatch_decision.meta = getattr(_decision, "meta", None)
+                        _dispatch_decision.source = getattr(_decision, "source", "")
                     _dr = self._get_tool_box().dispatch(
                         _dispatch_decision,
                         session_id=_session,
@@ -16075,6 +16469,21 @@ Respond with a JSON object:
                 ) if _dr else ""
                 if _dr and not _dr.success:
                     step_success = False
+                    # A CRASHED dispatch returns DispatchResult(success=False,
+                    # error=..., result=None) (tool_decision.py:2205): the tool
+                    # exception was caught one level deeper, so `result` is
+                    # None, `_format_tool_result_for_step` yields "", and the
+                    # step reported an EMPTY failure - the message never
+                    # reached the DER synthesis. The async twin
+                    # (_der_run_step_execution_async) calls the bridge directly
+                    # and DOES surface "[STEP ERROR: ...]", and the timeout
+                    # path above avoids this by putting its message in
+                    # `result`. Do the same here, using this function's own
+                    # "[STEP ERROR: ...]" convention (see the outer except).
+                    if not step_result:
+                        _dr_err = getattr(_dr, "error", None)
+                        if _dr_err:
+                            step_result = f"[STEP ERROR: {_dr_err}]"
                 # W9 (O3): capture structured tool results
                 if item.tool and _dr and _dr.result is not None:
                     try:
@@ -17738,7 +18147,7 @@ Respond with a JSON object:
                                 if (
                                     str(_verified or "").upper() == "VERIFIED"
                                     and str(step_result or "").strip()
-                                    and not _gc_result_is_error(step_result)
+                                    and not self._gc_result_is_error(step_result)
                                 ):
                                     _gc_req_norms = {
                                         _gc_mod2._norm(_f)
@@ -18304,9 +18713,14 @@ Respond with a JSON object:
         # extended the turn; turn fc2a1a48-ddf looped unbounded on gap-on-gap).
         # It never ran in parallel with the task, so it only added latency and
         # unsolicited steps. Decision: remove the gap-fill entirely.
-        # _trailing_director stays None (init no longer constructs it); the
-        # REQ-5 AC1 shallow-verified check is intentionally dropped with it
-        # (it existed only to feed gap analysis).
+        # SESSION 364: the module itself is now DELETED
+        # (backend/agent/trailing_director.py, with its dedicated tests) - it had
+        # been unreachable since this decision and the attribute is gone from
+        # __init__. Its two jobs are covered elsewhere or were already retired:
+        # gap analysis lives in _goal_contract_open_facts() (the goal contract's
+        # required-but-uncovered facts, which drives the run grade and the
+        # finalize/partial-answer text), and the REQ-5 AC1 shallow-verified check
+        # was dropped with it because it only fed gap analysis.
 
         # NOTE: the verify_failed -> split-into-sub-loops step (Phase 2 D2.1)
         # used to live here. It computed `_children`, which the REQ-8
@@ -18706,6 +19120,51 @@ Respond with a JSON object:
         except Exception:
             return None
 
+    def _der_note_depth_route(self, route: str) -> None:
+        """SHADOW (session 365): record the continuation route the loop is about
+        to take, so `depth_route` can be scored against what actually happened.
+
+        CALLED FROM EACH BRANCH, passing that branch's own literal name — never
+        by predicting the route from state. Predicting would mean duplicating
+        `_goal_contract_bonus_pass`'s conditions (whose only mutation is
+        `bonus_passes = 1`), and a duplicated predicate that drifts would record
+        a WRONG reference — worse than no row, because a wrong `brain_choice`
+        silently corrupts the parity metric this consumer exists to produce.
+
+        The route is therefore declared where it is decided. Purely an observer:
+        it returns nothing and never raises, so the branch's own return value is
+        untouched.
+        """
+        try:
+            _st = getattr(self, "_goal_contract_state", None) or {}
+            _dv = getattr(self, "_der_last_depth", None) or {}
+            _box = self._get_tool_box()
+            if _box is None:
+                return
+            try:
+                _open = list(self._goal_contract_open_facts() or [])
+            except Exception:
+                _open = []
+            _contract = _st.get("contract")
+            _box.depth_route(
+                incumbent_route=route,
+                coverage=float(_st.get("C", 0.0) or 0.0),
+                open_facts=_open,
+                criteria="; ".join(
+                    str(_f) for _f in (getattr(_contract, "required", None) or ())
+                )[:300],
+                grade=str(
+                    (getattr(self, "_der_last_run_grade", None) or {}).get(
+                        "grade", ""
+                    )
+                ),
+                depth_met=_dv.get("met"),
+                pushes_used=int(getattr(self, "_depth_push_count", 0) or 0),
+                session_id=str(getattr(self, "session_id", "") or ""),
+            )
+        except Exception:  # noqa: BLE001 — an observer never blocks a reply
+            pass
+
     def _der_plan_next_step(
         self,
         task_objective: str,
@@ -18826,9 +19285,35 @@ Respond with a JSON object:
 
             m = re.search(r"\{[\s\S]+\}", raw)
             if not m:
-                return None
-
-            data = _json.loads(m.group())
+                # FALLBACK EXTRACTION (2026-09-27). This used to end the turn
+                # here, silently, and that one line had two faults:
+                #  1. `return None` is the SAME value the caller gets for "no
+                #     next step wanted", so a prose reply silently ENDED the task
+                #     with no way to tell the two apart.
+                #  2. It skips the `done` shadow consult below entirely — no row,
+                #     no log line, a consumer that looks unwired.
+                # Recover the done-bit from the common non-JSON shapes first. A
+                # recovered bit keeps the row PAIRABLE (an unpaired row carries
+                # brain_bool=None and is not scorable), which is worth more than
+                # merely recording a row.
+                _bit_m = re.search(
+                    r'"done"\s*:\s*(true|false)', raw, re.IGNORECASE
+                ) or re.search(
+                    r"^\s*(true|false|yes|no)\s*$", raw,
+                    re.IGNORECASE | re.MULTILINE,
+                )
+                if not _bit_m:
+                    logger.warning(
+                        "[DER] _der_plan_next_step: planner reply had no JSON and "
+                        "no recoverable done-bit — returning None (which is "
+                        "indistinguishable from 'no next step') and SKIPPING the "
+                        "`done` shadow consult. raw[:120]=%r",
+                        raw[:120],
+                    )
+                    return None
+                data = {"done": _bit_m.group(1).lower() in ("true", "yes")}
+            else:
+                data = _json.loads(m.group())
             # REQ-14 AC14.1 (T18): shadow-score the `done` consumer and emit
             # the row. The Brain's bit still decides — the goal-contract
             # override below is PRESERVED (AC14.1) — and the engine only ever
@@ -18836,15 +19321,33 @@ Respond with a JSON object:
             try:
                 from backend.agent import monitor_shadow as _ms
 
-                _done_value, _done_row = _ms.monitor_bool(
+                # 3-TUPLE, not 2 (2026-09-27). monitor_bool returns
+                # (value, text, shadow_row). Unpacking two names raised
+                #   ValueError: too many values to unpack (expected 2, got 3)
+                # BEFORE emit_row below, so the `done` row was never written -
+                # silently, because this block used to end in a bare `pass`.
+                # That one character is why the consumer read "0 rows" all
+                # session and looked unwired. Caught the moment the bare `pass`
+                # became a logged warning.
+                _done_value, _done_text, _done_row = _ms.monitor_bool(
                     "done", prompt,
                     brain_bool_fn=lambda: data.get("done") is True,
                     brain_text_fn=lambda: str(data.get("description", "") or ""),
                     engine=_ms.AUTO_ENGINE,
                 )
                 _ms.emit_row(_done_row)
-            except Exception:  # noqa: BLE001 — advisory observer
-                pass
+            except Exception as _mon_err:  # noqa: BLE001 — advisory observer
+                # VISIBLE, but still ADVISORY (2026-09-27). This was a bare
+                # `pass`, so a failing monitor consult lost its calibration row
+                # in total silence — the exact class of silence that made seven
+                # consumers look unwired for a whole session. A skipped consumer
+                # must leave a trace. Warning, not debug: losing a row is a real
+                # calibration event, and the observed failure mode was NO row
+                # with NO log line at all.
+                logger.warning(
+                    "[monitor] done shadow consult failed (row NOT recorded): %r",
+                    _mon_err,
+                )
             if data.get("done") is True:
                 # Goal contract T6 (REQ-3 AC3.6): the turn SHALL NOT end while
                 # a required fact is open and unblocked — request work on the
@@ -18859,6 +19362,7 @@ Respond with a JSON object:
                         "work instead of finalizing: %r",
                         len(_gc_open_now), str(_gc_open_now[0])[:160],
                     )
+                    self._der_note_depth_route("cover_open_fact")
                     return {"description": (
                         f"Cover the open required fact: "
                         f"{str(_gc_open_now[0])[:300]}"
@@ -18871,7 +19375,52 @@ Respond with a JSON object:
                 except Exception:
                     _gc_bonus = None
                 if _gc_bonus is not None:
+                    self._der_note_depth_route("bonus_ceiling")
                     return _gc_bonus
+                # ── THE REAL DEPTH PUSH (session 364) ───────────────────────
+                # We only reach here when `_gc_open_now` was EMPTY: every
+                # required fact is nominally covered, so the loop is about to
+                # finalize. But "covered" is not "done to depth" - a fact can be
+                # satisfied superficially, and THAT is the "settles for half
+                # work" failure this consumer exists to catch. When the depth_met
+                # verdict says the depth bar is NOT met, request one more pass
+                # instead of finalizing.
+                #
+                # Placed BEFORE the grade report on purpose: reporting
+                # "continuation-done" settles the card as done, so a push must
+                # pre-empt it. Bounded by the same per-turn cap, and only when
+                # the owner has ENFORCED depth_met - default behaviour is
+                # unchanged.
+                try:
+                    _dv = getattr(self, "_der_last_depth", None) or {}
+                    _dpushes = int(getattr(self, "_depth_push_count", 0) or 0)
+                    if (
+                        _dv.get("enforced")
+                        and _dv.get("met") is False
+                        and _dpushes < _DEPTH_PUSH_MAX
+                    ):
+                        self._depth_push_count = _dpushes + 1
+                        _dv_open = _dv.get("open_facts") or []
+                        logger.info(
+                            "[DER] depth_met PUSH at continuation: required facts "
+                            "are covered but the depth bar is NOT met (p=%s) - "
+                            "requesting depth instead of finalizing (%d/%d)",
+                            _dv.get("confidence"), self._depth_push_count,
+                            _DEPTH_PUSH_MAX,
+                        )
+                        self._der_note_depth_route("deepen")
+                        return {"description": (
+                            "Deepen the existing work so it is done to the DEPTH "
+                            "the success criteria require rather than merely "
+                            "present - the required facts are nominally covered "
+                            "but the depth check failed"
+                            + (
+                                f" (focus on: {str(_dv_open[0])[:200]})"
+                                if _dv_open else ""
+                            )
+                        )}
+                except Exception:  # noqa: BLE001 - advisory, never blocks
+                    pass
                 # AC5.6: done+GRADE via the shared helper (deduped by turn —
                 # the finalize-complete site may have reported first, T19).
                 try:
@@ -18880,6 +19429,7 @@ Respond with a JSON object:
                     )
                 except Exception:
                     pass
+                self._der_note_depth_route("finalize")
                 return None
 
             _desc = data.get("description")
@@ -18943,7 +19493,11 @@ Respond with a JSON object:
                 try:
                     from backend.agent import monitor_shadow as _ms
 
-                    _ot_value, _ot_row = _ms.monitor_bool(
+                    # 3-TUPLE, not 2 (2026-09-27) - same defect as the `done`
+                    # site above: monitor_bool returns (value, text, shadow_row)
+                    # and a 2-name unpack raised ValueError before emit_row,
+                    # losing every `on_track` row in silence.
+                    _ot_value, _ot_text, _ot_row = _ms.monitor_bool(
                         "on_track", prompt,
                         brain_bool_fn=lambda: bool(data.get("on_track", True)),
                         brain_text_fn=lambda: str(
@@ -18951,8 +19505,15 @@ Respond with a JSON object:
                         engine=_ms.AUTO_ENGINE,
                     )
                     _ms.emit_row(_ot_row)
-                except Exception:  # noqa: BLE001 — advisory observer
-                    pass
+                except Exception as _mon_err:  # noqa: BLE001 — advisory observer
+                    # VISIBLE, but still ADVISORY (2026-09-27) — see the twin
+                    # comment on the `done` site above: a bare `pass` here hid a
+                    # lost calibration row completely.
+                    logger.warning(
+                        "[monitor] on_track shadow consult failed "
+                        "(row NOT recorded): %r",
+                        _mon_err,
+                    )
                 if not data.get("on_track", True):
                     note = data.get("note", "")
                     suggestion = data.get("suggestion", "")

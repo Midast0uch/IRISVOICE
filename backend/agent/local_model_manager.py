@@ -3114,53 +3114,41 @@ class LocalModelManager:
                             vram_budget_gb=max(0.0, ledger_budget - _mmproj_reserve),
                             file_size_gb=file_size_gb,
                             kv_cache_type=params.get("cache_type_k", "q8_0"),
-                            # Tool duty: let VRAM decide (2026-09-27).
-                            # This used to hand TOOL_CTX_CAP to the deriver as
-                            # its CEILING, so a local tool model could never be
-                            # sized above 16384 no matter how much VRAM was
-                            # free. Because DER budgets every turn from the
-                            # SMALLER window of the two roles (pinned by
-                            # test_ctb4_turn_budget_is_capped_by_the_smaller_
-                            # window), that flat literal throttled the whole
-                            # agent, not just the tool call. derive_config is
-                            # the only thing here that knows what fits, so give
-                            # it the model's native context and let it choose.
-                            # TOOL_CTX_CAP is now a FLOOR: the ceiling to
-                            # consider when the model reports no native context.
-                            max_ctx=(
-                                max(
-                                    int(model_meta.get("context_length") or 0),
-                                    TOOL_CTX_CAP,
-                                )
-                                if purpose == "tool"
-                                else params.get("n_ctx")
-                            ),
+                            # THE PROFILE (or the UI value that filled params)
+                            # OWNS n_ctx. No load path may change it.
+                            # (2026-09-27) Two earlier versions of this line both
+                            # OVERRODE it: first TOOL_CTX_CAP as a ceiling (a
+                            # flat 16384 that throttled the whole agent, because
+                            # DER budgets every turn from the SMALLER of the two
+                            # role windows), then a VRAM-derived value. Both were
+                            # wrong for the same reason, and agent_kernel.py:1863
+                            # settles it: ResolvedWindow treats the ACTUALLY
+                            # LOADED n_ctx as "authoritative", outranking the
+                            # profile table. So whatever this line picks becomes
+                            # the context window of the entire agent, silently.
+                            # The user sets the window with the profile. The
+                            # deriver may size n_batch and n_gpu_layers, and may
+                            # REPORT that the window will not fit, but it does
+                            # not get to pick the window.
+                            max_ctx=int(params.get("n_ctx") or MAX_CTX),
+
                         )
                         # The deriver may only NARROW a profile's context, never
                         # widen it past what the profile (and its KV type) was
                         # written for.
-                        if purpose == "tool":
-                            # VRAM-derived for tool duty: derive_config already
-                            # proved this fits the free budget, so take ITS
-                            # answer. The old min() against the profile's n_ctx
-                            # would have re-imposed the same small literal the
-                            # change above just removed (a 4096 profile would
-                            # clamp a comfortably-fitting 32768 back to 4096).
-                            # MIN_CTX stays as the floor.
-                            params["n_ctx"] = max(int(derived["n_ctx"]), MIN_CTX)
-                        else:
-                            # Reasoning/local duty: the deriver may only NARROW
-                            # a profile's context, never widen it past what the
-                            # profile and its KV type were written for.
-                            params["n_ctx"] = min(
-                                int(params.get("n_ctx", derived["n_ctx"])),
-                                derived["n_ctx"],
-                            )
+                        # The profile's value, VERBATIM - the same for tool and
+                        # chat duty. See the max_ctx note above: because the
+                        # loaded value is authoritative downstream, this line IS
+                        # the context window of the whole agent. MIN_CTX is only
+                        # a floor for a profile that specifies nothing at all.
+                        params["n_ctx"] = int(params.get("n_ctx") or MIN_CTX)
                         params["n_batch"] = derived["n_batch"]
                         params["n_gpu_layers"] = derived["n_gpu_layers"]
-                        config_source = "derived"
+                        config_source = "profile"
                         logger.info(
-                            f"[LocalModelManager] derived config (source=derived): "
+                            f"[LocalModelManager] n_ctx comes from the profile "
+                            f"(authoritative, NOT derived); the deriver sized "
+                            f"only batch/layers: "
                             f"profile={profile} n_ctx={params['n_ctx']} "
                             f"(native {model_meta.get('context_length')}), "
                             f"n_batch={params['n_batch']}, "
@@ -3382,6 +3370,25 @@ class LocalModelManager:
                         stdout=subprocess.PIPE,
                         stderr=subprocess.STDOUT,
                         text=True,
+                        # DECODE DEFENSIVELY (session-364, verified live). With
+                        # text=True and no encoding/errors, Python decodes the
+                        # server's output with the LOCALE codec and raises on the
+                        # first byte that is not valid in it. llama-server's
+                        # `-lv 5` output is not guaranteed UTF-8 (measured: one
+                        # 0xc4 byte), so the reader thread DIED with
+                        #   "stdout reader exited: 'utf-8' codec can't decode
+                        #    byte 0xc4 in position 130: invalid continuation byte"
+                        # and then NOBODY DRAINED THE PIPE. The ~64 KB pipe
+                        # buffer filled, llama-server blocked forever in a write
+                        # syscall, and the model never finished loading:
+                        #   * /v1/models returned 503 "Loading model" forever,
+                        #   * the server showed ~0 CPU and NO GPU allocation,
+                        #   * every DER turn that needed a model call wedged.
+                        # errors="replace" makes a stray byte a U+FFFD instead of
+                        # a dead reader. Same pattern start-backend.py already
+                        # uses for its own streams.
+                        encoding="utf-8",
+                        errors="replace",
                         bufsize=1,  # line-buffered so we get progress lines as they arrive
                         # Set CWD to the server binary's parent so the Windows
                         # DLL loader finds CUDA runtime DLLs shipped alongside
@@ -4573,6 +4580,73 @@ def kill_orphan_servers() -> None:
     import platform as _pf
 
     system = _pf.system().lower()
+
+    # ── NEVER KILL THE EMBEDDING SIDECAR (2026-09-28) ──────────────────────
+    # Everything below this guard kills by IMAGE NAME:
+    #     taskkill /F /IM llama-server.exe      (and pkill -f llama-server)
+    # and the embedding sidecar IS a llama-server.exe
+    # (backend/memory/embedding_sidecar.py, --port 18183, cpu-only).
+    # Measured: the sidecar starts healthy and warms up, the CHAT model is then
+    # loaded, and the sidecar is simply GONE — no exit line, nothing logged. From
+    # then on every embedding silently falls back to the hash path, so every
+    # memory written is semantically meaningless (the same degradation as the
+    # "500 -> sidecar embed failed -> using hash fallback" warnings, but
+    # permanent).
+    # This is the same error as the one made by hand on 2026-09-27 that killed
+    # the MCM server: sweeping by process NAME catches processes that merely look
+    # alike. Kill by PID instead, and never one that owns the sidecar's port.
+    _sidecar_port = 18183
+    try:
+        from backend.memory import embedding_sidecar as _es
+
+        for _attr in ("PORT", "SIDECAR_PORT", "EMB_PORT", "EMBEDDING_PORT"):
+            _val = getattr(_es, _attr, None)
+            if isinstance(_val, int) and 0 < _val < 65536:
+                _sidecar_port = _val
+                break
+    except Exception:  # noqa: BLE001 — the default port is the fallback
+        pass
+
+    if PSUTIL_AVAILABLE:
+        _killed = _spared = 0
+        try:
+            for _proc in psutil.process_iter(["pid", "name", "cmdline"]):
+                try:
+                    _info = _proc.info
+                    if (_info.get("name") or "").lower() != "llama-server.exe":
+                        continue
+                    _cmd = " ".join(_info.get("cmdline") or [])
+                    if (f"--port {_sidecar_port}" in _cmd
+                            or f":{_sidecar_port}" in _cmd):
+                        _spared += 1          # the embedding sidecar — leave it
+                        continue
+                    _proc.kill()
+                    _killed += 1
+                except Exception:  # noqa: BLE001 — one bad proc must not stop it
+                    continue
+            logger.info(
+                "[LocalModelManager] orphan-server sweep: killed %d, spared %d "
+                "(the embedding sidecar on port %d is never killed by name)",
+                _killed, _spared, _sidecar_port,
+            )
+        except Exception as _sweep_exc:  # noqa: BLE001
+            logger.warning(
+                "[LocalModelManager] orphan sweep failed (%r); skipping rather "
+                "than falling back to a kill-by-name that would take the "
+                "embedding sidecar too", _sweep_exc,
+            )
+        return
+
+    # No psutil: the only remaining method is kill-by-image-name, which would
+    # destroy the sidecar. Skipping the sweep is strictly safer than performing
+    # it — an orphan chat server costs memory, but a dead sidecar silently
+    # corrupts every embedding written afterwards.
+    logger.warning(
+        "[LocalModelManager] orphan-server sweep SKIPPED: psutil unavailable and "
+        "the fallback kills llama-server by image name, which would also kill "
+        "the embedding sidecar on port %d", _sidecar_port,
+    )
+    return
     try:
         if system == "windows":
             _sp.run(

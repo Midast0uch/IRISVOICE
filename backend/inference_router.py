@@ -249,6 +249,28 @@ def _sanity_check_endpoint(api_base: str, api_key: str) -> None:
     """Lightweight endpoint reachability check (2s timeout).
 
     Raises ModelConnectError if the endpoint appears unreachable.
+
+    A BUSY ENDPOINT IS NOT AN UNREACHABLE ENDPOINT (measured 2026-09-27).
+    This check used to raise on every status outside (200, 401, 403, 404), so a
+    503 failed it. llama-server answers 503 to /v1/models WHILE IT IS LOADING
+    and while its single slot is busy - and with --parallel 1 that window is
+    now the whole turn. Measured live, on a perfectly healthy server:
+
+        httpx: GET http://127.0.0.1:8082/v1/models "HTTP/1.1 503 Service
+        Unavailable"
+      -> ModelConnectError("Endpoint returned status 503") raised right here
+      -> three retries, then agent_kernel.py:6625 emitted
+         "[IRIS error] The provider request failed 3 times"
+      -> which TTS SPOKE ALOUD, and the turn produced an EMPTY DER (surfaced to
+         the user as the misleading empty-DER fallback wording).
+
+    Two rules, both from that measurement:
+      1. A 5xx means the endpoint IS reachable - it answered HTTP. Not fatal.
+      2. A TIMEOUT here is not fatal either: this probe makes a REQUEST to the
+         very slot it is checking, so on a single-slot server it times out
+         whenever the model is working. The real request that follows reports a
+         genuine failure on its own terms.
+    Only a connect failure (nothing listening) or a real client error is fatal.
     """
     import httpx
     from backend.utils.ssl_context import get_ssl_context
@@ -257,6 +279,13 @@ def _sanity_check_endpoint(api_base: str, api_key: str) -> None:
         _url = f"{api_base.rstrip('/').removesuffix('/v1')}/v1/models"
         _headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         _r = httpx.get(_url, timeout=2.0, headers=_headers, verify=get_ssl_context())
+        if _r.status_code >= 500:
+            logger.info(
+                "[InferenceRouter] %s answered %d - reachable but busy or "
+                "still starting, so NOT treated as unreachable",
+                _url, _r.status_code,
+            )
+            return
         if _r.status_code not in (200, 401, 403, 404):
             raise ModelConnectError(
                 f"Endpoint returned status {_r.status_code}"
@@ -264,7 +293,12 @@ def _sanity_check_endpoint(api_base: str, api_key: str) -> None:
     except httpx.ConnectError as exc:
         raise ModelConnectError(f"Cannot connect to {api_base}: {exc}")
     except httpx.TimeoutException:
-        raise ModelConnectError(f"Endpoint {api_base} timed out")
+        logger.info(
+            "[InferenceRouter] %s did not answer within 2s - treated as BUSY, "
+            "not unreachable (this probe contends with the slot it checks)",
+            api_base,
+        )
+        return
 
 
 def _extract_chunk_text(chunk) -> str:

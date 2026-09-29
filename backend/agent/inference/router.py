@@ -280,6 +280,14 @@ class InferenceRouter:
         # tokens. None = resolution disabled, and the router then behaves
         # exactly as it did before this seam existed.
         self._window_resolver: Optional[Callable[[str], int]] = None
+        # Wedge fix (session 363, pin_35af67d07c5f): choke-point check injected
+        # by AgentKernel (modeled on _window_resolver above). Called at the top
+        # of generate() — the entry every model call passes through — and
+        # passed to the transports so the retry ladders and stream chunk loops
+        # can call it DURING a call. Raises on exhaustion; the kernel latches
+        # _der_stop_requested before raising. None = check disabled, and the
+        # router then behaves exactly as it did before this seam existed.
+        self._turn_budget_check: Optional[Callable[[], None]] = None
         # The window generate() last resolved, for callers, logs and tests.
         self.last_num_ctx: Optional[int] = None
         # Swarm-defer seam (T4b): timestamped intent recorded while swarm was
@@ -294,6 +302,15 @@ class InferenceRouter:
     def set_window_resolver(self, resolver: Optional[Callable[[str], int]]) -> None:
         """Inject the ``role -> context window`` resolver. See ``__init__``."""
         self._window_resolver = resolver
+
+    def set_turn_budget_check(self, check: Optional[Callable[[], None]]) -> None:
+        """Inject the turn choke-point check (wedge fix, session 363).
+
+        See ``__init__``. The check is a bound method of the calling kernel,
+        so per-turn state (start time, session, active flag) is read from the
+        kernel that registered it — no cross-session leakage.
+        """
+        self._turn_budget_check = check
 
     def _window_for_role(self, role: str) -> Optional[int]:
         """Resolved context window for *role* in tokens, or None if unknown.
@@ -374,29 +391,6 @@ class InferenceRouter:
         except Exception as exc:  # noqa: BLE001 — fall back to the existing path
             logger.debug("[InferenceRouter] local endpoint probe failed: %r", exc)
             return None
-
-    @staticmethod
-    def _is_local_provider_instance(inst: Any) -> bool:
-        """True when this provider serves a model ON THIS MACHINE.
-
-        Covers the local bindings by kind and by id, and an Ollama provider whose
-        model is not a `-cloud` one. A `-cloud` model runs on ollama.com and IS
-        rate limited, so it keeps its phase gate.
-        """
-        try:
-            kind = getattr(inst, "kind", None)
-            if kind in (ProviderKind.INPROCESS, ProviderKind.LOCAL_OPENAI):
-                return True
-            _id = str(getattr(inst, "id", "") or "")
-            if _id == "iris_local" or _id.startswith("local:"):
-                return True
-            if kind is ProviderKind.OLLAMA:
-                return not str(getattr(inst, "model", "") or "").endswith(
-                    "-cloud"
-                )
-        except Exception:  # noqa: BLE001 — an unknown provider keeps its gate
-            pass
-        return False
 
     @staticmethod
     def _accepts_num_ctx(transport: Any) -> bool:
@@ -1126,6 +1120,15 @@ class InferenceRouter:
             ``(text, thinking, tool_calls)`` — same shape as
             ``AgentKernel._dispatch_api`` and friends.
         """
+        # Wedge fix (session 363, pin_35af67d07c5f): choke-point check at the
+        # entry EVERY model call passes through. The DER loop condition only
+        # evaluates BETWEEN cycles, so a turn blocked inside ONE operation
+        # never re-evaluated it and the 600 s budget never fired. The check
+        # raises on exhaustion (the kernel latches _der_stop_requested first),
+        # which unwinds this call immediately. Fail-open: None = disabled.
+        _budget_check = getattr(self, "_turn_budget_check", None)
+        if _budget_check is not None:
+            _budget_check()
         inst = self.resolve(role)
         model_override = kwargs.pop("model_override", None)
         effective_model = model_override or inst.model or "local-model"
@@ -1178,23 +1181,19 @@ class InferenceRouter:
         # (T3.6 / REQ-13).  Fail-open: returns 0.0 if disabled or errored.
         # F9+F15: pass oscillator_id and quota_id explicitly.
         #
-        # SKIPPED ENTIRELY FOR A LOCAL MODEL (owner instruction 2026-09-27). The
-        # gate paces calls against a provider's rate limit, and a model on this
-        # machine has none - so for a local provider it can only ADD delay.
-        # Measured live: it logged
-        #   GATE_DECISION osc=local:LFM2.5-2.6B-QAD-Q4_0:user_turn
-        #                 quota=http://localhost:11434|nocred wait=...
-        # on the local planner path.
-        if self._is_local_provider_instance(inst):
-            logger.debug(
-                "[InferenceRouter] phase gate skipped for local provider %s",
-                inst.id,
-            )
-        else:
-            acquire(
-                oscillator_id=f"{inst.id}:{call_class().value}",
-                quota_id=getattr(transport, "_quota_id", None),
-            )
+        # APPLIES TO LOCAL MODELS TOO — RESTORED 2026-09-27. It was briefly
+        # skipped for local providers on the reasoning that a model on this
+        # machine has no rate limit, so the gate could only add delay. That was
+        # wrong in a way that mattered: the gate is also the PACING, and with it
+        # removed the calls fire back to back. Combined with several traffic
+        # chains running at once it saturated the machine — the owner's PC froze
+        # and this session crashed. A slower turn is preferable to a frozen box.
+        # Do not skip this for local providers again without a concurrency bound
+        # to put in its place.
+        acquire(
+            oscillator_id=f"{inst.id}:{call_class().value}",
+            quota_id=getattr(transport, "_quota_id", None),
+        )
 
         # ── Context window (2026-09-27) ─────────────────────────────────
         # Resolve the window for THIS role, then do both halves of the job:
@@ -1219,6 +1218,10 @@ class InferenceRouter:
             "chunk_callback": chunk_callback,
             "reasoning_callback": reasoning_callback,
             "timeout_s": timeout_s,
+            # Wedge fix: the transports call this inside their retry ladders
+            # and stream chunk loops, so a turn blocked DURING a call is also
+            # bounded. All four transport kinds accept the kwarg.
+            "budget_check": _budget_check,
         }
         if _window is not None and self._accepts_num_ctx(transport):
             _gen_kwargs["num_ctx"] = _window

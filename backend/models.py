@@ -5,6 +5,10 @@ Pydantic models for type validation and serialization
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+# Session 365 FIX: same as core_models.py — BackendReadyMessage's default_factory
+# lambda calls datetime.now() with no datetime import. (Latent: never
+# instantiated today.)
+import datetime
 import re
 
 from .core_models import AppState

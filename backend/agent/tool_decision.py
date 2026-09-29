@@ -1603,6 +1603,22 @@ class ToolDecisionBox:
         # enforced below even if the model proposes a vetoed tool anyway.
         _vetoed: set[str] = set((memory_hint or {}).get("veto") or [])
 
+        # Session 365: a LOCAL-workspace goal must not be dispatched to the WEB.
+        # Added to the SAME veto set the physics sanction uses, so it rides the
+        # existing enforcement (a model that proposes a web tool anyway is still
+        # blocked) and needs no new mechanism. See _is_local_workspace_goal for
+        # why the predicate is deliberately narrow.
+        try:
+            if self._is_local_workspace_goal(goal):
+                _vetoed |= set(self._WEB_GATHER_TOOLS)
+                logger.info(
+                    "[TOOL_DECISION] local-workspace goal — vetoing web gather "
+                    "tools %s for: %r",
+                    sorted(self._WEB_GATHER_TOOLS), (goal or "")[:120],
+                )
+        except Exception:  # noqa: BLE001 — a veto must never break resolution
+            pass
+
         # ── 3. Build propose prompt and call router ────────────────────
         tool_list = "\n".join(
             f"- {t.get('name', '?')}: {t.get('description', '')[:200]}"
@@ -2229,6 +2245,58 @@ class ToolDecisionBox:
         "retry_same", "retry_different_tool", "decompose", "escalate",
     )
 
+    # ── Session 365: the CONTINUATION route vocabulary (`depth_route`) ──────
+    # The routes `AgentKernel._der_plan_next_step` can take once the Brain says
+    # it is done. These are the INCUMBENT's own branch names, DELIBERATELY:
+    # oracle.md 14.2 requires the engine and the live path to speak the same
+    # vocabulary, or "the comparison never matches and the report shows
+    # precision 0 as though it were a measurement".
+    #
+    # The richer "how to deepen" sub-routes (deepen_with_tool / reread_evidence
+    # / verify_with_evidence / accept_partial) are NOT here yet: the incumbent
+    # cannot pick them, so they could never agree with it, and adding them now
+    # would deflate precision for no information. They become scoreable only
+    # once `deepen` is enforced and the engine's pick actually RUNS.
+    _DEPTH_ROUTES = (
+        "cover_open_fact", "bonus_ceiling", "deepen", "finalize",
+    )
+
+    # ── Session 365: a LOCAL goal must not be dispatched to the WEB ─────────
+    # MEASURED: the step goal "list the files in the current directory and tell
+    # me how many there are" resolved to `crawler_query`, which spent 157 s
+    # fetching Stack Overflow pages that returned 403 challenges, then failed
+    # the step permanently and took the whole chain down. A goal about the LOCAL
+    # workspace has no business spending a network round-trip.
+    _WEB_GATHER_TOOLS = frozenset({
+        "crawler_query", "web_search", "search", "fetch_url", "browser_read",
+    })
+
+    # Markers that make a goal EXPLICITLY about the local workspace.
+    _LOCAL_WORKSPACE_MARKERS = (
+        "current directory", "this directory", "current folder", "this folder",
+        "working directory", "in the repo", "in the project",
+        "local file", "local files", "the workspace", "this workspace",
+    )
+
+    @staticmethod
+    def _is_local_workspace_goal(goal: str) -> bool:
+        """True when *goal* is explicitly about the LOCAL workspace.
+
+        Deliberately NARROW. A false positive removes the web tools from a real
+        research step, and the two errors are not symmetric: a missed veto costs
+        one slow failing crawl (which now fails fast, see the browser latch),
+        whereas a wrong veto breaks the step outright. So only explicit local
+        phrasing counts, and a web goal that merely omits the word "web" keeps
+        its web tools.
+        """
+        try:
+            _g = (goal or "").lower()
+            return any(
+                m in _g for m in ToolDecisionBox._LOCAL_WORKSPACE_MARKERS
+            )
+        except Exception:  # noqa: BLE001 — a guard must never raise
+            return False
+
     def _record_shadow_row(
         self, row: Optional[Dict[str, Any]], session_id: str = "",
     ) -> None:
@@ -2423,6 +2491,121 @@ class ToolDecisionBox:
             self.last_triage_shadow = _row
             self._record_shadow_row(_row)
         return {"strategy": "delegate", "confidence": 0.0, "delegate": True}
+
+    def depth_route(
+        self,
+        *,
+        incumbent_route: str,
+        coverage: float = 0.0,
+        open_facts: Optional[list] = None,
+        criteria: str = "",
+        grade: str = "",
+        depth_met: Optional[bool] = None,
+        pushes_used: int = 0,
+        session_id: str = "",
+        threshold: Optional[float] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """SHADOW: which continuation should the loop take now that the Brain
+        says it is done? Records the row and returns it; the caller's behaviour
+        is UNCHANGED (the incumbent's route stands).
+
+        WHY THIS SITE, AND WHY THIS IS THE ANSWER (session 365). The depth push
+        on its own is NOT a decision point — it is one of four returns inside
+        the continuation decision, and scoring the push alone would have given a
+        CONSTANT reference (oracle.md 14.1's "manufacture agreement" trap: the
+        precision would measure nothing). The continuation decision genuinely
+        chooses among four named routes, so `brain_choice` varies with state and
+        the parity is meaningful.
+
+        THE REFERENCE IS A NAME, COMPARED AS A NAME. `brain_choice` is the route
+        the live path ACTUALLY took, and it speaks the same vocabulary as the
+        menu — no translation, which is the safest case 14.2 describes. Both
+        keys (`brain_choice`, `chosen`) are on `tool_bridge._DECISION_META_KEYS`,
+        or the ledger would drop the reference in transit.
+
+        WHAT IT CANNOT MEASURE YET, stated plainly: this is parity with a
+        state-determined policy, not an outcome measurement. In shadow the
+        engine's pick does not RUN, so the event's outcome describes the
+        incumbent's route, not the engine's. Outcome labelling only becomes
+        possible after a flip — which is why shadow-first parity is the correct
+        first step rather than a compromise.
+
+        Never raises: a shadow consumer must never block a reply.
+        """
+        _thr = self._decision_threshold if threshold is None else float(threshold)
+        eng = self._engine()
+        if eng is None:
+            return None
+        try:
+            # Criteria registration, mirroring recovery_strategy: without it the
+            # engine REFUSES to score the consumer, so no Noul is returned, no
+            # row is written, and the consumer can never reach the bar however
+            # often the continuation decision runs.
+            try:
+                from backend.agent.decision_backend_onnx import (
+                    ConsumerSpec,
+                    get_consumer_spec,
+                    register_consumer_spec,
+                )
+
+                if get_consumer_spec("depth_route") is None:
+                    register_consumer_spec(ConsumerSpec(
+                        consumer_id="depth_route",
+                        task_name="depth_route",
+                        instruction=(
+                            "The Brain says the task is done. What should the "
+                            "loop do next: cover a required fact that is still "
+                            "open, run the bounded bonus pass over the ceiling "
+                            "facts, push for more depth because the work is only "
+                            "superficially complete, or finalize and answer?"
+                        ),
+                        labels=tuple(
+                            list(self._DEPTH_ROUTES) + [self._DE_DELEGATE]
+                        ),
+                    ))
+            except Exception:  # noqa: BLE001 — criteria are best-effort
+                pass
+            frame = {
+                "goal": (criteria or "")[:200],
+                "coverage": round(float(coverage or 0.0), 3),
+                "open_facts": [str(_f) for _f in (open_facts or [])][:5],
+                "grade": grade or "",
+                "depth_met": depth_met,
+                "pushes_used": int(pushes_used or 0),
+                "incumbent_route": incumbent_route,
+            }
+            ds = eng.decide(
+                "depth_route",
+                list(self._DEPTH_ROUTES) + [self._DE_DELEGATE],
+                frame,
+            )
+            if ds is None:
+                return None
+            row = {
+                "consumer_id": "depth_route",
+                "engine": getattr(eng, "model_id", None) or "decision-engine",
+                "chosen": ds.chosen,
+                "confidence": round(float(ds.confidence), 4),
+                "candidates": [
+                    {"name": c.name, "prob": round(c.prob, 4)}
+                    for c in (ds.distribution or ())
+                ],
+                "threshold": _thr,
+                "engine_latency_ms": ds.engine_latency_ms,
+                # The live path's route, kept as its own field so a report can
+                # see BOTH the reference and what the incumbent did even if the
+                # two ever diverge in naming.
+                "incumbent_route": incumbent_route,
+                # oracle.md 14.2: the parity reference, under the key the ledger
+                # passes through and the report reads.
+                "brain_choice": incumbent_route,
+                "shadow": True,
+            }
+            self._record_shadow_row(row, session_id=session_id)
+            return row
+        except Exception as _e:  # noqa: BLE001 — an observer never blocks
+            logger.warning("[TOOL_DECISION] depth_route gate failed: %r", _e)
+            return None
 
     def record_tool_call(
         self,

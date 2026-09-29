@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -24,6 +25,62 @@ from typing import Optional, Protocol
 from backend.crawler.robots_checker import get_robots_checker
 
 logger = logging.getLogger(__name__)
+
+# ── Browser-availability latch (session 365) ────────────────────────────────
+# Tier-2 (pooled browser) escalation is the RECOVERY path for a Tier-1 challenge
+# (401/403/CAPTCHA). When the browser cannot launch at all — Playwright's
+# binaries are not installed ("BrowserType.launch: Executable doesn't exist ...
+# run `playwright install`") — the escalation can NEVER succeed, yet it was
+# retried PER URL, each attempt costing up to the 45 s pool lease. MEASURED: five
+# walled URLs = 157 s for a crawl that ends in "all pages failed to fetch"
+# anyway. The budget was never the problem; the retry of an impossible action was.
+#
+# A missing browser is an ENVIRONMENT fact, not a per-URL outcome, so it is
+# latched once and the escalation is skipped until the TTL expires. The latch is
+# TIME-BOUNDED rather than permanent on purpose: `playwright install` can be run
+# while this process lives, and a permanent latch would keep Tier-2 disabled in
+# production long after the fix.
+_BROWSER_UNAVAILABLE_UNTIL: float = 0.0
+_BROWSER_UNAVAILABLE_REASON: str = ""
+_BROWSER_LATCH_S = float(
+    os.environ.get("IRIS_BROWSER_UNAVAILABLE_LATCH_S", "300")
+)
+# Substrings that mean "the browser cannot run here", as opposed to "this URL
+# failed". Kept narrow so a genuine per-page error never disables Tier-2.
+_BROWSER_ENV_FAILURES = (
+    "executable doesn't exist",
+    "playwright install",
+    "browsertype.launch",
+)
+
+
+def _browser_latched() -> bool:
+    """True while a known-missing browser should suppress Tier-2 escalation."""
+    return time.monotonic() < _BROWSER_UNAVAILABLE_UNTIL
+
+
+def _latch_browser_unavailable(exc: object) -> bool:
+    """Latch the browser as unavailable when *exc* is an environment failure.
+
+    Returns True when this call latched (i.e. the caller should treat Tier-2 as
+    unavailable from now on). Never raises.
+    """
+    global _BROWSER_UNAVAILABLE_UNTIL, _BROWSER_UNAVAILABLE_REASON
+    try:
+        text = str(exc or "").lower()
+        if not any(_s in text for _s in _BROWSER_ENV_FAILURES):
+            return False
+        _BROWSER_UNAVAILABLE_UNTIL = time.monotonic() + _BROWSER_LATCH_S
+        _BROWSER_UNAVAILABLE_REASON = str(exc or "")[:200]
+        logger.warning(
+            "[capabilities] Tier-2 pooled browser is UNAVAILABLE (%s) — "
+            "skipping browser escalation for %.0fs so a doomed launch is not "
+            "retried per URL. Run `playwright install` to restore it.",
+            _BROWSER_UNAVAILABLE_REASON, _BROWSER_LATCH_S,
+        )
+        return True
+    except Exception:  # noqa: BLE001 — a latch must never raise
+        return False
 
 
 class WallKind(str, Enum):
@@ -160,6 +217,18 @@ class FetchCrawlCapability:
             return outcome
 
         # ── Tier 2: pooled-browser escalation (REQ-3 AC3.4) ───────────────
+        # A browser that cannot launch is an ENVIRONMENT fact, not a per-URL
+        # outcome: escalating again would burn another pool lease for every
+        # remaining URL (measured: 45 s x 5 URLs = 157 s) and still fail. Return
+        # the Tier-1 verdict so the caller sees the honest "challenge" outcome
+        # at once. See _BROWSER_UNAVAILABLE_UNTIL.
+        if _browser_latched():
+            logger.info(
+                "[capabilities][job_id=%s] fetch.crawl Tier-1 unusable "
+                "(reason=%s) — browser escalation SKIPPED (latched unavailable): %s",
+                job_id, outcome.verdict.reason.value, url,
+            )
+            return outcome
         logger.info(
             "[capabilities][job_id=%s] fetch.crawl Tier-1 unusable (reason=%s) — "
             "escalating to pooled browser: %s",
@@ -290,7 +359,11 @@ class FetchPDFCapability:
 
         t0 = time.monotonic()
         try:
-            async with httpx.AsyncClient(follow_redirects=True, timeout=60.0) as client:
+            # Session 365: 60 s -> 8 s. This is the Tier-1 plain-HTTP fetch, the
+            # CHEAP path, and at 60 s one slow host could eat the entire run
+            # ceiling by itself. A static fetch that cannot answer in 8 s is not
+            # going to answer usefully inside a 25 s run.
+            async with httpx.AsyncClient(follow_redirects=True, timeout=8.0) as client:
                 resp = await client.get(
                     url, headers={"User-Agent": _TIER1_USER_AGENT}
                 )
@@ -374,7 +447,9 @@ async def _fast_http_fetch_one(url, goal, job_id, page_offset, on_progress) -> F
     t0 = time.monotonic()
     capture_page = page_offset + 1
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=30.0) as client:
+        # Session 365: 30 s -> 8 s, same reasoning as the Tier-1 fetch above —
+        # one host must never be able to consume the whole run ceiling.
+        async with httpx.AsyncClient(follow_redirects=True, timeout=8.0) as client:
             resp = await client.get(
                 url,
                 headers={"User-Agent": _TIER1_USER_AGENT},
@@ -492,12 +567,20 @@ async def _browser_pool_fetch_one(url, goal, job_id, page_offset, on_progress) -
             "[capabilities][job_id=%s] Tier-2 browser fetch (goal=%r): %s",
             job_id, (goal or "")[:60], url,
         )
-        response = await pg.goto(url, wait_until="domcontentloaded", timeout=30_000)
+        # Session 365 — PER-PAGE bounds must fit inside the run ceiling
+        # (IRIS_WEBSEARCH_MAX_WALL_MS, 25 s). These were goto=30 s and
+        # networkidle=10 s, i.e. a SINGLE page could consume 40 s — more than
+        # the whole run budget — so the outer bound always won and the crawl
+        # died with an unnamed TimeoutError instead of an honest per-page limit.
+        # The owner's requirement is a web step that finishes well inside 30 s,
+        # so one page is bounded here at ~8 s of navigation.
+        response = await pg.goto(url, wait_until="domcontentloaded", timeout=8_000)
         status = response.status if response is not None else None
         # Best-effort wait for client-side rendering to settle; some SPAs never
-        # reach networkidle, so a timeout here is non-fatal.
+        # reach networkidle, so a timeout here is non-fatal. Bounded small: this
+        # is a SETTLE allowance, not a load budget.
         try:
-            await pg.wait_for_load_state("networkidle", timeout=10_000)
+            await pg.wait_for_load_state("networkidle", timeout=2_000)
         except Exception:  # noqa: BLE001
             pass
         html = await pg.content()
@@ -565,6 +648,9 @@ async def _browser_pool_fetch_one(url, goal, job_id, page_offset, on_progress) -
             har_entries=[har],
         )
     except Exception as exc:  # noqa: BLE001 — capability must never raise
+        # A launch/environment failure disables Tier-2 for the latch window, so
+        # the next URL does not pay another pool lease to fail identically.
+        _latch_browser_unavailable(exc)
         logger.warning(
             "[capabilities][job_id=%s] Tier-2 browser-pool fetch failed %s: %s",
             job_id, url, exc,

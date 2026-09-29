@@ -46,7 +46,6 @@ def _make_stub_kernel(conversation_id: str) -> AgentKernel:
     k = AgentKernel.__new__(AgentKernel)
     k.conversation_id = conversation_id
     k._memory_interface = None
-    k._trailing_director = None
     k._mcm_orch = None
     k._der_last_u_mag = None
     k._der_work_units = 10

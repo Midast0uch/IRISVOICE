@@ -329,6 +329,67 @@ class SystemServer(BuiltinServer):
         return {"error": f"Unknown tool: {name}"}
 
 
+def _reroot_if_missing(path: str) -> tuple:
+    """Return ``(usable_path, note)`` for a path that may not exist.
+
+    WHY THIS EXISTS (session-364, measured live three times). The model invents
+    absolute POSIX paths for files that live in the workspace - it asked for
+    ``/home/user/scripts`` when it meant this repo's own ``scripts`` folder - and
+    on Windows that becomes ``\\home\\user\\scripts``. ``list_directory`` then
+    raised ``[WinError 3] The system cannot find the path specified``, whose text
+    matches ``tool_decision._TERMINAL_FAILURE_SIGNALS`` ("cannot find"). That
+    classifies the failure as TERMINAL, so NO GRAFT happens and the whole TURN
+    finalizes (agent_kernel.py:12685 "critical step failed with an unrecoverable
+    cause - no graft, finalizing honestly"). Measured cost: a 4-step plan was
+    truncated to 2 steps, which is also what kept the completion monitors
+    (>= 3 completed steps) at zero rows.
+
+    SAFETY. This only ever fires when the ORIGINAL path does NOT exist, so a
+    valid path can never be redirected; it corrects a non-existent path rather
+    than imposing a policy on existing ones. Candidates are tried from the
+    longest suffix to the shortest, so ``/home/user/scripts`` prefers
+    ``<cwd>/user/scripts`` and falls back to ``<cwd>/scripts``. When it
+    substitutes, the caller MUST surface ``note`` in the result so the
+    substitution is observable instead of silent.
+
+    This does NOT add workspace confinement - the file tools still accept any
+    existing absolute path. Confinement is a separate decision.
+    """
+    if not path:
+        return path, ""
+    try:
+        if Path(path).exists():
+            return path, ""
+    except (OSError, ValueError):
+        return path, ""
+    # Only absolute paths (POSIX, UNC/backslash, or drive-letter) are candidates.
+    _is_abs = path.startswith(("/", "\\")) or (
+        len(path) > 1 and path[1] == ":" and path[0].isalpha()
+    )
+    if not _is_abs:
+        return path, ""
+    parts = [
+        seg for seg in path.replace("\\", "/").split("/")
+        if seg and seg not in (".", "..")
+    ]
+    if parts and len(parts[0]) == 2 and parts[0][1] == ":":
+        parts = parts[1:]  # drop a leading "C:" style drive token
+    if not parts:
+        return path, ""
+    base = Path.cwd()
+    for i in range(len(parts)):
+        candidate = base.joinpath(*parts[i:])
+        try:
+            if candidate.exists():
+                return str(candidate), (
+                    f"'{path}' does not exist; used '{candidate}' instead "
+                    f"(the path was re-rooted onto the workspace)"
+                )
+        except OSError:
+            continue
+    return path, ""
+
+
 class FileManagerServer(BuiltinServer):
     """File manager MCP server"""
 
@@ -407,10 +468,16 @@ class FileManagerServer(BuiltinServer):
             path = path_arg(arguments)
             if not path:
                 return missing_arg_error("read_file", "path", arguments)
+            # session-364: a hallucinated absolute path (e.g. /home/user/x) is a
+            # TERMINAL failure for the whole turn; re-root it onto the workspace.
+            path, _reroot_note = _reroot_if_missing(path)
             try:
                 content = await asyncio.to_thread(self._sync_read_file, path)
-                return {"success": True, "content": content, "path": path,
-                        "bytes": len(content)}
+                result = {"success": True, "content": content, "path": path,
+                          "bytes": len(content)}
+                if _reroot_note:
+                    result["notice"] = _reroot_note
+                return result
             except Exception as e:
                 return {"success": False, "error": str(e), "path": path}
 
@@ -448,11 +515,17 @@ class FileManagerServer(BuiltinServer):
         elif name == "list_directory":
             path = path_arg(arguments) or "."
             recursive = arguments.get("recursive", False)
+            # session-364: '/home/user/scripts' for the repo's own scripts folder
+            # crashed here with WinError 3, which _TERMINAL_FAILURE_SIGNALS reads
+            # as terminal -> no graft -> the whole turn finalized. Re-root it.
+            path, _reroot_note = _reroot_if_missing(path)
             try:
                 listing = await asyncio.to_thread(
                     self._sync_list_directory, path, recursive
                 )
                 result = {"success": True, "items": listing["items"], "path": path}
+                if _reroot_note:
+                    result["notice"] = _reroot_note
                 if listing["truncated"]:
                     # REQ-18 AC4: a silently truncated listing reads as complete.
                     result["truncated"] = True

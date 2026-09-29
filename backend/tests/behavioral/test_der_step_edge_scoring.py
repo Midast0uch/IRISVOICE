@@ -184,7 +184,6 @@ def _make_kernel(conn: sqlite3.Connection, verdict_label: str):
     k.conversation_id = "conv-scoring"
     k.session_id = "sess-scoring"
     k._memory_interface = _FakeMemoryInterface(myc)
-    k._trailing_director = None
     k._mcm_orch = None
     k._der_last_u_mag = None
     k._der_work_units = 10

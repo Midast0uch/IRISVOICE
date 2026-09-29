@@ -232,9 +232,9 @@ class QueueItem:
     veto_count: int = 0
     refined_description: Optional[str] = None  # set by Reviewer on REFINE
     depth_layer: int = 1  # trailing crystallizer depth level
-    gap_analysis: Optional[str] = None  # trailing Director gap description
-    result: Optional[str] = None  # populated after step execution; consumed by TrailingDirector
-    expected_output: Optional[str] = None  # DER Phase 0: explicit success criterion; consumed by TrailingDirector.analyze_gaps
+    gap_analysis: Optional[str] = None  # gap description (legacy; its producer, the TrailingDirector, was deleted in session 364)
+    result: Optional[str] = None  # populated after step execution
+    expected_output: Optional[str] = None  # DER Phase 0: explicit success criterion; still read by _verified_fraction
     is_subloop: bool = False  # DER Phase 2: child of a growth-width split; collapses to parent as one COMPRESS
     independent: bool = False  # Wave 4 / REQ-18 AC1: safe to batch with siblings
     batch: Optional["BatchToolCall"] = None  # REQ-24 (T37): composite batch node this item carries; materialized by expand_batch_nodes()
@@ -416,23 +416,35 @@ class DirectorQueue:
             ):
                 return ExecutionMode.AGENTIC
 
-        # ── Step 4: message length heuristics (content-based) ──────────
-        if msg_len <= MESSAGE_LENGTH_SHORT:
-            # Very short message → likely QUICK
-            return ExecutionMode.QUICK
-
+        # ── Step 4a: a LONG message tends to FULL (unchanged) ───────────────
+        # This MUST stay ABOVE the intent block below. A long message is
+        # already evidence of scope, and the contract pins it:
+        #   tests/contract/test_director_queue_contract.py:190
+        #   test_long_message_tends_to_full passes task_class="complex" with
+        #   confidence=0.5 and expects FULL.
+        # The intent block answers AGENTIC at exactly 0.5 (it escalates to FULL
+        # only ABOVE 0.5), so putting intent first silently downgraded long
+        # tasks — caught by that contract test on the first run. Intent may only
+        # RAISE the mode for messages the length heuristics do not already
+        # resolve.
         if msg_len >= MESSAGE_LENGTH_LONG:
-            # Long message with clear multi-step intent → FULL
             return ExecutionMode.FULL
 
-        # ── Step 5: task_class with low/medium confidence ──────────────
-        # Session 247 FIX: the TaskClassifier emits SUFFIXED labels
-        # ("research_task", "code_task", "planning_task" — see
-        # TASK_CLASS_SPACE_MAP in kyudo.py), but this matcher compared bare
-        # "research"/"explore"/… — labels the classifier NEVER emits. Every
-        # classified task therefore fell through to the AGENTIC default
-        # (legacy card-less execution: no card_id on events, no terminal
-        # task:done, frozen verbs). Normalize the suffix before matching.
+        # ── Step 3b: INTENT BEFORE THE SHORT HEURISTIC (2026-09-27) ─────────
+        # Intent is known at decision time; message length is only a PROXY for
+        # it. The old order asked the proxy first: Step 4 returned QUICK for
+        # ANY short message, so a SHORT but clearly multi-step request ("read
+        # these three files and compare them") was judged by its LENGTH, started
+        # in QUICK, and then depended on an escalation trigger — and every
+        # trigger below needs evidence that is only visible AFTER a step has
+        # already run. Ask the direct question first, and keep the length
+        # heuristic underneath as the fallback for when the class says nothing.
+        #
+        # The suffix normalisation is REQUIRED (Session 247): the TaskClassifier
+        # emits SUFFIXED labels ("research_task", "code_task", "planning_task"
+        # — see TASK_CLASS_SPACE_MAP in kyudo.py), so a bare-label matcher
+        # silently matches nothing. Hoisted here so it runs once, before ANY
+        # length-based early return can skip it.
         _tc = (
             task_class[:-5]
             if isinstance(task_class, str) and task_class.endswith("_task")
@@ -440,9 +452,19 @@ class DirectorQueue:
         )
         if _tc in ("research", "explore", "investigate", "complex"):
             return ExecutionMode.FULL if confidence > 0.5 else ExecutionMode.AGENTIC
-
         if _tc in ("tool_request", "multi_step", "complex_command"):
             return ExecutionMode.AGENTIC
+
+        # ── Step 4: message length heuristics (content-based) ──────────
+        if msg_len <= MESSAGE_LENGTH_SHORT:
+            # Very short message → likely QUICK
+            return ExecutionMode.QUICK
+
+        # (The former "Step 5: task_class with low/medium confidence" block
+        # lived here. It is now Step 3b, above the length heuristic — see the
+        # comment there for why: this block could never run for a short message,
+        # because Step 4 returned QUICK first. Its Session-247 suffix-
+        # normalisation fix is preserved there verbatim.)
 
         if _tc == "voice_first":
             # Voice with auto preference — decide by content, not by mode

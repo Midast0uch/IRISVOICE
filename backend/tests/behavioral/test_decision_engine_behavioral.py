@@ -202,10 +202,12 @@ class TestBtDe4ReasonSingleRow:
         assert len(bridge.decision_rows) == 1
         row = bridge.decision_rows[0]
         assert row["kind"] == "reason"
-        # Session-345: NONE now runs the AC3.2 ladder (memory→legacy), so the
-        # single route-only row says "escalated". The pinned property — one
-        # row, single writer — is unchanged.
-        assert row["meta"]["route"] == "escalated"
+        # Session-345 (OQ-2): a confident NONE on a goal with NO gather/action
+        # signal COMMITS as REASON with route "engine-none" — it does not climb
+        # the AC3.2 ladder. "nothing to do" is such a goal. STALE-BY-SPEC
+        # (2026-09-26): the earlier "escalated" expectation predates the OQ-2
+        # commit. The pinned property — one row, single writer — is unchanged.
+        assert row["meta"]["route"] == "engine-none"
 
     def test_engine_dead_no_rows_no_meta(self):
         bridge = BtBridge()

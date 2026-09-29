@@ -7,6 +7,10 @@ from dataclasses import dataclass, field as dc_field, replace as dc_replace
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+# Session 365 FIX: BackendReadyMessage's `timestamp` default_factory lambda calls
+# datetime.now(), but this module never imported it — instantiating the model
+# raised NameError. (Latent: nothing instantiates it today.)
+import datetime
 import json
 import re
 

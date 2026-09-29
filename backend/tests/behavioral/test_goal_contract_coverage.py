@@ -54,6 +54,14 @@ class _Kernel:
         ):
             if hasattr(AgentKernel, name):
                 setattr(self, name, getattr(AgentKernel, name).__get__(self))
+        # Session 365 (stale-double fix): `_der_report_run_grade` calls
+        # `_der_emit_card_settle` (added session 326), which this double
+        # predates. Without the attribute the grade helper raised
+        # AttributeError, its outer handler swallowed it, and it returned ""
+        # — so BT-GC2 asserted against "" and could never pass. STUBBED rather
+        # than bound, matching this double's own contract ("heavy
+        # collaborators stubbed"): the real method emits a card frame.
+        self._der_emit_card_settle = MagicMock()
         self._memory_interface = MagicMock()
         self._memory_interface._mycelium = None
 

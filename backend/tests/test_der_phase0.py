@@ -132,27 +132,13 @@ def test_escalation_remaining_correct(monkeypatch):
     assert captured["remaining"] == 29500, "escalation must see true remaining, not consumed"
 
 
-# ── D0.4 TrailingDirector reads expected_output ─────────────────────────────
-
-def test_trailing_director_reads_expected_output(monkeypatch):
-    from backend.agent.trailing_director import TrailingDirector
-    td = TrailingDirector.__new__(TrailingDirector)
-    # Mock the adapter so no LLM call is made; verify expected_output is read (no crash)
-    class _Resp:
-        raw_text = '{"has_gaps": true, "gap_items": [{"description": "expected output not satisfied", "tool": "search"}]}'
-    class _Adapter:
-        def infer(self, *a, **kw):
-            return _Resp()
-    td.adapter = _Adapter()
-    td.memory = types.SimpleNamespace()
-    step = types.SimpleNamespace(
-        step_id="s1", step_number=1, description="create file",
-        expected_output="file created; tests pass",
-        result="file created but tests failed")
-    plan = types.SimpleNamespace(steps=[], original_task="create file")
-    ctx = types.SimpleNamespace(mycelium_path="", gradient_warnings="")
-    gaps = td.analyze_gaps(step, plan, ctx, is_mature=True)
-    assert isinstance(gaps, list) and len(gaps) >= 1, "gap analysis must fire and read expected_output"
+# ── D0.4 TrailingDirector reads expected_output — TEST REMOVED (session 364) ─
+# `trailing_director.py` was DELETED (it had been unreachable since 2026-08-06:
+# the kernel never constructed it), so this test's subject no longer exists.
+# REMOVED, not weakened — it exercised a method on a module nothing constructed.
+# `expected_output` itself is KEPT on QueueItem because it is still read by
+# `_verified_fraction` for the DER run grade, so its coverage lives in the
+# grading tests, not here.
 
 
 # ── D0.5 episodic EWMA + outcome_type ────────────────────────────────────────

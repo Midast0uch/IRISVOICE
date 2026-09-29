@@ -13,7 +13,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from backend.monitoring.structured_logger import configure_logging, StructuredLogger
+from backend.monitoring.structured_logger import (
+    ShareableRotatingFileHandler,
+    configure_logging,
+    StructuredLogger,
+)
 
 
 # Default log directory: the repo-level .iris-logs/ folder every launcher
@@ -101,13 +105,43 @@ def setup_backend_logging(
 
         # File handler — so module-level loggers (backend.iris_gateway, etc.)
         # are captured in irisvoice.log alongside the structured logger output.
+        #
+        # ONE HANDLE PER FILE (2026-09-27) — this is the ROOT-CAUSE fix, and it
+        # replaces the ShareableRotatingFileHandler tolerance below as the primary
+        # remedy. The RotatingFileHandler above (configure_logging(log_file=...))
+        # already has THIS SAME path open. On Windows a rename fails while any
+        # other handle holds the file, so a second handle here did not merely
+        # cause a one-off error: it made rotation IMPOSSIBLE, forever. Measured:
+        # 18,097 PermissionErrors in an hour, each written into the file it could
+        # not rotate (489 MB, un-greppable) plus ~5,600 CPU-seconds.
+        # The tolerant handler stops the storm, but on its own it would leave the
+        # log growing without bound for ever — a cure for the symptom, not the
+        # cause. Sharing the ONE existing handler removes the second handle
+        # entirely, so the rollover can actually succeed.
+        # CONSEQUENCE, stated plainly: root-logger records now pass through the
+        # structured handler and are therefore JSON-formatted, like the rest of
+        # this file. The previous plain format still reaches the manager's
+        # captured stdout log. One file, one handle, working rotation.
         if enable_file_logging:
-            _file_handler = logging.handlers.RotatingFileHandler(
-                log_file, maxBytes=10 * 1024 * 1024, backupCount=5,
-                encoding="utf-8",
-            )
-            _file_handler.setFormatter(_fmt)
-            _root.addHandler(_file_handler)
+            _shared = None
+            try:
+                for _h in getattr(logger, "logger", logger).handlers:
+                    if isinstance(_h, logging.handlers.RotatingFileHandler):
+                        _shared = _h
+                        break
+            except Exception:
+                _shared = None
+            if _shared is not None:
+                _root.addHandler(_shared)
+            else:
+                # No shared handler to reuse (unexpected) — keep the tolerant
+                # one so a second handle at least cannot storm.
+                _file_handler = ShareableRotatingFileHandler(
+                    log_file, maxBytes=10 * 1024 * 1024, backupCount=5,
+                    encoding="utf-8",
+                )
+                _file_handler.setFormatter(_fmt)
+                _root.addHandler(_file_handler)
 
         _root.setLevel(getattr(logging, log_level.upper()))
 

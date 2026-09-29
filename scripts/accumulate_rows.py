@@ -14,6 +14,8 @@ import argparse
 import asyncio
 import json
 import logging
+import os
+import socket
 import sys
 import time
 
@@ -51,7 +53,13 @@ MESSAGES = [
     # locally - file reads, directory listing, system info, memory - so steps
     # actually finish and the completion checks run.
     "List the files in the current directory and tell me how many there are.",
-    "Read the README file and summarise what the project is for.",
+    # NOT "read the README and summarise": README.md is 83 KB (~20k tokens), so
+    # that single prompt cost 187 s of prefill where a light one costs 11 s.
+    # Measured 2026-09-27. Same evidence value, no giant prompt. The rule for
+    # this list: prefer tools that read LITTLE - directory listings, system
+    # info, a small file - never a large document.
+    "List the files in the backend/agent folder and tell me how many Python "
+    "files there are.",
     "Get the system info and tell me how much memory this machine has.",
     "List the files in the scripts folder and pick the one with the longest name.",
     "Remember that my project is called IRIS, then recall what my project is called.",
@@ -112,16 +120,98 @@ def _ws_url(client: str) -> str:
     return f"ws://127.0.0.1:8090/ws/{client}?session_id={client}"
 
 
+# The local model server's address. The app launches it on 8082; IRIS_LOCAL_PORT
+# overrides if that ever moves.
+LOCAL_MODEL_HOST = "127.0.0.1"
+LOCAL_MODEL_PORT = int(os.environ.get("IRIS_LOCAL_PORT", "8082"))
+
+# How long to wait for the local model before refusing to send any traffic.
+READY_TIMEOUT_S = 180.0
+
+
+async def _wait_for_local_model_ready(timeout: float = READY_TIMEOUT_S) -> bool:
+    """Block until the local model server's port accepts work, or give up.
+
+    WHY THIS EXISTS (measured 2026-09-27). This driver used to fire message 1
+    immediately after asking the app to load the model, with no gate at all.
+    The load and the first request landed in the same SECOND, and that run
+    produced 12 of 13 turns answered with "[IRIS error] The provider request
+    failed 3 times" - which TTS then SPOKE ALOUD - and zero rows.
+
+    WHY IT PROBES A TCP CONNECT AND NOT /health (measured the same day, after
+    the first version of this gate got it wrong). With --parallel 1 the single
+    slot is nearly always busy while the app is working, and this llama-server
+    build's /health and /props handlers BLOCK while a slot is processing. So a
+    perfectly healthy server looks dead:
+
+      - /props answered fine while the server was idle, then timed out for 8 s
+        mid-generation;
+      - the process CPU clock looked frozen (10.40625 -> 10.40625 across 6 s),
+        which proves nothing: GPU decode barely moves CPU time;
+      - the server's OWN stderr showed it serving throughout:
+        "slot release: id 0 | task 0 | stop processing: n_tokens = 2112".
+
+    A TCP connect answers the only question this gate needs - is the port
+    accepting work yet - and it cannot contend for the model lock.
+    """
+
+    def _probe() -> None:
+        with socket.create_connection(
+            (LOCAL_MODEL_HOST, LOCAL_MODEL_PORT), timeout=3
+        ):
+            return
+
+    deadline = time.monotonic() + timeout
+    last = "no attempt yet"
+    while time.monotonic() < deadline:
+        try:
+            await asyncio.to_thread(_probe)
+            logger.info(
+                "Local model server is accepting connections on %s:%d",
+                LOCAL_MODEL_HOST, LOCAL_MODEL_PORT,
+            )
+            return True
+        except Exception as exc:
+            last = type(exc).__name__
+        logger.info(
+            "Waiting for the local model server (%s) on %s:%d",
+            last, LOCAL_MODEL_HOST, LOCAL_MODEL_PORT,
+        )
+        await asyncio.sleep(5.0)
+    logger.warning(
+        "Local model server still not accepting connections after %.0fs (last: %s)",
+        timeout, last,
+    )
+    return False
+
+
 async def send_messages(
     count: int, delay: float, web: bool = False, client: str = "row-accumulator"
-) -> None:
-    """Send messages to the backend via WS."""
+) -> int:
+    """Send messages to the backend via WS.
+
+    Returns 0 when the messages went out, or 4 when the local model server
+    never became ready and nothing was sent (see
+    :func:`_wait_for_local_model_ready`).
+    """
     ws_url = _ws_url(client)
     messages_to_send = MESSAGES[:count] if count > 0 else MESSAGES
 
     logger.info("Connecting to %s", ws_url)
     async with websockets.connect(ws_url) as ws:
         logger.info("Connected. Sending %d messages with %.0fs delay", len(messages_to_send), delay)
+
+        # GATE FIRST: no traffic while the model is still loading. See the
+        # helper's docstring for the measured run this prevents.
+        if not await _wait_for_local_model_ready():
+            logger.error(
+                "Refusing to send: the local model server at %s:%d never "
+                "accepted connections. Traffic sent now can only produce error "
+                "turns, which TTS then reads aloud. Start the model and run "
+                "again.",
+                LOCAL_MODEL_HOST, LOCAL_MODEL_PORT,
+            )
+            return 4
 
         if web:
             # Internet access is a CAPABILITY GATE, not a routing switch
@@ -188,6 +278,7 @@ async def send_messages(
                 await asyncio.sleep(delay)
 
         logger.info("Done. Sent %d messages.", len(messages_to_send))
+        return 0
 
 
 def main() -> int:
@@ -205,9 +296,8 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        asyncio.run(send_messages(args.count, args.delay, web=args.web,
-                                  client=args.client))
-        return 0
+        return asyncio.run(send_messages(args.count, args.delay, web=args.web,
+                                         client=args.client))
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
         return 1

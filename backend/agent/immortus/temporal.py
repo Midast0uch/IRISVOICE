@@ -31,7 +31,9 @@ class TemporalCoordinate:
 
     def stability_score(self, confidence: float = 1.0) -> float:
         """
-        Combined stability signal used by TrailingDirector to find stable_anchor.
+        Combined stability signal, originally used by the TrailingDirector to
+        find stable_anchor. That module was DELETED in session 364, so this is
+        now an independent stability metric.
         Higher = more stable = better pivot anchor.
 
         Formula: confidence * (1 + log(identifier_depth + 1)) * (1 - drift)

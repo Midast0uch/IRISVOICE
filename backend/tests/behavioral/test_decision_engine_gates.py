@@ -45,7 +45,11 @@ class _GateEngine:
         self.counters = EngineCounters()
 
         class _Cfg:
-            default_threshold = 0.85
+            # AC25.8: thresholds are keyed by ACTIVE BACKEND IDENTITY — the
+            # stub models the resolved contract (a backend entry present, so
+            # threshold_for returns a number). Updated 2026-09-25 per the
+            # spec's ripple row; the two RED tests below are NOT touched.
+            backend_id = "gate-stub"
 
             @staticmethod
             def threshold_for(_c):
@@ -134,9 +138,12 @@ class TestCtDe6EventShapes:
         # pin. `card_id` (REQ-10 AC2 — stable prism-card lifecycle id, additive
         # per AC5: unknown = inert) and `partial` (REQ-13 AC5 — streaming
         # discriminator, additive: absent means final). The test still rejects
-        # any OTHER key; only these two documented contract extensions were
+        # any OTHER key; only these documented contract extensions were
         # added to the set, each pinned by its own CT (CT-7 / CT-11).
-        pinned |= {"card_id", "partial"}
+        # 2026-09-25 (tool-decision-engine-improvements ripple row): `title`
+        # joins the same way (card_title_for emit at agent_kernel.py:10360) —
+        # the third documented additive-key extension.
+        pinned |= {"card_id", "partial", "title"}
         for ks in keys_seen:
             assert ks <= pinned, f"event shape drifted: {ks - pinned}"
 
@@ -148,7 +155,19 @@ class TestCtDe6EventShapes:
 
 class TestCtDe7Registry:
     def test_consumers_and_counters(self):
-        assert CONSUMERS == ("tool_choice", "presentation", "narration")
+        # STALE-BY-SPEC (2026-09-26): the set grew by `recovery_strategy`
+        # (REQ-11 AC11.3, T15), then by REQ-13/14/15/17's consumers, then by
+        # REQ-29's four surface consumers (T46–T49). The enumeration is the
+        # contract, so it grows WITH the spec; `tier0_classify` stays OUT (a
+        # recorded non-fit, AC29.5) and the other assertions are unchanged.
+        assert CONSUMERS == (
+            "tool_choice", "presentation", "narration", "recovery_strategy",
+            "review_verdict", "sufficient", "done", "on_track",
+            "mode", "web_intent", "retry_same",
+            "has_gaps", "use_thinking", "escalate_incomplete", "needs_action",
+            # Session 364 (owner request): the DEPTH consumer.
+            "depth_met",
+        )
         c = EngineCounters()
         c.bump_consumer("presentation")
         c.bump_consumer("presentation")

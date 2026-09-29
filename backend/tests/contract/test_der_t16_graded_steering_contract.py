@@ -48,7 +48,6 @@ def _make_kernel(session_id: str = "sess-t16") -> AgentKernel:
     k.conversation_id = None
     k.session_id = session_id
     k._memory_interface = None
-    k._trailing_director = None
     k._mcm_orch = None
     k._der_last_u_mag = None
     # Real Caducean state with an oscillating |u| — under the pre-T16

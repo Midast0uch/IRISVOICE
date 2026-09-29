@@ -120,6 +120,50 @@ def open_encrypted_memory(db_path: str, biometric_key: bytes):
     db_file = Path(db_path)
     db_file.parent.mkdir(parents=True, exist_ok=True)
 
+    # ── Session 365: DETECT the file's format instead of ASSUMING it ────────
+    # This function used to try sqlcipher3 first and fall back to plain sqlite3
+    # only when sqlcipher3 could not be IMPORTED. That was correct while this
+    # machine had no sqlcipher3 wheel — but sqlcipher3 is now installed, so the
+    # encrypted branch is taken against a PLAINTEXT data/memory.db and
+    # `PRAGMA key` makes SQLCipher reject it ("file is not a database").
+    #
+    # The blast radius is far larger than a failed open: initialise_memory()
+    # raises, no MemoryInterface is constructed, ffi_init_engine() (its only
+    # caller) is therefore never called, `_engine` stays None, and the ENTIRE
+    # Oracle calibration ledger silently refuses every row — measured as 14
+    # ingest attempts / 14 refusals in a single turn, with nothing in the log
+    # naming the cause.
+    #
+    # The header is unambiguous: a SQLCipher file does NOT start with the
+    # plaintext magic, because SQLCipher encrypts the header too. So read it
+    # and pick the matching reader.
+    #
+    # Deliberately NARROW: only a POSITIVELY identified plaintext file switches
+    # reader. A missing or empty file keeps the previous preference (SQLCipher),
+    # so encryption-at-rest for new databases is unchanged.
+    _PLAIN_MAGIC = b"SQLite format 3\x00"
+    _detected_plain = False
+    try:
+        with open(db_path, "rb") as _probe_fh:
+            _detected_plain = _probe_fh.read(16).startswith(_PLAIN_MAGIC)
+    except OSError:
+        _detected_plain = False  # no file yet (or unreadable) -> old behaviour
+    if _detected_plain:
+        logger.info(
+            "[db] %s is an UNENCRYPTED SQLite file (plaintext header) — "
+            "opening with sqlite3 rather than SQLCipher", db_path,
+        )
+        conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute("PRAGMA cache_size=-20000;")
+        conn.execute("PRAGMA temp_store=MEMORY;")
+        conn.execute("PRAGMA mmap_size=268435456;")
+        conn.execute(f"PRAGMA busy_timeout={DEFAULT_BUSY_TIMEOUT_MS};")
+        conn.execute("SELECT count(*) FROM sqlite_master")
+        return conn
+
     # Try sqlcipher3 first
     try:
         import sqlcipher3 as _sqlcipher3
@@ -169,8 +213,13 @@ def open_encrypted_memory(db_path: str, biometric_key: bytes):
         conn.execute("PRAGMA temp_store=MEMORY;")
         conn.execute("PRAGMA mmap_size=268435456;")
         # D4g: same busy_timeout as the encrypted branch above — this is the
-        # branch actually active on this dev machine (no sqlcipher3 wheel),
-        # so it is the one that produced the "database is locked" evidence.
+        # branch that produced the "database is locked" evidence. NOTE
+        # (session 365): the old comment here claimed this branch is active
+        # because this machine has "no sqlcipher3 wheel". That is no longer
+        # true — sqlcipher3 IS installed — which is exactly why a plaintext
+        # data/memory.db started being opened with a key. The header detection
+        # at the top of this function now routes a plaintext file here
+        # regardless of whether sqlcipher3 is importable.
         conn.execute(f"PRAGMA busy_timeout={DEFAULT_BUSY_TIMEOUT_MS};")
         conn.execute("SELECT count(*) FROM sqlite_master")
         logger.info(f"[db] Opened unencrypted (dev) memory database: {db_path}")

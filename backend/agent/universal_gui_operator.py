@@ -300,6 +300,11 @@ class UniversalGUIOperator:
             coords = self.vl.suggest_click_coords(
                 img, f"{field_name} text input field", win_left, win_top)
             if coords:
+                # Session 365 FIX: `pyautogui` is used below but was never
+                # imported into this scope — the import at the VL branch of the
+                # sibling method is local to THAT function. Without this the VL
+                # fallback raised NameError instead of typing.
+                import pyautogui
                 pyautogui.click(*coords)
                 await asyncio.sleep(0.2)
                 pyautogui.hotkey("ctrl", "a")

@@ -146,8 +146,22 @@ class TestCtDe1Shapes:
         assert names == {"name", "logprob", "prob"}
 
     def test_consumers_enumerated(self):
-        # AC13.1 v1 consumers, fixed set
-        assert CONSUMERS == ("tool_choice", "presentation", "narration")
+        # AC13.1 v1 consumers + REQ-11 AC11.3's `recovery_strategy` (T15).
+        # STALE-BY-SPEC (2026-09-26): the spec mandates the new consumers, so
+        # the enumeration grows with it — REQ-13/14/15/17's consumers and
+        # REQ-29's four surface consumers (T46–T49). `tier0_classify` stays
+        # OUT: a recorded non-fit (AC29.5).
+        assert CONSUMERS == (
+            "tool_choice", "presentation", "narration", "recovery_strategy",
+            "review_verdict", "sufficient", "done", "on_track",
+            "mode", "web_intent", "retry_same",
+            "has_gaps", "use_thinking", "escalate_incomplete", "needs_action",
+            # Session 364 (owner request): the DEPTH consumer. `sufficient` and
+            # `done` ask whether the objective is COVERED; `depth_met` asks
+            # whether it is done to the DEPTH the success criteria require -
+            # the "the Brain settles for half work" complaint, made measurable.
+            "depth_met",
+        )
 
     def test_meta_channel_keys_on_engine_decision(self):
         box = make_box(engine=FakeEngine())
@@ -256,12 +270,14 @@ class TestCtDe3Ledger:
         assert len(bridge.decision_rows) == 1
         row = bridge.decision_rows[0]
         assert row["kind"] == "reason"
-        # Session-345: NONE now takes the AC3.2 ladder (memory→legacy) instead
-        # of committing — so the single row's route is "escalated", not
-        # "engine". The pinned property is unchanged: exactly one route-only
-        # row per decision. (Live finding: engine NONE@0.869 on a websearch
-        # goal used to kill the step without consulting the ladder.)
-        assert row["meta"]["route"] == "escalated"
+        # Session-345 (OQ-2, `tool_decision.py`): a confident NONE on a goal
+        # carrying NO gather/action signal now COMMITS as REASON with route
+        # "engine-none" instead of climbing the AC3.2 ladder. "just think" is
+        # exactly such a goal, so the single route-only row records the COMMIT.
+        # STALE-BY-SPEC (2026-09-26): the earlier expectation of "escalated"
+        # predates the OQ-2 commit and mis-described this fixture. The pinned
+        # property is unchanged: exactly one route-only row, one writer.
+        assert row["meta"]["route"] == "engine-none"
 
     def test_legacy_decision_never_records_rows(self):
         bridge = FakeBridge()

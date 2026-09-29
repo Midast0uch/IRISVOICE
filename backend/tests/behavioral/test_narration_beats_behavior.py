@@ -67,7 +67,9 @@ def _make_kernel(router):
     k._router = router
     k._accrue_tokens = lambda *a, **k_: None
     k._caducean_modulate_temperature = lambda temp, sess: temp
-    k._get_failure_warnings = lambda text: []
+    # REQ-24 AC24.2: the settled return type is str — this stub returned []
+    # while the other five stub "None"; aligned 2026-09-25 (T34).
+    k._get_failure_warnings = lambda text: "None"
     return k
 
 

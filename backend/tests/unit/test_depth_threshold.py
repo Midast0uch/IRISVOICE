@@ -2,9 +2,11 @@
 
 Spec: specs/phase-6-der-integrity/requirements.md REQ-5 AC1/AC3.
 
-A VERIFIED step below expected depth for its task class must trigger
-`analyze_gaps`; one at or above expected depth (or in an intentionally
-excluded task class, AC3) must not.
+A VERIFIED step below expected depth for its task class is flagged; one at or
+above expected depth (or in an intentionally excluded task class, AC3) is not.
+NOTE (session 364): the consumer of this predicate — the TrailingDirector's
+`analyze_gaps` — was DELETED, so nothing reads it at runtime today. These tests
+pin the pure predicate itself, which is why they are kept.
 """
 
 from __future__ import annotations

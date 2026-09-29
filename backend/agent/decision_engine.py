@@ -92,6 +92,18 @@ CONSUMERS: Tuple[str, ...] = (
     "use_thinking",
     "escalate_incomplete",
     "needs_action",
+    # Session 364 (owner request): the DEPTH question, asked against the task's
+    # SUCCESS CRITERIA rather than against coverage alone. The complaint it
+    # exists to measure and then fix: the Brain "settles for half work" - the
+    # loop declares a task complete while required facts are still open, or the
+    # result is only superficially complete. `sufficient` and `done` ask whether
+    # the objective is COVERED; this asks whether it is done to the DEPTH the
+    # criteria demand. Shape: a Noul (a calibrated probability), like the other
+    # monitors (AC14.6). Reference: the loop's OWN run grade, so the parity row
+    # measures exactly how often a "complete" verdict failed the depth bar.
+    # NOTE: this grows the pinned consumer set; the CT-DE-7 enumerations and the
+    # surface-observer tests are updated in the SAME change.
+    "depth_met",
 )
 
 

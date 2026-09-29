@@ -70,7 +70,7 @@ class VPSConfig(BaseModel):
     auth_token: Optional[str] = None
     timeout: int = 30
     health_check_interval: int = 60
-    fallback_to_local: bool = True
+    fallback_to_local: bool = False
     load_balancing: bool = False
     load_balancing_strategy: LoadBalancingStrategy = LoadBalancingStrategy.ROUND_ROBIN
     protocol: VPSProtocol = VPSProtocol.REST

@@ -79,7 +79,6 @@ def test_t11_real_finalize_populates_count_via_loop_write_line():
     kernel.conversation_id = "conv"
     kernel._der_ledger = MagicMock()
     kernel._memory_interface = None
-    kernel._trailing_director = None
     kernel._mcm_orch = None
 
     queue = DirectorQueue(objective="obj")

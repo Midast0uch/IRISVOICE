@@ -423,13 +423,34 @@ class InferenceConfig:
                             "(empty model_path on local entry)"
                         )
                         continue
-                    if inf.local_model_id and entry.model != _local_stem(
-                        inf.local_model_id
-                    ):
+                    # COMPARE LIKE WITH LIKE (2026-09-28). This was an exact
+                    # string match against _local_stem(local_model_id), so an
+                    # entry saved with the file's own spelling
+                    # ('LFM2.5-2.6B-QAD-Q4_0.gguf') was DROPPED whenever
+                    # local_model_id had been normalised ('lfm2.5-2.6b-qad-q4_0')
+                    # — the SAME model, written two ways. Measured live:
+                    #   [Config] validate_providers: dropping
+                    #   local:LFM2.5-2.6B-QAD-Q4_0
+                    #   (model='LFM2.5-2.6B-QAD-Q4_0.gguf' != current
+                    #    local_model_id='lfm2.5-2.6b-qad-q4_0')
+                    # The role binding points AT that id, so dropping the entry
+                    # left tool_execution bound to something unresolvable — the
+                    # very failure this validator exists to prevent.
+                    # Both sides are now stemmed, .gguf-stripped and lowered, so
+                    # presentation can never decide whether a binding resolves.
+                    _entry_stem = (
+                        _local_stem(entry.model).lower()
+                        .removesuffix(".gguf")
+                    )
+                    _current_stem = (
+                        _local_stem(inf.local_model_id).lower()
+                        .removesuffix(".gguf")
+                    )
+                    if inf.local_model_id and _entry_stem != _current_stem:
                         logger.warning(
                             f"[Config] validate_providers: dropping {pid} "
-                            f"(model={entry.model!r} != current local_model_id="
-                            f"{_local_stem(inf.local_model_id)!r})"
+                            f"(model stem {_entry_stem!r} != current "
+                            f"local_model_id stem {_current_stem!r})"
                         )
                         continue
                 else:

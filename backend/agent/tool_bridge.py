@@ -53,6 +53,12 @@ _DECISION_META_KEYS = (
     "final_choice", "engine_correct",
     "stage_detail", "cached",
     "brain_bool", "shadow",
+    # criteria_version (session 364, oracle-addendum 25.6.3): the improving
+    # agent's rule is ONE change at a time, with a criteria version logged on
+    # EVERY row, so a report can scope to (Oracle, Brain, criteria version).
+    # Without this key on the whitelist the version is dropped in transit and
+    # every row becomes unattributable the moment a criterion is edited.
+    "criteria_version",
     # brain_choice (2026-09-27): the parity reference for a LABEL consumer.
     # brain_bool covers a consumer whose answer IS a boolean (sufficient, done,
     # has_gaps...). A label consumer (mode, review_verdict, web_intent...) has a
@@ -3113,7 +3119,18 @@ class AgentToolBridge:
         # last stage named. 120s clears legit quiets (45s nav, ~60s cloud
         # wobble); past it the step fails and recovers instead of burning
         # the full tool budget blind (the blank 162s D7 death).
-        _STALL_S = 120.0
+        # Session 365 — the stall window is a CEILING, not a target, and it must
+        # sit ABOVE the per-page work it is supposed to tolerate.
+        # History: 120 s cleared the legitimate quiets this comment used to name
+        # ("45 s nav, ~60 s cloud wobble"). I then set 10 s to satisfy the
+        # owner's <30 s requirement and that was WRONG — it cancelled every
+        # crawl, because a normal page navigation is silent for far longer than
+        # 10 s (measured live: the model reported "the crawler_query was
+        # stalled"). The real fix was to make the NAVIGATION faster, not the
+        # stall detector twitchier: per-page bounds in capabilities.py are now
+        # goto=8 s / networkidle=2 s, so 12 s clears a bounded page and still
+        # fires well inside the 25 s run ceiling.
+        _STALL_S = float(os.environ.get("IRIS_CRAWL_STALL_S", "12"))
         _stall_at = [time.monotonic()]
         _stall_stage = ["research-start"]
 
