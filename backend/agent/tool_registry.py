@@ -362,6 +362,10 @@ def get_all_specs() -> List[ToolSpec]:
     return list(_REGISTRY.values())
 
 
+# JSON Schema keywords carried from an internal parameter spec to the provider.
+_SCHEMA_KEYWORDS = ("enum", "items", "minimum", "maximum")
+
+
 def to_function_schema(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Convert IRIS-internal tool descriptors to provider function-calling schema.
 
@@ -411,6 +415,14 @@ def to_function_schema(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "type": pspec.get("type", "string"),
                 "description": pspec.get("description", "") or "",
             }
+            # Keep the constraints the model needs to form a valid call
+            # (execution audit B15, 2026-09-29): enums were dropped, and an
+            # array with no `items` is rejected by strict providers.
+            for _kw in _SCHEMA_KEYWORDS:
+                if _kw in pspec:
+                    props[pname][_kw] = pspec[_kw]
+            if props[pname]["type"] == "array" and "items" not in props[pname]:
+                props[pname]["items"] = {"type": "string"}
             if not pspec.get("optional", False):
                 required.append(pname)
         out.append(
@@ -864,10 +876,14 @@ def register_builtin_tools() -> None:
         ),
         ToolSpec(
             name="run_command",
-            description="Run a shell command in the project directory (npm, python, pytest, etc.)",
+            description=(
+                "Run a shell command in the project directory (npm, python, pytest, etc.). "
+                "Returns the exit code and the output; a non-zero exit code means the command failed."
+            ),
             parameters={
                 "command": {"type": "string", "description": "Command to run"},
                 "cwd": {"type": "string", "description": "Working directory (defaults to IRISVOICE root)", "optional": True},
+                "timeout": {"type": "integer", "description": "Seconds to allow, default 300, max 600. Raise it for long test suites or builds.", "optional": True},
             },
             category="shell", executor="dev", permission_tier="side_effect", parallel_safe=False,
         ),

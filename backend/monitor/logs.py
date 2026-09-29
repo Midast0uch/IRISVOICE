@@ -52,6 +52,10 @@ def _module_to_source(module: str) -> str:
     return "system"
 
 
+# Third-party loggers that are per-request chatter at DEBUG/INFO.
+_NOISY_LIBRARY_LOGGERS = ("httpcore", "httpx", "urllib3", "hpack")
+
+
 class LogManagerHandler(logging.Handler):
     """A logging.Handler that forwards every backend log record into the
     in-memory LogManager, organized by the Monitor's source buckets.
@@ -130,6 +134,12 @@ class LogManager:
         # Ensure root actually emits at the handler's level.
         if logging.getLogger().level == logging.NOTSET or logging.getLogger().level > level:
             logging.getLogger().setLevel(min(logging.getLogger().level, level) if logging.getLogger().level != logging.NOTSET else level)
+        # A DEBUG root lets the HTTP client libraries log ~15 lines for EVERY
+        # request (connect/send/receive/close); with a flushed write per line
+        # that grew logs/iris.log past 2 GB and cost I/O on every embedding
+        # call (execution audit, 2026-09-29). Their warnings still come through.
+        for _noisy in _NOISY_LIBRARY_LOGGERS:
+            logging.getLogger(_noisy).setLevel(logging.WARNING)
         return True
 
     def _setup_file_logging(self):

@@ -1,0 +1,460 @@
+<title>IRIS Execution Audit</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<style>
+/* Layout: one reading column (~72ch) with wide tables/diagrams allowed to scroll inside their own boxes. Dark-first, matching the IRIS app (brand hue 210). */
+:root{
+  --bg:#0b0d12; --panel:#12151d; --panel-2:#171b25; --line:#252b38;
+  --fg:#dfe4ee; --muted:#8c96a8; --accent:hsl(210 80% 60%);
+  --ok:#4fbf8a; --warn:#e0a84a; --bad:#e2645a;
+  --display:"IBM Plex Sans Condensed","Arial Narrow",system-ui,sans-serif;
+  --body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,"Cascadia Mono",Consolas,monospace;
+  color-scheme:dark;
+}
+@media (prefers-color-scheme: light){ :root:not([data-theme="dark"]){
+  --bg:#f6f7fa; --panel:#ffffff; --panel-2:#eef1f6; --line:#d8dde7;
+  --fg:#161a22; --muted:#5b6475; --accent:hsl(210 80% 42%);
+  --ok:#1f8a5b; --warn:#a86a0c; --bad:#b83a30; color-scheme:light; } }
+:root[data-theme="light"]{
+  --bg:#f6f7fa; --panel:#ffffff; --panel-2:#eef1f6; --line:#d8dde7;
+  --fg:#161a22; --muted:#5b6475; --accent:hsl(210 80% 42%);
+  --ok:#1f8a5b; --warn:#a86a0c; --bad:#b83a30; color-scheme:light; }
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:15px/1.6 var(--body);padding-inline:16px;padding-block:0 64px}
+main{max-width:860px;margin:0 auto}
+h1,h2,h3{font-family:var(--display);text-wrap:balance;line-height:1.2;margin:0}
+h1{font-size:2.1rem;font-weight:700;letter-spacing:-.01em}
+h2{font-size:1.45rem;font-weight:600;margin-top:3rem;padding-top:1.2rem;border-top:1px solid var(--line)}
+h3{font-size:1.1rem;font-weight:600;margin-top:1.8rem}
+p,li{max-width:72ch}
+p{margin:.7rem 0}
+ul,ol{padding-left:1.3rem;margin:.6rem 0}
+li{margin:.3rem 0}
+a{color:var(--accent)}
+code,.mono{font-family:var(--mono);font-size:.86em}
+code{background:var(--panel-2);padding:.08em .35em;border-radius:4px;overflow-wrap:anywhere}
+.eyebrow{font:600 .72rem/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
+header{padding-block:40px 8px;display:grid;gap:.6rem}
+.meta{color:var(--muted);font-size:.9rem}
+.lede{font-size:1.08rem}
+.analogy{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:1rem 1.2rem;margin:1.2rem 0}
+.analogy h3{margin-top:0;font-size:1rem;color:var(--muted);font-weight:500}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+.two > div{min-width:0}
+.two .col{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:.9rem 1.1rem}
+.two .col h4{margin:0 0 .4rem;font:600 .8rem/1.2 var(--mono);letter-spacing:.06em;text-transform:uppercase}
+.two .col.now h4{color:var(--bad)} .two .col.next h4{color:var(--ok)}
+.two .col p{margin:.3rem 0;font-size:.93rem}
+@media (max-width:640px){.two{grid-template-columns:1fr}}
+.facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:.6rem;margin:1rem 0;padding:0;list-style:none}
+.facts li{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:.6rem .8rem;margin:0;min-width:0}
+.facts b{display:block;font:600 1.15rem/1.3 var(--mono);font-variant-numeric:tabular-nums}
+.facts span{color:var(--muted);font-size:.84rem}
+.scroll{overflow-x:auto;margin:1rem 0;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+table{border-collapse:collapse;width:100%;font-size:.88rem;min-width:680px}
+th,td{text-align:left;vertical-align:top;padding:.55rem .7rem;border-bottom:1px solid var(--line)}
+th{font:600 .72rem/1.2 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);background:var(--panel-2)}
+tr:last-child td{border-bottom:0}
+td.id{font-family:var(--mono);color:var(--muted);white-space:nowrap}
+td .proof{display:block;font-family:var(--mono);font-size:.78rem;color:var(--muted);margin-top:.25rem;overflow-wrap:anywhere}
+.chip{display:inline-block;font:600 .68rem/1 var(--mono);letter-spacing:.05em;padding:.28rem .45rem;border-radius:4px;white-space:nowrap}
+.chip.p0{background:color-mix(in srgb,var(--bad) 18%,transparent);color:var(--bad)}
+.chip.p1{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
+.chip.p2{background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent)}
+pre.mermaid{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:1rem;overflow-x:auto}
+.term{background:#07090d;color:#d6dbe5;border:1px solid var(--line);border-radius:10px;padding:1rem 1.1rem;font:13px/1.65 var(--mono);overflow-x:auto;white-space:pre;margin:1rem 0}
+.term .p{color:hsl(210 80% 64%)} .term .d{color:#7d8799} .term .g{color:#5fcf98} .term .r{color:#ef7a70} .term .y{color:#e8b75c} .term .b{font-weight:700;color:#fff}
+.term .add{color:#5fcf98} .term .del{color:#ef7a70}
+.phase{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:1rem 1.2rem;margin:1rem 0}
+.phase h3{margin-top:0;display:flex;gap:.6rem;align-items:baseline;flex-wrap:wrap}
+.phase h3 .size{font:500 .75rem/1 var(--mono);color:var(--muted)}
+.bound{display:grid;grid-template-columns:auto 1fr;gap:.2rem .8rem;font-size:.9rem;margin-top:.6rem}
+.bound dt{font:600 .72rem/1.9 var(--mono);letter-spacing:.06em}
+.bound dt.done{color:var(--ok)} .bound dt.not{color:var(--bad)}
+.bound dd{margin:0}
+.q{border-left:3px solid var(--accent);padding:.2rem 0 .2rem 1rem;margin:1rem 0}
+.q b{font-family:var(--display);font-size:1.02rem}
+.note{color:var(--muted);font-size:.88rem}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+/* Execution-matrix sketch: a deliberately dark terminal surface in both themes (its own background). */
+.mx-demo{background:#070814;border:1px solid #16324a;border-radius:12px;padding:14px;margin:1rem 0;font:12.5px/1.6 var(--mono);color:#dfe6f2;min-width:0}
+.mx-prompt{margin-bottom:10px;overflow-wrap:anywhere}
+.mx-user{color:#35d0ff;font-weight:700}
+.mx{border:1px solid rgba(0,212,255,.35);border-radius:6px;background:rgba(0,212,255,.03)}
+.mx-head,.mx-thk{display:flex;align-items:center;gap:8px;padding:6px 10px;min-width:0}
+.mx-head{border-bottom:1px solid rgba(0,212,255,.18)}
+.mx-ico{color:#35d0ff}
+.mx-lbl{color:#7fe3ff;font-weight:700;white-space:nowrap}
+.mx-lbl2{color:#f2c14e;font-weight:700;white-space:pre}
+.mx-obj{color:#fff;font-weight:600;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mx-thought{color:#9aa5b8;font-style:italic;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mx-meta{color:#7fe3ff;white-space:nowrap;font-variant-numeric:tabular-nums}
+.mx-count{color:#9aa5b8}
+.mx-chev{background:none;border:1px solid rgba(0,212,255,.3);color:#7fe3ff;border-radius:4px;font:inherit;line-height:1;padding:2px 6px;cursor:pointer}
+.mx-chev.sm{padding:1px 5px;font-size:11px}
+.mx-chev:hover{background:rgba(0,212,255,.12)}
+.mx-body{padding:6px 10px 8px;border-bottom:1px solid rgba(0,212,255,.18);display:grid;gap:2px}
+.mx-row{display:grid;grid-template-columns:14px 16px 6.5ch minmax(0,1fr) auto auto;align-items:center;gap:8px;min-width:0}
+.mx-row .rail{color:rgba(255,255,255,.22)}
+.mx-row .verb{font-weight:700}
+.mx-row .tgt{color:rgba(255,255,255,.82);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mx-row .res{color:#9aa5b8;white-space:nowrap}
+.mx-row .res.bad{color:#ff8a7e}
+.mx-row.done .orb,.mx-row.done .verb{color:#35d0ff}
+.mx-row.fail .orb,.mx-row.fail .verb{color:#ff8a7e}
+.mx-row.run .orb,.mx-row.run .verb{color:#f2c14e}
+.mx-row.todo{opacity:.45}
+.mx-row.run .orb{animation:mxbreathe 1.6s ease-in-out infinite}
+@keyframes mxbreathe{0%,100%{opacity:1;text-shadow:0 0 6px #f2c14e}50%{opacity:.45;text-shadow:none}}
+.mx-detail{margin:2px 0 4px 38px;padding:6px 10px;border-left:1px dashed rgba(0,212,255,.3);white-space:pre;overflow-x:auto;color:#c9d2e0;font-size:11.5px}
+.mx-detail .dim,.mx-demo .dim{color:#6b7689}
+.mx-demo .add{color:#5fcf98}.mx-demo .del{color:#ff8a7e}
+.mx-sub{margin:4px 0 4px 14px;border:1px dashed rgba(190,120,255,.45);border-radius:5px;padding:4px 8px}
+.mx-sublbl{color:#c69bff;font-weight:700;font-size:11.5px}
+.mx-foot{padding:6px 10px;color:#6b7689;font-size:11.5px}
+.mx-folded{margin-top:12px;color:#9aa5b8;font-size:11.5px}
+.mx-conv{color:#5fcf98;font-weight:700}
+.spin{color:#f2c14e}
+@media (prefers-reduced-motion: reduce){.mx-row.run .orb{animation:none}}
+@media (max-width:520px){.mx-demo{font-size:11.5px;padding:10px}.mx-row{grid-template-columns:12px 14px 5.5ch minmax(0,1fr) auto auto;gap:6px}.mx-row.done .res{display:none}.mx-detail{margin-left:20px}}
+</style>
+
+<main>
+<header>
+  <div class="eyebrow">Agent execution · end-to-end trace</div>
+  <h1>IRIS Execution Audit</h1>
+  <div class="meta">2026-09-29 · branch <code>feat/agent-multi-step-tool-execution</code> · read-only trace of routing, planning, tool calls, model calls, replies and the chat view</div>
+</header>
+
+<p class="lede">You are right that the ingredients are there. Memory, a tool bridge, a typed error system, Oracle, the task card, a steering inbox: all of it exists and most of it works. The execution side fails because of the <em>shape</em> the parts are arranged in, plus about fifteen small defects that each block coding work on their own.</p>
+
+<div class="analogy">
+  <h3>The picture in one paragraph</h3>
+  <p>Today a coding task runs like a relay race where each runner only sees a slip of paper. The planner writes goals on index cards. It never sees the tools. A quick sorter (Oracle) picks one tool per card from a menu of four. A small 2.6B model fills in the tool form, and the form holds only 500 tokens. A clerk then stamps "verified" if the machine did not jam, even when the test it ran failed. The next runner gets 400 characters of what happened. Nobody sees the whole job, and nobody reads the test result.</p>
+  <p>Agents that do long coding tasks well work like <strong>one skilled worker at a bench</strong>. The worker sees the whole job and picks any tool. The worker reads the real output and keeps going until the tests pass. IRIS already has that worker (<code>_respond_direct</code>). It is only allowed three rounds, and only for messages that a keyword list decides are "simple".</p>
+</div>
+
+<div class="two">
+  <div class="col now"><h4>Why it breaks now</h4>
+    <p>The loop was shaped for <b>web research</b>: gather, check, summarize. Its guards were built for that job. They include the repeat guard, the 400-character evidence limit, the text-similarity check and the "enough found" gate.</p>
+    <p>Coding is a <b>feedback loop</b>: read, edit, run, read the error, edit again. Every research guard pushes against that loop.</p>
+  </div>
+  <div class="col next"><h4>What fixes it</h4>
+    <p><b>Keep one engine, and change what runs inside a node.</b> DER-DAG stays the planner and the map: it builds the graph, branches into sub-loops and folds results back. Today a node is <em>one tool call</em>. In the new design, each node runs a <b>small work loop</b>: one model with all tools, a transcript for that node, and real results, until the node's goal is met.</p>
+    <p>A simple task is a graph of one node. Research and coding are the same engine with different tools. Oracle scores the choices alongside, and the task card shows the graph.</p>
+  </div>
+</div>
+
+<h2>By the numbers</h2>
+<ul class="facts">
+  <li><b>20,987</b><span>lines in <code>agent_kernel.py</code>, one class, ~300 methods</span></li>
+  <li><b>~1,600</b><span>lines each in <code>_execute_plan_der</code> and <code>_der_finalize_step</code></span></li>
+  <li><b>527</b><span>broad <code>except</code> blocks in the kernel; ~157 end in <code>pass</code></span></li>
+  <li><b>63 / 137</b><span>commits since Sep 1 that are fixes, mostly at seams between parts</span></li>
+  <li><b>7</b><span>separate layers that each guess the task type</span></li>
+  <li><b>3</b><span>tool lists that disagree (bridge 44–47, registry 56, executor fallback)</span></li>
+  <li><b>~12</b><span>places that produce text the user reads or hears</span></li>
+  <li><b>5,642</b><span>lines in <code>chat-view.tsx</code>: one component, 39 <code>useState</code>, 39 <code>useEffect</code></span></li>
+</ul>
+
+<h2>The path a task takes today</h2>
+<pre class="mermaid">
+flowchart LR
+  U[Your message] --> G{Keyword gate<br/>substring match}
+  G -- no action word --> D[Direct chat<br/>max 3 tool rounds]
+  G -- action word --> P[Planner<br/>writes goals, never tools]
+  P --> Q[Step queue]
+  Q --> O[Oracle scores 4 tools<br/>goal cut to 200 chars]
+  O -- confident --> X[Run tool]
+  O -- unsure --> S[2.6B model writes args<br/>max 500 tokens]
+  S --> X
+  X --> V[Verify: did the tool<br/>say success?]
+  V --> N[Next step sees<br/>400 chars of output]
+  N --> Q
+  Q -- queue empty --> C[One 400-token call:<br/>any next step?]
+  C -- parse error or no --> Y[Summary call<br/>no persona, no history]
+</pre>
+<p class="note">Each arrow is a place where information is lost. The planner never learns which tools exist in detail. The resolver never sees the conversation. The summary never sees your persona or the history. Memory stores only the final spoken line, not what was done.</p>
+
+<h2>Blockers: why coding cannot work today</h2>
+<p>Each row alone can stop a coding task. Most are small, contained fixes. <span class="chip p0">P0</span> blocks coding outright. <span class="chip p1">P1</span> makes results wrong or unstable. <span class="chip p2">P2</span> adds noise or cost. I read the code for every P0 row myself. The other rows come from the traces and cite their lines.</p>
+
+<div class="scroll"><table>
+<thead><tr><th>#</th><th></th><th>What happens</th><th>Fix</th></tr></thead>
+<tbody>
+<tr><td class="id">B1</td><td><span class="chip p0">P0</span></td><td><b>The model setup cannot write code.</b> Every tool call is written by <code>LFM2.5-2.6B</code> running locally. Its window was measured at 8,192 tokens. The turn budget is the <em>smaller</em> of the two roles' windows, so a whole DER turn works in about 3–7k tokens. The Brain runs on Ollama, and the Ollama transport sends <b>no tool definitions</b>. It also has a fixed 30 s timeout with no retry.<span class="proof">data/iris_config.json:34-45 · inference/transport.py:1512-1546 · agent_kernel.py:1934-1963</span></td><td>The app stays model-agnostic. Send <code>tools</code> and stream in the Ollama transport, and honour <code>timeout_s</code>, so that <code>gemma4:31b-cloud</code> can drive a node. Inside one node, the same model thinks and calls tools. Models with no native tool calls get a text protocol that sends parse errors back to the model.</td></tr>
+<tr><td class="id">B2</td><td><span class="chip p0">P0</span></td><td><b>The tool form holds 500 tokens.</b> The call that writes tool arguments uses <code>max_tokens=500</code>. A <code>write_file</code> body longer than about 1,500 characters cannot come out of it.<span class="proof">tool_decision.py:1689, 1709</span></td><td>Fixed by the node executor, where the model writes arguments inside its own loop. A stopgap is to size the limit from the tool.</td></tr>
+<tr><td class="id">B3</td><td><span class="chip p0">P0</span></td><td><b>The same command never runs twice.</b> "Hard rule 2": a tool with the same arguments is never re-run <em>for the whole conversation</em>. The agent reads the old result instead. Running the tests again after an edit, or reading a file again after writing it, is blocked.<span class="proof">agent_kernel.py:15952-15990 (map written at 11628, 16202)</span></td><td>Apply the rule to web fetches only, and never to <code>run_command</code>, <code>read_file</code> or git.</td></tr>
+<tr><td class="id">B4</td><td><span class="chip p0">P0</span></td><td><b>A failing test is marked VERIFIED.</b> <code>run_command</code> returns <code>success: true</code> even with a non-zero exit code. A step with a tool and <code>success</code> is VERIFIED with no other check.<span class="proof">tool_bridge.py:2626-2657 · agent_kernel.py:16832</span></td><td>Treat a non-zero <code>returncode</code> as a failed step, and show the model the exit code.</td></tr>
+<tr><td class="id">B5</td><td><span class="chip p0">P0</span></td><td><b>Errors get cut to 400 characters.</b> Later steps see 400 characters of any earlier result that did not come from a gather or read tool. That includes shell, test and git output, so a stack trace is lost.<span class="proof">agent_kernel.py:14192-14199</span></td><td>Keep the first and last parts of long output (about 8–16k), and keep the full text available by reference.</td></tr>
+<tr><td class="id">B6</td><td><span class="chip p0">P0</span></td><td><b>Long commands time out and run again.</b> The step deadline for <code>run_command</code> is 90 s, but the tool itself allows 120 s. The timeout text contains "timeout", so the step retries up to 2 more times. Meanwhile the first process is "abandoned, not killed".<span class="proof">der_constants.py:310-312 · agent_kernel.py:10151, 16396-16403</span></td><td>Let the tool's own timeout decide, up to 10 minutes. Kill the process on timeout. Do not retry commands.</td></tr>
+<tr><td class="id">B7</td><td><span class="chip p0">P0</span></td><td><b>Developer mode never reaches the agent that does the work.</b> <code>set_launcher_mode</code> updates only the "default" kernel. Each conversation gets its own kernel that starts as "personal", and the code that copies settings from other kernels skips the mode. The planner uses the plain personality prompt, so PROJECT.md never reaches planning or steps.<span class="proof">agent_kernel.py:607, 20797-20811, 7031 · main.py:581, 1358</span></td><td>Read the mode from <code>CapabilitySet</code> when the prompt is built (one line), not from a copy stored on each kernel.</td></tr>
+<tr><td class="id">B8</td><td><span class="chip p0">P0</span></td><td><b>A keyword list decides whether to plan.</b> The words <em>fix, implement, refactor, debug</em> are not on the list. The match is by substring, so "set" matches "settings" and "test" matches "latest".<span class="proof">semantic_gate.py:139-158, 394</span></td><td>Let the router decide (Oracle's <code>mode</code> consumer, which already works well by its rows). In developer mode, send every request to the work loop.</td></tr>
+<tr><td class="id">B9</td><td><span class="chip p0">P0</span></td><td><b>There is no edit tool.</b> A change means reading the whole file and writing the whole file again. <code>read_file</code> has no line range and no size limit. <code>write_file</code> is not atomic and does not check that the file was read first.<span class="proof">mcp/builtin_servers.py:467-513</span></td><td>Add <code>edit_file(path, old, new)</code> (exact, unique match), and a line range on <code>read_file</code>.</td></tr>
+<tr><td class="id">B10</td><td><span class="chip p1">P1</span></td><td><b>The agent cannot see its own edits to IRIS.</b> Self-edit writes go to a git worktree, but <code>read_file</code> and <code>run_command</code> still use the live repo.<span class="proof">tool_bridge.py:1868-1875, 2448-2512, 2604-2610</span></td><td>Send reads and command working directories to the same worktree.</td></tr>
+<tr><td class="id">B11</td><td><span class="chip p1">P1</span></td><td><b>Any error text with the digit 5 is treated as temporary.</b> The keyword list includes <code>"5"</code>, so a port number, a line number or a file path starts a retry.<span class="proof">tool_decision.py:570</span></td><td>Remove it. Match <code>5\d\d</code> status codes instead.</td></tr>
+<tr><td class="id">B12</td><td><span class="chip p1">P1</span></td><td><b>Source code can set off the "destructive" approval.</b> Words such as "overwrite", "format ", "purge" and "destroy" are matched against the whole argument text, including the content being written.<span class="proof">permissions.py:330-371, 478-483</span></td><td>Match only command arguments and paths, never file content.</td></tr>
+<tr><td class="id">B13</td><td><span class="chip p1">P1</span></td><td><b>A task can end without a sign.</b> After the planned steps, one 400-token call reads a greedy JSON regex. A parse failure returns <code>None</code>, and that means "done". Messages of 50 characters or fewer run in QUICK mode, which never continues. The label <code>code_task</code> matches no mode branch.<span class="proof">agent_kernel.py:19215-19360 · der_loop.py:367-457</span></td><td>Fixed by the node executor: a node is finished when the model returns no tool call, and <code>plan_update</code> adds the next node.</td></tr>
+<tr><td class="id">B14</td><td><span class="chip p1">P1</span></td><td><b>Chat stops after 3 tool rounds, without a sign.</b> After round 3, further tool calls are dropped. Bad argument JSON is still run as <code>__raw_arguments__</code>.<span class="proof">agent_kernel.py:3425-3496</span></td><td>Use a budget of tokens and time, not a count of rounds. Send parse errors back to the model.</td></tr>
+<tr><td class="id">B15</td><td><span class="chip p1">P1</span></td><td><b>The tool schemas the model sees are wrong.</b> The conversion drops <code>enum</code> and array <code>items</code>. Parameters that the descriptions call "optional" are sent as required. The chat path has no <code>grep_files</code> or <code>glob_files</code>.<span class="proof">tool_registry.py:365-430 · tool_bridge.py:511-826</span></td><td>Use one registry and one full JSON Schema output.</td></tr>
+<tr><td class="id">B16</td><td><span class="chip p1">P1</span></td><td><b>A stream retry repeats text.</b> The reply buffer is created outside the retry loop, so a stream that fails partway and then retries adds new text after the partial text.<span class="proof">inference/transport.py:1054-1058, 664-668</span></td><td>Reset the buffers on each attempt, or do not retry after the first chunk arrived.</td></tr>
+<tr><td class="id">B17</td><td><span class="chip p2">P2</span></td><td><b>The prompts contain noise.</b> 589 kernel lines hold garbled characters (<code>â€”</code> where a dash should be). Two test skills are loaded into the live prompt. No prompt gives the current date. Every system prompt also carries Caducean and EML jargon.<span class="proof">agent_kernel.py:2385-2470 · skills_loader.py:18-58</span></td><td>Re-encode the file, filter out <code>_test_*</code> skills, add the date, and keep the physics tags out of the prompt the model reads.</td></tr>
+</tbody></table></div>
+
+<h2>The structural problems</h2>
+<h3>1. Too many places guess what you want</h3>
+<p>Seven separate parts each try to decide the kind of request:</p>
+<ul>
+  <li>the keyword gate</li>
+  <li><code>TaskClassifier</code></li>
+  <li><code>ModeDetector</code></li>
+  <li><code>_decide_mode</code> (by message length)</li>
+  <li><code>_should_skip_der</code></li>
+  <li>Oracle's <code>mode</code> consumer</li>
+  <li>the Reviewer</li>
+</ul>
+<p>They can disagree, and nothing settles which one wins. The fix is one router that makes one choice, and node loops that need no further guessing.</p>
+
+<h3>2. Oracle is at the wrong place in the coding loop</h3>
+<p>Oracle does its job well: it gives fast, calibrated answers over a small menu. Choosing the next action in a coding task is a different kind of question:</p>
+<ul>
+  <li>The right tool depends on the last output.</li>
+  <li>The menu is 4 tools, in registry order, with vision tools first.</li>
+  <li>The goal is cut to 200 characters, and each tool description to 90.</li>
+  <li>Oracle's own doc reports <code>tool_choice</code> AUROC as 0.54. That is chance level.</li>
+</ul>
+<p><b>Recommendation:</b></p>
+<ul>
+  <li>Keep Oracle for the questions it answers well: mode, web intent, presentation and recovery hints.</li>
+  <li>Take it off the <em>deciding</em> path inside a node loop.</li>
+  <li>Let it score every tool choice the model makes as a shadow row. You get calibration data for free on each step, and no call waits for it.</li>
+</ul>
+
+<h3>3. Errors become answers</h3>
+<p>Many failures return a string instead of raising: "[IRIS error] …", "Still working on your previous request", "Web search is currently disabled". These strings then flow through the normal reply path:</p>
+<ul>
+  <li>They are shown as assistant replies.</li>
+  <li>They are stored in memory.</li>
+  <li>They can be spoken with the <em>previous</em> turn's speech line, because <code>_last_spoken_text</code> is reset only on the success path.</li>
+</ul>
+<p>Across 527 broad <code>except</code> blocks, the usual pattern is "log a warning and carry on". Several consumers were dead for whole sessions because of a swallowed <code>NameError</code>.</p>
+
+<h3>4. The kernel is too large to reason about</h3>
+<ul>
+  <li>One class has about 300 methods.</li>
+  <li>About 900 lines are dead code: <code>plan_task</code>, <code>_generate_response</code> and <code>_handle_control_codes</code> have no callers.</li>
+  <li>Comments promise behaviour that does not exist: "falls back to ReAct" appears three times, and no such fallback exists.</li>
+  <li>There are two <code>IRISGateway</code> classes.</li>
+</ul>
+<p>A new agent that works in this file cannot keep the whole file in its context. That is one reason each fix breaks another part.</p>
+
+<h2>One engine: DER plans, every node runs a loop</h2>
+<div class="analogy">
+  <h3>The picture</h3>
+  <p>DER-DAG is the general contractor. It reads the job, draws the plan, opens side jobs when it needs them (sub-loops) and collects the results (fold-back). Today the contractor hands each worker <em>one instruction</em> and walks away. In the new design, each node gets a <b>skilled worker at a bench</b>. The worker has every tool and keeps working on that node until its goal is met, then reports back. The contractor keeps the big picture, and the worker handles the details.</p>
+</div>
+<pre class="mermaid">
+flowchart LR
+  U[Your message] --> R{Router<br/>Oracle mode}
+  R -- chat --> C[Direct reply<br/>a 1-node graph]
+  R -- task --> P[DER planner<br/>sees the tool families]
+  P --> G[(DAG of nodes)]
+  G --> N1
+  subgraph N1[Node = bounded work loop]
+    M[Model<br/>all tools + node transcript] --> T[Run tools<br/>read-only in parallel]
+    T --> RES[Real results<br/>exit code, head+tail] --> M
+  end
+  M -- plan_update --> G
+  G -- split --> SUB[Child nodes<br/>sub-loop, same executor] --> FOLD[Fold back<br/>summary to parent]
+  FOLD --> G
+  MEM[(Memory pack<br/>+ recall tool)] --> M
+  G --> CARD[Execution matrix<br/>one row per node]
+  T -. shadow score .-> OR[Oracle rows]
+  G -- all nodes met --> A[Answer streams]
+  A --> TR[(Turn trace saved)]
+</pre>
+
+<p><b>Why one engine is the better design, and what it costs.</b> A separate loop would ship sooner. It would also leave two engines that drift apart, which is the exact pattern that made today's code brittle. The unified shape keeps everything DER already does well: the graph, branching, fold-back, the card contract, the ledger, the physics and Oracle rows. It replaces only the weak seam, "one node = one tool call chosen from a goal string". The cost is that the node executor must plug into the DER scheduler. That is why the executor goes in a <em>new module</em> with one clear entry, <code>run_node(node, context) → NodeResult</code>. It does not go into the 1,600-line methods.</p>
+
+<ol>
+  <li><b>A node is a loop, not a call.</b> Grow the ReAct loop in <code>_respond_direct</code> into the node executor. Inside a node, the model sees its own earlier tool calls and their results word for word. The node ends when the model returns no tool call, or when the node's token or time budget runs out. A round count does not end it. A simple chat turn is a graph with one node, so there is one engine for everything.</li>
+  <li><b>The model can change the graph.</b> A <code>plan_update</code> tool (the model's to-do list) adds, splits or closes nodes in the DAG. It uses the graft and amend paths DER already has. Each node is a matrix row: the backend creates it and orders it with <code>seq</code>, so the TASK_CARD contract you already built still holds. The planner also sees the tool families, so its nodes match what the tools can do.</li>
+  <li><b>Research guards become tool policies.</b> The repeat guard, the wall ledger and the "enough found" gate attach to the <em>web tool family</em>, not to the loop. Research keeps its protections, and coding is no longer blocked by them.</li>
+  <li><b>Real coding tools.</b>
+    <ul>
+      <li><code>read_file</code> with line numbers and a range</li>
+      <li><code>edit_file</code> with an exact, unique match</li>
+      <li><code>write_file</code> for new files</li>
+      <li><code>grep</code> and <code>glob</code></li>
+      <li><code>run_command</code> with a timeout set per call (up to 10 minutes) that returns the exit code, stdout and stderr</li>
+    </ul>
+    <p>Two guards apply: the agent must read a file before it edits it, and the tools stay inside the workspace folder.</p></li>
+  <li><b>Checks based on what really happened.</b> A non-zero exit code is a failure, and the model sees it. When tests were run, "done" means the last test run passed. Text similarity stays for research answers only.</li>
+  <li><b>Memory where it pays off.</b> Recall runs once at the start, as one bounded pack. A <code>recall</code> tool lets the model ask for more. At the end of the turn, IRIS saves a short trace: the goal, the files touched, the commands and the outcome. Today only the final spoken line is saved, so the next session cannot learn what was done.</li>
+  <li><b>Long tasks.</b> Nodes keep each transcript small, because a node sees its own work plus short summaries of the nodes before it. When a node's transcript gets close to the window, older tool output is summarized. The graph and the node results are saved to disk after each node, so a task can resume. Steering text from your existing inbox enters the running node as a user message.</li>
+  <li><b>One error policy.</b> Inside a node, an exception becomes a typed tool result that the model can react to, using the FAULTLINE shape you already have. Outside the loop, it becomes a turn error that the UI shows. The loop has no silent <code>pass</code>.</li>
+</ol>
+
+<h2>The reply surface</h2>
+<div class="analogy">
+  <h3>The picture</h3>
+  <p>Today one reply is carried by three couriers, in three envelope sizes, with no delivery receipt. The front desk (the chat view) guesses which envelopes belong together. It guesses by matching turn ids as strings. When a guess fails, a card lands in the "orphan" pile, or a reply ends up in the wrong conversation.</p>
+</div>
+
+<h3>Backend: one turn protocol</h3>
+<p>Every turn becomes <code>turn.start</code>, then numbered <code>turn.part</code> events, then exactly one <code>turn.end</code>. The event types are:</p>
+<ul>
+  <li><code>text</code> and <code>reasoning</code> deltas</li>
+  <li><code>tool_call</code> and <code>tool_result</code></li>
+  <li><code>todo</code></li>
+  <li><code>card</code> and <code>document</code></li>
+  <li><code>error</code></li>
+</ul>
+<p><code>turn.end</code> carries a status (ok, error or cancelled) and the text to speak. The schema lives in one Python module, and the TypeScript types are generated from it. Contract tests run on both sides.</p>
+<p>What this removes:</p>
+<ul>
+  <li>the three shapes of <code>text_response</code></li>
+  <li>the <code>chat_message</code>/<code>text_response</code> split between the text path and the voice path</li>
+  <li>the flat-or-nested tolerance code</li>
+  <li>the <code>chat_reasoning</code> and <code>error</code> events that nothing reads</li>
+</ul>
+
+<h3>Frontend: one turn store</h3>
+<p>Build replies the way the task card is already built. Use an external store with a reducer (the same pattern as <code>useTaskProgress</code>) that holds <code>Turn { id, conversationId, status, parts[] }</code>. Then split <code>chat-view.tsx</code> into <code>ChatShell → Timeline → TurnView → PartView</code>, with one view for each part type. Specific bugs this closes:</p>
+<ul>
+  <li>The card-anchor early return. The turn id is added at line 1290 and checked at line 1293, so a card falls to the orphan pile.</li>
+  <li>The 500-character clamp while a reply streams. The reply freezes at 6 lines, and the element remounts.</li>
+  <li>Chunk, text and plan events are written to the <em>active</em> conversation, not to the conversation named in the event.</li>
+  <li>The suggestion-pill send has no <code>conversation_id</code>, no typing state and no dev routing.</li>
+  <li>The retry calls <code>fetch</code> inside a state updater, and it leaves a "Retrying…" message that nothing removes.</li>
+  <li>Backend errors and live reasoning have no listener, so you never see them.</li>
+</ul>
+
+<h3>Speech</h3>
+<ul>
+  <li>Make "spoken ⊆ visible" true. Today IRIS speaks lines such as "Sub-task done; folding back into the main thread." Your own planner prompt forbids that kind of line, and the chat never shows it.</li>
+  <li>Use one function that decides the spoken text, not five.</li>
+  <li>Filter code out of speech once, on the complete text, not per sentence.</li>
+</ul>
+
+<h2>Developer mode: a real terminal view</h2>
+<p>Developer mode today is a partial re-skin:</p>
+<ul>
+  <li>9 px ASCII task cards that scroll sideways</li>
+  <li>11 px raw text, with <code>**</code> and fences shown as literal characters</li>
+  <li>glass-style headers, feedback bars and permission cards in the same scroll</li>
+</ul>
+<p>Shell output from <code>&gt;cmd</code> and <code>/run</code> goes to a scrollback store that nothing renders, so those commands look as if they do nothing.</p>
+
+<h3>Your concept is right. The build turned it into a picture.</h3>
+<p>Your <code>cli-preview</code> direction is a live structural view. You watch the work take shape, and thinking does not fill the screen. That is the right idea, and it lines up with the one-engine design, because the matrix <em>is</em> the DER graph drawn on screen. The problem is how it was built. <code>renderBlueprintCellMatrixCLI</code> produces a fixed 68-column <b>string</b> of box characters, and the chat view prints that string in a 9 px <code>&lt;pre&gt;</code>. A string cannot animate, cannot fold a single row, cannot fit a narrow wing and cannot open to show output. It is a printed photo of a dashboard, not the dashboard. Your preview page already draws the matrix as real elements, and that is the version to grow.</p>
+
+<h3>Proposal: the terminal is the matrix</h3>
+<p>Each developer turn has three parts: a prompt line, the <b>live execution matrix</b>, and the answer. The matrix keeps your Blueprint language: the cyan frame, <code>┊</code> rails, <code>○ ◎ ● ✦</code> orbs, a fixed verb column and <code>↳</code> sub-loop chambers. It is built from components, so it moves. Click a chevron below to try the frame.</p>
+
+<div class="mx-demo" id="mxdemo">
+  <div class="mx-prompt"><span class="mx-user">iris@dev ›</span> the router test fails after the window change — fix it</div>
+  <div class="mx" data-open="true">
+    <div class="mx-head">
+      <span class="mx-ico">▤</span><span class="mx-lbl">TASK :</span><span class="mx-obj">Fix the router window test</span>
+      <span class="mx-meta"><span class="mx-count">4/6</span> <span class="mx-clock" id="mxclock">⏱ 0:31</span></span>
+      <button class="mx-chev" aria-expanded="true" data-target="body" title="Fold the matrix">⌃</button>
+    </div>
+    <div class="mx-thk"><span class="mx-lbl2">THK  :</span><span class="mx-thought">the cap subtracts max_tokens but not the 256-token reserve…</span></div>
+    <div class="mx-body" data-part="body">
+      <div class="mx-row done"><span class="rail">┊</span><span class="orb">●</span><span class="verb">READ</span><span class="tgt">backend/agent/inference/router.py</span><span class="res">419–466</span></div>
+      <div class="mx-row fail"><span class="rail">┊</span><span class="orb">●</span><span class="verb">EXEC</span><span class="tgt">pytest tests/unit/test_router.py -q</span><span class="res bad">✗ exit 1</span><button class="mx-chev sm" aria-expanded="false" data-target="out1" title="Show output">⌄</button></div>
+      <div class="mx-detail" data-part="out1" hidden><span class="dim">…36 lines above</span>
+FAILED test_router.py::test_cap_respects_reserve
+AssertionError: expected 8192, got 4096
+<span class="dim">2 failed, 10 passed in 1.84s</span></div>
+      <div class="mx-sub"><div class="mx-sublbl">↳ [sub-loop: find callers]</div>
+        <div class="mx-row done"><span class="rail">┊</span><span class="orb">●</span><span class="verb">GREP</span><span class="tgt">_cap_messages_to_window</span><span class="res">3 hits</span></div>
+        <div class="mx-row done"><span class="rail">┊</span><span class="orb">✦</span><span class="verb">FOLD</span><span class="tgt">only generate() calls it</span><span class="res"></span></div>
+      </div>
+      <div class="mx-row run"><span class="rail">┊</span><span class="orb">◎</span><span class="verb">PATCH</span><span class="tgt">router.py</span><span class="res"><span class="add">+3</span> <span class="del">−1</span> <span class="spin" id="mxspin">⠋</span></span><button class="mx-chev sm" aria-expanded="true" data-target="diff1" title="Hide diff">⌃</button></div>
+      <div class="mx-detail" data-part="diff1"><span class="del">- budget = window - max_tokens</span>
+<span class="add">+ budget = window - max_tokens - _RESERVE</span></div>
+      <div class="mx-row todo"><span class="rail"> </span><span class="orb">○</span><span class="verb">EXEC</span><span class="tgt">re-run router tests</span><span class="res"></span></div>
+    </div>
+    <div class="mx-foot">MEM: recalled 2 episodes on window budgets</div>
+  </div>
+  <div class="mx-folded">When the turn ends, the matrix folds to one line and the answer gets the space:<br><span class="mx-conv">✦ CONVERGED · 6 nodes · 1 sub-loop · 0:42 ⌄</span></div>
+</div>
+
+<ul>
+  <li><b>Live, not replayed.</b> A row appears when its node is born. The running orb breathes. The rail fills as nodes finish. The row's result chip shows the current action as it happens, for example <code>◎ EXEC pytest… ⠋ 0:07</code>.</li>
+  <li><b>Thinking is one line.</b> <code>THK</code> shows only the latest sentence, as it streams. The chevron opens the full reasoning. It never takes over the view.</li>
+  <li><b>Chevrons at two levels.</b> The frame folds to one summary line. Each row opens to show that node's tool calls, the tail of the output and the diffs. Rows are closed by default, except a failure and the running row.</li>
+  <li><b>It fits any width.</b> The rails and chambers are CSS, and the text shortens with an ellipsis. No sideways scroll. It uses one mono face at a readable 12–13 px, not 9 px.</li>
+  <li><b>One visual grammar.</b> A <code>&gt;cmd</code> shell command is a one-node matrix with an <code>EXEC</code> row. Permission and question prompts become rows that wait in the matrix. The answer is markdown rendered in the same mono family.</li>
+  <li><b>The data stays shared.</b> Rows still come from <code>useTaskProgress</code>, <code>rowOrder</code> and <code>verbRegistry</code>. The ANSI string renderer stays for real terminal export and logs, and its parity tests keep the GUI card, the matrix and the export in step. Personal mode renders the same turn parts as prose plus the GUI card.</li>
+</ul>
+<p class="note">The frame above is a sketch of the direction, not the final visual design. The motion, the palette and the chamber style are open, and I suggest we make them a design pass in the IRIS style once the turn parts exist.</p>
+
+<h2>Order of work</h2>
+<p>Each phase has a DONE line (when the phase stops) and a NOT THIS line (the over-builds it tempts), in the format your CLAUDE.md uses.</p>
+
+<div class="phase"><h3>Phase 0 · Measure first <span class="size">small</span></h3>
+<p>Build a set of about 15 real developer tasks in a scratch copy of a repo. Each task has a checker that runs a test. Examples: "rename this function and update its callers", "make this failing test pass", "add a flag and a test for it". Also add about 8 personal-mode research tasks, because research is what most users will do. Their checkers look for facts that can be verified, for sources, and for the absence of an error reply. Run the set after every change, with <code>gemma4:31b-cloud</code> as the test model. This turns "brittle" into a pass rate you can watch go up. It is the gap-finding harness your CLAUDE.md describes, aimed at execution.</p>
+<dl class="bound"><dt class="done">DONE</dt><dd>One command runs all tasks and prints the pass rate per group, and today's baseline is recorded.</dd><dt class="not">NOT THIS</dt><dd>A benchmark framework, dashboards, or tasks without an automatic checker.</dd></dl></div>
+
+<div class="phase"><h3>Phase 1 · Remove the blockers <span class="size">small · B3–B8, B10–B12, B15–B17</span></h3>
+<p>These are small, contained fixes inside the current design. Several of them help the current DER loop even before the node executor exists.</p>
+<dl class="bound"><dt class="done">DONE</dt><dd>Each blocker has a regression test that fails on the old code, and the Phase 0 pass rate goes up.</dd><dt class="not">NOT THIS</dt><dd>Restructuring DER, or touching Oracle.</dd></dl></div>
+
+<div class="phase"><h3>Phase 2 · The node executor inside DER, developer mode first <span class="size">medium</span></h3>
+<p>Build <code>run_node(node, context) → NodeResult</code> in a new module, not in <code>agent_kernel.py</code>. DER calls it where it calls <code>ToolDecisionBox.resolve</code> and a single dispatch today. The phase includes:</p>
+<ul>
+  <li>the Ollama transport with tools (B1)</li>
+  <li>the coding tools (B9)</li>
+  <li><code>plan_update</code> on DER's graft and amend paths</li>
+  <li>checks based on exit codes</li>
+  <li>research guards moved onto the web tool family</li>
+  <li>Oracle shadow rows</li>
+  <li>the node trace saved to memory</li>
+</ul>
+<p>Developer-mode turns use the new executor first. Personal-mode research changes over when its group of the pass rate is equal or better.</p>
+<dl class="bound"><dt class="done">DONE</dt><dd>Every developer-mode node runs through <code>run_node</code>, and the coding group passes at least 12 of 15 with no fall in the research group.</dd><dt class="not">NOT THIS</dt><dd>A second engine next to DER, a rewrite of the DER scheduler, multi-agent swarms, or a plugin system for tools.</dd></dl></div>
+
+<div class="phase"><h3>Phase 3 · The turn protocol and the turn store <span class="size">medium</span></h3>
+<p>The backend event schema, the generated TypeScript types, the turn reducer, and the split of <code>chat-view.tsx</code> into <code>TurnView</code>/<code>PartView</code>, with tests that render them.</p>
+<dl class="bound"><dt class="done">DONE</dt><dd>Every turn ends with exactly one <code>turn.end</code>. An error shows in the chat. Replay tests of recorded turns pass in both modes.</dd><dt class="not">NOT THIS</dt><dd>A visual redesign in the same change.</dd></dl></div>
+
+<div class="phase"><h3>Phase 4 · The live execution matrix <span class="size">medium</span></h3>
+<p>Grow the matrix from <code>cli-preview</code> into components (<code>MatrixFrame</code>, <code>MatrixRow</code>, <code>SubLoopChamber</code>, <code>RowDetail</code>). Feed them from the Phase 3 turn parts and the existing card store. Then do a visual design pass on motion and chamber style.</p>
+<dl class="bound"><dt class="done">DONE</dt><dd>A developer turn shows the prompt line, a live matrix whose rows appear, run and fold as nodes do, and a rendered answer. It fits the wing width with no sideways scroll, and a <code>&gt;cmd</code> command shows as an <code>EXEC</code> row.</dd><dt class="not">NOT THIS</dt><dd>Changes to personal mode's look, or removing the ANSI export renderer.</dd></dl></div>
+
+<div class="phase"><h3>Phase 5 · Long tasks and shrinking the kernel <span class="size">large, ongoing</span></h3>
+<ul>
+  <li>Summarize old output as the transcript fills, and resume from the saved transcript.</li>
+  <li>Delete the dead code and keep one tool registry and one gateway.</li>
+  <li>Move the remaining DER pieces out of the kernel one at a time. The Phase 0 pass rate guards each move.</li>
+</ul>
+<dl class="bound"><dt class="done">DONE</dt><dd>A 30-step task survives a backend restart, and <code>agent_kernel.py</code> is below 8k lines.</dd><dt class="not">NOT THIS</dt><dd>A rewrite in one pass.</dd></dl></div>
+
+<h2>Decisions so far</h2>
+<div class="q"><b>1. Model:</b><p>The app stays model-agnostic. Testing uses <code>gemma4:31b-cloud</code> on Ollama, with larger models later. The Cline pass key is available when needed. Result: the Ollama transport must carry tools (B1).</p><p><b>Split roles stay:</b> a fast local 2.6B model for tool calls next to an API Brain. In a node, the tool model is the <em>hands</em>. It makes valid calls, repairs schema errors locally and gives the Brain a digest of large output. The Brain is the <em>pen</em>. Fields marked <code>authored_by: "brain"</code> (<code>write_file.content</code>, <code>edit_file.new</code>, <code>create_artifact.content</code>) are written by the Brain in a streamed call and passed straight into the tool call. The 500-token limit (B2) therefore never cuts a file. The reply surface report has the details.</p></div>
+<div class="q"><b>2. Oracle:</b><p>It advises and records shadow rows in the node loop, and it keeps deciding where its bar says it may.</p></div>
+<div class="q"><b>3. Engine:</b><p>One engine. DER-DAG plans and branches, and every node runs a bounded work loop. Developer mode changes over first, then personal-mode research.</p></div>
+<div class="q"><b>4. Developer view:</b><p>The live execution matrix, grown from your <code>cli-preview</code> Blueprint concept, with chevrons at the frame and row levels and a one-line thought stream. The visual details stay open for a design pass.</p></div>
+
+<h2>Scope of this trace</h2>
+<p class="note">This was a read-only trace. Nothing was edited and no tests were run. Five parallel read-only traces covered routing and the loop, tool calls, replies, the chat view, and prompts with model calls. I checked every P0 row against the source myself. Rows B10 and B16 and the frontend bugs come from reading the code and were not reproduced live. The MCM graph server was offline during the trace, so the trace did not use the graph.</p>
+</main>
+<script>
+(function(){
+  var demo=document.getElementById('mxdemo'); if(!demo) return;
+  demo.addEventListener('click',function(e){
+    var b=e.target.closest('.mx-chev'); if(!b) return;
+    var part=demo.querySelector('[data-part="'+b.dataset.target+'"]'); if(!part) return;
+    var open=b.getAttribute('aria-expanded')==='true';
+    part.hidden=open; b.setAttribute('aria-expanded',String(!open)); b.textContent=open?'⌄':'⌃';
+  });
+  if(window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  var frames='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏',i=0,s=31,spin=document.getElementById('mxspin'),clock=document.getElementById('mxclock');
+  setInterval(function(){ i=(i+1)%frames.length; if(spin) spin.textContent=frames[i]; },90);
+  setInterval(function(){ s++; if(clock) clock.textContent='⏱ '+Math.floor(s/60)+':'+String(s%60).padStart(2,'0'); },1000);
+})();
+</script>

@@ -1,0 +1,635 @@
+{
+  "recorded_at": "2026-09-29T14:41:05",
+  "models": [],
+  "summary": {
+    "coding": {
+      "passed": 0,
+      "total": 15
+    },
+    "research": {
+      "passed": 1,
+      "total": 6
+    }
+  },
+  "results": [
+    {
+      "id": "c01_fix_off_by_one",
+      "group": "coding",
+      "passed": false,
+      "seconds": 139.9,
+      "notes": [
+        "hidden: 1 failed, 2 passed in 23.55s"
+      ],
+      "conversation_id": "conv-175",
+      "workdir": "C:\\Users\\midas\\AppData\\Local\\Temp\\iris-evals\\20260929-134258\\c01_fix_off_by_one",
+      "tools": [],
+      "web_used": false,
+      "permissions": 0,
+      "questions": 0,
+      "reply_head": "I couldn't complete that task. 0/4 steps finished, but the following step(s) failed:\n- Read the contents of test_mathutils.py to understand the failing test case: [Errno 2] No such file or directory: 'test_mathutils.py'\n- Read the contents of mathutils.py to identify the off-by-one error: summary: Read the contents of mathutils.py to identify the off-by-one error | remaining: Read the contents of ",
+      "event_counts": {
+        "cli_activity": 1,
+        "cli_started": 1,
+        "system_status": 80,
+        "ping": 2,
+        "listening_state": 1,
+        "audio_envelope": 1,
+        "context:usage": 1,
+        "cli_output": 5,
+        "text_response": 1
+      }
+    },
+    {
+      "id": "c02_add_slugify",
+      "group": "coding",
+      "passed": false,
+      "seconds": 71.7,
+      "notes": [
+        "hidden: 1 error in 0.69s"
+      ],
+      "conversation_id": "conv-176",
+      "workdir": "C:\\Users\\midas\\AppData\\Local\\Temp\\iris-evals\\20260929-134258\\c02_add_slugify",
+      "tools": [],
+      "web_used": false,
+      "permissions": 0,
+      "questions": 0,
+      "reply_head": "I have added the `slugify` function to `textutils.py` as requested.\n\n## Implementation Details\n\nThe function follows the specified logic:\n- **Case**: Converts all text to lowercase.\n- **Replacement**: Uses regular expressions to replace sequences of non-alphanumeric characters with a single hyphen.\n- **Trimming**: Strips any leading or trailing hyphens.\n\n## File Update\n\n| Field | Value |\n| :--- | ",
+      "event_counts": {
+        "cli_activity": 1,
+        "cli_started": 1,
+        "system_status": 29,
+        "ping": 1,
+        "context:usage": 3,
+        "task:learning": 2,
+        "cli_output": 11,
+        "text_response": 1
+      }
+    },
+    {
+      "id": "c03_rename_across_files",
+      "group": "coding",
+      "passed": false,
+      "seconds": 62.8,
+      "notes": [
+        "hidden: 2 failed, 1 passed in 0.31s"
+      ],
+      "conversation_id": "conv-177",
+      "workdir": "C:\\Users\\midas\\AppData\\Local\\Temp\\iris-evals\\20260929-134258\\c03_rename_across_files",
+      "tools": [],
+      "web_used": false,
+      "permissions": 0,
+      "questions": 0,
+      "reply_head": "I couldn't complete that task. 5/7 steps finished, but the following step(s) failed:\n- Update the function definition and all call sites to use 'compute_total': [Errno 2] No such file or directory: '/C/Users/midas/AppData/Local/Temp/iris-evals/20260929-134258/c03_rename_across_files/billing/core.py'\n- Run python main.py to ensure the project still functions correctly: summary: Run python main.py t",
+      "event_counts": {
+        "cli_activity": 1,
+        "cli_started": 1,
+        "system_status": 35,
+        "context:usage": 6,
+        "task:learning": 5,
+        "listening_state": 2,
+        "audio_envelope": 2,
+        "ping": 1,
+        "cli_output": 3,
+        "text_response": 1
+      }
+    },
+    {
+      "id": "c04_implement_from_tests",
+      "group": "coding",
+      "passed": false,
+      "seconds": 62.8,
+      "notes": [
+        "hidden: 12 failed, 1 passed in 0.60s"
+      ],
+      "conversation_id": "conv-178",
+      "workdir": "C:\\Users\\midas\\AppData\\Local\\Temp\\iris-evals\\20260929-134258\\c04_implement_from_tests",
+      "tools": [],
+      "web_used": false,
+      "permissions": 0,
+      "questions": 0,
+      "reply_head": "I couldn't complete that task. 0/4 steps finished, but the following step(s) failed:\n- Read the content of test_durations.py to determine the expected behavior of parse_duration: [Errno 2] No such file or directory: 'test_durations.py'\n- Read the current content of durations.py: summary: Read the current content of durations.py | remaining: Read the current content of durations.py\n- Implement the ",
+      "event_counts": {
+        "cli_activity": 1,
+        "cli_started": 1,
+        "listening_state": 8,
+        "audio_envelope": 8,
+        "context:usage": 1,
+        "system_status": 13,
+        "ping": 1,
+        "cli_output": 5,
+        "text_response": 1
+      }
+    },
+    {
+      "id": "c05_add_cli_flag",
+      "group": "coding",
+      "passed": false,
+      "seconds": 62.9,
+      "notes": [
+        "hidden: 2 failed, 1 passed in 1.61s"
+      ],
+      "conversation_id": "conv-180",
+      "workdir": "C:\\Users\\midas\\AppData\\Local\\Temp\\iris-evals\\20260929-140129\\c05_add_cli_flag",
+      "tools": [],
+      "web_used": false,
+      "permissions": 0,
+      "questions": 0,
+      "reply_head": "I couldn't complete that task. 0/2 steps finished, but the following step(s) failed:\n- Read the contents of C:\\Users\\midas\\AppData\\Local\\Temp\\iris-evals\\20260929-140129\\c05_add_cli_flag\\greet.py: summary: Read the contents of C:\\Users\\midas\\AppData\\Local\\Temp\\iris-evals\\20260929-140129\\c05_add_cli_flag\\greet.py | remaining: Read the contents of C:\\Users\\midas\\AppData\\Local\\Temp\\iris-evals\\20260929",
+      "event_counts": {
+        "cli_activity": 1,
+        "cli_started": 1,
+        "listening_state": 1,
+        "audio_envelope": 1,
+        "system_status": 12,
+        "ping": 1,
+        "context:usage": 1,
+        "cli_output": 3,
+        "text_response": 1
+      }
+    },
+    {
+      "id": "c06_fix_import_error",
+      "group": "coding",
+      "passed": false,
+      "seconds": 33.1,
+      "notes": [
+        "hidden: 2 failed, 1 passed in 0.37s"
+      ],
+      "conversation_id": "conv-181",
+      "workdir": "C:\\Users\\midas\\AppData\\Local\\Temp\\iris-evals\\20260929-140129\\c06_fix_import_error",
+      "tools": [
+        "direct"
+      ],
+      "web_used": false,
+      "permissions": 0,
+      "questions": 0,
+      "reply_head": "I couldn't complete that task. 0/5 steps finished, but the following step(s) failed:\n- List the files in the project directory to understand the structure: summary: List the files in the project directory to understand the structure | remaining: List the files in the project directory to understand the structure\n- Read app.py to see how it imports area_circle and area_square: summary: Read app.py ",
+      "event_counts": {
+        "cli_activity": 1,
+        "cli_started": 1,
+        "task:start": 2,
+        "tool:call": 1,
+        "task:fail": 2,
+        "context:usage": 1,
+        "cli_output": 6,
+        "text_response": 1
+      }
+    },
+    {
+      "id": "c07_config_defaults",
+      "group": "coding",
+      "passed": false,
+      "seconds": 15.4,
+      "notes": [
+        "hidden: 4 failed in 1.01s"
+      ],
+      "conversation_id": "conv-182",
+      "workdir": "C:\\Users\\midas\\AppData\\Local\\Temp\\iris-evals\\20260929-140129\\c07_config_defaults",
+      "tools": [],
+      "web_used": false,
+      "permissions": 0,
+      "questions": 0,
+      "reply_head": "I couldn't complete that task. 0/2 steps finished, but the following step(s) failed:\n- Read the contents of config.py in the specified directory: summary: Read the contents of config.py in the specified directory | remaining: Read the contents of config.py in the specified directory\n- Rewrite load_config to return a merged dictionary of DEFAULTS and file values, ensuring DEFAULTS remains untouched",
+      "event_counts": {
+        "cli_activity": 1,
+        "cli_started": 1,
+        "context:usage": 1,
+        "cli_output": 3,
+        "text_response": 1
+      }
+    },
+    {
+      "id": "c08_write_tests",
+      "group": "coding",
+      "passed": false,
+      "seconds": 19.1,
+      "notes": [
+        "hidden: 6 failed, 1 passed in 0.78s",
+        "LEAK into IRIS repo: [' M backend/agent/tool_decision.py', '?? backend/tests/unit/test_classify_error_status_codes.py']"
+      ],
+      "conversation_id": "conv-183",
+      "workdir": "C:\\Users\\midas\\AppData\\Local\\Temp\\iris-evals\\20260929-140129\\c08_write_tests",
+      "tools": [],
+      "web_used": false,
+      "permissions": 0,
+      "questions": 0,
+      "reply_head": "I couldn't complete that task. 0/3 steps finished, but the following step(s) failed:\n- Read the contents of stack.py to understand the class implementation: [Errno 2] No such file or directory: 'stack.py'\n- Create test_stack.py with pytest cases covering push, pop, peek, is_empty, len, and empty stack errors: summary: Create test_stack.py with pytest cases covering push, pop, peek, is_empty, len, ",
+      "event_counts": {
+        "cli_activity": 1,
+        "cli_started": 1,
+        "system_status": 14,
+        "context:usage": 1,
+        "cli_output": 4,
+        "text_response": 1
+      }
+    },
+    {
+      "id": "c09_edit_long_file",
+      "group": "coding",
+      "passed": false,
+      "seconds": 33.4,
+      "notes": [
+        "hidden: 1 failed, 3 passed in 0.32s"
+      ],
+      "conversation_id": "conv-184",
+      "workdir": "C:\\Users\\midas\\AppData\\Local\\Temp\\iris-evals\\20260929-140129\\c09_edit_long_file",
+      "tools": [],
+      "web_used": false,
+      "permissions": 0,
+      "questions": 0,
+      "reply_head": "I couldn't complete that task. 0/2 steps finished, but the following step(s) failed:\n- Read the contents of inventory_report.py in the specified project directory: summary: Read the contents of inventory_report.py in the specified project directory | remaining: Read the contents of inventory_report.py in the specified project directory\n- Update the total_value function to return the sum of price m",
+      "event_counts": {
+        "cli_activity": 1,
+        "cli_started": 1,
+        "system_status": 14,
+        "context:usage": 1,
+        "cli_output": 3,
+        "text_response": 1
+      }
+    },
+    {
+      "id": "c10_create_module",
+      "group": "coding",
+      "passed": false,
+      "seconds": 62.6,
+      "notes": [
+        "hidden: 1 error in 0.67s",
+        "LEAK into IRIS repo: ['?? backend/tests/unit/test_tool_args_output_cap.py']"
+      ],
+      "conversation_id": "conv-185",
+      "workdir": "C:\\Users\\midas\\AppData\\Local\\Temp\\iris-evals\\20260929-140129\\c10_create_module",
+      "tools": [],
+      "web_used": false,
+      "permissions": 0,
+      "questions": 0,
+      "reply_head": "I have started setting up the project directory, but the file itself has not been created yet.\n\n## Current Status\n- The directory `C:\\Users\\midas\\AppData\\Local\\Temp\\iris-evals\\20260929-140129\\c10_create_module` was successfully created.\n\n## Missing Requirements\nThe file `inventory.py` and the `Inventory` class (including the `add`, `remove`, and `count` methods) have not been created.",
+      "event_counts": {
+        "cli_activity": 1,
+        "cli_started": 1,
+        "context:usage": 2,
+        "task:learning": 1,
+        "system_status": 15,
+        "ping": 1,
+        "cli_output": 4,
+        "text_response": 1
+      }
+    },
+    {
+      "id": "c11_two_bugs_two_files",
+      "group": "coding",
+      "passed": false,
+      "seconds": 62.4,
+      "notes": [
+        "hidden: 2 failed, 2 passed in 0.35s",
+        "LEAK into IRIS repo: [' M backend/agent/tool_bridge.py', '?? backend/tests/contract/test_render_tool_real_store_signature.py', '?? backend/tests/unit/test_file_tools_session_workdir.py']"
+      ],
+      "conversation_id": "conv-186",
+      "workdir": "C:\\Users\\midas\\AppData\\Local\\Temp\\iris-evals\\20260929-140129\\c11_two_bugs_two_files",
+      "tools": [],
+      "web_used": false,
+      "permissions": 0,
+      "questions": 0,
+      "reply_head": "I couldn't complete that task. 1/4 steps finished, but the following step(s) failed:\n- Examine the geometry package source files to find the bugs causing the test failures: [Errno 2] No such file or directory: '/Users/midas/AppData/L/geometry'\n- Apply the necessary fixes to the geometry package files: summary: Apply the necessary fixes to the geometry package files | remaining: Apply the necessary",
+      "event_counts": {
+        "cli_activity": 1,
+        "cli_started": 1,
+        "terminal_output": 34,
+        "file_activity": 11,
+        "context:usage": 2,
+        "task:learning": 1,
+        "system_status": 6,
+        "ping": 1,
+        "cli_output": 4,
+        "text_response": 1
+      }
+    },
+    {
+      "id": "c12_add_method_long_class",
+      "group": "coding",
+      "passed": false,
+      "seconds": 18.7,
+      "notes": [
+        "hidden: 1 failed, 1 passed in 0.24s",
+        "LEAK into IRIS repo: [' D backend/agent/skills/_test_dispatch_skill/SKILL.md']"
+      ],
+      "conversation_id": "conv-187",
+      "workdir": "C:\\Users\\midas\\AppData\\Local\\Temp\\iris-evals\\20260929-140129\\c12_add_method_long_class",
+      "tools": [],
+      "web_used": false,
+      "permissions": 0,
+      "questions": 0,
+      "reply_head": "I couldn't complete that task. 0/2 steps finished, but the following step(s) failed:\n- Read the contents of ledger.py in the specified project directory: [Errno 2] No such file or directory: '/home/user/project/ledger.py'\n- Implement the balance_on(date) method in the Ledger class to sum entries on or before the given ISO date: summary: Implement the balance_on(date) method in the Ledger class to ",
+      "event_counts": {
+        "cli_activity": 1,
+        "cli_started": 1,
+        "listening_state": 3,
+        "audio_envelope": 3,
+        "context:usage": 1,
+        "cli_output": 3,
+        "text_response": 1
+      }
+    },
+    {
+      "id": "c13_explain_code",
+      "group": "coding",
+      "passed": false,
+      "seconds": 63.4,
+      "notes": [
+        "error or empty reply",
+        "missing: ['\\\\bfed\\\\b']",
+        "hidden: 1 passed in 0.01s",
+        "LEAK into IRIS repo: [' M backend/agent/agent_kernel.py', '?? backend/tests/unit/test_launcher_mode_reaches_thread_kernels.py']"
+      ],
+      "conversation_id": "conv-188",
+      "workdir": "C:\\Users\\midas\\AppData\\Local\\Temp\\iris-evals\\20260929-140129\\c13_explain_code",
+      "tools": [],
+      "web_used": false,
+      "permissions": 0,
+      "questions": 0,
+      "reply_head": "Agent turn failed: Empty response from Ollama",
+      "event_counts": {
+        "cli_activity": 1,
+        "cli_started": 1,
+        "system_status": 43,
+        "listening_state": 2,
+        "audio_envelope": 2,
+        "ping": 1,
+        "text_response": 1
+      }
+    },
+    {
+      "id": "c14_run_and_report",
+      "group": "coding",
+      "passed": false,
+      "seconds": 152.7,
+      "notes": [
+        "missing: ['\\\\b(3|three)\\\\b[^.\\\\n]{0,40}\\\\bfail|\\\\bfail\\\\w*\\\\W{0,5}(3|three)\\\\b']",
+        "hidden: 1 passed in 0.02s"
+      ],
+      "conversation_id": "conv-189",
+      "workdir": "C:\\Users\\midas\\AppData\\Local\\Temp\\iris-evals\\20260929-140129\\c14_run_and_report",
+      "tools": [],
+      "web_used": false,
+      "permissions": 0,
+      "questions": 0,
+      "reply_head": "I couldn't complete that task. 5/6 steps finished, but the following step(s) failed:\n- Analyze the test output to determine the exact number of failed tests: summary: Analyze the test output to determine the exact number of failed tests | remaining: Analyze the test output to determine the exact number of failed tests\n\nIf a search or source failed, try rephrasing the request or pasting the informa",
+      "event_counts": {
+        "cli_activity": 1,
+        "cli_started": 1,
+        "listening_state": 6,
+        "audio_envelope": 6,
+        "system_status": 67,
+        "context:usage": 6,
+        "task:learning": 5,
+        "ping": 2,
+        "task:start": 1,
+        "plan:recovery_start": 1,
+        "terminal_output": 13,
+        "cli_output": 2,
+        "text_response": 1
+      }
+    },
+    {
+      "id": "c15_iterate_until_green",
+      "group": "coding",
+      "passed": false,
+      "seconds": 135.5,
+      "notes": [
+        "hidden: 7 failed, 3 passed in 0.39s"
+      ],
+      "conversation_id": "conv-190",
+      "workdir": "C:\\Users\\midas\\AppData\\Local\\Temp\\iris-evals\\20260929-140129\\c15_iterate_until_green",
+      "tools": [
+        "direct",
+        "list_directory",
+        "direct",
+        "list_directory",
+        "direct",
+        "get_rendered_documents",
+        "direct",
+        "get_rendered_documents",
+        "direct",
+        "run_command"
+      ],
+      "web_used": false,
+      "permissions": 0,
+      "questions": 0,
+      "reply_head": "I have successfully updated the implementation to ensure all tests in `test_roman.py` pass.\n\n## Test Results\nI ran the test suite using `pytest`, and all tests are now passing.\n\n| Metric | Result |\n| :--- | :--- |\n| Test File | `test_roman.py` |\n| Status | All tests passed |\n| Return Code | `0` |\n\n## Actions Taken\n- Identified the implementation and test files in the project directory.\n- Analyzed ",
+      "event_counts": {
+        "cli_activity": 1,
+        "cli_started": 1,
+        "listening_state": 6,
+        "audio_envelope": 6,
+        "task:start": 2,
+        "tool:call": 10,
+        "task:progress": 14,
+        "memory:event": 12,
+        "tool:result": 5,
+        "context:usage": 6,
+        "task:learning": 5,
+        "system_status": 61,
+        "ping": 2,
+        "terminal_output": 1,
+        "task:fail": 1,
+        "task:done": 1,
+        "cli_output": 12,
+        "text_response": 1
+      }
+    },
+    {
+      "id": "r01_python_origin",
+      "group": "research",
+      "passed": true,
+      "seconds": 162.2,
+      "notes": [],
+      "conversation_id": "conv-191",
+      "workdir": null,
+      "tools": [],
+      "web_used": true,
+      "permissions": 0,
+      "questions": 0,
+      "reply_head": "The Python programming language was created by Guido van Rossum, and its first version was released in 1991.",
+      "event_counts": {
+        "chat_typing": 1,
+        "system_status": 87,
+        "chat_heartbeat": 31,
+        "listening_state": 1,
+        "audio_envelope": 1,
+        "ping": 3,
+        "crawler_started": 1,
+        "crawler_page_fetched": 5,
+        "crawler_complete": 1,
+        "context:usage": 2,
+        "task:learning": 1,
+        "chat_chunk": 2,
+        "inference_event": 1,
+        "chat_message": 1
+      }
+    },
+    {
+      "id": "r02_websocket_rfc",
+      "group": "research",
+      "passed": false,
+      "seconds": 618.8,
+      "notes": [
+        "timed out",
+        "error or empty reply",
+        "missing: ['\\\\b6455\\\\b']"
+      ],
+      "conversation_id": "conv-192",
+      "workdir": null,
+      "tools": [],
+      "web_used": true,
+      "permissions": 0,
+      "questions": 0,
+      "reply_head": "",
+      "event_counts": {
+        "chat_typing": 1,
+        "chat_heartbeat": 115,
+        "ping": 10,
+        "system_status": 195,
+        "listening_state": 22,
+        "crawler_vision_action": 1,
+        "audio_envelope": 13,
+        "task:start": 2,
+        "plan:recovery_start": 2,
+        "crawler_started": 1,
+        "crawler_phase": 4,
+        "crawler_page_fetched": 2,
+        "crawler_source_parked": 2
+      }
+    },
+    {
+      "id": "r03_attention_paper",
+      "group": "research",
+      "passed": false,
+      "seconds": 600.8,
+      "notes": [
+        "timed out",
+        "error or empty reply",
+        "missing: ['vaswani', '\\\\b2017\\\\b']"
+      ],
+      "conversation_id": "conv-193",
+      "workdir": null,
+      "tools": [],
+      "web_used": true,
+      "permissions": 0,
+      "questions": 0,
+      "reply_head": "",
+      "event_counts": {
+        "chat_typing": 1,
+        "chat_heartbeat": 115,
+        "ping": 10,
+        "system_status": 232,
+        "listening_state": 6,
+        "audio_envelope": 6,
+        "task:learning": 1,
+        "crawler_started": 1,
+        "crawler_phase": 4,
+        "crawler_page_fetched": 1,
+        "crawler_source_parked": 3
+      }
+    },
+    {
+      "id": "r04_kilimanjaro",
+      "group": "research",
+      "passed": false,
+      "seconds": 315.5,
+      "notes": [
+        "missing: ['\\\\b5[,. ]?89\\\\d\\\\b']"
+      ],
+      "conversation_id": "conv-195",
+      "workdir": null,
+      "tools": [],
+      "web_used": true,
+      "permissions": 0,
+      "questions": 0,
+      "reply_head": "The tallest mountain in Africa is Mount Kilimanjaro.\n\nThe provided source did not list the height of the mountain in meters.",
+      "event_counts": {
+        "chat_typing": 1,
+        "listening_state": 3,
+        "audio_envelope": 3,
+        "chat_heartbeat": 59,
+        "system_status": 127,
+        "ping": 5,
+        "crawler_started": 1,
+        "crawler_phase": 4,
+        "crawler_source_parked": 2,
+        "crawler_page_fetched": 1,
+        "open_tab": 1,
+        "crawler_complete": 1,
+        "context:usage": 2,
+        "task:learning": 1,
+        "chat_chunk": 2,
+        "inference_event": 1,
+        "chat_message": 1
+      }
+    },
+    {
+      "id": "r05_fastapi_license",
+      "group": "research",
+      "passed": false,
+      "seconds": 379.1,
+      "notes": [
+        "missing: ['\\\\bMIT\\\\b']"
+      ],
+      "conversation_id": "conv-196",
+      "workdir": null,
+      "tools": [],
+      "web_used": true,
+      "permissions": 0,
+      "questions": 0,
+      "reply_head": "I've completed the task. 1/1 steps finished.\n- Search for the FastAPI GitHub repository license: --- Source: https://github.com/fastapi/fastapi/blob/c796ba4f46a6e81477ce44eabe13fd01d82f2c4a/LICENSE --- fastapi/LICENSE at c796ba4f46a6e81477ce44eabe13fd01d82f2c4a \u00b7 fastapi/fastapi \u00b7 GitHub Skip to content Na [\u2026] duce about 40% of human (developer) induce [...truncated...]\n\nWhat would you like to do ",
+      "event_counts": {
+        "chat_typing": 1,
+        "chat_heartbeat": 74,
+        "system_status": 146,
+        "ping": 6,
+        "listening_state": 5,
+        "audio_envelope": 3,
+        "crawler_started": 1,
+        "crawler_phase": 4,
+        "crawler_page_fetched": 5,
+        "open_tab": 1,
+        "crawler_complete": 1,
+        "context:usage": 2,
+        "task:learning": 1,
+        "chat_chunk": 2,
+        "inference_event": 1,
+        "chat_message": 1
+      }
+    },
+    {
+      "id": "r06_tokyo_osaka",
+      "group": "research",
+      "passed": false,
+      "seconds": 600.3,
+      "notes": [
+        "timed out",
+        "error or empty reply",
+        "missing: ['tokyo', 'osaka', 'million']"
+      ],
+      "conversation_id": "conv-197",
+      "workdir": null,
+      "tools": [],
+      "web_used": true,
+      "permissions": 0,
+      "questions": 0,
+      "reply_head": "",
+      "event_counts": {
+        "chat_typing": 1,
+        "chat_heartbeat": 99,
+        "system_status": 177,
+        "ping": 9,
+        "listening_state": 7,
+        "audio_envelope": 5,
+        "crawler_started": 2,
+        "crawler_phase": 8,
+        "crawler_page_fetched": 9,
+        "crawler_source_parked": 1,
+        "crawler_progress": 1
+      }
+    }
+  ],
+  "note": "Baseline of the code before the 2026-09-29 Phase 1 fixes. r07/r08 never ran: research turns took 5-10 min each and two backend crashes stopped the runs. LEAK notes on c08/c10/c11/c13 are the auditor's own concurrent edits; c12 is a test fixture deleted by a test run (restored)."
+}

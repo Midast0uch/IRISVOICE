@@ -341,6 +341,13 @@ _DESTRUCTIVE_PARAM_PATTERNS: List[str] = [
     "overwrite",
 ]
 
+# Params that carry written DATA (file bodies, replacement text, messages).
+# The pattern scan above never reads them; see classify_tool.
+_CONTENT_PARAM_KEYS: frozenset = frozenset({
+    "content", "contents", "text", "body", "data", "code", "markdown", "html",
+    "new", "old", "new_string", "old_string", "message", "summary", "description",
+})
+
 # Goal contract T18 (REQ-9 AC9.6): deletion/removal COMMAND forms. These are
 # shell-command tokens, matched with word boundaries against the shell
 # command text only (never against prose inside a file write) so the
@@ -475,9 +482,17 @@ def classify_tool(tool_name: str, params: Optional[Dict[str, Any]] = None) -> Pe
             pass  # registry read must never break classification
         base_tier = PermissionTier.SIDE_EFFECT  # unknown default
 
-    # Check params for destructive patterns — escalates any tier to DESTRUCTIVE
+    # Check params for destructive patterns — escalates any tier to DESTRUCTIVE.
+    # CONTENT params are not scanned (execution audit B12, 2026-09-29): a file
+    # body, replacement text or commit message is data being written, not an
+    # action. Source code containing "overwrite", "format " or "purge" made a
+    # plain write_file ask for destructive confirmation.
     if params:
-        params_str = str(params).lower()
+        _scan = (
+            {k: v for k, v in params.items() if str(k).lower() not in _CONTENT_PARAM_KEYS}
+            if isinstance(params, dict) else params
+        )
+        params_str = str(_scan).lower()
         for pattern in _DESTRUCTIVE_PARAM_PATTERNS:
             if pattern in params_str:
                 return PermissionTier.DESTRUCTIVE

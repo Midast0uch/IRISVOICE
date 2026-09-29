@@ -305,6 +305,23 @@ _VISION_PHRASES = (
 )
 
 
+# Developer-mode menu priority: the tools a coding step actually uses, with
+# ripgrep search right after reading. Only the first (cap - 2) reach the scorer.
+_DEV_MENU_ORDER = (
+    "read_file", "grep_files", "write_file", "run_command",
+    "glob_files", "list_directory", "git_diff", "git_status",
+)
+
+
+def _developer_mode() -> bool:
+    try:
+        from backend.capabilities import CapabilitySet
+
+        return CapabilitySet.is_developer()
+    except Exception:
+        return False
+
+
 def _vision_relevant(goal: str) -> bool:
     """Deterministic vision-relevance feature (REQ-16, amended by REQ-3).
 
@@ -566,8 +583,11 @@ def _classify_error(error: Optional[str], result: Any = None) -> str:
     if not error:
         return "permanent"
     err_lower = error.lower()
-    # Transient / rate-limit
-    if any(kw in err_lower for kw in ("timeout", "timed out", "connection reset", "5")):
+    # Transient / rate-limit. A 5xx status is matched as a whole 3-digit code:
+    # the old bare "5" keyword matched ANY digit 5 (a line number, a port, a
+    # path), so "SyntaxError at line 15" was classified transient and retried.
+    if any(kw in err_lower for kw in ("timeout", "timed out", "connection reset")) \
+            or re.search(r"\b5\d\d\b", err_lower):
         return "transient"
     if any(kw in err_lower for kw in ("rate limit", "429", "too many requests")):
         return "rate_limit"
@@ -915,6 +935,15 @@ class ToolDecisionBox:
                 ]
                 vision_front = vision_names
                 names = vision_names + [n for n in names if n not in vision_names]
+            if not needs_vision and _developer_mode():
+                # The menu is cut to the cap in list order, and the registry
+                # lists vision tools FIRST - so in a coding task the Oracle was
+                # scoring vision tools while read/grep/run never made the menu
+                # (execution audit, 2026-09-29). Developer steps rank the coding
+                # tools first; the menu WIDTH is unchanged, so the calibrated
+                # threshold still applies.
+                _front = [n for n in _DEV_MENU_ORDER if n in names]
+                names = _front + [n for n in names if n not in _front]
             _cap = getattr(getattr(engine, "_cfg", None), "candidate_cap", 8)
             if vision_front:
                 # guaranteed in: vision names stay at the front; the composed
@@ -1680,13 +1709,17 @@ class ToolDecisionBox:
         # actual job (2026-08-16).
         _sel_role = self._selection_role()
 
+        # No call-site output cap (execution audit B2, 2026-09-29). This call
+        # writes the tool ARGUMENTS, and for write_file those are the whole
+        # file body: the old max_tokens=500 made any file over ~1,500 chars
+        # impossible to write. The router's own default still bounds a
+        # runaway generation, and its window cap already reserves room for it.
         try:
             text, _thinking, tool_calls = self._router.generate(
                 _sel_role,
                 messages,
                 tools=_fn_tools,
                 temperature=0.2,
-                max_tokens=500,
             )
             # REQ-4 (specs/tool-decision-engine, session-342 E5): the planner
             # died cleanly on an EMPTY completion ("[TOOL_DECISION_FAIL]
@@ -1706,7 +1739,6 @@ class ToolDecisionBox:
                     messages,
                     tools=_fn_tools,
                     temperature=0.2,
-                    max_tokens=500,
                 )
 
             # ── 4. Parse response ──────────────────────────────────────

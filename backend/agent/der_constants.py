@@ -310,6 +310,11 @@ LEDGER_PROMPT_MAX = 20
 DEADLINE_CRAWL_S = 240
 DEADLINE_READ_S = 60
 DEADLINE_DEFAULT_S = 90
+# run_command carries its own timeout (default 300 s, max 600 s, see
+# tool_bridge._command_timeout) and kills the process when it expires. The
+# step deadline sits ABOVE that maximum so the tool's own limit always decides;
+# the old 90 s default fired before the tool's 120 s (execution audit B6).
+DEADLINE_COMMAND_S = 630
 # Heartbeat stall → warning log only; the deadline alone aborts (AC11.2).
 STALL_WARN_S = 30
 # VLM in-site recovery lane (REQ-9 AC9.5/AC9.7, session-319). The lane is

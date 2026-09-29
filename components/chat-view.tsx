@@ -2351,6 +2351,9 @@ export function ChatWing({
         // resolved to persisted card snapshots so the agent can reason over
         // a PREVIOUS conversation's task results.
         referenced_cards: extractReferencedCards(userMessage.text),
+        // Developer chat runs its tools in the open project tab's folder, the
+        // same workdir `/run` and `>` already send (Gate 3 T10).
+        ...(isDeveloper && activeTabPath ? { workdir: activeTabPath } : {}),
       })
     } else {
       // Fallback: REST /api/chat (reliable when WS unavailable)

@@ -1,0 +1,314 @@
+<title>IRIS Reply Surface</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap">
+<style>
+/* Layout: one reading column (~72ch); the two chat mocks sit side by side on wide screens and stack on phones. Dark-first like the IRIS app (brand hue 210). */
+:root{
+  --bg:#0b0d12; --panel:#12151d; --panel-2:#171b25; --line:#252b38;
+  --fg:#dfe4ee; --muted:#8c96a8; --accent:hsl(210 80% 60%);
+  --ok:#4fbf8a; --warn:#e0a84a; --bad:#e2645a;
+  --display:"IBM Plex Sans Condensed","Arial Narrow",system-ui,sans-serif;
+  --body:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,"Cascadia Mono",Consolas,monospace;
+  color-scheme:dark;
+}
+@media (prefers-color-scheme: light){ :root:not([data-theme="dark"]){
+  --bg:#f6f7fa; --panel:#ffffff; --panel-2:#eef1f6; --line:#d8dde7;
+  --fg:#161a22; --muted:#5b6475; --accent:hsl(210 80% 42%);
+  --ok:#1f8a5b; --warn:#a86a0c; --bad:#b83a30; color-scheme:light; } }
+:root[data-theme="light"]{
+  --bg:#f6f7fa; --panel:#ffffff; --panel-2:#eef1f6; --line:#d8dde7;
+  --fg:#161a22; --muted:#5b6475; --accent:hsl(210 80% 42%);
+  --ok:#1f8a5b; --warn:#a86a0c; --bad:#b83a30; color-scheme:light; }
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:15px/1.6 var(--body);padding-inline:16px;padding-block:0 64px}
+main{max-width:980px;margin:0 auto}
+.read{max-width:860px}
+h1,h2,h3{font-family:var(--display);text-wrap:balance;line-height:1.2;margin:0}
+h1{font-size:2.1rem;font-weight:700}
+h2{font-size:1.45rem;font-weight:600;margin-top:3rem;padding-top:1.2rem;border-top:1px solid var(--line)}
+h3{font-size:1.1rem;font-weight:600;margin-top:1.8rem}
+p,li{max-width:72ch} p{margin:.7rem 0} ul,ol{padding-left:1.3rem;margin:.6rem 0} li{margin:.3rem 0}
+code{font-family:var(--mono);font-size:.86em;background:var(--panel-2);padding:.08em .35em;border-radius:4px;overflow-wrap:anywhere}
+.eyebrow{font:600 .72rem/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
+header{padding-block:40px 8px;display:grid;gap:.6rem}
+.meta,.note{color:var(--muted);font-size:.9rem}
+.lede{font-size:1.08rem}
+.analogy{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:1rem 1.2rem;margin:1.2rem 0}
+.analogy h3{margin-top:0;font-size:1rem;color:var(--muted);font-weight:500}
+.scroll{overflow-x:auto;margin:1rem 0;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+table{border-collapse:collapse;width:100%;font-size:.88rem;min-width:660px}
+th,td{text-align:left;vertical-align:top;padding:.55rem .7rem;border-bottom:1px solid var(--line)}
+th{font:600 .72rem/1.2 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted);background:var(--panel-2)}
+tr:last-child td{border-bottom:0}
+td.id{font-family:var(--mono);color:var(--muted);white-space:nowrap}
+.proof{display:block;font-family:var(--mono);font-size:.78rem;color:var(--muted);margin-top:.25rem;overflow-wrap:anywhere}
+.chip{display:inline-block;font:600 .68rem/1 var(--mono);padding:.28rem .45rem;border-radius:4px;white-space:nowrap}
+.chip.p0{background:color-mix(in srgb,var(--bad) 18%,transparent);color:var(--bad)}
+.chip.p1{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn)}
+.chip.p2{background:color-mix(in srgb,var(--accent) 16%,transparent);color:var(--accent)}
+pre.mermaid{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:1rem;overflow-x:auto}
+pre.code{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:1rem;overflow-x:auto;font:12.5px/1.55 var(--mono)}
+.rule{display:grid;grid-template-columns:auto 1fr;gap:.4rem 1rem;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:1rem 1.2rem;margin:1rem 0}
+.rule dt{font:700 .78rem/1.6 var(--mono);color:var(--accent);white-space:nowrap}
+.rule dd{margin:0}
+.phase{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:1rem 1.2rem;margin:1rem 0}
+.phase h3{margin-top:0}
+.bound{display:grid;grid-template-columns:auto 1fr;gap:.2rem .8rem;font-size:.9rem;margin-top:.6rem}
+.bound dt{font:600 .72rem/1.9 var(--mono)} .bound dt.done{color:var(--ok)} .bound dt.not{color:var(--bad)} .bound dd{margin:0}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* ── Chat mocks: fixed dark IRIS surface in both page themes (own background). ── */
+.mocks{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin:1.2rem 0}
+.mocks > figure{margin:0;min-width:0}
+.mocks figcaption{font:600 .72rem/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+@media (max-width:760px){.mocks{grid-template-columns:1fr}}
+.wing{background:#0a0b16;border:1px solid rgba(0,212,255,.16);border-radius:12px;padding:14px;color:#e5e8ef;font:13px/1.55 var(--body);display:grid;gap:12px;min-width:0}
+.wing.dev{font:12.5px/1.6 var(--mono)}
+.u{justify-self:end;background:rgba(255,255,255,.06);border-radius:10px;padding:7px 11px;max-width:85%}
+.lbl{font:600 9.5px/1 var(--mono);letter-spacing:.12em;color:#7fe3ff;text-transform:uppercase}
+.reply p{margin:.25rem 0}
+/* Liquid-ink chassis, shared by all compact cards */
+.ch{position:relative;background:linear-gradient(135deg,rgba(18,20,34,.95),rgba(10,11,22,.98));border:1px solid rgba(255,255,255,.07);border-radius:9px;padding:8px 10px 8px 13px;overflow:hidden;min-width:0}
+.ch::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--vein,#35d0ff)}
+.ch .row{display:flex;align-items:center;gap:9px;min-width:0}
+.ico{width:26px;height:26px;border-radius:6px;display:grid;place-items:center;background:rgba(0,212,255,.1);color:#7fe3ff;font:700 10px/1 var(--mono);flex:0 0 auto}
+.tt{min-width:0;flex:1}
+.tt b{display:block;font-weight:600;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tt span{display:block;color:#8d97aa;font-size:10.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.acts{display:flex;gap:5px;flex:0 0 auto}
+.btn{font:600 10.5px/1 var(--body);border-radius:6px;padding:6px 9px;border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.04);color:#dfe6f2;cursor:pointer;white-space:nowrap}
+.btn.pri{background:#35d0ff;border-color:#35d0ff;color:#04121a}
+.btn.warn{background:#f2c14e;border-color:#f2c14e;color:#1a1204}
+.chev{background:none;border:0;color:#7fe3ff;cursor:pointer;font:inherit;padding:2px 4px}
+.peek{margin-top:8px;border-top:1px dashed rgba(0,212,255,.2);padding-top:8px;position:relative;max-height:120px;overflow:hidden}
+.peek::after{content:"";position:absolute;left:0;right:0;bottom:0;height:34px;background:linear-gradient(transparent,#0c0d1a)}
+.thumb{display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px}
+.thumb i{display:block;height:34px;border-radius:4px;background:linear-gradient(135deg,rgba(0,212,255,.25),rgba(160,110,255,.18))}
+.thumb i:first-child{grid-column:span 3;height:18px;background:rgba(255,255,255,.12)}
+.cmd{font:11.5px/1.5 var(--mono);background:rgba(0,0,0,.35);border-radius:5px;padding:5px 8px;margin:6px 0;overflow-x:auto;white-space:pre}
+.ring{font:600 10px/1 var(--mono);color:#f2c14e;white-space:nowrap}
+.opts{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
+.opt{font:500 11px/1 var(--body);border:1px solid rgba(0,212,255,.3);border-radius:999px;padding:6px 10px;color:#cfefff;background:rgba(0,212,255,.06)}
+.opt kbd{font:600 9.5px/1 var(--mono);color:#7fe3ff;margin-right:5px}
+.receipt{font:500 11px/1.4 var(--mono);color:#8d97aa;display:flex;gap:7px;align-items:center}
+.receipt .okc{color:#5fcf98}
+.tc .steps{display:grid;gap:3px;margin-top:6px;font-size:11.5px;color:#b9c2d3}
+.tc .steps div{display:flex;gap:7px}
+.o-d{color:#35d0ff}.o-r{color:#f2c14e}.o-m{color:#5fcf98}.o-p{color:#6b7689}
+/* dev matrix rows */
+.mx{border:1px solid rgba(0,212,255,.35);border-radius:6px;padding:6px 9px;background:rgba(0,212,255,.03)}
+.mh{display:flex;gap:7px;align-items:center;border-bottom:1px solid rgba(0,212,255,.18);padding-bottom:5px;margin-bottom:4px;min-width:0}
+.mh .t{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#fff;font-weight:600}
+.mr{display:grid;grid-template-columns:12px 14px 6.5ch minmax(0,1fr) auto;gap:7px;align-items:center;min-width:0}
+.mr .tg{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:rgba(255,255,255,.82)}
+.mr .rs{color:#8d97aa;white-space:nowrap}
+.mr .rail{color:rgba(255,255,255,.22)}
+.v-d{color:#35d0ff;font-weight:700}.v-r{color:#f2c14e;font-weight:700}.v-m{color:#5fcf98;font-weight:700}.v-q{color:#c69bff;font-weight:700}
+.wait{margin:3px 0 4px 33px;padding:5px 8px;border-left:1px dashed rgba(242,193,78,.5);color:#dfe6f2}
+.wait .k{color:#f2c14e;font-weight:700}
+.dim{color:#6b7689}
+.art{border:1px dashed rgba(95,207,152,.45);border-radius:5px;padding:6px 9px;display:flex;gap:8px;align-items:center;min-width:0}
+.art .t{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+</style>
+
+<main>
+<header class="read">
+  <div class="eyebrow">Reply surface · cards · artifacts</div>
+  <h1>IRIS Reply Surface</h1>
+  <div class="meta">2026-09-29 · read-only audit of how IRIS picks plain text or a prism card, how the cards render, and what rich HTML artifacts need · companion to the execution audit</div>
+</header>
+
+<div class="read">
+<p class="lede">You are right that the task card and the prism card could make a very clean experience together. Three things stop that today. The rule for "text or card" lives in five places that disagree. The card can show up with no name. And the permission and question cards live outside the conversation, with no record left after you answer.</p>
+
+<div class="analogy">
+  <h3>The picture in one paragraph</h3>
+  <p>Picture a good assistant who hands you work. They <em>tell</em> you the answer. When they make you something to keep, such as a report, a script or a chart, they hand you a <em>labelled folder</em>. You never wonder which one you got. IRIS today has five clerks who each decide whether to use a folder. One clerk reads your question for keywords. One counts steps. One checks for headings, one looks for a failed web search, and one is the model itself. Sometimes they overrule each other. Sometimes the folder has no label. And the one clerk who is meant to make folders on request (the <code>render_document</code> tool) crashes every time.</p>
+</div>
+
+<h2>What decides "text or card" today</h2>
+<p>The model can ask for a card through its <code>{speak, show}</code> JSON. Four other rules then change the result:</p>
+<div class="scroll"><table>
+<thead><tr><th>Rule</th><th>What it does</th><th>Where</th></tr></thead>
+<tbody>
+<tr><td>Model <code>show</code></td><td>Asks for a card. The prompt says this is the <em>only</em> trigger, and that "the kernel NEVER infers a card".</td><td><span class="proof">agent_kernel.py:2418-2470</span></td></tr>
+<tr><td>Markdown demotion</td><td>A <code>show</code> in markdown with no heading, table or code fence is quietly turned back into a text bubble. The model is not told.</td><td><span class="proof">agent_kernel.py:4819-4834</span></td></tr>
+<tr><td>Fallback mint</td><td>A card <em>is</em> inferred when your question has a build verb and a document noun but no "short" noun. The prompt says this never happens.</td><td><span class="proof">agent_kernel.py:4664 · artifact_policy.py:67-81</span></td></tr>
+<tr><td>Failed-search phrases</td><td>A card becomes text when the answer contains phrases such as "wasn't able to pull". The front end has a second copy of this check.</td><td><span class="proof">agent_kernel.py:4473 · chat-view.tsx:3950</span></td></tr>
+<tr><td>Web results rule</td><td>The prompt <em>requires</em> a card for every web result. When no card comes, IRIS asks you to pick "Markdown / Table / HTML / Diagram / Plain text".</td><td><span class="proof">agent_kernel.py:2460-2470, 5518-5565</span></td></tr>
+</tbody></table></div>
+<p>The keyword matches are substring matches, so "spec" matches "specific", "doc" matches "docker", "list" matches "playlist" and "note" matches "notebook". The task card has its own rule: 5 or more tool steps, and never on a "document ask". Its threshold changed three times in one day (3, 4, 5).</p>
+
+<h2>Findings</h2>
+<div class="scroll"><table>
+<thead><tr><th>#</th><th></th><th>What happens</th><th>Fix</th></tr></thead>
+<tbody>
+<tr><td class="id">R1</td><td><span class="chip p0">P0</span></td><td><b>The <code>render_document</code> tool crashes on every call.</b> It passes <code>card_id=</code> to <code>_store_document_data</code>, and that function has no such parameter. The <code>TypeError</code> is caught and returned as a failed tool result, so no card appears. The tests replace the real function with a stub, so they pass. Two helpers it calls (<code>_record_turn_render</code>, <code>_render_doc_for_turn</code>) do not exist on the real kernel.<span class="proof">tool_bridge.py:3694-3701 vs agent_kernel.py:5018-5025 (verified) · tests/…/test_render_as_tool.py:53</span></td><td>Replace it with the <code>create_artifact</code> tool described below. Its tests use the real store.</td></tr>
+<tr><td class="id">R2</td><td><span class="chip p0">P0</span></td><td><b>Five rules decide, and the prompt contradicts two of them.</b> The model cannot learn a rule that the code changes without telling it.<span class="proof">see the table above</span></td><td>One trigger. The agent makes an artifact, or it does not. No demotion, no minting, no keyword gates.</td></tr>
+<tr><td class="id">R3</td><td><span class="chip p0">P0</span></td><td><b>A card can have no name.</b> Only the <code>_mint_artifact_card</code> path sends a <code>title</code>. The orphan path passes no title, and reloaded cards often have none. An untitled, collapsed card shows as a full-width bar with only a chevron on it. That is the "long strip". The front end reads only H1 headings for a title, and the backend reads any heading level, so a card can change its name after a reload.<span class="proof">RichDocument.tsx:226,237 · chat-view.tsx:1530-1540, 4656-4678 · documentMerge.ts:82 · artifact_policy.py:160-199</span></td><td>Make <code>title</code> required in the artifact schema. The backend computes one fallback title, and the front end never invents one.</td></tr>
+<tr><td class="id">R4</td><td><span class="chip p1">P1</span></td><td><b>A collapsed card says nothing about its contents.</b> It has no type, no size and no one-line summary. The format badge was removed on 2026-08-27.<span class="proof">RichDocument.tsx:246</span></td><td>Give every collapsed card a meta line, for example <code>HTML page · 3 diagrams</code> or <code>Python · 84 lines</code>.</td></tr>
+<tr><td class="id">R5</td><td><span class="chip p0">P0</span></td><td><b>HTML artifacts cannot do what you want, and "trusted" HTML is unsafe.</b> HTML goes into a normal <code>&lt;div&gt;</code> through <code>innerHTML</code>, so scripts never run. When the turn touched no web page, the HTML counts as "trusted" and is inserted <em>without</em> sanitizing, inside the app's own origin. Inline handlers such as <code>onerror</code> would run there. The body is also clipped at 460 px with no sideways scroll, so wide diagrams are cut off.<span class="proof">RichDocument.tsx:139-143, 291-302 · agent_kernel.py:4733-4737</span></td><td>Render every HTML artifact in a sandboxed iframe, as <code>dark-glass-dashboard.tsx:2254-2268</code> already does.</td></tr>
+<tr><td class="id">R6</td><td><span class="chip p1">P1</span></td><td><b>After a web search, IRIS asks you about formatting.</b> The prompt says "if unsure … call ask_user_question with the format options", and <code>_maybe_escalate_web_format</code> asks you when no card appeared. Deciding the format is the agent's job.<span class="proof">agent_kernel.py:2466-2470, 5518-5565, 7781, 8427</span></td><td>Remove both. A research answer is text with a sources footer. It becomes an artifact only when you asked for a report.</td></tr>
+<tr><td class="id">R7</td><td><span class="chip p1">P1</span></td><td><b>Permission cards sit outside the conversation.</b> They stack at the bottom of the chat, not in the turn that asked. They vanish when you click, and no record stays in the thread. The countdown does nothing at zero. There are no keyboard shortcuts. The risk sentence is hidden in a tooltip. No test covers the component.<span class="proof">chat-view.tsx:4759-4804 · PermissionCard.tsx:143-149, 174-183, 227</span></td><td>Anchor the card in its turn. It folds into a one-line receipt when answered. At zero it denies and says so. Enter allows and Esc denies.</td></tr>
+<tr><td class="id">R8</td><td><span class="chip p1">P1</span></td><td><b>Question cards also vanish when answered.</b> They have two placements (in the turn, or at the bottom as a fallback). The only keyboard support is Enter in the text field.<span class="proof">chat-view.tsx:966-1012, 4095-4106, 4806-4815</span></td><td>Always in the turn. The card folds into "You chose: …". Number keys pick an option.</td></tr>
+<tr><td class="id">R9</td><td><span class="chip p1">P1</span></td><td><b>Developer mode has no card design.</b> Prism, permission and question cards render the same glass cards in the terminal view.<span class="proof">no <code>isDeveloper</code> branch in components/chat/</span></td><td>Each card becomes a matrix row in developer mode (mock below).</td></tr>
+<tr><td class="id">R10</td><td><span class="chip p2">P2</span></td><td><b>Two markdown styles.</b> The text bubble uses <code>.iris-md</code>, and cards use the <code>RichDocument</code> component map. Neither highlights code syntax. A render with empty content is dropped silently.<span class="proof">globals.css:522 · RichDocument.tsx:615-968 · chat-view.tsx:1506</span></td><td>One markdown renderer with highlighting, used by both.</td></tr>
+</tbody></table></div>
+
+<h2>The rule: one trigger, stated to the model</h2>
+<p>Replace the five rules with one tool and one plain rule in the prompt. The model learns one thing, and the code does exactly that thing.</p>
+<dl class="rule">
+  <dt>ANSWER</dt><dd>Plain text is the reply. It can be long, with headings, lists, tables and short code blocks. It is shown in full and never turned into a card.</dd>
+  <dt>ARTIFACT</dt><dd>Call <code>create_artifact</code> when you made something to <b>keep, reuse or open on its own</b>: a report, a file of code, a dataset, a diagram or an interactive page. Always give it a title and a one-line summary.</dd>
+  <dt>BOTH</dt><dd>When you make an artifact, the reply says in 1–3 sentences what you made and what matters about it. It never repeats the artifact's content.</dd>
+  <dt>SIGNS</dt><dd>These signs mean an artifact: the user asked for a file, report, page, chart or document; the content stands alone and is longer than about 40 lines; the user will save, share or open it again; or the content is visual. A snippet under about 15 lines stays in the answer.</dd>
+</dl>
+<p>Oracle's <code>presentation</code> consumer keeps a shadow score for every turn: "should this have been an artifact?". Where it disagrees with the model, the disagreement becomes calibration data. It never overrides the model. The <code>{speak, show}</code> JSON still parses for older prompts, and it converts to the same <code>create_artifact</code> event, so nothing breaks while the prompts change.</p>
+
+<h3>The artifact format</h3>
+<pre class="code">create_artifact(
+  title:    str                 # required, ≤ 60 chars, shown on the card
+  kind:     "document" | "code" | "data" | "diagram" | "page" | "image"
+  summary:  str                 # required, one line under the title
+  content:  str                 # the body; see "who writes it" below
+  language: str | None          # kind=code: python, ts, rust…  kind=data: csv, json
+  artifact_id: str | None       # pass it to publish a new version of an existing artifact
+) → { artifact_id, version }</pre>
+<ul>
+  <li><b>document</b>: markdown, rendered with the one shared renderer, including mermaid blocks.</li>
+  <li><b>code</b>: a file with syntax highlighting, a line count, and copy and save-to-workspace buttons.</li>
+  <li><b>data</b>: CSV or JSON, shown as a sortable table with the raw view one click away.</li>
+  <li><b>diagram</b>: mermaid or SVG, drawn full width with pan and zoom in the panel.</li>
+  <li><b>page</b>: a complete HTML page with CSS, SVG, diagrams and JavaScript, like the two reports I made for you. See the page contract below.</li>
+</ul>
+<p>The document store already handles any format string, <code>card_id</code>, <code>turn_id</code>, versions and body fetch. The backend needs few changes. Most of the work is the renderer and the prompt.</p>
+
+<h3>The page contract (HTML, SVG, JavaScript)</h3>
+<ul>
+  <li><b>Isolation.</b> Every page renders in <code>&lt;iframe srcdoc sandbox="allow-scripts"&gt;</code> with <b>no</b> <code>allow-same-origin</code>, as your dashboard browser tab already does. A page cannot read IRIS, its storage or its cookies.</li>
+  <li><b>A content policy injected by IRIS.</b> Inline CSS and JS are allowed. Scripts load only from a short CDN allowlist (cdnjs, jsdelivr). No network requests, no forms, no top-level navigation. Images are <code>data:</code> URIs only.</li>
+  <li><b>Theme.</b> IRIS injects its tokens (<code>--iris-bg</code>, <code>--iris-fg</code>, <code>--iris-accent</code>, the fonts), so pages match the app without extra work from the agent.</li>
+  <li><b>Size.</b> A tiny injected script reports the page height with <code>postMessage</code>, so the peek fits the content. The panel shows the page at full size. "Open in browser surface" moves it to the dashboard tab.</li>
+  <li><b>Authoring guide.</b> The <code>page</code> kind comes with a short guide in the prompt: self-contained, the tokens, readable on phone widths, <code>&lt;pre class="mermaid"&gt;</code> for diagrams. This is the same kind of guide I followed to build these reports.</li>
+</ul>
+
+<h3>Who writes the content when the models are split</h3>
+<p>You plan to run a fast local 2.6B model for tool calls next to an API Brain. That fits well, as long as each model does the job it is good at. The tool model is the <b>hands</b>: it turns a decision into a valid call and fixes schema errors locally and fast. The Brain is the <b>pen</b>: it writes anything long.</p>
+<ul>
+  <li>Tool schemas mark large fields as <code>authored_by: "brain"</code>. These are <code>create_artifact.content</code>, <code>write_file.content</code> and <code>edit_file.new</code>.</li>
+  <li>The tool model fills the small fields: path, title, kind, language. For a marked field it writes a short brief instead, for example "a Python module with a Reader class that…".</li>
+  <li>Before dispatch, the node executor asks the Brain to write the marked field, streamed, with the node's transcript and the brief. The Brain's text goes straight into the call. The small model never copies it, so it cannot cut it off at 500 tokens.</li>
+  <li>The tool model can also read large tool output for the Brain. It gives back the first and last parts plus a short digest, so the Brain spends its context on decisions.</li>
+</ul>
+<p class="note">This split also applies to the node executor in the execution audit. When one model has native tool calls and a large window, the node loop can use it for both roles, and the split is an option, not a requirement.</p>
+
+<h2>How it looks: one turn, both modes</h2>
+<p>An example turn, shown in each mode. The content is made up to show the layout. The request was "research the three STT engines and give me a comparison page". The run needed approval for one command and asked one question. Every card has a name, a type and a size, and each one sits in the turn that made it. A card you answered folds into a one-line receipt, so the thread keeps a record.</p>
+
+<div class="mocks">
+<figure>
+<figcaption>Personal mode · compact cards</figcaption>
+<div class="wing" role="img" aria-label="Personal mode mock of a turn with task card, reply, artifact card, permission receipt and question card">
+  <div class="u">Research the three STT engines and give me a comparison page</div>
+  <div class="ch tc" style="--vein:#35d0ff">
+    <div class="row"><div class="ico">▤</div><div class="tt"><b>Compare STT engines</b><span>6 of 6 steps · 0:48 · 2 memories used</span></div><button class="chev" aria-label="Open steps">⌄</button></div>
+  </div>
+  <div class="receipt"><span class="okc">✓</span> Allowed · run command · <span style="color:#cfd6e3">pip show faster-whisper</span></div>
+  <div class="reply"><div class="lbl">IRIS</div>
+    <p>WhisperX is the best fit for your pipeline: it is the fastest on your GPU and has word timing, which your TTS highlight needs. Parakeet was more accurate on clean audio but has no Windows build yet.</p>
+    <p>The page has the benchmark table, a latency chart and my sources.</p>
+  </div>
+  <div class="ch" style="--vein:#5fcf98">
+    <div class="row"><div class="ico" style="background:rgba(95,207,152,.12);color:#5fcf98">&lt;/&gt;</div><div class="tt"><b>STT engine comparison</b><span>HTML page · table, 2 charts · 14 sources</span></div><div class="acts"><button class="btn">Open</button><button class="chev" aria-label="Peek">⌃</button></div></div>
+    <div class="peek"><div class="thumb"><i></i><i></i><i></i><i></i></div></div>
+  </div>
+  <div class="ch" style="--vein:#c69bff">
+    <div class="row"><div class="ico" style="background:rgba(198,155,255,.12);color:#c69bff">?</div><div class="tt"><b>Save this comparison to memory?</b><span>Asking you · 1:52</span></div></div>
+    <div class="opts"><span class="opt"><kbd>1</kbd>Yes, as a reference</span><span class="opt"><kbd>2</kbd>Only the verdict</span><span class="opt"><kbd>3</kbd>No</span></div>
+  </div>
+</div>
+</figure>
+
+<figure>
+<figcaption>Developer mode · matrix rows</figcaption>
+<div class="wing dev" role="img" aria-label="Developer mode mock of the same turn as a live execution matrix">
+  <div><span style="color:#35d0ff;font-weight:700">iris@dev ›</span> research the three STT engines and give me a comparison page</div>
+  <div class="mx">
+    <div class="mh"><span style="color:#35d0ff">▤</span><span style="color:#7fe3ff;font-weight:700">TASK :</span><span class="t">Compare STT engines</span><span class="dim">6/6 · 0:48</span><button class="chev" aria-label="Fold">⌃</button></div>
+    <div class="mr"><span class="rail">┊</span><span class="o-d">●</span><span class="v-d">SEARCH</span><span class="tg">whisperx vs parakeet vs faster-whisper</span><span class="rs">14 src</span></div>
+    <div class="mr"><span class="rail">┊</span><span class="o-d">●</span><span class="v-d">EXEC</span><span class="tg">pip show faster-whisper</span><span class="rs">✓ allowed</span></div>
+    <div class="mr"><span class="rail">┊</span><span class="o-d">●</span><span class="v-d">READ</span><span class="tg">backend/audio/stt_pipeline.py</span><span class="rs">212 ln</span></div>
+    <div class="mr"><span class="rail">┊</span><span class="o-m">✦</span><span class="v-m">MADE</span><span class="tg">STT engine comparison</span><span class="rs">page</span></div>
+    <div class="mr"><span class="rail"> </span><span class="o-r">◎</span><span class="v-q">ASK</span><span class="tg">save this comparison to memory?</span><span class="rs" style="color:#f2c14e">1:52</span></div>
+    <div class="wait"><span class="k">[1]</span> yes, as a reference  <span class="k">[2]</span> only the verdict  <span class="k">[3]</span> no</div>
+  </div>
+  <div>WhisperX is the best fit: fastest on your GPU, with word timing for the TTS highlight. Parakeet was more accurate on clean audio but has no Windows build yet.</div>
+  <div class="art"><span style="color:#5fcf98">▣</span><span class="t">STT engine comparison <span class="dim">· html · 38 KB · 2 charts</span></span><span style="color:#7fe3ff">[open]</span><span style="color:#7fe3ff">⌄</span></div>
+</div>
+</figure>
+</div>
+
+<h3>Permission, before and after an answer</h3>
+<div class="mocks">
+<figure>
+<figcaption>Personal · waiting, then the receipt</figcaption>
+<div class="wing" role="img" aria-label="Personal mode permission card and its receipt">
+  <div class="ch" style="--vein:#f2c14e">
+    <div class="row"><div class="ico" style="background:rgba(242,193,78,.12);color:#f2c14e">⚡</div><div class="tt"><b>Run a command in IRISVOICE</b><span>Changes your files · runs in the project folder</span></div><span class="ring">1:54</span></div>
+    <div class="cmd">git checkout -b feat/stt-whisperx</div>
+    <div class="row" style="justify-content:flex-end"><button class="btn">Deny <span class="dim">Esc</span></button><button class="btn">Always here</button><button class="btn warn">Allow <span style="opacity:.6">↵</span></button></div>
+  </div>
+  <div class="receipt"><span class="okc">✓</span> Allowed · run command · <span style="color:#cfd6e3">git checkout -b feat/stt-whisperx</span></div>
+  <div class="receipt"><span style="color:#ff8a7e">✕</span> Timed out → denied · delete file · <span style="color:#cfd6e3">tmp/cache.db</span></div>
+</div>
+</figure>
+<figure>
+<figcaption>Developer · the row waits for a key</figcaption>
+<div class="wing dev" role="img" aria-label="Developer mode permission row">
+  <div class="mx">
+    <div class="mr"><span class="rail">┊</span><span class="o-d">●</span><span class="v-d">EDIT</span><span class="tg">backend/audio/stt_pipeline.py</span><span class="rs"><span style="color:#5fcf98">+12</span> <span style="color:#ff8a7e">−3</span></span></div>
+    <div class="mr"><span class="rail"> </span><span class="o-r">◎</span><span class="v-r">EXEC</span><span class="tg">git checkout -b feat/stt-whisperx</span><span class="rs" style="color:#f2c14e">1:54</span></div>
+    <div class="wait">changes files · <span class="k">[y]</span> allow  <span class="k">[a]</span> always here  <span class="k">[n]</span> deny</div>
+  </div>
+  <div class="dim">after: ● EXEC git checkout -b feat/stt-whisperx   ✓ allowed (you)</div>
+</div>
+</figure>
+</div>
+
+<h2>How the task card and the artifacts work together</h2>
+<ul>
+  <li><b>The task card shows the work.</b> It appears while the agent works. When the turn ends, it folds to one line: title, steps, time and memories used.</li>
+  <li><b>The reply is the answer.</b> It is always text, written for you, and it names what was made.</li>
+  <li><b>An artifact is a thing you keep.</b> It shows as a compact, named card under the reply. It is also the last row of the task card (<code>✦ MADE</code>), so the work and its result connect.</li>
+  <li><b>Interactions live in the turn.</b> Permission and question cards appear where the agent paused. Each one leaves a receipt.</li>
+  <li><b>One chassis, two views.</b> The same data drives both modes. Personal mode draws compact glass cards, and developer mode draws matrix rows. It is the same pattern as the task card and the ASCII matrix, carried through to every card type.</li>
+</ul>
+
+<h2>Order of work</h2>
+<div class="phase"><h3>A · Make the one trigger real <span class="note">small–medium</span></h3>
+<p>Add <code>create_artifact</code> on the real store, with required title and summary. Delete the markdown demotion, the fallback mint, the keyword gates and the web-format question (R1, R2, R6). Rewrite the <code>[RESPONSE FORMAT]</code> block into the four-line rule. Convert <code>show</code> into the same event. Keep <code>presentation</code> as a shadow score.</p>
+<dl class="bound"><dt class="done">DONE</dt><dd>Contract tests on the real store show that every artifact event has a title, kind, summary and turn_id, and that a text answer never becomes a card. Replayed turns render the same cards before and after a reload.</dd><dt class="not">NOT THIS</dt><dd>New card visuals, or a format negotiation flow.</dd></dl></div>
+<div class="phase"><h3>B · Compact cards and receipts <span class="note">medium</span></h3>
+<p>Build the compact collapsed state with icon, title, meta line, Open and a peek. Anchor permission and question cards in their turn, with receipts, keyboard keys and a real timeout (R3, R4, R7, R8). Add one shared markdown renderer with highlighting (R10).</p>
+<dl class="bound"><dt class="done">DONE</dt><dd>No card can render without a title. Every answered interaction leaves a receipt in its turn. Component tests render all three cards in each state.</dd><dt class="not">NOT THIS</dt><dd>Developer-mode visuals, or a redesign of the task card.</dd></dl></div>
+<div class="phase"><h3>C · Page artifacts <span class="note">medium</span></h3>
+<p>The sandboxed iframe renderer with an injected CSP, theme tokens and auto height. Moving HTML out of <code>innerHTML</code> (R5). The authoring guide in the prompt. "Open in browser surface".</p>
+<dl class="bound"><dt class="done">DONE</dt><dd>The agent makes a page with a chart and a script. It runs in the peek and the panel. A page that tries to read <code>parent</code>, fetch the network or navigate is blocked, and a test proves it.</dd><dt class="not">NOT THIS</dt><dd>An artifact editor, sharing or publishing.</dd></dl></div>
+<div class="phase"><h3>D · Developer rows <span class="note">small, after the live matrix</span></h3>
+<p><code>MADE</code>, <code>ASK</code> and permission rows in the execution matrix, with key shortcuts (R9).</p>
+<dl class="bound"><dt class="done">DONE</dt><dd>A developer turn shows no glass card, and every card type has a matrix row form.</dd><dt class="not">NOT THIS</dt><dd>Changes to personal-mode cards.</dd></dl></div>
+
+<h2>About the Blueprint Matrix</h2>
+<p>You gave me freedom on the look and asked me to keep the structure and the content. I will keep all of these:</p>
+<ul>
+  <li>the <code>TASK</code> and <code>THK</code> header</li>
+  <li>one row per node, with an orb for its state, a verb, a target and a summary</li>
+  <li>the <code>↳</code> sub-loop chambers</li>
+  <li>the converged and memory footer</li>
+</ul>
+<p>The matrix will also gain rows for the new card types (<code>MADE</code>, <code>ASK</code>, permission), a result chip and a time on each row, and folding at the frame and row levels. The visual treatment will be a design pass once the components exist. The execution audit has a first clickable sketch.</p>
+
+<p class="note">Scope: read-only trace by two parallel code readers plus my own check of R1 and R6. I did not get live screenshots, because the front end did not finish its first compile within about 8 minutes. The mocks show the direction and are not final visuals. Related: the execution audit on the same date.</p>
+</div>
+</main>

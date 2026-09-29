@@ -2265,6 +2265,23 @@ class AgentKernel:
         self._developer_context = None  # invalidate cached context
         logger.info(f"[AgentKernel] Launcher mode changed: {prev} â†’ {mode}")
 
+    def _effective_launcher_mode(self) -> str:
+        """The launcher mode from the persisted config, the single source of truth.
+
+        ``set_launcher_mode`` is only ever called on the "default" kernel, and
+        every conversation gets its own kernel that starts as "personal", so
+        the copy on ``self`` never reached the kernel doing the work (execution
+        audit B7, 2026-09-29). CapabilitySet reads data/iris_config.json per
+        call, the same value the tool gates use. The stored copy is only the
+        fallback when that module cannot be imported.
+        """
+        try:
+            from backend.capabilities import CapabilitySet
+
+            return CapabilitySet.get_mode()
+        except Exception:
+            return getattr(self, "_launcher_mode", "personal")
+
     def _get_developer_context(self) -> str:
         """Load and cache the PROJECT.md developer context string.
 
@@ -2307,7 +2324,7 @@ class AgentKernel:
             except Exception:
                 pass
 
-        if self._launcher_mode == "developer":
+        if self._effective_launcher_mode() == "developer":
             dev_ctx = self._get_developer_context()
             # Resolve active worktree path (set when /api/mode switches to developer)
             try:
@@ -3422,8 +3439,19 @@ class AgentKernel:
         # If the model requested tool calls (e.g. web search / crawler_query),
         # execute them, feed results back, and let the model produce the final
         # answer. Bounded to avoid runaway loops.
-        _MAX_TOOL_ROUNDS = 3
+        # Execution audit B14 (2026-09-29): 3 rounds cut real work short and the
+        # calls requested in round 4 were dropped without a word. The bound is
+        # larger, and hitting it ends with one tool-less call (below) so the
+        # model says what it has and what is unfinished.
+        _MAX_TOOL_ROUNDS = 8
         _round = 0
+        # Tools run under the TURN's WebSocket session - the key the project
+        # workdir, the session shell and permission routing are bound to (the
+        # DER path already does this). The conversation id is not a session.
+        _tool_session = (
+            getattr(self, "_turn_session_id", None)
+            or self.session_id or self.conversation_id or "voice"
+        )
         while _tool_calls and _round < _MAX_TOOL_ROUNDS:
             _round += 1
             messages.append({
@@ -3467,7 +3495,7 @@ class AgentKernel:
                         self._tool_bridge.execute_tool(
                             tool_name=_name,
                             params=_params,
-                            session_id=self.conversation_id or "voice",
+                            session_id=_tool_session,
                         )
                     )
                 except RuntimeError:
@@ -3480,7 +3508,7 @@ class AgentKernel:
                             self._tool_bridge.execute_tool(
                                 tool_name=_name,
                                 params=_params,
-                                session_id=self.conversation_id or "voice",
+                                session_id=_tool_session,
                             ),
                         ).result(timeout=60)
                 _content = self._format_tool_result(_raw)
@@ -3491,6 +3519,25 @@ class AgentKernel:
                     "content": _content,
                 })
             _response, _thinking, _tool_calls = _call(messages, _tools)
+            self._pending_thinking = _thinking
+
+        if _tool_calls:
+            # Bound reached with calls still requested: never drop them in
+            # silence. One final call WITHOUT tools makes the model answer from
+            # what it has and name what is left undone.
+            logger.info(
+                "[RespondDirect] tool-round bound (%d) reached with %d call(s) "
+                "pending conv=%s - asking for a final answer",
+                _MAX_TOOL_ROUNDS, len(_tool_calls), self.conversation_id,
+            )
+            messages.append({
+                "role": "user",
+                "content": (
+                    "Tool budget for this turn is used up. Answer now from the "
+                    "results you have, and say plainly what is still unfinished."
+                ),
+            })
+            _response, _thinking, _ = _call(messages, None)
             self._pending_thinking = _thinking
 
         return _response
@@ -6074,6 +6121,23 @@ class AgentKernel:
             logger.debug("[DER] recovery trigger failed: %s", _rec_exc)
             return None
 
+    @staticmethod
+    def _der_step_error_is_retryable(err: str) -> bool:
+        """Whether a failed step's error text is worth another attempt.
+
+        Connection-level errors are. A STEP TIMEOUT is not (execution audit B6,
+        2026-09-29): the step already spent its whole deadline, and the
+        abandoned worker may still be running the command - a retry starts it
+        a second and third time in parallel.
+        """
+        if not err or err.lstrip().startswith("[STEP TIMEOUT"):
+            return False
+        return any(
+            _k in err
+            for _k in ("ConnectionError", "TimeoutError", "timed out",
+                       "Connection refused", "timeout")
+        )
+
     def _der_tool_deadline(self, tool: Optional[str]) -> float:
         """Session-318 T18 (REQ-11 AC11.1): per-family dispatch deadline in
         seconds. Gather covers the 90s crawler ceilings with margin;
@@ -6093,9 +6157,12 @@ class AgentKernel:
             from backend.agent.tool_envelope import tool_family as _tf
             from backend.agent.der_constants import (
                 DEADLINE_CRAWL_S, DEADLINE_READ_S, DEADLINE_DEFAULT_S,
+                DEADLINE_COMMAND_S,
             )
             _fam = _tf(tool)
-            if _fam == "gather":
+            if (tool or "").lower() == "run_command":
+                _base = max(float(DEADLINE_COMMAND_S), 1.0)
+            elif _fam == "gather":
                 _base = max(float(DEADLINE_CRAWL_S), 1.0)
             elif _fam == "read":
                 _base = max(float(DEADLINE_READ_S), 1.0)
@@ -7575,6 +7642,10 @@ class AgentKernel:
         # Use provided session_id or fall back to instance session_id
         if session_id is None:
             session_id = self.session_id
+        # The kernel's own session_id is fixed at creation; the TURN's session
+        # (this WebSocket) is what tool calls must run under - see
+        # _respond_direct. The DER path already receives it as a parameter.
+        self._turn_session_id = session_id
 
         # Resolve conversation_id â€” primary key for per-thread context.
         # getattr guard: a kernel may be constructed without __init__ (test
@@ -10148,13 +10219,7 @@ Respond with a JSON object:
                 if isinstance(_res, RateLimitedError):
                     raise _res
                 _err = _res or ""
-                if any(
-                    _k in _err
-                    for _k in (
-                        "ConnectionError", "TimeoutError", "timed out",
-                        "Connection refused", "timeout",
-                    )
-                ):
+                if AgentKernel._der_step_error_is_retryable(_err):
                     raise ConnectionError(_err)  # transient -> retry
                 raise ValueError(_err)  # permanent -> fail fast
 
@@ -14188,6 +14253,9 @@ Respond with a JSON object:
         "get_rendered_document",
     }
 
+    # Tools whose result is a command's output: exit code + stdout/stderr.
+    _SHELL_RESULT_TOOLS = {"run_command", "read_shell_output"}
+
     @staticmethod
     def _der_evidence_cap(tool: Optional[str]) -> int:
         """Evidence window for a step result, by tool kind."""
@@ -14195,6 +14263,11 @@ Respond with a JSON object:
         if _t in AgentKernel._DER_GATHER_TOOLS or _t in AgentKernel._DER_SEARCH_TOOLS:
             return 8000
         if _t in AgentKernel._DER_READ_TOOLS:
+            return 8000
+        # Execution audit B5: command and git output carried 400 chars into
+        # later steps, so a test failure's traceback never reached the step
+        # that had to fix it. The excerpt keeps head AND tail.
+        if _t in AgentKernel._SHELL_RESULT_TOOLS or _t.startswith("git_"):
             return 8000
         return 400
 
@@ -15043,6 +15116,17 @@ Respond with a JSON object:
         """
         try:
             _t = (tool or "").lower()
+            # Execution audit B4/B5 (2026-09-29): a shell result has no content
+            # key, so it fell to compact JSON - output escaped inside a string,
+            # exit code buried. Readable text with the exit code FIRST, so the
+            # verifier and every later step can see whether the command failed.
+            if _t in AgentKernel._SHELL_RESULT_TOOLS and isinstance(raw, dict) \
+                    and "returncode" in raw:
+                _out = "\n".join(
+                    s for s in (str(raw.get("stdout") or "").rstrip(),
+                                str(raw.get("stderr") or "").rstrip()) if s
+                )
+                return f"[exit code {raw.get('returncode')}]\n{_out or '(no output)'}"
             if _t in AgentKernel._DER_READ_TOOLS and isinstance(raw, dict):
                 _docs = raw.get("documents")
                 if isinstance(_docs, list) and _docs:
@@ -15955,6 +16039,14 @@ Respond with a JSON object:
             )
             _seen = getattr(self, "_der_seen_dispatches", {}).get(_conv, {})
             _original_step_id = _seen.get(_digest, "")
+            # Execution audit B3 (2026-09-29): the repeat rule protects WEB
+            # fetches, whose repeat returns the same page. Local tools read state
+            # that changes - re-running the tests after an edit, or re-reading a
+            # file after writing it, is the coding loop itself - so they are
+            # never blocked as repeats.
+            if _original_step_id and str(getattr(item, "tool", "") or "").lower() \
+                    not in AgentKernel._REPEAT_GUARDED_TOOLS:
+                _original_step_id = ""
             if _original_step_id:
                 # Find the original envelope for the doc pointer (bounded
                 # scan of the FIFO-capped registry).
@@ -16678,6 +16770,9 @@ Respond with a JSON object:
     _WEB_CONTENT_TOOLS = frozenset(
         {"crawler_query", "web_search", "search", "google_search", "exa_search"}
     )
+    # Tools the conversation-wide REPEAT rule applies to: web fetches, whose
+    # repeat returns the same page. Local tools are re-runnable (audit B3).
+    _REPEAT_GUARDED_TOOLS = _WEB_CONTENT_TOOLS | {"fetch_url", "browser_read", "open_url"}
     # pin_42ddd255162d: display/render tools complete by SUCCESS, not by content
     # volume â€” a rendered-card confirmation is a legit completion, never a
     # candidate for a verify-failure split (which is what made the task card
@@ -16755,6 +16850,14 @@ Respond with a JSON object:
         _without_marker = self._STUB_RE.sub("", result).strip()
         if not _without_marker:
             return "FAILED"
+        # Execution audit B4 (2026-09-29): run_command reports success=True for
+        # a command that ran and exited non-zero (REQ-19, so the output stays
+        # readable). "The tool ran" is not "the step worked": a failing test
+        # run was VERIFIED. A non-zero exit commits honestly as UNVERIFIED.
+        if tool in self._SHELL_RESULT_TOOLS:
+            _exit = re.match(r"\[exit code (-?\d+)\]", result)
+            if _exit and int(_exit.group(1)) != 0:
+                return "UNVERIFIED"
         if tool and tool in self._WEB_CONTENT_TOOLS:
             _low = _without_marker.lower()
             # pin_42ddd255162d: CONTENT SUFFICIENCY must not scan real page

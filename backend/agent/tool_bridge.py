@@ -241,6 +241,23 @@ def _approval_unavailable_result(
     return _res
 
 
+RUN_COMMAND_DEFAULT_TIMEOUT_S = 300
+RUN_COMMAND_MAX_TIMEOUT_S = 600
+
+
+def _command_timeout(requested) -> int:
+    """run_command's own timeout: the model may ask for more, within bounds.
+
+    The old fixed 120 s (under a 90 s step deadline) meant any full test suite
+    or build timed out (execution audit B6, 2026-09-29).
+    """
+    try:
+        value = int(requested) if requested is not None else RUN_COMMAND_DEFAULT_TIMEOUT_S
+    except (TypeError, ValueError):
+        value = RUN_COMMAND_DEFAULT_TIMEOUT_S
+    return max(1, min(value, RUN_COMMAND_MAX_TIMEOUT_S))
+
+
 def _plain_permission_description(tool_name, params, tier_value):
     """Session-326: human-readable permission headline (owner: the live card
     read "Execute 'run_command' with 1 params" — machine speak no non-coder
@@ -763,6 +780,28 @@ class AgentToolBridge:
 
         # [13.3] Filter developer-only tools in personal mode
         from backend.capabilities import CapabilitySet
+
+        # Ripgrep code search (grep_files / glob_files) existed only on the DER
+        # path's registry list, so developer CHAT could not search the codebase
+        # at all (execution audit, 2026-09-29). Built from the registry specs so
+        # the two paths share one definition.
+        if CapabilitySet.is_developer():
+            try:
+                from backend.agent.tool_registry import resolve_tool
+
+                _have = {t.get("name") for t in tools}
+                for _search in ("grep_files", "glob_files"):
+                    _spec = resolve_tool(_search)
+                    if _spec is not None and _search not in _have:
+                        tools.append({
+                            "name": _spec.name,
+                            "description": _spec.description,
+                            "parameters": dict(_spec.parameters),
+                            "category": _spec.category,
+                        })
+            except Exception as exc:  # the chat still works without search
+                logger.warning("[ToolBridge] search tools not added to chat list: %s", exc)
+
         blocked = CapabilitySet.blocked_tools()
         if blocked:
             tools = [t for t in tools if t.get("name") not in blocked]
@@ -1154,6 +1193,9 @@ class AgentToolBridge:
         server = self._mcp_servers.get(server_name)
         if not server:
             return {"error": f"MCP server '{server_name}' not found"}
+
+        if server_name == "file_manager":
+            params = self._anchor_file_paths(params, session_id)
 
         try:
             # Check rate limit
@@ -2377,6 +2419,30 @@ class AgentToolBridge:
         self.__init_bridge_state__()
         self._session_workdirs[session_id] = workdir
 
+    _FILE_PATH_KEYS = ("path", "file_path")
+
+    def _anchor_file_paths(self, params: Dict, session_id: str) -> Dict:
+        """Resolve a RELATIVE file-tool path against the session workdir.
+
+        run_command, git and search already run in the session workdir
+        (_resolve_scope), but the file tools received the path unchanged, so a
+        relative path resolved against the BACKEND's cwd - the IRIS repo. The
+        planner writes goal-only steps ("read test_mathutils.py") that drop
+        the project folder, so every coding task in another folder read and
+        wrote the wrong tree (Phase 0 eval: coding 0/15, 2026-09-29).
+        Absolute paths and sessions with no bound workdir are left untouched.
+        """
+        self.__init_bridge_state__()
+        workdir = self._session_workdirs.get(session_id)
+        if not workdir or not isinstance(params, dict):
+            return params
+        anchored = dict(params)
+        for key in self._FILE_PATH_KEYS:
+            raw = anchored.get(key)
+            if isinstance(raw, str) and raw.strip() and not os.path.isabs(raw):
+                anchored[key] = os.path.normpath(os.path.join(workdir, raw))
+        return anchored
+
     # ── T4b (REQ-15): per-turn write tracking for the verification gate ──
 
     def note_turn_write(self, session_id: str, path: str) -> None:
@@ -2726,7 +2792,7 @@ class AgentToolBridge:
             # shell IS the pipe, so pipes/&& work and cwd/env persist.
             # REQ-19 AC2: non-zero exit is a result (success:True + returncode),
             # never a tool failure.
-            return await _run(raw, timeout=120)
+            return await _run(raw, timeout=_command_timeout(params.get("timeout")))
 
         return {"error": f"Unknown dev tool: {tool_name}"}
 
@@ -3690,6 +3756,10 @@ class AgentToolBridge:
                                 "revised": True,
                             }
             document_id = params.get("document_id") or str(_uuid.uuid4())
+            # _prism_card_id_for records the card id itself; the store call
+            # takes the same arguments as the `show` path. Passing card_id=
+            # raised TypeError on EVERY call (the tests stubbed the store with
+            # **kwargs, so it never showed) - execution audit R1, 2026-09-29.
             card_id = kernel._prism_card_id_for(document_id)
             kernel._store_document_data(
                 document_id=document_id,
@@ -3697,7 +3767,6 @@ class AgentToolBridge:
                 trust=params.get("trust") or "trusted",
                 turn_id=turn_id,
                 conversation_id=conversation_id,
-                card_id=card_id,
             )
             get_event_bus().emit(
                 IRISStreamEvent.DOCUMENT_RENDER,

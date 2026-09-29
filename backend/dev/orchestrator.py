@@ -242,6 +242,38 @@ class DevOrchestrator:
         self._session_loops.pop(session_id, None)
 
 
+# ── Chat-path workdir binding ───────────────────────────────────────────────
+
+def bind_chat_workdir(session_id: str, workdir: Optional[str]) -> bool:
+    """Bind the active project folder for a developer-mode CHAT turn.
+
+    Only `dev_cli` (/run) used to bind a workdir, so a plain developer chat
+    message ran every tool against the IRIS repo instead of the project the
+    user had open (execution audit, 2026-09-29). Same checks as /run: developer
+    mode only, and the folder must exist. Returns True when bound.
+    """
+    if not workdir:
+        return False
+    try:
+        from backend.capabilities import CapabilitySet
+
+        if not CapabilitySet.is_developer():
+            return False
+        from .terminal_handler import validate_workdir
+
+        problem = validate_workdir(workdir)
+        if problem:
+            logger.warning("[DevChat][%s] workdir not bound: %s", session_id, problem)
+            return False
+        from backend.agent.tool_bridge import get_agent_tool_bridge
+
+        get_agent_tool_bridge().set_session_workdir(session_id, workdir)
+        return True
+    except Exception as exc:  # binding is best-effort; the turn still runs
+        logger.warning("[DevChat][%s] could not bind workdir '%s': %s", session_id, workdir, exc)
+        return False
+
+
 # ── Module-level singleton ──────────────────────────────────────────────────
 
 _orchestrator: Optional[DevOrchestrator] = None

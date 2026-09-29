@@ -5757,6 +5757,13 @@ class IRISGateway:
                 )
                 return
 
+            # Developer chat runs its tools in the project folder the user has
+            # open, exactly like /run does (the tab path rides as `workdir`).
+            if payload.get("workdir"):
+                from .dev.orchestrator import bind_chat_workdir
+
+                bind_chat_workdir(session_id, payload.get("workdir"))
+
             # Session 246 (@-card-mentions): the frontend may reference task
             # cards by id (typed as @card:<id> in the composer). Resolve each
             # reference to its persisted snapshot and build a bounded context

@@ -672,6 +672,12 @@ class ApiHttpxTransport:
             if budget_check is not None:
                 budget_check()  # wedge fix: raises if the turn budget expired
             _stream_ok = False
+            # Each attempt starts clean: a retry after a partial stream must not
+            # append to the failed attempt's text or tool-call fragments (B16).
+            full_reply = ""
+            _reasoning_buf = []
+            _tool_calls_acc = {}
+            _emitted = False
             try:
                 with _httpx.Client(
                     timeout=_httpx.Timeout(timeout_s or 60.0), verify=get_ssl_context()
@@ -757,12 +763,14 @@ class ApiHttpxTransport:
                             if _r:
                                 _reasoning_buf.append(_r)
                                 if reasoning_callback:
+                                    _emitted = True
                                     reasoning_callback(_r)
 
                             # Text content
                             _c = _delta.get("content")
                             if _c:
                                 full_reply += _c
+                                _emitted = True
                                 chunk_callback(_c)
 
                             # Tool calls
@@ -779,7 +787,9 @@ class ApiHttpxTransport:
                     attempt + 1,
                     _e,
                 )
-                if attempt == 2:
+                # Text already reached the user: a retry would stream it a
+                # second time after the partial copy (execution audit B16).
+                if attempt == 2 or _emitted:
                     raise
             if _stream_ok:
                 break
@@ -1062,6 +1072,12 @@ class OpenAICompatTransport:
             if budget_check is not None:
                 budget_check()  # wedge fix: raises if the turn budget expired
             _stream_ok = False
+            # Each attempt starts clean: a retry after a partial stream must not
+            # append to the failed attempt's text or tool-call fragments (B16).
+            full_reply = ""
+            _reasoning_buf = []
+            _tool_calls_acc = {}
+            _emitted = False
             try:
                 with _httpx.Client(
                     timeout=_httpx.Timeout(timeout_s or 60.0), verify=get_ssl_context()
@@ -1157,11 +1173,13 @@ class OpenAICompatTransport:
                             if _r:
                                 _reasoning_buf.append(_r)
                                 if reasoning_callback:
+                                    _emitted = True
                                     reasoning_callback(_r)
 
                             _c = _delta.get("content")
                             if _c:
                                 full_reply += _c
+                                _emitted = True
                                 chunk_callback(_c)
 
                             _accumulate_tool_calls(
@@ -1177,7 +1195,9 @@ class OpenAICompatTransport:
                     attempt + 1,
                     _e,
                 )
-                if attempt == 2:
+                # Text already reached the user: a retry would stream it a
+                # second time after the partial copy (execution audit B16).
+                if attempt == 2 or _emitted:
                     raise
             if _stream_ok:
                 break
