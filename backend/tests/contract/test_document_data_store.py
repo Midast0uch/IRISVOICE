@@ -88,6 +88,15 @@ def _run_process(response_json, trusted=True, coord=SAMPLE_COORD):
         k._turn_touched_external = not trusted
         k._memory_interface = FakeMI()
         k._process_structured_response(response_json, turn_id="t1", conversation_id="c1")
+        # Both stores are background writers (Mycelium on the pacman fragment
+        # worker, the Immortus chain row on the ordered durability lane).
+        # Drain them before asserting, still inside the mocks: the asserts
+        # previously won only a thread-start race.
+        from backend.agent.mcm_protocol.actions import pacman_fragment as _pf
+        from backend.utils import durability_queue as _dq
+
+        _pf._FRAGMENT_QUEUE.join()
+        assert _dq.flush(10), "durability lane did not drain"
     return bus, immortus, k
 
 
@@ -165,6 +174,19 @@ def test_t9_immortus_chain_append():
         f"coords_from={ic.get('coords_from')!r} != {EXPECTED_COORD_STR!r}"
     )
     assert bool(ic.get("coords_from")), "coords_from must be non-empty"
+
+
+def test_s12_immortus_document_row_is_a_reference():
+    """S12: the chain row places a document in time and reasoning state; the
+    document itself stays in document_data. The row carries the id and a
+    short head, never the payload (a copy grew chain rows to 841 MB)."""
+    big = "row,value\n" + "\n".join(["x,1"] * 50_000)
+    _, immortus, _ = _run_process(json.dumps({"show": {"format": "table", "content": big}}))
+    assert len(immortus) == 1
+    ref = json.loads(immortus[0]["result"])
+    assert ref["document_id"] == immortus[0]["file_path"]
+    assert ref["chars"] == len(big)
+    assert len(immortus[0]["result"]) < 2_000, "chain row copied the document payload"
 
 
 def test_t9_untrusted_immortus_coords_from():

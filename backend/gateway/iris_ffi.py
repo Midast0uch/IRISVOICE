@@ -20,6 +20,22 @@ from typing import Dict, Optional, Tuple, List, Any, Sequence
 
 logger = logging.getLogger(__name__)
 
+# Standard S12 (store cleanup 2026-09-30): the most text one memory_chain row
+# may hold. p99 of real rows was 407 KB only because of nested store-read
+# captures (S11); p90 was 15.7 KB. 28 rows over 1 MB held 4.83 GB of the
+# 6.6 GB app store, each stored twice (content duplicated result).
+_CHAIN_RESULT_CAP = 65_536
+
+
+def _bound_chain_result(result):
+    """Cap a chain row's text at _CHAIN_RESULT_CAP chars with a visible marker."""
+    if isinstance(result, str) and len(result) > _CHAIN_RESULT_CAP:
+        return (
+            result[:_CHAIN_RESULT_CAP]
+            + f"\n[...truncated {len(result) - _CHAIN_RESULT_CAP} chars (S12 cap)]"
+        )
+    return result
+
 # ---------------------------------------------------------------------------
 # DLL Discovery
 # ---------------------------------------------------------------------------
@@ -847,6 +863,7 @@ class _PythonFallbackEngine:
                 r[1] for r in self._conn.execute("PRAGMA table_info(memory_chain)")
             }
         cols = self._chain_cols
+        result = _bound_chain_result(result)
 
         chain_id = str(uuid.uuid4())
         now = time.time()
@@ -901,8 +918,10 @@ class _PythonFallbackEngine:
             insert_cols.append("role")
             vals.append(kwargs.get("role") or "agent")
         if "content" in cols:
+            # Legacy NOT NULL column. Every reader reads `result`; copying the
+            # same text here stored each row twice (S12).
             insert_cols.append("content")
-            vals.append(result or "")
+            vals.append("")
         self._conn.execute(
             "INSERT INTO memory_chain ({}) VALUES ({})".format(
                 ", ".join(insert_cols), ", ".join("?" for _ in vals)
@@ -1494,7 +1513,7 @@ class IrisCoreEngine:
             )
             rc = self._ffi.immortus_chain_append(
                 thread_id,
-                result,
+                _bound_chain_result(result),
                 coords_from,
                 coords_to,
                 nbl_outcome,

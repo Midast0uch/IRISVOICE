@@ -88,6 +88,15 @@ def _run_process(response_json, trusted=True, coord=SAMPLE_COORD):
         k._turn_touched_external = not trusted
         k._memory_interface = FakeMI()
         k._process_structured_response(response_json, turn_id="t1", conversation_id="c1")
+        # Both stores are background writers (Mycelium on the pacman fragment
+        # worker, the Immortus chain row on the ordered durability lane).
+        # Drain them before asserting, still inside the mocks: the asserts
+        # previously won only a thread-start race.
+        from backend.agent.mcm_protocol.actions import pacman_fragment as _pf
+        from backend.utils import durability_queue as _dq
+
+        _pf._FRAGMENT_QUEUE.join()
+        assert _dq.flush(10), "durability lane did not drain"
     return bus, immortus, k
 
 

@@ -105,6 +105,7 @@ to fail on the old state. Change a number only with a new measurement and the re
 | S7 | TTS is ready with the backend; `/health` 503 while TTS loads, 200 + `tts.status=error` on a failed load | c11 reply 213.6 s -> 116.8 s; startup timeouts / zero audio in turns: many -> 0 (eval logs 2026-09-30) | lazy load landed inside turns (5 min 6 s cold on the C: hard disk) and starved pytest; now loads in the lifespan, warm-up before "ready", no idle unload (growth recycle caps memory) | `contract/test_startup_readiness_standards.py::test_s7_*`; hang: `behavioral/test_tts_memory_envelope_behavior.py::test_concurrent_first_speak_spawns_exactly_one_worker` |
 | S8 | the git-status poll never runs back to back on a slow repo | ran every 5 s, each run a 5 s timeout -> at most ~10% of disk time | fixed 5 s TTL + 5 s timeout on a huge dirty repo on the hard disk; TTL now x10 the last run's cost | `test_startup_readiness_standards.py::test_s8_*` |
 | S10 | the Oracle model hash comes from a cache on a repeat start (`data/oracle_model_hash.json`, keyed by abs path + size + mtime_ns) | ~16 s of `_hash_model_file` frames at startup -> 0; start -> first Oracle decide 23.0 / 38.6 / 70.4 s -> 5.3 s (one run, model file warm) (stack dump + log, 2026-09-30) | `load()` read the 642 MB model twice (ORT session + sha256) on the C: hard disk, competing with the TTS worker load | `contract/test_startup_readiness_standards.py::test_s10_*` (unchanged file is not read again; a changed file is re-hashed) |
+| S12 | one `memory_chain` row is bounded (`iris_ffi._CHAIN_RESULT_CAP` = 64 K chars + a `truncated` marker) and stored once (legacy `content` written empty; every reader reads `result`) | `data/memory.db` 6.61 GB -> 0.277 GB (VACUUM, 2026-09-30); 28 rows > 1 MB held 4.83 GB, each byte twice; 84 captured store listings in `document_data` held 1.23 GB | S11 stopped new nested captures; the chain writer still copied any size into both `result` and `content` | `contract/test_answer_path_standards.py::test_s12_*` (legacy-shape store; fails on the old writer); `contract/test_document_data_store.py::test_s12_*` (document chain row is a reference) |
 | S6 | eval pass flags and `reply_s` per task | c10 reply 63-226 s -> 16.9 s | all of the above | `evals/standards.json` + `run_evals.py` STANDARDS check (exit 5 on regression; tolerance x1.5 + 10 s for cloud-model variance). Record with `--record-standard` after a clean full run (pending: after the TTS fix) |
 
 **How to run the evals safely (learned the hard way).**
@@ -147,6 +148,39 @@ to fail on the old state. Change a number only with a new measurement and the re
 
 Running log of work after the Phase 1 commit (`a21b641c`). Each entry is also recorded in
 MCM (`record_edit` / `record_test` / `pin_add`).
+
+## 2026-09-30 (session 64237209) — HANDOFF 5 follow-ups: A5, test change, store cleanup (S12)
+
+**Wave B** runs in a Sonnet builder subagent in its own worktree (B1-B4); TG-B (live drive,
+Mode B) and Wave C stay with the Director.
+
+**(1) A5 — extractor off the agent answer path** (commit `0d65d398`). `research()` takes
+`defer_extraction`; `tool_bridge` crawler_query sets it. The funnel returns right after rerank;
+`extract_and_cite` runs on `durability_queue.lane("web_extract")` and hands OPEN_TAB (same
+payload) then CRAWLER_COMPLETE back to the caller's loop. The gateway path is unchanged
+(synchronous). Log line: `[web_timing] job_id=... deferred extract_ms=`. Effect: the agent tool
+result's `summary` and the job registry's summary/cited_markdown are empty on the agent path (the
+agent reads `content`). AC3.2/AC3.3 were already done in Wave A. LIVE MEASUREMENT (r01/r05) still
+to do on a quiet machine.
+
+**(2) Test changes (owner-approved).** `contract/test_search_discovery_contract.py::
+test_capability_path_consults_robots_before_fetching`: `startswith("Mozilla")` -> `==
+capabilities._TIER1_USER_AGENT` (the contract is gate UA == fetch UA). NEW
+`contract/test_crawl_orchestrator_contract.py::test_deferred_extraction_returns_before_blocked_extractor`.
+`evals/tasks.json` r06: the `million` pattern now also accepts a 7+ digit or comma-grouped figure
+(r06's correct answer said "14,246,219").
+
+**(3) Store cleanup + S12.** Backend stopped; backup `D:\iris-backup\2026-09-30\memory.db*`
+(sizes verified). Writer: `iris_ffi._PythonFallbackEngine.immortus_chain_append` copied `result`
+into the legacy NOT NULL `content` column (no reader uses `content`, native engine included).
+Fix: `_bound_chain_result` caps at 64 K chars with a marker (Python writer + native branch);
+`content` written empty. Store: `content` blanked where it equalled `result`; 84 results capped;
+84 `document_data` rows that were captured store listings (`{"success": true,
+"conversation_id": ..., "documents": [...]}`, 1.23 GB) blanked to a marker JSON (row identity
+kept); VACUUM -> 0.277 GB. `test_chain_coordinate_store_contract.py` copies the live store —
+run it after the VACUUM only.
+
+**Immortus chain = the 4D time layer (owner note).** The document landing (`agent_kernel._store_document_data`) wrote the whole canonical document (content + variants) into the chain row's `result`, so the chain held the payload instead of the document's place in time. Now the row is a REFERENCE (`document_id`, format, trust, chars, 400-char head); `retrieve_documents_by_trajectory` rehydrates the document from `document_data` by `file_path`; `coords_to` = `coords_from` (a point event, was the format string); written on the ordered durability lane (was a thread per row). Guard: `contract/test_document_data_store.py::test_s12_*`. TEST HARNESS CHANGE (both copies of `test_document_data_store.py`): `_run_process` now drains the fragment queue and the durability lane before asserting (the asserts had won a thread-start race). Load 0.277 GB store: recall newest-5 0.123 s -> 0.000 s (warm). OPEN gaps from the read-only map (for an owner decision): coordinate-addressed recall has no production caller (`retrieve_documents_by_trajectory`, `immortus_chain_query_by_coordinate`); `created_at` is used only for recency ranking (no windows, decay or trajectory replay); `api/chat.py` writes `rest:input:<turn>` pseudo-coordinates and `agent/mcm.py` writes Python lists as coordinates (both unparseable by the coordinate query).
 
 ## 2026-09-30 (session 13a261c7) — post-move check, startup disk contention, S10
 

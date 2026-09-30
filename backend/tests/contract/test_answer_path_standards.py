@@ -21,6 +21,9 @@ so a regression is caught before it costs a turn.
       get_rendered_documents results were captured, nested and re-escaped
       each round; 37 memory_chain rows grew to 4.84 GB (rows up to 841 MB)
       of the 6.6 GB store.
+  S12 one memory_chain row is bounded and stored once. Measured: 28 rows
+      over 1 MB held 4.83 GB, every byte twice (content == result); the
+      writer now caps result at _CHAIN_RESULT_CAP and leaves content empty.
 """
 from __future__ import annotations
 
@@ -211,3 +214,39 @@ def test_s11_store_read_results_are_never_captured():
         )
     # A fresh gather is still captured (the gate is not simply closed).
     assert AgentKernel._is_capture_worthy(kernel, "crawler_query", listing) is True
+
+
+def test_s12_chain_row_is_bounded_and_stored_once():
+    """S12: an oversized chain result is stored truncated with a marker, and
+    the legacy content column (the live store's shape) never duplicates it."""
+    tmp = Path(tempfile.mkdtemp(prefix="answer-path-s12-"))
+    store = str(tmp / "memory.db")
+    legacy = sqlite3.connect(store)
+    # The live data/memory.db shape before the coordinate ALTER.
+    legacy.execute(
+        "CREATE TABLE memory_chain (entry_id TEXT DEFAULT NULL, "
+        "thread_id TEXT NOT NULL, session_id TEXT DEFAULT NULL, "
+        "sequence INTEGER NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, "
+        "metadata TEXT DEFAULT '{}', session_ts REAL DEFAULT NULL, "
+        "result TEXT DEFAULT NULL, distilled INTEGER DEFAULT 0, "
+        "created_at REAL NOT NULL, PRIMARY KEY (thread_id, sequence))"
+    )
+    legacy.commit()
+    legacy.close()
+    eng = _ffi._PythonFallbackEngine(db_path=store, key_hex="00" * 32)
+    try:
+        big = "y" * (_ffi._CHAIN_RESULT_CAP * 4)
+        assert eng.immortus_chain_append("s12-thread", big) == 0
+    finally:
+        eng._conn.close()
+    conn = sqlite3.connect(store)
+    try:
+        result, content = conn.execute(
+            "SELECT result, content FROM memory_chain WHERE thread_id = ?",
+            ("s12-thread",),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert len(result) < _ffi._CHAIN_RESULT_CAP + 200, "S12: chain row not capped"
+    assert "truncated" in result, "S12: a capped row must say it was truncated"
+    assert not content, "S12: content duplicates result (every row stored twice)"

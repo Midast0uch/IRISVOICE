@@ -5389,29 +5389,48 @@ class AgentKernel:
         # _record_tool_event had the identical problem and was moved off-thread
         # first; fixing it simply revealed this one underneath. If a third
         # appears, the pattern (not the instance) is what needs addressing.
+        #
+        # The chain row is the document's place in TIME (created_at) and in
+        # reasoning state (coords): a REFERENCE to the payload, never the
+        # payload. document_data holds the document; retrieve_documents_by_
+        # trajectory rehydrates it by file_path. Copying canonical_text here
+        # (content + variants, i.e. the document twice) grew single chain rows
+        # to 841 MB (S12). Written on the ordered durability lane, not a
+        # thread per row.
         try:
-            import threading as _threading
-
             from backend.gateway.iris_ffi import ffi_immortus_chain_append
+            from backend.utils.durability_queue import submit as _durability_submit
+
+            _chain_ref = json.dumps({
+                "document_id": document_id,
+                "format": fmt,
+                "trust": trust,
+                "content_origin": content_origin,
+                "conversation_id": conversation_id,
+                "turn_id": turn_id,
+                "chars": len(content) if isinstance(content, str) else 0,
+                "head": content[:400] if isinstance(content, str) else "",
+            }, ensure_ascii=False)
 
             def _append_chain() -> None:
                 try:
                     ffi_immortus_chain_append(
                         thread_id=conversation_id,
-                        result=canonical_text,
+                        result=_chain_ref,
                         coords_from=coords_from,
-                        coords_to=canonical.get("format", "document"),
+                        # A document lands at a point in reasoning state: it
+                        # does not move the state, so the transition ends
+                        # where it began.
+                        coords_to=coords_from,
                         nbl_outcome="document_render",
-                        insight=canonical.get("format", "document"),
+                        insight=fmt,
                         file_path=document_id,
                         landmark_id="",
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("[AgentKernel] document_data Immortus store failed: %s", exc)
 
-            _threading.Thread(
-                target=_append_chain, daemon=True, name="immortus-chain-append",
-            ).start()
+            _durability_submit(f"immortus-doc:{document_id}", _append_chain)
         except Exception as exc:
             logger.warning("[AgentKernel] document_data Immortus dispatch failed: %s", exc)
 
@@ -5957,6 +5976,7 @@ class AgentKernel:
                 nbl_outcome="document_render",
             )
             docs = []
+            _store = None
             for e in entries:
                 if not e.get("file_path"):
                     continue
@@ -5964,6 +5984,16 @@ class AgentKernel:
                     data = json.loads(e.get("result") or "{}")
                 except Exception:
                     data = {}
+                # The chain row is a reference (S12); the document itself
+                # lives in document_data, keyed by the row's file_path.
+                try:
+                    if _store is None:
+                        _store = self._get_document_store()
+                    _full = _store.get(e["file_path"]) if _store is not None else None
+                except Exception:
+                    _full = None
+                if _full:
+                    data = {**data, **_full}
                 data["_distance"] = e.get("distance")
                 docs.append(data)
             return docs
