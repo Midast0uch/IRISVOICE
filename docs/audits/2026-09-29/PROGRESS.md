@@ -175,6 +175,20 @@ logged (`hash=61dd40d59032`), 0 hash frames at startup. Tests: model-pin + onnx-
 contract (18 passed), `test_startup_readiness_standards.py` 4 passed; `test_s10_*` fails on the
 old code ("an unchanged model file was read again").
 
+**S9 cold baseline (BEFORE the site-packages switch).** Owner rebooted 12:08; backend started
+13:00:37 (52 min after boot, site-packages still on the C: hard disk): `/health` 200 at 13:13:08 =
+**12 min 31 s**. Backend imports 2.6 min before the TTS spawn; TTS worker imports (torch +
+pocket_tts) 8.9 min (its TEMP stack dump shows `torch._load_dll_libraries` ~4 min in); model load
+25.7 s; warm-up 34 s; first Oracle decide 47.7 s (scoring 20.6 s cold). Warm starts the same day:
+116-123 s. The switch to D: is the fix to measure next (owner runs it with Claude Code closed).
+
+**Research re-measured (warm):** r01 PASS reply 154 s, r02 PASS reply 64 s. r01 split: plan 18 s,
+Exa URL planning 16 s, crawl 36 s (3 pages in ~6 s; both en.wikipedia.org URLs "Tier-1 unusable
+(reason=challenge)" -> pooled browser -> 25 s run budget -> parked), `data_extractor` Brain pass
+43 s, goal-contract extract + synthesis 30 s. Wikipedia check: plain HTTP with no / httpx /
+Chrome-like User-Agent -> 403; a UA-policy User-Agent (app name + contact URL) -> 200 in 0.54 s,
+and the good page itself contains the word "challenge".
+
 **Owner note (2026-09-30): websearch / research has always been slow and must improve.** Next:
 Mode A on the research group, one task at a time, timeline + stack dumps before any change.
 
