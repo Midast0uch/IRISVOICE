@@ -233,11 +233,44 @@ def _vision_live_sync() -> bool:
     return bool(client is not None and client.health_check())
 
 
-async def _vision_live() -> bool:
+# The probe can make HTTP calls to local model servers. It runs on its OWN
+# daemon thread, never the loop's default executor: a probe abandoned by the
+# 3 s bound there was still joined when the per-call loop closed, so a slow
+# probe held the tool call anyway (it hung the Wave B tests at teardown).
+# The answer is cached so each observe does not probe again.
+_VISION_TTL_S = 60.0
+_VISION_WAIT_S = 3.0
+_vision_lock = threading.Lock()
+_vision_state: Dict[str, Any] = {"at": 0.0, "value": False, "probing": False}
+
+
+def _vision_probe_thread() -> None:
     try:
-        return await asyncio.wait_for(asyncio.to_thread(_vision_live_sync), 3.0)
-    except Exception:  # noqa: BLE001 — no vision is the safe answer
-        return False
+        value = _vision_live_sync()
+    except Exception as exc:  # noqa: BLE001 — no vision is the safe answer
+        logger.debug("[browser_tools] vision probe failed: %s", exc)
+        value = False
+    with _vision_lock:
+        _vision_state.update(at=time.monotonic(), value=bool(value), probing=False)
+
+
+async def _vision_live() -> bool:
+    """Cached vision liveness. Waits at most _VISION_WAIT_S for a fresh probe,
+    then answers False (degrades the marked screenshot, never cancels the probe)."""
+    deadline = time.monotonic() + _VISION_WAIT_S
+    while True:
+        with _vision_lock:
+            fresh = time.monotonic() - _vision_state["at"] < _VISION_TTL_S
+            if fresh:
+                return bool(_vision_state["value"])
+            if not _vision_state["probing"]:
+                _vision_state["probing"] = True
+                threading.Thread(
+                    target=_vision_probe_thread, daemon=True, name="iris-vision-probe",
+                ).start()
+        if time.monotonic() >= deadline:
+            return False
+        await asyncio.sleep(0.1)
 
 
 def _fail(error: str) -> Dict[str, Any]:

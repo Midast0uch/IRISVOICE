@@ -309,3 +309,32 @@ def test_handoff_hint_names_the_tool_and_the_unreadable_pages():
     assert "browser_open" in hint and "https://a.test/x" in hint and "https://b.test/y" in hint
     assert "not-a-url" not in hint
     assert handoff_hint([]) == "" and handoff_hint(None) == ""
+
+
+def test_a_blocked_vision_probe_never_holds_the_tool_call(monkeypatch):
+    """The vision-liveness probe may block on a local model server. The call
+    answers False within the bound, and closing the call's event loop does not
+    wait for the probe (it once joined the abandoned executor thread)."""
+    import threading
+    import time
+
+    from backend.agent.tools import browser_tools
+
+    release = threading.Event()
+
+    def _blocked() -> bool:
+        release.wait(30)
+        return True
+
+    monkeypatch.setattr(browser_tools, "_vision_live_sync", _blocked)
+    monkeypatch.setattr(browser_tools, "_VISION_WAIT_S", 0.5, raising=False)
+    monkeypatch.setattr(
+        browser_tools, "_vision_state", {"at": 0.0, "value": False, "probing": False},
+        raising=False,
+    )
+    try:
+        t0 = time.monotonic()
+        assert asyncio.run(browser_tools._vision_live()) is False
+        assert time.monotonic() - t0 < 5.0, "the event loop waited for the probe"
+    finally:
+        release.set()
