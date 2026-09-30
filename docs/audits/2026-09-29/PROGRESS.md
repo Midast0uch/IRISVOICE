@@ -2,7 +2,11 @@
 
 ## START HERE (next session)
 
-Read in this order: this section -> MCM pins `pin_8c65c2f38078` (HANDOFF 3),
+**NEXT AGENT: read MCM `pin_069f18710552` (HANDOFF 4) first** — it assumes the owner has run
+`disk-move-plan.md` and lists the exact next steps (verify the move + Standard S9, address
+`pin_22b078571d73`, then the remaining audit items).
+
+Read in this order: this section -> MCM pins `pin_069f18710552` (HANDOFF 4), `pin_8c65c2f38078` (HANDOFF 3),
 `pin_01a6c7f883b5` (STANDARDS — check before touching these paths), `pin_c8d898bc13c3`
 (latency pattern), `pin_fe189f29c30b` (physics lane), `pin_4de2bce61834` (EML root cause) ->
 the log below ->
