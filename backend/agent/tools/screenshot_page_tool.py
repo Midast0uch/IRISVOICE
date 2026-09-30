@@ -41,6 +41,47 @@ _FULL_PAGE = False
 _MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
 
+async def _capture_png(url: str) -> "tuple[Optional[bytes], str]":
+    """Open ``url`` in a session and photograph it: ``(png, "")``, or
+    ``(None, reason)`` when the browser could not open the page. Runs on the
+    browser host loop; raises on a capture failure."""
+    from backend.vision.browser_session import BrowserSession, SessionBounds
+
+    session = None
+    try:
+        job_id = f"shot-{uuid.uuid4().hex[:12]}"
+        # No actions: this session exists to open the page and photograph it.
+        # A short wall bound because a user is waiting on a single picture, not
+        # on a reading pass.
+        session = BrowserSession(
+            job_id=job_id,
+            url=url,
+            goal="capture a screenshot of this page",
+            bounds=SessionBounds(max_actions=0, max_wall_ms=25_000),
+        )
+        await session.open()
+        if not session.available():
+            return None, "the browser could not open that page"
+        # Paint-settle before the shot (2026-08-12): open() waits only for
+        # `domcontentloaded`, so an immediate screenshot captured a BLANK
+        # canvas — example.com came out as a uniform RGB(238,238,238)
+        # 4255-byte 1280x720 PNG. settle() waits best-effort for networkidle
+        # (3s bound, never blocks) so the first paint and any lazy content
+        # land; the extra sleep gives the compositor a frame or two.
+        try:
+            await session.settle()
+            await asyncio.sleep(0.4)
+        except Exception:  # noqa: BLE001 — capture whatever painted
+            pass
+        return await session.screenshot(), ""
+    finally:
+        if session is not None:
+            try:
+                await session.close()
+            except Exception:  # noqa: BLE001 — a leaked page must not fail the tool
+                logger.debug("[screenshot_page] session close failed", exc_info=True)
+
+
 async def capture_page_screenshot(
     url: str,
     kernel: Any,
@@ -78,48 +119,16 @@ async def capture_page_screenshot(
         logger.warning("[screenshot_page] egress guard errored for %s: %s", url, exc)
         return {"success": False, "error": "could not verify that address"}
 
-    png: Optional[bytes] = None
-    session = None
     try:
-        from backend.vision.browser_session import BrowserSession, SessionBounds
+        # The session's Playwright objects live on the browser host loop.
+        from backend.vision.browser_host import get_browser_host
 
-        job_id = f"shot-{uuid.uuid4().hex[:12]}"
-        # No actions: this session exists to open the page and photograph it.
-        # A short wall bound because a user is waiting on a single picture, not
-        # on a reading pass.
-        session = BrowserSession(
-            job_id=job_id,
-            url=url,
-            goal="capture a screenshot of this page",
-            bounds=SessionBounds(max_actions=0, max_wall_ms=25_000),
-        )
-        await session.open()
-        if not session.available():
-            return {
-                "success": False,
-                "error": "the browser could not open that page",
-            }
-        # Paint-settle before the shot (2026-08-12): open() waits only for
-        # `domcontentloaded`, so an immediate screenshot captured a BLANK
-        # canvas — example.com came out as a uniform RGB(238,238,238)
-        # 4255-byte 1280x720 PNG. settle() waits best-effort for networkidle
-        # (3s bound, never blocks) so the first paint and any lazy content
-        # land; the extra sleep gives the compositor a frame or two.
-        try:
-            await session.settle()
-            await asyncio.sleep(0.4)
-        except Exception:  # noqa: BLE001 — capture whatever painted
-            pass
-        png = await session.screenshot()
+        png, error = await get_browser_host().run(_capture_png(url))
     except Exception as exc:  # noqa: BLE001
         logger.warning("[screenshot_page] capture failed url=%s: %s", url, exc)
         return {"success": False, "error": "the page could not be captured"}
-    finally:
-        if session is not None:
-            try:
-                await session.close()
-            except Exception:  # noqa: BLE001 — a leaked page must not fail the tool
-                logger.debug("[screenshot_page] session close failed", exc_info=True)
+    if error:
+        return {"success": False, "error": error}
 
     if not png:
         return {"success": False, "error": "the page produced no image"}

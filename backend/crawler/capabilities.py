@@ -554,7 +554,37 @@ async def _fast_http_fetch_one(url, goal, job_id, page_offset, on_progress) -> F
         )
 
 
+async def _block_heavy_resources(context) -> None:
+    """Crawl contexts read text: drop media and fonts before they are fetched
+    (D5 memory bound). Best-effort - a context without ``route`` just loads them."""
+    from backend.vision.browser_pool import BLOCKED_CRAWL_RESOURCES
+
+    async def _gate(route) -> None:
+        if route.request.resource_type in BLOCKED_CRAWL_RESOURCES:
+            await route.abort()
+        else:
+            await route.continue_()
+
+    try:
+        await context.route("**/*", _gate)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[capabilities] resource blocking not installed: %s", exc)
+
+
 async def _browser_pool_fetch_one(url, goal, job_id, page_offset, on_progress) -> FetchOutcome:
+    """Tier 2: hand the whole page fetch to the browser host loop.
+
+    The pooled Chromium lives on that loop (``browser_host``); every Playwright
+    call of the fetch must run there, whichever loop the crawl is on. Never raises.
+    """
+    from backend.vision.browser_host import get_browser_host
+
+    return await get_browser_host().run(
+        _browser_pool_fetch_one_on_host(url, goal, job_id, page_offset, on_progress)
+    )
+
+
+async def _browser_pool_fetch_one_on_host(url, goal, job_id, page_offset, on_progress) -> FetchOutcome:
     """Tier 2: pooled-browser fetch via backend.vision.browser_pool.
 
     REQ-3 AC3.5 / REQ-4 AC4.2/AC4.3. Uses ``acquire_browser()`` + an isolated
@@ -591,6 +621,7 @@ async def _browser_pool_fetch_one(url, goal, job_id, page_offset, on_progress) -
         context = await asyncio.wait_for(
             browser.new_context(), timeout=_TIER2_STEP_TIMEOUT_S
         )
+        await _block_heavy_resources(context)
         pg = await asyncio.wait_for(context.new_page(), timeout=_TIER2_STEP_TIMEOUT_S)
         logger.info(
             "[capabilities][job_id=%s] Tier-2 browser fetch (goal=%r): %s",

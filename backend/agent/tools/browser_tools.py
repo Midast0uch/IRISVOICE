@@ -6,19 +6,16 @@ class): ``browser_open`` loads a URL, ``browser_observe`` lists what can be
 clicked or typed into (Set-of-Marks), ``browser_act`` does it with real mouse and
 keyboard input while the overlay shows the cursor arriving first.
 
-WHY A PRIVATE LOOP AND A PRIVATE CHROMIUM. The DER loop runs every tool call on a
-fresh event loop (``tool_decision._run_async``), and a Playwright object only
-works on the loop that created it. The shared ``browser_pool`` Chromium is bound
-to whichever loop started it: measured 2026-09-30, a session held open on one
-loop makes the pool's next user on another loop HANG (and across two
-``asyncio.run`` calls the pooled browser is a corpse). A session that must
-outlive one tool call therefore lives on ONE dedicated loop thread with its own
-Chromium, and every tool call marshals onto it. Crawls keep the shared pool and
-never touch this browser.
+WHY ONE HOST LOOP. The DER loop runs every tool call on a fresh event loop
+(``tool_decision._run_async``), and a Playwright object only works on the loop
+that created it (measured 2026-09-30: a session held open on one loop made the
+pool's next user on another loop HANG). A session that must outlive one tool call
+therefore lives on the ONE browser host loop (``vision.browser_host``), and every
+tool call marshals onto it. The same loop hosts the crawl pool's Chromium, so the
+backend runs ONE Chromium; each conversation gets its own BrowserContext.
 
 Bounded: at most ``IRIS_BROWSER_MAX_SESSIONS`` sessions (default 2, LRU-closed),
-each idle-closed after ``_IDLE_TTL_S``; the private Chromium exits with its last
-session.
+each idle-closed after ``_IDLE_TTL_S``; the pool stops the Chromium when idle.
 """
 from __future__ import annotations
 
@@ -33,6 +30,8 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
 
+from backend.vision.browser_host import get_browser_host
+
 logger = logging.getLogger(__name__)
 
 Emit = Callable[[str, dict], None]
@@ -45,24 +44,12 @@ _REAP_EVERY_S = 30.0
 _OPEN_TIMEOUT_S = 120.0
 _OBSERVE_TIMEOUT_S = 30.0
 _ACT_TIMEOUT_S = 60.0
-_LAUNCH_TIMEOUT_S = 60.0
 # A long interactive task takes many steps; the defaults for vision sessions
 # (12 actions / 60 s) are sized for a reading pass, not for this.
 _SESSION_MAX_ACTIONS = 150
 _SESSION_MAX_WALL_MS = 900_000
 # Ceiling on the base64 marked screenshot carried in a tool result.
 _MAX_IMAGE_B64 = 600_000
-
-
-class _NullLease:
-    """Stands in for a pool lease: the private browser is closed by its own
-    last session, not by an idle watchdog."""
-
-    def renew(self, *_a: Any, **_k: Any) -> None:
-        pass
-
-    def release(self) -> None:
-        pass
 
 
 @dataclass
@@ -73,87 +60,35 @@ class _Entry:
 
 
 class _BrowserRuntime:
-    """The dedicated loop thread, its sessions and its private Chromium.
+    """The agent's browser sessions, hosted on the shared browser host loop.
 
-    ``sessions`` and the browser handles are touched ONLY from the loop thread,
-    so they need no lock; ``run`` is the single way in from any other loop.
+    ``sessions`` is touched ONLY from the host loop, so it needs no lock; ``run``
+    is the single way in from any other loop. The Chromium is the pool's - one per
+    backend process - and each conversation gets its own BrowserContext from it.
     """
 
     def __init__(self) -> None:
-        self._start_lock = threading.Lock()
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._reaper_started = False
         self.sessions: "OrderedDict[str, _Entry]" = OrderedDict()
-        self._pw: Any = None
-        self._browser: Any = None
-        self._launch_lock: Optional[asyncio.Lock] = None
 
     def loop(self) -> asyncio.AbstractEventLoop:
-        with self._start_lock:
-            if self._loop is None:
-                loop = asyncio.new_event_loop()
-                threading.Thread(
-                    target=loop.run_forever, name="iris-browser-loop", daemon=True,
-                ).start()
-                asyncio.run_coroutine_threadsafe(self._reap_forever(), loop)
-                self._loop = loop
-            return self._loop
+        loop = get_browser_host().loop()
+        if not self._reaper_started:
+            self._reaper_started = True
+            asyncio.run_coroutine_threadsafe(self._reap_forever(), loop)
+        return loop
 
     async def run(self, coro: Any, timeout: float) -> Any:
-        """Run ``coro`` on the browser loop from any loop; cancel it on timeout."""
-        fut = asyncio.run_coroutine_threadsafe(coro, self.loop())
-        try:
-            return await asyncio.wait_for(asyncio.wrap_future(fut), timeout)
-        except BaseException:  # timeout or the caller being cancelled
-            fut.cancel()
-            raise
-
-    # ── private browser (loop thread only) ──────────────────────────────────
-
-    async def acquire(self, max_lease_ms: float = 0) -> tuple:
-        """Drop-in for ``browser_pool.acquire_browser`` (see BrowserSession)."""
-        if self._launch_lock is None:
-            self._launch_lock = asyncio.Lock()
-        async with self._launch_lock:
-            if self._browser is not None and not self._browser.is_connected():
-                await self.stop_browser()
-            if self._browser is None:
-                from playwright.async_api import async_playwright  # lazy, heavy
-
-                pw = await async_playwright().start()
-                try:
-                    self._browser = await asyncio.wait_for(
-                        pw.chromium.launch(
-                            headless=True,
-                            args=["--disable-blink-features=AutomationControlled"],
-                        ),
-                        _LAUNCH_TIMEOUT_S,
-                    )
-                except BaseException:
-                    try:
-                        await pw.stop()
-                    except Exception:  # noqa: BLE001
-                        pass
-                    raise
-                self._pw = pw
-                logger.info("[browser_tools] private browser started")
-            return self._browser, _NullLease()
-
-    async def stop_browser(self) -> None:
-        browser, pw = self._browser, self._pw
-        self._browser = self._pw = None
-        for closer in (browser, pw):
-            if closer is None:
-                continue
-            try:
-                await (closer.close() if closer is browser else closer.stop())
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("[browser_tools] private browser stop: %s", exc)
+        """Run ``coro`` on the host loop from any loop; cancel it on timeout."""
+        self.loop()
+        return await get_browser_host().run(coro, timeout)
 
     # ── session lifecycle (loop thread only) ────────────────────────────────
 
     async def close_entry(self, conv: str, reason: str) -> None:
-        """Close one conversation's session, tell the panel the run is over, and
-        stop the private Chromium when it was the last one. Never raises."""
+        """Close one conversation's session and tell the panel the run is over.
+        The shared Chromium stays up: the pool's idle watchdog stops it when no
+        crawl or session needs it. Never raises."""
         entry = self.sessions.pop(conv, None)
         if entry is None:
             return
@@ -168,8 +103,6 @@ class _BrowserRuntime:
         except Exception as exc:  # noqa: BLE001
             logger.debug("[browser_tools] session close conv=%s: %s", conv, exc)
         logger.info("[browser_tools] session closed conv=%s reason=%s", conv, reason)
-        if not self.sessions:
-            await self.stop_browser()
 
     async def _reap_forever(self) -> None:
         while True:
@@ -383,19 +316,14 @@ async def _do_open(conv: str, url: str, emit: Optional[Emit]) -> Dict[str, Any]:
             bounds=SessionBounds(
                 max_actions=_SESSION_MAX_ACTIONS, max_wall_ms=_SESSION_MAX_WALL_MS,
             ),
-            acquire=_RT.acquire,
         )
         try:
             await session.open()
         except Exception as exc:  # noqa: BLE001 — open() released what it held
             await session.close()
-            if not _RT.sessions:
-                await _RT.stop_browser()
             return _fail(f"browser unavailable: {str(exc)[:200]}")
         if not session.available():
             await session.close()
-            if not _RT.sessions:
-                await _RT.stop_browser()
             return _fail("browser unavailable: the browser could not be started")
         _RT.sessions[conv] = _Entry(session=session, emit=emit)
         _emit(emit, "OPEN_TAB", {

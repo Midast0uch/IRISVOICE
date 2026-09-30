@@ -410,6 +410,26 @@ async def discover_urls_via_vision(
     session_cls: type = BrowserSession,
     provider: Optional[object] = None,
 ) -> DiscoveryResult:
+    """Run the discovery session on the browser host loop (``browser_host``):
+    its Playwright objects live there. Never raises."""
+    from backend.vision.browser_host import get_browser_host
+
+    return await get_browser_host().run(_discover_urls_on_host(
+        query, job_id, _emit, max_results=max_results, bounds=bounds,
+        session_cls=session_cls, provider=provider,
+    ))
+
+
+async def _discover_urls_on_host(
+    query: str,
+    job_id: str,
+    _emit: Optional[Callable[[str, dict], None]] = None,
+    *,
+    max_results: int = _DEFAULT_MAX_RESULTS,
+    bounds: Optional[SessionBounds] = None,
+    session_cls: type = BrowserSession,
+    provider: Optional[object] = None,
+) -> DiscoveryResult:
     """Drive a search engine in the vision browser session and harvest
     candidate result URLs (REQ-19 AC1/AC2). Never raises — every failure
     path returns a `DiscoveryResult` the caller can act on (REQ-19 AC8).
