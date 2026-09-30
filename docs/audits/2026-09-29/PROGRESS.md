@@ -226,6 +226,16 @@ nothing). Findings logged for later: `_der_check_steering` returns before `_der_
 no steering is queued — the stuck-streak gate (and its rec==3 override) runs only when the user
 steers.
 
+**pin_22b078571d73 (a) DONE — option B, the topology halt is live.** `_der_topology_halt` (module
+level, next to `_der_physics_settle`) runs at each step boundary in `_execute_plan_der`, before
+the steering check, outside every advisory try. It reads only a LANDED update (never waits: S3),
+raises `TopologyViolationException` once per update (`fold.halted`), and
+`_der_execute_with_recovery` runs its targeted recovery (Caducean reset + DER_RECOVERY + one
+retry). Note: an unacted violation left by the previous turn halts the next turn's first boundary.
+Guard: `contract/test_topology_halt.py` (9 tests, all fail on the old code). DER behavioral files
+loop/concurrent/invariants/batch_expansion/rejects_stub/phase3 pass; `test_der_c1_error_propagation`
+fails on the committed code too (stand-in `_Step` has no `expected_output`, pre-existing).
+
 **Owner note (2026-09-30): websearch / research has always been slow and must improve.** Next:
 Mode A on the research group, one task at a time, timeline + stack dumps before any change.
 

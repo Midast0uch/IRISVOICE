@@ -165,6 +165,35 @@ def _der_physics_settle(owner, session_id: str) -> None:
         )
 
 
+def _der_topology_halt(owner, session_id: str) -> None:
+    """Stop the line on a TOPO_VIOLATION (rec==3) at a step boundary.
+
+    The rec==3 raise inside the physics job never reached the loop: finalize's
+    broad except (later the lane job) swallowed it, and every shape-decision
+    read sits inside an advisory try — so _der_execute_with_recovery's targeted
+    recovery never ran in production (MCM pin_22b078571d73, option B). Called
+    on the loop thread OUTSIDE any broad except. Reads only a LANDED update —
+    never waits (S3: the answer path does not wait for its physics); a later
+    landing is caught at the next boundary. Raises once per update, so the
+    recovery run does not halt again on the same stale state.
+    """
+    pending = getattr(owner, "_der_physics_pending", None)
+    fold = pending.get(session_id) if pending else None
+    if fold is None or not fold.ready.is_set() or fold.rec != 3:
+        return
+    with fold.lock:
+        if getattr(fold, "halted", False):
+            return
+        fold.halted = True
+    from backend.agent.exceptions import TopologyViolationException
+
+    logger.warning(
+        "[DER] TOPO_VIOLATION landed session=%s step=%s - halting for recovery",
+        session_id, getattr(fold, "step", None),
+    )
+    raise TopologyViolationException(session_id=session_id)
+
+
 def _der_fold_envelope(item, fold) -> None:
     """Write the landed physics onto the step's envelope (caller holds
     fold.lock). Idempotent: whichever of the lane and the envelope build
@@ -9838,6 +9867,9 @@ Respond with a JSON object:
             # the remaining plan (AC2); a stop aborts here (AC3); a pause
             # suspends here until resume/stop (AC4). budget_deadline bounds
             # the re-plan's LLM call by the turn budget (pin_ced7b0dc3b8f).
+            # Before it: a landed TOPO_VIOLATION halts the loop into
+            # _der_execute_with_recovery (never waits on the physics lane).
+            _der_topology_halt(self, _session)
             _steer = self._der_check_steering(
                 _session, plan, queue,
                 budget_deadline=_der_start_time + _DER_TURN_BUDGET_S,
@@ -17761,11 +17793,9 @@ Respond with a JSON object:
                     )
                 from .exceptions import TopologyViolationException
 
-                # NOTE (2026-09-29): this raise never reached the loop — it was
-                # caught by the broad except below even when it ran inline in
-                # _der_finalize_step. Kept as-is: it ends this update the same
-                # way it always did. Whether a topology violation should halt
-                # the loop is an owner decision, not part of the lane move.
+                # This raise ends THIS update (the lane job) only; it never
+                # reaches the loop. The loop halts via _der_topology_halt at
+                # the next step boundary, reading fold.rec set above.
                 raise TopologyViolationException(
                     session_id=_session,
                     direction_signal=None,  # full signal in DebugPanel
