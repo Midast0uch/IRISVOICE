@@ -247,8 +247,8 @@ You are not a generic chatbot — you are this user's personal AI assistant. Use
             Formatted skills block string, or empty string on any error.
         """
         try:
-            from .skills.skills_loader import load_all_skills, extract_description
-            skills = load_all_skills()
+            from .skills.skills_loader import extract_description, prompt_skills
+            skills = prompt_skills()
             if not skills:
                 return ""
 

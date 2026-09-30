@@ -126,6 +126,17 @@ def extract_description(skill_content: str) -> str:
     return "(no description)"
 
 
+def prompt_skills() -> Dict[str, str]:
+    """Skills for the live system prompt: all but `_`-prefixed test fixtures.
+
+    `_test_creator_skill` / `_test_dispatch_skill` are tracked test fixtures in
+    this folder; load_all_skills() and get_skill_prompt_context() must still
+    list them (tests assert both), but they were injected into every live
+    system prompt via PersonalityManager (execution audit B17).
+    """
+    return {k: v for k, v in load_all_skills().items() if not k.startswith("_")}
+
+
 def get_skill_prompt_context() -> str:
     """
     Return a formatted string of all loaded skills suitable for inclusion

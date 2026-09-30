@@ -97,9 +97,11 @@ def _embeddings_capable(timeout_s: float = 3.0) -> bool:
 
 
 def _health_ok(timeout_s: float = 2.0) -> bool:
+    # Pooled client: httpx.get() built a new client + SSL context per call, and
+    # every embed ran this twice under _lock, so all embedding callers queued
+    # on certificate loading (seen in in-process stack dumps, 2026-09-29).
     try:
-        import httpx
-        r = httpx.get(f"http://127.0.0.1:{_SIDECAR_PORT}/health", timeout=timeout_s)
+        r = _get_client().get(f"http://127.0.0.1:{_SIDECAR_PORT}/health", timeout=timeout_s)
         return r.status_code == 200
     except Exception:
         return False
@@ -231,10 +233,13 @@ def _touch_locked() -> None:
 
 
 def touch() -> None:
-    """Public: record a use so the idle timer re-arms."""
+    """Record a use so the idle timer re-arms.
+
+    Called after a successful embed, which already proved the server healthy,
+    so no second health request is made here.
+    """
     with _lock:
-        if _health_ok():
-            _touch_locked()
+        _touch_locked()
 
 
 def _idle_stop() -> None:

@@ -111,7 +111,7 @@ logger = logging.getLogger(__name__)
 
 # Per-session update counter for homeostatic relaxation cadence (REQ-1 AC2).
 # Keyed by session_id, incremented each time _der_finalize_step processes a
-# non-exception step. Reset is implicit â€” a new session starts at 0.
+# non-exception step. Reset is implicit — a new session starts at 0.
 _update_counters: Dict[str, int] = {}
 _update_counters_lock = threading.Lock()
 
@@ -124,8 +124,8 @@ _update_counters_lock = threading.Lock()
 # the rule allows one. Module-level so it is shared by every kernel instance.
 _der_recovery_lock = threading.Lock()
 
-# â”€â”€ DER Loop constants (spec: agent_loop_requirements.md Gap 11) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-# Canonical values live in der_constants.py â€” re-exported here for spec
+# ── DER Loop constants (spec: agent_loop_requirements.md Gap 11) ───────────
+# Canonical values live in der_constants.py — re-exported here for spec
 # compliance so module-level code that imports from agent_kernel finds them.
 try:
     from backend.agent.der_constants import (
@@ -197,11 +197,11 @@ _DER_TURN_BUDGET_S = float(os.environ.get("IRIS_DER_TURN_BUDGET_S", "600"))
 # what satisfies oracle.md 17.2's "being wrong is cheap or gated".
 _DEPTH_PUSH_MAX = int(os.environ.get("IRIS_DEPTH_PUSH_MAX", "3"))
 
-# REQ-1 AC8 (T2b, Decision 13 â€” revised 2026-08-19): the user-facing copy for
+# REQ-1 AC8 (T2b, Decision 13 — revised 2026-08-19): the user-facing copy for
 # the child steps of a sub-loop split. `branchLabel` is free text on the
-# wire â€” CardChassis's ChassisBranchBadge renders whatever string arrives
+# wire — CardChassis's ChassisBranchBadge renders whatever string arrives
 # here, so the wording is owned in this ONE constant, not inlined at each
-# emit site. NEVER "Sub-Loop" / "Detour" â€” those remain internal identifiers
+# emit site. NEVER "Sub-Loop" / "Detour" — those remain internal identifiers
 # (sub_loop_split / is_subloop) and are UNCHANGED; this is the user-facing
 # label only.
 DER_SUBLOOP_BRANCH_LABEL = "Diving Deeper"
@@ -217,7 +217,7 @@ class TaskContext:
     """
 
     task_id: str  # unique per user message
-    user_message: str  # original user request â€” never lost
+    user_message: str  # original user request — never lost
     session_id: str
     conversation_history: List[Dict]  # snapshot of memory at task start
     conversation_id: str = "default"
@@ -284,7 +284,7 @@ def _resolve_effective_key(
     blanket fallback attaches, e.g., a Cerebras key to a Cohere provider
     instance, which then 401s at call time even though the keyring is correct.
 
-    Pure function â€” unit-testable without constructing an AgentKernel.
+    Pure function — unit-testable without constructing an AgentKernel.
     """
     if api_key:
         return api_key
@@ -295,7 +295,7 @@ def _resolve_effective_key(
 
 # Formatting rules appended to every prompt that produces USER-FACING prose.
 #
-# Models do not reliably structure a long answer on their own â€” a multi-tool
+# Models do not reliably structure a long answer on their own — a multi-tool
 # result came back as one unbroken block, which is unreadable in a chat thread
 # (2026-08-16). The reply is rendered as markdown, so ask for the structure
 # explicitly, and scale it: a one-line answer must NOT grow headings.
@@ -307,7 +307,7 @@ _READABLE_FORMAT_RULES = """FORMATTING (your reply is rendered as markdown in a 
   - `-` bullets for lists of findings
   - a markdown table for field/value pairs (specs, settings, counts)
   - `backticks` for paths, commands, filenames and code
-  - a blank line between blocks â€” never run sections together
+  - a blank line between blocks — never run sections together
 - Structure only where it aids reading. Do not pad a short answer to fill it.
 - Report what the tools actually returned. If something was not returned, say
   so plainly rather than filling the gap."""
@@ -510,7 +510,7 @@ class AgentKernel:
         # exits cleanly without emitting further events for this conversation.
         self._cancel_requested = threading.Event()
 
-        # W6 (T27-T29): per-conversation DER lock â€” prevents concurrent DER
+        # W6 (T27-T29): per-conversation DER lock — prevents concurrent DER
         # execution on the same conversation. Accessed via _conversation_der_locks
         # class-level dict keyed by conversation_id.
         self._der_active = False
@@ -527,7 +527,7 @@ class AgentKernel:
         self._tool_bridge: Optional[AgentToolBridge] = (
             None  # Will be initialized lazily
         )
-        # For brainâ†”executor logging
+        # For brain↔executor logging
         self._inter_model_communicator: Optional[InterModelCommunicator] = None
 
         # State management
@@ -539,17 +539,17 @@ class AgentKernel:
         # NOTE (2026-08-16): `_model_provider`, `_selected_reasoning_model` and
         # `_selected_tool_execution_model` used to be assigned here and kept in
         # sync by hand from half a dozen call sites. They are now READ-ONLY
-        # PROPERTIES derived from the process-wide role-binding table â€” see
+        # PROPERTIES derived from the process-wide role-binding table — see
         # their definitions below. A stale copy of the user's model choice is
         # not a bug that can be fixed here; it is a bug that can only be made
         # impossible, by there being no copy.
 
-        # OpenAI-compatible endpoint â€” covers lmstudio, llamafile, vllm, or any custom server.
+        # OpenAI-compatible endpoint — covers lmstudio, llamafile, vllm, or any custom server.
         # Set via configure_lmstudio() (legacy name kept) or configure_openai_compat().
         # Defaults to LM Studio's default port; overridden when the user saves settings.
         self._lmstudio_endpoint: str = "http://localhost:1234"
 
-        # In-process `LocalModelManager` binding â€” non-None when iris_gateway
+        # In-process `LocalModelManager` binding — non-None when iris_gateway
         # has loaded a model via the in-process path. `_get_lmstudio_client()`
         # checks this before creating a real HTTP client; when set AND the
         # provider is `iris_local`, inference goes through the manager's
@@ -590,12 +590,12 @@ class AgentKernel:
         # Internet access is now a global app-wide flag (see
         # set_global_internet_access / get_global_internet_access below).
 
-        # Swarm compound collaboration (default: False â€” enabled via UI toggle)
+        # Swarm compound collaboration (default: False — enabled via UI toggle)
         self._swarm_enabled: bool = False
         self._swarm_coordinator = None
         self._context_control_handler = None
 
-        # â”€â”€ Inference behaviour fields (wired from inference_mode card) â”€â”€
+        # ── Inference behaviour fields (wired from inference_mode card) ──
         self._thinking_style: str = "balanced"  # concise | balanced | thorough
         self._response_length: str = "medium"  # short | medium | long
         self._reasoning_effort: str = "balanced"  # fast | balanced | accurate
@@ -608,38 +608,38 @@ class AgentKernel:
         # cached PROJECT.md content
         self._developer_context: Optional[str] = None
 
-        # â”€â”€ Model context window registry â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        # Maps (provider, model_name_substring) â†’ context window in tokens.
+        # ── Model context window registry ──────────────────────────────────
+        # Maps (provider, model_name_substring) → context window in tokens.
         # Used by resolve_context_window() so memory, conversation history,
-        # and MCM budgets are never hardcoded â€” they adapt to the model.
+        # and MCM budgets are never hardcoded — they adapt to the model.
         self._context_window_overrides: dict[str, int] = {}
 
-        # â”€â”€ REQ-3 (T2): backend-declared task-card identity registry â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── REQ-3 (T2): backend-declared task-card identity registry ────────
         # Maps DER task_id -> card_id so the SAME task's early-skeleton and
         # DER-queue task:start emits (and every lifecycle event after it)
-        # resolve to one Liquid Ink card instead of two. Bounded â€” this is a
+        # resolve to one Liquid Ink card instead of two. Bounded — this is a
         # per-kernel-lifetime dict, not per-turn, so it must not grow forever
         # (see _register_card's eviction).
         self._card_by_task: dict[str, str] = {}
         self._active_card_id: Optional[str] = None
         self._CARD_REGISTRY_CAP: int = 200
 
-        # Domain 4.5 â€” proactive skill creation.
-        # Tracks how many times each normalized tool-name sequence (joined with "â†’")
+        # Domain 4.5 — proactive skill creation.
+        # Tracks how many times each normalized tool-name sequence (joined with "→")
         # has been used this session.  When a pattern hits the threshold, the agent
         # is prompted to codify it as a SKILL.md.
         self._session_tool_patterns: dict[str, int] = {}
         self._skill_trigger_threshold: int = 3
-        # Patterns already prompted this session â€” avoid repeating the prompt.
+        # Patterns already prompted this session — avoid repeating the prompt.
         self._prompted_skill_patterns: set[str] = set()
 
-        # Cached OpenAI client for LM Studio â€” created once, reused on every call.
+        # Cached OpenAI client for LM Studio — created once, reused on every call.
         # Rebuilding _OpenAI() per-call recreates the full httpx connection pool,
         # adding unnecessary overhead on every message.  Invalidated in
         # configure_lmstudio() whenever the endpoint URL changes.
         self._lmstudio_client: Optional[Any] = None
 
-        # Main event loop â€” captured during startup so background threads can
+        # Main event loop — captured during startup so background threads can
         # dispatch coroutines via run_coroutine_threadsafe.
         self._broadcast_loop: Optional[Any] = None
 
@@ -649,7 +649,7 @@ class AgentKernel:
         # Auto-apply a provider configured in iris_config.json so the agentic /
         # DER loop does not silently fall back to a local OpenAI-compatible model
         # when a cloud provider is already configured.  Local-only setups (no
-        # provider / no key) are left uninitialized â€” the existing wait-for-user
+        # provider / no key) are left uninitialized — the existing wait-for-user
         # (Models-card APPLY / model_selection confirm_card) behaviour is preserved.
         self._router = InferenceRouter(load_config())
         # Context window (2026-09-27): the router asks us for the window of the
@@ -730,7 +730,7 @@ class AgentKernel:
         self._vps_config = VPSConfig(enabled=False)
         self._vps_gateway = None
         logger.info(
-            "[AgentKernel] VPS Gateway deferred (lazy init â€” awaiting user VPS configuration)"
+            "[AgentKernel] VPS Gateway deferred (lazy init — awaiting user VPS configuration)"
         )
 
         try:
@@ -766,7 +766,7 @@ class AgentKernel:
             self._personality = None
 
         try:
-            # Initialize Inter-Model Communicator for brainâ†”executor logging (Bug 5 fix)
+            # Initialize Inter-Model Communicator for brain↔executor logging (Bug 5 fix)
             logger.info("[AgentKernel] Initializing Inter-Model Communicator...")
             if self._model_router:
                 model_conversation = ModelConversation()
@@ -789,7 +789,7 @@ class AgentKernel:
         # Memory Foundation integration
         self._memory_interface: Optional[Any] = None
 
-        # MCM Protocol Orchestrator â€” wired after set_memory_interface()
+        # MCM Protocol Orchestrator — wired after set_memory_interface()
         self._mcm_orch = None
 
         # Trust-routing (plan W2): whether the current turn touched external/
@@ -799,7 +799,7 @@ class AgentKernel:
         # _execute_plan_der) and set when an external tool runs.
         self._turn_touched_external: bool = False
 
-        # â”€â”€ DER Loop components â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── DER Loop components ────────────────────────────────────────────
         # DER_MAX_CYCLES / DER_MAX_VETO_PER_ITEM re-exported at module level
         # for spec compliance (Gap 11). Canonical values live in der_constants.
         self._task_classifier = None
@@ -860,7 +860,7 @@ class AgentKernel:
             logger.warning(f"[AgentKernel] ModeDetector unavailable: {_md_err}")
 
         # REQ-6 AC2 (T9): fire the bounded, latched, background LFM warm-up so
-        # the first user turn runs at warm latency. Non-blocking â€” a daemon
+        # the first user turn runs at warm latency. Non-blocking — a daemon
         # thread does the load; a failure leaves the normal cold path intact.
         try:
             from backend.agent.semantic_gate import ensure_warm_start
@@ -1008,7 +1008,7 @@ class AgentKernel:
             logger.warning(f"[AgentKernel] MCMOrchestrator unavailable: {_mcm_err}")
             self._mcm_orch = None
 
-    # â”€â”€ Trust-routing helpers (plan W2) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Trust-routing helpers (plan W2) ────────────────────────────────────
     def _pacman_zone_for_turn(self) -> Optional[str]:
         """Zone for fragments produced by the current turn.
 
@@ -1033,11 +1033,11 @@ class AgentKernel:
 
     def clear_conversation(self, conversation_id: Optional[str] = None) -> None:
         """
-        Clear the agent context for a conversation â€” both the in-memory
+        Clear the agent context for a conversation — both the in-memory
         conversation history and the persistent store.  Called on 'new
         conversation' or thread switch cleanup so the next turn starts blank.
 
-        Never raises â€” logs warning on failure.
+        Never raises — logs warning on failure.
         """
         _cid = conversation_id or getattr(self, "conversation_id", None)
         # Reset in-memory history immediately so a reused kernel instance
@@ -1189,16 +1189,16 @@ class AgentKernel:
         """Add this inference call's cost to the pill's real counter (D1 fix).
 
         The ContextPill reads ``self._tokens_used`` (see ``_emit_context_usage``),
-        but nothing ever incremented it from a LIVE call â€” only
+        but nothing ever incremented it from a LIVE call — only
         ``restore_context_from_store`` ever set it (from a persisted snapshot),
         so a brand-new or freshly-restored turn stayed frozen at whatever it
         was restored to, through an entire real turn.
 
         *usage* is the REAL per-call usage dict parsed by the transport
-        (``InferenceRouter.last_usage`` â€” prompt/completion/total tokens from
+        (``InferenceRouter.last_usage`` — prompt/completion/total tokens from
         the provider's own response). It always wins when present. Only when
         the provider/local model omits usage entirely do we fall back to the
-        char/4 heuristic â€” and that fallback is logged as an estimate so real
+        char/4 heuristic — and that fallback is logged as an estimate so real
         and estimated increments are never silently blended.
         """
         try:
@@ -1213,7 +1213,7 @@ class AgentKernel:
                 "[AgentKernel._accrue_tokens] +%d (%s, source=%s) tokens_used=%d",
                 _add, _kind, source or "?", self._tokens_used,
             )
-        except Exception as _e:  # pragma: no cover â€” accounting must never break a turn
+        except Exception as _e:  # pragma: no cover — accounting must never break a turn
             logger.debug("[AgentKernel._accrue_tokens] failed: %s", _e)
 
     def infer(
@@ -1226,7 +1226,7 @@ class AgentKernel:
         """
         Thin inference adapter used by Reviewer (and other DER components).
         Returns an object with a `.raw_text` attribute.
-        Never raises â€” returns empty-text object on any backend failure.
+        Never raises — returns empty-text object on any backend failure.
         Routes through the same backend as the agentic loop.
         """
 
@@ -1274,7 +1274,7 @@ class AgentKernel:
 
         # T8c (REQ-10 AC5): emit an episodic memory event so the card's memory
         # slot renders REAL episodic retrieval (never fabricated). Fire-and-
-        # forget and OFF the inference hot path â€” a bus failure must never
+        # forget and OFF the inference hot path — a bus failure must never
         # affect the returned context.
         try:
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
@@ -1424,7 +1424,7 @@ class AgentKernel:
                     f"[AgentKernel] VPS Gateway created: enabled={self._vps_config.enabled}, endpoints={len(self._vps_config.endpoints)}"
                 )
             elif not self._vps_config.enabled:
-                # VPS disabled â€” clear any existing gateway to stop health checks
+                # VPS disabled — clear any existing gateway to stop health checks
                 self._vps_gateway = None
                 logger.info("[AgentKernel] VPS Gateway disabled by user config")
             else:
@@ -1447,7 +1447,7 @@ class AgentKernel:
           http://localhost:1234/v1     -> http://localhost:1234
           http://localhost:1234/v1/    -> http://localhost:1234
         None or empty string returns "".
-        _get_lmstudio_client() always appends /v1 itself â€” never double-append.
+        _get_lmstudio_client() always appends /v1 itself — never double-append.
         """
         if not endpoint:
             return ""
@@ -1463,7 +1463,7 @@ class AgentKernel:
         OpenAI-compatible server URL (LM Studio, llamafile, vllm, llama-server, etc.).
         """
         self._lmstudio_endpoint = self._normalise_endpoint(endpoint)
-        self._lmstudio_client = None  # invalidate cached client â€” endpoint changed
+        self._lmstudio_client = None  # invalidate cached client — endpoint changed
         self._sync_context_window()
         logger.info(
             f"[AgentKernel] OpenAI-compatible endpoint configured: {self._lmstudio_endpoint}"
@@ -1475,11 +1475,11 @@ class AgentKernel:
         """Configure any OpenAI-compatible inference server.
 
         Passing endpoint=None clears the endpoint (e.g. after model unload).
-        Safe to call with None â€” never raises AttributeError.
+        Safe to call with None — never raises AttributeError.
 
         Sets the ENDPOINT only. It used to also assign ``_model_provider``, but
         that field is now derived from the role binding, and this function is
-        not a binding authority â€” the swarm/local handlers that call it wire the
+        not a binding authority — the swarm/local handlers that call it wire the
         router themselves (``_handle_swarm_action``, the local-load path). The
         assignment was vestigial and could disagree with actual routing: it
         reported ``"uninitialized"`` after an unload while the router happily
@@ -1492,7 +1492,7 @@ class AgentKernel:
                 f"[AgentKernel] {provider_name} endpoint configured: {self._lmstudio_endpoint}"
             )
         else:
-            logger.info("[AgentKernel] Endpoint cleared â€” kernel is uninitialized")
+            logger.info("[AgentKernel] Endpoint cleared — kernel is uninitialized")
 
     def configure_ollama(self, endpoint: str) -> None:
         """Configure the Ollama native API endpoint (provider == 'local')."""
@@ -1518,9 +1518,9 @@ class AgentKernel:
             f"[AgentKernel] Remote API configured: base_url={self._api_base_url}"
         )
 
-    # â”€â”€ Context window resolution â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Context window resolution ──────────────────────────────────────────
     # Every model has a maximum context window.  Memory, conversation history,
-    # and MCM budgets should be derived from it â€” never hardcoded.
+    # and MCM budgets should be derived from it — never hardcoded.
 
     def _sync_context_window(self) -> None:
         """Propagate the resolved context window to memory config + peers."""
@@ -1564,7 +1564,7 @@ class AgentKernel:
         ("mistral", "mistral-medium", 32_000),
         ("mistral", "mistral-small", 32_000),
         ("mistral", "mixtral", 32_000),
-        # Cerebras â€” value confirmed by the user 2026-07-28.
+        # Cerebras — value confirmed by the user 2026-07-28.
         # NOTE: no provider-wide ("cerebras", "", N) fallback on purpose. An
         # unlisted model must fall through to the conservative 8k default rather
         # than inherit 256k: the budget is sized at window*0.9, so a default that
@@ -1588,14 +1588,14 @@ class AgentKernel:
         # purpose (windows unverified) and take the safe 8k default.
         ("cerebras", "qwen-3.8-27b", 64_000),
         # OpenRouter: REMOVED 2026-07-29. ("openrouter", "", 32_000) was a
-        # bare-substring provider-wide fallback â€” it matched EVERY model from
+        # bare-substring provider-wide fallback — it matched EVERY model from
         # OpenRouter, which fronts models from 4k to 2M windows. A blanket
         # 32_000 meant an 8k-window model got a budget sized for 32k, so DER
         # kept issuing steps while every call silently truncated (REQ-2 AC6,
         # the exact case row 1 of the silent-failure table in specs/PHASES.md
         # describes). This was briefly grandfathered into an allow-list in
         # test_no_raised_provider_default; that was wrong and has been
-        # reverted â€” the guard now admits no exceptions. An unlisted
+        # reverted — the guard now admits no exceptions. An unlisted
         # openrouter model now falls through to the conservative 8_192
         # default (case 4 below), tagged source="default" per REQ-2 AC4:
         # under-provisioning is safe, over-provisioning truncates silently.
@@ -1603,8 +1603,8 @@ class AgentKernel:
         # _context_window_overrides (highest precedence, REQ-2 AC3).
         # Open question: the correct long-term fix is resolving OpenRouter's
         # window from its API metadata (authoritative, REQ-2 AC2) rather than
-        # any table guess â€” see specs/phase-1-foundation/requirements.md OQ.
-        # LM Studio / IRIS Local â€” common local models
+        # any table guess — see specs/phase-1-foundation/requirements.md OQ.
+        # LM Studio / IRIS Local — common local models
         ("lmstudio", "lfm-2-8b", 32_768),
         ("lmstudio", "llama-3", 8_192),
         ("lmstudio", "llama-3.1", 128_000),
@@ -1615,7 +1615,7 @@ class AgentKernel:
         ("iris_local", "lfm-2-8b", 32_768),
         ("iris_local", "llama-3", 8_192),
         ("iris_local", "llama-3.1", 128_000),
-        # Ollama â€” common local models
+        # Ollama — common local models
         ("local", "llama3.1", 128_000),
         ("local", "llama3", 8_192),
         ("local", "mistral", 32_768),
@@ -1623,14 +1623,14 @@ class AgentKernel:
         ("local", "phi3", 128_000),
         ("local", "gemma2", 8_192),
         # Ollama CLOUD models. Every value below was read from the running
-        # Ollama server's own /api/show `context_length` on 2026-08-16 â€” not
+        # Ollama server's own /api/show `context_length` on 2026-08-16 — not
         # from a model card, a blog post, or memory. The catalog above this
         # file was once ~80% fabricated, so anything unverifiable is simply
         # absent here rather than guessed.
         #
         # Why these were missing and what it cost: an OLLAMA-kind provider maps
         # to the provider string "local" (see _provider_string_for_instance),
-        # and no "local" entry matched any cloud id â€” so gpt-oss:120b-cloud
+        # and no "local" entry matched any cloud id — so gpt-oss:120b-cloud
         # resolved to the conservative 8192 default and DER got a 4000-token
         # budget against a real 131072 window. Observed live: a 3-step task
         # stopped after step 2 with "Token budget exhausted (6091/4000)" while
@@ -1639,7 +1639,7 @@ class AgentKernel:
         # Deliberately NOT listed: kimi-k2.5:cloud and kimi-k2-thinking:cloud.
         # Ollama's own /api/show returns an error for both, so no authoritative
         # window exists to record. They fall through to the 8192 default, which
-        # under-provisions rather than truncates â€” the safe direction, per the
+        # under-provisions rather than truncates — the safe direction, per the
         # cerebras note above.
         ("local", "gpt-oss", 131_072),
         ("local", "nemotron-3-nano", 262_144),
@@ -1666,7 +1666,7 @@ class AgentKernel:
     # Known vision-capable API models. Keyed (provider_id, model_substring),
     # mirroring _KNOWN_CONTEXT_WINDOWS's shape and matching rule directly
     # above: substring match is case-insensitive, first match wins. Sibling
-    # table for specs/unified-vision-routing REQ-1 AC2 â€” this is DATA only,
+    # table for specs/unified-vision-routing REQ-1 AC2 — this is DATA only,
     # not a raise site. A model id that matches no row here is simply absent
     # from the table; the "unknown -> False" behaviour of REQ-1 AC5 is owned
     # by supports_vision() (backend/agent/inference/router.py), which must
@@ -1674,20 +1674,20 @@ class AgentKernel:
     #
     # provider_id follows the same vocabulary as _KNOWN_CONTEXT_WINDOWS: the
     # literal instance id registered for an API ProviderInstance (e.g.
-    # "openai", "anthropic" â€” see PROVIDER_PRESETS in
+    # "openai", "anthropic" — see PROVIDER_PRESETS in
     # backend/agent/inference/provider.py), not the ProviderKind enum value.
     _KNOWN_VISION_MODELS: list[tuple[str, str]] = [
-        # OpenAI â€” the GPT-4o family and later multimodal generations accept
+        # OpenAI — the GPT-4o family and later multimodal generations accept
         # image input natively.
         ("openai", "gpt-4o"),
         ("openai", "gpt-4-turbo"),
         ("openai", "gpt-4.5"),
-        # Anthropic â€” every Claude 3 and later model accepts image input.
+        # Anthropic — every Claude 3 and later model accepts image input.
         ("anthropic", "claude-3"),
         ("anthropic", "claude-opus"),
         ("anthropic", "claude-sonnet"),
         ("anthropic", "claude-haiku"),
-        # Gemini â€” multimodal since 1.5. No "gemini" id exists in
+        # Gemini — multimodal since 1.5. No "gemini" id exists in
         # PROVIDER_PRESETS today (no dedicated Google preset is registered
         # yet); this row is forward-compatible with a directly-configured
         # Gemini-compatible API provider registered under instance id
@@ -1698,23 +1698,23 @@ class AgentKernel:
         ("gemini", "gemini"),
     ]
 
-    # â”€â”€ Active-model state: DERIVED from the router, never stored â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Active-model state: DERIVED from the router, never stored ─────────
     #
     # These three read like plain attributes because ~120 call sites across the
-    # backend read them that way, and that is fine â€” reading is safe. What is
+    # backend read them that way, and that is fine — reading is safe. What is
     # not safe is STORING them, which is what they used to do.
     #
     # The role-binding table and the provider registry are process-wide
     # singletons (REQ-5): one table, shared by every kernel's router. The user's
     # live choice lives there and nowhere else. Every recurring "I picked cohere
     # and it went back to cerebras" report traced to some path re-applying a
-    # stored copy of that choice â€” startup config replay, peer inheritance, a
+    # stored copy of that choice — startup config replay, peer inheritance, a
     # module-global snapshot, persisted session field_values. Each was fixed
     # individually and the bug came back through the next copy.
     #
     # Deriving them removes the category. There is no copy to go stale, no sync
-    # to forget, and a new conversation kernel â€” or a subagent, or a swarm
-    # worker â€” sees the live binding at construction because it shares the
+    # to forget, and a new conversation kernel — or a subagent, or a swarm
+    # worker — sees the live binding at construction because it shares the
     # table rather than inheriting a snapshot of it.
     #
     # To CHANGE the active model, bind the role: `kernel.set_role_binding(...)`.
@@ -1748,7 +1748,7 @@ class AgentKernel:
     def _selected_tool_execution_model(self) -> Optional[str]:
         """Model id serving the ``tool_execution`` role, or None when unbound.
 
-        Independent of :attr:`_selected_reasoning_model` by construction â€” the
+        Independent of :attr:`_selected_reasoning_model` by construction — the
         two roles are separate bindings. Brain and Tool can sit on different
         providers, which is the property the swarm and subagent work builds on.
         """
@@ -1774,7 +1774,7 @@ class AgentKernel:
         multi-tool answers it matters most for (2026-08-16).
 
         *floor* keeps a caller's own minimum when it needs more room than the
-        setting implies â€” the setting raises a cap, it should not starve a
+        setting implies — the setting raises a cap, it should not starve a
         prompt that genuinely needs length.
         """
         _mapped = {"short": 1024, "medium": 4096, "long": 8192}.get(
@@ -1817,10 +1817,10 @@ class AgentKernel:
         """Resolve *role*'s effective context window, tagging the source that won.
 
         Precedence (REQ-2, design D-2):
-          1. override      â€” user-set ``_context_window_overrides`` (highest)
-          2. authoritative â€” the ACTUAL loaded local ``n_ctx`` (source of truth)
-          3. table         â€” ``(provider, substring)`` registry lookup
-          4. default       â€” conservative 8k, logged and tagged as a default
+          1. override      — user-set ``_context_window_overrides`` (highest)
+          2. authoritative — the ACTUAL loaded local ``n_ctx`` (source of truth)
+          3. table         — ``(provider, substring)`` registry lookup
+          4. default       — conservative 8k, logged and tagged as a default
 
         The authoritative branch MUST run before the substring table: a loaded
         model's real ``n_ctx`` outranks a name-based guess. The old code ran the
@@ -1832,13 +1832,13 @@ class AgentKernel:
         reasoning binding unconditionally, so a turn's whole budget was sized by
         the Brain even for the steps that execute on the Tool binding
         (``infer(role="EXECUTION")``). With Brain on a 256k model and Tool on an
-        8k one, that budgets ~230k against a model that truncates at 8k â€” the
+        8k one, that budgets ~230k against a model that truncates at 8k — the
         silent-truncation failure this table's conservative default exists to
         prevent, reintroduced through the back door. Callers that care which
         model will actually receive the tokens must say so.
         """
         # REQ-1 AC1: the ACTIVE binding is authoritative. These properties
-        # resolve it directly (2026-08-16) â€” they used to be stored fields that
+        # resolve it directly (2026-08-16) — they used to be stored fields that
         # could disagree with the binding, which is why this block once read the
         # router explicitly and treated them as a stale fallback.
         if role == "reasoning":
@@ -1859,7 +1859,7 @@ class AgentKernel:
             return ResolvedWindow(self._context_window_overrides[model], "override")
 
         # 2. Authoritative: the live local model manager's ACTUAL loaded n_ctx.
-        #    This is the source of truth for a locally-run model â€” it was
+        #    This is the source of truth for a locally-run model — it was
         #    launched with a specific n_ctx, and a substring guess would
         #    under/over-size the budget vs the real window.
         #
@@ -1869,7 +1869,7 @@ class AgentKernel:
         #    for "local" fired for Ollama (which has no LocalModelManager and
         #    always fell through) and NEVER for a real local model. A model
         #    loaded at 32768 then fell past the substring table to the 8192
-        #    default â€” the same silent truncation the gpt-oss entry below was
+        #    default — the same silent truncation the gpt-oss entry below was
         #    added to fix, reintroduced by REQ-4's id namespacing.
         if provider in ("local", "lmstudio", "iris_local"):
             try:
@@ -1885,7 +1885,7 @@ class AgentKernel:
             except Exception:
                 pass
 
-        # 3. Table â€” (provider, substring) registry lookup, case-insensitive.
+        # 3. Table — (provider, substring) registry lookup, case-insensitive.
         model_lower = model.lower().strip()
         for reg_provider, reg_substring, tokens in self._KNOWN_CONTEXT_WINDOWS:
             if reg_provider == provider and (
@@ -1893,7 +1893,7 @@ class AgentKernel:
             ):
                 return ResolvedWindow(tokens, "table")
 
-        # 4. Local model manager profiles â€” config-derived guess. Treated as the
+        # 4. Local model manager profiles — config-derived guess. Treated as the
         #    table tier: better than the 8k default, but not the live loaded value.
         try:
             from .local_model_manager import LocalModelManager
@@ -1908,11 +1908,11 @@ class AgentKernel:
         except Exception:
             pass
 
-        # 5. Safe default â€” 8k for unknown models. Tagged so it is VISIBLE, not silent.
-        #    REQ-1 AC3: WARN-level, naming provider+model+source â€” loudly, not silently.
+        # 5. Safe default — 8k for unknown models. Tagged so it is VISIBLE, not silent.
+        #    REQ-1 AC3: WARN-level, naming provider+model+source — loudly, not silently.
         logger.warning(
             "[AgentKernel] WARN source=default: no context window known for "
-            f"provider={provider} model={model} â€” falling back to 8192"
+            f"provider={provider} model={model} — falling back to 8192"
         )
         return ResolvedWindow(8_192, "default")
 
@@ -1925,7 +1925,7 @@ class AgentKernel:
         The source tag is available via ``resolve_context_window_with_source()``.
 
         Defaults to ``reasoning`` because that is the model the user thinks of as
-        "the model" â€” it answers, and it is the right ContextPill denominator.
+        "the model" — it answers, and it is the right ContextPill denominator.
         Use ``resolve_turn_context_window()`` for anything sizing a budget that
         BOTH roles will spend against.
         """
@@ -1939,7 +1939,7 @@ class AgentKernel:
         on different models the only safe ceiling is the SMALLER window: budget
         for the larger one and every call to the smaller silently truncates.
 
-        This follows the rule stated throughout the window table â€” under-sizing
+        This follows the rule stated throughout the window table — under-sizing
         is safe, over-sizing is the bug. A Brain/Tool split must not be able to
         reintroduce the overcommit by the back door (2026-08-16).
         """
@@ -1956,7 +1956,7 @@ class AgentKernel:
         if _tool != _reasoning:
             logger.info(
                 "[AgentKernel] turn window = min(reasoning=%d, tool_execution=%d) "
-                "= %d â€” Brain and Tool are on different models, so the budget is "
+                "= %d — Brain and Tool are on different models, so the budget is "
                 "capped by the smaller window to avoid silent truncation",
                 _reasoning, _tool, min(_reasoning, _tool),
             )
@@ -1976,10 +1976,10 @@ class AgentKernel:
         REQ-12 (Wave 9): makes the ContextPill live on EVERY model response,
         not just inside the DER loop. Single emitter so DER and non-DER paths
         share the SAME event contract (same shape, same `resolve_context_window()`
-        denominator, same `self._tokens_used` numerator) â€” they intertwine via
+        denominator, same `self._tokens_used` numerator) — they intertwine via
         the contract, not duplicated logic.
 
-        - `max_tokens` = resolve_context_window() (the model in use) â€” never a
+        - `max_tokens` = resolve_context_window() (the model in use) — never a
           hardcoded 128k.
         - `used_tokens` = self._tokens_used, the kernel's real per-thread count,
           restored from the context store per conversation_id (agent_kernel.py:547).
@@ -2005,7 +2005,7 @@ class AgentKernel:
                 session_id=self.session_id,
             )
         except Exception:
-            pass  # EventBus is optional â€” no crash if it fails
+            pass  # EventBus is optional — no crash if it fails
 
     @staticmethod
     def _extract_chunk_text(chunk):
@@ -2049,7 +2049,7 @@ class AgentKernel:
         as well as other OpenAI-compatible servers listed in _OPENAI_COMPAT_PROVIDERS.
         """
         # Direct LM Studio check: self._model_provider == "lmstudio" is the most
-        # common OpenAI-compat provider â€” always handled by the openai client path.
+        # common OpenAI-compat provider — always handled by the openai client path.
         return self._model_provider in self._OPENAI_COMPAT_PROVIDERS
 
     def _is_api_provider(self) -> bool:
@@ -2076,7 +2076,7 @@ class AgentKernel:
         Called by `iris_gateway` immediately after the manager loads a model
         via the in-process path. Once set, ``_get_lmstudio_client()`` returns
         the manager's ``InProcessOpenAIAdapter`` instead of a real openai
-        HTTP client whenever the provider is ``iris_local`` â€” eliminating
+        HTTP client whenever the provider is ``iris_local`` — eliminating
         the port-8082 subprocess round-trip and the Windows hang that
         motivated this refactor.
 
@@ -2131,16 +2131,16 @@ class AgentKernel:
 
         Two paths:
 
-        1. **In-process adapter** â€” when the provider is ``iris_local`` and
+        1. **In-process adapter** — when the provider is ``iris_local`` and
            a `LocalModelManager` has been bound via
            ``configure_inprocess_local()`` with a loaded model. Returns the
            manager's ``InProcessOpenAIAdapter``, which duck-types the
            openai client surface but routes straight to the in-process
            ``Llama`` instance. No HTTP, no subprocess, no port 8082.
 
-        2. **Real openai HTTP client** â€” all other cases. Created once and
+        2. **Real openai HTTP client** — all other cases. Created once and
            cached so every inference call reuses the same httpx connection
-           pool (saves ~5â€“20 ms per call on localhost).
+           pool (saves ~5–20 ms per call on localhost).
 
         Invalidated by ``configure_lmstudio()`` / ``configure_inprocess_local()``
         when the binding changes.
@@ -2151,7 +2151,7 @@ class AgentKernel:
             adapter = mgr.get_inprocess_client()
             if adapter is not None:
                 return adapter
-            # Manager was bound but model isn't loaded â†’ fall through to
+            # Manager was bound but model isn't loaded → fall through to
             # HTTP path (which will 404 cleanly instead of silently hanging).
 
         # Path 1.5: the app's OWN local model server (2026-09-27).
@@ -2202,7 +2202,7 @@ class AgentKernel:
                 timeout=httpx.Timeout(connect=10, read=60, write=10, pool=10),
             )
             logger.info(
-                f"[AgentKernel] Created LM Studio client â†’ {self._lmstudio_endpoint}/v1"
+                f"[AgentKernel] Created LM Studio client → {self._lmstudio_endpoint}/v1"
             )
         return self._lmstudio_client
 
@@ -2215,7 +2215,7 @@ class AgentKernel:
         the model to load in the background, so it is already hot by the time the user
         sends their first message.
 
-        Called from a daemon thread â€” never blocks the caller.
+        Called from a daemon thread — never blocks the caller.
         """
         import threading
 
@@ -2224,7 +2224,7 @@ class AgentKernel:
             try:
                 model = self._selected_reasoning_model or "local-model"
                 logger.info(
-                    f"[AgentKernel] Pre-warming LM Studio model '{model}' at {self._lmstudio_endpoint} â€¦"
+                    f"[AgentKernel] Pre-warming LM Studio model '{model}' at {self._lmstudio_endpoint} …"
                 )
                 client = self._get_lmstudio_client()
                 client.chat.completions.create(
@@ -2237,7 +2237,7 @@ class AgentKernel:
                 elapsed = time.perf_counter() - t0
                 logger.info(
                     f"[AgentKernel] LM Studio pre-warm complete in {elapsed:.2f}s "
-                    f"â€” model is hot and ready"
+                    f"— model is hot and ready"
                 )
             except Exception as e:
                 elapsed = time.perf_counter() - t0
@@ -2263,7 +2263,7 @@ class AgentKernel:
         prev = self._launcher_mode
         self._launcher_mode = mode
         self._developer_context = None  # invalidate cached context
-        logger.info(f"[AgentKernel] Launcher mode changed: {prev} â†’ {mode}")
+        logger.info(f"[AgentKernel] Launcher mode changed: {prev} → {mode}")
 
     def _effective_launcher_mode(self) -> str:
         """The launcher mode from the persisted config, the single source of truth.
@@ -2301,10 +2301,23 @@ class AgentKernel:
                 return self._developer_context
             here = here.parent
         logger.warning(
-            "[AgentKernel] PROJECT.md not found â€” developer context unavailable"
+            "[AgentKernel] PROJECT.md not found — developer context unavailable"
         )
         self._developer_context = ""
         return ""
+
+    def _bound_external_project(self) -> str:
+        """The turn's bound workdir when it is outside the IRIS repo, else ""."""
+        try:
+            _sess = getattr(self, "_turn_session_id", None) or self.session_id
+            _wd = (getattr(self._tool_bridge, "_session_workdirs", None) or {}).get(_sess) or ""
+            if not _wd:
+                return ""
+            _repo = os.path.normcase(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+            _norm = os.path.normcase(os.path.abspath(_wd))
+            return "" if _norm == _repo or _norm.startswith(_repo + os.sep) else _wd
+        except Exception:
+            return ""
 
     def _build_system_prompt(self) -> str:
         """Return the full system prompt for the current launcher mode.
@@ -2325,6 +2338,7 @@ class AgentKernel:
                 pass
 
         if self._effective_launcher_mode() == "developer":
+            _base_before_dev = base
             dev_ctx = self._get_developer_context()
             # Resolve active worktree path (set when /api/mode switches to developer)
             try:
@@ -2376,6 +2390,20 @@ class AgentKernel:
                     + worktree_block
                 )
 
+            # The blocks above describe the IRIS repo ("full access to the
+            # IRISVOICE source", PROJECT.md, the iris-agent branch). When the
+            # turn is bound to ANOTHER project folder they point the planner at
+            # the wrong codebase, so they are replaced by that folder.
+            _project = self._bound_external_project()
+            if _project:
+                base = (
+                    _base_before_dev
+                    + "\n\n--- DEVELOPER MODE ACTIVE ---\n"
+                    + f"PROJECT FOLDER: {_project}\n"
+                    + "You are working on this project, not on IRIS. Relative paths "
+                    "resolve inside this folder and commands run in it.\n"
+                )
+
             # Gate 3 T7 (REQ-9): discipline ladder + active task scope bound.
             # Injected at this single assembly point so DER workers inherit it
             # (AC4). 'off' injects nothing (AC5); failure degrades silently.
@@ -2388,43 +2416,17 @@ class AgentKernel:
             except Exception as _ladder_exc:
                 logger.debug("[AgentKernel] ladder injection skipped: %s", _ladder_exc)
 
-        # Gap 4: EML cognitive state visible to LLM
-        try:
-            from backend.gateway.iris_ffi import ffi_calculate_eml
-            from backend.agent.der_constants import EML_EXPLORE, EML_VERIFY
+        # Execution audit B17 (2026-09-29): the EML "[COGNITIVE STATE]" and
+        # "[CADUCEAN GOVERNOR]" lines were removed from the prompt. They are
+        # internal control signals the model cannot act on, and the EML read
+        # was a synchronous FFI call on every prompt build (20 s+ under load in
+        # an eval turn). The physics still runs; it just is not narrated to the
+        # model. No prompt gave the date, so the model guessed it.
+        import datetime as _dt
 
-            _e, _x, _y = ffi_calculate_eml(self.session_id)
-            _phase = (
-                "EXPLORE"
-                if _e >= EML_EXPLORE
-                else ("VERIFY" if _e < EML_VERIFY else "BALANCE")
-            )
-            base += (
-                f"\n\n[COGNITIVE STATE: {_phase} | EML={_e:.2f} x={_x:.2f} y={_y:.2f}]"
-            )
-        except Exception:
-            pass
+        base += f"\n\nToday's date: {_dt.date.today().strftime('%A, %d %B %Y')}."
 
-        # Domain 19: Caducean DER Governor state visible to LLM
-        # The Caducean governor tracks exploration-exploitation balance (Î¾).
-        # Phase mapping: Î¾ < 0.3 â†’ EXPLOIT, 0.3 â‰¤ Î¾ < 0.7 â†’ BALANCE, Î¾ â‰¥ 0.7 â†’ EXPLORE
-        try:
-            from backend.gateway.iris_ffi import ffi_caducean_get_xi
-
-            _xi = ffi_caducean_get_xi(self.session_id)
-            _cad_phase = (
-                "EXPLOIT" if _xi < 0.3 else ("EXPLORE" if _xi >= 0.7 else "BALANCE")
-            )
-            base += (
-                f"\n[CADUCEAN GOVERNOR: {_cad_phase} | Î¾={_xi:.2f}]"
-                "\nYou are governed by the Caducean DER Governor, which balances "
-                "exploration vs exploitation. When asked about your phase or state, "
-                "report the Caducean phase and Î¾ value above."
-            )
-        except Exception:
-            pass
-
-        # Issue C.1 â€” structured speak/show response contract.
+        # Issue C.1 — structured speak/show response contract.
         # `show` means STORE THIS AS A DOCUMENT, not "this answer is long".
         # The old rule here was length-based ("longer than about 3 sentences ->
         # respond with JSON"), which made ordinary conversation arrive at
@@ -2437,12 +2439,12 @@ class AgentKernel:
             "Two different things, decided separately:\n"
             "\n"
             "1. LENGTH is not a reason to use JSON. A long answer is still an "
-            "answer â€” write it as plain text and format it readably (headings, "
+            "answer — write it as plain text and format it readably (headings, "
             "bullets, tables, code fences). It is shown in full in the chat "
             "thread. NEVER shorten an answer because it is long.\n"
             "\n"
             "2. Use the JSON `show` payload ONLY when the content is a DOCUMENT "
-            "â€” something STORED in the document store so the user can reopen, "
+            "— something STORED in the document store so the user can reopen, "
             "reformat or refer back to it later:\n"
             "  - web-search / web-crawl results and the evidence behind them\n"
             "  - a file or document you generated (a report, a plan, a spec)\n"
@@ -2468,7 +2470,7 @@ class AgentKernel:
             '// optional but encouraged: also include the SAME content rendered in '
             'other formats (e.g. {"markdown": "...", "html": "..."}) so the user can '
             'switch formats instantly without re-generating}}\n'
-            "The `speak` field is what the user HEARS via TTS â€” keep it brief "
+            "The `speak` field is what the user HEARS via TTS — keep it brief "
             "and natural (1-3 sentences). The `show` field is the document that "
             "is stored and rendered as a card; the chat thread keeps your spoken "
             "line so the document is not duplicated inline.\n"
@@ -2480,7 +2482,7 @@ class AgentKernel:
             "  - data, comparisons, stats -> 'table'\n"
             "  - flows, architectures, relationships -> 'diagram'\n"
             "  - raw web page content -> 'html' (untrusted, sanitized)\n"
-            "If you are unsure which format fits best, DO NOT guess â€” call "
+            "If you are unsure which format fits best, DO NOT guess — call "
             "`ask_user_question` with the format options (markdown/table/html/"
             "diagram/text) so the user chooses. Never return a bare .md file "
             "without a `show` format choice."
@@ -2489,7 +2491,7 @@ class AgentKernel:
         return base
 
     # ------------------------------------------------------------------
-    # Domain 4.5 â€” Proactive skill creation
+    # Domain 4.5 — Proactive skill creation
     # ------------------------------------------------------------------
 
     def _maybe_trigger_skill_creation(
@@ -2507,7 +2509,7 @@ class AgentKernel:
           1. Trigger iff >= 3 DISTINCT tools AND similarity to existing skills
              < 0.85 (workflow_capture.should_capture).
           2. Self-test: every step names a tool registered in tool_registry
-             (no unknown tools) â€” a safe structural replay, no real execution
+             (no unknown tools) — a safe structural replay, no real execution
              (workflow_capture.self_test_skill).
           3. Register the verified skill in semantic memory
              (workflow_capture.register_verified_skill), mirroring
@@ -2539,7 +2541,7 @@ class AgentKernel:
             )
             if name:
                 names.append(name)
-        pattern_key = " â†’ ".join(names)
+        pattern_key = " → ".join(names)
         if pattern_key in self._prompted_skill_patterns:
             return
         self._prompted_skill_patterns.add(pattern_key)
@@ -2656,9 +2658,9 @@ class AgentKernel:
         cutting latency from ~30s to ~5s on Qwen3-9B.
 
         Respects the user's _thinking_style setting:
-          concise   â†’ never use thinking
-          balanced  â†’ heuristic trigger-based (default)
-          thorough  â†’ always use thinking
+          concise   → never use thinking
+          balanced  → heuristic trigger-based (default)
+          thorough  → always use thinking
         """
         style = getattr(self, "_thinking_style", "balanced")
         if style == "concise":
@@ -2762,14 +2764,14 @@ class AgentKernel:
         """Split model output into (thinking: str, response: str).
 
         Handles three forms of chain-of-thought output:
-        1. <think>â€¦</think> XML tags  (Qwen3 thinking mode)
-        2. <thinking>â€¦</thinking> XML tags  (DeepSeek-style)
+        1. <think>…</think> XML tags  (Qwen3 thinking mode)
+        2. <thinking>…</thinking> XML tags  (DeepSeek-style)
         3. Untagged preamble paragraphs where the model narrates its reasoning
-           ("Okay, the user is askingâ€¦", "Let me thinkâ€¦", etc.) before a blank
+           ("Okay, the user is asking…", "Let me think…", etc.) before a blank
            line that separates it from the real answer.
 
         Returns:
-            (thinking, clean_response) â€” thinking is an empty string when none found.
+            (thinking, clean_response) — thinking is an empty string when none found.
         """
         import re
 
@@ -2844,7 +2846,7 @@ class AgentKernel:
         _first = t.split()[0] if t.split() else ""
         if _first in ("hi", "hello", "hey", "yo", "sup", "howdy", "hiya", "greetings"):
             return True
-        # "how are you" family â€” social, not a task
+        # "how are you" family — social, not a task
         if t.startswith("how are") or t.startswith("how's") or t.startswith("how is"):
             return True
         # Short casual acknowledgement (no tool intent)
@@ -2852,7 +2854,7 @@ class AgentKernel:
             return True
         return False
 
-    # Action/tool intent markers â€” prompts containing these need the DER
+    # Action/tool intent markers — prompts containing these need the DER
     # planning/tool loop. Everything else (simple questions, factual lookups,
     # conversation) takes the fast direct-response path (1 Cerebras call, no
     # "Working on it" filler, no rate-limit burst).
@@ -2868,7 +2870,7 @@ class AgentKernel:
         "analyze", "compare", "calculate", "convert",
     )
 
-    # Follow-up / anaphora markers â€” these signal the user is continuing a
+    # Follow-up / anaphora markers — these signal the user is continuing a
     # PRIOR task ("now do it for the sales team", "yes, schedule that",
     # "what about the other one"). They carry no action verb of their own but
     # are clearly NOT standalone questions, so they must route to DER (the safe
@@ -2900,7 +2902,7 @@ class AgentKernel:
         if words & set(self._ANAPHORA_PRONOUNS) and not any(
             v in t for v in self._ACTION_VERBS
         ):
-            # "do it", "change that", "what about them" â€” continuation.
+            # "do it", "change that", "what about them" — continuation.
             if any(m in t for m in ("do", "change", "update", "edit", "what about",
                                     "how about", "send", "for", "with", "the")):
                 return True
@@ -2944,7 +2946,7 @@ class AgentKernel:
     @property
     def _gate(self):
         """Lazy SemanticLogicGate instance (T7, REQ-1/REQ-8). No model load at
-        construction â€” the ontology (Tier 2) is wired via memory_interface."""
+        construction — the ontology (Tier 2) is wired via memory_interface."""
         from backend.agent.semantic_gate import SemanticLogicGate
 
         if getattr(self, "__gate", None) is None:
@@ -2970,7 +2972,7 @@ class AgentKernel:
 
     def _needs_planning(self, text: str, context=None) -> bool:
         """
-        Planner gate â€” the semantic logic gate (REQ-1, T7, T13).
+        Planner gate — the semantic logic gate (REQ-1, T7, T13).
 
         ``compile_dag().requires_der_kernel`` is the structured planning
         decision (REQ-8): Tier 0 (deterministic rules) -> Tier 2 (coordinate-
@@ -2990,9 +2992,12 @@ class AgentKernel:
         """
         _g = self._gate
         _g.tool_mode = getattr(self, "_tool_mode", "auto")
-        graph = _g.compile_dag(text, context, web_mode=self._web_mode_on())
+        graph = _g.compile_dag(
+            text, context, web_mode=self._web_mode_on(),
+            developer=self._effective_launcher_mode() == "developer",
+        )
         # REQ-5 AC1 (T8): stash the compiled graph for the [LAYERS] emit
-        # (off the hot path â€” the TurnMetrics stamp copies a few attrs).
+        # (off the hot path — the TurnMetrics stamp copies a few attrs).
         self._last_gate_graph = graph
         return bool(graph.requires_der_kernel)
 
@@ -3029,9 +3034,9 @@ class AgentKernel:
             broadcast_loop=self._broadcast_loop,
         )
 
-    # â”€â”€ Token estimation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    # Rough but fast: 1 token â‰ˆ 4 chars. Real tokenizer adds <5% accuracy gain
-    # but costs 10-50ms per call â€” not worth it for windowing decisions.
+    # ── Token estimation ─────────────────────────────────────────────────────
+    # Rough but fast: 1 token ≈ 4 chars. Real tokenizer adds <5% accuracy gain
+    # but costs 10-50ms per call — not worth it for windowing decisions.
     _CHARS_PER_TOKEN: int = 4
 
     # Context budget for direct responses. Keeps the most recent history
@@ -3049,28 +3054,28 @@ class AgentKernel:
     def _assemble_direct_context(self, text: str, context: List[Dict]) -> List[Dict]:
         """
         Build the message list for _respond_direct using all three memory layers
-        from the Context Engineering spec (CONTEXT_ENGINEERING.md Â§1â€“3):
+        from the Context Engineering spec (CONTEXT_ENGINEERING.md §1–3):
 
-          Layer 1 â€” Mycelium coordinate graph  â†’ already in system_prompt via
+          Layer 1 — Mycelium coordinate graph  → already in system_prompt via
                                                   _build_system_prompt()
-          Layer 2 â€” Episodic store             â†’ injected here as memory block
-          Layer 3 â€” Working memory / history   â†’ token-aware full context, NOT
+          Layer 2 — Episodic store             → injected here as memory block
+          Layer 3 — Working memory / history   → token-aware full context, NOT
                                                   a hard-capped roll window
 
         The result is unlimited effective memory: the agent sees all context
         that fits in the budget. When history exceeds the budget, the oldest
-        messages are trimmed â€” but episodic summaries from Mycelium still carry
+        messages are trimmed — but episodic summaries from Mycelium still carry
         the gist of older sessions forward (Layer 2).
 
         Design rules (from spec):
-          â€¢ Never drop the current user turn
-          â€¢ First non-system message must be "user" (Qwen3 / most models)
-          â€¢ Episodic block is a system-adjacent userâ†”assistant exchange so it
+          • Never drop the current user turn
+          • First non-system message must be "user" (Qwen3 / most models)
+          • Episodic block is a system-adjacent user↔assistant exchange so it
             doesn't break the alternating pattern
         """
         system_prompt = self._build_system_prompt()
 
-        # â”€â”€ Layer 2: episodic injection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Layer 2: episodic injection ───────────────────────────────────
         episodic_prefix: List[Dict] = []
         try:
             if self._memory_interface is not None and hasattr(
@@ -3079,7 +3084,7 @@ class AgentKernel:
                 ep_ctx = self._memory_interface.episodic.assemble_episodic_context(text)
                 if ep_ctx and ep_ctx.strip():
                     # Inject as a pseudo-exchange so the message pattern stays
-                    # [system, user, assistant, user, assistant, â€¦, user]
+                    # [system, user, assistant, user, assistant, …, user]
                     episodic_prefix = [
                         {
                             "role": "user",
@@ -3087,13 +3092,13 @@ class AgentKernel:
                         },
                         {
                             "role": "assistant",
-                            "content": "Understood â€” I have that context.",
+                            "content": "Understood — I have that context.",
                         },
                     ]
         except Exception as _ep_exc:
             loud_error(_ep_exc, "episodic.assemble_episodic_context")
 
-        # â”€â”€ Layer 3: Option B â€” DB-backed semantic context (Pacman retrieval) â”€â”€
+        # ── Layer 3: Option B — DB-backed semantic context (Pacman retrieval) ──
         # Instead of a blind rolling-window crop, we retrieve the most relevant
         # conversation fragments stored by fragment_and_store().  Falls back to
         # the plain rolling window when no chunks exist yet (first turn, fresh DB).
@@ -3106,7 +3111,7 @@ class AgentKernel:
         ep_tokens = self._count_tokens(episodic_prefix)
         current_tokens = len(text) // self._CHARS_PER_TOKEN
 
-        # â”€â”€ 3a: semantic chunk retrieval from DB â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── 3a: semantic chunk retrieval from DB ──────────────────────────
         chunk_prefix: List[Dict] = []
         try:
             if (
@@ -3163,7 +3168,7 @@ class AgentKernel:
                         },
                         {
                             "role": "assistant",
-                            "content": "Understood â€” I have those context fragments.",
+                            "content": "Understood — I have those context fragments.",
                         },
                     ]
         except Exception as _ch_exc:
@@ -3178,7 +3183,7 @@ class AgentKernel:
             - current_tokens
         )
 
-        # â”€â”€ 3b: recency anchor â€” last N raw turns â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── 3b: recency anchor — last N raw turns ─────────────────────────
         history = list(context)
         # Remove current user turn from tail if already appended
         if (
@@ -3216,7 +3221,7 @@ class AgentKernel:
                 history.pop(0)
             history_block = history
 
-        # â”€â”€ Assemble final message list â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Assemble final message list ───────────────────────────────────
         messages: List[Dict] = [{"role": "system", "content": system_prompt}]
         messages.extend(episodic_prefix)  # Layer 2: episodic summaries
         messages.extend(chunk_prefix)  # Layer 3a: semantic DB chunks
@@ -3230,7 +3235,7 @@ class AgentKernel:
         ):
             messages.append({"role": "user", "content": text})
 
-        # â”€â”€ Telemetry: log context assembly metrics â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Telemetry: log context assembly metrics ─────────────────────
         try:
             _sys_chars = len(system_prompt) if system_prompt else 0
             _ep_chars = sum(len(m.get("content", "")) for m in episodic_prefix)
@@ -3256,7 +3261,7 @@ class AgentKernel:
         except Exception:
             pass
 
-        # â”€â”€ MCM Protocol: MITO tag injection + DCP prune â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── MCM Protocol: MITO tag injection + DCP prune ─────────────────
         if self._mcm_orch is not None:
             try:
                 messages = self._mcm_orch.pre_call(messages, text)
@@ -3324,7 +3329,7 @@ class AgentKernel:
                 # After system, any role is fine
                 sanitized.append(m)
             elif sanitized[-1]["role"] != m["role"]:
-                # Alternating roles â€” OK
+                # Alternating roles — OK
                 sanitized.append(m)
             # else: skip consecutive same-role non-system (keeps first of run)
 
@@ -3371,9 +3376,9 @@ class AgentKernel:
         or auto-detected provider type.
 
         Context uses all three memory layers (see CONTEXT_ENGINEERING.md):
-          Layer 1: Mycelium coordinates â†’ system prompt
-          Layer 2: Episodic store       â†’ memory block prefix
-          Layer 3: Full history         â†’ token-aware (not a hard roll window)
+          Layer 1: Mycelium coordinates → system prompt
+          Layer 2: Episodic store       → memory block prefix
+          Layer 3: Full history         → token-aware (not a hard roll window)
 
         Returns: response text string.
         """
@@ -3417,7 +3422,7 @@ class AgentKernel:
         # so no existing caller changes.
         _tools = self._get_openai_tools(text) if tools is not False else []
 
-        # Local dispatch wrapper â€” routes to the correct backend provider and
+        # Local dispatch wrapper — routes to the correct backend provider and
         # returns (response_text, thinking_text, tool_calls).
         def _call(_msgs: List[Dict], _tools_arg: Optional[List[Dict]]) -> Tuple[str, str, List[Dict]]:
             _text, _thinking, _tool_calls = self._router.generate(
@@ -3556,12 +3561,12 @@ class AgentKernel:
         reasoning_callback: Optional[Callable[[str], None]] = None,
         tools: Optional[List[Dict]] = None,
     ) -> Tuple[str, str, List[Dict]]:
-        """Remote API provider â€” direct httpx streaming (Chutes, OpenAI, etc.).
+        """Remote API provider — direct httpx streaming (Chutes, OpenAI, etc.).
 
         Uses httpx directly instead of _llm.complete() to avoid thread-pool hangs.
         Returns (response_text, thinking_text).
 
-        Raises RuntimeError on API errors â€” no silent error swallowing.
+        Raises RuntimeError on API errors — no silent error swallowing.
         """
         import json as _json
         import time as _perf_t
@@ -3573,7 +3578,7 @@ class AgentKernel:
         sel = self._selected_reasoning_model or "local-model"
         if sel in ("local-model", "Currently Loaded Model", "currently-loaded-model"):
             raise RuntimeError(
-                "No reasoning model configured. Set a model in Settings â†’ "
+                "No reasoning model configured. Set a model in Settings → "
                 "Model Selection (e.g. Cerebras gemma-4-31b) before sending messages."
             )
 
@@ -3613,7 +3618,7 @@ class AgentKernel:
             )
         except Exception as _think_exc:  # noqa: BLE001 -- never fail on a hint
             logger.debug("[thinking] hint not applied: %s", _think_exc)
-        # â”€â”€ Telemetry: log API request shape (not content) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Telemetry: log API request shape (not content) ──────────
         try:
             _msg_count = len(messages)
             _total_chars = sum(len(str(m.get("content", ""))) for m in messages)
@@ -3654,7 +3659,7 @@ class AgentKernel:
                                 except Exception:
                                     pass
                                 logger.warning(
-                                    "[DispatchAPI] 429 rate-limit (attempt %d/3) â€” retrying",
+                                    "[DispatchAPI] 429 rate-limit (attempt %d/3) — retrying",
                                     _attempt + 1,
                                 )
                                 continue
@@ -3695,7 +3700,7 @@ class AgentKernel:
                                     continue
                                 _delta = _choices[0].get("delta", {})
 
-                                # Reasoning content â€” field name varies by provider
+                                # Reasoning content — field name varies by provider
                                 _r = _delta.get("reasoning_content") or _delta.get("reasoning")
                                 if _r:
                                     _reasoning_buf.append(_r)
@@ -3709,7 +3714,7 @@ class AgentKernel:
                                     if chunk_callback:
                                         chunk_callback(_c)
 
-                                # Tool calls (function calling) â€” accumulate across
+                                # Tool calls (function calling) — accumulate across
                                 # streaming deltas by index.
                                 for _tc_item in (_delta.get("tool_calls") or []):
                                     _idx = _tc_item.get("index", 0)
@@ -3804,7 +3809,7 @@ class AgentKernel:
                                 _wait = min(1.0 * (2 ** _attempt), 30.0)
                             _wait = max(0.0, min(_wait, 60.0))  # hard cap 60s
                             logger.warning(
-                                "[DispatchAPI] 429 rate-limit (attempt %d/3) â€” "
+                                "[DispatchAPI] 429 rate-limit (attempt %d/3) — "
                                 "waiting %.1fs for reset window",
                                 _attempt + 1,
                                 _wait,
@@ -3845,7 +3850,7 @@ class AgentKernel:
             _ctok = _usage.get("completion_tokens", max(1, len(_reply) // 4))
             self._broadcast_inference_event(sel, _ptok, _ctok, _elapsed)
 
-            # â”€â”€ FIX (session 154): Invoke chunk_callback on non-streaming path â”€â”€
+            # ── FIX (session 154): Invoke chunk_callback on non-streaming path ──
             # When the LLM provider returns the full reply in one shot (Cerebras,
             # Cohere batch mode, etc.), chunk_callback is never called, so the
             # TTS sentence_queue only receives the None sentinel and the
@@ -3869,12 +3874,12 @@ class AgentKernel:
         reasoning_callback: Optional[Callable[[str], None]] = None,
         tools: Optional[List[Dict]] = None,
     ) -> Tuple[str, str, List[Dict]]:
-        """LM Studio / local OpenAI-compatible endpoint â€” direct httpx streaming.
+        """LM Studio / local OpenAI-compatible endpoint — direct httpx streaming.
 
         Similar to _dispatch_api but uses _lmstudio_endpoint and LM Studio's
         Extra-body template hints. Returns (response_text, thinking_text).
 
-        Raises RuntimeError on API errors â€” no silent error swallowing.
+        Raises RuntimeError on API errors — no silent error swallowing.
         """
         import json as _json
         import time as _perf_t
@@ -3943,7 +3948,7 @@ class AgentKernel:
                                 except Exception:
                                     pass
                                 logger.warning(
-                                    "[DispatchLMStudio] 429 rate-limit (attempt %d/3) â€” retrying",
+                                    "[DispatchLMStudio] 429 rate-limit (attempt %d/3) — retrying",
                                     _attempt + 1,
                                 )
                                 continue
@@ -4049,7 +4054,7 @@ class AgentKernel:
                                 )
                                 if _resp.status_code == 429:
                                     logger.warning(
-                                        "[DispatchLMStudio] 429 rate-limit (attempt %d/3) â€” retrying",
+                                        "[DispatchLMStudio] 429 rate-limit (attempt %d/3) — retrying",
                                         _attempt + 1,
                                     )
                                     if _attempt < 2:
@@ -4120,7 +4125,7 @@ class AgentKernel:
             _elapsed_ns = _perf_t.perf_counter() - _t0
             self._broadcast_inference_event(sel, _ptok, _ctok, _elapsed_ns)
 
-            # â”€â”€ FIX (session 154): Invoke chunk_callback on non-streaming path â”€â”€
+            # ── FIX (session 154): Invoke chunk_callback on non-streaming path ──
             # Same fix as _dispatch_api: when LM Studio returns the full reply
             # in one shot, chunk_callback is never called, so the TTS
             # sentence_queue only receives the None sentinel. Send the full
@@ -4161,7 +4166,7 @@ class AgentKernel:
             messages[-1].get("content", "") if messages else ""
         )
 
-        # â”€â”€ FIX (session 154): Invoke chunk_callback on non-streaming path â”€â”€
+        # ── FIX (session 154): Invoke chunk_callback on non-streaming path ──
         # Local in-process models generate the full reply at once. Without
         # this call, the TTS pipeline never sees the response text.
         if chunk_callback and reply:
@@ -4193,7 +4198,7 @@ class AgentKernel:
         if text.count("```") >= 2:
             return True
         # Three or more bullet / numbered list items
-        list_items = sum(1 for ln in lines if re.match(r"^\s*[-*â€¢]\s|^\s*\d+\.\s", ln))
+        list_items = sum(1 for ln in lines if re.match(r"^\s*[-*•]\s|^\s*\d+\.\s", ln))
         if list_items >= 3:
             return True
         # Long, dense multi-paragraph text (>10 non-empty lines, avg >8 words/line)
@@ -4204,7 +4209,7 @@ class AgentKernel:
                 return True
         return False
 
-    # â”€â”€ Tool definitions for OpenAI-compatible function calling â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Tool definitions for OpenAI-compatible function calling ─────────────
 
     def _ensure_tool_bridge(self) -> None:
         """Lazy-initialize the tool bridge on first access.
@@ -4212,7 +4217,7 @@ class AgentKernel:
         The bridge is created as a background task (its initialize() is async
         and wires MCP/server connections); tools from its in-process dict are
         available immediately.  This MUST run before ANY code reads
-        ``self._tool_bridge.get_available_tools()`` â€” ``_plan_task`` builds the
+        ``self._tool_bridge.get_available_tools()`` — ``_plan_task`` builds the
         planner's AVAILABLE TOOLS block from it, and a None bridge silently
         produces an empty tool list (planner then emits tool-less speak steps).
         """
@@ -4226,7 +4231,7 @@ class AgentKernel:
                         loop = asyncio.get_running_loop()
                         loop.create_task(self._tool_bridge.initialize())
                     except RuntimeError:
-                        # No running event loop â€” run synchronously
+                        # No running event loop — run synchronously
                         asyncio.run(self._tool_bridge.initialize())
                 logger.info("[AgentKernel] Tool bridge lazy-initialized")
             except Exception as e:
@@ -4247,14 +4252,14 @@ class AgentKernel:
         if not self._tool_bridge:
             return []
         # Single shared converter (tool_registry.to_function_schema). This used
-        # to be an inline copy, and ToolDecisionBox had no conversion at all â€”
+        # to be an inline copy, and ToolDecisionBox had no conversion at all —
         # so the same tools were valid on one code path and a 422 on the other.
         from backend.agent.tool_registry import to_function_schema
 
         openai_tools: List[Dict] = to_function_schema(
             self._tool_bridge.get_available_tools()
         )
-        # â”€â”€ Filter web tools when not explicitly requested â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Filter web tools when not explicitly requested ──────────────
         # Even when the web toggle is ON, exclude search/crawler tools
         # unless the user's text explicitly asks for a web search.
         # The model otherwise calls web_search unnecessarily for simple
@@ -4267,7 +4272,7 @@ class AgentKernel:
             ]
         return openai_tools
 
-    # â”€â”€ ReAct agentic loop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── ReAct agentic loop ───────────────────────────────────────────────────
 
     # REQ-28: threshold above which the first-sentence rule below stops being
     # an acceptable spoken form. Same number prepare_spoken_text already uses
@@ -4430,22 +4435,22 @@ class AgentKernel:
         Full response is ALWAYS sent separately via text_response.
 
         Conversational-first design: IRIS speaks a short, natural summary.
-        The full response is always visible in ChatView â€” voice is a companion,
+        The full response is always visible in ChatView — voice is a companion,
         not a reader.  Thresholds keep spoken output under ~20-25 seconds.
 
-        No second LLM call â€” direct text processing keeps first-audio latency
+        No second LLM call — direct text processing keeps first-audio latency
         to synthesis time only (~1-2s warm, ~40s cold F5-TTS).
 
         Rules (applied after code/markdown is stripped):
-          â‰¤ 60 words  â†’ spoken verbatim (always â€” short answers, confirmations)
-          61-120 words, conversational â†’ spoken verbatim (user asked, answer given)
-          61-120 words, document-like â†’ first sentence + "in the chat window"
-          > 120 words â†’ first sentence to boundary (â‰¤ 60 words) + "in the chat window"
+          ≤ 60 words  → spoken verbatim (always — short answers, confirmations)
+          61-120 words, conversational → spoken verbatim (user asked, answer given)
+          61-120 words, document-like → first sentence + "in the chat window"
+          > 120 words → first sentence to boundary (≤ 60 words) + "in the chat window"
         """
         import re as _re
         from backend.voice.tts_normalizer import normalize_text
 
-        # Strip code fences and their content entirely â€” code is unreadable aloud
+        # Strip code fences and their content entirely — code is unreadable aloud
         cleaned = _re.sub(r"```[\s\S]*?```", "", full_response)
         # Strip inline code
         cleaned = _re.sub(r"`[^`]+`", "", cleaned)
@@ -4454,7 +4459,7 @@ class AgentKernel:
         # Strip bold/italic markers
         cleaned = _re.sub(r"\*{1,3}([^*]+)\*{1,3}", r"\1", cleaned)
         # Strip bullet dashes/asterisks at line start
-        cleaned = _re.sub(r"^\s*[-*â€¢]\s+", "", cleaned, flags=_re.MULTILINE)
+        cleaned = _re.sub(r"^\s*[-*•]\s+", "", cleaned, flags=_re.MULTILINE)
         # Collapse whitespace
         cleaned = " ".join(cleaned.split())
 
@@ -4462,18 +4467,18 @@ class AgentKernel:
         is_doc = self._is_document_content(full_response)
         word_count = len(cleaned.split())
 
-        # Short response â€” always spoken verbatim (~0-15s at 150 wpm)
+        # Short response — always spoken verbatim (~0-15s at 150 wpm)
         if word_count <= 60:
             spoken = normalize_text(cleaned)
             if had_code:
                 spoken += " The full code is in the chat window."
             return spoken
 
-        # Medium conversational response â€” spoken in full if not document-like (~15-25s)
+        # Medium conversational response — spoken in full if not document-like (~15-25s)
         if word_count <= 120 and not is_doc and not had_code:
             return normalize_text(cleaned)
 
-        # Document, code, or long response â€” speak first sentence(s) up to 60 words
+        # Document, code, or long response — speak first sentence(s) up to 60 words
         words = cleaned.split()
         truncated = " ".join(words[:60])
         # Walk back to last sentence boundary to avoid mid-sentence cut
@@ -4493,7 +4498,7 @@ class AgentKernel:
         return spoken
 
     # ------------------------------------------------------------------
-    # Issue C.1 â€” structured speak/show response contract
+    # Issue C.1 — structured speak/show response contract
     # ------------------------------------------------------------------
 
     def _finalize_response(
@@ -4507,7 +4512,7 @@ class AgentKernel:
         the rule is enforced in ONE place instead of at nine separate returns.
         Three of those returns had each caused the same truncation bug in turn
         (``return speak``; the card branch owning the content; the speak-tool
-        ``spoken`` field) â€” the shape, not the individual returns, was the bug.
+        ``spoken`` field) — the shape, not the individual returns, was the bug.
 
         ``spoken`` is the agent's own TTS line when it supplied one. It is
         always assigned (empty when absent) so a previous turn's line can never
@@ -4556,12 +4561,12 @@ class AgentKernel:
 
         The DER path can hand back a TOOL RESULT as its final output. The speak
         tool returns ``{"status": "ok", "utterance_id": ..., "spoken": text}``
-        â€” JSON with neither ``speak`` nor ``show``, so
+        — JSON with neither ``speak`` nor ``show``, so
         ``parse_structured_response`` reports it as unstructured.
 
         When the envelope also carries a written answer (a longer
         text/content/response field), that is the display text and ``spoken``
-        stays the TTS line. Otherwise the spoken text is both â€” it is the only
+        stays the TTS line. Otherwise the spoken text is both — it is the only
         text there is, and it must be shown in full.
 
         Returns ``(response, None)`` when this is not a tool envelope, so the
@@ -4594,7 +4599,7 @@ class AgentKernel:
         ONE RULE, ONE EXIT (2026-08-17). Returns the text for the thread and
         assigns the TTS line to ``self._last_spoken_text``; a card renders only
         for a stored artifact. Every exit goes through
-        :meth:`_finalize_response` â€” three separate returns each caused the same
+        :meth:`_finalize_response` — three separate returns each caused the same
         truncation in turn, so the exits are now consolidated rather than
         patched individually.
 
@@ -4614,14 +4619,14 @@ class AgentKernel:
         ==============================  ==========================  ===========
 
         The distinction that drives it is decided by the AGENT, not inferred
-        here: ``show`` means "this is a DOCUMENT â€” store it", so it renders a
+        here: ``show`` means "this is a DOCUMENT — store it", so it renders a
         card and the thread keeps the spoken line. Everything else is
         conversation and goes to the thread as text, in full, however long. The
         [RESPONSE FORMAT] prompt in :meth:`_build_system_prompt` is the other
         half of this contract; the two must be read together.
 
         Content lives in exactly one place. With a card, that place is the card
-        and the document store. Without one, it is the chat message â€” which is
+        and the document store. Without one, it is the chat message — which is
         why no path here may shorten it.
         """
         if not response:
@@ -4639,17 +4644,17 @@ class AgentKernel:
 
         speak, show = parse_structured_response(response)
 
-        # â”€â”€ Tool-result envelope â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Tool-result envelope ──────────────────────────────────────────
         # ROOT CAUSE of the last truncation (2026-08-16, fixed 2026-08-17):
         # a speak-tool result reaches here as {"status", "utterance_id",
         # "spoken"}. It has neither `speak` nor `show`, so it fell into the
-        # plain-text branch below and _supportive_text excerpted the RAW JSON â€”
+        # plain-text branch below and _supportive_text excerpted the RAW JSON —
         # an 887-char answer displayed and persisted as 55 chars.
         #
         # A handler for the "spoken" field DID exist, but it sat AFTER the
         # `show is None` return, so it could never run. That is why the earlier
         # spot-fix appeared to "return raw JSON": the branch it patched was
-        # dead. Unwrapping HERE â€” before any return â€” is the fix. The dead
+        # dead. Unwrapping HERE — before any return — is the fix. The dead
         # branch is gone.
         # Internal narration never reaches the user, on any lane. A leading
         # planning paragraph is dropped when a real answer follows it — the
@@ -4740,14 +4745,14 @@ class AgentKernel:
             # fallback (:4036) covers the common plain case.
             return self._finalize_response(response, speak)
 
-        # â”€â”€ Structured response â€” emit DOCUMENT_RENDER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Structured response — emit DOCUMENT_RENDER ────────────────────
         # Trust-routing W3: 'untrusted' when this turn touched external/web
         # sources, else 'trusted'. The frontend sanitizes html/mermaid when
         # A CARD IS FOR AN ARTIFACT, NOT FOR CONVERSATION (2026-08-16, user rule).
         #
         # Document renders exist for content that is STORED to be opened again
         # later: web-search results, generated markdown, plans, code. An ordinary
-        # spoken-and-shown answer â€” "here is your system info" â€” is conversation,
+        # spoken-and-shown answer — "here is your system info" — is conversation,
         # and belongs in the thread as text the agent formatted readably.
         #
         # This matters because the card branch returns the short `speak` line to
@@ -4758,7 +4763,7 @@ class AgentKernel:
         # `show` IS THE STORAGE SIGNAL (2026-08-17). No gate here.
         #
         # A previous kernel-side gate tried to infer, per turn, whether the
-        # content "was really an artifact" â€” first from the web/reference zone,
+        # content "was really an artifact" — first from the web/reference zone,
         # then from the payload's content. Both are guesses, and the guess is
         # not decidable: `{"format": "markdown", "content": "plain doc"}` with no
         # provenance is required to render by
@@ -4772,7 +4777,7 @@ class AgentKernel:
         # prompt now defines `show` as "a document to be STORED and reopened",
         # not "a long answer" (the old length rule is what made ordinary
         # conversation arrive here wearing a `show` payload). A `show` payload
-        # therefore means store it and render it â€” and the answer can no longer
+        # therefore means store it and render it — and the answer can no longer
         # be lost, because the card and the document store both hold it, while
         # every path WITHOUT a `show` returns the full text to the thread.
         #
@@ -4799,7 +4804,7 @@ class AgentKernel:
             conversation_id=conversation_id,
             alternatives=show.get("alternatives", []) or [],
         ):
-            # The card was revised in place â€” it owns the content. The agent's
+            # The card was revised in place — it owns the content. The agent's
             # spoken line still reaches TTS.
             return self._finalize_response("", speak)
         document_id = str(uuid.uuid4())
@@ -4935,8 +4940,8 @@ class AgentKernel:
                 logger.warning("[AgentKernel] speak broadcast failed: %s", exc)
             # CONTENT LIVES IN EXACTLY ONE PLACE (2026-08-16, user rule).
             #
-            # A document render is for an ARTIFACT â€” search results, generated
-            # markdown, a plan, code â€” something stored in the document store to
+            # A document render is for an ARTIFACT — search results, generated
+            # markdown, a plan, code — something stored in the document store to
             # be opened again later. When one is rendered, the card owns the
             # content and the chat keeps the agent's conversational line, so the
             # thread is not a wall of duplicated markdown.
@@ -5001,7 +5006,7 @@ class AgentKernel:
         )
         return self._finalize_response(show.get("content") or "")
 
-    # â”€â”€ W4: canonical document-data storage â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── W4: canonical document-data storage ────────────────────────────────
     def _get_document_store(self):
         """Return the DocumentDataStore for this kernel's memory DB, or None."""
         try:
@@ -5018,7 +5023,7 @@ class AgentKernel:
 
         Tolerant of shape: prefers '--- Source: <url> ---' markers (observed in
         live crawler output) and falls back to any http(s) URL. Returns [] on
-        failure â€” never raises into the store path (design risk: malformed JSON
+        failure — never raises into the store path (design risk: malformed JSON
         -> empty sources, store still succeeds).
         """
         import re
@@ -5051,7 +5056,7 @@ class AgentKernel:
 
         Extracted as a pure function so the ceiling is directly assertable and
         so there is exactly ONE place that decides it. A caller passing
-        ``trust="trusted"`` for vision output is downgraded, not honoured â€”
+        ``trust="trusted"`` for vision output is downgraded, not honoured —
         provenance beats the caller's claim.
         """
         if content_origin in ("vision", "reconciled") and trust != "untrusted":
@@ -5073,14 +5078,14 @@ class AgentKernel:
         """Persist a document's canonical DATA (not its render) keyed by document_id.
 
         Two coordinated homes (plan W4):
-          * Mycelium (episodic.fragment_and_store) â€” semantically retrievable
+          * Mycelium (episodic.fragment_and_store) — semantically retrievable
             later via mcm_recall / pacman_recall, scoped by zone (trust).
-          * Immortus 4D chain (immortus_chain_append) â€” placed in the reasoning
+          * Immortus 4D chain (immortus_chain_append) — placed in the reasoning
             trajectory via coords_from->coords_to so it "finds its place".
 
         The rendered ``content`` is only a view derived on demand; the stored
         source of truth is the canonical {format, content, alternatives}.
-        All failures are swallowed â€” storage must never block the render.
+        All failures are swallowed — storage must never block the render.
         """
         import json
 
@@ -5096,7 +5101,7 @@ class AgentKernel:
         # REQ-18 AC2/AC3: provenance travels with the content, and vision-derived
         # content is never stored at a HIGHER trust than equivalent crawled web
         # content. The ceiling is enforced HERE, at the single choke point every
-        # document passes through, rather than at each call site â€” one guard
+        # document passes through, rather than at each call site — one guard
         # cannot be forgotten by a future caller. ContentOrigin previously lived
         # only inside frame_extraction.py and never reached the store at all, so
         # vision output was indistinguishable from DOM text once persisted.
@@ -5117,7 +5122,7 @@ class AgentKernel:
         canonical_text = json.dumps(canonical, ensure_ascii=False)
         zone = "reference" if trust == "untrusted" else "trusted"
 
-        # â”€â”€ Immortus 4D chain coordinate (computed early; used by W8 seed + Immortus) â”€â”€
+        # ── Immortus 4D chain coordinate (computed early; used by W8 seed + Immortus) ──
         # coords_from = the agent's actual reasoning-state coordinate at the
         # moment this document was produced (sourced from the Caducean
         # trajectory recorder). This is what lets W7/O1 do trajectory-proximity
@@ -5150,7 +5155,7 @@ class AgentKernel:
         except Exception as exc:
             logger.warning("[AgentKernel] document_data coord lookup failed: %s", exc)
 
-        # â”€â”€ Wave 0/1 provenance linkage (REQ-5/REQ-13) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Wave 0/1 provenance linkage (REQ-5/REQ-13) ─────────────────────
         # Persist source_document_id / sources / har_path so documents rehydrate
         # with provenance. Tolerant of shape: malformed input -> empty sources,
         # store still succeeds (design risk).
@@ -5188,7 +5193,7 @@ class AgentKernel:
                     except Exception:
                         pass
 
-        # â”€â”€ DocumentDataStore: source-of-truth keyed by document_id (G4) â”€â”€â”€â”€
+        # ── DocumentDataStore: source-of-truth keyed by document_id (G4) ────
         try:
             store = self._get_document_store()
             if store is not None:
@@ -5235,10 +5240,10 @@ class AgentKernel:
         except Exception:
             pass  # never block the document store on an emit failure
 
-        # â”€â”€ Mycelium: semantic/episodic store â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Mycelium: semantic/episodic store ──────────────────────────────
         # OFF THE CRITICAL PATH (2026-08-17, same rule as the pacman_fragment
         # mediator). Storing means embedding, and the CPU-only encoder costs
-        # ~5 s per 1 KB chunk â€” a 14-chunk document blocked the DER loop for
+        # ~5 s per 1 KB chunk — a 14-chunk document blocked the DER loop for
         # ~50-90 s per step. Measured live: three inter-step gaps of 88 s, 72 s
         # and 84 s accounted for 244 s of a 311 s turn, while the mediator's own
         # fragments (already async) filed in the background without stalling it.
@@ -5267,10 +5272,10 @@ class AgentKernel:
         except Exception as exc:
             logger.warning("[AgentKernel] document_data Mycelium store failed: %s", exc)
 
-        # â”€â”€ Mycelium: seed document data as a trust-routed context node (W8/O2) â”€â”€
+        # ── Mycelium: seed document data as a trust-routed context node (W8/O2) ──
         # So trusted, frequently-referenced data can crystallize into a permanent
         # landmark at PERMANENCE_THRESHOLD. Trust routing is CellWall-enforced
-        # inside the interface â€” never bypassed. coords_from is the agent's real
+        # inside the interface — never bypassed. coords_from is the agent's real
         # reasoning-state coordinate ("x,y,xi,u"); the interface parses it.
         try:
             if mi is not None and hasattr(mi, "ingest_document_data"):
@@ -5287,14 +5292,14 @@ class AgentKernel:
 
 
         # OFF THE CRITICAL PATH. This is a durability/audit write, not part of
-        # producing the answer â€” but it ran INLINE on the DER thread after every
+        # producing the answer — but it ran INLINE on the DER thread after every
         # tool result. A live stack dump caught the thread parked in
         # ffi_immortus_chain_append -> SQLite right after a web search returned,
         # so a finished crawl looked hung and its UI events never surfaced.
         # `canonical_text` carries the full rendered document (for a crawl, the
         # page content), so the cost scales with how much the search found.
         #
-        # NOTE this is the SECOND such write on the same path â€” tool_bridge's
+        # NOTE this is the SECOND such write on the same path — tool_bridge's
         # _record_tool_event had the identical problem and was moved off-thread
         # first; fixing it simply revealed this one underneath. If a third
         # appears, the pattern (not the instance) is what needs addressing.
@@ -5427,7 +5432,7 @@ class AgentKernel:
             logger.warning(f"[AgentKernel] update_document failed: {exc}")
             return None
 
-    # â”€â”€ W9 (O3): proactive structured-data capture from ANY tool result â”€â”€â”€â”€â”€â”€
+    # ── W9 (O3): proactive structured-data capture from ANY tool result ──────
     # Plan W9: extend capture beyond `show` payloads to any tool result
     # (web_search, crawler_query, read_file, ...) so everything the agent
     # touches becomes reformat-able via the same DocumentDataStore. Scoped by a
@@ -5439,7 +5444,7 @@ class AgentKernel:
     @staticmethod
     def _json_default(obj: Any) -> Any:
         """json.dumps ``default=`` for tool-result payloads that carry
-        non-JSON-native objects (D4e â€” e.g. crawler CredibilityMap nested
+        non-JSON-native objects (D4e — e.g. crawler CredibilityMap nested
         inside a web_search/crawler_query result dict, which raised "Object
         of type CredibilityMap is not JSON serializable" and dropped the
         whole DER tool-result capture).
@@ -5499,13 +5504,13 @@ class AgentKernel:
         Trust-routing (W2/W3): external tools (web_search, crawler_query) are
         stored as ``untrusted``; everything else (e.g. read_file) as ``trusted``.
         Returns the new document_id, or None when the result was skipped by the
-        capture-worthiness gate. All failures are swallowed â€” capture must never
+        capture-worthiness gate. All failures are swallowed — capture must never
         block the tool result from reaching the agent.
         """
-        # â”€â”€ ChatCard redesign (pin_9e97e21340e7): external/web tool results are
+        # ── ChatCard redesign (pin_9e97e21340e7): external/web tool results are
         # captured into the document store (reformat-able) so the agent can
         # render them as a Prism Glass document card via its own `show` choice.
-        # The RENDER itself is the agent's decision â€” it must emit a `show`
+        # The RENDER itself is the agent's decision — it must emit a `show`
         # payload choosing the format (markdown/table/html/diagram/text). If the
         # agent does NOT choose a format (returns plain text), we escalate to a
         # QuestionCard (ask_user_question) offering the format options, rather
@@ -5567,7 +5572,7 @@ class AgentKernel:
 
         Called after the agent's response is processed. If a web/crawler result
         was captured this turn (``_pending_web_doc_id`` set) but the agent did
-        NOT render it as a document (``_last_render_emitted`` is False â€” i.e. it
+        NOT render it as a document (``_last_render_emitted`` is False — i.e. it
         returned plain text without a ``show`` format choice), we ask the user
         which format they want. This honors the ChatCard redesign: the rendered
         document is the agent's choice, and when the agent is unsure it escalates
@@ -5577,7 +5582,7 @@ class AgentKernel:
         answer asynchronously (the agent's response continues).
         """
         pending = getattr(self, "_pending_web_doc_id", None)
-        # Clear the flag regardless â€” each web result gets at most one escalation.
+        # Clear the flag regardless — each web result gets at most one escalation.
         self._pending_web_doc_id = None
         if not pending:
             return
@@ -5627,7 +5632,7 @@ class AgentKernel:
 
         W5 (data-centric): the primary path retrieves the document's canonical
         data + stored variants by ``document_id`` (the frontend sends only
-        ``{document_id, target_format}`` â€” no client ``content``).  Deterministic
+        ``{document_id, target_format}`` — no client ``content``).  Deterministic
         first (G1): if ``target_format`` is already a stored variant, it is
         returned with **zero LLM calls**.  Only genuinely new formats invoke the
         LLM on the canonical data, and the result is cached as a new variant.
@@ -5642,7 +5647,7 @@ class AgentKernel:
         if not target_format:
             return None
 
-        # â”€â”€ W5 primary path: retrieve by document_id â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── W5 primary path: retrieve by document_id ───────────────────────
         if document_id:
             store = self._get_document_store()
             doc = store.get(document_id) if store is not None else None
@@ -5692,7 +5697,7 @@ class AgentKernel:
             content = doc.get("content", "")
             original_format = original_format or doc.get("format")
 
-        # â”€â”€ LLM reformat path (W5 new format, or legacy content fallback) â”€â”€â”€
+        # ── LLM reformat path (W5 new format, or legacy content fallback) ───
         if not content:
             return None
         prompt = (
@@ -5750,7 +5755,7 @@ class AgentKernel:
         self._record_reformat_edge(self._get_document_store(), original_format, target_format)
         return payload["content"]
 
-    # â”€â”€ W10 (O4): pheromone-reinforced reformat + cross-modal synergy â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── W10 (O4): pheromone-reinforced reformat + cross-modal synergy ────────
     # Plan W10: reinforce the reformat action's pheromone edge when used, so
     # frequently-reformatted doc types become "sticky" (the agent can proactively
     # offer a reformat), and expose cross-modal views (vocalize / diagram) that
@@ -5796,7 +5801,7 @@ class AgentKernel:
 
         Reformats the stored document to ``target_format`` (reusing W5's
         data-centric reformat) and vocalizes the result via the SpeakTool
-        (existing TTS channel). Fire-and-forget â€” returns the speak status.
+        (existing TTS channel). Fire-and-forget — returns the speak status.
         """
         content = self.reformat_document(
             document_id=document_id,
@@ -5822,7 +5827,7 @@ class AgentKernel:
     ) -> Optional[str]:
         """Cross-modal synergy (W10/O4): return a diagram view of a document.
 
-        Reuses reformat_document's existing ``diagram`` (mermaid) format â€” the
+        Reuses reformat_document's existing ``diagram`` (mermaid) format — the
         "turn data into a diagram" synergy without a separate Vision generator.
         Returns the mermaid/diagram content, or None on failure.
         """
@@ -5845,7 +5850,7 @@ class AgentKernel:
         Queries the Immortus 4D chain by coordinate proximity (not embedding
         cosine) and returns the canonical document data for document entries
         (``nbl_outcome='document_render'``, ``file_path`` set). This is the novel
-        primitive: "data gathered while thinking like this."  Fire-and-forget â€”
+        primitive: "data gathered while thinking like this."  Fire-and-forget —
         returns [] on any failure.
         """
         try:
@@ -5878,7 +5883,7 @@ class AgentKernel:
         """
         Filter prompt-injection attempts before the task reaches the DER Director.
         Replaces coordinate-layer protocol markers with [filtered].
-        Applied ONLY here â€” not in WebSocket validators.
+        Applied ONLY here — not in WebSocket validators.
         """
         import re as _re
 
@@ -5940,7 +5945,7 @@ class AgentKernel:
 
         sections.append(f"TASK:\n{task}")
 
-        # â”€â”€ Phase 2.1: full conversation history (no index slicing) â”€â”€
+        # ── Phase 2.1: full conversation history (no index slicing) ──
         # The active thread is passed in its entirety so the planner can resolve
         # references like "do the websearch" / "the pricing of those" back to the
         # original query from earlier turns (fixes the toggle-restoration context
@@ -5957,7 +5962,7 @@ class AgentKernel:
                     + "\n".join(history_lines)
                 )
 
-        # â”€â”€ Phase 2.1: PACMAN semantic recall from past sessions â”€â”€
+        # ── Phase 2.1: PACMAN semantic recall from past sessions ──
         if episodic_context:
             sections.append(
                 f"RECALLED EPISODIC CONTEXT (PACMAN):\n{episodic_context}"
@@ -6642,12 +6647,12 @@ class AgentKernel:
         Builds RecallFilters from THIS node's record (node_type + both
         domain axes) and queries the shared chain with the widen-order
         (relationship -> type -> domain, winning scope logged). Returns
-        chain-row dicts, or [] on any failure â€” the step proceeds on live
+        chain-row dicts, or [] on any failure — the step proceeds on live
         state, never an error. Cross-conversation by default (AC1b):
         thread_id ranks, never filters.
 
         REQ-6 AC3 (semantic gate): the recall execution is the SHARED helper
-        ``run_filtered_recall`` (ontology_recall.py) â€” the gate's Tier 2 calls
+        ``run_filtered_recall`` (ontology_recall.py) — the gate's Tier 2 calls
         the same code path, so the widen-order and telemetry cannot drift.
         """
         try:
@@ -6671,7 +6676,7 @@ class AgentKernel:
                 limit=3,
             )
             if not _filters.has_any:
-                return []  # no ontology axes on this node â€” nothing to filter
+                return []  # no ontology axes on this node — nothing to filter
 
             _conn = resolve_mycelium_conn(self._memory_interface)
             if _conn is None:
@@ -6983,10 +6988,10 @@ class AgentKernel:
         """
         DER-aware planning wrapper. Returns ExecutionPlan (or None on failure).
         Mode + maturity-aware temperature:
-          debug/review  â†’ 0.0  (deterministic â€” finding bugs, not exploring)
-          implement      â†’ 0.1  (low â€” structured code generation)
-          research       â†’ 0.3  (higher â€” exploratory synthesis)
-          default        â†’ 0.1 if mature else 0.25
+          debug/review  → 0.0  (deterministic — finding bugs, not exploring)
+          implement      → 0.1  (low — structured code generation)
+          research       → 0.3  (higher — exploratory synthesis)
+          default        → 0.1 if mature else 0.25
         Falls back to a single-step plan on any model or parse failure.
         """
         from backend.core_models import ExecutionPlan, PlanStep
@@ -7004,7 +7009,7 @@ class AgentKernel:
         }
         temperature = _MODE_TEMPERATURES.get(mode, 0.1 if is_mature else 0.25)
 
-        # â”€â”€ Phase 5: Caducean-governed planning temperature â”€â”€
+        # ── Phase 5: Caducean-governed planning temperature ──
         # Modulate the base (mode-derived) temperature by the live Caducean
         # recommendation: COMPRESS (rec==1) -> more deterministic (lower temp);
         # EXPAND (rec==0) -> more exploratory (higher temp, capped); MAINTAIN
@@ -7046,7 +7051,7 @@ class AgentKernel:
         # that; the descriptions never did any work here. ~187 tokens.
         _tools_block = ""
         try:
-            # Ensure the tool bridge exists BEFORE reading the tool list â€” a
+            # Ensure the tool bridge exists BEFORE reading the tool list — a
             # fresh kernel has a None bridge (lazy-init only ran on the OpenAI
             # tools path), which silently yields an empty AVAILABLE TOOLS block
             # and the planner then emits tool-less speak steps (2026-08-12:
@@ -7069,7 +7074,7 @@ class AgentKernel:
         except Exception as _tb_exc:
             logger.debug("[AgentKernel._plan_task] tools block build failed: %s", _tb_exc)
 
-        # â”€â”€ Phase 2.1: PACMAN semantic recall (best-effort, never blocks) â”€â”€
+        # ── Phase 2.1: PACMAN semantic recall (best-effort, never blocks) ──
         episodic_context = ""
         try:
             if self._memory_interface is not None and hasattr(
@@ -7103,7 +7108,7 @@ class AgentKernel:
         full_prompt = (
             f"{system_prompt}\n\n{planning_prompt}\n\n"
             + (f"{_tools_block}\n\n" if _tools_block else "")
-            + "Respond with JSON only â€” no prose, no markdown fences:\n"
+            + "Respond with JSON only — no prose, no markdown fences:\n"
             '{"strategy":"do_it_myself|spawn_children|delegate_external",'
             '"plan_title":"short 2-3 word summary of what the plan does (e.g. \\"Search web for AI news\\")",'
             '"reasoning":"one sentence explaining the approach",'
@@ -7153,7 +7158,7 @@ class AgentKernel:
         plan_raw: Optional[str] = None
         try:
             # Primary path: route planning through the unified InferenceRouter so
-            # API providers (Cerebras, OpenAI, â€¦) are used â€” not just local/Ollama
+            # API providers (Cerebras, OpenAI, …) are used — not just local/Ollama
             # models. Legacy LM Studio / Ollama branches below remain as fallbacks
             # for local-model configurations.
             try:
@@ -7217,7 +7222,7 @@ class AgentKernel:
         except Exception as _pe:
             logger.warning(f"[AgentKernel._plan_task] inference failed: {_pe}")
 
-        # Parse JSON â†’ ExecutionPlan
+        # Parse JSON → ExecutionPlan
         try:
             if plan_raw:
                 data = self._parse_planner_json(plan_raw)
@@ -7241,7 +7246,7 @@ class AgentKernel:
                                 description=str(raw_step.get("description", "")),
                                 # Phase 1 (D1.3): planner emits GOALS only. Tool
                                 # selection is a runtime, memory-conditioned policy
-                                # via explorer.propose â€” never pre-assigned here.
+                                # via explorer.propose — never pre-assigned here.
                                 tool=None,
                                 params={},
                                 critical=bool(raw_step.get("critical", True)),
@@ -7297,7 +7302,7 @@ class AgentKernel:
                 (plan_raw or "")[:600],
             )
 
-        # Fallback: return None to signal plan error (REQ-2 â€” no silent self-do)
+        # Fallback: return None to signal plan error (REQ-2 — no silent self-do)
         try:
             if getattr(self, "_last_plan_failure", None) is None:
                 # No router error and no parse attempt recorded (e.g. no
@@ -7490,14 +7495,14 @@ class AgentKernel:
         """Conservative fact-seeking intent signal (used ONLY with web mode ON).
 
         _is_web_search_request() requires an explicit search phrase, which
-        misses factual questions that arrive without one â€” e.g. the frontend
+        misses factual questions that arrive without one — e.g. the frontend
         strips the "websearch:" prefix, so "what are the latest NASA Mars
         rover discoveries this month?" has no trigger phrase (T36 finding
         2026-08-09). This helper catches question-word / current-info
         phrasing so the DER-skip gate does not misroute them as chit-chat.
 
         Deliberately narrow: it must NOT match greetings or small talk
-        ("hello", "how are you", "tell me a joke") â€” those stay on the fast
+        ("hello", "how are you", "tell me a joke") — those stay on the fast
         path even when web mode is ON.
         """
         if not text:
@@ -7537,13 +7542,13 @@ class AgentKernel:
         prefix) must reach DER so the crawler path stays available. Chit-chat
         still skips DER regardless of web mode.
 
-        F6 interaction (2026-08-12): plan steps are GOALS ONLY â€” the parse
+        F6 interaction (2026-08-12): plan steps are GOALS ONLY — the parse
         hardcodes ``tool=None`` and the single resolver (explorer.propose)
         assigns tools at execution time. Therefore step.tool is ALWAYS None
         for production plans, and the empty string must NOT count as a
         "voice-only" tool. With "" in the speak set, every planned task was
         misread as voice-only and DER (task card + tool execution) was
-        skipped â€” an explicit "use the screenshot_page tool" prompt produced
+        skipped — an explicit "use the screenshot_page tool" prompt produced
         a trivial plan, no task card, and the empty fallback. Only
         EXPLICITLY marked speak steps are voice-only now.
         """
@@ -7572,10 +7577,10 @@ class AgentKernel:
 
         Produces an AWARE message instead of the old blind
         "IRIS couldn't generate a response. Please try again.":
-          - real upstream error detail â†’ surface it (retry / switch model)
-          - search-intent turn + web OFF â†’ advise toggling internet access
-          - search-intent turn + web ON â†’ honest incomplete-search message
-          - otherwise â†’ neutral rephrase guidance
+          - real upstream error detail → surface it (retry / switch model)
+          - search-intent turn + web OFF → advise toggling internet access
+          - search-intent turn + web ON → honest incomplete-search message
+          - otherwise → neutral rephrase guidance
         Never contains the phrase "couldn't generate" (contract: it must not
         reach a chat_message content on a healthy path).
         """
@@ -7593,7 +7598,7 @@ class AgentKernel:
             )
         if _searchy:
             return (
-                "I couldn't complete the web search for that â€” the search "
+                "I couldn't complete the web search for that — the search "
                 "returned nothing usable. Please try again, or ask me "
                 "without the web."
             )
@@ -7621,7 +7626,7 @@ class AgentKernel:
         conversation_id: Key for per-thread context persistence. If None,
                          falls back to self.conversation_id (or session_id).
         from_voice: when True the request came from the voice pipeline.
-          - Overrides mode detection â†’ "voice_first"
+          - Overrides mode detection → "voice_first"
           - Uses DER_TOKEN_BUDGETS["voice_first"] (15k tokens, under 20k)
           - Planning caps at 1 step for fast first-token response
         """
@@ -7634,7 +7639,7 @@ class AgentKernel:
         # Trust-routing W2: each new turn starts unmarked; the external flag is
         # set if a web/crawler tool runs during this turn.
         self.clear_turn_trust_flag()
-        # pin_517dfcbda150: the web-gather budget is per-task â€” it resets at the
+        # pin_517dfcbda150: the web-gather budget is per-task — it resets at the
         # turn boundary so a new task may gather up to _MAX_CRAWLS_PER_TASK
         # distinct (refined) queries again.
         self._der_crawl_attempts = {}
@@ -7647,9 +7652,9 @@ class AgentKernel:
         # _respond_direct. The DER path already receives it as a parameter.
         self._turn_session_id = session_id
 
-        # Resolve conversation_id â€” primary key for per-thread context.
+        # Resolve conversation_id — primary key for per-thread context.
         # getattr guard: a kernel may be constructed without __init__ (test
-        # stubs, partial init) â€” never raise on a missing attribute. The
+        # stubs, partial init) — never raise on a missing attribute. The
         # session_id fallback is the documented behavior (docstring above).
         _conv_id = conversation_id or getattr(self, "conversation_id", None) or session_id
         self.conversation_id = _conv_id
@@ -7668,7 +7673,7 @@ class AgentKernel:
         # copy only; the seam getattr-guards it, so a missing handle is safe.
         self._active_turn_metrics = metrics
         # REQ-5 AC1 (T8): stamp the semantic-gate compilation onto this turn's
-        # [LAYERS] emit (off the hot path â€” attribute copies only).
+        # [LAYERS] emit (off the hot path — attribute copies only).
         self._stamp_gate_telemetry(metrics)
         # REQ-3 T8b AC5: per-turn prompt-token counter accumulated at each DER
         # step's context assembly (forgetting bound), recorded into TurnMetrics.
@@ -7750,7 +7755,7 @@ class AgentKernel:
             # client_replace). If the user navigated away mid-task and then
             # returns to send a new message in the SAME conversation, the
             # stale _cancel_requested flag would otherwise halt the DER loop
-            # before executing any step â†’ "no usable sources found" with zero
+            # before executing any step → "no usable sources found" with zero
             # steps run.
             try:
                 _cancel = getattr(self, "_cancel_requested", None)
@@ -7758,7 +7763,7 @@ class AgentKernel:
                     _cancel.clear()
                     logger.info(
                         f"[AgentKernel] Cleared stale _cancel_requested for "
-                        f"conv={conversation_id} â€” new user turn supersedes prior soft-cancel"
+                        f"conv={conversation_id} — new user turn supersedes prior soft-cancel"
                     )
             except Exception:
                 pass
@@ -7798,7 +7803,7 @@ class AgentKernel:
             f"[Timing] memory.get_context: {(_t_memory - _t_start) * 1000:.1f} ms"
         )
 
-        # â”€â”€ Direct path (default): skip planning for non-tool messages â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Direct path (default): skip planning for non-tool messages ──────────
         # Route shadow (REQ-18, T30): record the fork for every turn, ahead
         # of either branch so both route choices land in the log. The gate
         # answer is computed ONCE here and reused by the branch below — the
@@ -7840,7 +7845,7 @@ class AgentKernel:
                 # handles it with structured logging and sends a visible
                 # error to the UI. No silent error swallowing.
                 raise
-            # Issue C.1: apply speak/show contract â€” emit document:render for
+            # Issue C.1: apply speak/show contract — emit document:render for
             # the `show` payload and reduce the stored/returned text to `speak`.
             response = self._process_structured_response(
                 response, turn_id=task_id, conversation_id=_conv_id
@@ -7859,7 +7864,7 @@ class AgentKernel:
                 except Exception as _mem_exc:
                     loud_error(_mem_exc, "conversation_memory.add_message (direct)")
             # Option B / Pacman: fragment this turn-pair into the vector DB so future
-            # context assembly can retrieve it semantically (PACMAN.md Â§Digestion).
+            # context assembly can retrieve it semantically (PACMAN.md §Digestion).
             # MCM orchestrator handles fragmentation + compression check when available.
             try:
                 if response:
@@ -7894,7 +7899,7 @@ class AgentKernel:
                 loud_error(_pac_exc, "pacman fragment_and_store")
             if response is None:
                 logger.error(
-                    "[AgentKernel] _respond_direct returned None â€” returning fallback"
+                    "[AgentKernel] _respond_direct returned None — returning fallback"
                 )
                 response = "I wasn't able to generate a response. Please check the model connection."
             metrics.path = "direct"
@@ -7906,7 +7911,7 @@ class AgentKernel:
             self._emit_context_usage()
             return response
 
-        # â”€â”€ Internet-access gate check (runs before DER to save cost) â”€â”€â”€â”€â”€â”€
+        # ── Internet-access gate check (runs before DER to save cost) ──────
         # If web tools are disabled and the user explicitly asked for a web
         # search, respond directly without engaging the expensive DER loop.
         if not get_global_internet_access() and self._is_web_search_request(text):
@@ -7916,7 +7921,7 @@ class AgentKernel:
                 "web features."
             )
 
-        # â”€â”€ Thinking feedback: emit a filler utterance so the user hears â”€â”€
+        # ── Thinking feedback: emit a filler utterance so the user hears ──
         # audio feedback while the agent is "thinking" (DER/ReAct path).
         # Gap-filler exception (REQ-10 AC10.13, T16): fires ONLY when speech
         # would otherwise be silent AND no beat is ready; never the same
@@ -7935,21 +7940,21 @@ class AgentKernel:
         except Exception as _filler_err:
             logger.debug("[AgentKernel] thinking filler emit skipped: %s", _filler_err)
 
-        # â”€â”€ Lock gate (W6 T27-T29): prevent concurrent DER on same conversation â”€â”€
+        # ── Lock gate (W6 T27-T29): prevent concurrent DER on same conversation ──
         if self._der_active:
             # DER is already running for this conversation. Answer chitchat directly
             # or ask the user to wait for complex tool-backed requests.
             if not self._needs_planning(text, context):
-                logger.info("[AgentKernel] DER active â€” answering chitchat directly")
+                logger.info("[AgentKernel] DER active — answering chitchat directly")
                 return self._respond_direct(
                     text, context,
                     chunk_callback=_wrapped_chunk_cb,
                     reasoning_callback=reasoning_callback,
                 )
-            logger.info("[AgentKernel] DER active â€” deferring complex request")
-            return "Still working on your previous request â€” one moment."
+            logger.info("[AgentKernel] DER active — deferring complex request")
+            return "Still working on your previous request — one moment."
 
-        # â”€â”€ DER path: sanitize â†’ classify â†’ Mycelium â†’ plan â†’ execute â”€â”€â”€â”€â”€â”€
+        # ── DER path: sanitize → classify → Mycelium → plan → execute ──────
         # Runs BEFORE the ReAct loop. Falls through to ReAct on any failure.
         _der_response: Optional[str] = None
         self._der_active = True
@@ -7998,13 +8003,13 @@ class AgentKernel:
                 except Exception as _ctx_exc:
                     loud_error(_ctx_exc, "memory_interface.get_task_context_package")
 
-            # Mode detection â€” runs AFTER Mycelium fetch so mature graph data
+            # Mode detection — runs AFTER Mycelium fetch so mature graph data
             # can suppress clarification mode and improve confidence.
             # Result flows into _plan_task() (temperature) and _execute_plan_der()
             # (token budget via DER_TOKEN_BUDGETS[mode]).
             # Voice requests skip mode detection and lock to "voice_first" so
             # they always get the tight 15k token budget and single-step plan.
-            # Confidence defaults to 0.5 for voice â€” memory-derived when mature.
+            # Confidence defaults to 0.5 for voice — memory-derived when mature.
             if from_voice:
                 _mode_name = "voice_first"
                 _confidence = 0.70 if _is_mature else 0.50
@@ -8051,12 +8056,12 @@ class AgentKernel:
                 if _plan_attempt < 2:
                     # Planner failure is almost always the provider quota: the
                     # transport already burned its 3x30s retries, so the 60s
-                    # provider window has usually ROLLED by now â€” a short gap
+                    # provider window has usually ROLLED by now — a short gap
                     # and a fresh attempt lands in new quota. Without this, a
                     # single saturated minute returned "[IRIS error] The planner
                     # returned no valid plan" (observed live).
                     logger.info(
-                        "[process_text_message] planner attempt %d failed â€” "
+                        "[process_text_message] planner attempt %d failed — "
                         "retrying after quota-window gap",
                         _plan_attempt + 1,
                     )
@@ -8082,7 +8087,7 @@ class AgentKernel:
                 self._emit_context_usage()
                 return _msg
 
-            # GAP 5 â€” strategy signal to Mycelium after planning
+            # GAP 5 — strategy signal to Mycelium after planning
             try:
                 if self._memory_interface:
                     self._memory_interface.mycelium_ingest_statement(
@@ -8092,7 +8097,7 @@ class AgentKernel:
             except Exception as _ing_exc:
                 loud_error(_ing_exc, "mycelium_ingest_statement")
 
-            # GAP 6 â€” register plan address when Mycelium is mature
+            # GAP 6 — register plan address when Mycelium is mature
             try:
                 if (
                     _is_mature
@@ -8108,19 +8113,19 @@ class AgentKernel:
             except Exception as _reg_exc:
                 loud_error(_reg_exc, "context_package.register_address")
 
-            # GAP 4 â€” route by strategy (do_it_myself â†’ DER; others â†’ ReAct)
+            # GAP 4 — route by strategy (do_it_myself → DER; others → ReAct)
             if _plan.strategy == "do_it_myself":
-                # â”€â”€ Emit TASK_START early so the frontend sees the plan
+                # ── Emit TASK_START early so the frontend sees the plan
                 # skeleton BEFORE the DER thread starts executing tools
-                # (fixes Q4 plan-late bug â€” without this, task:start and
+                # (fixes Q4 plan-late bug — without this, task:start and
                 # the first tool:call can arrive in the same WS batch,
                 # making the plan card appear to jump straight to "working").
                 # Voice-only DER bypass: skip DER/card for trivial chit-chat
                 # (plan with only speak steps and no websearch intent).
                 # Websearch prompts MUST go through DER so the frontend
                 # receives card/render events even when the plan has only
-                # speak steps â€” the DER loop resolves speak steps via
-                # ToolDecisionBox â†’ _run_step_direct, which produces both
+                # speak steps — the DER loop resolves speak steps via
+                # ToolDecisionBox → _run_step_direct, which produces both
                 # voice and card output.
                 # NOTE (2026-09-27): the "" in this tuple is gone. The docstring
                 # of _should_skip_der (F6, 2026-08-12) records why: production
@@ -8139,7 +8144,7 @@ class AgentKernel:
                 # internet-access toggle. With web mode ON, a factual
                 # question ("what are the latest NASA Mars rover
                 # discoveries this month?") must reach DER so the crawler
-                # path is available â€” even when the text heuristic misses
+                # path is available — even when the text heuristic misses
                 # (frontend strips the "websearch:" prefix). Chit-chat
                 # ("hello", "how are you") still skips DER on the fast path.
                 _web_on = get_global_internet_access()
@@ -8149,7 +8154,7 @@ class AgentKernel:
                 if _skip_der:
                     logger.info(
                         "[AgentKernel] voice-only/trivial plan (steps=%d, "
-                        "websearch=%s, web_on=%s, informational=%s) â€” skipping "
+                        "websearch=%s, web_on=%s, informational=%s) — skipping "
                         "DER/card, falling through to direct response",
                         len(_plan.steps),
                         _is_websearch,
@@ -8281,7 +8286,7 @@ class AgentKernel:
                                 mode=_mode_name,
                                 steps=_steps,
                                 total_steps=len(_plan.steps),
-                                # REQ-14 (T23): initial plan announcement â€”
+                                # REQ-14 (T23): initial plan announcement —
                                 # revisions re-emit through the same merge-by-id
                                 # channel with origin "sub_loop_split" (REQ-4/13)
                                 # or "user_steering" (REQ-15).
@@ -8295,7 +8300,7 @@ class AgentKernel:
                             ),
                             session_id=session_id or self.session_id,
                         )
-                        # T4a (REQ-4 AC1): persist the card at task:start â€”
+                        # T4a (REQ-4 AC1): persist the card at task:start —
                         # upsert with terminal_state="running".
                         self._persist_card_snapshot(
                             card_id=_card_id,
@@ -8389,12 +8394,12 @@ class AgentKernel:
                 # REQ-7 AC3 (T25): record the per-turn DER call count so the
                 # loop's actual call count is visible against the T3 baseline.
                 metrics.der_calls = getattr(self, "_der_turn_calls", 0)
-                # T11 (REQ-12): record the completed-step count â€” wired at the
+                # T11 (REQ-12): record the completed-step count — wired at the
                 # DER loop finalize (was declared-never-assigned before
                 # 2026-08-06, so [LAYERS] reported der_steps=0 while steps ran).
                 metrics.der_steps = getattr(self, "_der_step_count", 0)
                 # REQ-6 AC1/AC3 (T18): governance-source counts for the [LAYERS]
-                # line â€” which signal governed this turn's steering decisions
+                # line — which signal governed this turn's steering decisions
                 # (past-memory / live-state / both) and the alternation ratio
                 # (computed in to_log_line).
                 _gov = getattr(self, "_der_governance_counts", None) or {}
@@ -8402,7 +8407,7 @@ class AgentKernel:
                 metrics.gov_live = int(_gov.get("live", 0) or 0)
                 metrics.gov_both = int(_gov.get("both", 0) or 0)
                 # REQ-17 AC1 (T34): the REAL budget source (the source that
-                # won in resolve_context_window_with_source â€” override /
+                # won in resolve_context_window_with_source — override /
                 # authoritative / table / default), never a silent 8192.
                 try:
                     metrics.budget_source = (
@@ -8417,7 +8422,7 @@ class AgentKernel:
                 # 429 count: the rate meter's per-quota 429 frequency, summed
                 # across metered windows (the transport observes 429s there;
                 # the kernel never counts them itself). 0 when no metered
-                # quota exists or the meter is unavailable â€” never raises.
+                # quota exists or the meter is unavailable — never raises.
                 metrics.count_429 = 0
                 try:
                     from backend.agent.rate_meter import get_rate_meter
@@ -8434,7 +8439,7 @@ class AgentKernel:
                 except Exception:
                     metrics.count_429 = 0
                 # REQ-17 AC1 (T34): narration decisions this turn (0 when none).
-                # Counts the conversation's narration JSONL entries â€” read-only,
+                # Counts the conversation's narration JSONL entries — read-only,
                 # best-effort, never raises; a missing log file = 0.
                 try:
                     from backend.agent.narration import _NARRATION_LOG_DIR
@@ -8469,7 +8474,7 @@ class AgentKernel:
                     )
                 except Exception:
                     pass
-                # â”€â”€ FIX (session 154): Invoke chunk_callback on DER path â”€â”€
+                # ── FIX (session 154): Invoke chunk_callback on DER path ──
                 # The DER loop generates the full response via internal LLM
                 # calls but never invokes chunk_callback. Without this call,
                 # the TTS sentence_queue only receives the None sentinel,
@@ -8485,7 +8490,7 @@ class AgentKernel:
                     logger.info("[DER-TTS-FIX] chunk_callback invoked OK")
                 else:
                     logger.warning(
-                        f"[DER-TTS-FIX] SKIPPED â€” chunk_callback={chunk_callback}, "
+                        f"[DER-TTS-FIX] SKIPPED — chunk_callback={chunk_callback}, "
                         f"der_response={bool(_der_response)}"
                     )
                 # Issue C.1: apply speak/show contract before returning.
@@ -8602,7 +8607,7 @@ class AgentKernel:
                             # nor VPS will handle this request.  If ":" is in the model ID
                             # it is an Ollama model (e.g. "llama3.2:3b"); if VPS is wired
                             # the VPS block below handles it.  In those cases we MUST NOT
-                            # fall back â€” the stub is broken and produces garbage output.
+                            # fall back — the stub is broken and produces garbage output.
                             _sel_check = self._selected_reasoning_model
                             _ollama_will_handle = ":" in _sel_check
                             _vps_will_handle = bool(self._vps_gateway)
@@ -8633,12 +8638,12 @@ class AgentKernel:
                                     else ("Ollama" if _ollama_will_handle else "VPS")
                                 )
                                 logger.info(
-                                    f"[AgentKernel] Selected model '{_sel_check}' not in local cache â€” "
+                                    f"[AgentKernel] Selected model '{_sel_check}' not in local cache — "
                                     f"will route to {_dest}"
                                 )
                                 # reasoning_model stays None; inference block handles it
                     else:
-                        # No model selected â€” use default reasoning model
+                        # No model selected — use default reasoning model
                         reasoning_model = self._model_router.get_reasoning_model()
                         if reasoning_model:
                             default_model_id = getattr(
@@ -8668,13 +8673,13 @@ class AgentKernel:
                         )
                         return {"error": f"Failed to access fallback model: {e}"}
                 elif self._is_openai_compat():
-                    # LM Studio is configured â€” reasoning_model stays None; the LM Studio
+                    # LM Studio is configured — reasoning_model stays None; the LM Studio
                     # inference block below handles it via localhost:1234.
                     logger.info(
                         "[AgentKernel] No local model loaded; delegating planning to LM Studio"
                     )
                 elif self._vps_gateway:
-                    # VPS Gateway is configured â€” no local model required.
+                    # VPS Gateway is configured — no local model required.
                     # reasoning_model stays None; the VPS inference block below handles it.
                     logger.info(
                         "[AgentKernel] No local reasoning model; delegating planning to VPS Gateway"
@@ -8682,12 +8687,12 @@ class AgentKernel:
                 elif self._selected_reasoning_model and self._model_router:
                     # The user confirmed a model but it isn't in _model_router.models yet.
                     # Two sub-cases:
-                    # A) Ollama model â€” ID contains ":" (e.g. "llama3.2:3b")
-                    #    â†’ handled in the Ollama inference block below.
+                    # A) Ollama model — ID contains ":" (e.g. "llama3.2:3b")
+                    #    → handled in the Ollama inference block below.
                     #    NOTE: provider="local" means LFM local file, NOT Ollama.
                     #    Only ":" in the ID identifies an Ollama model.
                     # B) LFM HuggingFace model (provider="local", no ":" in ID)
-                    #    â†’ trigger load_models() now so the model dict is populated.
+                    #    → trigger load_models() now so the model dict is populated.
                     _sel = self._selected_reasoning_model
                     _is_ollama = ":" in _sel  # ONLY colon-format IDs go to Ollama
                     if _is_ollama:
@@ -8695,7 +8700,7 @@ class AgentKernel:
                             f"[AgentKernel] Ollama model '{_sel}' selected; "
                             "will infer via localhost:11434"
                         )
-                        # reasoning_model stays None â€” Ollama block below handles inference
+                        # reasoning_model stays None — Ollama block below handles inference
                     else:
                         # LFM lazy-load path (provider="local", model file on disk)
                         logger.info(
@@ -8721,14 +8726,14 @@ class AgentKernel:
                                 "error": (
                                     f"Local model '{_sel}' could not be loaded. "
                                     "Check that the model file exists in the models/ directory, "
-                                    "or switch to an Ollama or VPS model in Settings â†’ Configure."
+                                    "or switch to an Ollama or VPS model in Settings → Configure."
                                 )
                             }
                 else:
                     return {
                         "error": (
                             "No inference backend configured. "
-                            "Please go to Settings â†’ Configure and select a Local, VPS, or OpenAI model."
+                            "Please go to Settings → Configure and select a Local, VPS, or OpenAI model."
                         )
                     }
 
@@ -8795,7 +8800,7 @@ Respond with a JSON object:
                     except RuntimeError as e:
                         if "already running" in str(e):
                             logger.warning(
-                                "[AgentKernel] Event loop conflict â€” falling back to local model"
+                                "[AgentKernel] Event loop conflict — falling back to local model"
                             )
                             plan_response = None
                         else:
@@ -8832,9 +8837,9 @@ Respond with a JSON object:
                         f"[AgentKernel] LM Studio planning inference failed: {_lms_err}"
                     )
 
-            # Ollama local inference â€” runs when the model ID contains ":" which is
+            # Ollama local inference — runs when the model ID contains ":" which is
             # the Ollama format (e.g. "llama3.2:3b", "mistral:7b", "kimi-k2.5:cloud").
-            # NOTE: provider="local" means LFM local file â€” it does NOT go to Ollama.
+            # NOTE: provider="local" means LFM local file — it does NOT go to Ollama.
             # Only colon-format IDs are Ollama models.
             if (
                 plan_response is None
@@ -8893,12 +8898,12 @@ Respond with a JSON object:
                     elif _sel_err:
                         _err_msg = (
                             f"Model '{_sel_err}' could not be loaded. "
-                            "Check that the model file exists, or select a different model in Settings â†’ Configure."
+                            "Check that the model file exists, or select a different model in Settings → Configure."
                         )
                     else:
                         _err_msg = (
                             "No inference backend configured. "
-                            "Please go to Settings â†’ Configure and select a Local, VPS, or OpenAI model."
+                            "Please go to Settings → Configure and select a Local, VPS, or OpenAI model."
                         )
                     return {"error": _err_msg}
 
@@ -8961,7 +8966,7 @@ Respond with a JSON object:
                 return plan
             except json.JSONDecodeError:
                 # Model returned free-form text rather than JSON.
-                # Treat the entire response as the user-facing reply â€” do NOT use
+                # Treat the entire response as the user-facing reply — do NOT use
                 # "respond_to_user" as the action string because execute_step would
                 # return that keyword verbatim to the frontend.
                 logger.warning(
@@ -9020,7 +9025,7 @@ Respond with a JSON object:
         # (explorer.propose) can apply the capability-gated web fallback.
         self._der_task_class = _der_task_class
 
-        # REQ-19 (T20): one DerLinkWriter per DER run â€” writes structural
+        # REQ-19 (T20): one DerLinkWriter per DER run — writes structural
         # links (part_of / depends_on / relevant_to / failed_like) into the
         # SHARED mycelium link store at finalize. Wired here so it exists for
         # the whole plan; bound to this run's kernel (no cross-session shared
@@ -9066,7 +9071,7 @@ Respond with a JSON object:
             )
         except TopologyViolationException:
             logger.warning(
-                "[AgentKernel] TopologyViolation â€” attempting targeted recovery"
+                "[AgentKernel] TopologyViolation — attempting targeted recovery"
             )
             try:
                 # RC11 FIX: reset Caducean session state before recovery
@@ -9083,7 +9088,7 @@ Respond with a JSON object:
                     data={
                         "from_mode": "DER",
                         "to_mode": "DER_RECOVERY",
-                        "reason": "Topological violation â€” recovering",
+                        "reason": "Topological violation — recovering",
                     },
                     session_id=_session,
                 )
@@ -9092,7 +9097,7 @@ Respond with a JSON object:
                     data={
                         "from_mode": "DER",
                         "to_mode": "DER_RECOVERY",
-                        "reason": "Topological violation â€” recovering",
+                        "reason": "Topological violation — recovering",
                     },
                     session_id=_session,
                 )
@@ -9284,20 +9289,20 @@ Respond with a JSON object:
         budget_class: Optional[str] = None,
     ) -> str:
         """
-        DER execution cycle: Director â†’ Reviewer â†’ Explorer â†’ repeat until complete.
+        DER execution cycle: Director → Reviewer → Explorer → repeat until complete.
 
         The Director re-reads Mycelium each cycle via ContextPackage.
         The Reviewer gates each step (PASS / REFINE / VETO).
         The Explorer executes via _tool_bridge or direct model call.
         Mycelium signal hooks fire after every step and at outcome.
 
-        Never raises â€” wraps failures as step error text so the response
+        Never raises — wraps failures as step error text so the response
         always reaches the user.
         """
-        # Trust-routing W2: a plan run is one turn â€” start unmarked.
+        # Trust-routing W2: a plan run is one turn — start unmarked.
         self.clear_turn_trust_flag()
         # REQ-5 AC3: the amendment bound is PER TASK. _der_amendment_count lives
-        # on the kernel, which is cached per CONVERSATION â€” leaving it to
+        # on the kernel, which is cached per CONVERSATION — leaving it to
         # accumulate would permanently refuse every graft after the third
         # recovery in a conversation, silently killing DER's existing recovery
         # path. One plan run is one task, so the counter resets here.
@@ -9329,7 +9334,7 @@ Respond with a JSON object:
         _session = session_id or self.session_id
         # _turn_id threads the request turn id through EventBus emits and
         # escalation calls. It was previously referenced throughout this
-        # method but never defined â€” that NameError broke the DER escalation
+        # method but never defined — that NameError broke the DER escalation
         # path and forced the "[step N completed]" fallback. See Issue E fix.
         _turn_id = turn_id
         completed_items: List[Any] = []
@@ -9348,19 +9353,19 @@ Respond with a JSON object:
         self._der_turn_active = True
         self._der_last_client_check = 0.0
 
-        # Token budget â€” spec [1.2]: enforce DER_TOKEN_BUDGETS[task_class]
-        # Tokens are estimated from step result length (4 chars â‰ˆ 1 token).
+        # Token budget — spec [1.2]: enforce DER_TOKEN_BUDGETS[task_class]
+        # Tokens are estimated from step result length (4 chars ≈ 1 token).
         # Budget is a ceiling; the loop exits early if exceeded.
         # DER budget is derived from the MODEL'S ACTUAL CONTEXT WINDOW, not a
         # hardcoded per-mode cap. DER exists to execute tasks in alignment with
         # memory (Pacman filters tokens into the context window that then feeds
-        # coordinate memory.db) â€” so each model should be allowed to use its full
+        # coordinate memory.db) — so each model should be allowed to use its full
         # window for reasoning across steps. The flat DER_TOKEN_BUDGETS values
         # are kept only as a SAFETY FLOOR (never go below a sane minimum), never
         # as a ceiling. No upper cap: a 256k model gets ~230k of step budget, a
-        # 32k local model gets ~29k â€” each uses its real capacity.
+        # 32k local model gets ~29k — each uses its real capacity.
         # Sized by the SMALLEST window among the roles this turn will actually
-        # spend against â€” DER issues both reasoning calls and tool_execution
+        # spend against — DER issues both reasoning calls and tool_execution
         # calls, and a Brain/Tool split can put them on very different models.
         # Using the reasoning window alone budgeted ~230k for a turn whose tool
         # steps ran on an 8k model (2026-08-16).
@@ -9380,9 +9385,9 @@ Respond with a JSON object:
             derive_work_units_0(_model_window),
         )
 
-        # â”€â”€ REQ-1: pre-flight â€” is the reasoning provider usable? â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── REQ-1: pre-flight — is the reasoning provider usable? ────────
         if not getattr(self, "_router", None):
-            logger.warning("[DER] pre-flight FAILED â€” no router configured")
+            logger.warning("[DER] pre-flight FAILED — no router configured")
             return "[DER unavailable] No inference router configured"
         try:
             _hc = self._router.health_check_provider("reasoning")
@@ -9391,7 +9396,7 @@ Respond with a JSON object:
         if not _hc.get("ok"):
             _reason = _hc.get("error", "no reason")
             logger.warning(
-                "[DER] pre-flight FAILED â€” reasoning provider unavailable: %s",
+                "[DER] pre-flight FAILED — reasoning provider unavailable: %s",
                 _reason,
             )
             return f"[DER unavailable] {_reason}"
@@ -9422,7 +9427,7 @@ Respond with a JSON object:
                     if context_package
                     else ""
                 ),
-                # REQ-3 (T8): EVERY node carries its compressed memory record â€”
+                # REQ-3 (T8): EVERY node carries its compressed memory record —
                 # top-level plan steps included, not just split children. The
                 # record's Understanding/Awareness/Direction fields are derived
                 # from the plan step itself (the node's initial position), and
@@ -9441,7 +9446,7 @@ Respond with a JSON object:
                     ruled_out="",
                     coordinate_ref=None,
                     coords_from="",
-                    # REQ-18 (T19): both domain axes resolved at construction â€”
+                    # REQ-18 (T19): both domain axes resolved at construction —
                     # topic from the step's own text via the mycelium registry,
                     # execution from the active winding. Registry-backed, never
                     # free text (AC2/AC3). The finalize site re-stamps with the
@@ -9541,11 +9546,11 @@ Respond with a JSON object:
         # now a single runtime authority (explorer.propose), which routes web
         # intent to crawler_query via the registry's alias + capability system
         # (capability-gated fallback for research-class goals). No routing is
-        # lost â€” the registry already canonicalizes web aliases to crawler_query.
+        # lost — the registry already canonicalizes web aliases to crawler_query.
 
-        # â”€â”€ Phase 3: initialize execution mode â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Phase 3: initialize execution mode ────────────────────────
         # Director decides mode dynamically based on task characteristics.
-        # Voice no longer caps to 1 step â€” Director decides based on content.
+        # Voice no longer caps to 1 step — Director decides based on content.
         voice_preference = getattr(self, "_voice_preference", "auto")
         initial_mode = DirectorQueue._decide_mode(
             task_class=task_class,
@@ -9599,7 +9604,7 @@ Respond with a JSON object:
         except Exception as _gate_exc:  # never block the turn on the gate
             logger.debug("[AgentKernel] card gate skipped: %s", _gate_exc)
 
-        # â”€â”€ EventBus: emit task:start â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── EventBus: emit task:start ──────────────────────────────────
         try:
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
             bus = get_event_bus()
@@ -9607,7 +9612,7 @@ Respond with a JSON object:
             _card_id, _card_relation = self._resolve_card_identity(
                 _card_task_id, "initial"
             )
-            # T16 (REQ-12 AC4): card-lifecycle observability â€” relation decision
+            # T16 (REQ-12 AC4): card-lifecycle observability — relation decision
             # is logged here, off the inference hot path (this block only emits
             # an event; a log line can never block the user response).
             logger.info(
@@ -9634,7 +9639,7 @@ Respond with a JSON object:
                     mode=initial_mode.value,
                     steps=_start_steps,
                     total_steps=len(items),
-                    # REQ-14 (T23): execution-start announcement â€” still the
+                    # REQ-14 (T23): execution-start announcement — still the
                     # INITIAL plan; revisions re-emit with a distinct origin.
                     origin="initial",
                     # REQ-3 (T2): backend-declared card identity.
@@ -9660,9 +9665,9 @@ Respond with a JSON object:
                 terminal_state="running",
             )
         except Exception:
-            pass  # EventBus is optional â€” no crash if it fails
+            pass  # EventBus is optional — no crash if it fails
 
-        # C.1 LiveContextPackage â€” refreshes ContextPackage mid-loop so the
+        # C.1 LiveContextPackage — refreshes ContextPackage mid-loop so the
         # Director always reads current gradient_warnings + tier2_predictions.
         try:
             from backend.memory.live_context import LiveContextPackage
@@ -9675,7 +9680,7 @@ Respond with a JSON object:
         except Exception:
             _live_ctx = None  # graceful no-op if import fails
 
-        # Reviewer â€” falls back to PASS on any failure (membrane, not gate)
+        # Reviewer — falls back to PASS on any failure (membrane, not gate)
         reviewer = self._reviewer
 
         # WS disconnect helper - checks if the originating session still has
@@ -9687,7 +9692,7 @@ Respond with a JSON object:
         def _session_has_client() -> bool:
             return self._session_has_client_for(_session)
 
-        # â”€â”€ REQ-15 (T25/T26): per-task steering state reset â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── REQ-15 (T25/T26): per-task steering state reset ─────────────
         self._der_stop_requested = False
         self._der_pause_requested = False
         self._der_resume_requested = False
@@ -9731,17 +9736,17 @@ Respond with a JSON object:
             # REQ-15 AC3: an explicit stop aborts at the next step boundary.
             and not self._der_stop_requested
         ):
-            # â”€â”€ DISCONNECT CHECK: stop early if client is gone â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── DISCONNECT CHECK: stop early if client is gone ──────────────
             if not _session_has_client():
                 logger.info(
-                    f"[DER] Session {_session} has no connected clients â€” "
+                    f"[DER] Session {_session} has no connected clients — "
                     "recording partial outcome and stopping"
                 )
                 break
 
             queue.cycle_count += 1
 
-            # â”€â”€ DOMAIN 19: Caducean phase read â”€â”€
+            # ── DOMAIN 19: Caducean phase read ──
             import math as _math
 
             _xi = 0.0
@@ -9751,7 +9756,7 @@ Respond with a JSON object:
                 _xi = ffi_caducean_get_xi(_session)
             except Exception as _ffi_exc:
                 loud_error(_ffi_exc, "ffi_caducean_get_xi")
-            _phase = 0  # 0=[0,Ï€/2], 1=[Ï€/2,Ï€], 2=[Ï€,3Ï€/2], 3=[3Ï€/2,2Ï€]
+            _phase = 0  # 0=[0,π/2], 1=[π/2,π], 2=[π,3π/2], 3=[3π/2,2π]
             if _xi >= 3.0 * _math.pi / 2.0:
                 _phase = 3
             elif _xi >= _math.pi:
@@ -9763,8 +9768,8 @@ Respond with a JSON object:
             if item is None:
                 break  # dependency deadlock guard
 
-            # â”€â”€ REQ-15 (T25/T26): consume mid-task steering at the NEXT step
-            # boundary (AC1 â€” never mid-step). A steering revision replaces
+            # ── REQ-15 (T25/T26): consume mid-task steering at the NEXT step
+            # boundary (AC1 — never mid-step). A steering revision replaces
             # the remaining plan (AC2); a stop aborts here (AC3); a pause
             # suspends here until resume/stop (AC4). budget_deadline bounds
             # the re-plan's LLM call by the turn budget (pin_ced7b0dc3b8f).
@@ -9776,7 +9781,7 @@ Respond with a JSON object:
                 if _steer.get("stop"):
                     break
                 if _steer.get("revised"):
-                    # The pulled item belongs to the dropped plan â€” re-pull
+                    # The pulled item belongs to the dropped plan — re-pull
                     # from the revised queue on the next iteration.
                     continue
                 if _steer.get("pause"):
@@ -9785,11 +9790,11 @@ Respond with a JSON object:
                     )
                     if _suspend == "stop":
                         break
-                    # resumed: the pulled item was never executed â€” re-pull
+                    # resumed: the pulled item was never executed — re-pull
                     # it from the (unchanged) queue.
                     continue
 
-            # â”€â”€ C.1 LIVE CONTEXT REFRESH â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── C.1 LIVE CONTEXT REFRESH ────────────────────────────────────
             # Re-read Mycelium coordinate signals for the current sub-step.
             # Updates gradient_warnings + tier2_predictions on context_package.
             # < 50ms SLA; silently no-ops on any error.
@@ -9797,7 +9802,7 @@ Respond with a JSON object:
                 _live_ctx.refresh(item, completed_items)
                 context_package = _live_ctx.package  # always valid
 
-            # â”€â”€ C.4 MID-LOOP EPISODIC RETRIEVAL â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── C.4 MID-LOOP EPISODIC RETRIEVAL ────────────────────────────
             # Query the episodic store for the *current sub-task*, not the
             # parent task.  Injects a hint into item.coordinate_signal so the
             # Reviewer and Explorer both see "I solved this sub-problem before
@@ -9878,7 +9883,7 @@ Respond with a JSON object:
                             # the summary, so the Explorer repeats a known-good path.
                             _seq = ep.get("tool_sequence", [])
                             if _seq:
-                                _approach = " â†’ ".join(
+                                _approach = " → ".join(
                                     s.get("tool", "?") for s in _seq[:5]
                                 )
                                 _hint_parts.append(f"PROVEN APPROACH: {_approach}")
@@ -9902,10 +9907,10 @@ Respond with a JSON object:
                     except Exception as _fw_exc:
                         loud_error(_fw_exc, "failure_warning_mid_loop")
 
-                    # â”€â”€ REQ-20 AC3 (T21): the filtered ontology neighborhood
+                    # ── REQ-20 AC3 (T21): the filtered ontology neighborhood
                     # is a first-class step input. Query the DER chain with
                     # THIS node's type + both domain axes and surface the
-                    # relevant neighbor records into the step context â€” the
+                    # relevant neighbor records into the step context — the
                     # relevant neighborhood, not the whole graph. Zero-hit
                     # widens (relationship -> type -> domain, logged) and
                     # falls back to the live-state-only step (never an error).
@@ -9932,24 +9937,24 @@ Respond with a JSON object:
                     except Exception as _nb_exc:
                         loud_error(_nb_exc, "ontology_recall_neighborhood")
 
-                    # â”€â”€ REQ-3 T8 AC1/AC3: the node's compressed memory record is
+                    # ── REQ-3 T8 AC1/AC3: the node's compressed memory record is
                     # a FIRST-CLASS step input (not opt-in). If this item carries
                     # a NodeRecord (every node does from split/creation on), its
-                    # Understanding/Awareness/Direction + the compressed Î£
+                    # Understanding/Awareness/Direction + the compressed Σ
                     # position are injected into the step input alongside the
                     # episodic hints. When the store has no record for the
                     # node's coordinate, the step proceeds on the live state
                     # alone and is marked memory-sparse in the observability log
-                    # (AC3) â€” never an error.
+                    # (AC3) — never an error.
                     try:
                         _rec = getattr(item, "node_record", None) or getattr(
                             item, "footprint", None
                         )
                         # REQ-6 AC1 (T18): OBSERVE which signal governed this
-                        # step's steering â€” past-memory (compressed node
+                        # step's steering — past-memory (compressed node
                         # record present) vs live-state (memory-sparse: no
-                        # record, the decision runs on the live Î£ alone). A
-                        # record present AND live Î£ consumed is the "both"
+                        # record, the decision runs on the live Σ alone). A
+                        # record present AND live Σ consumed is the "both"
                         # (equal-signals) edge. No hardcoded authority (AC2).
                         try:
                             self._der_record_governance(
@@ -9973,7 +9978,7 @@ Respond with a JSON object:
                                 _rec_parts.append(f"BRANCH COORDS: {_rec.coords_from}")
                             # REQ-4 AC4 (T16b): the fold-back observations from
                             # this node's sub-loop children are first-class
-                            # step context (REQ-3 AC1) â€” the parent's next
+                            # step context (REQ-3 AC1) — the parent's next
                             # decision reads what the children resolved.
                             if getattr(_rec, "folded_back", None):
                                 _rec_parts.append(
@@ -9985,10 +9990,10 @@ Respond with a JSON object:
                                     _prior + "\nNODE RECORD: " + "; ".join(_rec_parts)
                                 ).strip()
 
-                            # â”€â”€ REQ-5 AC1/AC3 (T17): SURFACE the branch
+                            # ── REQ-5 AC1/AC3 (T17): SURFACE the branch
                             # candidates to the deciding step. Retrieval ranks
                             # the relevant branches (physics + evidence) and
-                            # puts ALL of them in front of the step â€” never
+                            # puts ALL of them in front of the step — never
                             # pre-selecting one by score. The step decides with
                             # both branches in view; the chosen one is recorded
                             # at commit (_der_record_coupling_decision).
@@ -10008,7 +10013,7 @@ Respond with a JSON object:
                                         + " | ".join(_cand_parts)
                                     ).strip()
                                     # remember for the commit-time decision
-                                    # record (AC2/AC4) â€” bounded provenance.
+                                    # record (AC2/AC4) — bounded provenance.
                                     try:
                                         item._coupled_candidates = list(_cands)
                                     except Exception:
@@ -10018,24 +10023,24 @@ Respond with a JSON object:
                                     "[DER] branch surfacing failed: %s", _surf_exc
                                 )
 
-                            # â”€â”€ REQ-3 T8b AC4/AC5/AC6: wire the FORGETTING. The
+                            # ── REQ-3 T8b AC4/AC5/AC6: wire the FORGETTING. The
                             # step's working context (coordinate_signal) is bounded
                             # to a fraction of the REQ-1 resolved window (OQ-6:
-                            # derived, never a literal) â€” content beyond the bound is
+                            # derived, never a literal) — content beyond the bound is
                             # DROPPED from the working context and re-read later
                             # only when retrieval selects the node record. The
                             # per-step prompt token count is recorded so the
                             # reduction is a measured number (AC5). AC6: if the
                             # node's chain write FAILED (durability drop counter),
-                            # the working context is the ONLY copy â€” do NOT bound
+                            # the working context is the ONLY copy — do NOT bound
                             # (forget) it. Extracted to _der_bound_step_context so
                             # the contract test drives the REAL code (T8b).
                             self._der_bound_step_context(item)
                         else:
-                            # AC3: memory-sparse â€” no record, proceed on live state.
+                            # AC3: memory-sparse — no record, proceed on live state.
                             logger.info(
                                 "[DER] step memory-sparse step_id=%s (no node record "
-                                "for this coordinate) â€” proceeding on live state",
+                                "for this coordinate) — proceeding on live state",
                                 getattr(item, "step_id", "?"),
                             )
                     except Exception as _rec_exc:
@@ -10043,7 +10048,7 @@ Respond with a JSON object:
             except Exception as _explore_exc:
                 loud_error(_explore_exc, "explorer_sub_episodes")
 
-            # â”€â”€ REVIEWER PHASE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── REVIEWER PHASE ─────────────────────────────────────────────
             if reviewer is not None:
                 try:
                     verdict, feedback = reviewer.review(
@@ -10065,7 +10070,7 @@ Respond with a JSON object:
                         f"(count={item.veto_count}, reason={feedback})"
                     )
                     # DER Phase 0 (D0.2): a VETO means the action was NEVER executed.
-                    # Do NOT emit a tool-outcome record (that would be a lie â€” a
+                    # Do NOT emit a tool-outcome record (that would be a lie — a
                     # success=False edge for a tool that never ran). The veto decision is
                     # logged for audit only; it is not a tool outcome.
                     logger.debug(
@@ -10078,7 +10083,7 @@ Respond with a JSON object:
                         continue
                     else:
                         queue.mark_vetoed(item.step_id)
-                        # â”€â”€ REQ-8 AC3: emit learning signal for avoided step â”€â”€
+                        # ── REQ-8 AC3: emit learning signal for avoided step ──
                         try:
                             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
                             get_event_bus().emit(
@@ -10120,7 +10125,7 @@ Respond with a JSON object:
                             f"Reviewer REFINE to get_rendered_documents",
                         )
 
-            # â”€â”€ EXPLORER PHASE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── EXPLORER PHASE ─────────────────────────────────────────────
             # Emit TOOL_CALL event for the frontend / TaskKernel
             try:
                 from backend.agent.event_bus import get_event_bus, IRISStreamEvent
@@ -10155,7 +10160,7 @@ Respond with a JSON object:
             except Exception:
                 pass
 
-            # â”€â”€ RC1 FIX: pre-execution validation (catches tool:null / missing
+            # ── RC1 FIX: pre-execution validation (catches tool:null / missing
             # params before runtime). Invalid steps route to graft with the
             # REQ-6 (soft-cancel): if the user switched away from this conversation,
             # stop issuing further steps. An in-flight tool subprocess is allowed to
@@ -10169,7 +10174,7 @@ Respond with a JSON object:
                 )
                 break
 
-            # validation error instead of executing-and-failing. â”€â”€
+            # validation error instead of executing-and-failing. ──
             if item.tool:
                 from backend.agent.tool_registry import validate_tool_call
                 _valid, _val_err = validate_tool_call(item.tool, item.params or {})
@@ -10195,13 +10200,13 @@ Respond with a JSON object:
                     )
                     continue
 
-            # â”€â”€ EXPLORER PHASE: execute primary step with resilience (Phase 1.1) â”€â”€
+            # ── EXPLORER PHASE: execute primary step with resilience (Phase 1.1) ──
             # retry_with_backoff_sync retries transient errors (ConnectionError /
             # TimeoutError / OSError) with exponential backoff and fails fast on
             # permanent errors (ValueError / PermissionError / etc). _der_run_step
             # returns (result, success) rather than raising, so _run_step re-raises
             # a classified exception to drive the retry decision. The sync twin is
-            # used because _der_run_step_execution calls asyncio.run() internally â€”
+            # used because _der_run_step_execution calls asyncio.run() internally —
             # nesting asyncio.run would raise RuntimeError in the executor thread.
             from backend.agent.resilience import retry_with_backoff_sync
 
@@ -10214,7 +10219,7 @@ Respond with a JSON object:
                 # RateLimitedError is raised (not returned) by
                 # _der_run_step_execution when the transport exhausted its own
                 # 429 retries. It must NOT be retried at the DER layer (REQ-4
-                # AC1) â€” re-raise so retry_with_backoff_sync's NO_RETRY_ERRORS
+                # AC1) — re-raise so retry_with_backoff_sync's NO_RETRY_ERRORS
                 # check surfaces it immediately.
                 if isinstance(_res, RateLimitedError):
                     raise _res
@@ -10253,7 +10258,7 @@ Respond with a JSON object:
                                 cap=4.0,
                                 label=f"step_{item.step_number}:{item.tool}",
                             )
-                        except BaseException as _step_exc:  # noqa: BLE001 â€” boxed, re-raised below
+                        except BaseException as _step_exc:  # noqa: BLE001 — boxed, re-raised below
                             _step_box["exc"] = _step_exc
 
                     import threading as _step_threading
@@ -10267,7 +10272,7 @@ Respond with a JSON object:
                     if _step_t.is_alive():
                         logger.warning(
                             "[DER] Step %s (%s) exceeded the remaining turn "
-                            "budget (%.0fs) â€” failing the step and moving on",
+                            "budget (%.0fs) — failing the step and moving on",
                             item.step_number, item.tool, _step_budget_s,
                         )
                         step_success = False
@@ -10284,7 +10289,7 @@ Respond with a JSON object:
             except Exception as _retry_exc:
                 step_success = False
                 # RateLimitedError carries structured context (provider id,
-                # retry count) â€” preserve it verbatim for the ledger (REQ-3
+                # retry count) — preserve it verbatim for the ledger (REQ-3
                 # AC4 / REQ-4 AC2). Do NOT stringify into a generic message.
                 if isinstance(_retry_exc, RateLimitedError):
                     step_result = (
@@ -10294,7 +10299,7 @@ Respond with a JSON object:
                     )
                     logger.warning(
                         "[DER] Step %s rate-limited by provider %s after %d "
-                        "attempts â€” recording FAILED (no DER-layer retry)",
+                        "attempts — recording FAILED (no DER-layer retry)",
                         item.step_number, _retry_exc.provider_id,
                         _retry_exc.attempts,
                     )
@@ -10333,7 +10338,7 @@ Respond with a JSON object:
                                 )
                     except Exception:
                         pass
-                    # Step failed after retry â€” mark, abort downstream, graft.
+                    # Step failed after retry — mark, abort downstream, graft.
                     self._der_handle_step_failure(
                         item, queue, plan, _session, _turn_id, context_package,
                         step_result=step_result,
@@ -10366,7 +10371,7 @@ Respond with a JSON object:
                         pass
                     continue  # re-enter loop; grafted steps are now in the queue
 
-            # â”€â”€ Phase 4: finalize this step via the shared helper â”€â”€
+            # ── Phase 4: finalize this step via the shared helper ──
             _tokens_used = self._der_finalize_step(
                 item,
                 step_result,
@@ -10396,13 +10401,13 @@ Respond with a JSON object:
                 _token_budget=_token_budget, _tokens_used=_tokens_used,
             )
 
-            # â”€â”€ Phase 4: concurrently execute any ADDITIONAL ready
+            # ── Phase 4: concurrently execute any ADDITIONAL ready
             # parallel_safe steps this cycle, then finalize them with the
             # same helper. The primary `item` above is already finalized.
             # parallel_safe is derived from the tool registry (is_parallel_safe),
             # so this batch is ACTIVE for read-only/independent tools
-            # (vision analysis, search, read_file, github reads, git read-only). â”€â”€
-            # all_ready_items() may raise TOPO_VIOLATION â€” let it propagate
+            # (vision analysis, search, read_file, github reads, git read-only). ──
+            # all_ready_items() may raise TOPO_VIOLATION — let it propagate
             # exactly like next_ready() does (do NOT swallow it here).
             _extra_ready = [
                 i for i in queue.all_ready_items(_session)
@@ -10418,7 +10423,7 @@ Respond with a JSON object:
                     )
                 except Exception as _conc_exc:
                     logger.warning(
-                        "[DER] Phase 4 concurrent exec failed: %s â€” "
+                        "[DER] Phase 4 concurrent exec failed: %s — "
                         "falling back to serial",
                         _conc_exc,
                     )
@@ -10431,7 +10436,7 @@ Respond with a JSON object:
                 for _ei in _extra_ready:
                     _er, _es = _extra_results[_ei.step_id]
                     if not _es:
-                        # Phase 1.4: single retry for the extra step â€” use the
+                        # Phase 1.4: single retry for the extra step — use the
                         # SAME retry authority as the main step path
                         # (retry_with_backoff_sync), NOT an ad-hoc
                         # time.sleep(0.5) + silent retry (REQ-5). This keeps the
@@ -10451,7 +10456,7 @@ Respond with a JSON object:
                     if not _es:
                         # C1 FIX: preserve the real error for the graft prompt.
                         _ei.result = _er
-                        # Failed after retry â€” handle (mark/abort/graft) and
+                        # Failed after retry — handle (mark/abort/graft) and
                         # skip finalizing this now-terminal step.
                         self._der_handle_step_failure(
                             _ei, queue, plan, _session, _turn_id, context_package
@@ -10467,7 +10472,7 @@ Respond with a JSON object:
                         from_voice,
                     )
 
-        # â”€â”€ OUTCOME RECORDING (ordered per spec: clear â†’ stats â†’ episode)
+        # ── OUTCOME RECORDING (ordered per spec: clear → stats → episode)
         # NOTE: _store_task_episode internally calls mycelium_record_outcome
         # and mycelium_crystallize_landmark, so we do NOT duplicate them here.
         # DER Phase 0 (D0.6): coarsen outcome from verified_fraction, not a binary
@@ -10488,13 +10493,13 @@ Respond with a JSON object:
         else:
             outcome = "failure"
 
-        # â”€â”€ REQ-15 AC3 (T25): an explicit stop persists the lifecycle as
-        # `cancelled` (REQ-9 LIFECYCLE_CANCELLED) and reports honestly â€”
+        # ── REQ-15 AC3 (T25): an explicit stop persists the lifecycle as
+        # `cancelled` (REQ-9 LIFECYCLE_CANCELLED) and reports honestly —
         # never a fabricated success or failure.
         if getattr(self, "_der_stop_requested", False):
             outcome = "cancelled"
 
-        # â”€â”€ T6 (REQ-5 / D8): task lifecycle reaches its terminal state HERE,
+        # ── T6 (REQ-5 / D8): task lifecycle reaches its terminal state HERE,
         # derived from the same honest queue state as the outcome label, and is
         # persisted BEFORE the terminal task:done/task:fail event. completed /
         # partial / failed are decided by execution state (queue terminals +
@@ -10521,10 +10526,10 @@ Respond with a JSON object:
             _t = _ledger.transition(_task_id, _term)
             if not _ledger.persist():
                 logger.warning(
-                    "[DER] task lifecycle persistence FAILED (state=%s) â€” durable completion not claimed",
+                    "[DER] task lifecycle persistence FAILED (state=%s) — durable completion not claimed",
                     _term,
                 )
-        except Exception as _lc_exc:  # noqa: BLE001 â€” lifecycle must never block the user response
+        except Exception as _lc_exc:  # noqa: BLE001 — lifecycle must never block the user response
             _write_counters.bump("ledger.lifecycle_write_failed")
             logger.warning("[DER] task lifecycle write FAILED: %s", _lc_exc)
 
@@ -10541,10 +10546,10 @@ Respond with a JSON object:
         # as a chain-extraction source.
         self._save_card_footprint(plan, completed_items, outcome)
 
-        # â”€â”€ EventBus: emit task:done / task:fail â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── EventBus: emit task:done / task:fail ────────────────────────
         # T11 (REQ-12): record the completed-step count on the kernel so the
         # caller's TurnMetrics block (metrics.der_steps) reads a real number.
-        # len(completed_items) is authoritative here â€” it is appended only in
+        # len(completed_items) is authoritative here — it is appended only in
         # _der_finalize_step, one per actually-completed step.
         self._der_step_count = len(completed_items)
         #
@@ -10566,7 +10571,7 @@ Respond with a JSON object:
                     data={
                         "task_id": _lifecycle_task_id,
                         "outcome": outcome,
-                        # REQ-15 AC3 (T25): a stop is explicit â€” the user sees it.
+                        # REQ-15 AC3 (T25): a stop is explicit — the user sees it.
                         "cancelled": outcome == "cancelled",
                         "steps_completed": len(completed_items),
                         "total_steps": len(plan.steps),
@@ -10596,7 +10601,7 @@ Respond with a JSON object:
                 )
                 # T4a (REQ-4 AC1): persist the terminal state. Mirrors the same
                 # outcome == "success" condition used to pick TASK_DONE vs
-                # TASK_FAIL above â€” no separate terminal-state taxonomy invented.
+                # TASK_FAIL above — no separate terminal-state taxonomy invented.
                 _envelope = self._card_envelope(_lifecycle_task_id)
                 self._persist_card_snapshot(
                     card_id=_envelope.get("card_id"),
@@ -10609,7 +10614,7 @@ Respond with a JSON object:
                     terminal_state="done" if outcome == "success" else "fail",
                 )
             except Exception:
-                pass  # EventBus is optional â€” no crash if it fails
+                pass  # EventBus is optional — no crash if it fails
 
         try:
             if self._memory_interface:
@@ -10643,9 +10648,9 @@ Respond with a JSON object:
         except Exception as _exc:
             loud_error(_exc, "mycelium_record_plan_stats")
 
-        # â”€â”€ EPISODIC STORAGE: write completed task to episodic memory â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── EPISODIC STORAGE: write completed task to episodic memory ──────────
         # Closes the read/write loop. get_task_context() already calls
-        # assemble_episodic_context() which reads from this store â€” but only
+        # assemble_episodic_context() which reads from this store — but only
         # if episodes exist. This call creates them.
         # Also triggers Mycelium outcome + crystallization internally.
         try:
@@ -10671,7 +10676,7 @@ Respond with a JSON object:
                     session_id=_session,
                     duration_ms=_der_duration_ms,
                 )
-                # Domain 4.5 â€” check if this tool sequence warrants a new skill
+                # Domain 4.5 — check if this tool sequence warrants a new skill
                 try:
                     self._maybe_trigger_skill_creation(
                         tool_sequence=_tool_seq,
@@ -10682,7 +10687,7 @@ Respond with a JSON object:
         except Exception as _exc:
             loud_error(_exc, "store_task_episode")
 
-        # â”€â”€ EventBus: emit der:done â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── EventBus: emit der:done ────────────────────────────────────
         try:
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
             get_event_bus().emit(
@@ -10719,7 +10724,7 @@ Respond with a JSON object:
         # REQ-12 (Wave 9): emit final context usage for the DER task.
         # Covers the "zero steps executed" case (plan rejected before any
         # step ran) where the per-step emit never fired. Uses the real
-        # per-thread self._tokens_used â€” never 0 for an active thread.
+        # per-thread self._tokens_used — never 0 for an active thread.
         # All return paths below are preceded by this single emit.
         self._emit_context_usage(
             step_number=len(completed_items),
@@ -10865,7 +10870,7 @@ Respond with a JSON object:
                     plan, completed_items, queue
                 )
             )
-        # â”€â”€ Zero steps (or zero usable outputs) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Zero steps (or zero usable outputs) ──────────────────────────
         # The crawl plan produced no executable URLs (all blocked/filtered
         # by BOT_BLOCKED_DOMAINS, or the LLM couldn't generate any). Return
         # a descriptive message so _plan_task's post-processing can surface
@@ -10874,13 +10879,13 @@ Respond with a JSON object:
         self._der_stamp_session_exit(False)
         _emit_terminal_event()
         return (
-            f"[DER] {plan.strategy} â€” "
+            f"[DER] {plan.strategy} — "
             f"{len(completed_items)}/{len(plan.steps)} steps completed.  "
             f"error: no usable sources found for '{getattr(plan, 'title', '') or getattr(plan, 'plan_title', '') or plan.original_task[:40]}'.  "
             + self._build_crawl_failure_explanation(plan)
         )
 
-    # â”€â”€ Phase 1.4: failure handling + plan grafting â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Phase 1.4: failure handling + plan grafting ──────────────────────
 
     @staticmethod
     def _task_start_payload(
@@ -10902,7 +10907,7 @@ Respond with a JSON object:
         """The ``task:start`` payload contract (REQ-14 / T23; REQ-3 / T1).
 
         ONE construction point for every ``task:start`` emit so the
-        merge-by-id contract keys (useTaskProgress.ts:210-227 â€”
+        merge-by-id contract keys (useTaskProgress.ts:210-227 —
         task_id / description / plan_title / mode / steps / total_steps)
         stay identical across sites, plus ``origin`` distinguishing the
         initial announcement from revisions: ``"initial"`` (both initial
@@ -10910,14 +10915,14 @@ Respond with a JSON object:
         (REQ-15), or ``"amendment"``. REQ-18's trace reads ``origin`` to
         attribute a revision.
 
-        T1 (REQ-3): ADDITIVE ONLY â€” ``card_id`` / ``card_relation`` /
+        T1 (REQ-3): ADDITIVE ONLY — ``card_id`` / ``card_relation`` /
         ``conversation_id`` are the three new keys; nothing about the seven
         keys above changed. Kept a @staticmethod on purpose: identity
         resolution (``_resolve_card_identity``, which needs kernel state)
         stays a separate, independently-testable step, and every caller
         resolves it before building this payload.
 
-        cli-workspace-unification T9a (REQ-5 AC1): ADDITIVE ONLY â€”
+        cli-workspace-unification T9a (REQ-5 AC1): ADDITIVE ONLY —
         ``agent_id`` (kernel session identity) and ``project_id`` (active
         project folder scope) join the same single construction point, so
         every emit site inherits the multi-agent Kanban tags for free. The
@@ -10925,10 +10930,10 @@ Respond with a JSON object:
         (no active project scope set on the kernel) consumers fall back to
         conversationId-only keying.
 
-        Session 244 (cardâ†”response inline join): ADDITIVE ONLY â€”
+        Session 244 (card↔response inline join): ADDITIVE ONLY —
         ``turn_id`` (the kernel's current response turn id,
         ``self._current_turn_id``) joins the payload so the frontend can
-        render a card INLINE with the assistant message it belongs to â€”
+        render a card INLINE with the assistant message it belongs to —
         the same join documents already use (message.id === turn_id).
         Absent on legacy replays; consumers fall back to bottom-stacking.
         """
@@ -10977,7 +10982,7 @@ Respond with a JSON object:
         """T9a (REQ-5 AC1): the ``(agent_id, project_id)`` Kanban tags,
         resolved ONCE here so every ``task:start`` call site spreads the
         same dict. ``agent_id`` is the kernel session identity;
-        ``project_id`` is the active project folder scope â€” ``None`` until
+        ``project_id`` is the active project folder scope — ``None`` until
         a project scope is set on the kernel (consumers then fall back to
         conversationId-only keying per design.md Error Handling)."""
         return {
@@ -10989,7 +10994,7 @@ Respond with a JSON object:
     def _register_card(self, task_id: str, card_id: str) -> None:
         """Bind ``task_id -> card_id`` in the per-kernel registry (REQ-3/T2).
 
-        Bounded at ``_CARD_REGISTRY_CAP`` â€” evicts the oldest insertion first
+        Bounded at ``_CARD_REGISTRY_CAP`` — evicts the oldest insertion first
         (dict preserves insertion order) so a long-running kernel process
         cannot leak memory one entry per DER task forever.
         """
@@ -11006,26 +11011,26 @@ Respond with a JSON object:
 
         a. ``task_id`` already registered -> same card_id, "continues". This
            is the known double-emit case: the early LLM-plan skeleton then
-           the DER queue emit for one task (REQ-3 edge case â€” no flicker).
+           the DER queue emit for one task (REQ-3 edge case — no flicker).
         b. ``origin != "initial"`` and there is an active card -> register
            ``task_id`` against the ACTIVE card and continue it. Written as
            "not initial" ON PURPOSE, rather than an explicit membership test
            against sub_loop_split / user_steering / amendment: a non-initial
            origin is by definition a revision of a running task, so a future
            fifth origin still continues the card instead of silently
-           starting a new one. A sub-loop split CONTINUES the parent card â€”
+           starting a new one. A sub-loop split CONTINUES the parent card —
            a branch WITHIN a card, never a second card.
         c. otherwise -> a genuinely new task; mint ``card_{task_id}``,
            register it, make it the active card, return "new".
 
-        Never raises â€” a resolution failure logs and falls back to a fresh,
+        Never raises — a resolution failure logs and falls back to a fresh,
         unregistered card_id rather than breaking the task:start emit.
         """
         try:
             if not task_id:
                 logger.warning(
                     "[AgentKernel] card identity: empty task_id (origin=%s conv=%s) "
-                    "â€” minting an unregistered card; continuation will not track it",
+                    "— minting an unregistered card; continuation will not track it",
                     origin, self.conversation_id,
                 )
                 import uuid as _uuid
@@ -11060,7 +11065,7 @@ Respond with a JSON object:
                 task_id, origin, self.conversation_id, card_id,
             )
             return card_id, "new"
-        except Exception as _card_exc:  # noqa: BLE001 â€” never break a task emit
+        except Exception as _card_exc:  # noqa: BLE001 — never break a task emit
             logger.warning(
                 "[AgentKernel] card identity resolution failed "
                 "(task=%s origin=%s conv=%s): %s",
@@ -11096,14 +11101,14 @@ Respond with a JSON object:
     @staticmethod
     def _queue_steps_snapshot(queue) -> list:
         """T4a (REQ-4 AC1/AC5): the FULL, cumulative step list + derived
-        status, for card PERSISTENCE â€” distinct from the task:start WIRE
+        status, for card PERSISTENCE — distinct from the task:start WIRE
         payload, which for revision origins (user_steering/amendment)
         intentionally emits only the delta for the frontend's merge-by-id
         reducer (useTaskProgress.ts). A persisted card has no earlier
         partial payload to merge against, so persistence always walks
         ``queue.items`` (already cumulative by the time any revision emits)
         and derives status from completed_ids/failed_ids/vetoed_ids rather
-        than reusing the wire delta. Never raises â€” a malformed queue
+        than reusing the wire delta. Never raises — a malformed queue
         persists as "no steps" rather than breaking the emit it rides on.
         """
         try:
@@ -11223,8 +11228,8 @@ Respond with a JSON object:
         between call sites.
 
         NON-BLOCKING: hands the snapshot to
-        ``conversation_context_store.enqueue_card_write`` â€” a bounded,
-        coalescing background queue â€” rather than calling
+        ``conversation_context_store.enqueue_card_write`` — a bounded,
+        coalescing background queue — rather than calling
         ``store.save_card()`` (synchronous SQLite) directly. These emit
         sites run on the DER worker thread (iris_gateway.py's
         ``run_in_executor`` pool), not inside a coroutine, so there is no
@@ -11232,7 +11237,7 @@ Respond with a JSON object:
         offload.
 
         Missing ``card_id``/``conversation_id`` (unknown task_id, no active
-        card) is a no-op â€” there is nothing to persist. Never raises: a
+        card) is a no-op — there is nothing to persist. Never raises: a
         persistence failure must never block a card emit or a user
         response.
 
@@ -11286,17 +11291,17 @@ Respond with a JSON object:
                     terminal_state=terminal_state,
                 )
             )
-        except Exception as exc:  # noqa: BLE001 â€” persistence must never block a card emit
+        except Exception as exc:  # noqa: BLE001 — persistence must never block a card emit
             logger.debug(
                 "[AgentKernel] card persistence skipped (card_id=%s): %s",
                 card_id, exc,
             )
 
-    # â”€â”€ REQ-15 (T25): mid-task steering channel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── REQ-15 (T25): mid-task steering channel ──────────────────────────
 
     def _der_check_steering(self, _session, plan, queue, budget_deadline: Optional[float] = None) -> Optional[dict]:
         """REQ-15 AC1/AC2/AC3/AC6 (T25): consume pending steering at the NEXT
-        step boundary â€” never mid-step.
+        step boundary — never mid-step.
 
         Drains every record queued for the session since the last boundary
         and applies, in order:
@@ -11311,7 +11316,7 @@ Respond with a JSON object:
 
         AC6 (channel independence): stop/pause flags are latched BEFORE any
         (potentially slow) revision is applied, and a stop suppresses the
-        revision entirely â€” a stop is never delayed behind steering work.
+        revision entirely — a stop is never delayed behind steering work.
 
         AC5 (acknowledgement): every consumed record emits ``steering:ack``
         status="considered".
@@ -11381,7 +11386,7 @@ Respond with a JSON object:
         for rec in records:
             self._emit_steering_ack(rec.channel, rec.message_id, "considered", _session)
 
-        # REQ-18 AC4 (T31): correlate every steering message received â€” channel,
+        # REQ-18 AC4 (T31): correlate every steering message received — channel,
         # acknowledged status, and the step boundary at which it was applied.
         try:
             from backend.agent.der_trace import get_der_trace
@@ -11912,17 +11917,17 @@ Respond with a JSON object:
 
         Re-plans from the steering text (single-step fallback on failure),
         REMOVES every not-yet-terminal queue item (they are REPLACED, not
-        failed â€” ``queue.failed_ids`` stays honest), appends the revised steps
+        failed — ``queue.failed_ids`` stays honest), appends the revised steps
         as fresh items, and re-emits ``task:start`` with
         ``origin="user_steering"`` carrying the revised step list (REQ-14 AC1
         revision signal; REQ-18 AC3 origin).
 
         ``budget_deadline`` (session 269, pin_ced7b0dc3b8f): the re-plan is
-        an UNBOUNDED LLM call made INSIDE the loop body â€” the turn budget's
+        an UNBOUNDED LLM call made INSIDE the loop body — the turn budget's
         while-condition can never reach a hang here. conv-81's last event was
         the steering ack, then silence for 29 minutes. When a deadline is
         supplied, the re-plan runs on a daemon thread bounded by it; a
-        timeout keeps the CURRENT plan (the revision is advisory â€” skipping
+        timeout keeps the CURRENT plan (the revision is advisory — skipping
         it degrades the turn, it never kills it).
 
         Returns True when a revision was actually applied.
@@ -11936,7 +11941,7 @@ Respond with a JSON object:
                 _timeout_s = budget_deadline - time.perf_counter()
                 if _timeout_s <= 0:
                     logger.warning(
-                        "[DER] Session %s steering skipped â€” turn budget "
+                        "[DER] Session %s steering skipped — turn budget "
                         "already exhausted", _session,
                     )
                     return False
@@ -11947,7 +11952,7 @@ Respond with a JSON object:
                         _box["plan"] = self._plan_task(
                             text, session_id=_session, mode=_mode,
                         )
-                    except BaseException as _exc:  # noqa: BLE001 â€” boxed, re-raised below
+                    except BaseException as _exc:  # noqa: BLE001 — boxed, re-raised below
                         _box["exc"] = _exc
 
                 import threading as _threading
@@ -11961,7 +11966,7 @@ Respond with a JSON object:
                 if _t.is_alive():
                     logger.warning(
                         "[DER] Session %s steering re-plan exceeded the "
-                        "remaining turn budget (%.0fs) â€” keeping the current "
+                        "remaining turn budget (%.0fs) — keeping the current "
                         "plan", _session, _timeout_s,
                     )
                     return False
@@ -11976,7 +11981,7 @@ Respond with a JSON object:
                 )
             if _rev is None or not getattr(_rev, "steps", None):
                 logger.info(
-                    "[DER] Session %s steering produced no plan â€” keeping "
+                    "[DER] Session %s steering produced no plan — keeping "
                     "the current plan", _session,
                 )
                 return False
@@ -12051,7 +12056,7 @@ Respond with a JSON object:
             )
             # T4a (REQ-4 AC1): persist the revised card. The WIRE payload
             # above intentionally carries only `_fresh` (the delta the
-            # frontend merges) â€” the STORED snapshot must stay the FULL
+            # frontend merges) — the STORED snapshot must stay the FULL
             # cumulative step list (queue.items, already extended with
             # _fresh), or a restore would show only the newest steps.
             self._persist_card_snapshot(
@@ -12080,10 +12085,10 @@ Respond with a JSON object:
             logger.debug("[DER] steering revision failed: %s", _steer_exc)
             return False
 
-    # â”€â”€ REQ-5 (specs/dag-node-execution-model): bounded mid-execution
-    # amendment â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── REQ-5 (specs/dag-node-execution-model): bounded mid-execution
+    # amendment ─────────────────────────────────────────────────────────────
     # The executing graph may be EXTENDED between steps based on outcomes
-    # already observed (AC1). Planner-driven ONLY (design D6) â€” a node
+    # already observed (AC1). Planner-driven ONLY (design D6) — a node
     # proposing its own successor would reintroduce hidden control flow.
     # Amendments append fresh steps; they never re-execute satisfied nodes
     # (AC2) and the existing step budget / token accounting stays
@@ -12105,7 +12110,7 @@ Respond with a JSON object:
 
         Returns True when the amendment was applied. Refused amendments are
         recorded with their cause (REQ-5 AC5, REQ-9 AC3) and execution
-        continues on the existing graph â€” never a hang, never a silent skip.
+        continues on the existing graph — never a hang, never a silent skip.
         """
         from backend.agent.nodes.telemetry import log_amendment
 
@@ -12113,7 +12118,7 @@ Respond with a JSON object:
         # and a kernel built via __new__ (as the DER test doubles and some
         # recovery paths do) has no conversation_id. A bare access raised
         # AttributeError inside the graft's try/except, silently turning
-        # "amend the graph" into "recovery failed" â€” telemetry must never be
+        # "amend the graph" into "recovery failed" — telemetry must never be
         # able to cost a graft.
         _task_id = getattr(self, "conversation_id", None) or _session
         try:
@@ -12147,7 +12152,7 @@ Respond with a JSON object:
                     detail=f"used={_used} bound={self._AMENDMENT_BOUND}",
                 )
                 return False
-            # AC4: the task budget is authoritative â€” an amendment cannot
+            # AC4: the task budget is authoritative — an amendment cannot
             # exceed it. (Amendments add steps; if the budget is already
             # exhausted, adding work would violate the ceiling.)
             if _token_budget > 0 and _tokens_used >= _token_budget:
@@ -12160,7 +12165,7 @@ Respond with a JSON object:
 
             # AC2: satisfied nodes are preserved. New steps may only depend on
             # already-terminal ids (completed/vetoed/failed); a dependency on a
-            # pending node that may never run would stall the graph â€” refuse
+            # pending node that may never run would stall the graph — refuse
             # (REQ-5 edge: amendment that removes/consumes a live node is
             # rejected, recorded, execution unchanged).
             from backend.agent.der_loop import QueueItem
@@ -12182,7 +12187,7 @@ Respond with a JSON object:
                     )
                     return False
 
-            # Append the fresh steps â€” completed work is untouched (AC2).
+            # Append the fresh steps — completed work is untouched (AC2).
             _base = len(queue.items) + 1
             _fresh: List["QueueItem"] = []
             for _i, _s in enumerate(new_steps):
@@ -12215,13 +12220,13 @@ Respond with a JSON object:
                 len(_fresh), _used + 1, _task_id,
             )
 
-            # Revision signal so the frontend card reflects the extended plan â€”
+            # Revision signal so the frontend card reflects the extended plan —
             # SAME payload shape as steering (no new event types; REQ-3 AC4).
             try:
                 from backend.agent.event_bus import get_event_bus, IRISStreamEvent
 
                 _mode = queue.mode.value if getattr(queue, "mode", None) else "full"
-                # REQ-3 (T2): "amendment" is a fourth, undocumented origin â€”
+                # REQ-3 (T2): "amendment" is a fourth, undocumented origin —
                 # handled generically by the "not initial" rule in
                 # _resolve_card_identity rather than special-cased here.
                 _card_id, _card_relation = self._resolve_card_identity(
@@ -12264,7 +12269,7 @@ Respond with a JSON object:
                     conversation_id=self.conversation_id,
                     session_id=_session,
                 )
-                # T4a (REQ-4 AC1): persist the amended card â€” full
+                # T4a (REQ-4 AC1): persist the amended card — full
                 # cumulative queue.items (already extended with _fresh
                 # above), not the wire delta (same reasoning as the
                 # user_steering site).
@@ -12281,7 +12286,7 @@ Respond with a JSON object:
             except Exception:
                 pass  # never block an amendment on an emit failure
             return True
-        except Exception as _amend_exc:  # noqa: BLE001 â€” refusal, never a crash
+        except Exception as _amend_exc:  # noqa: BLE001 — refusal, never a crash
             log_amendment(
                 task_id=_task_id, kind="refused",
                 cause="error", detail=str(_amend_exc)[:200],
@@ -12291,7 +12296,7 @@ Respond with a JSON object:
     def _emit_steering_ack(self, channel, message_id, status, _session) -> None:
         """REQ-15 AC5 (T26): visible acknowledgement that a steering message
         landed ("queued") or was considered at a step boundary ("considered").
-        Best-effort â€” never blocks or breaks the loop."""
+        Best-effort — never blocks or breaks the loop."""
         try:
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
 
@@ -12315,12 +12320,12 @@ Respond with a JSON object:
         Persists the in-progress state (ledger lifecycle ``paused`` + a
         ``task:paused`` event), then waits for a ``resume`` or ``stop``
         record. Steer records arriving while suspended STAY queued and are
-        applied at the next boundary after resume â€” they are never dropped.
+        applied at the next boundary after resume — they are never dropped.
         Idempotent resume: ``completed_ids``/``vetoed_ids``/``failed_ids``
         ARE the persisted in-progress state; ``next_ready`` skips them, so
         no completed side effect is duplicated on resume.
 
-        Returns "resume" or "stop". Runs on the DER worker thread â€” the
+        Returns "resume" or "stop". Runs on the DER worker thread — the
         bounded poll (time.sleep) never blocks the event loop.
         """
         from backend.agent.der_execution_ledger import ExecutionLedger
@@ -12332,7 +12337,7 @@ Respond with a JSON object:
         # and a kernel built via __new__ (as the DER test doubles and some
         # recovery paths do) has no conversation_id. A bare access raised
         # AttributeError inside the graft's try/except, silently turning
-        # "amend the graph" into "recovery failed" â€” telemetry must never be
+        # "amend the graph" into "recovery failed" — telemetry must never be
         # able to cost a graft.
         _task_id = getattr(self, "conversation_id", None) or _session
         try:
@@ -12357,7 +12362,7 @@ Respond with a JSON object:
                 session_id=_session,
             )
         except Exception:
-            pass  # EventBus optional â€” never block the loop
+            pass  # EventBus optional — never block the loop
 
         inbox = get_steering_inbox()
         self._der_resume_requested = False
@@ -12394,7 +12399,7 @@ Respond with a JSON object:
                     pass
                 return "resume"
             try:
-                _time.sleep(0.2)  # poll â€” DER runs on a worker thread
+                _time.sleep(0.2)  # poll — DER runs on a worker thread
             except Exception:
                 break
         return "stop"
@@ -12413,7 +12418,7 @@ Respond with a JSON object:
         # (e.g. "the provider rate window was already saturated (recent 429s)
         # ... retry the search shortly") precisely so the failure is reported
         # honestly. This function used to discard it and always emit the
-        # bot-blocked guess below â€” so a user hitting a 60-second rate limit
+        # bot-blocked guess below — so a user hitting a 60-second rate limit
         # was told to REPHRASE THEIR QUERY, which cannot help and sends them
         # down the wrong path. Only fall back to the generic text when the
         # planner did not say why.
@@ -12433,13 +12438,13 @@ Respond with a JSON object:
         )
         return _msg[:400]
 
-    # â”€â”€ REQ-4 (specs/dag-node-execution-model): outcome-driven routing â”€â”€â”€â”€â”€
+    # ── REQ-4 (specs/dag-node-execution-model): outcome-driven routing ─────
     # The DER seam the node model adds: when a step fails with a typed reason,
     # consult the router BEFORE the graft/split handler. A recovery node that
-    # advertises the reason runs in place of the failing node â€” no branch is
+    # advertises the reason runs in place of the failing node — no branch is
     # written in the failing node's module (design D4). Returns the recovered
     # step result on success, None when routing is disabled / declined / no
-    # candidate â€” in which case the caller proceeds exactly as today (REQ-7
+    # candidate — in which case the caller proceeds exactly as today (REQ-7
     # AC4/AC5 kill-switch parity).
     def _der_enqueue_recovery(
         self, item, recovery, step_result, _session, _turn_id, outcome, tool, queue,
@@ -12589,13 +12594,13 @@ Respond with a JSON object:
             from backend.agent.tool_registry import get_node_spec, resolve_tool
 
             if not routing_enabled():
-                return None  # kill switch â€” today's path (REQ-7 AC4/AC5)
+                return None  # kill switch — today's path (REQ-7 AC4/AC5)
             tool = getattr(item, "tool", None)
             if not tool:
                 return None  # reasoning steps have no tool to route on
             spec = resolve_tool(tool)
             if spec is None:
-                return None  # undeclared legacy tool â€” adapter path (REQ-7 AC1)
+                return None  # undeclared legacy tool — adapter path (REQ-7 AC1)
             node_spec = get_node_spec(tool)
             if node_spec is None:
                 return None  # tool exists but never declared node metadata
@@ -12612,7 +12617,7 @@ Respond with a JSON object:
                 node=tool,
                 outcome=outcome,
                 # REQ-8 AC1/AC2: a recovery node may not exceed the tier the
-                # user approved for THIS step â€” the failing node's own tier.
+                # user approved for THIS step — the failing node's own tier.
                 approved_tier=node_spec.permission_tier,
             )
             decision = get_node_router().route(req)
@@ -12620,7 +12625,7 @@ Respond with a JSON object:
                 return None  # honest no-candidate (REQ-4 AC6) or blocked
             if decision.blocked_by in ("permission", "terminal", "bound"):
                 # REQ-8 edge: a permission-blocked route is surfaced, never
-                # taken silently â€” the caller proceeds on today's path and the
+                # taken silently — the caller proceeds on today's path and the
                 # normal failure handling (graft / ask) applies.
                 return None
 
@@ -12644,7 +12649,7 @@ Respond with a JSON object:
                     outcome, tool, queue,
                 )
             # Run the recovery node through the node RUNNER (CT-4 caller
-            # existence) with the tool_bridge as its executor â€” the SAME
+            # existence) with the tool_bridge as its executor — the SAME
             # dispatch path the failing node used, with the same params: the
             # route is an alternative execution of the intent.
             try:
@@ -12667,7 +12672,7 @@ Respond with a JSON object:
                         plan_title=(getattr(plan, "plan_title", "") or ""),
                     )
                 )
-            except Exception as _route_exc:  # noqa: BLE001 â€” recovery must not crash the loop
+            except Exception as _route_exc:  # noqa: BLE001 — recovery must not crash the loop
                 logger.warning(
                     "[DER] routing recovery %s for %s crashed: %s",
                     recovery.name, tool, _route_exc,
@@ -12699,7 +12704,7 @@ Respond with a JSON object:
                     if _outcome.artifact is not None else None
                 )
                 return self._format_tool_result(_raw) if _raw is not None else ""
-            # Recovery node failed identically â€” the router's attempt bound
+            # Recovery node failed identically — the router's attempt bound
             # makes the second identical failure terminal (REQ-4 AC3).
             log_routing_decision(
                 task_id=self.conversation_id or _session,
@@ -12709,7 +12714,7 @@ Respond with a JSON object:
                 selected=recovery.name, bound_hit=True,
             )
             return None
-        except Exception as _route_err:  # noqa: BLE001 â€” routing must never break the loop
+        except Exception as _route_err:  # noqa: BLE001 — routing must never break the loop
             logger.warning("[DER] routing consultation failed: %s", _route_err)
             return None
 
@@ -12867,14 +12872,14 @@ Respond with a JSON object:
                 len(aborted), item.step_id, aborted,
             )
         # Phase 2 (D2.1) + Spec D1.2: critical failure recovery uses the SAME
-        # unified _split_step operator as the physics trigger â€” NOT a separate
+        # unified _split_step operator as the physics trigger — NOT a separate
         # graft path that assigns tools directly. Children carry tool=None and
         # resolve via the single resolver (explorer.propose) when executed, so
         # there is exactly ONE tool-assignment authority (F6 / System Invariant).
         # D4/REQ-4 (specs/long-horizon-der-execution): classify the failure
         # BEFORE recursive fan-out at the FAILURE site too. The finalize site
         # classifies, but this handler previously split on ANY critical
-        # failure â€” a rate-limited crawl (transient) or an empty URL list
+        # failure — a rate-limited crawl (transient) or an empty URL list
         # (empty/permanent) recursively spawned graft children that re-ran the
         # same failing tool until the graft budget was exhausted (observed
         # live: 23-minute websearch loop under a saturated provider window).
@@ -12882,7 +12887,7 @@ Respond with a JSON object:
         # verification judged it wrong) splits: the step_result then carries
         # real content, not an error prefix. Mirror the finalize site: classify
         # only when the result LOOKS like an error (classify_failure never
-        # returns semantic â€” it falls through to permanent), and broaden the
+        # returns semantic — it falls through to permanent), and broaden the
         # error prefixes for failure-site shapes ("RateLimitedError(...)" /
         # "ConnectionError(...)" do not start with "error").
         _split_ok = True
@@ -12936,7 +12941,7 @@ Respond with a JSON object:
                 ):
                     _split_ok = False
                     logger.info(
-                        "[DER] step %s failure classified=%s â€” recorded, NOT split (D4)",
+                        "[DER] step %s failure classified=%s — recorded, NOT split (D4)",
                         item.step_id, _fail_class,
                     )
                     try:
@@ -12960,7 +12965,7 @@ Respond with a JSON object:
                         )
                     except Exception as _led_exc:  # noqa: BLE001
                         logger.debug("[DER] failure-evidence record failed: %s", _led_exc)
-        except Exception:  # noqa: BLE001 â€” classification must never break recovery
+        except Exception:  # noqa: BLE001 — classification must never break recovery
             _split_ok = True
         # Item 3 (2026-09-24, owner-approved): an UNRECOVERABLE failure is not
         # grafted. Live conv-144: a read step failed with "[Errno 2] No such
@@ -13100,26 +13105,26 @@ Respond with a JSON object:
                     # REQ-5 (dag-node-execution-model): grafted recovery steps
                     # ARE an amendment of the executing graph, so they go
                     # through the amendment gate rather than around it. This is
-                    # _der_amend_graph's production caller â€” without one the
+                    # _der_amend_graph's production caller — without one the
                     # mechanism was built, tested and unreachable.
                     #
                     # Behaviour is unchanged by construction: _AMENDMENT_BOUND
                     # and DER_MAX_GRAFTS are both 3, so the gate admits exactly
                     # the grafts that already ran. What it adds is REQ-5's
-                    # guarantees on a path that previously had none â€” validity
+                    # guarantees on a path that previously had none — validity
                     # checking, the per-task bound, and telemetry for every
                     # applied AND refused amendment (REQ-5 AC5, REQ-9 AC3).
                     if not self._der_amend_graph(
                         _children, _session, plan, queue, _turn_id=_turn_id,
                     ):
                         logger.info(
-                            "[DER] amendment refused for failed %s â€” continuing "
+                            "[DER] amendment refused for failed %s — continuing "
                             "on the existing graph (REQ-5 AC5)", item.step_id,
                         )
                         return aborted
                     queue.graft_attempts += 1
                     # REQ-7 AC1/AC2/AC3 (T25): route subloop children through
-                    # the batcher â€” each ready group (full OR force-flushed at
+                    # the batcher — each ready group (full OR force-flushed at
                     # the join point) dispatches as ONE batched call via
                     # dispatch_batch, with results routed back per node;
                     # parse-failure children fall back to individual execution.
@@ -13152,18 +13157,18 @@ Respond with a JSON object:
                     )
             except Exception as _graft_exc:
                 logger.warning("[DER] critical-failure split failed: %s", _graft_exc)
-        # â”€â”€ REQ-5 (specs/long-horizon-der-execution): honest partial finalization â”€â”€
+        # ── REQ-5 (specs/long-horizon-der-execution): honest partial finalization ──
         # When the recovery budget is exhausted, the task does NOT block on a
         # TASK_BLOCKED card / ask_user QuestionCard (that escalation came from
         # the deleted der-loop-integrity-display REQ-10; the long-horizon spec
         # supersedes it: "IF budget ends before completion THEN emit remaining
         # nodes and their last failure class"). The step is already marked
         # failed, descendants already aborted, failure evidence already
-        # recorded â€” the DER loop's final summary carries the remaining nodes
+        # recorded — the DER loop's final summary carries the remaining nodes
         # with their failure classes and the honest incomplete result.
         if item.critical and queue.graft_attempts >= DER_MAX_GRAFTS:
             logger.info(
-                "[DER] REQ-5: critical step %s failed after %d grafts â€” "
+                "[DER] REQ-5: critical step %s failed after %d grafts — "
                 "finalizing honestly with remaining nodes + failure class",
                 item.step_id, queue.graft_attempts,
             )
@@ -13193,27 +13198,27 @@ Respond with a JSON object:
                 from backend.gateway.iris_ffi import ffi_caducean_update
 
                 # REQ-19 vocabulary: this "COMPRESS" (action=1) is the COMPRESS
-                # RECOMMENDATION â€” a physics action code that increments the
+                # RECOMMENDATION — a physics action code that increments the
                 # failure accumulator y. It COMPACTS NOTHING. See the REQ-19
                 # canonical-vocabulary table in
-                # specs/long-horizon-der-execution/design.md (row 3) â€” it is
+                # specs/long-horizon-der-execution/design.md (row 3) — it is
                 # NOT Node Condense, NOT DCP message pruning, NOT mcm_compress.
                 ffi_caducean_update(_session, 1, 1.0)
             except Exception:
                 pass
 
-    # â”€â”€ Phase 2: Emergent Shape â€” growth-width split/execute operator â”€â”€â”€â”€â”€â”€
+    # ── Phase 2: Emergent Shape — growth-width split/execute operator ──────
     # This is the ONE recursive operator that decides execution-tree *shape*
     # from the live Caducean state (u,xi). It replaces the former mode-driven
     # fan-out AND the separate recovery-graft path: both physics-triggered
     # ("unresolved_u") and verification-failed ("verify_failed") splits use it.
-    # MorphoHDL break: the decision is STATEFUL â€” width depends on live |u|,
+    # MorphoHDL break: the decision is STATEFUL — width depends on live |u|,
     # never a fixed stateless predicate.
 
     def _growth_width(self, u: float) -> int:
         """Map live |u| to a split width (MorphoHDL athlete rule).
 
-        REQ-19 vocabulary: this is STEP EXPANSION â€” the DER sub-loop split
+        REQ-19 vocabulary: this is STEP EXPANSION — the DER sub-loop split
         operator (_growth_width -> _split_step). It is NOT Node Expansion
         (scorer.expand, the mycelium coordinate-graph mechanism), NOT DER
         "COMPRESS" (a physics recommendation code, int 1), NOT DCP message
@@ -13235,7 +13240,7 @@ Respond with a JSON object:
         return 1
 
     def _der_split_width(self, u: float, verified_fraction: float) -> int:
-        """REQ-4 AC1/AC2 (T16): GRADED split width â€” a continuous function of
+        """REQ-4 AC1/AC2 (T16): GRADED split width — a continuous function of
         BOTH |u| and the verified fraction, not a |u|-only gate.
 
         The pre-T16 split width was binary in the verification dimension:
@@ -13243,20 +13248,20 @@ Respond with a JSON object:
         while ``verified_fraction`` was computed and then thrown away at the
         split decision. REQ-4 AC1 requires the continuous fraction to be a
         steering input; AC2 requires the graded middle path when the signal is
-        mid-band â€” never a threshold coin-flip.
+        mid-band — never a threshold coin-flip.
 
         Bands:
           verified_fraction <= 0.25            -> strong failure: |u| governs
                                                   (delegate to _growth_width)
           0.25 < verified_fraction < 0.75      -> MID-BAND (AC2): bounded probe
-                                                  (width 1, probe=True) â€” the
+                                                  (width 1, probe=True) — the
                                                   step produced meaningful but
                                                   insufficient content; a wide
                                                   split would be a retry wearing
                                                   a split costume. The child
                                                   resolves the specific blocker
                                                   (REQ-4 AC4/T16b) at width 1.
-          verified_fraction >= 0.75            -> near-pass: atomic (1) â€” the
+          verified_fraction >= 0.75            -> near-pass: atomic (1) — the
                                                   result satisfied most of the
                                                   expected output; a wide split
                                                   spends budget re-attempting a
@@ -13271,10 +13276,10 @@ Respond with a JSON object:
             return 1  # near-pass: atomic
         return self._growth_width(u)  # strong failure: |u| bands govern
 
-    # â”€â”€ REQ-5 (T17): coupling as decision-provenance â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── REQ-5 (T17): coupling as decision-provenance ────────────────────────
     # Retrieval RANKS relevant branches (physics- and evidence-driven, AC3) and
     # SURFACES ALL of them (bounded by the candidate cap) to the deciding step
-    # (AC1) â€” never silently pre-selecting one by score. When the step commits,
+    # (AC1) — never silently pre-selecting one by score. When the step commits,
     # the edge to the branch that informed it is written/strengthened with the
     # decision as provenance (AC2), and the per-decision record (how many
     # candidates surfaced, which was chosen) is stored on the node record (AC4).
@@ -13283,17 +13288,17 @@ Respond with a JSON object:
         self, item, cad: Optional[Dict[str, float]] = None, max_candidates: int = 0
     ) -> List[dict]:
         """REQ-5 AC1/AC3 (T17): rank relevant branch candidates and return ALL
-        of them (bounded by the candidate cap) â€” never one, never pre-selected.
+        of them (bounded by the candidate cap) — never one, never pre-selected.
 
         Ranking is physics- and evidence-driven (AC3):
-          - coordinate proximity to the step's live Î£ position,
+          - coordinate proximity to the step's live Σ position,
           - learned score of the region->candidate edge (if one exists),
           - compression/expansion state via the EXISTING coupling kernel
-            ``trig_coupling.align_force`` (AC6 â€” reuse, do not write a second
+            ``trig_coupling.align_force`` (AC6 — reuse, do not write a second
             implementation): the u term biases candidates whose phase aligns
             with the step's current direction.
 
-        SELECTION is NOT made here â€” the step decides with all candidates in
+        SELECTION is NOT made here — the step decides with all candidates in
         view; the chosen one is recorded at commit (see
         ``_der_record_coupling_decision``).
 
@@ -13318,11 +13323,11 @@ Respond with a JSON object:
                 _cad.get("xi", 0.0), _cad.get("u", 0.0),
             ]
             _u = _cad.get("u", 0.0)
-            # AC6: the EXISTING coupling kernel â€” the u-term in the ranking is
+            # AC6: the EXISTING coupling kernel — the u-term in the ranking is
             # align_force as WIRED at coupled_registry.py:287 (full phase list
             # [self, other], N=2 satisfies the mean-field guard; the self term
             # contributes sin(0)=0). The u-term is the signed attraction of the
-            # step's phase toward the converged phase 0.0 â€” NOT a new formula.
+            # step's phase toward the converged phase 0.0 — NOT a new formula.
             _align = align_force(_u, [_u, 0.0], k=1.0)
             # physics term normalized to [0, 1]: aligned (u>0, expanding toward
             # convergence) scores higher; anti-aligned (u<0, compressing) lower.
@@ -13335,7 +13340,7 @@ Respond with a JSON object:
             _nav = getattr(myc, "_navigator", None)
             _nodes = []
             # Primary candidate source: the highest-confidence node from each
-            # space (navigate_all_spaces) â€” the relevant BRANCHES, one per
+            # space (navigate_all_spaces) — the relevant BRANCHES, one per
             # space. Fallback: active registry nodes.
             try:
                 if _nav is not None and hasattr(_nav, "navigate_all_spaces"):
@@ -13390,7 +13395,7 @@ Respond with a JSON object:
                     continue
             _scored.sort(key=lambda c: c["score"], reverse=True)
             # REQ-5 AC5 (T17b): record the TOTAL number of relevant branches
-            # found (BEFORE the cap) on the item â€” the coverage DENOMINATOR
+            # found (BEFORE the cap) on the item — the coverage DENOMINATOR
             # for candidate-surfacing coverage ("how often a decision saw >=2
             # candidates when >=2 EXISTED"). candidates_surfaced is the capped
             # return; candidates_existed is the uncapped count. Both are needed
@@ -13400,13 +13405,13 @@ Respond with a JSON object:
             except Exception:
                 pass
             return _scored[:cap]
-        except Exception as _cp_exc:  # noqa: BLE001 â€” coupling never blocks
+        except Exception as _cp_exc:  # noqa: BLE001 — coupling never blocks
             logger.debug("[DER] branch-candidate surfacing failed: %s", _cp_exc)
             return []
 
     def _der_region_node_id(self, session_id: str) -> str:
         """The mycelium node_id of the session's CURRENT region node (the ONE
-        active node nearest the live Î£ position â€” REQ-26 AC1 region scoping).
+        active node nearest the live Σ position — REQ-26 AC1 region scoping).
         Empty string if none resolvable. Never raises."""
         try:
             myc = getattr(self._memory_interface, "_mycelium", None)
@@ -13447,7 +13452,7 @@ Respond with a JSON object:
 
     def _der_record_governance(self, source: str) -> None:
         """REQ-6 AC1/AC3 (T18): record WHICH signal governed a steering
-        decision â€” past-memory | live-state | both.
+        decision — past-memory | live-state | both.
 
         Increments the per-turn governance counter on the kernel (read by the
         caller's TurnMetrics block into the [LAYERS] line). Off the hot path
@@ -13457,8 +13462,8 @@ Respond with a JSON object:
         the same counts.
 
         No decision path hardcodes which signal is authoritative (AC2): the
-        recorded source is OBSERVED at the decision point â€” a step whose
-        context carried a compressed node record (past-memory) AND live Î£ is
+        recorded source is OBSERVED at the decision point — a step whose
+        context carried a compressed node record (past-memory) AND live Σ is
         "both"; memory-sparse (no record) is "live"; record present but no
         live signal is "past".
         """
@@ -13485,7 +13490,7 @@ Respond with a JSON object:
         "awareness of the alternatives, and a recorded decision, is [the
         system's business]"). The step's choice is observed from the outcome:
         the chosen branch is the candidate whose coordinates are nearest the
-        step's final Î£ position (``coords_to``), i.e. the branch the step's
+        step's final Σ position (``coords_to``), i.e. the branch the step's
         result actually moved toward. Empty string when no candidate is
         nearest (no branches existed / no coords). Never raises.
         """
@@ -13528,7 +13533,7 @@ Respond with a JSON object:
                     return _best
             # No resolvable coordinates: fall back to the top-ranked candidate
             # (the ranking is physics- and evidence-driven, AC3) so a decision
-            # is still RECORDED â€” an empty choice would be an unrecorded one.
+            # is still RECORDED — an empty choice would be an unrecorded one.
             return (candidates[0].get("node_id", "") if candidates else "")
         except Exception as _ch_exc:  # noqa: BLE001
             logger.debug("[DER] coupling-branch choice failed: %s", _ch_exc)
@@ -13546,9 +13551,9 @@ Respond with a JSON object:
         ``chosen_node_id`` is the branch the step actually committed to.
 
         AC2: write/strengthen the coupling edge from the step's region node to
-        the chosen branch â€” the decision IS the edge's provenance. Uses the
+        the chosen branch — the decision IS the edge's provenance. Uses the
         SAME edge store/scorer as the region->mediator learning (one store,
-        one scorer â€” REQ-19 AC4); a decision is a strengthenable observation,
+        one scorer — REQ-19 AC4); a decision is a strengthenable observation,
         not a new edge kind.
         AC4: candidates_surfaced / chosen_branch / surfaced_branches are
         stamped on the node record so "was the agent aware of both branches"
@@ -13567,7 +13572,7 @@ Respond with a JSON object:
                 _rec.candidates_surfaced = _count
                 _rec.chosen_branch = _chosen
                 # REQ-18 AC1b (T19): a node that SURFACED >=1 candidate and
-                # CHOSE one is a node that COMMITTED A DECISION â€” a valid
+                # CHOSE one is a node that COMMITTED A DECISION — a valid
                 # coupling endpoint. This is the ROLE marker that makes
                 # "which decisions were informed by branch X" a relationship
                 # lookup (REQ-20) instead of a table scan. Set only here, at
@@ -13579,7 +13584,7 @@ Respond with a JSON object:
                     c.get("label", "") for c in (candidates or [])
                 ][:DER_COUPLING_PROVENANCE_MAX]
                 # REQ-5 AC5 (T17b): the DENOMINATOR for candidate-surfacing
-                # coverage â€” how many relevant branches EXISTED before the cap.
+                # coverage — how many relevant branches EXISTED before the cap.
                 # candidates_surfaced / candidates_existed is the coverage ratio
                 # ("saw >=2 when >=2 existed").
                 try:
@@ -13603,7 +13608,7 @@ Respond with a JSON object:
                             if _existing is not None:
                                 # decision PROVENANCE: the informed-branch edge
                                 # is strengthened by a decision observation
-                                # (REQ-5 AC2) â€” delta positive, modest.
+                                # (REQ-5 AC2) — delta positive, modest.
                                 _store.record_observation(_edge_id, 0.1)
                             elif hasattr(_store, "upsert_edge"):
                                 _new_eid = _store.upsert_edge(
@@ -13667,15 +13672,15 @@ Respond with a JSON object:
         """REQ-4 AC4 (T16b): name the SPECIFIC blocker this split resolves.
 
         Deterministic extraction from the failure evidence (no LLM call on the
-        split hot path â€” the blocker is derived, not generated):
+        split hot path — the blocker is derived, not generated):
 
           1. error-prefixed step_result  -> the tool failure itself
           2. verify_failed               -> the acceptance criterion that was
-             NOT satisfied (expected_output, else the produced result) â€” names
+             NOT satisfied (expected_output, else the produced result) — names
              the specific gap, never the parent goal
           3. unresolved_u (physics)      -> the oscillating state itself
-             (decomposition, not a failure â€” still names WHAT it resolves)
-          4. empty evidence AND no expected_output -> "" (UNNAMED blocker) â€”
+             (decomposition, not a failure — still names WHAT it resolves)
+          4. empty evidence AND no expected_output -> "" (UNNAMED blocker) —
              the split cannot name what it resolves; recorded as such via
              blocker_named=False, surfaced as evidence the failure was not
              understood.
@@ -13698,7 +13703,7 @@ Respond with a JSON object:
                 return f"result did not satisfy expected output: {_exp[:200]}"
             if _res:
                 return f"result was not verified against the expected output: {_res[:200]}"
-            return ""  # UNNAMED â€” no expected output AND no evidence
+            return ""  # UNNAMED — no expected output AND no evidence
         if trigger == "unresolved_u":
             return "unresolved oscillating state (|u| below the split threshold)"
         if _res:
@@ -13724,10 +13729,10 @@ Respond with a JSON object:
                         minus what has been prepaid). Split is PERMITTED only if
                         work_units >= width; split PREPAYS ``width`` units up
                         front (this is what makes the Lyapunov potential Phi
-                        strictly decrease â€” see Appendix B).
+                        strictly decrease — see Appendix B).
             step_result: the failure evidence (produced result / error text).
                         REQ-4 AC4 (T16b): used to name the SPECIFIC blocker the
-                        children exist to resolve â€” the child's objective_anchor
+                        children exist to resolve — the child's objective_anchor
                         is NEVER a restatement of the parent goal.
             verified_fraction: REQ-4 AC1/AC2 (T16): the continuous verification
                         fraction of this step (0..1), consumed as a GRADED
@@ -13773,16 +13778,16 @@ Respond with a JSON object:
         from backend.agent.der_loop import QueueItem, NodeRecord
 
         # REQ-4 AC2 (T16): a mid-band verified fraction selects the graded
-        # middle path â€” a BOUNDED PROBE (width 1, probe=True), not a threshold
+        # middle path — a BOUNDED PROBE (width 1, probe=True), not a threshold
         # coin-flip. The child resolves the specific blocker at width 1.
         _probe = 0.25 < verified_fraction < 0.75 and trigger == "verify_failed"
 
         from backend.agent.der_loop import QueueItem, NodeRecord
 
         # REQ-4 AC4 (T16b): name the SPECIFIC blocker the split exists to
-        # resolve â€” deterministically extracted from the failure evidence (no
+        # resolve — deterministically extracted from the failure evidence (no
         # LLM call on the split hot path). A split that cannot name what it
-        # resolves records an UNNAMED blocker (blocker_named=False) â€” surfaced
+        # resolves records an UNNAMED blocker (blocker_named=False) — surfaced
         # as evidence the failure was not understood, never hidden behind a
         # fresh node id.
         _blocker = self._der_split_blocker(item, trigger, step_result)
@@ -13794,14 +13799,14 @@ Respond with a JSON object:
             _blocker_named = False
             logger.warning(
                 "[DER] _split_step trigger=%s step=%s produced an UNNAMED "
-                "blocker â€” the split cannot name what it resolves; recorded "
+                "blocker — the split cannot name what it resolves; recorded "
                 "as evidence (REQ-4 AC4)",
                 trigger, item.step_id,
             )
 
-        # REQ-21 (T41): the compressed footprint each child carries â€”
+        # REQ-21 (T41): the compressed footprint each child carries —
         # Understanding (what has been attempted/gathered for this goal across
-        # ALL prior attempts, bounded â€” never a truncated sample), Awareness
+        # ALL prior attempts, bounded — never a truncated sample), Awareness
         # (the goal itself), Direction (remaining vs ruled-out), and a
         # coordinate_ref into the ledger/memory for the full prior evidence.
         # Bounded by construction: prior attempts are a deduplicated key set
@@ -13817,7 +13822,7 @@ Respond with a JSON object:
             _prior_summary = (
                 f"{len(_prior_keys)} prior gather attempt(s) committed for "
                 f"this goal: {', '.join(_prior_keys[:5])}"
-                + ("â€¦" if len(_prior_keys) > 5 else "")
+                + ("…" if len(_prior_keys) > 5 else "")
             )
             _coordinate_ref = None
             try:
@@ -13848,7 +13853,7 @@ Respond with a JSON object:
                 step_id=f"{item.step_id}_s{i}",
                 step_number=item.step_number,
                 # REQ-4 AC4 (T16b): the child's description/objective names the
-                # SPECIFIC blocker it resolves â€” NOT a restatement of the
+                # SPECIFIC blocker it resolves — NOT a restatement of the
                 # parent goal. This is what makes a split a RESOLVE, not a
                 # retry wearing a new node id.
                 description=f"{_child_anchor} (sub {i + 1})",
@@ -13858,7 +13863,7 @@ Respond with a JSON object:
                 is_subloop=True,  # collapses back to parent as one COMPRESS
                 critical=item.critical,
                 independent=True,  # T6.8: subloop children are independent per REQ-18 AC1
-                # REQ-3 T8: EVERY node carries its memory record â€” the
+                # REQ-3 T8: EVERY node carries its memory record — the
                 # generalized NodeRecord (was SubLoopFootprint, sub-loop-only).
                 node_record=NodeRecord(
                     step_id=f"{item.step_id}_s{i}",
@@ -13876,7 +13881,7 @@ Respond with a JSON object:
                     blocker_named=_blocker_named,
                     probe=_probe,
                     # REQ-18 (T19): children INHERIT the parent's two domain
-                    # axes â€” they are the same task (topic) run in the same
+                    # axes — they are the same task (topic) run in the same
                     # winding (execution). Registry values by construction.
                     topic_domain=getattr(
                         getattr(item, "node_record", None), "topic_domain", "general"
@@ -13912,7 +13917,7 @@ Respond with a JSON object:
         results routed back per node. Guarantees:
 
         - AC1: children in a ready group share a single LLM call.
-        - AC2: NO child is ever silently lost â€” full groups dispatch now,
+        - AC2: NO child is ever silently lost — full groups dispatch now,
           width-1/2 groups are force-flushed at the join point, and children
           the batcher declined (phase outside window / not independent) are
           queued directly. A child whose batched segment parsed is queued
@@ -13924,8 +13929,8 @@ Respond with a JSON object:
         """
         from backend.agent.batch_dispatch import BatchGroup, dispatch_batch
 
-        # Use the module-level `get_batcher` (imported above) â€” NOT a local
-        # import â€” so tests that patch agent_kernel.get_batcher keep working.
+        # Use the module-level `get_batcher` (imported above) — NOT a local
+        # import — so tests that patch agent_kernel.get_batcher keep working.
         _batcher = get_batcher()
         _join = ""
         _ready: List[BatchGroup] = []
@@ -13962,7 +13967,7 @@ Respond with a JSON object:
         from backend.agent.batch_dispatch import BatchGroup, dispatch_batch
 
         # Defensive: never iterate a non-BatchGroup. A patched/mocked batcher
-        # (unit tests) may return an auto-created MagicMock from flush() â€”
+        # (unit tests) may return an auto-created MagicMock from flush() —
         # treat it as "no group" so children fall through to the caller's
         # per-child fallback instead of crashing on a non-iterable group.
         if not isinstance(group, BatchGroup):
@@ -13975,10 +13980,10 @@ Respond with a JSON object:
             try:
                 # REQ-1 AC2 / T25: route the batched call through the ROUTER's
                 # role binding ("reasoning"), exactly like the per-step path
-                # (box.resolve â†’ router.generate("reasoning")). Passing a model
+                # (box.resolve → router.generate("reasoning")). Passing a model
                 # STRING here is a real bug: router.generate's first arg is a
                 # ROLE, so a model id fails resolve() and falls back to the
-                # legacy default (provider='ollama') â€” observed live 2026-08-06:
+                # legacy default (provider='ollama') — observed live 2026-08-06:
                 # "der_batch_dispatch failed: Ollama returned 500" while
                 # per-step calls routed to cerebras. The role form makes the
                 # batched call use the SAME bound provider as its siblings.
@@ -13987,7 +13992,7 @@ Respond with a JSON object:
                     dispatch_batch(group, _router, "reasoning", _messages) or {}
                 )
                 # D1: dispatch_batch() calls router.generate() directly with
-                # this SAME router instance â€” credit its real (or, absent
+                # this SAME router instance — credit its real (or, absent
                 # that, estimated-from-combined-children) usage here.
                 self._accrue_tokens(
                     " ".join(_results.values()) if _results else "",
@@ -14004,7 +14009,7 @@ Respond with a JSON object:
             _sid = getattr(_child, "step_id", "")
             _res = (_results or {}).get(_sid, "")
             if _res and _res.strip():
-                _child.result = _res.strip()  # pre-seed â†’ execution short-circuits
+                _child.result = _res.strip()  # pre-seed → execution short-circuits
                 logger.info(
                     "[DER] BATCH_ROUTED child=%s len=%d", _sid, len(_res)
                 )
@@ -14048,7 +14053,7 @@ Respond with a JSON object:
 
         Primary: ffi_caducean_get_state (live engine). Fallback: the trajectory
         recorder's last recorded coordinate (so a split can still be decided if
-        the engine is unavailable). Never raises â€” returns zeros on total
+        the engine is unavailable). Never raises — returns zeros on total
         failure.
         """
         try:
@@ -14095,7 +14100,7 @@ Respond with a JSON object:
         recovery prompt tests). It asks the LLM for ALTERNATIVE recovery
         STEPS but returns them as GOALS ONLY (tool=None, params={}) so they
         resolve through the single resolver (explorer.propose) when executed.
-        It must NOT assign tools directly â€” that would violate F6 / the
+        It must NOT assign tools directly — that would violate F6 / the
         System Invariant. The live critical-failure path routes through
         _split_step instead; this method is a goal-only fallback.
         Returns a list of QueueItem (recovery steps) or [] on any failure.
@@ -14205,7 +14210,7 @@ Respond with a JSON object:
 
         Success path -> natural_exit=True (task ran to completion); failure /
         zero-step path -> natural_exit=False (task did NOT complete). Best-
-        effort, off the hot path, never raises â€” a missing conversation memory
+        effort, off the hot path, never raises — a missing conversation memory
         is simply skipped.
         """
         try:
@@ -14401,7 +14406,7 @@ Respond with a JSON object:
                     _parts.append(f"ruled-out: {_ro[:200]}")
                 if _parts:
                     return " | ".join(_parts)
-            # No node record â€” bounded raw fallback (REQ-8 edge case).
+            # No node record — bounded raw fallback (REQ-8 edge case).
             _raw = getattr(item, "result", "") or ""
             if _raw:
                 return _raw[:400]
@@ -14517,8 +14522,8 @@ Respond with a JSON object:
         REQ-12 (AC1/AC2/AC3): success-path synthesis.
 
         Consumes the SAME evidence the failure path (``_der_synthesize_outcome``)
-        consumes â€” ``plan.original_task`` plus each completed step's description
-        and result â€” and routes it through the previously-dead
+        consumes — ``plan.original_task`` plus each completed step's description
+        and result — and routes it through the previously-dead
         ``_synthesize_response`` brain synthesis (AC3 wiring), which handles the
         InferenceRouter, LM Studio, and Ollama providers. Returns "" when
         synthesis is unavailable so the caller falls back to the deterministic
@@ -14827,10 +14832,10 @@ Respond with a JSON object:
         """User-facing 'task incomplete' message that needs NO LLM call (Part B).
 
         ``_der_synthesize_outcome`` relies on ``infer()`` to write the summary.
-        When the model is rate-limited/unavailable â€” the exact failure that
-        triggered the research step's failure â€” that synthesis returns "" and the
+        When the model is rate-limited/unavailable — the exact failure that
+        triggered the research step's failure — that synthesis returns "" and the
         user is left with silence. This deterministic fallback guarantees the
-        user always gets a clear "I couldn't complete X â€” these steps failed
+        user always gets a clear "I couldn't complete X — these steps failed
         (and why)" message even if the LLM is down.
         """
         try:
@@ -14858,12 +14863,12 @@ Respond with a JSON object:
                 f"I couldn't complete that task. {_done}/{_total} steps finished, "
                 f"but the following step(s) failed:\n{_failed_txt}\n\n"
                 f"If a search or source failed, try rephrasing the request or "
-                f"pasting the information directly â€” I can continue from where it stopped."
+                f"pasting the information directly — I can continue from where it stopped."
             )
         except Exception as _e:
             logger.warning("[DER] deterministic failure summary failed: %s", _e)
             return (
-                "I couldn't complete that task â€” one or more steps failed. "
+                "I couldn't complete that task — one or more steps failed. "
                 "Please try again or rephrase the request."
             )
 
@@ -14874,7 +14879,7 @@ Respond with a JSON object:
         Mirrors ``_der_deterministic_failure_summary``: when the brain synthesis
         is unavailable (no reasoning model / providers down), this deterministic
         summary guarantees the user gets a clear statement of what was completed
-        â€” never a silent raw concatenation of step outputs.
+        — never a silent raw concatenation of step outputs.
         """
         try:
             _done_lines = []
@@ -14946,7 +14951,7 @@ Respond with a JSON object:
             logger.warning("[DER] deterministic success summary failed: %s", _e)
             return "I finished running the steps but couldn't verify the result. What would you like me to do next?"
 
-    # â”€â”€ Phase 2.2: context-aware query refinement â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Phase 2.2: context-aware query refinement ──────────────────────
 
     @staticmethod
     def _der_query_has_reference(query: str) -> bool:
@@ -15019,7 +15024,7 @@ Respond with a JSON object:
         - never raises; any failure falls back to str(raw)
 
         Note: the full structured result is still captured verbatim by
-        _capture_tool_result (document store) â€” this only shapes the textual
+        _capture_tool_result (document store) — this only shapes the textual
         flow, so nothing is lost for later reformatting.
         """
         if raw is None:
@@ -15494,7 +15499,7 @@ Respond with a JSON object:
         if not _out:
             _out = _t[:max_chars]
         if len(_out) > max_chars:
-            _out = _out[:max_chars].rstrip() + "â€¦"
+            _out = _out[:max_chars].rstrip() + "…"
         return _out
 
     @staticmethod
@@ -15503,7 +15508,7 @@ Respond with a JSON object:
 
         REQ-19 vocabulary: "COMPRESS"/"EXPAND"/"MAINTAIN" here are DER PHYSICS
         RECOMMENDATION CODES (ints 1/0/2) returned by ffi_caducean_recommend.
-        They modulate temperature ONLY â€” they compact/expand NOTHING. Actual
+        They modulate temperature ONLY — they compact/expand NOTHING. Actual
         compaction is DCP message pruning (dcp.py) and mycelium condense/expand
         (scorer.py); Step Expansion is _growth_width->_split_step. See the
         REQ-19 vocabulary table in specs/long-horizon-der-execution/design.md.
@@ -15512,7 +15517,7 @@ Respond with a JSON object:
         - EXPAND   (rec==0) -> more exploratory (temperature *1.2, capped at 0.6)
         - MAINTAIN (rec==2) / unknown / TOPO_VIOLATION -> base unchanged
 
-        Pure function of (base, session_id); never raises â€” returns ``base`` on
+        Pure function of (base, session_id); never raises — returns ``base`` on
         any error so planning always proceeds.
         """
         try:
@@ -15589,7 +15594,7 @@ Respond with a JSON object:
                 "Complete this step. Respond with the result only."
             ).strip()
             # THINKING RUNS ON THE BRAIN (2026-08-16). This is the tool-less
-            # step path â€” there is no tool to execute, only reasoning â€” so it
+            # step path — there is no tool to execute, only reasoning — so it
             # belongs to the reasoning binding. It used to run on
             # role="EXECUTION" (the tool_execution binding), which meant that
             # with Brain and Tool on different models the actual thinking was
@@ -15628,8 +15633,8 @@ Respond with a JSON object:
         except Exception as _e:
             return f"[step {item.step_number} error: {_e}]"
 
-    # â”€â”€ ToolDecisionBox lazy factory â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    # pin_517dfcbda150 â€” physics-driven web-gather sanction:
+    # ── ToolDecisionBox lazy factory ─────────────────────────────────────
+    # pin_517dfcbda150 — physics-driven web-gather sanction:
     #   _MAX_CRAWLS_PER_TASK  hard budget of DISTINCT queries per task; the
     #                         agent may gather more only by refining the query
     #                         (new hash = new job). Same-query repeats resolve
@@ -15652,7 +15657,7 @@ Respond with a JSON object:
             return self._tool_box
         from backend.agent.tool_registry import get_registry_tools, validate_tool_call
 
-        # memory_lookup_fn â€” consults mycelium / pheromone for tool suggestions
+        # memory_lookup_fn — consults mycelium / pheromone for tool suggestions
         # (REQ-4 AC6: memory as pre-filter, not fallback; SourceRegistry-like).
         def _mem_lookup(goal: str) -> Optional[Dict[str, Any]]:
             try:
@@ -15660,21 +15665,21 @@ Respond with a JSON object:
                     AUTO_ENGINE, _is_web_intent, _pheromone_top1,
                 )
 
-                # â”€â”€ pin_517dfcbda150: physics-driven gather sanction â”€â”€
-                # pin_42ddd255162d: the gate runs BEFORE the memory checks â€”
+                # ── pin_517dfcbda150: physics-driven gather sanction ──
+                # pin_42ddd255162d: the gate runs BEFORE the memory checks —
                 # it needs no memory (conversation state + engine + scheduler
                 # oscillators). Behind the old `mi is None` early return it
                 # NEVER ran in the DER (whose kernel has no memory interface):
                 # web-intent step 1 resolved REASON (tool=null), its short
                 # result failed verification, the step split, and the children
-                # re-gathered the same URLs â€” the "keeps going back to
+                # re-gathered the same URLs — the "keeps going back to
                 # searching" loop. The route + sanction below also give the
                 # FIRST web-intent resolution a hard crawler_query.
                 # Applies to ANY goal flavor (not just web-intent phrasing):
                 # synthesis steps like "summarize the findings" are NOT web
                 # intent by the classifier, yet must be prevented from
                 # re-gathering once the task has committed web content.
-                # Once â‰¥1 crawl ran this task:
+                # Once ≥1 crawl ran this task:
                 #   (a) converged (|u| < U_SPLIT)      -> veto gather tools,
                 #   (b) new distinct query + budget hit -> veto (budget),
                 #   (c) provider under load (amp low)  -> veto (load).
@@ -15685,7 +15690,7 @@ Respond with a JSON object:
                 except Exception:  # pragma: no cover - constant drift guard
                     U_SPLIT = 0.5
                 # pin_42ddd255162d: key the gather-sanction state by the
-                # CONVERSATION, not the execution session â€” DER split children
+                # CONVERSATION, not the execution session — DER split children
                 # (SubLoopBatcher) run under the placeholder session
                 # "unknown", which made every child look like a fresh task and
                 # bypassed the converged/budget veto (u=0.00 yet children
@@ -15695,7 +15700,7 @@ Respond with a JSON object:
                     or getattr(self, "session_id", "")
                     or ""
                 )
-                # D2: stable action identity â€” deterministic digest, never
+                # D2: stable action identity — deterministic digest, never
                 # builtin hash() (process-randomized). Same query -> same key
                 # across restarts and replay fixtures.
                 try:
@@ -15715,12 +15720,12 @@ Respond with a JSON object:
                 )
                 # D1 (REQ-3): physics and scheduler state never AUTHORIZE here.
                 # u/xi convergence and phase-manager amplitude are removed from
-                # tool authorization â€” the scheduler paces calls; whether a
+                # tool authorization — the scheduler paces calls; whether a
                 # required web action may run is decided by the execution
                 # policy below (fresh-query budget only). A converged oscillator
                 # means stable physics, NOT task completion, and a failed step's
                 # children must still be allowed to gather their sub-query.
-                # D6/REQ-9: the same-query repeat is allowed â€” the JobRegistry
+                # D6/REQ-9: the same-query repeat is allowed — the JobRegistry
                 # dedupe serves the cached crawl (no provider call is paid), so
                 # a repeat is a read observation, not a new side effect.
                 _is_web_goal = False
@@ -15874,12 +15879,12 @@ Respond with a JSON object:
                 # REQ-3 AC4 / REQ-5 (specs/long-horizon-der-execution): once the
                 # task has committed web evidence (>=1 crawl), steer SYNTHESIS
                 # goals toward READING the gathered documents instead of
-                # re-gathering. Advisory only â€” _apply_pre_filter keeps the
+                # re-gathering. Advisory only — _apply_pre_filter keeps the
                 # suggested tool alongside generic utilities, so the LLM still
                 # chooses; if the read tool is unavailable the pre-filter falls
                 # back to the full list. This cuts the observed 4-gather waste
                 # (crawler_query x2 + search x2) and the 429 storm it caused.
-                # NOTE: no resolve_tool/capability_allowed here â€” that call in
+                # NOTE: no resolve_tool/capability_allowed here — that call in
                 # the hot path slowed every gate evaluation by seconds.
                 try:
                     _SYNTH_TRIGGERS = (
@@ -15914,10 +15919,10 @@ Respond with a JSON object:
                             "tool": "get_rendered_documents",
                             "rationale": "evidence committed; synthesize from gathered docs",
                         }
-                except Exception:  # noqa: BLE001 â€” steering is advisory
+                except Exception:  # noqa: BLE001 — steering is advisory
                     pass
 
-                # Memory pre-filter (REQ-4 AC6) â€” mycelium consulted only
+                # Memory pre-filter (REQ-4 AC6) — mycelium consulted only
                 # after the physics gate, which needs no memory.
                 mi = getattr(self, "_memory_interface", None)
                 if mi is None:
@@ -15963,7 +15968,7 @@ Respond with a JSON object:
         )
         return self._tool_box
 
-    # â”€â”€ Phase 4: concurrent step execution helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Phase 4: concurrent step execution helpers ──────────────────────
 
     def _der_pre_dispatch_guard(self, item: "QueueItem") -> Optional[Dict[str, Any]]:
         """T6B (specs/tool-result-envelope REQ-2/REQ-3 AC3.3, KD-10): the
@@ -16124,6 +16129,48 @@ Respond with a JSON object:
             )
             return None
 
+    def _der_run_node(self, item, _session: str, _turn_id: Optional[str], _prior_results: list) -> tuple:
+        """Adapter for node_executor.run_node: this kernel's router, the box's
+        dispatch (ledger rows, deadlines, permissions) and the developer tools."""
+        from backend.agent.node_executor import DEV_NODE_TOOLS, NodeContext, run_node
+
+        box = self._get_tool_box()
+
+        def _generate(role, messages, **kw):
+            out = self._router.generate(role, messages, **kw)
+            self._accrue_tokens("", getattr(self._router, "last_usage", None), source="run_node")
+            return out
+
+        def _execute(name, params):
+            dr = box.dispatch(
+                Decision(kind=DecisionKind.TOOL, tool=name, params=params, source="run_node"),
+                session_id=_session, conversation_id=self.conversation_id,
+                turn_id=_turn_id, timeout_s=self._der_tool_deadline(name),
+            )
+            raw = getattr(dr, "result", None)
+            return raw if raw is not None else {"success": False, "error": getattr(dr, "error", "") or "no result"}
+
+        tools = [t for t in self._get_openai_tools() if t.get("function", {}).get("name") in DEV_NODE_TOOLS]
+        workdir = (getattr(self._tool_bridge, "_session_workdirs", None) or {}).get(_session, "")
+        goal = item.description or item.objective_anchor or ""
+
+        def _shadow(name, params):
+            # Same single ledger writer as the direct loop; async_=True runs it
+            # on a daemon thread, so the node pays no latency.
+            box.record_shadow_tool_choice(
+                goal=goal, observed_tool=name, observed_params=params,
+                session_id=self.conversation_id or "voice",
+                conversation_id=self.conversation_id or "", async_=True,
+            )
+
+        result = run_node(goal, NodeContext(
+            generate=_generate, execute=_execute,
+            format_result=lambda name, raw: self._format_tool_result_for_step(raw, name),
+            tools=tools, prior_results=_prior_results, workdir=workdir,
+            conv_id=self.conversation_id or "", on_call=_shadow,
+        ))
+        return result.as_step_result(), result.success
+
     def _der_run_step_execution(
         self,
         item: "QueueItem",
@@ -16179,6 +16226,12 @@ Respond with a JSON object:
                 except Exception as _prio_err:
                     logger.debug("[DER] prior-result gather failed: %s", _prio_err)
 
+            # Execution audit Phase 2: in developer mode a tool-less step runs
+            # as a bounded Brain work loop (backend/agent/node_executor.py)
+            # instead of one tool picked by the small tool model.
+            if not item.tool and self._effective_launcher_mode() == "developer":
+                return self._der_run_node(item, _session, _turn_id, _prior_results)
+
             # ── Phase 1 (D1.6): resolve via ToolDecisionBox ─────────────
             # Session-345 correction (2026-09-28): _decision is assigned
             # ONLY on this no-tool path. A step that arrives with its tool
@@ -16219,7 +16272,7 @@ Respond with a JSON object:
                     )
                     # D1: ToolDecisionBox.resolve() calls self._router.generate()
                     # directly (it shares this kernel's router instance), so its
-                    # cost must be credited here â€” it is the DOMINANT call site
+                    # cost must be credited here — it is the DOMINANT call site
                     # for a real multi-step DER turn and was previously invisible
                     # to the pill entirely.
                     self._accrue_tokens(
@@ -16233,13 +16286,13 @@ Respond with a JSON object:
                         item.step_number, _box_err,
                     )
                     step_success = False
-                    step_result = f"[STEP ERROR: tool resolution crashed â€” {_box_err}]"
+                    step_result = f"[STEP ERROR: tool resolution crashed — {_box_err}]"
                     return step_result, step_success
 
                 if _decision.kind == DecisionKind.FAIL:
-                    # FAIL â†’ route to DER recovery (graft / escalate REQ-10)
+                    # FAIL → route to DER recovery (graft / escalate REQ-10)
                     step_success = False
-                    step_result = f"[STEP ERROR: tool resolution failed â€” {_decision.error}]"
+                    step_result = f"[STEP ERROR: tool resolution failed — {_decision.error}]"
                     return step_result, step_success
 
                 if _decision.kind == DecisionKind.TOOL:
@@ -16249,6 +16302,24 @@ Respond with a JSON object:
                         "[DER] box resolved tool=%r for step %d (source=%s)",
                         item.tool, item.step_number, _decision.source,
                     )
+                    # Split roles (execution audit 2026-09-29): the tool model
+                    # chose a file write; the Brain writes the body with the
+                    # file in view (backend/agent/brain_author.py).
+                    from backend.agent.brain_author import AUTHORED_TOOLS, author_step
+                    if item.tool in AUTHORED_TOOLS:
+                        _a_tool, _a_params, _a_err = author_step(
+                            self._tool_bridge, self._router.generate, _session,
+                            item.tool, item.params or {},
+                            item.description or item.objective_anchor or "",
+                            _prior_results, self.conversation_id or "",
+                        )
+                        self._accrue_tokens(
+                            "", getattr(self._router, "last_usage", None),
+                            source="_der_run_step_execution:brain_author",
+                        )
+                        if _a_tool is None:
+                            return f"[STEP ERROR: file change not written — {_a_err}]", False
+                        item.tool, item.params = _a_tool, _a_params
                     # ── T6B (specs/tool-result-envelope): pre-dispatch
                     # HARD-RULE guard — a walled tool is never retried and a
                     # repeat is never re-executed (rerouted to read). Runs
@@ -16385,12 +16456,12 @@ Respond with a JSON object:
                         )
                     except Exception:
                         pass  # never block execution on an emit failure
-                # REASON: item.tool stays None â†’ falls to _run_step_direct below
+                # REASON: item.tool stays None → falls to _run_step_direct below
 
-            # â”€â”€ Phase 2: dispatch (TOOL) or direct (REASON) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── Phase 2: dispatch (TOOL) or direct (REASON) ──────────────
             # Set the phase gate call class so the gate knows whether to wait
-            # (REASON/TOOL â†’ gated) or admit immediately (USER_TURN/SPEAK) (T3.7).
-            # GRAFT is NOT high-priority (T6.4) â€” recovery-plan generation after
+            # (REASON/TOOL → gated) or admit immediately (USER_TURN/SPEAK) (T3.7).
+            # GRAFT is NOT high-priority (T6.4) — recovery-plan generation after
             # a step failure (including 429) must be gated to avoid amplification.
             if item.tool:
                 set_call_class(CallClass.TOOL)
@@ -16451,7 +16522,7 @@ Respond with a JSON object:
                         turn_id=_turn_id,
                         timeout_s=_dispatch_deadline,
                     )
-                    # pin_42ddd255162d: dispatch-time gather sanction â€” the
+                    # pin_42ddd255162d: dispatch-time gather sanction — the
                     # resolution-time record (in _mem_lookup) was unreliable
                     # (attempted=0 on every gate read), so the per-task crawl
                     # budget never engaged. The dispatch runs for EVERY crawl
@@ -16515,9 +16586,9 @@ Respond with a JSON object:
                     )
                 except RuntimeError as _rte:
                     # asyncio.run() inside box may fail if an event loop is
-                    # already running in this thread â€” executor fallback
+                    # already running in this thread — executor fallback
                     logger.warning(
-                        "[DER] box.dispatch RuntimeError for %s: %s â€” using executor",
+                        "[DER] box.dispatch RuntimeError for %s: %s — using executor",
                         item.tool, _rte,
                     )
                     import concurrent.futures as _cf
@@ -16537,7 +16608,7 @@ Respond with a JSON object:
                             success=isinstance(_raw_dr, dict) and _raw_dr.get("success") is not False,
                             result=_raw_dr,
                         )
-                # â”€â”€ Record tool call for ToolCallTree (REQ-13) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                # ── Record tool call for ToolCallTree (REQ-13) ──────────
                 if _dr:
                     try:
                         _step_id = str(getattr(item, "step_id", "")) or ""
@@ -16591,12 +16662,12 @@ Respond with a JSON object:
                             "[DER] tool-result capture failed: %s", _cap_err,
                         )
             else:
-                # REASON (no tool) or no tool_bridge â€” direct reasoning
+                # REASON (no tool) or no tool_bridge — direct reasoning
                 step_result = self._run_step_direct(item, context_package, _session)
         except RateLimitedError:
             # Propagate rate-limit failures untouched so the DER layer can
             # record them honestly (REQ-3 AC4 / REQ-4 AC2). Do NOT wrap in a
-            # string â€” the structured provider_id / retry_after fields are
+            # string — the structured provider_id / retry_after fields are
             # needed by the ledger.
             raise
         except Exception as _ex_err:
@@ -16685,7 +16756,7 @@ Respond with a JSON object:
                         from backend.agent.der_trace import get_der_trace
 
                         _nav = raw if isinstance(raw, dict) else {}
-                        # T13 (REQ-18 AC5): discriminator â€” a job_id means the
+                        # T13 (REQ-18 AC5): discriminator — a job_id means the
                         # page was crawled and is served from the CAPTURE
                         # REPLAY endpoint; without one the panel must fall back
                         # to the live PROXY. Both paths surface=in-app; the
@@ -16757,11 +16828,11 @@ Respond with a JSON object:
         _completed = await asyncio.gather(*tasks)
         return {_sid: (_res, _succ) for _sid, _res, _succ in _completed}
 
-    # â”€â”€ DER Phase 0: verification (stub-kill + coarsened outcome) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-    # SemanticVerifier instance â€” lazy-init so import at module level is safe.
+    # ── DER Phase 0: verification (stub-kill + coarsened outcome) ──────────────
+    # SemanticVerifier instance — lazy-init so import at module level is safe.
     _VERIFIER: Optional["SemanticVerifier"] = None
     _STUB_RE = re.compile(r"\[step\s+\d+\s+completed\]", re.IGNORECASE)
-    # pin_517dfcbda150: web/crawl steps verify by CONTENT SUFFICIENCY â€” the
+    # pin_517dfcbda150: web/crawl steps verify by CONTENT SUFFICIENCY — the
     # tool itself already proved it fetched real content (zero pages returns
     # an error at the tool boundary in tool_bridge). Assertion matching against
     # crawl output is meaningless under the hash/substring fallback while the
@@ -16774,7 +16845,7 @@ Respond with a JSON object:
     # repeat returns the same page. Local tools are re-runnable (audit B3).
     _REPEAT_GUARDED_TOOLS = _WEB_CONTENT_TOOLS | {"fetch_url", "browser_read", "open_url"}
     # pin_42ddd255162d: display/render tools complete by SUCCESS, not by content
-    # volume â€” a rendered-card confirmation is a legit completion, never a
+    # volume — a rendered-card confirmation is a legit completion, never a
     # candidate for a verify-failure split (which is what made the task card
     # say "rendering documents" while the backend re-searched).
     _TRUSTED_RESULT_TOOLS = frozenset({"get_rendered_documents"})
@@ -16786,7 +16857,7 @@ Respond with a JSON object:
         return self._VERIFIER
 
     def _der_trace_task_id(self) -> str:
-        """Stable per-task key for the REQ-18 trace â€” mirrors the ledger's
+        """Stable per-task key for the REQ-18 trace — mirrors the ledger's
         task_id (conversation_id or session_id), so the trace and the ledger
         correlate on the same task."""
         return self.conversation_id or self.session_id or "unknown"
@@ -16828,20 +16899,20 @@ Respond with a JSON object:
         A stub pattern with no real output is ALWAYS FAILED (no silent success).
 
         pin_517dfcbda150: when ``tool`` is a web/crawl tool, the verdict is
-        CONTENT SUFFICIENCY â€” the tool already proved it fetched pages (a
+        CONTENT SUFFICIENCY — the tool already proved it fetched pages (a
         zero-page crawl returns an error from tool_bridge), so a non-empty,
         non-error result VERIFIEDs. This terminates the crawl step as soon as
         real content exists and prevents pointless re-crawl splits.
         """
         if tool in self._TRUSTED_RESULT_TOOLS:
             # pin_42ddd255162d: display/render tools complete by SUCCESS, and
-            # this check runs FIRST â€” the formatted result of the render tool
+            # this check runs FIRST — the formatted result of the render tool
             # can be an empty/JSON-less string even on success (its dict has no
             # extractable content key), and the old position (after the
             # empty-result check) turned every successful render into a
-            # verify-FAILED â†’ split â†’ children re-gathered the SAME urls while
+            # verify-FAILED → split → children re-gathered the SAME urls while
             # the card said "rendering documents". A trusted tool that ran
-            # returns "VERIFIED" unconditionally â€” its contract never returns
+            # returns "VERIFIED" unconditionally — its contract never returns
             # errors on the read-only render path.
             return "VERIFIED"
         if not result:
@@ -16908,18 +16979,18 @@ Respond with a JSON object:
             # never triggers a re-gather split.
             return "UNVERIFIED"
         if tool in self._TRUSTED_RESULT_TOOLS:
-            # pin_42ddd255162d: display/render tools complete by SUCCESS â€” a
+            # pin_42ddd255162d: display/render tools complete by SUCCESS — a
             # rendered-card confirmation is a legit completion. The expected
             # assertion text (e.g. "a rendered document card") never matches
             # the short confirmation string, so the assertion path FAILED the
-            # step and split it â€” spawning children that re-gathered web pages
+            # step and split it — spawning children that re-gathered web pages
             # while the card said "rendering documents".
             return "VERIFIED" if _without_marker else "FAILED"
         _frac = self._verified_fraction(expected, result)
         _expected_text = (expected or "").strip()
         if not _expected_text:
             # pin_42ddd255162d: no explicit expectation (REASON/synthesis and
-            # render steps) â€” the assertion fraction is meaningless; the verdict
+            # render steps) — the assertion fraction is meaningless; the verdict
             # rests on SUBSTANCE: a substantial result VERIFIEDs, short text
             # commits honestly as UNVERIFIED. Only an explicit error/stub FAILs.
             # Live fix 2026-09-24 (conv-145): a real TOOL that reported
@@ -16940,22 +17011,22 @@ Respond with a JSON object:
         if _frac >= 0.3:
             return "UNVERIFIED"
         # Explicit expectation, low match: a SUBSTANTIAL result is still a real
-        # answer â€” commit honestly as UNVERIFIED; only weak stubs FAIL.
+        # answer — commit honestly as UNVERIFIED; only weak stubs FAIL.
         return "UNVERIFIED" if len(_without_marker) >= 200 else "FAILED"
 
-    # â”€â”€ REQ-1 AC2/AC3/AC4: per-step edge scoring â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── REQ-1 AC2/AC3/AC4: per-step edge scoring ────────────────────────────
     @staticmethod
     def _der_mediator_for(item: "QueueItem") -> tuple:
         """REQ-23 (T37): resolve the MEDIATOR for a finalized step.
 
         Returns (mediator, source):
-          - mediator: ``"<tool>:<args_hash>"`` â€” the resolved tool/action
+          - mediator: ``"<tool>:<args_hash>"`` — the resolved tool/action
             identifier plus a stable hash of its arguments (AC1). The args
             hash is the separator between "the same tool with materially
             different arguments" (REQ-23 edge case).
           - source:   ``"explicit"`` (tool chosen by the normal resolver /
                       plan), ``"none"`` (a pure decision/synthesis node with
-                      no tool â€” recorded EXPLICITLY, never empty, per AC5).
+                      no tool — recorded EXPLICITLY, never empty, per AC5).
 
         The DER loop resolves tools through the plan/explorer path today, so
         the source is always ``"explicit"`` or ``"none"``; the ``"predictor"``
@@ -17049,26 +17120,26 @@ Respond with a JSON object:
 
         This is deliberately a thin wiring call, not a new scorer: the deltas
         are the SAME generic table already defined in
-        ``EdgeScorer._OUTCOME_DELTAS`` (scorer.py) â€” hit=+0.05, partial=+0.02,
-        miss=-0.08 â€” now applied EVIDENCE-WEIGHTED (REQ-26/T40): the first
+        ``EdgeScorer._OUTCOME_DELTAS`` (scorer.py) — hit=+0.05, partial=+0.02,
+        miss=-0.08 — now applied EVIDENCE-WEIGHTED (REQ-26/T40): the first
         observation on an edge moves it fully, later observations move it
         less, so belief converges instead of oscillating.
 
         REQ-26 AC1 (T40c): the scored edge is the (coordinate-region,
-        mediator) pair for THIS step, selected by the CALLER â€” not every
+        mediator) pair for THIS step, selected by the CALLER — not every
         outbound edge of every active node. The REGION is the single active
         Mycelium node whose coordinates are nearest the step's live Caducean
-        position Î£ = (x, y, Î¾, u) (the same state the chain row records):
+        position Σ = (x, y, ξ, u) (the same state the chain row records):
         a step's outcome updates the region it was IN, and only that region.
         Scoring every active node would re-create the global fan-out the
-        amendment removes â€” a step cannot fail "in two regions at once".
+        amendment removes — a step cannot fail "in two regions at once".
         The mediator is ``_der_mediator_for(item)`` (REQ-23/T37).
         ``EdgeScorer.record_region_mediator_outcome`` finds-or-creates that
         edge and updates ONLY it, so a tool that works in one region and
         fails in another is representable (a single global score cannot
         express that).
 
-        REQ-1 AC2: VERIFIED  -> hit-scoring only (no crystallization change â€”
+        REQ-1 AC2: VERIFIED  -> hit-scoring only (no crystallization change —
                    out of scope; no per-step crystallization exists today).
         REQ-1 AC3: UNVERIFIED -> partial credit, capped at
                    DER_MAX_UNVERIFIED_REPROPOSE + 1 scored attempts per
@@ -17077,8 +17148,8 @@ Respond with a JSON object:
                    credit. Never crystallizes (no code path does today).
         REQ-1 AC4: FAILED    -> miss-scoring, and writes an episode with
                    outcome_type="miss" via the EXISTING ``_store_task_episode``
-                   path â€” the same episodic-store write used for whole-task
-                   outcomes â€” so evidence.py's AVOID section (which already
+                   path — the same episodic-store write used for whole-task
+                   outcomes — so evidence.py's AVOID section (which already
                    queries ``outcome_type = 'miss'``) surfaces it on the next
                    acting-prompt assembly. No second AVOID path is added.
 
@@ -17094,7 +17165,7 @@ Respond with a JSON object:
         }[verified_label]
 
         if verified_label == "UNVERIFIED":
-            # AC3: enforce the re-propose cap BEFORE scoring â€” this is the
+            # AC3: enforce the re-propose cap BEFORE scoring — this is the
             # load-bearing guard, not advisory. Lazily initialised so this
             # works regardless of how the kernel was constructed (tests build
             # AgentKernel via __new__ without running __init__).
@@ -17104,7 +17175,7 @@ Respond with a JSON object:
             if _count > DER_MAX_UNVERIFIED_REPROPOSE:
                 logger.debug(
                     "[DER] UNVERIFIED re-propose cap reached for step %s "
-                    "(> %d) â€” no further partial credit",
+                    "(> %d) — no further partial credit",
                     item.step_id, DER_MAX_UNVERIFIED_REPROPOSE,
                 )
                 return
@@ -17127,14 +17198,14 @@ Respond with a JSON object:
             try:
                 _mediator, _mediator_source = self._der_mediator_for(item)
                 if _mediator == "none":
-                    # REQ-23 AC5: a node with NO mediator records "none" â€”
+                    # REQ-23 AC5: a node with NO mediator records "none" —
                     # there is no (region, mediator) edge to score. Pure
                     # decision/synthesis nodes are not learning events.
                     return
                 _mediator_tool = _mediator.split(":", 1)[0]
                 node_ids = list(myc._registry.get_active(session_id))
                 # REQ-26 AC1: the step's REGION is the ONE active node whose
-                # coordinates are nearest its live Î£ position â€” not every
+                # coordinates are nearest its live Σ position — not every
                 # active node (that would be a fan-out in region clothing).
                 try:
                     _cad = self._der_live_cad_state(session_id)
@@ -17180,7 +17251,7 @@ Respond with a JSON object:
                     from backend.memory.mycelium.scorer import EdgeScorer
 
                     # REQ-26 AC1/T40c: the (coordinate-region, mediator)
-                    # edge for THIS step â€” never the global fan-out.
+                    # edge for THIS step — never the global fan-out.
                     EdgeScorer(myc._store).record_region_mediator_outcome(
                         region_node_id=_region_node,
                         mediator=_mediator_tool,
@@ -17223,16 +17294,16 @@ Respond with a JSON object:
         Thin wrapper over the mycelium registry resolver (extractor.py
         ``resolve_topic_domain``) so the kernel never touches keyword patterns
         directly and unknown text resolves to the registry's ``general`` bucket
-        with a logged mismatch â€” never invented free text. Lazy import keeps
+        with a logged mismatch — never invented free text. Lazy import keeps
         the mycelium extractor off the module import path (heavy-import rule).
         """
         try:
             from backend.memory.mycelium.extractor import resolve_topic_domain
 
             return resolve_topic_domain(text or "")
-        except Exception as _td_exc:  # noqa: BLE001 â€” never block a step
+        except Exception as _td_exc:  # noqa: BLE001 — never block a step
             logger.debug(
-                "[DER] topic_domain resolve failed (%s) â€” falling back to "
+                "[DER] topic_domain resolve failed (%s) — falling back to "
                 "'general'",
                 _td_exc,
             )
@@ -17245,9 +17316,9 @@ Respond with a JSON object:
         winding. ``voice`` when the turn entered via voice; ``research`` when
         the task class is research-shaped (research|explore|investigate, the
         same set der_loop._decide_mode uses); otherwise ``der``. This is the
-        request-domain axis â€” how the node RUNS, distinct from ``topic_domain``
+        request-domain axis — how the node RUNS, distinct from ``topic_domain``
         (what it is ABOUT). Unknown windings resolve to the session default
-        (``der``) â€” never invented free text (REQ-18 AC3).
+        (``der``) — never invented free text (REQ-18 AC3).
         """
         if from_voice:
             return "voice"
@@ -17256,7 +17327,7 @@ Respond with a JSON object:
             return "research"
         return "der"
 
-    # â”€â”€ Phase 4: shared per-step finalize (extracted from _execute_plan_der)
+    # ── Phase 4: shared per-step finalize (extracted from _execute_plan_der)
 
 
     def _der_finalize_step(
@@ -17309,7 +17380,7 @@ Respond with a JSON object:
         # Behaviour here is unchanged; the body simply moved.
         _remember_turn_urls(self, step_result, "finalize")
 
-        # â”€â”€ EventBus: emit tool:result or tool:error â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── EventBus: emit tool:result or tool:error ────────────────
         try:
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
             _lifecycle_task_id = _turn_id or item.step_id
@@ -17389,7 +17460,7 @@ Respond with a JSON object:
                         self._memory_interface.episodic, "fragment_and_store"
                     )
                 ):
-                    # Background, same writer as every other fragment path â€”
+                    # Background, same writer as every other fragment path —
                     # see the note at the document_data store above.
                     from backend.agent.mcm_protocol.actions.pacman_fragment import (
                         _submit_fragment_job,
@@ -17443,8 +17514,8 @@ Respond with a JSON object:
         except Exception as _fail_frag_exc:
             loud_error(_fail_frag_exc, "der_pacman_fragment_failure")
 
-        # â”€â”€ TOKEN BUDGET: accumulate estimated tokens from step result â”€â”€
-        # 4 chars â‰ˆ 1 token; also count prompt overhead per step (~200 tok)
+        # ── TOKEN BUDGET: accumulate estimated tokens from step result ──
+        # 4 chars ≈ 1 token; also count prompt overhead per step (~200 tok)
         # Session 366 (track C): bill the BOUNDED evidence the window actually
         # receives, not the raw tool result. MEASURED: a 16384-token window
         # yields a 13270-token budget; one crawl's RAW result charged ~12k
@@ -17456,7 +17527,7 @@ Respond with a JSON object:
         # one large result killed the chain. 4 chars ~= 1 token, + ~200 prompt
         # overhead per step.
         _tokens_used += max(200, len(_window_evidence) // 4)
-        # â”€â”€ EventBus: emit context:usage (token budget progress) â”€â”€â”€â”€â”€â”€
+        # ── EventBus: emit context:usage (token budget progress) ──────
         try:
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
             get_event_bus().emit(
@@ -17472,11 +17543,11 @@ Respond with a JSON object:
                 session_id=_session,
             )
         except Exception:
-            pass  # EventBus is optional â€” no crash if it fails
+            pass  # EventBus is optional — no crash if it fails
         if _tokens_used >= _token_budget:
             logger.info(
                 f"[DER] Token budget exhausted ({_tokens_used}/{_token_budget}) "
-                f"after step {item.step_number} â€” stopping early"
+                f"after step {item.step_number} — stopping early"
             )
             # RC6 FIX: emit explicit event instead of silent stop
             try:
@@ -17502,9 +17573,9 @@ Respond with a JSON object:
                     session_id=_session,
                 )
             except Exception:
-                pass  # EventBus is optional â€” no crash if it fails
+                pass  # EventBus is optional — no crash if it fails
 
-        # â”€â”€ MYCELIUM SIGNAL: tool call â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── MYCELIUM SIGNAL: tool call ─────────────────────────────────
         try:
             if self._memory_interface:
                 self._memory_interface.mycelium_ingest_tool_call(
@@ -17551,23 +17622,23 @@ Respond with a JSON object:
         except Exception:
             pass
 
-        # â”€â”€ Phase 2 (D2.1): unified recovery â€” verification FAILED uses the
+        # ── Phase 2 (D2.1): unified recovery — verification FAILED uses the
         # SAME _split_step operator as the physics trigger. No separate graft
         # code path remains. Split prepays work units up front (Lyapunov Phi
         # strictly decreases). Children are Sub-Loops (is_subloop=True) that
-        # collapse back to this step as ONE COMPRESS. â”€â”€
+        # collapse back to this step as ONE COMPRESS. ──
         # BUGFIX (REQ-8 AC3): this block used to run at the very end of the
         # function (right before `return _tokens_used`), but `_children` is
-        # READ much earlier â€” by the REQ-8 task:learning emit below and by the
-        # REQ-7 physics-narration hook â€” while it is only ASSIGNED here. Since
+        # READ much earlier — by the REQ-8 task:learning emit below and by the
+        # REQ-7 physics-narration hook — while it is only ASSIGNED here. Since
         # a name assigned anywhere in a Python function is local for the whole
         # function, every earlier read raised `UnboundLocalError: cannot
         # access local variable '_children' where it is not associated with a
         # value`, silently caught by each call site's own try/except so the
         # task:learning event (and the physics narration) never fired. Moved
         # up so `_children` is a real, already-computed value at every read
-        # site. `_children` defaults to `[]` (no split) so the success path â€”
-        # which never enters the split branch â€” still has a bound, honestly
+        # site. `_children` defaults to `[]` (no split) so the success path —
+        # which never enters the split branch — still has a bound, honestly
         # falsy value instead of leaving the name unbound.
         _children = []
         # REQ-13 (fold forward, not back): only a FAILED verification may enter
@@ -17586,7 +17657,7 @@ Respond with a JSON object:
             # BEFORE recursive fan-out. Transport/provider/envelope failures
             # (timeout, rate-limit, unavailable tool, bad args, empty result,
             # auth) are recorded as failure evidence and must NOT split the
-            # task into children â€” the old `not step_success -> split` rule
+            # task into children — the old `not step_success -> split` rule
             # turned a single transient error into a recursive fan-out. Only a
             # genuine semantic failure (tool produced content but verification
             # judged it wrong) splits: the step_result then carries real
@@ -17627,7 +17698,7 @@ Respond with a JSON object:
                     ):
                         _split_ok = False
                         logger.info(
-                            "[DER] step %s failure classified=%s â€” recorded, NOT split (D4)",
+                            "[DER] step %s failure classified=%s — recorded, NOT split (D4)",
                             item.step_id, _fail_class,
                         )
                         try:
@@ -17651,14 +17722,14 @@ Respond with a JSON object:
                             )
                         except Exception as _led_exc:  # noqa: BLE001
                             logger.debug("[DER] failure-evidence record failed: %s", _led_exc)
-            except Exception:  # noqa: BLE001 â€” classification must never break recovery
+            except Exception:  # noqa: BLE001 — classification must never break recovery
                 _split_ok = True
             if _split_ok:
                 try:
                     _cad_split = self._der_live_cad_state(_session)
                     _wu = getattr(self, "_der_work_units", 0)
                     # REQ-4 AC1 (T16): the continuous verified fraction is a
-                    # GRADED steering input at the split decision â€” mid-band
+                    # GRADED steering input at the split decision — mid-band
                     # selects a bounded probe (width 1) instead of a full-width
                     # re-attempt. Never crash the split on fraction failure.
                     try:
@@ -17678,7 +17749,7 @@ Respond with a JSON object:
                     )
                     # REQ-3: debit measured tokens, not a flat child count.
                     # _measured must be bound for the debit even when no child was
-                    # created (empty split) â€” a NameError here was silently swallowed
+                    # created (empty split) — a NameError here was silently swallowed
                     # by the broad except, disabling the work-unit debit entirely
                     # (NORTHSTAR defect-shape #1).
                     _measured = 0
@@ -17692,7 +17763,7 @@ Respond with a JSON object:
                         # REQ-3: debit measured tokens, not a flat child count.
                         _measured = max(200, len(step_result) // 4)
                         # REQ-14 (AC1/AC5, T23): a sub-loop split REVISES the
-                        # plan mid-task â€” re-emit task:start through the SAME
+                        # plan mid-task — re-emit task:start through the SAME
                         # merge-by-id channel (useTaskProgress.ts:210-227) with
                         # the revision origin so the frontend refreshes
                         # description/tool for new steps without clobbering live
@@ -17712,7 +17783,7 @@ Respond with a JSON object:
                                 else str(_phase)
                             )
                             # REQ-3 (T2) edge case: a sub-loop split CONTINUES
-                            # the parent card â€” it is a branch WITHIN a card,
+                            # the parent card — it is a branch WITHIN a card,
                             # never a second card. Handled generically by the
                             # "not initial" rule in _resolve_card_identity.
                             _card_task_id = _turn_id or getattr(
@@ -17723,7 +17794,7 @@ Respond with a JSON object:
                             )
                             # T2b (REQ-1 AC8): the badge marks the nested row,
                             # so the label is set on the CHILD steps this
-                            # split just produced â€” never on the parent or
+                            # split just produced — never on the parent or
                             # any sibling already in the queue. A step
                             # outside `_children` carries no `branchLabel`
                             # key at all (not an empty string), so
@@ -17768,7 +17839,7 @@ Respond with a JSON object:
                             # T4a (REQ-4 AC1): persist the split card. Uses
                             # _queue_steps_snapshot (derives done/failed from
                             # queue state) rather than the wire payload's
-                            # blanket "pending" â€” a mid-run restore should
+                            # blanket "pending" — a mid-run restore should
                             # show already-finished steps as finished.
                             self._persist_card_snapshot(
                                 card_id=_card_id,
@@ -17796,7 +17867,7 @@ Respond with a JSON object:
                             except Exception:
                                 pass
                         except Exception:
-                            pass  # EventBus is optional â€” never break recovery
+                            pass  # EventBus is optional — never break recovery
                     self._der_work_units = debit_work_units(_wu, _measured)
                     logger.info(
                         "[DER] verify_failed -> split into %d sub-loops (work_units=%d)",
@@ -17805,11 +17876,11 @@ Respond with a JSON object:
                 except Exception as _split_exc:
                     logger.warning("[DER] split-on-failure failed: %s", _split_exc)
 
-        # â”€â”€ Phase 3 (D3.3 G5): honest commit ledger â”€â”€
+        # ── Phase 3 (D3.3 G5): honest commit ledger ──
         # REQ-1: a commit is recorded for EVERY executed action with its true label
-        # (VERIFIED / UNVERIFIED / FAILED) â€” not only VERIFIED. This is the learning
+        # (VERIFIED / UNVERIFIED / FAILED) — not only VERIFIED. This is the learning
         # signal the outer loop and the AVOID/edge-miss path consume; gating it on
-        # VERIFIED starves failure learning. Store write â€” never injected into a
+        # VERIFIED starves failure learning. Store write — never injected into a
         # prompt.
         try:
             from backend.agent.caducean_trajectory import (
@@ -17845,10 +17916,10 @@ Respond with a JSON object:
                 _session, getattr(item, "step_id", "?"), _verified, _commit_exc,
             )
 
-        # â”€â”€ REQ-1 AC2/AC3/AC4: per-step edge-score consequence of verified_label.
-        # VERIFIED hit-scores (+0.05), UNVERIFIED partial-credits (+0.02, capped â€”
+        # ── REQ-1 AC2/AC3/AC4: per-step edge-score consequence of verified_label.
+        # VERIFIED hit-scores (+0.05), UNVERIFIED partial-credits (+0.02, capped —
         # AC3) and never crystallizes, FAILED miss-scores (-0.08) and feeds the
-        # AVOID header (AC4). Never raises â€” off the critical path.
+        # AVOID header (AC4). Never raises — off the critical path.
         try:
             self._der_score_step_outcome(item, _verified, _session, step_result)
         except Exception as _score_exc:
@@ -17860,11 +17931,11 @@ Respond with a JSON object:
 
         queue.mark_complete(item.step_id)
 
-        # â”€â”€ T6/T8/T10 (specs/long-horizon-der-execution REQ-5/REQ-9) â”€â”€â”€â”€â”€â”€
+        # ── T6/T8/T10 (specs/long-horizon-der-execution REQ-5/REQ-9) ──────
         # D8: persistence gates terminal state. Close the execution-attempt in
         # the ledger and persist BEFORE emitting the terminal task:learning
         # event. A persistence failure is exposed honestly (warning) and the
-        # event still fires â€” but the durable record is flagged, never silently
+        # event still fires — but the durable record is flagged, never silently
         # claimed.
         try:
             from backend.agent.der_execution_ledger import ExecutionLedger
@@ -17891,18 +17962,18 @@ Respond with a JSON object:
             )
             if not _ledger.persist():
                 logger.warning(
-                    "[DER] attempt persistence FAILED for step %s â€” durable completion not claimed",
+                    "[DER] attempt persistence FAILED for step %s — durable completion not claimed",
                     item.step_id,
                 )
-        except Exception as _att_exc:  # noqa: BLE001 â€” ledger must never block the step
+        except Exception as _att_exc:  # noqa: BLE001 — ledger must never block the step
             logger.debug("[DER] attempt-ledger write failed: %s", _att_exc)
 
-        # â”€â”€ REQ-8: honest learning signal (task:learning) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── REQ-8: honest learning signal (task:learning) ───────────────
         # Emited (never injected into a prompt) so the frontend can show the real
         # card state + Pacman OrbCanvas particles on the border. Three signals:
-        #   avoided    â€” FAILED step (no children, not a subloop) -> AVOID
-        #   retried    â€” verify_failed -> split into Sub-Loops
-        #   crystallizedâ€” VERIFIED step -> skill captured
+        #   avoided    — FAILED step (no children, not a subloop) -> AVOID
+        #   retried    — verify_failed -> split into Sub-Loops
+        #   crystallized— VERIFIED step -> skill captured
         # Off the critical path; a bus failure must never block the step result.
         try:
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
@@ -17928,9 +17999,9 @@ Respond with a JSON object:
         except Exception as _learn_exc:
             logger.debug("[DER] task:learning emit failed: %s", _learn_exc)
 
-        # â”€â”€ Phase 3 (Gap 3): propagate this step's output into dependent
+        # ── Phase 3 (Gap 3): propagate this step's output into dependent
         # pending steps so later steps consume real results, not static
-        # params. Non-blocking â€” never fails the step. â”€â”€
+        # params. Non-blocking — never fails the step. ──
         try:
             queue.resolve_dependent_params(item, step_result)
         except Exception as _dep_exc:
@@ -17938,17 +18009,17 @@ Respond with a JSON object:
                 "[DER] resolve_dependent_params failed: %s", _dep_exc
             )
 
-        # pin_42ddd255162d: physics reads bound BEFORE the try below â€” the
+        # pin_42ddd255162d: physics reads bound BEFORE the try below — the
         # broad swallowing try starts with imports + the trajectory recorder,
         # and ANY early exception (recorder creation, FFI import/call) used to
         # skip the binding; later reads of _u/_xi (trajectory record, coupling,
-        # the REQ-7 narration hook) then raised UnboundLocalError â€” the defect
-        # class of CADUCEAN_ARCHITECTURE.md Â§10 rule 7. Narration was 100%
+        # the REQ-7 narration hook) then raised UnboundLocalError — the defect
+        # class of CADUCEAN_ARCHITECTURE.md §10 rule 7. Narration was 100%
         # mute, logging "physics-event narration skipped".
         _u = 0.0
         _xi = 0.0
 
-        # â”€â”€ CADUCEAN UPDATE + IMMORTUS + TRAJECTORY RECORD â”€â”€
+        # ── CADUCEAN UPDATE + IMMORTUS + TRAJECTORY RECORD ──
         try:
             from backend.gateway.iris_ffi import (
                 ffi_caducean_update,
@@ -17976,8 +18047,8 @@ Respond with a JSON object:
             # block below sits inside a broad swallowing try; if
             # ffi_caducean_update/ffi_calculate_eml throws, the flow jumps to
             # the except and later reads of _u/_xi (trajectory record, coupling,
-            # the REQ-7 narration hook) would raise UnboundLocalError â€” the
-            # exact defect class of CADUCEAN_ARCHITECTURE.md Â§10 rule 7: a name
+            # the REQ-7 narration hook) would raise UnboundLocalError — the
+            # exact defect class of CADUCEAN_ARCHITECTURE.md §10 rule 7: a name
             # read before assignment disables a whole feature (narration was
             # 100% mute, logging "physics-event narration skipped").
             _u = 0.0
@@ -17985,7 +18056,7 @@ Respond with a JSON object:
             _eml_score, _ex, _ey = ffi_calculate_eml(_session)
             # v2: balance clamped to [0.1, 3.0] (was [0.1, 2.0]).
             # Note: the v2 baseline divisor is 2.3418 per the field theory
-            # (see docs/cad_v2_architecture.md Â§2.2). The current EML
+            # (see docs/cad_v2_architecture.md §2.2). The current EML
             # returns a raw score, not a balance; the kernel clamps to
             # the safe range defensively. The TrajectoryController may
             # override the constant via ffi_caducean_set_params.
@@ -18005,12 +18076,12 @@ Respond with a JSON object:
             _state_snapshot = ffi_caducean_get_state(_session)
             _xi = _state_snapshot.get("xi", 0.0)
             _u = _state_snapshot.get("u", 0.0)
-            # â”€â”€ REQ-10 / REQ-11: multi-session coupling (feature-flagged, off
+            # ── REQ-10 / REQ-11: multi-session coupling (feature-flagged, off
             # the critical path). Register the session once with its domain
-            # windings, push live (Î¾, u) into the registry, and apply coupling.
+            # windings, push live (ξ, u) into the registry, and apply coupling.
             # The engine is (re)initialized with the domain windings on first
             # registration so engine c_eff and registry c_eff agree (REQ-11 AC3).
-            # Any failure logs at debug and never blocks the step (REQ-10 AC5). â”€â”€
+            # Any failure logs at debug and never blocks the step (REQ-10 AC5). ──
             try:
                 from backend.agent.coupled_registry import (
                     coupling_enabled,
@@ -18083,7 +18154,7 @@ Respond with a JSON object:
                     direction_signal=None,  # full signal in DebugPanel
                 )
 
-            # â”€â”€ Homeostatic relaxation (REQ-1 AC2) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── Homeostatic relaxation (REQ-1 AC2) ─────────────────────────
             # Fire after every RELAX_EVERY_N_UPDATES (10) updates, or every
             # RELAX_MAX_INTERVAL_S (60 s) wall-clock, whichever first. This
             # call is inside the outer swallowing try block so a relaxation
@@ -18103,9 +18174,9 @@ Respond with a JSON object:
                     "[agent_kernel] maybe_relax failed: %s", _relax_exc
                 )
 
-            # â”€â”€ TrajectoryController refit on DER cadence (REQ-13) â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── TrajectoryController refit on DER cadence (REQ-13) ─────────
             # Calls TrajectoryController.fit() which refits only at milestones
-            # (100, 500, 1000 records). Never blocks the step â€” wrapped in
+            # (100, 500, 1000 records). Never blocks the step — wrapped in
             # its own try/except so a refit failure cannot abort the record or
             # chain append.
             try:
@@ -18136,16 +18207,16 @@ Respond with a JSON object:
                 _state_snapshot.get("xi", 0.0),
                 _state_snapshot.get("u", 0.0),
             )
-            # REQ-23 (T37): the causal triple â€” resolve the MEDIATOR once and
+            # REQ-23 (T37): the causal triple — resolve the MEDIATOR once and
             # bind it to a VALUE (the write runs later; `item` must not be
             # read from another thread after the loop moves on). AC1: written
             # at the same finalize point as the outcome; AC5: "none" is the
             # explicit value for mediator-less (decision/synthesis) nodes,
-            # never empty â€” so they do not rank as failed actions.
+            # never empty — so they do not rank as failed actions.
             _mediator, _mediator_source = self._der_mediator_for(item)
             # REQ-3 AC2 (T37 completion): stamp the node's memory record at
-            # finalize â€” outcome, continuous fraction, mediator, and the
-            # landing coordinate â€” so the record is complete for the causal
+            # finalize — outcome, continuous fraction, mediator, and the
+            # landing coordinate — so the record is complete for the causal
             # vocabulary (Treatment -> Mediator -> Outcome) and for the
             # REQ-26 posterior reader. Off the critical path; never fails the
             # step.
@@ -18156,7 +18227,7 @@ Respond with a JSON object:
                 if _rec is not None:
                     _rec.outcome = _verified
                     # REQ-18 (T19): stamp the two domain axes at the same
-                    # finalize point as the outcome â€” topic re-resolved from
+                    # finalize point as the outcome — topic re-resolved from
                     # the FULL step result text (richer signal than the seed
                     # description; registry-backed, general + logged on miss),
                     # execution from the active winding. AC4: these ride the
@@ -18169,7 +18240,7 @@ Respond with a JSON object:
                     )
                     # T36-FIX (content_summary): the L6014 construction comment
                     # promised "the finalize site re-stamps with the full step
-                    # result text" â€” but content_summary was NEVER re-stamped, so
+                    # result text" — but content_summary was NEVER re-stamped, so
                     # _der_node_record_evidence fed the synthesis LLM only the
                     # step DESCRIPTION (plan sentence), not the actual tool output.
                     # Live T36 smoke: crawl stored 17 chunks + rendered the prism
@@ -18337,9 +18408,9 @@ Respond with a JSON object:
                     _rec.mediator_source = _mediator_source
                     _rec.coords_to = _coords_to
                     _rec.edge_ids = _rec.edge_ids or []
-                    # â”€â”€ REQ-5 AC2/AC4 (T17): record the COUPLING DECISION at
+                    # ── REQ-5 AC2/AC4 (T17): record the COUPLING DECISION at
                     # commit. The branches surfaced to this step (all of them,
-                    # capped â€” AC1) plus the one it chose are stamped on the
+                    # capped — AC1) plus the one it chose are stamped on the
                     # node record, and the edge to the chosen branch is
                     # written/strengthened with the decision as provenance.
                     # Off the critical path; never raises.
@@ -18354,12 +18425,12 @@ Respond with a JSON object:
                         logger.debug(
                             "[DER] coupling-decision record failed: %s", _cc_exc
                         )
-                    # â”€â”€ REQ-19 (T20): persist the DER structural links into
-                    # the SHARED link store at the same finalize point â€” the
+                    # ── REQ-19 (T20): persist the DER structural links into
+                    # the SHARED link store at the same finalize point — the
                     # node's memory record AND its edges land together (DAG =
                     # memory = DAG). part_of (sub-loop containment, child ->
                     # parent), depends_on (plan dependency), relevant_to
-                    # (branches actually surfaced to a decision â€” provenance,
+                    # (branches actually surfaced to a decision — provenance,
                     # not affinity), failed_like (same failure class, so AVOID
                     # recall is a graph walk). Off the critical path; the
                     # writer itself never raises.
@@ -18381,7 +18452,7 @@ Respond with a JSON object:
                 logger.debug(
                     "[DER] node_record finalize stamp failed: %s", _rec_exc
                 )
-            # â”€â”€ REQ-4 AC4 (T16b): FOLD-BACK â€” a sub-loop child folds back as
+            # ── REQ-4 AC4 (T16b): FOLD-BACK — a sub-loop child folds back as
             # a compressed observation that CHANGES the parent's state: the
             # parent's node_record gains the child's verified outcome (REQ-3
             # AC1: the parent's next decision reads node records that now
@@ -18419,7 +18490,7 @@ Respond with a JSON object:
             # reversed and corrupt the trajectory. The durability queue has a
             # single consumer, so submission order is the write order.
             #
-            # Every argument is bound to a VALUE here, not to `item` â€” the
+            # Every argument is bound to a VALUE here, not to `item` — the
             # write runs later and the step object must not be read from a
             # different thread after the loop has moved on.
             durability_submit(
@@ -18434,7 +18505,7 @@ Respond with a JSON object:
                 file_path=item.params.get("path", "") if item.params else "",
                 landmark_id="",
                 # REQ-23 AC2: mediator + source ride the same chain row as the
-                # Î£ coords, so (Treatment -> Mediator -> Outcome) is queryable
+                # Σ coords, so (Treatment -> Mediator -> Outcome) is queryable
                 # together with the coordinates that were in force.
                 mediator=_mediator,
                 mediator_source=_mediator_source,
@@ -18560,7 +18631,7 @@ Respond with a JSON object:
         except Exception as _rec_open_exc:
             logger.debug("[DER] recovery open failed: %s", _rec_open_exc)
 
-        # â”€â”€ Phase 3: escalation + explorer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Phase 3: escalation + explorer ─────────────────────────
         # After each step, check if mode escalation is warranted.
         # If queue is complete but more work is needed in AGENTIC/FULL
         # mode, re-plan with the LLM.
@@ -18575,7 +18646,7 @@ Respond with a JSON object:
 
             # If queue is complete but mode is AGENTIC or FULL,
             # ask the LLM if more tools are needed.
-            # Phase 5: rec-int termination â€” during COMPRESS (rec==1) the field
+            # Phase 5: rec-int termination — during COMPRESS (rec==1) the field
             # is condensing, so do NOT expand the plan with new explorer steps.
             # (next_ready already defers non-critical steps during COMPRESS; this
             # stops adding NEW ones, integrating the recommendation into loop
@@ -18630,7 +18701,7 @@ Respond with a JSON object:
                 if _next_tool:
                     # GOAL ONLY: the continuation step carries no tool/params.
                     # _der_run_step_execution resolves it via the single resolver
-                    # (explorer.propose) â€” F6 / System Invariant. We never take a
+                    # (explorer.propose) — F6 / System Invariant. We never take a
                     # tool from the Explorer's continuation dict.
                     # Session 312 (live conv-99): QueueItem was referenced here
                     # without an import — the one at the DER-loop function is a
@@ -18655,7 +18726,7 @@ Respond with a JSON object:
                     )
                     # Surface the newly-planned step to the frontend so the
                     # inline plan card shows the agent's live search/action
-                    # steps as they are discovered â€” not just the upfront
+                    # steps as they are discovered — not just the upfront
                     # planner plan.  Frontend appends it to the to-do list.
                     # No session_id -> broadcast to all (single-user IRIS).
                     try:
@@ -18681,7 +18752,7 @@ Respond with a JSON object:
                             card_id=_add_step_envelope.get("card_id"),
                             conversation_id=self.conversation_id,
                             card_relation="continues",
-                            # save_card upserts the WHOLE row â€” plan_title/mode
+                            # save_card upserts the WHOLE row — plan_title/mode
                             # must be re-sent every write or a step-transition
                             # snapshot would null out what task:start set.
                             plan_title=self._effective_plan_title(plan),
@@ -18718,7 +18789,7 @@ Respond with a JSON object:
         except Exception:
             pass
 
-        # â”€â”€ EventBus: emit der:step â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── EventBus: emit der:step ────────────────────────────────
         try:
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
             get_event_bus().emit(
@@ -18750,7 +18821,7 @@ Respond with a JSON object:
                     "step_done": True,
                     # pin_517dfcbda150: carry the unique step id so the frontend
                     # can check off BOTH plan steps (ids like r1/step_1) and
-                    # DER-discovered steps (der-N / explorer_N) â€” previously it
+                    # DER-discovered steps (der-N / explorer_N) — previously it
                     # only matched der-N, so plan steps never visually completed.
                     "step_id": item.step_id,
                     "step_number": item.step_number,
@@ -18762,7 +18833,7 @@ Respond with a JSON object:
                 },
             )
             # T4a (REQ-4 AC5): persist the step transition so a card
-            # interrupted mid-run restores with current step statuses â€”
+            # interrupted mid-run restores with current step statuses —
             # the whole point of AC5, since a crash never reaches task:done.
             _step_done_envelope = self._card_envelope(_turn_id)
             self._persist_card_snapshot(
@@ -18778,15 +18849,15 @@ Respond with a JSON object:
         except Exception:
             pass
 
-        # â”€â”€ REQ-7: agent-driven PHYSICS-EVENT narration (post-step hook) â”€â”€
+        # ── REQ-7: agent-driven PHYSICS-EVENT narration (post-step hook) ──
         # Replaces the flat per-step heartbeat. The agent speaks ONLY on a physics
-        # event â€” a |u| transition (oscillating -> converged) or a structural
+        # event — a |u| transition (oscillating -> converged) or a structural
         # event (split into Sub-Loops, or a Sub-Loop collapsing). This is the
         # "now moving into a sub-task" / "settling into the answer" signal. It is
         # latency-cheap (pure arithmetic on already-fetched caducean state), off
         # the critical path (try/except), and funneled through SpeakTool (narration
         # lock) so it never conflicts with web-search progress or the final answer.
-        # Invariant: spoken âŠ† visible â€” every spoken line is a real transition.
+        # Invariant: spoken ⊆ visible — every spoken line is a real transition.
         try:
             from backend.agent.der_constants import detect_physics_narration
 
@@ -18814,7 +18885,7 @@ Respond with a JSON object:
                 _has_struct = bool(_children) or bool(
                     getattr(item, "is_subloop", False)
                 )
-                # pin_42ddd255162d: direct sync write â€” the DER runs in a
+                # pin_42ddd255162d: direct sync write — the DER runs in a
                 # thread where get_event_loop() raises RuntimeError, so the
                 # old run_in_executor path threw on EVERY finalize and the
                 # narration log was silently empty. _write is a small JSONL
@@ -18855,7 +18926,7 @@ Respond with a JSON object:
             except Exception:
                 pass
 
-        # â”€â”€ TRAILING DIRECTOR gap-fill REMOVED (2026-08-06) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── TRAILING DIRECTOR gap-fill REMOVED (2026-08-06) ──────────────
         # The gap-fill ran SEQUENTIALLY after the user's task: it was invoked
         # synchronously in _der_finalize_step and its gap items were queued
         # into the SAME turn, re-executing completed steps' work after the plan
@@ -18875,7 +18946,7 @@ Respond with a JSON object:
         # NOTE: the verify_failed -> split-into-sub-loops step (Phase 2 D2.1)
         # used to live here. It computed `_children`, which the REQ-8
         # task:learning emit and the REQ-7 physics-narration hook above both
-        # read â€” but those reads ran *before* this block, every time, so
+        # read — but those reads ran *before* this block, every time, so
         # `_children` was always unbound at read time (UnboundLocalError,
         # silently swallowed). Moved up to right after `_verified` is known,
         # before its first reader. See the bugfix note there.
@@ -18886,27 +18957,27 @@ Respond with a JSON object:
         """REQ-3 T8b AC4/AC5/AC6: bound the step's working context (forgetting).
 
         Extracted from _der_finalize_step's step-input section so the contract
-        test drives the REAL code. Never raises â€” the caller's step must not
+        test drives the REAL code. Never raises — the caller's step must not
         fail on a forgetting error.
 
         AC4: content beyond the OQ-6 derived bound is dropped from the step's
-        working context (coordinate_signal) â€” the node record is the re-read
+        working context (coordinate_signal) — the node record is the re-read
         point.
         AC5: the per-step prompt token count is recorded (measured reduction);
         the bound is DERIVED from the REQ-1 resolved window, never a literal.
         AC6: when the node's chain write FAILED (durability drop counter > 0),
-        the working context is the ONLY copy â€” never bounded/dropped.
+        the working context is the ONLY copy — never bounded/dropped.
         """
         try:
             _window = self.resolve_context_window() or 8192
-            # OQ-6: 15% of the resolved window, derived â€” never a hardcoded
+            # OQ-6: 15% of the resolved window, derived — never a hardcoded
             # literal (a literal re-creates the 8192 collapse REQ-1 fixes).
             _step_budget = max(512, int(_window * 0.15))
             _sig = getattr(item, "coordinate_signal", "") or ""
-            _step_tokens = max(1, len(_sig) // 4)  # charsâ†’tokens â‰ˆ 4:1
+            _step_tokens = max(1, len(_sig) // 4)  # chars→tokens ≈ 4:1
             # AC6: never forget content whose write failed. BUGFIX 2026-08-06:
             # the old guard `_der_chain_drops == 0 or not
-            # step_id.startswith("immortus")` made AC6 vacuously true â€” the
+            # step_id.startswith("immortus")` made AC6 vacuously true — the
             # `or` second clause was True for EVERY non-immortus step, so a
             # regular DER step whose chain write FAILED (drops>0) still had
             # its only copy dropped. Contract
@@ -18922,7 +18993,7 @@ Respond with a JSON object:
         except Exception as _forget_exc:
             loud_error(_forget_exc, "step_forgetting_bound")
 
-    # â”€â”€ Phase 3: explorer methods â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # ── Phase 3: explorer methods ──────────────────────────────────────
 
     def _gc_result_is_error(self, result: object) -> bool:
         """True when a settled step's result is an ERROR envelope, not output.
@@ -19328,10 +19399,10 @@ Respond with a JSON object:
         needed to satisfy the original objective.
 
         Returns a dict with 'description' (a GOAL) if more work is needed,
-        or None if done. It MUST NOT return a 'tool'/'params' â€” tool
+        or None if done. It MUST NOT return a 'tool'/'params' — tool
         selection is the single resolver's job (explorer.propose), fired
         when the continuation step executes (F6 / System Invariant). This
-        is the key method for AGENTIC mode â€” it enables the multi-step tool
+        is the key method for AGENTIC mode — it enables the multi-step tool
         loop without a hardcoded limit, while keeping one tool authority.
         """
         try:
@@ -19590,7 +19661,7 @@ Respond with a JSON object:
                 self._der_note_depth_route("finalize")
                 return None
 
-            # GOAL ONLY â€” no tool/params. The resolver picks the tool on exec.
+            # GOAL ONLY — no tool/params. The resolver picks the tool on exec.
             self._der_note_depth_route("next_step")
             return {"description": str(_desc).strip()}
 
@@ -19673,11 +19744,11 @@ Respond with a JSON object:
                     note = data.get("note", "")
                     suggestion = data.get("suggestion", "")
                     logger.info(
-                        "[DER] FULL mode progress check â€” drift detected: %s", note
+                        "[DER] FULL mode progress check — drift detected: %s", note
                     )
                     if suggestion:
                         # The suggestion is logged for debugging but not
-                        # automatically applied â€” the Director decides.
+                        # automatically applied — the Director decides.
                         logger.info(
                             "[DER] FULL mode suggestion: %s", suggestion
                         )
@@ -19796,7 +19867,7 @@ Cover every part of the user's request. If the results lack some asked part, say
 """
 
         try:
-            # Get reasoning model for synthesis â€” only use local model if it's
+            # Get reasoning model for synthesis — only use local model if it's
             # actually loaded.  Do NOT call get_reasoning_model() as a fallback here:
             # that can return a broken/unloaded stub which echoes garbage like
             # "respond_to_user" back to the user verbatim.
@@ -19809,7 +19880,7 @@ Cover every part of the user's request. If the results lack some asked part, say
             if reasoning_model:
                 # Call the loaded local/LFM model for synthesis. In-process
                 # local models never report a usage block (no HTTP response to
-                # parse), so this is an ESTIMATE-only accrual (D1 item 4/5) â€”
+                # parse), so this is an ESTIMATE-only accrual (D1 item 4/5) —
                 # there is no real number available to prefer here.
                 _raw_reply = reasoning_model.generate(synthesis_prompt)
                 response = self._strip_thinking(_raw_reply)
@@ -19822,13 +19893,13 @@ Cover every part of the user's request. If the results lack some asked part, say
                 return response
 
             # Primary path: route synthesis through the unified InferenceRouter so
-            # API providers (Cerebras, OpenAI, â€¦) are used for the brain answer,
+            # API providers (Cerebras, OpenAI, …) are used for the brain answer,
             # not just local/Ollama models. Legacy LM Studio / Ollama branches
             # below remain as fallbacks for local-model configurations.
             #
             # REQ-8 AC3 (T26): when the ROUTER holds the primary provider (its
             # health check reports ok), a router failure degrades DIRECTLY to the
-            # compressed-summary fallback â€” we do NOT replay the giant synthesis
+            # compressed-summary fallback — we do NOT replay the giant synthesis
             # prompt through the LM Studio / Ollama chain (the 429-stall
             # behaviour REQ-8 fixes). LM Studio / Ollama are only tried when the
             # router has NO bound provider (local-only configurations), where
@@ -19898,9 +19969,9 @@ Cover every part of the user's request. If the results lack some asked part, say
                 if _router_primary:
                     # Empty response from the primary provider counts as failure
                     # (the health check reports ok even when the endpoint returns
-                    # nothing â€” reachability is only proven at execution time).
+                    # nothing — reachability is only proven at execution time).
                     logger.warning(
-                        "[AgentKernel] router (primary) returned empty synthesis â€” "
+                        "[AgentKernel] router (primary) returned empty synthesis — "
                         "degrading to compressed-summary fallback (REQ-8 AC3)"
                     )
                     return ""
@@ -19947,10 +20018,10 @@ Cover every part of the user's request. If the results lack some asked part, say
                             f"[AgentKernel] empty-response retry failed: {_retry_err}"
                         )
                 if _router_primary:
-                    # REQ-8 AC3 (T26): primary provider failed â€” degrade to the
+                    # REQ-8 AC3 (T26): primary provider failed — degrade to the
                     # deterministic compressed summary, no giant-prompt replay.
                     logger.warning(
-                        "[AgentKernel] router is the primary provider and failed â€” "
+                        "[AgentKernel] router is the primary provider and failed — "
                         "degrading to compressed-summary fallback (REQ-8 AC3)"
                     )
                     return ""
@@ -20003,10 +20074,10 @@ Cover every part of the user's request. If the results lack some asked part, say
             # No model available for synthesis. Return "" instead of a generic
             # template so the REQ-12 success path falls through to the DER-shaped
             # deterministic summary (_der_deterministic_success_summary) that
-            # mirrors _der_deterministic_failure_summary â€” never a silent raw
+            # mirrors _der_deterministic_failure_summary — never a silent raw
             # concatenation of step outputs (REQ-12 AC4).
             logger.warning(
-                "[AgentKernel] No model for synthesis â€” returning empty "
+                "[AgentKernel] No model for synthesis — returning empty "
                 "(caller falls back to deterministic summary)"
             )
             return ""
@@ -20116,11 +20187,11 @@ Cover every part of the user's request. If the results lack some asked part, say
     # This allows saved settings that used local model path names to resolve
     # correctly against VPS available-model IDs without requiring a migration.
     _MODEL_ALIASES: Dict[str, str] = {
-        # Legacy local model directory name â†’ canonical ID (executor only; brain removed)
+        # Legacy local model directory name → canonical ID (executor only; brain removed)
         "LFM2.5-1.2B-Instruct": "lfm2.5-1.2b-instruct",
         "executor": "lfm2.5-1.2b-instruct",
         # NOTE: LFM2-8B-A1B / "brain" / "lfm2-8b" aliases are intentionally absent.
-        # That model is not in use â€” removing the aliases prevents accidental routing.
+        # That model is not in use — removing the aliases prevents accidental routing.
     }
 
     def _normalize_model_id(self, model_id: Optional[str]) -> Optional[str]:
@@ -20152,14 +20223,14 @@ Cover every part of the user's request. If the results lack some asked part, say
             model_provider:     Provider the user chose: "local" | "vps" | "api"
 
         Returns:
-            True always â€” selections are stored unconditionally so that:
-            â€¢ Ollama model IDs (e.g. "llama3.2:3b") aren't rejected because
+            True always — selections are stored unconditionally so that:
+            • Ollama model IDs (e.g. "llama3.2:3b") aren't rejected because
               ModelRouter doesn't list them.
-            â€¢ LFM local models aren't rejected when lazy loading is active and
+            • LFM local models aren't rejected when lazy loading is active and
               the models dict is still empty.
             Inference-time routing is responsible for surfacing "not available".
         """
-        # Normalize aliases (e.g. "LFM2-8B-A1B" â†’ "lfm2-8b")
+        # Normalize aliases (e.g. "LFM2-8B-A1B" → "lfm2-8b")
         reasoning_model = self._normalize_model_id(reasoning_model)
         tool_execution_model = self._normalize_model_id(tool_execution_model)
 
@@ -20176,7 +20247,7 @@ Cover every part of the user's request. If the results lack some asked part, say
             # If swarm is enabled, do NOT let the Models card overwrite
             # provider='iris_local' or the swarm model names back to UI
             # selections. This used to guard only the (now removed) legacy-field
-            # assignments, while the role rebind below ran anyway â€” so the card
+            # assignments, while the role rebind below ran anyway — so the card
             # re-pointed the router away from the swarm even as the log line
             # claimed the selection was ignored. Returning here makes the guard
             # mean what it says.
@@ -20223,13 +20294,13 @@ Cover every part of the user's request. If the results lack some asked part, say
             # `_selected_reasoning_model`, `_selected_tool_execution_model` and
             # `_model_provider` are derived from those bindings.
 
-            # â”€â”€ Resolve provider credentials EARLY â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── Resolve provider credentials EARLY ─────────────────────────
             # Must happen BEFORE peer propagation / snapshot sync so secondary
-            # kernels (crawl_planner, session_iris_integration, â€¦) inherit the
+            # kernels (crawl_planner, session_iris_integration, …) inherit the
             # CORRECT api_base_url + api_key. Previously these were assigned at
             # the END of this method, AFTER peers/snapshot had copied the stale
-            # default (https://api.openai.com/v1) â€” so the crawl_planner sent the
-            # Cerebras key to OpenAI â†’ 401.
+            # default (https://api.openai.com/v1) — so the crawl_planner sent the
+            # Cerebras key to OpenAI → 401.
             if api_key:
                 self._api_key = api_key
                 self._api_key_provider = model_provider or ""
@@ -20282,7 +20353,7 @@ Cover every part of the user's request. If the results lack some asked part, say
                 if peer_kernel is not self:
                     if getattr(peer_kernel, "_swarm_enabled", False):
                         logger.debug(
-                            f"[AgentKernel] Peer '{peer_id}' swarm enabled â€” "
+                            f"[AgentKernel] Peer '{peer_id}' swarm enabled — "
                             f"skipping credential propagation"
                         )
                         continue
@@ -20302,8 +20373,8 @@ Cover every part of the user's request. If the results lack some asked part, say
 
             # The 'default' kernel used to be force-created here so it could act
             # as the "inheritance source" new conversations copied their model
-            # from. There is no inheritance any more â€” every kernel reads the
-            # shared role table â€” so this block existed only to keep a copy
+            # from. There is no inheritance any more — every kernel reads the
+            # shared role table — so this block existed only to keep a copy
             # warm, and creating a phantom 'default' kernel as a side effect of
             # a model pick was itself a known problem (Wave 5).
 
@@ -20333,7 +20404,7 @@ Cover every part of the user's request. If the results lack some asked part, say
                     # Persist the per-provider key to the keyring so it survives
                     # restarts and _build_transport can retrieve it by cred_ref.
                     # Without this, a key applied per provider was memory-only and
-                    # the keyring kept a stale/fake key â†’ 401 after restart.
+                    # the keyring kept a stale/fake key → 401 after restart.
                     try:
                         from backend.agent.inference.keyring import set_secret
 
@@ -20343,7 +20414,7 @@ Cover every part of the user's request. If the results lack some asked part, say
                 if api_base_url:
                     self._api_base_url = api_base_url.rstrip("/")
                 # Resolve the effective key: freshly supplied key wins; else the
-                # key already on the kernel â€” but ONLY when it belongs to THIS
+                # key already on the kernel — but ONLY when it belongs to THIS
                 # provider. `self._api_key` is a single shared field holding the
                 # LAST applied key regardless of provider; using it as a blanket
                 # fallback attaches, e.g., a Cerebras key to a Cohere provider
@@ -20371,26 +20442,26 @@ Cover every part of the user's request. If the results lack some asked part, say
                 # Namespace the bare "local" provider id (REQ-4 AC1) so it never
                 # collides with or shadows a namespaced local entry.
                 # `reasoning_model` is optional on this call, so derive the stem
-                # defensively â€” an unguarded .split() on None raised out of here
+                # defensively — an unguarded .split() on None raised out of here
                 # and the whole selection silently returned False.
                 _inst_id = (
                     f"local:{(reasoning_model or 'local').split('.')[0].lower()}"
                     if model_provider == "local"
                     else model_provider
                 )
-                # â”€â”€ Resolve the model this instance is registered WITH â”€â”€â”€â”€â”€â”€
+                # ── Resolve the model this instance is registered WITH ──────
                 # `registry.add()` REPLACES the entry for this id, so whatever
                 # lands in `model=` becomes the provider's model for every
                 # later reader (ModelSwitcher label, dashboard card, and
                 # `generate()`'s `model_override or inst.model` fallback).
                 #
-                # Two rules, both learned from the cerebrasâ†’cohere desync
+                # Two rules, both learned from the cerebras→cohere desync
                 # (2026-08-13 08:19, backend-20260813-074742.log): a confirm_card
                 # carrying the PREVIOUS provider's model name re-registered
                 # `cohere` with `model="gemma-4-31b"`.
                 #   1. A hosted-API provider only accepts a model from its OWN
                 #      catalog. A foreign model id is a stale caller value, not
-                #      a user intent â€” drop it rather than stamp it on.
+                #      a user intent — drop it rather than stamp it on.
                 #   2. Never downgrade a known model to blank. An empty `model`
                 #      is what made every downstream resolution fall through to
                 #      the stale value in the first place.
@@ -20429,7 +20500,7 @@ Cover every part of the user's request. If the results lack some asked part, say
                     and not model_belongs_to_provider(model_provider, _inst_model)
                 ):
                     logger.warning(
-                        "[AgentKernel] model '%s' is not in provider '%s' catalog â€” "
+                        "[AgentKernel] model '%s' is not in provider '%s' catalog — "
                         "ignoring it (stale caller value) and keeping the provider's "
                         "own model",
                         _inst_model, model_provider,
@@ -20458,7 +20529,7 @@ Cover every part of the user's request. If the results lack some asked part, say
                     api_base_url=api_base_url or getattr(self, '_api_base_url', '') or "",
                     api_key=_effective_key,
                     # Carry forward live state that this call knows nothing
-                    # about â€” re-registering a loaded local provider must not
+                    # about — re-registering a loaded local provider must not
                     # silently mark it unloaded (that drops it out of the
                     # ModelSwitcher, which filters local providers on `loaded`).
                     purpose=(_prev_inst.purpose if _prev_inst else "chat"),
@@ -20467,22 +20538,22 @@ Cover every part of the user's request. If the results lack some asked part, say
                 )
                 # Register on this kernel's router only. The registry is
                 # process-wide (REQ-5), so every peer kernel observes the same
-                # provider and role bindings automatically â€” no fan-out loop.
+                # provider and role bindings automatically — no fan-out loop.
                 _r = getattr(self, "_router", None)
                 if _r is not None:
                     _r.add_provider(_inst)
                     # PERSIST the provider, not just register it (2026-08-16).
                     #
                     # add_provider() writes the LIVE registry only. The config's
-                    # `inference.providers` collection â€” which the registry is
-                    # rebuilt from at startup â€” was written by a different path
+                    # `inference.providers` collection — which the registry is
+                    # rebuilt from at startup — was written by a different path
                     # that only the explicit provider-setup flow calls. So a
                     # provider chosen through the Models card existed until the
                     # next restart and then vanished: ollama disappeared from the
                     # ModelSwitcher dropdown and both roles fell back to cohere,
                     # because the id they were bound to no longer existed.
                     #
-                    # This is provider-agnostic by construction â€” the same hole
+                    # This is provider-agnostic by construction — the same hole
                     # swallowed any provider (and would swallow a loaded local
                     # model) that was never registered through provider setup.
                     # Credentials are NOT written here; the key already went to
@@ -20517,7 +20588,7 @@ Cover every part of the user's request. If the results lack some asked part, say
                         _sc2(_cfg2)
                         logger.info(
                             "[AgentKernel] persisted provider %r to config "
-                            "(kind=%s model=%r) â€” survives restart",
+                            "(kind=%s model=%r) — survives restart",
                             _inst_id, _kind.name, _inst_model,
                         )
                     except Exception as _pp_err:
@@ -20528,7 +20599,7 @@ Cover every part of the user's request. If the results lack some asked part, say
                     if preserve_bindings:
                         # confirm_card path: role_bindings (set by the Brain/Tool
                         # dropdowns / chat ModelSwitcher via set_role_binding) are
-                        # canonical. Do NOT rebind them here â€” a stale provider
+                        # canonical. Do NOT rebind them here — a stale provider
                         # from the card must not clobber the user's selection.
                         # Only ensure the provider is registered.
                         logger.info(
@@ -20620,7 +20691,7 @@ Cover every part of the user's request. If the results lack some asked part, say
                 if _local_inst is not None:
                     instance_id = _local_inst.id
             # Local-override is NOT a veto (REQ-5 AC4): binding to a local
-            # provider whose model is not yet loaded is allowed â€” it becomes
+            # provider whose model is not yet loaded is allowed — it becomes
             # live once the model loads. The gateway surfaces a status flag
             # instead of rejecting. We simply bind on the process-wide registry.
             _r = getattr(self, "_router", None)
@@ -20628,7 +20699,7 @@ Cover every part of the user's request. If the results lack some asked part, say
                 return False
             # THE write. The table is process-wide, so this one call is visible
             # to every kernel, every peer session, every future conversation,
-            # and every subagent â€” immediately and without propagation.
+            # and every subagent — immediately and without propagation.
             #
             # Nothing follows it. There used to be two sync blocks here: one
             # updating the module-global `_model_config_snapshot` and one
@@ -20745,7 +20816,7 @@ Cover every part of the user's request. If the results lack some asked part, say
 # Singleton instance management
 _agent_kernel_instances: Dict[str, AgentKernel] = {}
 
-# â”€â”€ Global internet-access gate (app-wide) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Global internet-access gate (app-wide) ────────────────────────────────
 # Web mode is a single app-level switch, not per-conversation.  Kernels are
 # created per conversation (_agent_kernel_instances), but internet access must
 # apply to every kernel at once when the user toggles web mode in the UI.
@@ -20767,12 +20838,12 @@ def get_global_internet_access() -> bool:
     return _internet_access_enabled
 
 
-# â”€â”€ Global desktop-control gate (app-wide) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Global desktop-control gate (app-wide) ────────────────────────────────
 # Desktop control = launching the user's real browser/apps, opening files with
 # their default application, locking the screen, GUI/screen automation, etc.
 # Everything that reaches OUTSIDE the app sandbox.  It is OFF by default and
 # only enabled when the user explicitly grants permission via the
-# desktop_control dashboard card (confirm_card â†’ set_desktop_control_enabled).
+# desktop_control dashboard card (confirm_card → set_desktop_control_enabled).
 # tool_bridge gates every desktop-control tool on this flag so the agent can
 # NEVER reach the desktop unless the user opted in.
 _desktop_control_enabled: bool = False
@@ -20804,7 +20875,7 @@ _swarm_config_snapshot: Optional[dict] = None
 # read the process-wide role-binding table, which already holds the live choice.
 #
 # It was also the third of the five competing sources of truth for "which model
-# is active", and the one that made the others hard to reason about â€” it was
+# is active", and the one that made the others hard to reason about — it was
 # written by set_model_selection under one key spelling ("tool_execution_model")
 # and read under another ("tool_model"), and its reader had been raising
 # TypeError on every call since the day set_model_selection's signature changed.
@@ -20823,7 +20894,7 @@ def get_agent_kernel(
     session_id is preserved for WS routing and Mycelium ingestion.
 
     Args:
-        conversation_id: Primary key â€” one kernel per conversation thread.
+        conversation_id: Primary key — one kernel per conversation thread.
         session_id: Transport label for WS routing and Mycelium.
                     If None, falls back to conversation_id.
 
@@ -20843,7 +20914,7 @@ def get_agent_kernel(
         # ran under session_iris. Log every construction with BOTH ids and the
         # existing keys so a mid-turn rebuild is visible instead of inferred.
         # Note some keys are pseudo-conversations by design (crawl_planner,
-        # data_extractor, default) â€” those are expected; a real thread id
+        # data_extractor, default) — those are expected; a real thread id
         # appearing twice, or appearing late, is not.
         logger.info(
             "[AgentKernel] CONSTRUCTING kernel conv=%r session=%r "
@@ -20857,7 +20928,7 @@ def get_agent_kernel(
             conversation_id=conversation_id,
         )
 
-        # Auto-wire Pillar 4 (Memory) â€” connects episodic/semantic memory to every session
+        # Auto-wire Pillar 4 (Memory) — connects episodic/semantic memory to every session
         try:
             from backend.memory import get_memory_interface
 
@@ -20875,8 +20946,8 @@ def get_agent_kernel(
         # Inherit inference BEHAVIOUR settings from any already-configured peer.
         #
         # Context: the user configures things once (in session_iris / the main UI
-        # session).  Secondary sessions â€” such as session_iris_integration which is
-        # created when the wake-word fires â€” are spun up lazily.  Without this,
+        # session).  Secondary sessions — such as session_iris_integration which is
+        # created when the wake-word fires — are spun up lazily.  Without this,
         # a wake-word-triggered response ran with default behaviour settings.
         #
         # WHICH MODEL SERVES WHICH ROLE IS NOT COPIED HERE (2026-08-16). It used
@@ -20884,7 +20955,7 @@ def get_agent_kernel(
         # _model_provider, ...)`` without ``preserve_bindings``, which fell
         # through to ``bind_role`` and REBOUND the process-wide role table from
         # the peer's LEGACY fields. Those fields are not updated by the gateway's
-        # role-binding path, so they held the startup provider â€” and every new
+        # role-binding path, so they held the startup provider — and every new
         # conversation therefore reverted the user's live pick (the recurring
         # "picked cohere, sent a message, back to cerebras" bug).
         #
@@ -20968,7 +21039,7 @@ def get_agent_kernel(
             # `response_length=` and `tool_mode=`, none of which are parameters
             # of set_model_selection, so every call raised TypeError straight
             # into the handler below it and logged "model snapshot hydrate
-            # failed". Second, even working it would have been wrong â€” it
+            # failed". Second, even working it would have been wrong — it
             # replayed a STORED copy of the user's choice over the live
             # process-wide role table, which is the same class of bug as the
             # peer-inheritance rebind above. Startup seeding belongs in
@@ -20979,13 +21050,13 @@ def get_agent_kernel(
     return _agent_kernel_instances[conversation_id]
 
 
-# â”€â”€ Session â†’ active conversation registry â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Session → active conversation registry ───────────────────────────────
 # Wave 5 (session-conversation-switching spec): eliminates the phantom
 # "default" kernel.  Callers that only knew a session_id (e.g. a wake-word
 # voice path, a reconnect, a REST chat request) were calling
 # get_agent_kernel(session_id=...) which fell back to conversation_id="default",
 # creating a kernel the active thread never used.  The gateway owns the
-# authoritative sessionâ†’active-conversation binding (_active_conversation_id);
+# authoritative session→active-conversation binding (_active_conversation_id);
 # it mirrors that binding here (module-level, no circular import) so any
 # caller can resolve the *real* active kernel for a session via
 # get_active_kernel(session_id) instead of spawning a "default" ghost.
@@ -20995,12 +21066,12 @@ _session_active_conversation: dict = {}
 def set_active_conversation(
     session_id: str, conversation_id: Optional[str]
 ) -> None:
-    """Mirror the gateway's sessionâ†’active-conversation binding into this
+    """Mirror the gateway's session→active-conversation binding into this
     module-level registry.  Called by the gateway whenever it (re)points a
     session at a conversation (new_conversation / switch_conversation /
     sync_state / voice_command_start / connect).
 
-    ``conversation_id=None`` UNBINDS the session â€” the state "the user left a
+    ``conversation_id=None`` UNBINDS the session — the state "the user left a
     thread and has not started the next one yet".  Leaving a stale binding in
     place is what let a wake word or a reconnect resolve back into the thread
     the user had just walked away from, so the absence of a thread has to be

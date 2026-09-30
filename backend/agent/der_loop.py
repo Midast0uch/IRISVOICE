@@ -452,7 +452,11 @@ class DirectorQueue:
         )
         if _tc in ("research", "explore", "investigate", "complex"):
             return ExecutionMode.FULL if confidence > 0.5 else ExecutionMode.AGENTIC
-        if _tc in ("tool_request", "multi_step", "complex_command"):
+        # Execution audit B13 (2026-09-29): "code" (from "code_task") and the
+        # encoder's "quick_edit" matched no branch, so a SHORT coding request
+        # ("fix parser.py") fell to the length heuristic below, ran in QUICK,
+        # and QUICK never continues past its plan.
+        if _tc in ("tool_request", "multi_step", "complex_command", "code", "quick_edit"):
             return ExecutionMode.AGENTIC
 
         # ── Step 4: message length heuristics (content-based) ──────────

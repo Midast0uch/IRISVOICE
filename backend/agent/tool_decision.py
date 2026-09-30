@@ -308,8 +308,8 @@ _VISION_PHRASES = (
 # Developer-mode menu priority: the tools a coding step actually uses, with
 # ripgrep search right after reading. Only the first (cap - 2) reach the scorer.
 _DEV_MENU_ORDER = (
-    "read_file", "grep_files", "write_file", "run_command",
-    "glob_files", "list_directory", "git_diff", "git_status",
+    "read_file", "edit_file", "grep_files", "run_command",
+    "write_file", "glob_files", "list_directory", "git_diff", "git_status",
 )
 
 
@@ -1296,11 +1296,15 @@ class ToolDecisionBox:
         if spec is None:
             return []
         _p = params or {}
+        # authored_by="brain" fields (file bodies) are written after resolution
+        # by backend/agent/brain_author.py with the file in view; asking for them
+        # here (200 tokens, no file) produced bodies that could not be right.
         return [
             name
             for name, pspec in (spec.parameters or {}).items()
             if isinstance(pspec, dict)
             and not pspec.get("optional", False)
+            and pspec.get("authored_by") != "brain"
             and not str(_p.get(name, "")).strip()
         ]
 

@@ -1487,6 +1487,47 @@ class InProcessTransport:
 # ---------------------------------------------------------------------------
 
 
+def _to_ollama_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """OpenAI-shaped history -> Ollama /api/chat history.
+
+    Ollama wants ``tool_calls[].function.arguments`` as an OBJECT (the kernel
+    keeps OpenAI's JSON string) and names a tool result with ``tool_name``.
+    Plain messages pass through unchanged.
+    """
+    out: List[Dict[str, Any]] = []
+    for m in messages:
+        if m.get("tool_calls"):
+            calls = []
+            for tc in m["tool_calls"]:
+                fn = dict(tc.get("function") or {})
+                args = fn.get("arguments")
+                if isinstance(args, str):
+                    try:
+                        fn["arguments"] = _json.loads(args) if args.strip() else {}
+                    except ValueError:
+                        fn["arguments"] = {"__raw_arguments__": args}
+                calls.append({"function": {"name": fn.get("name", ""), "arguments": fn.get("arguments") or {}}})
+            m = {"role": m.get("role", "assistant"), "content": m.get("content") or "", "tool_calls": calls}
+        elif m.get("role") == "tool":
+            m = {"role": "tool", "content": m.get("content") or "", "tool_name": m.get("name", "")}
+        out.append(m)
+    return out
+
+
+def _from_ollama_tool_call(index: int, tc: Dict[str, Any]) -> Dict[str, Any]:
+    """Ollama tool call -> the OpenAI shape the kernel consumes (arguments as a JSON string)."""
+    fn = tc.get("function") or {}
+    args = fn.get("arguments")
+    return {
+        "id": tc.get("id") or f"call_{index}",
+        "type": "function",
+        "function": {
+            "name": fn.get("name", ""),
+            "arguments": args if isinstance(args, str) else _json.dumps(args or {}),
+        },
+    }
+
+
 class OllamaTransport:
     """Ollama native API via https.
 
@@ -1494,7 +1535,7 @@ class OllamaTransport:
     replaced with httpx for consistency with other transports).
 
     No streaming support — Ollama native API is called non-streaming.
-    No tool support.
+    Tools: sent when given; tool calls come back in the OpenAI shape.
     """
 
     def __init__(
@@ -1531,7 +1572,7 @@ class OllamaTransport:
         url = f"{self._endpoint}/api/chat"
         payload = {
             "model": model,
-            "messages": messages,
+            "messages": _to_ollama_messages(messages),
             "stream": False,
             # Session-345 live finding: thinking models (gpt-oss:120b-cloud)
             # can place the ENTIRE answer in message.thinking while content
@@ -1562,8 +1603,15 @@ class OllamaTransport:
                 model,
             )
 
+        # Execution audit B1: tools were never sent, so the Brain on Ollama
+        # could not call a tool, and a fixed 30 s timeout cut off any long
+        # answer (a file body). Honour the caller's timeout; default 120 s.
+        if tools:
+            payload["tools"] = tools
+        _timeout = float(timeout_s) if timeout_s else 120.0
+        _tool_calls: List[Dict[str, Any]] = []
         try:
-            with _httpx.Client(timeout=_httpx.Timeout(30.0)) as _client:
+            with _httpx.Client(timeout=_httpx.Timeout(_timeout)) as _client:
                 _resp = _client.post(url, json=payload)
                 # The provider publishes its own RPM ceiling on every response;
                 # learning it only from 429s meant guessing 30 against a real 5.
@@ -1584,13 +1632,21 @@ class OllamaTransport:
                     )
                 result = _resp.json()
                 self.last_usage = _extract_ollama_usage(result)
-                _reply = result.get("message", {}).get("content") or ""
+                _msg = result.get("message", {}) or {}
+                _reply = _msg.get("content") or ""
+                _tool_calls = [
+                    _from_ollama_tool_call(i, tc)
+                    for i, tc in enumerate(_msg.get("tool_calls") or [])
+                ]
         except Exception:
             logger.warning(
                 "[OllamaTransport] inference failed for model=%s", model
             )
             raise
 
+        if _tool_calls:
+            thinking, clean = parse_thinking(_reply) if _reply else ("", "")
+            return clean, thinking, _tool_calls
         if not _reply:
             raise RuntimeError("Empty response from Ollama")
 

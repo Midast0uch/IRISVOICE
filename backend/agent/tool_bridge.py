@@ -634,9 +634,13 @@ class AgentToolBridge:
                 "url": {"type": "string"}}, "category": "web", "server": "browser"},
 
             # File Management
-            {"name": "read_file", "description": "Read file contents", "parameters": {
-                "path": {"type": "string"}}, "category": "file", "server": "file_manager"},
-            {"name": "write_file", "description": "Write to file", "parameters": {"path": {
+            {"name": "read_file", "description": "Read a file (optionally only start_line..end_line)", "parameters": {
+                "path": {"type": "string"}, "start_line": {"type": "integer"},
+                "end_line": {"type": "integer"}}, "category": "file", "server": "file_manager"},
+            {"name": "edit_file", "description": "Fix or change code in an existing file: replace exact old text with new text", "parameters": {
+                "path": {"type": "string"}, "old": {"type": "string"},
+                "new": {"type": "string"}}, "category": "file", "server": "file_manager"},
+            {"name": "write_file", "description": "Create a new file or replace a whole file", "parameters": {"path": {
                 "type": "string"}, "content": {"type": "string"}}, "category": "file", "server": "file_manager"},
             {"name": "list_directory", "description": "List directory", "parameters": {
                 "path": {"type": "string"}}, "category": "file", "server": "file_manager"},
@@ -1196,6 +1200,10 @@ class AgentToolBridge:
 
         if server_name == "file_manager":
             params = self._anchor_file_paths(params, session_id)
+            if tool_name in ("read_file", "list_directory"):
+                params = {k: (self._self_edit_view(v, session_id)
+                              if k in self._FILE_PATH_KEYS and isinstance(v, str) else v)
+                          for k, v in params.items()}
 
         try:
             # Check rate limit
@@ -1849,6 +1857,7 @@ class AgentToolBridge:
                 # File
                 "read_file": ("file_manager", "read_file"),
                 "write_file": ("file_manager", "write_file"),
+                "edit_file": ("file_manager", "edit_file"),
                 "list_directory": ("file_manager", "list_directory"),
                 "create_directory": ("file_manager", "create_directory"),
                 "delete_file": ("file_manager", "delete_file"),
@@ -1907,7 +1916,7 @@ class AgentToolBridge:
             # file writes are rewritten into the sandbox worktree so the
             # live tree is never touched. Non-IRIS workdirs write direct.
             sandbox_note = None
-            if tool_name in ("write_file", "create_directory", "delete_file"):
+            if tool_name in ("write_file", "edit_file", "create_directory", "delete_file"):
                 routed = await self._route_self_edit(tool_name, params, session_id)
                 if routed.get("reject"):
                     result = routed["result"]
@@ -1950,7 +1959,7 @@ class AgentToolBridge:
                 # Gate 3 T4b (REQ-15): track files this turn wrote, so the
                 # orchestrator can run the targeted verification gate after
                 # the turn. Session-scoped, cleared by pop_turn_writes().
-                if tool_name in ("write_file", "delete_file") \
+                if tool_name in ("write_file", "edit_file", "delete_file") \
                         and isinstance(result, dict) and result.get("success"):
                     try:
                         self.note_turn_write(session_id, str(params.get("path", "")))
@@ -2431,6 +2440,14 @@ class AgentToolBridge:
         the project folder, so every coding task in another folder read and
         wrote the wrong tree (Phase 0 eval: coding 0/15, 2026-09-29).
         Absolute paths and sessions with no bound workdir are left untouched.
+
+        A ROOTED path with no drive ("/durations.py", "/home/user/mathutils.py")
+        is not absolute on Windows, and os.path.join keeps only the workdir's
+        drive for it: "/durations.py" became "C:\\durations.py" and every write
+        step failed with Errno 2 (eval re-run after Phase 1, 2026-09-29). The
+        model invents these paths for project files, so it is re-rooted into
+        the workdir: the longest suffix whose parent folder exists there wins,
+        which always terminates at <workdir>/<basename>.
         """
         self.__init_bridge_state__()
         workdir = self._session_workdirs.get(session_id)
@@ -2439,9 +2456,26 @@ class AgentToolBridge:
         anchored = dict(params)
         for key in self._FILE_PATH_KEYS:
             raw = anchored.get(key)
-            if isinstance(raw, str) and raw.strip() and not os.path.isabs(raw):
+            if not (isinstance(raw, str) and raw.strip()) or os.path.isabs(raw):
+                continue
+            if raw.startswith(("/", "\\")):
+                anchored[key] = self._reroot_into_workdir(raw, workdir)
+                logger.info("[ToolBridge] session=%s re-rooted %s=%r -> %r",
+                            session_id, key, raw, anchored[key])
+            else:
                 anchored[key] = os.path.normpath(os.path.join(workdir, raw))
         return anchored
+
+    @staticmethod
+    def _reroot_into_workdir(raw: str, workdir: str) -> str:
+        parts = [seg for seg in raw.replace("\\", "/").split("/") if seg and seg not in (".", "..")]
+        if not parts:
+            return workdir
+        for i in range(len(parts)):
+            candidate = os.path.join(workdir, *parts[i:])
+            if os.path.isdir(os.path.dirname(candidate)):
+                return os.path.normpath(candidate)
+        return os.path.normpath(os.path.join(workdir, parts[-1]))
 
     # ── T4b (REQ-15): per-turn write tracking for the verification gate ──
 
@@ -2504,6 +2538,30 @@ class AgentToolBridge:
             scope = os.path.normpath(os.path.join(base, scope))
         return scope
 
+    def _self_edit_view(self, path: str, session_id: str) -> str:
+        """Execution audit B10: while a session edits IRIS itself, its reads,
+        searches and commands see the sandbox worktree its writes go to.
+
+        Writes were routed into .iris-worktree (REQ-13) but read_file,
+        run_command and grep still used the live repo, so the agent could not
+        see its own edit and its tests ran against the old code. A live-repo
+        path maps to the same relative path in the worktree; any other path,
+        or a session not editing IRIS, or no worktree yet, is unchanged.
+        """
+        self.__init_bridge_state__()
+        workdir = self._session_workdirs.get(session_id)
+        repo = os.path.normpath(self._DEFAULT_REPO)
+        if not path or not workdir or not self._path_under(os.path.normpath(workdir), repo):
+            return path
+        from backend import git_ops as _gitops
+
+        worktree = os.path.normpath(_gitops._get_worktree_path(repo))
+        path = os.path.normpath(path)
+        if not os.path.isdir(worktree) or not self._path_under(path, repo) \
+                or self._path_under(path, worktree):
+            return path
+        return os.path.normpath(os.path.join(worktree, os.path.relpath(path, repo)))
+
     @staticmethod
     def _path_under(candidate: str, root: str) -> bool:
         """True if candidate == root or lies beneath it (separator-aware)."""
@@ -2549,18 +2607,21 @@ class AgentToolBridge:
 
         worktree = os.path.normpath(wt_info["path"]) if wt_info.get("path") else _gitops._get_worktree_path(repo_root)
 
-        raw_path = str(params.get("path", ""))
-        if not raw_path:
+        # Resolve exactly as the file tools will (both path keys, rooted "/x"
+        # paths re-rooted): joining here by hand let "/x.py" and a `file_path`
+        # key miss the IRIS check and write the live tree.
+        anchored = self._anchor_file_paths(params, session_id)
+        key = next((k for k in self._FILE_PATH_KEYS if str(anchored.get(k) or "").strip()), None)
+        if key is None:
             return {"params": params}
-        candidate = raw_path if os.path.isabs(raw_path) else os.path.join(workdir, raw_path)
-        candidate = os.path.normpath(candidate)
+        candidate = os.path.normpath(str(anchored[key]))
 
         if not self._path_under(candidate, repo_root):
             return {"params": params}  # target outside IRIS root — not a self-edit
 
         rel = os.path.relpath(candidate, repo_root)
-        new_params = dict(params)
-        new_params["path"] = os.path.join(worktree, rel)
+        new_params = dict(anchored)
+        new_params[key] = os.path.join(worktree, rel)
 
         note = None
         if rel.endswith(".py"):
@@ -2597,6 +2658,7 @@ class AgentToolBridge:
 
             rejection = f"Working directory '{scope}' is outside the project root. Aborting."
             return tool_error("workdir_denied", rejection, raw=rejection)
+        scope = self._self_edit_view(scope, session_id)
 
         import asyncio as _asyncio
         from backend.agent import search_tools
@@ -2683,6 +2745,7 @@ class AgentToolBridge:
 
             rejection = f"Working directory '{cwd}' is outside the project root. Aborting."
             return tool_error("workdir_denied", rejection, raw=rejection)
+        cwd = self._self_edit_view(cwd, session_id)
 
         async def _run(cmd, timeout: int = 30) -> Dict:
             """T0c (REQ-1 AC5): run on the session ShellSession — the SAME

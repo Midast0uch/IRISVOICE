@@ -644,15 +644,33 @@ def register_builtin_tools() -> None:
         ),
         ToolSpec(
             name="read_file",
-            description="Read file contents",
-            parameters={"path": {"type": "string"}},
+            description="Read a file (optionally only start_line..end_line)",
+            parameters={
+                "path": {"type": "string"},
+                "start_line": {"type": "integer", "description": "First line (1-based)", "optional": True},
+                "end_line": {"type": "integer", "description": "Last line (inclusive)", "optional": True},
+            },
             category="file", executor="mcp", mcp_server="file_manager", mcp_tool="read_file",
             permission_tier="read_only", parallel_safe=True, critical=True,
         ),
+        # authored_by="brain" (owner decision 2026-09-29, split roles): the
+        # small tool model picks the tool and path; the Brain writes these
+        # fields (backend/agent/brain_author.py). Not part of the JSON schema.
+        ToolSpec(
+            name="edit_file",
+            description="Fix or change code in an existing file: replace exact old text with new text",
+            parameters={
+                "path": {"type": "string"},
+                "old": {"type": "string", "description": "Exact current text, must match once", "authored_by": "brain"},
+                "new": {"type": "string", "description": "Replacement text", "authored_by": "brain"},
+            },
+            category="file", executor="mcp", mcp_server="file_manager", mcp_tool="edit_file",
+            permission_tier="side_effect",
+        ),
         ToolSpec(
             name="write_file",
-            description="Write to file",
-            parameters={"path": {"type": "string"}, "content": {"type": "string"}},
+            description="Create a new file or replace a whole file",
+            parameters={"path": {"type": "string"}, "content": {"type": "string", "authored_by": "brain"}},
             category="file", executor="mcp", mcp_server="file_manager", mcp_tool="write_file",
             permission_tier="side_effect",
         ),

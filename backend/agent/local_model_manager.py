@@ -74,6 +74,12 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# llama-server runs at -lv 5 so load progress is observable, but at that level
+# it also prints ~10 "D" (debug) lines per generated token for the whole
+# session; forwarding them grew logs/iris.log to 2 GB. Lines look like
+# "8.19.557.938 D que    start_loop: ..." - progress parsing still sees them.
+_LLAMA_DEBUG_LINE = re.compile(r"^\d+\.\d+\.\d+\.\d+ D ")
+
 IRISVOICE_ROOT = Path(__file__).parent.parent.parent
 
 # ── Quantization bits-per-weight table (for VRAM estimation) ──
@@ -3427,7 +3433,8 @@ class LocalModelManager:
                         line = raw_line.rstrip()
                         if not line:
                             continue
-                        logger.debug(f"[llama-server] {line}")
+                        if not _LLAMA_DEBUG_LINE.match(line):
+                            logger.debug(f"[llama-server] {line}")
                         # Capture server errors for failure reporting (e.g. unknown architecture 'dflash')
                         low = line.lower()
                         if "error loading model" in low or "unknown model architecture" in low or "exiting due to model loading error" in low:

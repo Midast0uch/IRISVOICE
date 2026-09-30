@@ -75,6 +75,7 @@ HIDDEN_DIRNAME = "_eval_hidden"
 _LEAK_NOISE_PREFIXES = (
     "data/", "backend/data/", ".mcm/", "logs/", ".iris-pids/", "temp/",
     "benchmarks/", "evals/results/", ".workbuddy-ai/", "screenshots/",
+    ".iris-worktree/",  # the developer-mode switch builds this self-edit worktree
 )
 
 # Reply prefixes that mean the turn failed rather than answered.

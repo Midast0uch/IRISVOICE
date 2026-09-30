@@ -277,6 +277,14 @@ def main():
     print(f"   PYTHONPATH: {os.environ.get('PYTHONPATH', 'not set')}")
     print()
     
+    # TEMP DIAGNOSTIC (2026-09-29, remove after the idle-gap hunt): in-process
+    # thread-stack dump every N s. External samplers crashed the backend.
+    if os.environ.get("IRIS_STACK_DUMP_S"):
+        import faulthandler
+        _dump_fh = open(os.path.join(base_dir, "logs", "stackdump.log"), "w")
+        _dump_fh.write(f"start_epoch {__import__('time').time():.3f}\n")
+        _dump_fh.flush()
+        faulthandler.dump_traceback_later(float(os.environ["IRIS_STACK_DUMP_S"]), repeat=True, file=_dump_fh)
     try:
         print("Starting async server...")
         asyncio.run(run_server())

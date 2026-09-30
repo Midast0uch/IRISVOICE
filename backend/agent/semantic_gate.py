@@ -1031,6 +1031,7 @@ class SemanticLogicGate:
         director_queue=None,
         web_mode: bool = False,
         session_id: Optional[str] = None,
+        developer: bool = False,
     ) -> DAGPlanGraph:
         """Compile a turn into a DAGPlanGraph (REQ-1, REQ-8).
 
@@ -1038,9 +1039,16 @@ class SemanticLogicGate:
         (coordinate-graph ontology) + the continuation lens. The neural
         embedding tier (Tier 1) was removed — the gate routes on rules +
         coordinates, matching the app's coordinate-graph memory.
+
+        ``developer`` (execution audit B8): in developer mode every request
+        that is not chitchat goes to the work loop. The verb list matches
+        substrings and lacks "fix", "implement", "refactor", "debug", so
+        "fix the bug in foo.py" was answered on the direct path.
         """
         _t0 = time.perf_counter()
         verdict = tier0_classify(text, context)
+        if developer and verdict.intent in (Tier0Intent.QUESTION, Tier0Intent.FOLLOWUP):
+            verdict = Tier0Verdict(intent=Tier0Intent.ACTION)
 
         # Tier 2 — ontology axes + shared recall (only when memory is wired).
         t2 = Tier2Result()

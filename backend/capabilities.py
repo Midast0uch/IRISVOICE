@@ -40,6 +40,7 @@ class CapabilitySet:
     # file operations KEEP their gate: delete_file stays in _REPO_TOOLS.
     _FILE_WRITE_TOOLS: Set[str] = {
         "write_file",
+        "edit_file",
         "create_directory",
     }
 

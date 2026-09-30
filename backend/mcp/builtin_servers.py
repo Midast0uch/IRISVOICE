@@ -329,6 +329,41 @@ class SystemServer(BuiltinServer):
         return {"error": f"Unknown tool: {name}"}
 
 
+def _atomic_write(path: str, text: str, newline: Optional[str] = None) -> None:
+    """Write via a temp file + os.replace: a crash leaves the old file, never a half one."""
+    import tempfile
+
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(path)),
+                               prefix=".iris-write-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline=newline) as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _line_arg(arguments: Dict[str, Any], key: str) -> Optional[int]:
+    """A positive line number from a tool argument, or None (models send "12" too)."""
+    try:
+        value = int(arguments.get(key))
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _first_str(arguments: Dict[str, Any], keys: tuple) -> Optional[str]:
+    for key in keys:
+        value = arguments.get(key)
+        if isinstance(value, str):
+            return value
+    return None
+
+
 def _reroot_if_missing(path: str) -> tuple:
     """Return ``(usable_path, note)`` for a path that may not exist.
 
@@ -400,18 +435,20 @@ class FileManagerServer(BuiltinServer):
         self._tools = [
             MCPTool(
                 name="read_file",
-                description="Read contents of a file",
+                description="Read a file. Optional start_line/end_line (1-based, inclusive) read part of it.",
                 input_schema={
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string", "description": "File path"}
+                        "path": {"type": "string", "description": "File path"},
+                        "start_line": {"type": "integer", "description": "First line to read (1-based)"},
+                        "end_line": {"type": "integer", "description": "Last line to read (inclusive)"}
                     },
                     "required": ["path"]
                 }
             ),
             MCPTool(
                 name="write_file",
-                description="Write contents to a file",
+                description="Create a new file, or replace a whole file, with the given content",
                 input_schema={
                     "type": "object",
                     "properties": {
@@ -419,6 +456,19 @@ class FileManagerServer(BuiltinServer):
                         "content": {"type": "string", "description": "Content to write"}
                     },
                     "required": ["path", "content"]
+                }
+            ),
+            MCPTool(
+                name="edit_file",
+                description="Change part of an existing file: replace the exact text `old` (must occur exactly once) with `new`",
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "File path"},
+                        "old": {"type": "string", "description": "Exact text to replace; must match once"},
+                        "new": {"type": "string", "description": "Replacement text"}
+                    },
+                    "required": ["path", "old", "new"]
                 }
             ),
             MCPTool(
@@ -475,9 +525,31 @@ class FileManagerServer(BuiltinServer):
                 content = await asyncio.to_thread(self._sync_read_file, path)
                 result = {"success": True, "content": content, "path": path,
                           "bytes": len(content)}
+                start, end = _line_arg(arguments, "start_line"), _line_arg(arguments, "end_line")
+                if start or end:
+                    lines = content.splitlines(keepends=True)
+                    first = max(1, start or 1)
+                    last = min(len(lines), end or len(lines))
+                    result["content"] = "".join(lines[first - 1:last])
+                    result.update(start_line=first, end_line=last, total_lines=len(lines))
                 if _reroot_note:
                     result["notice"] = _reroot_note
                 return result
+            except Exception as e:
+                return {"success": False, "error": str(e), "path": path}
+
+        elif name == "edit_file":
+            path = path_arg(arguments)
+            if not path:
+                return missing_arg_error("edit_file", "path", arguments)
+            old = _first_str(arguments, ("old", "old_string", "old_text"))
+            new = _first_str(arguments, ("new", "new_string", "new_text"))
+            if not old:
+                return missing_arg_error("edit_file", "old", arguments)
+            if new is None:
+                return missing_arg_error("edit_file", "new", arguments)
+            try:
+                return await asyncio.to_thread(self._sync_edit_file, path, old, new)
             except Exception as e:
                 return {"success": False, "error": str(e), "path": path}
 
@@ -568,8 +640,35 @@ class FileManagerServer(BuiltinServer):
 
     @staticmethod
     def _sync_write_file(path: str, content: str) -> None:
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(content)
+        _atomic_write(path, content)
+
+    @staticmethod
+    def _sync_edit_file(path: str, old: str, new: str) -> dict:
+        """Replace the one exact occurrence of `old` with `new` (B9).
+
+        Read and written with newline="" so CRLF files keep their endings. An
+        LF-only `old` is retried as CRLF against a CRLF file, because a model
+        quotes code with bare newlines.
+        """
+        with open(path, "r", encoding="utf-8", newline="") as f:
+            text = f.read()
+        count = text.count(old)
+        if count == 0 and "\r\n" in text and "\r\n" not in old and "\n" in old:
+            old, new = old.replace("\n", "\r\n"), new.replace("\n", "\r\n")
+            count = text.count(old)
+        if count == 0:
+            return {"success": False, "path": path,
+                    "error": "edit_file: `old` text was not found in the file; "
+                             "read the file and quote the exact current text"}
+        if count > 1:
+            return {"success": False, "path": path,
+                    "error": f"edit_file: `old` text occurs {count} times; "
+                             "include more surrounding lines so it matches once"}
+        updated = text.replace(old, new, 1)
+        _atomic_write(path, updated, newline="")
+        line = text[: text.index(old)].count("\n") + 1
+        return {"success": True, "path": path, "message": f"Edited {path} at line {line}",
+                "line": line, "bytes": len(updated.encode("utf-8"))}
 
     @staticmethod
     def _sync_list_directory(path: str, recursive: bool) -> dict:

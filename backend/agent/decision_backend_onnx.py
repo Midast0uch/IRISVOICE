@@ -276,6 +276,15 @@ def resolve_model_dir(explicit: Optional[str] = None) -> Optional[str]:
 # change under us. `intra_op` is where the parallelism win is; a second axis of
 # `inter_op` threads on a single-request-at-a-time workload only oversubscribes.
 _INTER_OP_THREADS = 1
+
+# Input length cap (label structure + text). The encoder is DeBERTa-v3 with 512
+# positions and GLiNER trains on ~384 words; nothing capped the text, so the
+# `done` monitor - which passes the whole planner prompt, every step output
+# included - ran ~5k-token inputs through one quadratic-attention pass: 28.6 s
+# for one call, 65.7 s over four in one eval turn (2026-09-29), while every
+# other consumer queued behind it on the single inference thread and six gave
+# up at the 9 s budget. The head of the text (the objective) is kept.
+_MAX_INPUT_IDS = 512
 _GRAPH_OPT_LEVEL_NAME = "ORT_ENABLE_ALL"
 _EXECUTION_MODE_NAME = "ORT_SEQUENTIAL"
 
@@ -399,7 +408,10 @@ class _OnnxRunner:
             positions += [base + p for p in rel_positions]
         ids += self._ids("[SEP_TEXT]")
         for m in _WORDS.finditer(text):
-            ids += self._ids(m.group().lower())
+            piece = self._ids(m.group().lower())
+            if len(ids) + len(piece) > _MAX_INPUT_IDS:
+                break
+            ids += piece
         # AC30.6: tokenizer work separated from structure assembly.
         self._encode_ms = (time.perf_counter() - _t0) * 1000.0
         self._tokenize_ms = (self._tok_seconds - _tok_before) * 1000.0

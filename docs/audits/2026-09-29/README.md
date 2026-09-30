@@ -4,6 +4,7 @@ Start here when continuing the agent-execution work.
 
 | What | Where |
 |---|---|
+| **Latest progress + next steps (read first)** | `PROGRESS.md` ("START HERE") — also MCM pin `pin_afa4442771d1` |
 | Execution audit (blockers B1–B17, one-engine design, roadmap) | `execution-audit.html` — also https://claude.ai/artifact/HC1UMxkoe1KuPjfZML54UW |
 | Reply surface audit (card rules, `create_artifact`, page artifacts, compact cards) | `reply-surface.html` — also https://claude.ai/artifact/M72Nhc7FcxG8Zad69PReS8 |
 | Full handoff: owner decisions, fixes done, stale tests, next steps | MCM pin `pin_dc96cc9c9681` (`pin_search("HANDOFF execution audit")`) |
