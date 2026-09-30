@@ -10127,7 +10127,10 @@ Respond with a JSON object:
                             _rec_parts = []
                             if getattr(_rec, "prior_summary", ""):
                                 _rec_parts.append(
-                                    f"UNDERSTANDING: {_rec.prior_summary[:300]}"
+                                    # 1200: a replan-after-failure child also
+                                    # carries the bounded (<= 900) chain
+                                    # timeline (K3); other nodes stay < 300.
+                                    f"UNDERSTANDING: {_rec.prior_summary[:1200]}"
                                 )
                             if getattr(_rec, "ruled_out", ""):
                                 _rec_parts.append(f"RULED OUT: {_rec.ruled_out[:200]}")
@@ -14001,6 +14004,39 @@ Respond with a JSON object:
             _prior_summary = ""
             _prior_keys = []
             _coordinate_ref = None
+
+        # REQ-4 AC4.3 (K3): a replan AFTER A FAILURE is a decision point where
+        # the Immortus chain changes the decision - this task's own timeline
+        # (what was tried, in order) plus the mediators tried near the current
+        # state ride in the children's Understanding. ONLY here: a physics
+        # split ("unresolved_u") or a normal step carries none of it (owner
+        # rule 2026-09-30: no chain data per turn/step). Bounded (<= 900 chars)
+        # and never raises; rows the physics lane has not landed yet are simply
+        # absent (no wait: the replan is not worth stalling the answer path).
+        if trigger == "verify_failed":
+            try:
+                from backend.agent.caducean_trajectory import latest_coords_str
+                from backend.agent.ontology_recall import (
+                    replan_chain_context,
+                    resolve_mycelium_conn,
+                )
+
+                _chain_sid = (
+                    getattr(self, "_der_session", None) or self.session_id or ""
+                )
+                _chain_conn = resolve_mycelium_conn(self._memory_interface)
+                if _chain_conn is not None and _chain_sid:
+                    _chain_ctx = replan_chain_context(
+                        _chain_conn,
+                        _chain_sid,
+                        latest_coords_str(self._memory_interface, _chain_sid),
+                    )
+                    if _chain_ctx:
+                        _prior_summary = (
+                            f"{_prior_summary} {_chain_ctx}".strip()
+                        )
+            except Exception as _chain_exc:  # noqa: BLE001 — advisory context
+                logger.debug("[DER] replan chain context skipped: %s", _chain_exc)
 
         children: List["QueueItem"] = []
         # REQ-3 T8: capture the pre-split compressed position so every child's

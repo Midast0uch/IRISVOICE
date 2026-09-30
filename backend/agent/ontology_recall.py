@@ -465,3 +465,101 @@ def gated_neighborhood(
         filters.thread_id or "-",
     )
     return kept
+
+
+# ── REQ-4 AC4.3 (K3): the chain at a DECISION point ──────────────────────────
+#
+# A replan after a failure is where the chain changes the decision: it tells the
+# replanner what THIS task already tried, in order, and which mediators were
+# tried near the current state. It is read only there - never per turn or per
+# step (owner rule 2026-09-30). Bounded: <= 8 rows + 3 mediators, <= 900 chars.
+
+TIMELINE_ROWS = 8
+_TIMELINE_SQL = (
+    "SELECT chain_id, result, insight, nbl_outcome, created_at "
+    "FROM memory_chain WHERE thread_id = ? "
+    "ORDER BY created_at DESC, rowid DESC LIMIT ?"
+)
+_MEDIATORS_KEPT = 3
+_CONTEXT_MAX_CHARS = 900
+
+
+def chain_timeline(conn, thread_id: str, limit: int = TIMELINE_ROWS) -> List[dict]:
+    """The last ``limit`` chain rows of THIS thread, oldest first.
+
+    Read-only and bounded by ``limit``; the query orders by the indexed
+    ``created_at`` (S2). Never raises - a failed read returns [].
+    """
+    try:
+        if not thread_id or limit < 1:
+            return []
+        rows = conn.execute(_TIMELINE_SQL, (thread_id, int(limit))).fetchall()
+        keys = ("chain_id", "result", "insight", "nbl_outcome", "created_at")
+        return [dict(zip(keys, r)) for r in reversed(rows)]
+    except Exception as exc:
+        logger.debug("[ontology_recall] chain_timeline failed: %s", exc)
+        return []
+
+
+def replan_chain_context(
+    conn, thread_id: str, state: Optional[str] = None
+) -> str:
+    """K3: the text a replan-after-failure child carries; "" when the chain has
+    nothing for this thread. ``state`` is the current "x,y,xi,u" coordinate,
+    used only to rank the mediators by proximity. Logs one
+    ``[chain_recall] replan ...`` line (rows returned + ms per decision, AC4.4).
+    Never raises.
+    """
+    t0 = time.perf_counter()
+    timeline: List[dict] = []
+    mediators: List[str] = []
+    try:
+        timeline = chain_timeline(conn, thread_id)
+        from backend.gateway.iris_ffi import ffi_immortus_chain_query_mediators
+
+        vec = None
+        if state:
+            try:
+                vec = [float(p) for p in state.split(",")]
+            except Exception:
+                vec = None
+        tried = [
+            m for m in (ffi_immortus_chain_query_mediators(thread_id) or [])
+            if m.get("mediator") and m.get("mediator") != "none"
+        ]
+        # Newest first from the query; the stable sort keeps that on ties.
+        tried.sort(key=lambda m: _state_distance(vec, m.get("coords_from")))
+        seen: set = set()
+        for m in tried:
+            name = str(m["mediator"])[:40]
+            if name in seen:
+                continue
+            seen.add(name)
+            mediators.append("{}->{}".format(name, str(m.get("result") or "?")[:12]))
+            if len(mediators) >= _MEDIATORS_KEPT:
+                break
+    except Exception as exc:
+        logger.debug("[ontology_recall] replan mediators failed: %s", exc)
+
+    parts: List[str] = []
+    if timeline:
+        steps = []
+        for r in timeline:
+            outcome = str(r.get("result") or "")
+            outcome = outcome if len(outcome) <= 16 else ""  # long = a payload
+            steps.append(" ".join(
+                x for x in (
+                    str(r.get("nbl_outcome") or "step"),
+                    outcome,
+                    str(r.get("insight") or "")[:70],
+                ) if x
+            ))
+        parts.append("CHAIN TIMELINE (this task, oldest first): " + " > ".join(steps))
+    if mediators:
+        parts.append("MEDIATORS TRIED NEAR NOW: " + ", ".join(mediators))
+    logger.info(
+        "[chain_recall] replan rows=%d mediators=%d ms=%.1f thread=%s",
+        len(timeline), len(mediators), (time.perf_counter() - t0) * 1000.0,
+        thread_id or "-",
+    )
+    return ". ".join(parts)[:_CONTEXT_MAX_CHARS]
