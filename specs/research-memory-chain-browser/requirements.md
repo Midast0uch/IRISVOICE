@@ -40,9 +40,15 @@
 - **F6 Pseudo coordinates.** `backend/api/chat.py` ~165 writes `rest:input:<turn>` (165 rows);
   `backend/agent/mcm.py` ~132 writes Python lists. 260 step rows have `coords_from =
   0.00,0.00,0.00,0.00` (no prior coordinate) and 175 document rows have `coords_from = ''`.
-- **F7 The coordinate is low-information.** In all rows `y` (compression accumulator) is 0 and
-  `xi` = 1.05 x: position ~ "step number". State proximity alone cannot find "similar thinking";
-  it must be combined with meaning (topic, text). (Physics finding for the owner; not fixed here.)
+- **F7 The coordinate is low-information because its INPUTS are constant (not by design).**
+  `Caducean::update` (`src-tauri/src/iris_core/caducean.cpp:73`): action 0 -> x+=1, u+=s*cos(xi);
+  any other action -> y+=1, u-=s*sin(xi); xi += balance*s*c_eff. The kernel
+  (`agent_kernel._der_physics_step` ~17724) sends action 1 only for run_command/git_commit/git_push
+  and 2 for a failure: 1,137 of 1,168 steps were EXPAND, including edits, tests and syntheses. With
+  y = 0 the native EML (`iris_core.cpp:162`) is ~12.5 (-log(1e-5) alone is 11.5), the kernel clamps
+  balance to 3.0, so xi advances 3.0*0.35*1.0 = 1.05 every step and u follows cos(xi): Sigma is a
+  step counter, and every one-step task ends at (1, 0, 1.05, 0.35). The owner: coordinates are NOT
+  supposed to be meaningless -> REQ-8.
 - **F8 Three Chromium launch sites.** `crawler_engine.py:320` (crawl4ai, inside the crawl
   subprocess), `browser_pool.py:346` (shared pool, bound to the loop that started it),
   `browser_tools.py:125` (browser tools; private Chromium on a dedicated loop thread, because each
@@ -87,17 +93,21 @@
 - AC3.2 The dashboard tab SHALL show a history list; opening an entry renders its stored
   dashboard with the existing dashboard renderer (no new renderer).
 
-### REQ-4 The Immortus chain is the time layer
+### REQ-4 The Immortus chain is the time layer - consulted, never dumped
+Owner rule (2026-09-30): chain data enters the agent's context ONLY when it is relevant to the
+current task. No per-turn or per-step injection (context debt).
 - AC4.1 Every chain writer SHALL write a real coordinate (from the trajectory recorder) or NULL -
   never a pseudo value, a list, or `0,0,0,0` as a stand-in for "unknown".
-- AC4.2 WHEN a DER step builds its recall context THE system SHALL add chain rows that are close
-  in MEANING (topic/domain + text) and rank them with STATE proximity (coordinate distance) and
-  TIME (recency half-life) - the hybrid "data gathered while thinking like this".
-- AC4.3 WHEN the planner replans or continues a task THE system SHALL give it the task's own
-  timeline from the chain: the last N transitions of this thread in time order (step, outcome,
-  tool/insight, age) - bounded.
-- AC4.4 Coordinate recall SHALL have a production caller (AC4.2) and SHALL be measured (rows
-  returned per step, ms per query).
+- AC4.2 THE existing per-step "RELEVANT NEIGHBORS" injection (`_der_recall_neighborhood`) SHALL
+  inject a row only when it passes a relevance bar (same topic AND text similarity to the current
+  step goal above a threshold, then ranked by state proximity and recency); when no row passes,
+  NOTHING is injected. Measured: rows injected per step before/after.
+- AC4.3 THE chain SHALL be consulted at DECISION points where it changes the decision: (a) a
+  replan after a failure gets this task's own timeline (what was tried, in order) and the
+  mediators tried near the current state (`immortus_chain_query_mediators`); (b) a web goal gets
+  prior research (REQ-2, similarity-gated). Nowhere else.
+- AC4.4 Coordinate recall SHALL have a production caller (AC4.2/AC4.3) and SHALL be measured
+  (rows returned per decision, ms per query).
 
 ### REQ-5 One browser, bounded memory
 - AC5.1 In the backend process ONE Chromium SHALL serve both the crawl pool and agent browser
@@ -126,3 +136,15 @@
   and the agent chooses another way (no retry of the same element).
 - AC7.4 The Oracle SHALL have a `click_safety` consumer in SHADOW with a reference label from the
   active gate, so it can earn the decision later (CLAUDE.md "THE ORACLE EARNS ITS JOBS").
+
+### REQ-8 A meaningful coordinate (PENDING OWNER DECISION on the action mapping)
+- AC8.1 The action sent to the physics SHALL reflect what the step did: EXPAND for gathering and
+  exploring (search, crawl, read, browse, list, recall), COMPRESS for consolidating (synthesis,
+  verification, tests, edits/writes, commits, summaries). A failure SHALL NOT be counted as
+  compression; it feeds u (attention) through the outcome instead.
+- AC8.2 The balance SHALL NOT sit at its clamp: two sessions with different expand/compress mixes
+  SHALL reach different xi. Measured on the eval groups: distinct Sigma per task, share of steps
+  at the clamp (target: not 100 %).
+- AC8.3 Behavior guard: the recommend() mix (EXPAND/COMPRESS/CONTINUE/TOPO_VIOLATION) and the
+  coding/research eval pass rates SHALL be measured before/after; a regression blocks the change.
+

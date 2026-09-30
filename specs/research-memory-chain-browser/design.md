@@ -60,25 +60,19 @@ pass. `recall_research` is a `read_only` ToolSpec added to `_DER_READ_TOOLS` (S1
 the existing dashboard tab (hooks/useCrawl.ts owns the dashboard state); opening an entry sets
 `dashboard` to the stored payload - the existing renderer draws it.
 
-## D4 The chain: meaning x state x time (Immortus)
+## D4 The chain: consulted at decisions, gated by relevance (Immortus)
 - Writers (AC4.1): `api/chat.py` and `agent/mcm.py` get the coordinate from
-  `get_trajectory_recorder(mi).get_latest_coordinate(session_id)` (mcm.py already does this near
-  its line ~421) and pass `format_coords(...)` or None. The DER step fold passes None for
-  coords_from when there is no prior coordinate (not `0,0,0,0`).
-- Recall (AC4.2) at `_der_recall_neighborhood` (cognitive layer - reading the live coordinate is
-  allowed there; the router chokepoint stays blind, CT-3/CT-4): keep `run_filtered_recall` as the
-  MEANING filter (it already narrows by node_type/topic/execution domain), widen its candidate pool
-  (limit 12 instead of 3), then rank candidates by
-  `score = 0.5*meaning_rank + 0.3*state_proximity + 0.2*recency` where state proximity =
-  `1/(1+dist(Σ_now, coords_to))` (NULL coords -> 0) and recency = half-life 7 days on created_at.
-  Emit the top 3 as today. Rows that are references (document_render / research) show their head,
-  not their payload. One timing line: `[chain_recall] rows=<n> ms=<t>`.
-- Timeline (AC4.3): `chain_timeline(thread_id, limit=8) -> str` in `ontology_recall.py` (same
-  module as the other chain reader): newest 8 rows of THIS thread in time order,
-  `+<age>s step_<n> <success|failure> <insight[:60]>`. Injected where replan/continuation
-  context is built (find the replan prompt assembly; one block, <= 800 chars).
-- F7 (y always 0) is reported, not fixed: ranking uses meaning first, so the low-information
-  coordinate cannot pull unrelated rows in.
+  `get_trajectory_recorder(mi).get_latest_coordinate(session_id)` and pass `format_coords(...)`
+  or None. The DER step fold passes None for coords_from when there is no prior coordinate.
+- Relevance gate (AC4.2) at `_der_recall_neighborhood`: `run_filtered_recall` stays the topic
+  filter; each candidate must ALSO clear a text-similarity bar against the step goal (token
+  overlap on insight/result head - no embedding on the step path); survivors are ranked by state
+  proximity then recency; empty -> no block at all. Log `[chain_recall] cand=<n> kept=<k> ms=<t>`.
+- Decision points (AC4.3): the replan-after-failure context gets `chain_timeline(thread_id, 8)`
+  (this task only, time order) and the mediators tried near Sigma_now. Web goals: REQ-2.
+- REQ-8 (meaningful Sigma) is a physics INPUT change in `_der_physics_step` (action from the
+  step's tool/node kind) - waits for the owner's decision; state proximity only becomes useful
+  after it.
 
 ## D5 BrowserHost: one Chromium on one loop
 Promote the browser tools' private runtime (`_BrowserRuntime`, browser_tools.py ~75-110: a daemon

@@ -55,19 +55,19 @@ consent gate skip + explore dispatch) - keep each edit small and local.
   DONE = contract test per writer: the row's coords are `format_coords` output or NULL - never
   `rest:`, `[`, or `0.00,0.00,0.00,0.00` for "unknown".
   NOT THIS = rewriting old rows, physics changes (F7 is reported, not fixed).
-- [ ] **K2 (AC4.2, AC4.4): hybrid recall at `_der_recall_neighborhood`.** Meaning filter (widened
-  candidate pool) x state proximity x recency (D4); reference rows show their head; one
-  `[chain_recall] rows= ms=` log line.
-  DONE = behavioral test on a temp store: two rows with the same topic, one near the current
-  coordinate and recent, one far and old -> the near/recent one ranks first; a row from another
-  topic at the SAME coordinate is not returned (meaning first); S2 still holds (EXPLAIN shows the
-  index, no temp sort - run `test_answer_path_standards.py`).
-  NOT THIS = a new vector index, reading u/xi in the router, changing RecallFilters semantics.
-- [ ] **K3 (AC4.3): task timeline.** `chain_timeline(thread_id, limit=8)`; injected where replan /
-  continuation context is built.
-  DONE = unit test for the format and bound; a contract test that the replan context contains the
-  timeline block when the thread has rows.
-  NOT THIS = a new table, the full history.
+- [ ] **K2 (AC4.2, AC4.4): relevance gate on the per-step neighbors.** D4.
+  DONE = behavioral test on a temp store: a same-topic row whose text matches the step goal is
+  injected; a same-topic row with unrelated text is NOT; a step with no passing row gets NO
+  neighbors block; S2 still holds (`test_answer_path_standards.py`).
+  NOT THIS = injecting more rows, a new vector index, reading u/xi in the router.
+- [ ] **K3 (AC4.3): chain at decision points.** `chain_timeline` + mediators near Sigma_now in
+  the replan-after-failure context only.
+  DONE = contract test: the replan context after a failed step contains the timeline of THIS
+  thread (bounded); a normal step's context does not.
+  NOT THIS = a new table, the full history, per-turn injection.
+- [ ] **K4 (REQ-8) - BLOCKED on the owner's decision (action mapping).** Map the step kind to
+  EXPAND/COMPRESS; measure distinct Sigma, clamp share, recommend() mix and eval pass rates
+  before/after.
 
 ## Wave W - one browser, exploration, autonomous actions (REQ-5, REQ-6, REQ-7)
 
