@@ -165,6 +165,31 @@ def _der_physics_settle(owner, session_id: str) -> None:
         )
 
 
+# REQ-8 (spec research-memory-chain-browser): what a step DID decides its
+# Caducean action. Gathering/exploring expands (x); consolidating compresses
+# (y): synthesis (no tool), writes/edits, commands and tests, commits,
+# renders. A failed step consolidated nothing, so it expands. The old map
+# (compress only for run_command/git or a failure) made 1,137 of 1,168 steps
+# EXPAND, so y stayed 0 and Sigma was a step counter (replay 2026-09-30).
+_PHYSICS_GATHER_TOOLS = frozenset({
+    "crawler_query", "search", "web_search", "read_file", "list_directory",
+    "get_rendered_documents", "get_system_info", "glob_files", "grep_files",
+    "recall_memory", "recall_research", "vision_analyze_screen",
+    "take_screenshot", "read_shell_output", "open_url", "list_conversations",
+    "git_log", "git_status", "git_diff", "browser_open", "browser_observe",
+    "browser_explore",
+})
+# docs/cad_v2_architecture.md §2.2: balance = clamp(EML / 2.3418, 0.1, 3.0).
+_EML_BALANCE_DIVISOR = 2.3418
+
+
+def _physics_action(tool, success: bool) -> int:
+    """0 = EXPAND (gather, or a failed step), 1 = COMPRESS (consolidate)."""
+    if not success:
+        return 0
+    return 0 if (tool or "none") in _PHYSICS_GATHER_TOOLS else 1
+
+
 def _der_topology_halt(owner, session_id: str) -> None:
     """Stop the line on a TOPO_VIOLATION (rec==3) at a step boundary.
 
@@ -17706,8 +17731,8 @@ Respond with a JSON object:
         # ── CADUCEAN UPDATE + IMMORTUS + TRAJECTORY RECORD ──
         try:
             from backend.gateway.iris_ffi import (
+                ffi_caducean_calculate_eml,
                 ffi_caducean_update,
-                ffi_calculate_eml,
                 ffi_immortus_chain_append,
             )
             from backend.agent.caducean_trajectory import (
@@ -17721,19 +17746,14 @@ Respond with a JSON object:
                 self._memory_interface
             ).get_latest_coordinate(_session)
 
-            _action = 0
-            if vals["tool"] in ("run_command", "git_commit", "git_push"):
-                _action = 1
-            elif not step_success:
-                _action = 2
-            _eml_score, _ex, _ey = ffi_calculate_eml(_session)
-            # v2: balance clamped to [0.1, 3.0] (was [0.1, 2.0]).
-            # Note: the v2 baseline divisor is 2.3418 per the field theory
-            # (see docs/cad_v2_architecture.md §2.2). The current EML
-            # returns a raw score, not a balance; the kernel clamps to
-            # the safe range defensively. The TrajectoryController may
-            # override the constant via ffi_caducean_set_params.
-            _balance = max(0.1, min(3.0, _eml_score))
+            _action = _physics_action(vals["tool"], step_success)
+            # REQ-8: the v2 O(1) EML from this session's own (x, y) state,
+            # not the SQL EML (it counted file_edit/test_run system_events the
+            # agent never writes: a constant 12.51 on 1,166 of 1,168 steps),
+            # and the design divisor (docs/cad_v2_architecture.md §2.2), so
+            # the balance leaves its clamp once the session has consolidated.
+            _eml_score, _ex, _ey = ffi_caducean_calculate_eml(_session)
+            _balance = max(0.1, min(3.0, _eml_score / _EML_BALANCE_DIVISOR))
             ffi_caducean_update(_session, _action, _balance)
 
             # v2: fetch recommendation code AFTER the update so we can
