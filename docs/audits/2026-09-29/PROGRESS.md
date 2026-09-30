@@ -7,7 +7,13 @@ archived there); CLAUDE.md/AGENTS.md now carry "BUILD + VERIFY IRIS — THE MEAS
 "READING THIS CODEBASE — PHASE MODEL, PHYSICS, LANES"; validate every change with the
 `app-testing` skill, Mode A (`.opencode/skills/app-testing/SKILL.md`) — MCM `pin_6c81e87956b8`.
 
-**NEXT AGENT: read MCM `pin_069f18710552` (HANDOFF 4) first, then its ADDENDUM `pin_d4b9bd81e9f5`
+**NEXT AGENT (2026-09-30, latest): read MCM `pin_57d2554decaf` (HANDOFF 5) FIRST.** Research
+Wave A is done and measured (research 7/8, r01 154 s -> 44 s); the owner APPROVED three follow-ups
+(extractor off the answer path, test changes that improve the feature, store cleanup of 4.84 GB
+with a no-regrowth guard); then spec Wave B (real browser control,
+`specs/websearch-vision-browser/`). Details: the session 13a261c7 log below.
+
+**Previous handoff: read MCM `pin_069f18710552` (HANDOFF 4) first, then its ADDENDUM `pin_d4b9bd81e9f5`
 and the owner notes `pin_7484ace0deee` (`bootstrap/coordinates.db` is unused and
 `bootstrap/GOALS.md` is STALE — this folder's PROGRESS/README are the roadmap of record) and
 CORRECTION `pin_f1cb33f20a88`: `data/memory.db` stays the PRIMARY app store
