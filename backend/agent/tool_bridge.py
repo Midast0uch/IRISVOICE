@@ -870,6 +870,22 @@ class AgentToolBridge:
                     "category": "vision",
                 },
             ])
+            # Live browser control (REQ-4): built from the registry specs, so the
+            # chat list and the DER planner's list share one definition.
+            try:
+                from backend.agent.tool_registry import resolve_tool
+
+                for _bname in ("browser_open", "browser_observe", "browser_act"):
+                    _bspec = resolve_tool(_bname)
+                    if _bspec is not None:
+                        tools.append({
+                            "name": _bspec.name,
+                            "description": _bspec.description,
+                            "parameters": dict(_bspec.parameters),
+                            "category": _bspec.category,
+                        })
+            except Exception as exc:  # the chat still works without browser control
+                logger.warning("[ToolBridge] browser tools not added to chat list: %s", exc)
 
         # ── Desktop-control gate ─────────────────────────────────────────────
         # Tools that reach outside the app sandbox (launch the real browser/apps,
@@ -1344,6 +1360,43 @@ class AgentToolBridge:
         except Exception as exc:  # noqa: BLE001 — a picture never fails a turn
             logger.warning("[ToolBridge] screenshot_page failed: %s", exc)
             return {"success": False, "error": "the page could not be captured"}
+
+    async def _execute_browser_tool(self, tool_name: str, params: Dict, session_id: str) -> Dict:
+        """browser_open / browser_observe / browser_act (REQ-4 / REQ-5).
+
+        The page lives in ONE session per conversation on the browser tools'
+        own loop (see tools/browser_tools.py). Its events go to the panel through
+        the same forwarder crawls use; the cursor events are also counted into
+        this call's `[web_timing]` line (REQ-7).
+        """
+        from types import SimpleNamespace as _NS
+
+        from backend.agent.tools import browser_tools
+
+        params = params or {}
+        conversation_id = (
+            params.get("conversation_id")
+            or self._active_conversation_id.get(session_id)
+            or session_id
+        )
+        _ui_emit = _crawl_ui_emitter(session_id)
+        # The session emits from its own loop thread, where this call's timing
+        # ContextVar is not set — run the counter inside a copy of THIS context.
+        _ctx = contextvars.copy_context()
+
+        def _emit(event: str, payload: dict) -> None:
+            if event == "CRAWLER_VISION_ACTION":
+                _ctx.run(_web_timing_note_vision_event, payload)
+            _ui_emit(_NS(event=event, payload=payload))
+
+        if tool_name == "browser_open":
+            return await browser_tools.browser_open(conversation_id, params.get("url") or "", _emit)
+        if tool_name == "browser_observe":
+            return await browser_tools.browser_observe(conversation_id, _emit)
+        return await browser_tools.browser_act(
+            conversation_id, params.get("action") or "", params.get("element_id"),
+            params.get("text"), _emit,
+        )
 
     async def _handle_ask_user_question(self, params: Dict, session_id: str) -> Dict:
         """Handle the ask_user_question tool — ask user, wait for answer.
@@ -1909,6 +1962,26 @@ class AgentToolBridge:
                 result = None
                 try:
                     result = await self._execute_web_search(params, session_id)
+                finally:
+                    _WEB_TIMING.reset(_wt_tok)
+                    _log_web_timing(tool_name, session_id, _wt0, _wtm, result)
+                self._record_tool_event(
+                    session_id, tool_name,
+                    "success" if result.get("success") else "failure", params, result,
+                    plan_title=plan_title,
+                )
+                return result
+
+            # ── Live browser control (specs/websearch-vision-browser REQ-4/5) ──
+            # One page per conversation; the user sees each action's cursor
+            # glide before the input. Gated by the internet flag (registry).
+            if tool_name in ("browser_open", "browser_observe", "browser_act"):
+                _wtm = {}
+                _wt_tok = _WEB_TIMING.set(_wtm)
+                _wt0 = time.monotonic()
+                result = None
+                try:
+                    result = await self._execute_browser_tool(tool_name, params, session_id)
                 finally:
                     _WEB_TIMING.reset(_wt_tok)
                     _log_web_timing(tool_name, session_id, _wt0, _wtm, result)
@@ -3495,6 +3568,16 @@ class AgentToolBridge:
                     f" — {_ps}. A retry of the SAME search will fail identically; "
                     f"diversify sources or ask the user."
                 )
+            # REQ-4 AC4.6: hand the pages the crawl could not read to the live
+            # browser tool instead of leaving the agent with a dead end.
+            try:
+                from backend.agent.tools.browser_tools import handoff_hint
+
+                _hint = handoff_hint(getattr(crawl_result, "dead_urls", None))
+                if _hint:
+                    _no_content += " " + _hint
+            except Exception:  # noqa: BLE001 — a hint never changes the outcome
+                pass
             if _registry is not None:
                 await _registry.fail(job_id, _no_content)
             return {

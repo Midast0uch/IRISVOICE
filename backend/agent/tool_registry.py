@@ -1130,6 +1130,70 @@ def register_builtin_tools() -> None:
             category="web", executor="crawler", requires_internet=True, parallel_safe=False,
             critical=True, long_running=True,
         ),
+        # REQ-4 (specs/websearch-vision-browser): the agent drives ONE live page in the
+        # in-app browser. These are for INTERACTION (log in, fill a form, click
+        # through, use a site's own search, a page that only works in a browser) —
+        # reading a page's text is `search` / `crawler_query`. parallel_safe stays
+        # False: the three act on one shared page, in order.
+        ToolSpec(
+            name="browser_open",
+            description=(
+                "Open a URL in the live in-app browser so you can interact with the page "
+                "(log in, fill a form, click through, use a site's own search, a page that "
+                "only works in a real browser). The user watches it load. NOT for just "
+                "reading a page - use 'search' or 'crawler_query' for that. Next call "
+                "'browser_observe'."
+            ),
+            parameters={"url": {"type": "string", "description": "Full http(s) URL to open"}},
+            required=["url"],
+            category="web", executor="internal", requires_internet=True,
+            permission_tier="read_only", parallel_safe=False,
+        ),
+        ToolSpec(
+            name="browser_observe",
+            description=(
+                "List what can be clicked or typed into on the page open in the live "
+                "browser: every visible link, button, input and select, numbered, with its "
+                "role and name, plus the page title, URL and a text digest. Call it after "
+                "'browser_open' and again after any action that changed the page; the "
+                "numbers (element_id) are only valid for the last observation."
+            ),
+            parameters={},
+            category="web", executor="internal", requires_internet=True,
+            permission_tier="read_only", parallel_safe=False,
+        ),
+        ToolSpec(
+            name="browser_act",
+            description=(
+                "Act on the page in the live browser with real mouse and keyboard input; "
+                "the user sees the cursor move first. action: 'click' and 'select' need "
+                "element_id; 'type' needs element_id and text (replaces what is in the "
+                "field); 'scroll' takes text 'down' (default), 'up', 'bottom' or pixels; "
+                "'press' takes text as a key name (default Enter; element_id optional); "
+                "'back' needs nothing. element_id comes from 'browser_observe'. An error "
+                "result says what is wrong - re-observe and retry."
+            ),
+            parameters={
+                "action": {
+                    "type": "string",
+                    "enum": ["click", "type", "select", "scroll", "back", "press"],
+                    "description": "What to do",
+                },
+                "element_id": {
+                    "type": "integer",
+                    "description": "Number of the element from browser_observe",
+                    "optional": True,
+                },
+                "text": {
+                    "type": "string",
+                    "description": "Text to type, option to select, key to press, or scroll direction",
+                    "optional": True,
+                },
+            },
+            required=["action"],
+            category="web", executor="internal", requires_internet=True,
+            permission_tier="side_effect", parallel_safe=False,
+        ),
     ]
 
     # ── Multimedia tools (Phase 5.2 / research D2) ───────────────────────────

@@ -25,7 +25,11 @@ _DER_SIGNALS = [
 # routed to the 'reference' zone (episodic.py:_ZONE_REFERENCE, reserved for
 # "external content (future)") so untrusted web content is never mixed into
 # the trusted/user or tool zones. See trust-routing plan W1.
-_EXTERNAL_TOOLS = frozenset({"web_search", "crawler_query"})
+_EXTERNAL_TOOLS = frozenset({
+    "web_search", "crawler_query",
+    # Live browser control: what a page shows the agent is web content.
+    "browser_open", "browser_observe", "browser_act",
+})
 
 # Zone used for external/web-derived fragments. Reuses the existing 'reference'
 # slot rather than introducing a new enum value (plan decision #1).
