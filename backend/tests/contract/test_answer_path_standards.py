@@ -9,9 +9,10 @@ so a regression is caught before it costs a turn.
       Measured: SCAN of system_events on the cold 6.3 GB store took 16-84 s
       per DER step; with idx_system_events_session, ~1 ms.
   S2  the recall recency order uses an index, with no temp sort.
-      Measured: ORDER BY created_at walked legacy rows' overflow pages —
-      119 s cold for the widest scope, a 40 s turn-start stall; with
-      idx_memory_chain_created, 0.000 s.
+      Measured: the unindexed ORDER BY created_at read every row — 119 s
+      cold for the widest scope, a 40 s turn-start stall; with
+      idx_memory_chain_created, 0.000 s. (The table is small; the cost is
+      cold random reads across the 6.6 GB store — pin_22b078571d73.)
   S3  a step's answer path never waits for its physics update, and a shape
       decision still folds back on it. Measured: the inline update held the
       reply 16-106 s; on the physics lane the reply no longer waits.
@@ -87,7 +88,7 @@ def test_s2_recall_recency_order_uses_an_index(migrated_store, sql):
     plan = _plan(migrated_store, sql, params)
     assert not any("TEMP B-TREE FOR ORDER BY" in p for p in plan), (
         f"recall sorts memory_chain by reading every row again ({plan}) — "
-        "119 s cold for the widest scope on the live store"
+        "119 s cold for the widest scope on the live 6.6 GB store"
     )
     assert any("idx_memory_chain_created" in p for p in plan), plan
 

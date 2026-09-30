@@ -631,12 +631,13 @@ def migrate_memory_chain_schema(conn, db_path: str) -> None:
         logger.warning("[iris_ffi] memory_chain_v2 drop failed: %s", _v2_exc)
 
     # Recall orders by recency (ontology_recall: ORDER BY created_at DESC,
-    # rowid DESC). Legacy rows store created_at AFTER their large text
-    # columns, so an unindexed sort followed every row's overflow pages
-    # through the 6 GB store just to read the date: 119 s cold for the widest
-    # recall scope, and the turn-start DAG compile waited on it (40 s in
-    # coding eval c07, 2026-09-29). An index on created_at serves the order
-    # (entries are (created_at, rowid)) without reading those rows. Built once.
+    # rowid DESC). Unindexed, that sort read every memory_chain row: 119 s
+    # cold for the widest recall scope, and the turn-start DAG compile waited
+    # on it (40 s in coding eval c07, 2026-09-29). The table itself is small
+    # (~3.7k rows, ~1.5 MB), so the cost is cold random reads across the
+    # 6.6 GB store, not row size — cause under investigation (MCM pin
+    # pin_22b078571d73). An index on created_at serves the order (entries
+    # are (created_at, rowid)) so only the LIMIT rows are read. Built once.
     try:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_memory_chain_created "

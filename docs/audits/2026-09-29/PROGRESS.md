@@ -44,9 +44,14 @@ now arrives at **16.9 s** (was 63-226 s). Research group (1/6 baseline) not re-r
 6. Phase 2 rest: `plan_update` tool, tool-model argument repair, personal-mode research through
    `run_node` with web-family policies. Then Phase 3 (turn protocol + turn store), the live
    execution matrix (`app/cli-preview`), reply surface B-D.
-7. Owner decisions pending: (a) `TopologyViolationException` never halted the loop — it was
-   always swallowed by finalize's own `except Exception` (kept as-is); should a topology
-   violation halt? (b) planning is one Brain call of 13-19 s per turn (model time).
+7. Owner decisions pending — facts, options and recommendations in MCM `pin_22b078571d73`:
+   (a) `TopologyViolationException` never halted the loop (always swallowed); rec==3 fired in
+   0 of 1,048 trajectory rows. Recommendation: make the halt live at the fold-back, low priority.
+   (b) `idx_memory_chain_created` took ~7.5 min to build, blocking startup. The store is 6.61 GB
+   with only 0.23 GB free pages; `memory_chain` is small, so the cost is cold random reads across
+   the file (cause under investigation, ~5 GB not yet attributed). Recommendation: build indexes
+   off the startup path now; decide VACUUM / BLOB relocation after an offline size breakdown.
+   (c) planning is one Brain call of 13-19 s per turn (model time).
 8. Smaller open items: native `calculate_eml` still hits 1-6 s outliers (2 MB page cache per
    native connection); `[AgentKernel] _get_failure_warnings failed (AttributeError)` every turn
    (ResolutionEncoder path, pre-existing).
@@ -57,7 +62,7 @@ to fail on the old state. Change a number only with a new measurement and the re
 | # | Standard | Before -> after (how measured) | How / why | Guard |
 |---|---|---|---|---|
 | S1 | per-session `system_events` counts (calculate_eml input) use `idx_system_events_session` | 16-84 s per DER step -> ~1 ms (stack dump + `[EML-DIAG]` probe, c10) | cold 6.3 GB store; SCAN read rows with payload/BLOBs | `contract/test_answer_path_standards.py::test_s1_*` (plan has no `SCAN system_events`) |
-| S2 | recall recency order uses `idx_memory_chain_created` | widest scope 119 s cold, turn-start stall 40 s -> 0.000 s (EXPLAIN + timing, c07) | legacy rows keep `created_at` after big text; the sort walked overflow pages | `test_s2_*` (no `TEMP B-TREE FOR ORDER BY`) |
+| S2 | recall recency order uses `idx_memory_chain_created` | widest scope 119 s cold, turn-start stall 40 s -> 0.000 s (EXPLAIN + timing, c07) | the unindexed sort read every row; `memory_chain` is small (~1.5 MB), so the cost is cold random reads across the 6.6 GB file (corrected 2026-09-30; `pin_22b078571d73`) | `test_s2_*` (no `TEMP B-TREE FOR ORDER BY`) |
 | S3 | a step's answer path never waits for its physics; shape decisions fold back on `fold.ready` | reply held 16-106 s -> 0 s on the answer path (stack dump) | physics on `lane("physics")`; only shape decisions call `_der_physics_settle` | `test_s3_*` (finalize returns while the physics is blocked) |
 | S4 | ledger rows go through ONE ordered lane, and a blocked row reports itself | ~90 contending threads + "database is locked" -> zero lock errors (stack dump, eval logs) | thread-per-row on one connection fell back to the native writer | `contract/test_ledger_write_watchdog.py` (drives the real lane) |
 | S5 | each node sees the user's request word for word | c10 FAIL (rules lost in the paraphrase) -> PASS; coding 12/15 -> 15/15 | planner paraphrase dropped "qty <= 0" rules | coding eval (`evals/standards.json` once recorded) |
@@ -122,7 +127,7 @@ model or physics math:
 | Stall | Measured | Cause | Fix |
 |---|---|---|---|
 | per-step physics in `_der_finalize_step` | 16-84 s | `calculate_eml` counts SCAN `system_events` (no `session_id` index) on a cold 6.3 GB file: 18.3 s python SQL cold vs 0.26 s native warm | `idx_system_events_session` (migration 001's definition, never applied) in `_PythonFallbackEngine._run_migrations`; physics moved off the answer path (below) |
-| turn-start DAG compile | 40 s | `ontology_recall` `ORDER BY created_at` on `memory_chain`: legacy rows keep `created_at` after big text, so the sort walked overflow pages (widest scope 119 s cold) | `idx_memory_chain_created` in `migrate_memory_chain_schema` (guarded) -> 0.000 s. First startup builds it once (~7.5 min) |
+| turn-start DAG compile | 40 s | `ontology_recall` `ORDER BY created_at` on `memory_chain` read every row (widest scope 119 s cold). CORRECTED 2026-09-30: not row size — the table is ~1.5 MB; cold random reads across the 6.6 GB file (`pin_22b078571d73`) | `idx_memory_chain_created` in `migrate_memory_chain_schema` (guarded) -> 0.000 s. First startup builds it once (~7.5 min) |
 | ledger write storm | ~90 threads | thread-per-row on one shared connection; "database is locked" fell back to the native writer and blocked | one ordered ledger lane |
 | harness "63 s" | ~20-26 s | the harness drain counts the reply's SPEECH | `reply_s` in the results |
 | c11 step 1 | ~110 s | Pocket-TTS model load (61.5 s) inside the turn starved `pytest` | NEXT (item 1) |
