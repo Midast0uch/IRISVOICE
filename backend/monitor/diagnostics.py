@@ -44,7 +44,7 @@ class DiagnosticsManager:
         """Run comprehensive health checks"""
         checks = []
 
-        # Check Memory DB (bootstrap/coordinates.db)
+        # Check the application memory store (data/memory.db via memory_config.json)
         checks.append(self._check_memory_db())
 
         # Check Monitor DB (data/monitor.db)
@@ -75,27 +75,23 @@ class DiagnosticsManager:
         return checks
 
     def _check_memory_db(self) -> HealthCheck:
-        """Check the memory/coordinates database is connected and writable"""
+        """Check the application memory store is connected and writable"""
         import sqlite3
         import tempfile
         import os
         from pathlib import Path
         start = time.time()
         try:
-            # Find coordinates.db (bootstrap/coordinates.db)
-            candidates = [
-                Path("bootstrap/coordinates.db"),
-                Path(__file__).parent.parent.parent / "bootstrap" / "coordinates.db",
-            ]
-            # The application store from memory_config.json (moved to D: on
-            # 2026-09-30) — a CWD-relative "data/memory.db" would check a stale
-            # copy, or nothing once that copy is deleted.
+            # The application store: data/memory.db, resolved through
+            # memory_config.json (the ONE resolver, repo-root anchored). The old
+            # bootstrap/coordinates.db was checked FIRST here; it is no longer
+            # used (owner, 2026-09-30), so this check reported on a dead file.
             try:
                 from backend.memory.config import resolve_memory_store_path
 
-                candidates.append(resolve_memory_store_path())
+                candidates = [resolve_memory_store_path()]
             except Exception:  # noqa: BLE001 — a diagnostic never raises
-                candidates.append(Path("data/memory.db"))
+                candidates = [Path(__file__).resolve().parents[2] / "data" / "memory.db"]
             db_path = None
             for p in candidates:
                 if p.exists():
@@ -103,7 +99,11 @@ class DiagnosticsManager:
                     break
 
             if db_path is None:
-                return HealthCheck("memory_db", "warning", "coordinates.db not found", (time.time() - start) * 1000)
+                return HealthCheck(
+                    "memory_db", "warning",
+                    f"application memory store not found: {candidates[0]}",
+                    (time.time() - start) * 1000,
+                )
 
             # Open read-only first to test connection
             conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2)

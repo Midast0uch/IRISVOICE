@@ -3,7 +3,9 @@
 ## START HERE (next session)
 
 **NEXT AGENT: read MCM `pin_069f18710552` (HANDOFF 4) first, then its ADDENDUM `pin_d4b9bd81e9f5`
-and the owner CORRECTION `pin_f1cb33f20a88`: `data/memory.db` stays the PRIMARY app store
+and the owner notes `pin_7484ace0deee` (`bootstrap/coordinates.db` is unused and
+`bootstrap/GOALS.md` is STALE — this folder's PROGRESS/README are the roadmap of record) and
+CORRECTION `pin_f1cb33f20a88`: `data/memory.db` stays the PRIMARY app store
 (`memory_config.json` reverted; `D:\IRIS\data\memory.db` is an unused leftover — never delete the
 C: store).** (The disk move
 was executed 2026-09-30 — see `disk-move-execution-report.md`; the site-packages SWITCH and the
