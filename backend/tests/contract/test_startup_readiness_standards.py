@@ -10,6 +10,11 @@
       lifetime scales with the last run's cost (x GIT_STATUS_COST_FACTOR).
       Measured: every run hit the 5 s timeout and re-ran 5 s later, holding
       the C: hard disk for the whole time.
+  S10 the Oracle model hash is read from a cache on a repeat start: load()
+      read the 642 MB model twice (ORT session + sha256). Measured: ~16 s of
+      _hash_model_file frames at startup on the C: hard disk, competing with
+      the TTS worker load; after: 0 frames, same digest, start -> first Oracle
+      decide 23-70 s -> 5.3 s (one run, model file warm).
 
 The concurrent-spawn hang (every TTS caller silent for up to 300 s) is pinned
 by test_tts_memory_envelope_behavior.py::test_concurrent_first_speak_spawns_exactly_one_worker.
@@ -107,3 +112,43 @@ def test_s8_git_status_cache_scales_with_cost(monkeypatch):
     s._git_status_cache["ts"] = time.monotonic() - (5.0 * s.GIT_STATUS_COST_FACTOR + 1)
     s._cached_git_status()
     assert len(calls) == 2
+
+
+def test_s10_oracle_model_hash_hit_reads_no_model_bytes(tmp_path, monkeypatch):
+    """S10: a repeat start with an unchanged model file returns the cached
+    digest without reading the file; a changed file is hashed again."""
+    import builtins
+    import hashlib
+    import os
+
+    import backend.agent.decision_backend_onnx as onnx_mod
+
+    monkeypatch.setattr(
+        onnx_mod, "_HASH_CACHE_PATH", tmp_path / "hash.json", raising=False
+    )
+    model = tmp_path / "model_int8.onnx"
+    model.write_bytes(b"weights" * 4096)
+    digest = hashlib.sha256(model.read_bytes()).hexdigest()
+
+    assert onnx_mod.GlinerOnnx._hash_model_file(str(model)) == digest
+
+    reads = []
+    real_open = builtins.open
+
+    def _spy(path, *a, **k):
+        reads.append(os.path.abspath(str(path)))
+        return real_open(path, *a, **k)
+
+    monkeypatch.setattr(builtins, "open", _spy)
+    assert onnx_mod.GlinerOnnx._hash_model_file(str(model)) == digest
+    assert os.path.abspath(str(model)) not in reads, (
+        "S10: an unchanged model file was read again to hash it"
+    )
+
+    monkeypatch.setattr(builtins, "open", real_open)
+    model.write_bytes(b"swapped" * 4096)
+    st = os.stat(model)
+    os.utime(model, ns=(st.st_atime_ns, st.st_mtime_ns + 10**9))
+    assert onnx_mod.GlinerOnnx._hash_model_file(str(model)) == (
+        hashlib.sha256(model.read_bytes()).hexdigest()
+    ), "S10: a changed model file kept the stale cached digest"

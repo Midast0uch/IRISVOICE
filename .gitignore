@@ -82,6 +82,9 @@ data/iris_config.json
 # API keys / model config (contains secrets)
 data/iris_config.json
 
+# Machine-local Oracle model-file sha256 cache (decision_backend_onnx)
+data/oracle_model_hash.json
+
 # Dilithium Post-Quantum identity private key — never commit the real key.
 # Loaded at runtime via IRIS_DILITHIUM_KEY (env hex) or IRIS_DILITHIUM_KEY_FILE
 # (an external path you supply). Raw key-byte files must never enter the repo.

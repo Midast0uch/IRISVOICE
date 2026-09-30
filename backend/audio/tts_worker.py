@@ -559,6 +559,18 @@ def main() -> None:
     # _load_voice_state() had set the module value, so every voice change
     # reported "voice_error" even when the voice loaded.
     global _voice_name, _voice_state
+    # TEMP (execution audit 2026-09-30): the boot load hung >5 min at 0 CPU
+    # inside the backend but loads in ~10 s standalone. Same switch as the
+    # backend's hook in start-backend.py; remove with it.
+    if os.environ.get("IRIS_STACK_DUMP_S"):
+        import faulthandler
+
+        _dump_fh = open(_PROJECT_DIR / "logs" / "stackdump_tts.log", "w")
+        _dump_fh.write(f"start_epoch {time.time():.3f}\n")
+        _dump_fh.flush()
+        faulthandler.dump_traceback_later(
+            float(os.environ["IRIS_STACK_DUMP_S"]), repeat=True, file=_dump_fh
+        )
     logger.info("TTS worker starting — loading model...")
 
     # Send loading status immediately so the parent knows we're alive

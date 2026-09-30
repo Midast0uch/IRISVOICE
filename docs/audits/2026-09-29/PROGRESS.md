@@ -98,6 +98,7 @@ to fail on the old state. Change a number only with a new measurement and the re
 | S5 | each node sees the user's request word for word | c10 FAIL (rules lost in the paraphrase) -> PASS; coding 12/15 -> 15/15 | planner paraphrase dropped "qty <= 0" rules | coding eval (`evals/standards.json` once recorded) |
 | S7 | TTS is ready with the backend; `/health` 503 while TTS loads, 200 + `tts.status=error` on a failed load | c11 reply 213.6 s -> 116.8 s; startup timeouts / zero audio in turns: many -> 0 (eval logs 2026-09-30) | lazy load landed inside turns (5 min 6 s cold on the C: hard disk) and starved pytest; now loads in the lifespan, warm-up before "ready", no idle unload (growth recycle caps memory) | `contract/test_startup_readiness_standards.py::test_s7_*`; hang: `behavioral/test_tts_memory_envelope_behavior.py::test_concurrent_first_speak_spawns_exactly_one_worker` |
 | S8 | the git-status poll never runs back to back on a slow repo | ran every 5 s, each run a 5 s timeout -> at most ~10% of disk time | fixed 5 s TTL + 5 s timeout on a huge dirty repo on the hard disk; TTL now x10 the last run's cost | `test_startup_readiness_standards.py::test_s8_*` |
+| S10 | the Oracle model hash comes from a cache on a repeat start (`data/oracle_model_hash.json`, keyed by abs path + size + mtime_ns) | ~16 s of `_hash_model_file` frames at startup -> 0; start -> first Oracle decide 23.0 / 38.6 / 70.4 s -> 5.3 s (one run, model file warm) (stack dump + log, 2026-09-30) | `load()` read the 642 MB model twice (ORT session + sha256) on the C: hard disk, competing with the TTS worker load | `contract/test_startup_readiness_standards.py::test_s10_*` (unchanged file is not read again; a changed file is re-hashed) |
 | S6 | eval pass flags and `reply_s` per task | c10 reply 63-226 s -> 16.9 s | all of the above | `evals/standards.json` + `run_evals.py` STANDARDS check (exit 5 on regression; tolerance x1.5 + 10 s for cloud-model variance). Record with `--record-standard` after a clean full run (pending: after the TTS fix) |
 
 **How to run the evals safely (learned the hard way).**
@@ -140,6 +141,42 @@ to fail on the old state. Change a number only with a new measurement and the re
 
 Running log of work after the Phase 1 commit (`a21b641c`). Each entry is also recorded in
 MCM (`record_edit` / `record_test` / `pin_add`).
+
+## 2026-09-30 (session 13a261c7) — post-move check, startup disk contention, S10
+
+**State of the move.** Site-packages SWITCH not done (still a real dir on C:), no reboot since
+2026-09-27 -> S9 (cold start) still waits for the owner. LM Studio junction, HF_HOME on D: and
+`data/memory.db` (primary, C:) verified. Page file is on D: (peak use 22.8 GB since boot).
+
+**Coding eval after the move: 15/15** (`evals/results/20260930-115609.json`, warm backend).
+Replies c02-c15 12-105 s. One STANDARDS flag: c01 reply 452.6 s (standard 144.6 s). Cause
+(stack dumps): its first `pytest` subprocess took 4.5 min (11:37:42 -> 11:42:15) because the
+background whisper warm-up (`main._delayed_whisper_warm_up` -> `voice_command._do_warm_up` ->
+`import faster_whisper` -> `ctranslate2` -> `transformers`) was still importing from the C: hard
+disk 8+ min after start. The second pytest in the same task took 20 s. A heavy grep of mine also
+ran during c01's first ~40 s. Not an agent regression; do not re-record the standard from this run.
+
+**Startup disk contention (finding, not fixed).** Three starts: TTS ready never (worker hung
+>7 min at 0 CPU / 0 reads, then "Worker exited during startup" with no traceback), 123 s, 116 s.
+Standalone the same worker loads in ~10 s. In the hung start the weights load took 336 s; the
+worker's own TEMP stack dump blocked mid-line for minutes. During every start the backend reads
+~1 GB (Oracle ORT load + hash of the 642 MB model at `C:\temp\gliner-onnx`, embeddings, imports)
+while the worker imports torch from site-packages on the same hard disk; the whisper warm-up
+adds `transformers` at +90 s. Main lever: the owner's site-packages switch to D: (plan Step 1);
+then consider moving `C:\temp\gliner-onnx` to D: (`IRIS_DECISION_MODEL_DIR`). Open: why the
+worker exits silently after a late load (exit code is not logged). TEMP probe added:
+`tts_worker.main` writes `logs/stackdump_tts.log` when `IRIS_STACK_DUMP_S` is set (remove with
+the `start-backend.py` hook, item 4).
+
+**S10 (owner option 2): Oracle model hash cache.** `GlinerOnnx._hash_model_file` returns a
+cached digest when (abs path, size, mtime_ns) match `data/oracle_model_hash.json` (gitignored);
+miss/corrupt -> hash as before + atomic write; a cache failure never fails `load()`. Same digest
+logged (`hash=61dd40d59032`), 0 hash frames at startup. Tests: model-pin + onnx-backend unit and
+contract (18 passed), `test_startup_readiness_standards.py` 4 passed; `test_s10_*` fails on the
+old code ("an unchanged model file was read again").
+
+**Owner note (2026-09-30): websearch / research has always been slow and must improve.** Next:
+Mode A on the research group, one task at a time, timeline + stack dumps before any change.
 
 ## 2026-09-29 (session aa473536) — c10, then answer-path latency
 

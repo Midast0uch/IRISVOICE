@@ -230,6 +230,10 @@ _DEFAULT_VARIANT = "model_int8.onnx"
 _REPO_DIR = Path(__file__).resolve().parent.parent / "models" / "gliner2.5-decide-onnx"
 # Dev-machine fallback: the pre-download location used by the 2026-09-25 bench.
 _DEV_DIR = Path(r"C:\temp\gliner-onnx")
+# Model-file sha256 cache (see GlinerOnnx._hash_model_file). Machine-local.
+_HASH_CACHE_PATH = (
+    Path(__file__).resolve().parent.parent.parent / "data" / "oracle_model_hash.json"
+)
 
 _VARIANT_IDS = {
     "model_int8.onnx": "int8",
@@ -539,16 +543,54 @@ class GlinerOnnx:
     def _hash_model_file(path: str) -> Optional[str]:
         """sha256 of the deployed model file (AC6.5/AC22.5 attribution) —
         a model swap is detectable instead of silently invalidating
-        thresholds. Computed once at load; ~1-2 s for 642 MB, owned by the
-        startup warm-up."""
+        thresholds.
+
+        Cached in ``_HASH_CACHE_PATH`` keyed by (abs path, st_size,
+        st_mtime_ns): a hit returns the stored digest with no file read. The
+        full read was a second pass over the 642 MB file right after the ORT
+        session read it — ~16 s at startup on this machine's C: hard disk,
+        competing with the TTS worker load (2026-09-30). Any cache failure
+        (missing, corrupt, unwritable) falls back to hashing; it never fails
+        the load and never changes the digest.
+        """
         try:
             import hashlib
+            import json
+
+            st = os.stat(path)
+            key = {
+                "path": os.path.abspath(path),
+                "size": st.st_size,
+                "mtime_ns": st.st_mtime_ns,
+            }
+            try:
+                cached = json.loads(_HASH_CACHE_PATH.read_text(encoding="utf-8"))
+                if (
+                    isinstance(cached, dict)
+                    and all(cached.get(k) == v for k, v in key.items())
+                    and re.fullmatch(r"[0-9a-f]{64}", str(cached.get("sha256")))
+                ):
+                    return cached["sha256"]
+            except Exception:  # noqa: BLE001 — a cache miss, never a failure
+                pass
 
             h = hashlib.sha256()
             with open(path, "rb") as f:
                 for chunk in iter(lambda: f.read(1 << 20), b""):
                     h.update(chunk)
-            return h.hexdigest()
+            digest = h.hexdigest()
+
+            try:
+                tmp = _HASH_CACHE_PATH.with_suffix(f".{os.getpid()}.tmp")
+                tmp.write_text(json.dumps({**key, "sha256": digest}), encoding="utf-8")
+                os.replace(tmp, _HASH_CACHE_PATH)
+            except Exception as e:  # noqa: BLE001 — next load re-hashes
+                logger.debug("decision_backend_onnx hash cache not written: %r", e)
+                try:
+                    tmp.unlink(missing_ok=True)
+                except Exception:  # noqa: BLE001
+                    pass
+            return digest
         except Exception:
             return None
 
