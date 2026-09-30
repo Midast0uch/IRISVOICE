@@ -1,11 +1,14 @@
 ---
 name: app-testing
 description: >
-  Live-test IRIS Voice end to end: launch backend+frontend detached, poll until
-  ready, orient in the widget, then plan a SCOPED test (success parameters,
-  bug-vs-feature, logging) before driving via UI or WebSocket. Pivot on blockers,
-  record learnings to pins. Use when live-testing the running app, validating a
-  layer after a change, or orienting for the first time.
+  Live-test IRIS Voice end to end. Mode A (primary for any agent/DER/latency
+  change): the MEASURED EVAL LOOP — run real tasks through the real backend with
+  evals/run_evals.py, read pass + reply_s, find stalls with in-process stack dumps
+  and query plans, fix the cause, prove it, and guard it as a standard. Mode B:
+  UI-driven testing — launch backend+frontend detached, orient in the widget,
+  plan a SCOPED test, drive via UI or WebSocket. Pivot on blockers, record
+  learnings to pins. Use when validating any change, live-testing the app, or
+  orienting for the first time.
 ---
 
 # App Testing — IRIS Voice
@@ -24,6 +27,89 @@ plan, drive, pivot, record.
    contract**: the frontend does not reflect what the backend did.
 5. **Log the scope** — WS capture, console, screenshots, a running notes file.
 6. **Record** — pins for gotchas and contracts; update this skill.
+
+**Two modes — pick by the question you are answering:**
+
+| Question | Mode |
+|---|---|
+| Does the agent now DO the task? Is it faster? Did my change regress anything? | **A — measured eval loop** (below) |
+| Does the UI reflect what the backend did? Does a click/voice trigger work? | **B — UI-driven** (Step 0 onward) |
+
+Unit tests are necessary, never sufficient: this app is a system (DER loop + physics lanes
++ phase-gated model calls + TTS + stores), and in the 2026-09-29 audit a green unit suite
+coexisted with 0/15 coding tasks passing and 185 s turns holding ~11 s of real work.
+
+---
+
+## Mode A — The measured eval loop (primary for agent / DER / latency work)
+
+Established 2026-09-29/30 (execution audit, docs/audits/2026-09-29/PROGRESS.md). It took
+coding from 0/15 to 15/15 and the full group from ~36 min to 18 min, and every fix in it
+was found by measuring, not guessing.
+
+**0. Bound the task.** Write DONE = (one observable condition) and NOT THIS = (the
+over-builds it invites) before touching code (CLAUDE.md "THE SCOPE BOUND").
+
+**1. Start the backend DETACHED, with stack dumps on, and wait for REAL readiness.**
+```powershell
+$env:IRIS_STACK_DUMP_S = '4'   # in-process thread dump every 4 s -> logs/stackdump.log
+npm run iris:start:backend      # or: Start-Process python start-backend.py -WindowStyle Hidden ...
+# poll /health until 200 — it answers 503 {"status":"starting","tts":{"status":"loading"}}
+# until the TTS worker is warm (by design since 2026-09-30); budget 300 s cold.
+python evals/load_tool_model.py # loads the LFM2.5 tool model on :8082 via WS load_local_model
+```
+Wait ~45-75 s after the model load before a run (warm-ups). The Brain is `gemma4:31b-cloud`
+on Ollama :11434; use `127.0.0.1`, never `localhost`, for local ports (+2 s/request here).
+
+**2. Run real tasks, DETACHED, and read the right number.**
+```powershell
+Start-Process python -ArgumentList 'evals\run_evals.py','--task','c10_create_module' `
+  -WindowStyle Hidden -RedirectStandardOutput logs\eval_stdout.log -RedirectStandardError logs\eval_stderr.log
+# groups: --group coding (15 tasks, ~18 min) | --group research (heavy, one at a time)
+```
+- A tool timeout that kills the runner skips its `finally` → `data/iris_config.json` is left
+  in developer mode. Runs over ~8 min MUST be detached.
+- Read **`reply_s`** (time until the reply text). `seconds` also counts the reply being
+  SPOKEN (the harness drains frames until 2 s of silence).
+- The run prints a STANDARDS section and exits **5** on a regression against
+  `evals/standards.json`. Record a new standard only from a clean full run:
+  `--record-standard`.
+- Keep the machine quiet during a run — no disk scans, no test runs. A folder-size scan
+  during one run turned a 20 s reply into 274 s. A harness "LEAK into IRIS repo" note can
+  be YOUR OWN edits during the run.
+- Workdirs are deleted unless `--keep-workdirs`; keep them when you need to read what the
+  agent wrote (that is how c10's root cause was found: the written module had KeyError and
+  `< 0` where the request said ValueError and `<= 0` — the node never saw the request).
+
+**3. When it is slow or wrong, find the cause — do not guess.**
+- Timeline: grep `logs/iris.log` for `dev_cli`, `_plan_task] parsed`, `run_node]`,
+  `physics lane`, `physics fold-back`, `continuation gate`, `success synthesis`,
+  `DER response`. Gaps between them are where time went.
+- Inside a gap: `python scripts/stackdump_summary.py HH:MM:SS HH:MM:SS [--grep text]` —
+  the same frames repeating across dumps IS the stall.
+- A DB call in a stall: `EXPLAIN QUERY PLAN` it read-only. A `SCAN` of a table on this
+  machine's store is a multi-second stall when pages are cold (C: is a 7200 rpm disk).
+- Many threads in one writer (`ingest_event`, `database is locked`): a thread-per-row
+  pattern — route through ONE ordered lane (`backend/utils/durability_queue.lane(name)`).
+- NEVER sample the backend from outside (py-spy, `python -m asyncio ps`): it killed the
+  backend and Claude Code. NEVER use `preview_start` for the backend (a Claude crash kills
+  it). Probes go IN the process, marked TEMP, removed after.
+
+**4. Fix the cause at its chokepoint** — one resolver, one lane, one index — not the
+instance (see CLAUDE.md "READING THIS CODEBASE").
+
+**5. Prove it.** Targeted tests (never the full suite), then re-run the same eval tasks
+and compare `reply_s` and pass. Baseline any failing test on the committed code
+(`git stash push -- <file>` → run → `git stash pop`) before calling it yours or not.
+
+**6. Guard it as a standard** (memory `iris-measured-standards`): a pin with before/after,
+how measured, how/why fixed; a row in PROGRESS.md "Standards"; and a guard that FAILS on
+the old state — a contract test on the STRUCTURAL cause (e.g. the query plan has no SCAN;
+finalize returns while the physics is blocked), or `evals/standards.json` for wall-clock
+(with a stated tolerance). Prove the guard fails on the old code.
+
+**7. Record** — `record_edit`/`record_test`/`pin_add`, commit with `git commit -F <file>`
+(PowerShell here-strings become pathspecs), update this skill.
 
 ---
 
@@ -68,8 +154,11 @@ done
 
 - **Bound on wall clock, not loop count.** `N` iterations of a 2s timeout + 1s sleep is
   a `3N`-second wait — easy to believe you waited 20s when you waited 60.
-- **Backend: ~216s to ready** (measured; pocket-tts model load dominates). Budget 300s.
-  It is not hung. Signal: `/health` → 200, or `Application startup complete` in the log.
+- **Backend: ready = `/health` 200, which now includes TTS** (2026-09-30: the Pocket-TTS
+  worker loads WITH the backend; `/health` answers **503** `{"status":"starting",
+  "tts":{"status":"loading"}}` until it is warm — that is readiness, not a failure).
+  Measured 19-71 s warm, up to ~5 min cold (C: is a hard disk; imports alone were 110 s
+  cold vs 5 s warm). Budget 300 s. A failed TTS load answers 200 with `tts.status=error`.
 - **Frontend: do NOT poll HTTP.** Next compiles the route on first request, so the
   connection is accepted while the request hangs — `curl` returned `000` for 124s on a
   server whose log already said `✓ Ready in 13.0s`. Poll for the **listener** on 3000
@@ -341,13 +430,14 @@ bug-vs-feature calls, launch quirks.
   and the reconnect then cancels the in-flight turn (same `client_replace` path). Watch for
   `[IRIS WebSocket] No frame for Ns ... treating the backend as wedged and reconnecting` in
   the browser console during long turns.
-- **Memory spike = the TTS worker, not a leak (2026-09-14)**: `backend.audio.tts_worker`
-  (a python subprocess) loads ~980 MB idle and jumps to ~2.0 GB during each synthesis
-  (+~1 GB transient), then unloads after 600s idle (`[TTSManager] Idle 60Xs > 600s -
-  unloading TTS worker`) and the ~1 GB frees. It is a **sawtooth, not a ratchet** — the
-  backend/embed/next processes stay flat. Measure with `scripts/mem_watch.py` (writes
-  `.iris-logs/mem_watch.csv`: free RAM, per-IRIS-process MB, handles, CPU). This is the
-  biggest RAM swing in the app and the owner watches for it.
+- **Memory = the TTS worker, not a leak**: `backend.audio.tts_worker` (a python
+  subprocess) holds ~1-2 GB and jumps ~+1 GB during a synthesis. Since 2026-09-30 it is
+  **resident while the backend runs** (idle unload OFF by default, owner decision "TTS ready
+  with the backend"); memory is capped by the growth recycle (`IRIS_TTS_MAX_GROWTH_MB`,
+  500 MB over the post-load baseline), after which the reaper reloads it at once.
+  `IRIS_TTS_IDLE_TIMEOUT_S>0` restores the old idle unload. Measure with
+  `scripts/mem_watch.py` (writes `.iris-logs/mem_watch.csv`). This is the biggest RAM
+  swing in the app and the owner watches for it.
 - **`run_command` dispatch deadline (90s) < permission window (120s) (2026-09-14, OPEN)**:
   `DEADLINE_DEFAULT_S=90` in `der_constants.py`; a gated command can hit
   `[TOOL_DISPATCH] ... CRASHED error='TimeoutError'` before the user approves the card.
@@ -415,8 +505,33 @@ contract and is recorded per model in `models/gguf/.iris_model_settings.json`.
 `frontend-design` (UI/UX intent) · `systematic-debugging` (on a bug) ·
 `research-doc` (write it up) · `mcp-eml-testing` (MCM-EML contracts).
 
+## Reading the logs through the architecture (why IRIS is not a normal harness)
+
+IRIS is one recursive operator (DER) steered by physics (Caducean `u`/`ξ`) and gated by a
+phase scheduler — see CLAUDE.md "READING THIS CODEBASE". What that means for a tester:
+
+- **Answer path vs side lanes.** The reply waits only for plan → node work → verification →
+  synthesis. Physics, ledger rows, fragments and the chain run on ordered lanes
+  (`durability_queue.lane("physics"|"ledger")`, pacman fragment worker). A stall on a
+  lane must never show up in `reply_s`; if it does, something slipped back onto the path.
+- **Fold-back.** Only SHAPE decisions wait for the physics (`[DER] physics fold-back ...
+  waited Xs`): split width, the streak-gate topology override, and plan expansion under
+  COMPRESS (`continuation step SUPPRESSED during COMPRESS (rec=1)`). A fold-back that times
+  out (`not landed after 30.0s`) decides on stale physics — seen once, it kept a bonus step
+  that COMPRESS would have dropped. Slow physics is a real bug, not noise.
+- **Useful lines:** `[DER] physics lane session=... landed in Xs` (update cost),
+  `[tool-event] ledger write ... has not returned` (a blocked ledger row — the lane watcher),
+  `[TTSManager] boot load finished`, `Oracle decide consumer=X ... latency_ms` (0.2-0.7 s
+  normal; seconds = contention).
+- **The Oracle is shadow until it earns a flip** (`scripts/consumer_enforcement_report.py`:
+  rows ≥ 100, precision ≥ 0.90, ECE ≤ 0.05 on the ACTIVE engine). Its wrong-looking picks
+  (e.g. `tool_choice chosen=vision_get_context conf=0.21`) are below threshold and do not act.
+
 ## Maintain this skill
 
 After a session, append what a future agent would need: new contracts, launch quirks,
 provider notes, pivots that worked. **Correct anything you find to be false** — the old
 `cmd /c start` recipe and the "30s startup" figure were both wrong and cost real time.
+Last revised 2026-09-30 (session aa473536): added Mode A, TTS readiness, TTS memory
+lifecycle, the architecture-reading section. The Claude Code entry point is a pointer at
+`.claude/skills/app-testing/SKILL.md` — edit THIS file, never the pointer.

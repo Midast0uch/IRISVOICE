@@ -1,7 +1,12 @@
+> **ARCHIVED 2026-09-30 — STALE. Do not plan from this file.** It was `bootstrap/GOALS.md`
+> (last edited 2026-09-24). The current roadmap is `.mcm/GOALS.md`, and the current work is
+> `docs/audits/2026-09-29/PROGRESS.md`. Kept for history: domain specs, gate checklists,
+> incident records. Status lines below were NOT re-verified after 2026-09-24.
+
 IRIS Bootstrap Agent — Production Roadmap
 This file defines what needs to be built, fixed, or completed to ship IRIS as a production-quality autonomous assistant.
-File: IRISVOICE/bootstrap/GOALS.md
-Read this at the start of every session.
+File: IRISVOICE/bootstrap/GOALS.md (archived to .mcm/GOALS-archive-2026-09-24.md)
+(Historical: "Read this at the start of every session.")
 
 OBJECTIVE ANCHOR (never changes)
 Build IRIS until it can run fully autonomously: receive tasks through its own interface, execute them using its own backend, and improve itself over time without external scaffolding.

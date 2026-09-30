@@ -2,6 +2,11 @@
 
 ## START HERE (next session)
 
+**Foundations (2026-09-30):** the roadmap is `.mcm/GOALS.md` (the old `bootstrap/GOALS.md` is
+archived there); CLAUDE.md/AGENTS.md now carry "BUILD + VERIFY IRIS — THE MEASURED LOOP" and
+"READING THIS CODEBASE — PHASE MODEL, PHYSICS, LANES"; validate every change with the
+`app-testing` skill, Mode A (`.opencode/skills/app-testing/SKILL.md`).
+
 **NEXT AGENT: read MCM `pin_069f18710552` (HANDOFF 4) first, then its ADDENDUM `pin_d4b9bd81e9f5`
 and the owner notes `pin_7484ace0deee` (`bootstrap/coordinates.db` is unused and
 `bootstrap/GOALS.md` is STALE — this folder's PROGRESS/README are the roadmap of record) and

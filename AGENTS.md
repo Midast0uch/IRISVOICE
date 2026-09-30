@@ -15,7 +15,10 @@ You are working on **IRIS Voice**, a voice-controlled desktop assistant.
 - **Auth**: OAuth handlers, OS keyring for secure credential storage
 - **Database**: MCM SDK coordinate graph at `.mcm/coordinates.db` (project-local; set `MCM_DB_PATH=C:\dev\IRISVOICE\.mcm\coordinates.db`)
 
-Read bootstrap/GOALS.md for the full roadmap, current gate, and domain breakdown.
+Read `.mcm/GOALS.md` for the objective, completion condition, gates and domain status, then
+`docs/audits/2026-09-29/PROGRESS.md` (START HERE = current work order; Standards = what must not
+regress). `bootstrap/GOALS.md` is retired (archived as `.mcm/GOALS-archive-2026-09-24.md`, stale);
+`bootstrap/coordinates.db` is no longer used.
 
 ---
 
@@ -390,6 +393,70 @@ conflict (report it; never reconcile it yourself).
 
 ---
 
+BUILD + VERIFY IRIS — THE MEASURED LOOP (foundational, 2026-09-30)
+
+WHY: IRIS is a system, not a library. A green unit suite coexisted with 0/15 real
+coding tasks passing and 185 s turns holding ~11 s of real work (execution audit,
+docs/audits/2026-09-29). Everything that fixed it was found by RUNNING the app on real
+tasks and MEASURING — c10 failed because the node never saw the user's request; the
+time went to an unindexed scan, a 90-thread write storm and a TTS load inside a turn.
+None of that is visible to unit tests or log reading alone.
+
+THE LOOP (details + commands: app-testing skill, Mode A):
+  1. Bound it: DONE = / NOT THIS = (THE SCOPE BOUND above).
+  2. Baseline: backend DETACHED with IRIS_STACK_DUMP_S=4, /health 200 (includes TTS),
+     tool model loaded, then evals/run_evals.py on the tasks the change touches
+     (runner DETACHED for anything > ~8 min). Read pass + reply_s — never `seconds`
+     (it counts the reply being spoken).
+  3. Cause, not guess: log timeline -> scripts/stackdump_summary.py on the gap ->
+     EXPLAIN QUERY PLAN on any DB call in it. Never sample the backend from outside
+     (py-spy killed it); never preview_start the backend.
+  4. Fix at the chokepoint (one resolver, one lane, one index) — not the instance.
+  5. Prove: targeted tests (never the full suite), baseline any failure on the
+     committed code (git stash push -- <file>), re-run the same eval tasks.
+  6. Guard as a STANDARD: pin (before/after, how measured, how/why fixed) + a row in
+     PROGRESS "Standards" + a guard that FAILS on the old state (a contract test on the
+     structural cause, or evals/standards.json with a stated tolerance). Prove it fails.
+  7. Record in MCM; commit with `git commit -F <file>` (PowerShell here-strings break).
+MEASUREMENT RULES: keep the machine quiet during a run (a disk scan turned a 20 s reply
+into 274 s); measure cold (after reboot) separately from warm (C: is a hard disk, cold
+reads 10-20x slower); a harness "LEAK" note can be your own edits during the run; use
+127.0.0.1 not localhost for local ports.
+
+READING THIS CODEBASE — PHASE MODEL, PHYSICS, LANES (foundational, 2026-09-30)
+
+IRIS is not a request/response harness. Read changes through these rules
+(docs/CADUCEAN_ARCHITECTURE.md, docs/CADUCEAN_CONCURRENCY_MODEL.md):
+  - ONE OPERATOR, FOUR SCALES: the DER loop (step, sub-loop, session, outer tuning) is one
+    recursive fan-out/fold-back. Bugs live in the seams between scales.
+  - ANSWER PATH vs SIDE LANES: the reply waits only for plan -> node work -> verification
+    -> synthesis. Everything else (physics update, trajectory rows, ledger rows,
+    fragments, chain appends, bookkeeping) runs on an ORDERED LANE
+    (backend/utils/durability_queue.lane(name): one writer per resource, bounded, FIFO)
+    — never inline, never a thread per row. Before adding work to finalize or turn end,
+    ask: does THIS reply need it? If not, it goes on a lane.
+  - FOLD-BACK, NOT TIMEOUTS: a consumer waits for side-lane work only where it DECIDES
+    on it (the physics: `_der_physics_settle` waits on `fold.ready` — split width, the
+    streak-gate topology override, plan expansion under COMPRESS). Modulation readers use
+    the last settled position. A bound on a wait may degrade a decision, never cancel work.
+  - THE BOUNDARY: the phase scheduler (router chokepoint) must never read live u/xi
+    (CT-3/CT-4); the cognitive layer (split width, Oracle, recall breadth) may.
+  - ONE CHOKEPOINT: every model call goes through InferenceRouter.generate (phase gate,
+    priority lane); every store path through resolve_memory_store_path (data/memory.db is
+    the primary app store; scripts use scripts/_app_store.py).
+  - THE ORACLE EARNS ITS JOBS: consumers stay shadow until the bar (rows >= 100, precision
+    >= 0.90, ECE <= 0.05 on the ACTIVE engine; scripts/consumer_enforcement_report.py).
+    Move a decision to the Oracle/physics only when it measurably pays; never starve its
+    calibration rows (keep the Brain reference label).
+  - STAND-INS: many tests bind only some kernel methods — put barriers/helpers that guard a
+    read at module level, or the stand-in silently skips the guarded read.
+  - A COMPUTED SIGNAL MUST CHANGE BEHAVIOR (CADUCEAN_ARCHITECTURE §10): a raise swallowed by
+    its own broad except (the topology halt), a local that shadows a module global (the TTS
+    worker's set_voice), a probe returning a default — grep for these before believing a
+    feature works.
+
+---
+
 HOW TO REPORT BACK (user preference, 2026-08-16)
 
 WRITE ALL REPLIES TO THE USER IN ASD-STE100 SIMPLIFIED TECHNICAL ENGLISH.
@@ -474,6 +541,10 @@ Do this silently. Do not announce it.
 ---
 
 ### Manual Live Testing & Verification (Web App)
+**Start with the project's `app-testing` skill** (`.opencode/skills/app-testing/SKILL.md`):
+Mode A (the measured eval loop — real tasks through the real backend, `reply_s`, stack dumps,
+standards) is the primary way to validate ANY agent/DER/physics/latency change; Mode B covers
+UI-driven testing. The notes below are for the browser-automation part of Mode B.
 When a feature needs manual live UI testing or visual verification (beyond unit/integration tests), use the **mcp-browser-ui** skill (`~/.opencode/skills/mcp-browser-ui/SKILL.md`). It covers browser control via Playwright/Chrome DevTools MCP, screenshot capture, and vision-subagent verification. Rules to follow from that skill:
 - Save ALL screenshots to the canonical `<workspace>/screenshots/` folder (gitignored) with descriptive, timestamped filenames — never scatter them in the repo root or temp dirs.
 - The main model cannot see images inline — delegate visual verification to the `vision-minimax` sub-agent.
@@ -503,7 +574,7 @@ The three layers should all be present:
   SEMANTIC:  file_node confidence + Z-trajectory + edge weights
   LANDMARK:  permanent landmarks for every verified feature
 
-When the project reaches its completion condition (defined in GOALS.md),
+When the project reaches its completion condition (defined in `.mcm/GOALS.md` §2),
 .mcm/coordinates.db transfers to the application's runtime memory store.
 Same schema. No migration. The build memory becomes the app memory.
 
@@ -543,7 +614,8 @@ Exact signatures (required args in CAPS):
   mcm_compress(active_task, active_files, retention)
 
 SPEC / DOMAIN QUICK REFERENCE
-Production roadmap:     bootstrap/GOALS.md
+Production roadmap:     .mcm/GOALS.md  (+ current work: docs/audits/2026-09-29/PROGRESS.md)
+Validate a change:      app-testing skill (.opencode/skills/app-testing/SKILL.md, Mode A)
 Graph queries:          get_session() or navigate(file)
 Work queue:             get_session()   (no claim_work tool exists)
 Event recording:        record_edit(file=), record_test(file=,result=), record_create(file=)

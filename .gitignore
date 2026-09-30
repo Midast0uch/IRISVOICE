@@ -62,7 +62,13 @@ data/iris_config.json
 /bootstrap/*.db
 /bootstrap/*.db-shm
 /bootstrap/*.db-wal
-.mcm/
+# The MCM build store stays local; the roadmap files in .mcm/ are tracked
+# (GOALS.md moved here from bootstrap/ on 2026-09-30). `.mcm/*` (not `.mcm/`) so
+# the negations below can re-include files — git cannot re-include inside an
+# ignored directory.
+.mcm/*
+!.mcm/GOALS.md
+!.mcm/GOALS-archive-2026-09-24.md
 
 # Per-machine local-model calibration state (regenerated from use, never committed)
 .iris-config/
