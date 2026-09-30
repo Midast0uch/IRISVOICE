@@ -194,6 +194,28 @@ def _der_topology_halt(owner, session_id: str) -> None:
     raise TopologyViolationException(session_id=session_id)
 
 
+def _der_neighbors_block(rows) -> str:
+    """K2: the "RELEVANT NEIGHBORS" text for the rows that passed the relevance
+    gate; "" when there are none, so nothing is injected. Module level on
+    purpose (stand-in kernels bind only some methods). Bounded: 3 rows, 160
+    chars each."""
+    parts = []
+    for n in (rows or [])[:3]:
+        text = (n.get("insight") or "").strip()
+        outcome = (n.get("result") or "").strip()
+        # A step row keeps its text in insight and its outcome in result
+        # ("success"/"failure"); a long result is the payload head instead.
+        text = "{} [{}]".format(text, outcome[:40]) if text and outcome else (text or outcome)
+        if text:
+            parts.append("{} ({}/{}): {}".format(
+                n.get("chain_id") or "",
+                n.get("topic_domain") or "?",
+                n.get("execution_domain") or "?",
+                text[:160],
+            ))
+    return " | ".join(parts)
+
+
 def _der_fold_envelope(item, fold) -> None:
     """Write the landed physics onto the step's envelope (caller holds
     fold.lock). Idempotent: whichever of the lane and the envelope build
@@ -6780,12 +6802,20 @@ class AgentKernel:
         REQ-6 AC3 (semantic gate): the recall execution is the SHARED helper
         ``run_filtered_recall`` (ontology_recall.py) — the gate's Tier 2 calls
         the same code path, so the widen-order and telemetry cannot drift.
+
+        REQ-4 AC4.2 (K2): the recalled rows then pass a RELEVANCE GATE - same
+        topic AND token overlap with this step's goal (no embedding on the step
+        path); survivors rank by state proximity then recency; none passing ->
+        [] and the step carries no neighbors block at all (owner rule
+        2026-09-30: chain data enters the context only when relevant).
         """
         try:
+            from backend.agent.caducean_trajectory import latest_coords_str
             from backend.agent.ontology_recall import (
+                CANDIDATE_POOL,
                 RecallFilters,
+                gated_neighborhood,
                 resolve_mycelium_conn,
-                run_filtered_recall,
             )
 
             _rec = getattr(item, "node_record", None) or getattr(
@@ -6799,7 +6829,7 @@ class AgentKernel:
                 execution_domain=getattr(_rec, "execution_domain", None)
                 or getattr(item, "execution_domain", None),
                 thread_id=session_id or getattr(item, "session_id", None) or None,
-                limit=3,
+                limit=CANDIDATE_POOL,  # the gate keeps at most 3 of these
             )
             if not _filters.has_any:
                 return []  # no ontology axes on this node — nothing to filter
@@ -6808,7 +6838,16 @@ class AgentKernel:
             if _conn is None:
                 return []
 
-            return run_filtered_recall(_conn, _filters)
+            return gated_neighborhood(
+                _conn,
+                _filters,
+                getattr(item, "description", "") or "",
+                # Called only when more than one row passed the gate.
+                state_fn=lambda: latest_coords_str(
+                    self._memory_interface, session_id
+                ),
+                keep=3,
+            )
         except Exception as exc:
             logger.debug("[DER] ontology neighborhood recall failed: %s", exc)
             return []
@@ -10046,25 +10085,16 @@ Respond with a JSON object:
                     # widens (relationship -> type -> domain, logged) and
                     # falls back to the live-state-only step (never an error).
                     try:
-                        _nb = self._der_recall_neighborhood(item, _session)
-                        if _nb:
-                            _nb_parts = []
-                            for _n in _nb[:3]:
-                                _n_sum = (_n.get("result") or "")[:120]
-                                _n_id = _n.get("chain_id") or ""
-                                _n_td = _n.get("topic_domain") or "?"
-                                _n_ed = _n.get("execution_domain") or "?"
-                                if _n_sum:
-                                    _nb_parts.append(
-                                        f"{_n_id} ({_n_td}/{_n_ed}): {_n_sum}"
-                                    )
-                            if _nb_parts:
-                                _prior = getattr(item, "coordinate_signal", "") or ""
-                                item.coordinate_signal = (
-                                    _prior
-                                    + "\nRELEVANT NEIGHBORS: "
-                                    + " | ".join(_nb_parts)
-                                ).strip()
+                        # K2: only rows that passed the relevance gate reach
+                        # here; no row -> no block (nothing injected).
+                        _nb_block = _der_neighbors_block(
+                            self._der_recall_neighborhood(item, _session)
+                        )
+                        if _nb_block:
+                            _prior = getattr(item, "coordinate_signal", "") or ""
+                            item.coordinate_signal = (
+                                _prior + "\nRELEVANT NEIGHBORS: " + _nb_block
+                            ).strip()
                     except Exception as _nb_exc:
                         loud_error(_nb_exc, "ontology_recall_neighborhood")
 
