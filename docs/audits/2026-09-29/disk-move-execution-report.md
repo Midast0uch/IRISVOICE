@@ -1,5 +1,11 @@
 # Disk move — execution report
 
+> **OWNER CORRECTION 2026-09-30 (supersedes Step 2 below):** `data/memory.db` stays the PRIMARY
+> application store. `data/memory_config.json` `db_path` was set back to `"data/memory.db"`
+> (identical to the committed file); both copies were byte-identical with empty WALs at the
+> switch, so no data was lost or merged. `D:\IRIS\data\memory.db` is an unused leftover — delete
+> THAT one, never `C:\dev\IRISVOICE\data\memory.db`. MCM pin `pin_f1cb33f20a88`.
+
 Executed 2026-09-30 by the agent, per `disk-move-plan.md`.
 Scope: Steps 1-4 (the steps the plan delegates). Steps 0 and 5 are owner-only
 (they need a reboot) and were **not** run.
