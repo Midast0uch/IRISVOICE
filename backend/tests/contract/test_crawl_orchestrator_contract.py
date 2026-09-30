@@ -125,6 +125,58 @@ def test_funnel_order_and_events(events, emitter):
     assert "url" in ot[0], f"OPEN_TAB must carry url key: {ot[0]}"
 
 
+def test_deferred_extraction_returns_before_blocked_extractor(events, emitter):
+    """Spec websearch-vision-browser A5 (REQ-3 AC3.1, D5): with
+    defer_extraction=True (the agent path) research() returns while the
+    DataExtractor is still blocked, and the SAME OPEN_TAB dashboard payload
+    (then CRAWLER_COMPLETE) arrives from the web_extract lane after it
+    unblocks."""
+    import threading
+
+    gate = threading.Event()
+
+    class _BlockedExtractor:
+        async def extract(self, result, instructions, result_type, title, pin_id=None):
+            # A bound only so a broken run cannot hang forever: it must
+            # outlast research()'s event-log drain, which took >10 s on a cold
+            # C: HDD and let the extractor finish before research() returned.
+            gate.wait(120)
+            return {"title": title, "summary": "X is the quantum model.",
+                    "key_findings": [], "sources": []}
+
+    orch = CrawlOrchestrator(
+        planner=_stub_planner(["https://example.gov/doc"]),
+        extractor=_BlockedExtractor(),
+    )
+    orch._backend_override = _StubBackend()
+
+    async def _run():
+        result = await orch.research(
+            "what is X", mode="agent", session_id="s1",
+            on_progress=emitter, max_pages=5, defer_extraction=True,
+        )
+        assert not gate.is_set()
+        early = [e for e, _ in events]
+        assert "OPEN_TAB" not in early and "CRAWLER_COMPLETE" not in early
+        assert result.pages and result.passages, "answer-path content must be present"
+        gate.set()
+        for _ in range(200):
+            if any(e == "CRAWLER_COMPLETE" for e, _ in events):
+                break
+            await asyncio.sleep(0.05)
+
+    asyncio.run(_run())
+
+    ev_types = [e[0] for e in events]
+    assert "OPEN_TAB" in ev_types, f"dashboard never landed: {ev_types}"
+    assert ev_types.index("OPEN_TAB") < ev_types.index("CRAWLER_COMPLETE")
+    assert ev_types[-1] == "CRAWLER_COMPLETE"
+    ot = [p for e, p in events if e == "OPEN_TAB"][0]
+    assert ot["tab_type"] == "dashboard"
+    assert ot["data"]["summary"] == "X is the quantum model."
+    assert "job_id" in ot and "url" in ot
+
+
 def test_credibility_monotonicity():
     """REQ-5/6: primary_official scores higher than forum."""
     from crawler.credibility import classify_source, _base_weight

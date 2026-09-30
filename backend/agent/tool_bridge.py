@@ -3365,6 +3365,10 @@ class AgentToolBridge:
                 get_crawl_orchestrator().research(
                     query, mode="agent", session_id=session_id, on_progress=_on_progress,
                     excluded_urls=_excluded,
+                    # REQ-3 AC3.1 (websearch-vision-browser D5): the agent reads
+                    # raw page `content`; the DataExtractor dashboard lands later
+                    # on the web_extract lane, off the answer path.
+                    defer_extraction=True,
                     **_rec_kwargs,
                 )
             )

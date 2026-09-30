@@ -433,6 +433,7 @@ class CrawlOrchestrator:
         job_id: Optional[str] = None,
         excluded_urls: Optional[list] = None,
         seed_urls: Optional[list] = None,
+        defer_extraction: bool = False,
     ) -> CrawlResult:
         """Public entry point. REQ-18 AC2 (T20): declare that this RUN needs the
         browser for its whole duration, so the pool's idle-stop cannot fire
@@ -455,7 +456,7 @@ class CrawlOrchestrator:
                 query, mode=mode, session_id=session_id, on_progress=on_progress,
                 max_pages=max_pages, min_pages=min_pages, timeout_s=timeout_s,
                 job_id=job_id, excluded_urls=excluded_urls, seed_urls=seed_urls,
-                _timing=_wt,
+                defer_extraction=defer_extraction, _timing=_wt,
             )
             try:
                 _wt["pages_usable"] = sum(
@@ -486,9 +487,19 @@ class CrawlOrchestrator:
         job_id: Optional[str] = None,
         excluded_urls: Optional[list] = None,
         seed_urls: Optional[list] = None,
+        defer_extraction: bool = False,
         _timing: Optional[dict] = None,
     ) -> CrawlResult:
-        """Run the full funnel. Never raises for crawl failures (REQ-17 AC1)."""
+        """Run the full funnel. Never raises for crawl failures (REQ-17 AC1).
+
+        ``defer_extraction`` (spec websearch-vision-browser REQ-3 AC3.1 / D5):
+        the agent path consumes raw page ``content``, never the DataExtractor
+        JSON, so the extractor leaves the answer path. research() returns
+        right after rerank and the extraction runs on
+        ``durability_queue.lane("web_extract")``; that job emits the SAME
+        OPEN_TAB (dashboard payload) then CRAWLER_COMPLETE when it lands. The
+        default (False) is the synchronous path the gateway consumes.
+        """
         t_start = time.monotonic()
 
         def _wt_add(key: str, t0: float) -> None:
@@ -972,6 +983,22 @@ class CrawlOrchestrator:
         _emit("CRAWLER_PHASE", {"phase": "citing", "phase_sequence": PHASE_CITING})
 
         # 6) EXTRACT + CITE (REQ-8) — module implemented in T4
+        if defer_extraction:
+            # REQ-3 AC3.1 / D5: the answer path returns now; the extractor and
+            # the dashboard events land later on the web_extract lane.
+            cred_map.top_score = max((p.score for p in passages), default=0.0)
+            result = self._finalize(fetched, query, t_start)
+            result.passages = passages
+            result.credibility_map = cred_map
+            result.citation_index = {p.chunk_id: p.url for p in passages if p.chunk_id}
+            self._submit_deferred_extract(
+                _emit, query=query, fetched=fetched, passages=passages, plan=plan,
+                cred_map=cred_map, session_id=session_id, job_id=job_id,
+                page_count=len(ok_pages),
+            )
+            await self._drain_log_tasks()
+            return result
+
         from .cite import extract_and_cite
         _te = time.monotonic()
         dashboard_data, cited_markdown, unsourced = await extract_and_cite(
@@ -991,9 +1018,23 @@ class CrawlOrchestrator:
         result.credibility_map = cred_map
         # REQ-22: chunk_id -> url provenance map for pacman persistence.
         result.citation_index = {p.chunk_id: p.url for p in passages if p.chunk_id}
+        self._emit_dashboard(
+            _emit, query=query, title=plan.title, dashboard_data=dashboard_data,
+            session_id=session_id, job_id=job_id, page_count=len(ok_pages),
+        )
+        await self._drain_log_tasks()
+        return result
+
+    @staticmethod
+    def _emit_dashboard(
+        _emit, *, query: str, title: str, dashboard_data: dict,
+        session_id: str, job_id: str, page_count: int,
+    ) -> None:
+        """OPEN_TAB (dashboard payload) then CRAWLER_COMPLETE — one shape for
+        the synchronous path and the deferred web_extract lane job."""
         _emit("OPEN_TAB", {
             "tab_type": "dashboard", "id": session_id or query,
-            "title": plan.title, "data": dashboard_data,
+            "title": title, "data": dashboard_data,
             # REQ-11 (T13): the OPEN_TAB payload carries url + job_id so the
             # frontend can tell a content tab from a url-less dashboard tab —
             # and never force-activate a tab that has nothing to show.
@@ -1005,12 +1046,77 @@ class CrawlOrchestrator:
         _emit("CRAWLER_COMPLETE", {
             "query": query,
             "summary": dashboard_data.get("summary", ""),
-            "page_count": len(ok_pages),
+            "page_count": page_count,
             "session_id": session_id,
             "job_id": job_id,
         })
-        await self._drain_log_tasks()
-        return result
+
+    def _submit_deferred_extract(
+        self, _emit, *, query: str, fetched: CrawlResult, passages: list,
+        plan: CrawlPlan, cred_map, session_id: str, job_id: str, page_count: int,
+    ) -> None:
+        """REQ-3 AC3.1: run extract_and_cite on durability_queue.lane("web_extract").
+
+        The lane thread runs the extraction on its own short-lived event loop
+        (the model call is synchronous on the light path anyway), then hands
+        the events back to the caller's loop with call_soon_threadsafe: the
+        emitter schedules event-log appends with ensure_future, so it must run
+        on the loop that owns the session. Never raises into research().
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        extractor = self._extractor
+        title = plan.title
+        instructions = plan.instructions
+        result_type = plan.result_type
+
+        def _job() -> None:
+            from .cite import extract_and_cite
+
+            t0 = time.monotonic()
+            try:
+                dashboard_data, _cited, unsourced = asyncio.run(extract_and_cite(
+                    query=query, fetched=fetched, passages=passages,
+                    instructions=instructions, result_type=result_type,
+                    title=title, extractor=extractor,
+                ))
+            except Exception as exc:  # noqa: BLE001 — the dashboard still lands
+                logger.warning(
+                    "[CrawlOrchestrator] deferred extract failed job_id=%s: %s", job_id, exc,
+                )
+                dashboard_data = {"title": title, "summary": "", "key_findings": [], "sources": []}
+                unsourced = []
+            cred_map.unsourced_claims = unsourced
+            logger.info(
+                "[web_timing] job_id=%s deferred extract_ms=%d",
+                job_id, int((time.monotonic() - t0) * 1000),
+            )
+            if loop is None or loop.is_closed():
+                logger.warning(
+                    "[CrawlOrchestrator] deferred dashboard not emitted job_id=%s: "
+                    "caller loop gone", job_id,
+                )
+                return
+            try:
+                loop.call_soon_threadsafe(lambda: self._emit_dashboard(
+                    _emit, query=query, title=title, dashboard_data=dashboard_data,
+                    session_id=session_id, job_id=job_id, page_count=page_count,
+                ))
+            except RuntimeError as exc:  # loop closed between check and call
+                logger.warning(
+                    "[CrawlOrchestrator] deferred dashboard not emitted job_id=%s: %s",
+                    job_id, exc,
+                )
+
+        from backend.utils.durability_queue import lane
+
+        if not lane("web_extract").submit(f"web_extract:{job_id}", _job):
+            logger.warning(
+                "[CrawlOrchestrator] web_extract lane full job_id=%s: dashboard dropped",
+                job_id,
+            )
 
     async def fetch_url(
         self,

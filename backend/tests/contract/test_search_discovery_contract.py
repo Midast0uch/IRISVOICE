@@ -370,7 +370,11 @@ def test_capability_path_consults_robots_before_fetching(monkeypatch):
     ))
 
     assert gate_seen, "robots gate never consulted before fetching"
-    assert gate_seen[0][1].startswith("Mozilla"), (
+    # The contract is gate UA == fetch UA (the same identity the Tier-1
+    # request presents), not a particular vendor prefix: the UA is
+    # env-configurable (IRIS_CRAWL_USER_AGENT).
+    from backend.crawler.capabilities import _TIER1_USER_AGENT
+    assert gate_seen[0][1] == _TIER1_USER_AGENT, (
         "gate checked a different identity than the fetch presents"
     )
     assert outcome.page is None
