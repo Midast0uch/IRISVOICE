@@ -160,8 +160,7 @@ Mode B) and Wave C stay with the Director.
 payload) then CRAWLER_COMPLETE back to the caller's loop. The gateway path is unchanged
 (synchronous). Log line: `[web_timing] job_id=... deferred extract_ms=`. Effect: the agent tool
 result's `summary` and the job registry's summary/cited_markdown are empty on the agent path (the
-agent reads `content`). AC3.2/AC3.3 were already done in Wave A. LIVE MEASUREMENT (r01/r05) still
-to do on a quiet machine.
+agent reads `content`). AC3.2/AC3.3 were already done in Wave A. MEASURED 2026-09-30 17:01 (warm, quiet): r01 PASS reply 50.0 s, r05 PASS 24.8 s (was 48 s), r06 PASS 30.1 s (new check). All three answered from the quick `search` tier - `crawler_query` never ran, so A5 was NOT exercised; r05's gain is routing (search 2.8 s vs its earlier crawl 31.8 s). A5's ceiling per crawl = the earlier r05 `extract_ms=1745`. r01's 50 s: one cold Exa call `search_ms=13557` (the open Exa-cold finding). Exercise A5 with a task that needs a crawl.
 
 **(2) Test changes (owner-approved).** `contract/test_search_discovery_contract.py::
 test_capability_path_consults_robots_before_fetching`: `startswith("Mozilla")` -> `==
