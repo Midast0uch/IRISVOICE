@@ -55,6 +55,7 @@ TASKS_FILE = EVALS_DIR / "tasks.json"
 FIXTURES_DIR = EVALS_DIR / "fixtures"
 RESULTS_DIR = EVALS_DIR / "results"
 BASELINE_FILE = EVALS_DIR / "baseline.json"
+STANDARDS_FILE = EVALS_DIR / "standards.json"
 PARTIAL_FILE = RESULTS_DIR / "partial.json"  # rewritten after every task
 IRIS_CONFIG = REPO_ROOT / "data" / "iris_config.json"
 
@@ -258,6 +259,9 @@ async def _run_turn(task: dict, conv_id: str, workdir: Path | None, timeout_s: f
                 if payload.get("role") == "error" and not text.lower().startswith("[iris error"):
                     text = "[IRIS error] " + text
                 record["reply"] = text
+                # When the user can read the answer. The drain below keeps the
+                # socket open while the reply is SPOKEN, which "seconds" counts.
+                record["reply_at"] = time.monotonic()
                 # Documents are emitted before the final reply; give a late
                 # document frame a moment to arrive before closing.
                 try:
@@ -390,6 +394,7 @@ async def _run(tasks: list, keep: bool, done: list) -> list:
                        "permissions": 0, "questions": 0, "timed_out": False,
                        "ws_error": f"{type(exc).__name__}: {exc}"}
             seconds = round(time.monotonic() - started, 1)
+            reply_s = round(rec["reply_at"] - started, 1) if rec.get("reply_at") else None
 
             text = "\n\n".join([rec["reply"], *rec["documents"]])
             notes = []
@@ -415,13 +420,14 @@ async def _run(tasks: list, keep: bool, done: list) -> list:
 
             results.append({
                 "id": task["id"], "group": task["group"], "passed": passed,
-                "seconds": seconds, "notes": notes, "conversation_id": conv_id,
+                "seconds": seconds, "reply_s": reply_s, "notes": notes, "conversation_id": conv_id,
                 "workdir": str(workdir) if workdir else None,
                 "tools": rec["tools"], "web_used": web_used,
                 "permissions": rec["permissions"], "questions": rec["questions"],
                 "reply_head": rec["reply"][:400], "event_counts": rec["event_counts"],
             })
-            log.info("    %s in %.0fs  %s", "PASS" if passed else "FAIL", seconds, "; ".join(notes))
+            log.info("    %s in %.0fs (reply at %ss)  %s", "PASS" if passed else "FAIL", seconds,
+                     reply_s, "; ".join(notes))
             _write_results(results, PARTIAL_FILE)
             if not passed and not _backend_alive():
                 # Every later task would fail for a reason that says nothing
@@ -455,6 +461,55 @@ def _write_results(results: list, path: Path) -> dict:
     return payload
 
 
+# ── standards: measured results we do not regress from ───────────────────────
+# `--record-standard` stores each task's pass flag and reply_s from a clean
+# run; every later run is compared with it. Why each number is what it is, and
+# how it was reached, is in docs/audits/2026-09-29/PROGRESS.md ("Standards").
+#
+# A reply may be this much slower than its standard before it counts as a
+# regression. Physical reason: the Brain is a cloud model whose per-call time
+# varies run to run (the same c07 planning call measured 13 s and 19 s on
+# 2026-09-29), so a tighter bound would report model weather, not our code.
+_REPLY_TOLERANCE = 1.5
+_REPLY_SLACK_S = 10.0
+
+
+def _check_standards(results: list) -> list:
+    if not STANDARDS_FILE.is_file():
+        return []
+    std = json.loads(STANDARDS_FILE.read_text(encoding="utf-8")).get("tasks") or {}
+    regressions = []
+    for r in results:
+        s = std.get(r["id"])
+        if not s:
+            continue
+        if s.get("passed") and not r["passed"]:
+            regressions.append(f"{r['id']}: PASS in the standard, FAIL now")
+        limit = s.get("reply_s")
+        got = r.get("reply_s")
+        if limit and got is not None and got > limit * _REPLY_TOLERANCE + _REPLY_SLACK_S:
+            regressions.append(
+                f"{r['id']}: reply_s {got}s > standard {limit}s x{_REPLY_TOLERANCE} "
+                f"+ {_REPLY_SLACK_S:.0f}s"
+            )
+    return regressions
+
+
+def _record_standard(results: list, source: Path) -> None:
+    """Merge this run's tasks into the standard (a subset run updates only its tasks)."""
+    payload = {"tasks": {}}
+    if STANDARDS_FILE.is_file():
+        payload = json.loads(STANDARDS_FILE.read_text(encoding="utf-8"))
+    for r in results:
+        payload["tasks"][r["id"]] = {
+            "passed": bool(r["passed"]), "reply_s": r.get("reply_s"),
+            "source": source.name, "models": _model_bindings(),
+        }
+    payload["recorded_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    payload["why"] = "docs/audits/2026-09-29/PROGRESS.md -> Standards"
+    STANDARDS_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
 def _summary(results: list) -> dict:
     groups: dict = {}
     for r in results:
@@ -469,6 +524,8 @@ def main() -> int:
     ap.add_argument("--group", action="append", choices=["coding", "research"], default=[])
     ap.add_argument("--task", action="append", default=[], help="task id (repeatable)")
     ap.add_argument("--record-baseline", action="store_true")
+    ap.add_argument("--record-standard", action="store_true",
+                    help="store this run's pass flags and reply_s as the standard (evals/standards.json)")
     ap.add_argument("--keep-workdirs", action="store_true")
     ap.add_argument("--no-model-check", action="store_true")
     ap.add_argument("--resume", action="store_true",
@@ -495,8 +552,9 @@ def main() -> int:
 
     print("\n" + "-" * 72)
     for r in results:
+        _reply = f"{r['reply_s']:.0f}s" if r.get("reply_s") is not None else "-"
         print(f"{'PASS' if r['passed'] else 'FAIL'}  {r['id']:<28} {r['seconds']:>7.0f}s  "
-              f"{'web ' if r['web_used'] else ''}{'; '.join(r['notes'])[:120]}")
+              f"reply {_reply:>5}  {'web ' if r['web_used'] else ''}{'; '.join(r['notes'])[:120]}")
     print("-" * 72)
     for group, g in summary.items():
         print(f"{group:<10} {g['passed']}/{g['total']}")
@@ -508,7 +566,19 @@ def main() -> int:
     if args.record_baseline:
         _write_results(results, BASELINE_FILE)
         print(f"baseline: {BASELINE_FILE}")
-    return 0
+    regressions = _check_standards(results)
+    print("-" * 72)
+    if regressions:
+        print(f"STANDARDS: {len(regressions)} regression(s)")
+        for line in regressions:
+            print(f"  REGRESSION  {line}")
+    else:
+        print("STANDARDS: no regression" if STANDARDS_FILE.is_file() else "STANDARDS: none recorded")
+    if args.record_standard:
+        _record_standard(results, out)
+        print(f"standard: {STANDARDS_FILE}")
+        return 0
+    return 5 if regressions else 0
 
 
 if __name__ == "__main__":

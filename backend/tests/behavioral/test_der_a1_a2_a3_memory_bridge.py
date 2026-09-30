@@ -125,6 +125,17 @@ def test_fragment_failed_output_stored():
         verdict=MagicMock(),
     )
 
+    # The fragment is written by the pacman fragment worker in the background
+    # (2026-09-29, owner-approved): queue a sentinel behind it (one FIFO
+    # consumer) and wait for it before asserting on the write.
+    import threading
+
+    from backend.agent.mcm_protocol.actions import pacman_fragment as _pf
+
+    _drained = threading.Event()
+    assert _pf._submit_fragment_job(_drained.set, "test-drain")
+    assert _drained.wait(10), "fragment worker did not drain"
+
     frag = mem.episodic.fragment_and_store
     assert frag.called, "failed output should be fragmented"
     _call = frag.call_args

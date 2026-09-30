@@ -124,6 +124,63 @@ _update_counters_lock = threading.Lock()
 # the rule allows one. Module-level so it is shared by every kernel instance.
 _der_recovery_lock = threading.Lock()
 
+
+# ── Physics side lane helpers (see AgentKernel._der_submit_physics). Module
+# level on purpose: a kernel stand-in that binds only some methods must still
+# run the read a barrier guards, so the barrier cannot live on the class.
+def _der_physics_settle(owner, session_id: str) -> None:
+    """Fold-back point of the physics side lane.
+
+    Call this right before a DECISION about the next step's shape reads the
+    Caducean state (split width, stuck-streak topology override, plan
+    expansion under COMPRESS). It waits until this session's newest update
+    has moved the integrator (``fold.ready``; FIFO, so every earlier update
+    moved it first) — not for that job's bookkeeping. Past
+    DER_PHYSICS_FOLD_WAIT_S the decision proceeds on the last settled
+    position; the update itself is never cancelled.
+    """
+    pending = getattr(owner, "_der_physics_pending", None)
+    fold = pending.get(session_id) if pending else None
+    if fold is None or fold.ready.is_set():
+        return
+    from backend.utils.durability_queue import lane
+
+    if lane("physics").in_worker():
+        return  # the lane never waits on work queued behind itself
+    from backend.agent.der_constants import DER_PHYSICS_FOLD_WAIT_S
+
+    t0 = time.monotonic()
+    landed = fold.ready.wait(DER_PHYSICS_FOLD_WAIT_S)
+    waited = time.monotonic() - t0
+    if not landed:
+        logger.warning(
+            "[DER] physics fold-back session=%s step=%s not landed after %.1fs "
+            "- deciding on the last settled position",
+            session_id, fold.step, waited,
+        )
+    elif waited >= 0.5:
+        logger.info(
+            "[DER] physics fold-back session=%s step=%s waited %.2fs",
+            session_id, fold.step, waited,
+        )
+
+
+def _der_fold_envelope(item, fold) -> None:
+    """Write the landed physics onto the step's envelope (caller holds
+    fold.lock). Idempotent: whichever of the lane and the envelope build
+    finishes second applies it."""
+    env = getattr(item, "envelope", None)
+    if env is None:
+        return
+    if fold.coords_to is not None:
+        env.coords_from = str(fold.coords_from or "")
+        env.coords_to = str(fold.coords_to or "")
+        env.coords_basis = "format_coords"
+    if fold.rec == 3:
+        # AC3.4: a TOPO_VIOLATION forces suggestion=stop (physics first).
+        env.suggestion = "stop"
+
+
 # ── DER Loop constants (spec: agent_loop_requirements.md Gap 11) ───────────
 # Canonical values live in der_constants.py — re-exported here for spec
 # compliance so module-level code that imports from agent_kernel finds them.
@@ -11820,6 +11877,9 @@ Respond with a JSON object:
             try:
                 from backend.gateway.iris_ffi import ffi_caducean_recommend
 
+                # Fold-back: the finished steps' physics must have landed
+                # before the topology override decides (side lane).
+                _der_physics_settle(self, _session)
                 _topo = ffi_caducean_recommend(_session) == 3
             except Exception:
                 _topo = False
@@ -13081,6 +13141,8 @@ Respond with a JSON object:
                     item.step_id, (_missing or "unassessed")[:120],
                 )
             try:
+                # Fold-back: split width is a shape decision (side lane).
+                _der_physics_settle(self, _session)
                 _cad = self._der_live_cad_state(_session)
                 _wu = getattr(self, "_der_work_units", 0)
                 # REQ-4 AC1 (T16): continuous verified fraction as a GRADED
@@ -16129,7 +16191,7 @@ Respond with a JSON object:
             )
             return None
 
-    def _der_run_node(self, item, _session: str, _turn_id: Optional[str], _prior_results: list) -> tuple:
+    def _der_run_node(self, item, _session: str, _turn_id: Optional[str], _prior_results: list, task: str = "") -> tuple:
         """Adapter for node_executor.run_node: this kernel's router, the box's
         dispatch (ledger rows, deadlines, permissions) and the developer tools."""
         from backend.agent.node_executor import DEV_NODE_TOOLS, NodeContext, run_node
@@ -16166,7 +16228,7 @@ Respond with a JSON object:
         result = run_node(goal, NodeContext(
             generate=_generate, execute=_execute,
             format_result=lambda name, raw: self._format_tool_result_for_step(raw, name),
-            tools=tools, prior_results=_prior_results, workdir=workdir,
+            tools=tools, prior_results=_prior_results, task=task, workdir=workdir,
             conv_id=self.conversation_id or "", on_call=_shadow,
         ))
         return result.as_step_result(), result.success
@@ -16230,7 +16292,8 @@ Respond with a JSON object:
             # as a bounded Brain work loop (backend/agent/node_executor.py)
             # instead of one tool picked by the small tool model.
             if not item.tool and self._effective_launcher_mode() == "developer":
-                return self._der_run_node(item, _session, _turn_id, _prior_results)
+                return self._der_run_node(item, _session, _turn_id, _prior_results,
+                                          task=getattr(plan, "original_task", "") or "")
 
             # ── Phase 1 (D1.6): resolve via ToolDecisionBox ─────────────
             # Session-345 correction (2026-09-28): _decision is assigned
@@ -17330,6 +17393,416 @@ Respond with a JSON object:
     # ── Phase 4: shared per-step finalize (extracted from _execute_plan_der)
 
 
+    # ── Physics side lane (execution audit, 2026-09-29) ───────────────────────
+    # A step's Caducean update (EML observation -> integrator update -> coupling
+    # -> trajectory row -> homeostasis -> controller refit -> Immortus chain ->
+    # physics-event narration) is bookkeeping for the NEXT step's shape, not
+    # part of this step's answer. It used to run inline in _der_finalize_step:
+    # coding eval c10 spent 16-20 s of a 63 s turn inside ffi_calculate_eml on
+    # the DER thread while the reply waited (logs/stackdump.log, 21:06:31-47).
+    #
+    # Now it runs on the ordered durability lane (one consumer, FIFO — the
+    # physics is a sequential integrator and the chain is order-sensitive, so
+    # order is preserved by construction). The CADUCEAN fold-back rule decides
+    # who waits: only a DECISION about the next step's shape reads the pending
+    # update (_der_physics_settle). Everything else — synthesis, scoring,
+    # modulation — reads the last settled position and never waits.
+
+    def _der_submit_physics(
+        self,
+        item: "QueueItem",
+        *,
+        node_record,
+        step_success: bool,
+        verified: str,
+        session: str,
+        from_voice: bool,
+        n_children: int,
+        mediator: str,
+        mediator_source: str,
+    ):
+        """Queue this step's physics on the side lane; return its fold handle.
+
+        Every value the job needs is bound HERE: the job runs later, and the
+        step object must not be read from another thread after the loop moved
+        on. ``node_record`` (coords_to) and ``item.envelope`` (coords, topology
+        stop) are the two places the job writes back, both under ``fold.lock``.
+        """
+        from types import SimpleNamespace
+
+        from backend.utils.durability_queue import lane as _durability_lane
+
+        # Its own lane: a ledger or durability backlog must never delay the
+        # integrator a shape decision folds back on.
+        _lane_submit = _durability_lane("physics").submit
+
+        # ready: the integrator state (u, xi, rec) is updated — what a shape
+        #        decision reads. done: the whole job, bookkeeping included.
+        fold = SimpleNamespace(
+            ready=threading.Event(), done=threading.Event(), lock=threading.Lock(),
+            coords_from=None, coords_to=None, rec=None,
+            step=getattr(item, "step_number", None),
+        )
+        vals = {
+            "session": session,
+            "step_number": item.step_number,
+            "step_id": item.step_id,
+            "tool": item.tool,
+            "success": bool(step_success),
+            "verified": verified,
+            "from_voice": bool(from_voice),
+            "n_children": int(n_children),
+            "is_subloop": bool(getattr(item, "is_subloop", False)),
+            "execution_domain": getattr(item, "execution_domain", None)
+            or ("voice" if from_voice else "der"),
+            "topic_domain": getattr(item, "topic_domain", None) or "general",
+            "insight": (item.description or "")[:120],
+            "file_path": item.params.get("path", "") if item.params else "",
+            "mediator": mediator,
+            "mediator_source": mediator_source,
+            "node_type": getattr(node_record, "node_type", "step") or "step",
+            "rec_topic_domain": getattr(node_record, "topic_domain", "general") or "general",
+            "rec_execution_domain": getattr(node_record, "execution_domain", "der") or "der",
+            "conversation_id": self.conversation_id,
+        }
+
+        def _job() -> None:
+            t0 = time.monotonic()
+            try:
+                self._der_physics_step(fold, vals, node_record, item)
+            finally:
+                fold.ready.set()
+                fold.done.set()
+                dt = time.monotonic() - t0
+                (logger.info if dt >= 1.0 else logger.debug)(
+                    "[DER] physics lane session=%s step=%s landed in %.2fs",
+                    session, vals["step_number"], dt,
+                )
+
+        pending = getattr(self, "_der_physics_pending", None)
+        if pending is None:
+            pending = {}
+            self._der_physics_pending = pending
+        # Bounded: only sessions with an update in flight are kept.
+        for _sid in [s for s, f in pending.items() if f.done.is_set()]:
+            pending.pop(_sid, None)
+        pending[session] = fold
+        if not _lane_submit(f"der-physics:{session}:step_{vals['step_number']}", _job):
+            fold.ready.set()
+            fold.done.set()
+            logger.warning(
+                "[DER] physics lane full - step %s physics dropped (session=%s)",
+                vals["step_number"], session,
+            )
+        return fold
+
+    def _der_physics_step(self, fold, vals: dict, node_record, item) -> None:
+        """One step's Caducean physics. Runs on the side lane only.
+
+        Body moved from _der_finalize_step unchanged in effect; it reads the
+        bound ``vals``, never the live step object (``item`` is used only to
+        reach its envelope under fold.lock).
+        """
+        _session = vals["session"]
+        step_success = vals["success"]
+        from_voice = vals["from_voice"]
+        # pin_42ddd255162d: physics reads bound BEFORE the try below — any early
+        # exception must not leave _u/_xi unbound for the narration hook
+        # (CADUCEAN_ARCHITECTURE.md §10 rule 7).
+        _u = 0.0
+        _xi = 0.0
+
+        # ── CADUCEAN UPDATE + IMMORTUS + TRAJECTORY RECORD ──
+        try:
+            from backend.gateway.iris_ffi import (
+                ffi_caducean_update,
+                ffi_calculate_eml,
+                ffi_immortus_chain_append,
+            )
+            from backend.agent.caducean_trajectory import (
+                format_coords,
+                get_trajectory_recorder,
+            )
+
+            # REQ-5/REQ-6: capture the coordinate BEFORE this step for
+            # coords_from in the Immortus chain append (below).
+            _before_coord = get_trajectory_recorder(
+                self._memory_interface
+            ).get_latest_coordinate(_session)
+
+            _action = 0
+            if vals["tool"] in ("run_command", "git_commit", "git_push"):
+                _action = 1
+            elif not step_success:
+                _action = 2
+            _eml_score, _ex, _ey = ffi_calculate_eml(_session)
+            # v2: balance clamped to [0.1, 3.0] (was [0.1, 2.0]).
+            # Note: the v2 baseline divisor is 2.3418 per the field theory
+            # (see docs/cad_v2_architecture.md §2.2). The current EML
+            # returns a raw score, not a balance; the kernel clamps to
+            # the safe range defensively. The TrajectoryController may
+            # override the constant via ffi_caducean_set_params.
+            _balance = max(0.1, min(3.0, _eml_score))
+            ffi_caducean_update(_session, _action, _balance)
+
+            # v2: fetch recommendation code AFTER the update so we can
+            # detect TOPO_VIOLATION (3) and persist the new column.
+            from backend.gateway.iris_ffi import (
+                ffi_caducean_recommend,
+                ffi_caducean_get_state,
+            )
+
+            _rec = ffi_caducean_recommend(_session)
+            fold.rec = _rec
+            _state_snapshot = ffi_caducean_get_state(_session)
+            _xi = _state_snapshot.get("xi", 0.0)
+            _u = _state_snapshot.get("u", 0.0)
+            # Fold-back point: the state a shape decision reads is now
+            # current. The bookkeeping below (row, homeostasis, refit, chain,
+            # narration) no longer holds any decision up.
+            fold.ready.set()
+            # ── REQ-10 / REQ-11: multi-session coupling (feature-flagged).
+            # Register the session once with its domain windings, push live
+            # (ξ, u) into the registry, and apply coupling. The engine is
+            # (re)initialized with the domain windings on first registration
+            # so engine c_eff and registry c_eff agree (REQ-11 AC3). Any
+            # failure logs at debug and never blocks the step (REQ-10 AC5). ──
+            try:
+                from backend.agent.coupled_registry import (
+                    coupling_enabled,
+                    get_coupled_registry,
+                    domain_windings,
+                )
+                from backend.gateway.iris_ffi import ffi_caducean_init_session
+
+                if coupling_enabled():
+                    _domain = "voice" if from_voice else "der"
+                    _l, _m = domain_windings(_domain)
+                    _reg = get_coupled_registry()
+                    if _reg.ensure_registered(_session, _l, _m):
+                        ffi_caducean_init_session(_session, _l, _m)
+                    _reg.update_session_state(_session, _xi, _u)
+                    _reg.apply_coupling(_session)
+            except Exception as _coupling_exc:
+                logger.debug("[DER] coupling wiring skipped: %s", _coupling_exc)
+
+            get_trajectory_recorder(self._memory_interface).record(
+                session_id=_session,
+                step_num=vals["step_number"],
+                x=_ex,
+                y=_ey,
+                xi=_xi,
+                u=_u,
+                action=_action,
+                outcome="success" if step_success else "failure",
+                eml_after=_eml_score,
+                recommendation=_rec,
+                # REQ-21 (T22): carry the two ontology axes on the trajectory
+                # row so per-domain physics aggregation keys on how the step
+                # RAN (execution_domain) and what it was ABOUT (topic_domain).
+                execution_domain=vals["execution_domain"],
+                topic_domain=vals["topic_domain"],
+            )
+
+            # v2: handle TOPO_VIOLATION (rec=3) by recording the anomaly
+            # to the Mycelium QuorumSensor and halting the loop.
+            if _rec == 3:
+                with fold.lock:
+                    _der_fold_envelope(item, fold)
+                # Phase 5: adapt the Duffing controller on a topological
+                # violation so the engine self-corrects instead of repeatedly
+                # violating the same boundary.
+                try:
+                    from backend.agent.trajectory_controller import TrajectoryController
+
+                    _conn = getattr(
+                        getattr(self._memory_interface, "episodic", None), "db", None
+                    )
+                    if _conn is not None:
+                        TrajectoryController(_conn).tune_dffing_params(_session)
+                except Exception as _tune_exc:
+                    logger.warning(
+                        "[agent_kernel] tune_dffing_params failed: %s", _tune_exc
+                    )
+                try:
+                    self._memory_interface.mycelium_record_anomaly(
+                        _session, "update_velocity_anomaly"
+                    )
+                except Exception as _anom_exc:  # never block on this
+                    logger.warning(
+                        "[agent_kernel] mycelium_record_anomaly failed: %s",
+                        _anom_exc,
+                    )
+                from .exceptions import TopologyViolationException
+
+                # NOTE (2026-09-29): this raise never reached the loop — it was
+                # caught by the broad except below even when it ran inline in
+                # _der_finalize_step. Kept as-is: it ends this update the same
+                # way it always did. Whether a topology violation should halt
+                # the loop is an owner decision, not part of the lane move.
+                raise TopologyViolationException(
+                    session_id=_session,
+                    direction_signal=None,  # full signal in DebugPanel
+                )
+
+            # ── Homeostatic relaxation (REQ-1 AC2) ─────────────────────────
+            # Fire after every RELAX_EVERY_N_UPDATES (10) updates, or every
+            # RELAX_MAX_INTERVAL_S (60 s) wall-clock, whichever first. A
+            # relaxation failure cannot abort the trajectory record or chain
+            # append below.
+            try:
+                global _update_counters
+                with _update_counters_lock:
+                    _update_counters[_session] = (
+                        _update_counters.get(_session, 0) + 1
+                    )
+                    _uc = _update_counters[_session]
+                from backend.agent.param_homeostasis import get_param_homeostasis
+
+                get_param_homeostasis().maybe_relax(_session, _uc)
+            except Exception as _relax_exc:
+                logger.debug(
+                    "[agent_kernel] maybe_relax failed: %s", _relax_exc
+                )
+
+            # ── TrajectoryController refit on DER cadence (REQ-13) ─────────
+            # Calls TrajectoryController.fit() which refits only at milestones
+            # (100, 500, 1000 records), in its own try/except so a refit
+            # failure cannot abort the record or chain append.
+            try:
+                from backend.agent.trajectory_controller import TrajectoryController
+
+                _tc_conn = getattr(
+                    getattr(self._memory_interface, "episodic", None), "db", None
+                )
+                if _tc_conn is not None:
+                    TrajectoryController(_tc_conn).fit()
+            except Exception as _refit_exc:
+                logger.debug(
+                    "[agent_kernel] maybe_refit failed: %s", _refit_exc
+                )
+
+            # REQ-5/REQ-6: coords_from / coords_to in canonical format_coords.
+            if _before_coord is not None:
+                _coords_from = format_coords(
+                    _before_coord["x"], _before_coord["y"],
+                    _before_coord["xi"], _before_coord["u"],
+                )
+            else:
+                _coords_from = format_coords(0.0, 0.0, 0.0, 0.0)
+            _coords_to = format_coords(
+                _state_snapshot.get("x", _ex),
+                _state_snapshot.get("y", _ey),
+                _state_snapshot.get("xi", 0.0),
+                _state_snapshot.get("u", 0.0),
+            )
+            # REQ-3 AC2 (T37): the landing coordinate on the node's memory
+            # record, and on the envelope (whichever of this lane and the
+            # envelope build finishes second applies it).
+            with fold.lock:
+                fold.coords_from = _coords_from
+                fold.coords_to = _coords_to
+                if node_record is not None:
+                    node_record.coords_to = _coords_to
+                _der_fold_envelope(item, fold)
+
+            # The Immortus chain is a trajectory (coords_from -> coords_to):
+            # appended here, on the single-consumer lane, so appends land in
+            # step order.
+            ffi_immortus_chain_append(
+                thread_id=_session,
+                result="success" if step_success else "failure",
+                coords_from=_coords_from,
+                coords_to=_coords_to,
+                nbl_outcome=f"step_{vals['step_number']}",
+                insight=vals["insight"],
+                file_path=vals["file_path"],
+                landmark_id="",
+                # REQ-23 AC2: mediator + source ride the same chain row as the
+                # Σ coords, so (Treatment -> Mediator -> Outcome) is queryable
+                # together with the coordinates that were in force.
+                mediator=vals["mediator"],
+                mediator_source=vals["mediator_source"],
+                # REQ-18 AC4 (T19): node type + both domain axes ride the
+                # chain row so recall (REQ-20) and aggregation (REQ-21) can
+                # key on them without a join back to the in-memory record.
+                node_type=vals["node_type"],
+                topic_domain=vals["rec_topic_domain"],
+                execution_domain=vals["rec_execution_domain"],
+            )
+        except Exception as _cad_exc:
+            loud_error(_cad_exc, "caducean_trajectory_immortus")
+
+        # ── REQ-7: agent-driven PHYSICS-EVENT narration (post-step hook) ──
+        # The agent speaks ONLY on a physics event — a |u| transition
+        # (oscillating -> converged) or a structural event (split into
+        # Sub-Loops, or a Sub-Loop collapsing). Funneled through SpeakTool
+        # (narration lock) so it never conflicts with web-search progress or
+        # the final answer. It reads the u/xi this update just produced, so it
+        # runs here, on the lane, right after the update.
+        # Invariant: spoken ⊆ visible — every spoken line is a real transition.
+        _n_children = vals["n_children"]
+        _is_subloop = vals["is_subloop"]
+        _verified = vals["verified"]
+        try:
+            from backend.agent.der_constants import detect_physics_narration
+
+            _u_mag = abs(float(_u)) if _u is not None else 0.0
+            _narrate = detect_physics_narration(
+                self._der_last_u_mag, _u_mag, _n_children, _is_subloop,
+            )
+            _tts_played = False
+            if _narrate:
+                from backend.agent.tools.speak_tool import get_speak_tool
+
+                get_speak_tool().speak(_narrate, priority="low")
+                _tts_played = True
+            self._der_last_u_mag = _u_mag
+            # REQ-9: record the narration decision (incl. SILENCE) to the
+            # conversation-scoped observability log. u/xi carried on
+            # split/collapse.
+            try:
+                from backend.agent.narration import NarrationLog
+
+                _nlog = NarrationLog(vals["conversation_id"])
+                _decision = "brief" if _narrate else "silence"
+                # u/xi only meaningful on a structural event.
+                _has_struct = bool(_n_children) or _is_subloop
+                # pin_42ddd255162d: direct sync write (a small JSONL append).
+                _nlog._write(
+                    {
+                        "ts": time.time(),
+                        "conversation_id": vals["conversation_id"],
+                        "step_id": vals["step_id"],
+                        "decision": _decision,
+                        "signal": (
+                            "retried"
+                            if _n_children
+                            else (
+                                "crystallized"
+                                if _verified == "VERIFIED"
+                                else "avoided"
+                            )
+                        )
+                        if _has_struct
+                        else None,
+                        "u": float(_u) if _u is not None else None,
+                        "xi": float(_xi) if _xi is not None else None,
+                        "text": _narrate or "",
+                        "tts_played": _tts_played,
+                    },
+                )
+            except Exception as _nlog_exc:
+                logger.debug("[DER] narration log skipped: %s", _nlog_exc)
+        except Exception as _narr_exc:
+            logger.debug("[DER] physics-event narration skipped: %s", _narr_exc)
+            try:
+                self._der_last_u_mag = (
+                    abs(float(_u)) if _u is not None else 0.0
+                )
+            except Exception:
+                pass
+
     def _der_finalize_step(
         self,
         item: "QueueItem",
@@ -17726,6 +18199,8 @@ Respond with a JSON object:
                 _split_ok = True
             if _split_ok:
                 try:
+                    # Fold-back: split width is a shape decision (side lane).
+                    _der_physics_settle(self, _session)
                     _cad_split = self._der_live_cad_state(_session)
                     _wu = getattr(self, "_der_work_units", 0)
                     # REQ-4 AC1 (T16): the continuous verified fraction is a
@@ -18009,204 +18484,15 @@ Respond with a JSON object:
                 "[DER] resolve_dependent_params failed: %s", _dep_exc
             )
 
-        # pin_42ddd255162d: physics reads bound BEFORE the try below — the
-        # broad swallowing try starts with imports + the trajectory recorder,
-        # and ANY early exception (recorder creation, FFI import/call) used to
-        # skip the binding; later reads of _u/_xi (trajectory record, coupling,
-        # the REQ-7 narration hook) then raised UnboundLocalError — the defect
-        # class of CADUCEAN_ARCHITECTURE.md §10 rule 7. Narration was 100%
-        # mute, logging "physics-event narration skipped".
-        _u = 0.0
-        _xi = 0.0
-
-        # ── CADUCEAN UPDATE + IMMORTUS + TRAJECTORY RECORD ──
+        # ── Caducean physics -> ordered side lane (_der_submit_physics) ──
+        # The node record is stamped HERE, inline: synthesis and the
+        # continuation consult read it. The physics update (EML, integrator,
+        # trajectory row, homeostasis, refit, Immortus chain, physics-event
+        # narration) is queued right after and lands off the answer path; the
+        # next shape decision folds back on it (_der_physics_settle).
+        _mediator, _mediator_source = "none", "none"
+        _phys = None
         try:
-            from backend.gateway.iris_ffi import (
-                ffi_caducean_update,
-                ffi_calculate_eml,
-                ffi_immortus_chain_append,
-            )
-            from backend.agent.caducean_trajectory import (
-                format_coords,
-                get_trajectory_recorder,
-            )
-            from backend.utils.durability_queue import submit as durability_submit
-
-            # REQ-5/REQ-6: capture the coordinate BEFORE this step for
-            # coords_from in the Immortus chain append (below).
-            _before_coord = get_trajectory_recorder(
-                self._memory_interface
-            ).get_latest_coordinate(_session)
-
-            _action = 0
-            if item.tool in ("run_command", "git_commit", "git_push"):
-                _action = 1
-            elif not step_success:
-                _action = 2
-            # pin_42ddd255162d: bind physics reads BEFORE any FFI call. The
-            # block below sits inside a broad swallowing try; if
-            # ffi_caducean_update/ffi_calculate_eml throws, the flow jumps to
-            # the except and later reads of _u/_xi (trajectory record, coupling,
-            # the REQ-7 narration hook) would raise UnboundLocalError — the
-            # exact defect class of CADUCEAN_ARCHITECTURE.md §10 rule 7: a name
-            # read before assignment disables a whole feature (narration was
-            # 100% mute, logging "physics-event narration skipped").
-            _u = 0.0
-            _xi = 0.0
-            _eml_score, _ex, _ey = ffi_calculate_eml(_session)
-            # v2: balance clamped to [0.1, 3.0] (was [0.1, 2.0]).
-            # Note: the v2 baseline divisor is 2.3418 per the field theory
-            # (see docs/cad_v2_architecture.md §2.2). The current EML
-            # returns a raw score, not a balance; the kernel clamps to
-            # the safe range defensively. The TrajectoryController may
-            # override the constant via ffi_caducean_set_params.
-            _balance = max(0.1, min(3.0, _eml_score))
-            ffi_caducean_update(_session, _action, _balance)
-
-            # v2: fetch recommendation code AFTER the update so we can
-            # detect TOPO_VIOLATION (3) and persist the new column.
-            from backend.gateway.iris_ffi import (
-                ffi_caducean_recommend,
-                ffi_caducean_get_state,
-            )
-
-            _u = 0.0
-            _xi = 0.0
-            _rec = ffi_caducean_recommend(_session)
-            _state_snapshot = ffi_caducean_get_state(_session)
-            _xi = _state_snapshot.get("xi", 0.0)
-            _u = _state_snapshot.get("u", 0.0)
-            # ── REQ-10 / REQ-11: multi-session coupling (feature-flagged, off
-            # the critical path). Register the session once with its domain
-            # windings, push live (ξ, u) into the registry, and apply coupling.
-            # The engine is (re)initialized with the domain windings on first
-            # registration so engine c_eff and registry c_eff agree (REQ-11 AC3).
-            # Any failure logs at debug and never blocks the step (REQ-10 AC5). ──
-            try:
-                from backend.agent.coupled_registry import (
-                    coupling_enabled,
-                    get_coupled_registry,
-                    domain_windings,
-                )
-                from backend.gateway.iris_ffi import ffi_caducean_init_session
-
-                if coupling_enabled():
-                    _domain = "voice" if from_voice else "der"
-                    _l, _m = domain_windings(_domain)
-                    _reg = get_coupled_registry()
-                    if _reg.ensure_registered(_session, _l, _m):
-                        ffi_caducean_init_session(_session, _l, _m)
-                    _reg.update_session_state(_session, _xi, _u)
-                    _reg.apply_coupling(_session)
-            except Exception as _coupling_exc:
-                logger.debug("[DER] coupling wiring skipped: %s", _coupling_exc)
-
-            get_trajectory_recorder(self._memory_interface).record(
-                session_id=_session,
-                step_num=item.step_number,
-                x=_ex,
-                y=_ey,
-                xi=_xi,
-                u=_u,
-                action=_action,
-                outcome="success" if step_success else "failure",
-                eml_after=_eml_score,
-                recommendation=_rec,
-                # REQ-21 (T22): carry the two ontology axes on the trajectory
-                # row so per-domain physics aggregation keys on how the step
-                # RAN (execution_domain) and what it was ABOUT (topic_domain).
-                execution_domain=getattr(item, "execution_domain", None)
-                or ("voice" if from_voice else "der"),
-                topic_domain=getattr(item, "topic_domain", None) or "general",
-            )
-
-            # v2: handle TOPO_VIOLATION (rec=3) by recording the anomaly
-            # to the Mycelium QuorumSensor and halting the loop.
-            if _rec == 3:
-                # Phase 5: adapt the Duffing controller on a topological
-                # violation so the engine self-corrects instead of repeatedly
-                # violating the same boundary.
-                try:
-                    from backend.agent.trajectory_controller import TrajectoryController
-
-                    _conn = getattr(
-                        getattr(self._memory_interface, "episodic", None), "db", None
-                    )
-                    if _conn is not None:
-                        TrajectoryController(_conn).tune_dffing_params(_session)
-                except Exception as _tune_exc:
-                    logger.warning(
-                        "[agent_kernel] tune_dffing_params failed: %s", _tune_exc
-                    )
-                try:
-                    self._memory_interface.mycelium_record_anomaly(
-                        _session, "update_velocity_anomaly"
-                    )
-                except Exception as _anom_exc:  # never block on this
-                    logger.warning(
-                        "[agent_kernel] mycelium_record_anomaly failed: %s",
-                        _anom_exc,
-                    )
-                from .exceptions import TopologyViolationException
-
-                raise TopologyViolationException(
-                    session_id=_session,
-                    direction_signal=None,  # full signal in DebugPanel
-                )
-
-            # ── Homeostatic relaxation (REQ-1 AC2) ─────────────────────────
-            # Fire after every RELAX_EVERY_N_UPDATES (10) updates, or every
-            # RELAX_MAX_INTERVAL_S (60 s) wall-clock, whichever first. This
-            # call is inside the outer swallowing try block so a relaxation
-            # failure cannot abort the trajectory record or chain append below.
-            try:
-                global _update_counters
-                with _update_counters_lock:
-                    _update_counters[_session] = (
-                        _update_counters.get(_session, 0) + 1
-                    )
-                    _uc = _update_counters[_session]
-                from backend.agent.param_homeostasis import get_param_homeostasis
-
-                get_param_homeostasis().maybe_relax(_session, _uc)
-            except Exception as _relax_exc:
-                logger.debug(
-                    "[agent_kernel] maybe_relax failed: %s", _relax_exc
-                )
-
-            # ── TrajectoryController refit on DER cadence (REQ-13) ─────────
-            # Calls TrajectoryController.fit() which refits only at milestones
-            # (100, 500, 1000 records). Never blocks the step — wrapped in
-            # its own try/except so a refit failure cannot abort the record or
-            # chain append.
-            try:
-                from backend.agent.trajectory_controller import TrajectoryController
-
-                _tc_conn = getattr(
-                    getattr(self._memory_interface, "episodic", None), "db", None
-                )
-                if _tc_conn is not None:
-                    TrajectoryController(_tc_conn).fit()
-            except Exception as _refit_exc:
-                logger.debug(
-                    "[agent_kernel] maybe_refit failed: %s", _refit_exc
-                )
-
-            # REQ-5/REQ-6: coords_from / coords_to in canonical format_coords.
-            # _before_coord captured before record() at line ~7440.
-            if _before_coord is not None:
-                _coords_from = format_coords(
-                    _before_coord["x"], _before_coord["y"],
-                    _before_coord["xi"], _before_coord["u"],
-                )
-            else:
-                _coords_from = format_coords(0.0, 0.0, 0.0, 0.0)
-            _coords_to = format_coords(
-                _state_snapshot.get("x", _ex),
-                _state_snapshot.get("y", _ey),
-                _state_snapshot.get("xi", 0.0),
-                _state_snapshot.get("u", 0.0),
-            )
             # REQ-23 (T37): the causal triple — resolve the MEDIATOR once and
             # bind it to a VALUE (the write runs later; `item` must not be
             # read from another thread after the loop moves on). AC1: written
@@ -18406,7 +18692,6 @@ Respond with a JSON object:
                         pass
                     _rec.mediator = _mediator
                     _rec.mediator_source = _mediator_source
-                    _rec.coords_to = _coords_to
                     _rec.edge_ids = _rec.edge_ids or []
                     # ── REQ-5 AC2/AC4 (T17): record the COUPLING DECISION at
                     # commit. The branches surfaced to this step (all of them,
@@ -18480,44 +18765,23 @@ Respond with a JSON object:
                 except Exception as _fb_exc:  # noqa: BLE001
                     logger.debug("[DER] fold-back write failed: %s", _fb_exc)
 
-            # OFF THE CRITICAL PATH — the THIRD inline durability write found
-            # on this path (after tool_bridge._record_tool_event and
-            # _store_document_data). Per the note left on the second one, the
-            # PATTERN is fixed here rather than the instance.
-            #
-            # Not a thread-per-write like the other two: this is a CHAIN
-            # (coords_from -> coords_to), so two appends racing would land
-            # reversed and corrupt the trajectory. The durability queue has a
-            # single consumer, so submission order is the write order.
-            #
-            # Every argument is bound to a VALUE here, not to `item` — the
-            # write runs later and the step object must not be read from a
-            # different thread after the loop has moved on.
-            durability_submit(
-                f"immortus-chain:step_{item.step_number}",
-                ffi_immortus_chain_append,
-                thread_id=_session,
-                result="success" if step_success else "failure",
-                coords_from=_coords_from,
-                coords_to=_coords_to,
-                nbl_outcome=f"step_{item.step_number}",
-                insight=item.description[:120],
-                file_path=item.params.get("path", "") if item.params else "",
-                landmark_id="",
-                # REQ-23 AC2: mediator + source ride the same chain row as the
-                # Σ coords, so (Treatment -> Mediator -> Outcome) is queryable
-                # together with the coordinates that were in force.
+        except Exception as _cad_exc:
+            loud_error(_cad_exc, "der_node_record_finalize")
+        try:
+            _phys = self._der_submit_physics(
+                item,
+                node_record=getattr(item, "node_record", None)
+                or getattr(item, "footprint", None),
+                step_success=step_success,
+                verified=_verified,
+                session=_session,
+                from_voice=from_voice,
+                n_children=len(_children),
                 mediator=_mediator,
                 mediator_source=_mediator_source,
-                # REQ-18 AC4 (T19): node type + both domain axes ride the
-                # chain row so recall (REQ-20) and aggregation (REQ-21) can
-                # key on them without a join back to the in-memory record.
-                node_type=getattr(_rec, "node_type", "step") or "step",
-                topic_domain=getattr(_rec, "topic_domain", "general") or "general",
-                execution_domain=getattr(_rec, "execution_domain", "der") or "der",
             )
-        except Exception as _cad_exc:
-            loud_error(_cad_exc, "caducean_trajectory_immortus")
+        except Exception as _lane_exc:
+            loud_error(_lane_exc, "der_physics_submit")
         # ── specs/tool-result-envelope T6 (REQ-1 AC1.2): build the
         # envelope ONCE at the finalize site. Extracted into its own
         # method so an upstream caducean failure can never skip
@@ -18532,9 +18796,12 @@ Respond with a JSON object:
                 completed_items=completed_items,
                 _session=_session,
                 _turn_id=_turn_id,
-                coords_from=locals().get("_coords_from"),
-                coords_to=locals().get("_coords_to"),
+                coords_from=None,
+                coords_to=None,
             )
+            if _phys is not None:
+                with _phys.lock:
+                    _der_fold_envelope(item, _phys)
         except Exception as _env_call_exc:
             logger.warning(
                 "[envelope] finalize call failed for step %s: %s",
@@ -18651,13 +18918,6 @@ Respond with a JSON object:
             # (next_ready already defers non-critical steps during COMPRESS; this
             # stops adding NEW ones, integrating the recommendation into loop
             # termination.)
-            _rec_now = 2
-            try:
-                from backend.gateway.iris_ffi import ffi_caducean_recommend
-
-                _rec_now = ffi_caducean_recommend(_session)
-            except Exception:
-                _rec_now = 2
             # Session 366: make the continuation gate VISIBLE. It was one compound
             # condition, so a skipped consult left no trace at all - the same
             # silent-skip class that hid seven consumers for a session. Logging the
@@ -18669,8 +18929,8 @@ Respond with a JSON object:
             )
             _cont_run = _cont_mode_ok and _cont_complete
             logger.info(
-                "[DER] continuation gate: rec=%s mode=%s complete=%s -> %s",
-                _rec_now, getattr(queue.mode, "value", queue.mode),
+                "[DER] continuation gate: mode=%s complete=%s -> %s",
+                getattr(queue.mode, "value", queue.mode),
                 _cont_complete, "RUN" if _cont_run else "SKIP",
             )
             if _cont_run:
@@ -18691,6 +18951,18 @@ Respond with a JSON object:
                 # completed turn logged `continuation gate: rec=1 ... SKIP`, so
                 # those consumers could never produce a row however much traffic
                 # was driven. The EXPANSION is discarded; the SCORE is kept.
+                # Fold-back: rec decides only whether this expansion is
+                # kept, so it is read here — after the consult — and the
+                # physics update ran alongside the consult's model call.
+                _rec_now = 2
+                if _next_tool:
+                    _der_physics_settle(self, _session)
+                    try:
+                        from backend.gateway.iris_ffi import ffi_caducean_recommend
+
+                        _rec_now = ffi_caducean_recommend(_session)
+                    except Exception:
+                        _rec_now = 2
                 if _next_tool and _rec_now == 1:
                     logger.info(
                         "[DER] continuation step SUPPRESSED during COMPRESS "
@@ -18848,83 +19120,6 @@ Respond with a JSON object:
             )
         except Exception:
             pass
-
-        # ── REQ-7: agent-driven PHYSICS-EVENT narration (post-step hook) ──
-        # Replaces the flat per-step heartbeat. The agent speaks ONLY on a physics
-        # event — a |u| transition (oscillating -> converged) or a structural
-        # event (split into Sub-Loops, or a Sub-Loop collapsing). This is the
-        # "now moving into a sub-task" / "settling into the answer" signal. It is
-        # latency-cheap (pure arithmetic on already-fetched caducean state), off
-        # the critical path (try/except), and funneled through SpeakTool (narration
-        # lock) so it never conflicts with web-search progress or the final answer.
-        # Invariant: spoken ⊆ visible — every spoken line is a real transition.
-        try:
-            from backend.agent.der_constants import detect_physics_narration
-
-            _u_mag = abs(float(_u)) if _u is not None else 0.0
-            _narrate = detect_physics_narration(
-                self._der_last_u_mag, _u_mag, len(_children),
-                bool(getattr(item, "is_subloop", False)),
-            )
-            _tts_played = False
-            if _narrate:
-                from backend.agent.tools.speak_tool import get_speak_tool
-
-                get_speak_tool().speak(_narrate, priority="low")
-                _tts_played = True
-            self._der_last_u_mag = _u_mag
-            # REQ-9: record the narration decision (incl. SILENCE) to the
-            # conversation-scoped observability log. Off the critical path
-            # (async fire-and-forget). u/xi carried on split/collapse.
-            try:
-                from backend.agent.narration import NarrationLog
-
-                _nlog = NarrationLog(self.conversation_id)
-                _decision = "brief" if _narrate else "silence"
-                # u/xi only meaningful on a structural event.
-                _has_struct = bool(_children) or bool(
-                    getattr(item, "is_subloop", False)
-                )
-                # pin_42ddd255162d: direct sync write — the DER runs in a
-                # thread where get_event_loop() raises RuntimeError, so the
-                # old run_in_executor path threw on EVERY finalize and the
-                # narration log was silently empty. _write is a small JSONL
-                # append (microseconds); a sync call from the worker thread is
-                # correct and the caller's try/except keeps it non-blocking.
-                _nlog._write(
-                    {
-                        "ts": time.time(),
-                        "conversation_id": self.conversation_id,
-                        "step_id": item.step_id,
-                        "decision": _decision,
-                        "signal": (
-                            "retried"
-                            if _children
-                            else (
-                                "crystallized"
-                                if _verified == "VERIFIED"
-                                else "avoided"
-                            )
-                        )
-                        if _has_struct
-                        else None,
-                        "u": float(_u) if _u is not None else None,
-                        "xi": float(_xi) if _xi is not None else None,
-                        "text": _narrate or "",
-                        "tts_played": _tts_played,
-                    },
-                )
-            except Exception as _nlog_exc:
-                logger.debug("[DER] narration log skipped: %s", _nlog_exc)
-        except Exception as _narr_exc:
-            logger.debug("[DER] physics-event narration skipped: %s", _narr_exc)
-            # Never let narration block the step result.
-            try:
-                self._der_last_u_mag = (
-                    abs(float(_u)) if _u is not None else 0.0
-                )
-            except Exception:
-                pass
 
         # ── TRAILING DIRECTOR gap-fill REMOVED (2026-08-06) ──────────────
         # The gap-fill ran SEQUENTIALLY after the user's task: it was invoked

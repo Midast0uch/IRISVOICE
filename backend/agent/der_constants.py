@@ -256,6 +256,19 @@ U_CONVERGED = 0.85
 # grows into a log (quality: memory footprint bounded).
 DER_FOLD_BACK_MAX = 3
 
+# Physics side lane (execution audit, 2026-09-29): each step's Caducean update
+# runs on the ordered durability lane, never on the DER thread, so the answer
+# path does not wait for it. A shape DECISION (split width, stuck-streak
+# topology override, plan expansion under COMPRESS) folds back on the pending
+# update and waits at most this long. This never cancels the update — it lands
+# later and the next reader sees it. Rationale (physical): the wait ends when
+# the integrator moves (fold.ready), which is four per-session counts on an
+# indexed table of ~5k rows plus O(1) engine calls. Unindexed, those counts
+# were full scans of a cold 6 GB file (16-84 s, coding eval c10, 2026-09-29);
+# a wait past this bound is such a stall, and the decision then uses the
+# previous step's settled position instead of stalling the turn.
+DER_PHYSICS_FOLD_WAIT_S = 30.0
+
 # REQ-5 AC1 (T17): the coupling CANDIDATE CAP — how many relevant branches
 # retrieval may surface to a deciding step at once. Retrieval NEVER pre-selects
 # one candidate by score: it surfaces ALL relevant branches up to this cap and

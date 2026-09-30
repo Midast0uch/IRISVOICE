@@ -630,6 +630,25 @@ def migrate_memory_chain_schema(conn, db_path: str) -> None:
     except Exception as _v2_exc:
         logger.warning("[iris_ffi] memory_chain_v2 drop failed: %s", _v2_exc)
 
+    # Recall orders by recency (ontology_recall: ORDER BY created_at DESC,
+    # rowid DESC). Legacy rows store created_at AFTER their large text
+    # columns, so an unindexed sort followed every row's overflow pages
+    # through the 6 GB store just to read the date: 119 s cold for the widest
+    # recall scope, and the turn-start DAG compile waited on it (40 s in
+    # coding eval c07, 2026-09-29). An index on created_at serves the order
+    # (entries are (created_at, rowid)) without reading those rows. Built once.
+    try:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_memory_chain_created "
+            "ON memory_chain(created_at)"
+        )
+        conn.commit()
+    except Exception as _ci_exc:  # noqa: BLE001 — a missing index is slow, not wrong
+        logger.warning(
+            "[iris_ffi] idx_memory_chain_created not created (db=%s): %s",
+            db_path, _ci_exc,
+        )
+
 
 class _PythonFallbackEngine:
     """Pure Python fallback — uses sqlite3 (or sqlcipher3 if available)."""
@@ -720,6 +739,26 @@ class _PythonFallbackEngine:
         except Exception:
             # Column already exists — harmless.
             pass
+
+        # Per-session lookups (calculate_eml's four counts, native AND Python)
+        # filter system_events by session_id. Without this index every count
+        # was a full SCAN of the table, whose rows carry payloads and
+        # screenshot BLOBs in a 6 GB store: 18.3 s cold for the four counts vs
+        # 0.26 s once the pages were cached (EML probe, coding eval c10,
+        # 2026-09-29) — and the DER physics waited on it every step.
+        # Definition is migration 001's (idx_system_events_session), which
+        # never reached data/memory.db. Built once, at startup.
+        try:
+            self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_system_events_session "
+                "ON system_events(session_id)"
+            )
+            self._conn.commit()
+        except Exception as _idx_exc:  # noqa: BLE001 — a missing index is slow, not wrong
+            logger.warning(
+                "[iris_ffi] idx_system_events_session not created (db=%s): %s",
+                self.db_path, _idx_exc,
+            )
 
         # REQ-2 AC3/AC5 (T6) / D4b / D4c: bring a LEGACY memory_chain to the
         # coordinate + typed-node schema by IDEMPOTENT ALTER, preserving

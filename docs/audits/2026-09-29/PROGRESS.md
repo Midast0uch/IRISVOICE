@@ -2,23 +2,36 @@
 
 ## START HERE (next session)
 
-Read in this order: this section -> MCM pin `pin_afa4442771d1` (HANDOFF 2) -> the log below
--> `README.md` (owner decisions) -> `execution-audit.html` / `reply-surface.html` for design
-detail. Older handoff: `pin_dc96cc9c9681` (its NEXT list is superseded).
+Read in this order: this section -> MCM pins `pin_8c65c2f38078` (HANDOFF 3),
+`pin_01a6c7f883b5` (STANDARDS — check before touching these paths), `pin_c8d898bc13c3`
+(latency pattern), `pin_fe189f29c30b` (physics lane), `pin_4de2bce61834` (EML root cause) ->
+the log below ->
+`README.md` (owner decisions) -> `execution-audit.html` / `reply-surface.html` for design detail.
+Older handoffs: `pin_afa4442771d1` (HANDOFF 2), `pin_dc96cc9c9681` (superseded).
 
-**Where it stands.** Phase 0 harness and Phase 1 blockers (B1-B17) are done. Phase 2 core is
-live: in developer mode every tool-less DER step runs `backend/agent/node_executor.run_node`
-(a bounded Brain tool loop). Coding eval: baseline 0/15 -> 12/15 full run
-(`evals/results/20260929-191746.json`) -> after the STATUS-line fix c11 + c14 also pass
-(est. 14/15). Only `c10_create_module` still fails. Research group (1/6 baseline) not re-run.
+**Where it stands (2026-09-29 late).** Phase 0 + Phase 1 blockers done; Phase 2 core live.
+**Coding eval 15/15** (`evals/results/20260929-223059.json`; baseline 0/15). c10 was fixed by giving
+each node the user's request word for word (`NodeContext.task`). Answer-path latency work since
+then (see the log): per-step physics on its own ordered lane with fold-back at shape decisions,
+two missing indexes on the 6.3 GB `data/memory.db`, and one ordered ledger writer lane. c10 reply
+now arrives at **16.9 s** (was 63-226 s). Research group (1/6 baseline) not re-run.
 
 **Next work, in order** (each with DONE / NOT THIS per CLAUDE.md):
-1. `c10_create_module` — inspect the reply and hidden tests (`evals/fixtures/c10_create_module/`),
-   find why the Brain's one-shot module fails 8 hidden tests. DONE: c10 passes and the full
-   coding group reaches >= 14/15. NOT THIS: task-specific prompt hacks.
-2. Remove the TEMP `IRIS_STACK_DUMP_S` faulthandler hook in `start-backend.py` once no more
-   timing work is planned (it is off unless the env var is set).
-3. Reply surface Phase A (`reply-surface.html`, "Order of work" A): one `create_artifact(title,
+1. **TTS cold start** (owner request). The Pocket-TTS worker (438 MB) loads lazily and loads IN a
+   turn: c11 2026-09-29 23:20-23:21 the load took 61.5 s, starved the CPU, and the step's
+   `pytest` took ~110 s instead of ~2 s; "Worker startup timed out" fires repeatedly. DONE: the
+   worker is loaded before `/health` reports ready and no turn ever sees a startup timeout.
+   NOT THIS: a longer startup deadline.
+2. **Oracle takes decisions** (owner rule, memory `iris-oracle-takes-decisions`): first target —
+   the continuation consult asks the Brain for an expansion that COMPRESS (`rec=1`) then
+   discards; split "Oracle score, always" from "LLM expansion, only when the physics does not
+   decide". Check first whether `depth_route` scoring needs the LLM proposal as a candidate.
+   Keep only if measured significant; never starve Oracle rows (Session 366).
+3. Turn-end bookkeeping before synthesis (`_save_card_footprint`, `mycelium_record_plan_stats`,
+   `_store_task_episode` + crystallize, `_maybe_trigger_skill_creation`, agent_kernel ~10600-10745)
+   -> an ordered lane; fold-back at the next turn's recall if recall must see it.
+4. Remove the TEMP `IRIS_STACK_DUMP_S` hook in `start-backend.py` once timing work ends.
+5. Reply surface Phase A (`reply-surface.html`, "Order of work" A): one `create_artifact(title,
    kind, summary, content, language?, artifact_id?)` tool built from
    `tool_bridge._execute_render_document` + `agent_kernel._store_document_data` + the existing
    `DOCUMENT_RENDER` event; remove markdown demotion (`agent_kernel` ~4874,
@@ -28,12 +41,27 @@ live: in developer mode every tool-less DER step runs `backend/agent/node_execut
    `contract/test_structured_response.py`, `contract/test_document_render_contract.py`,
    `contract/test_render_as_tool.py`, `contract/test_surface_observer_contract.py`,
    `behavioral/test_reply_surface_behavior.py` (run behavioral tests with a time cap).
-4. Phase 2 rest: `plan_update` tool (model adds/splits/closes DAG nodes via existing graft/amend),
-   tool-model argument repair (hands), personal-mode research through `run_node` with the
-   research guards moved to web-tool-family policies. Then Phase 3 (turn protocol + turn
-   store), then the live execution matrix (`app/cli-preview`), then reply surface B-D.
-5. Open performance items: turn-start recall (ontology 16 s + episodic 18 s), `calculate_eml`
-   FFI per step in `_der_finalize_step` (20 s seen once).
+6. Phase 2 rest: `plan_update` tool, tool-model argument repair, personal-mode research through
+   `run_node` with web-family policies. Then Phase 3 (turn protocol + turn store), the live
+   execution matrix (`app/cli-preview`), reply surface B-D.
+7. Owner decisions pending: (a) `TopologyViolationException` never halted the loop — it was
+   always swallowed by finalize's own `except Exception` (kept as-is); should a topology
+   violation halt? (b) planning is one Brain call of 13-19 s per turn (model time).
+8. Smaller open items: native `calculate_eml` still hits 1-6 s outliers (2 MB page cache per
+   native connection); `[AgentKernel] _get_failure_warnings failed (AttributeError)` every turn
+   (ResolutionEncoder path, pre-existing).
+
+**Standards (measured; do not regress).** Each row is guarded by something that FAILS, proven
+to fail on the old state. Change a number only with a new measurement and the reason.
+
+| # | Standard | Before -> after (how measured) | How / why | Guard |
+|---|---|---|---|---|
+| S1 | per-session `system_events` counts (calculate_eml input) use `idx_system_events_session` | 16-84 s per DER step -> ~1 ms (stack dump + `[EML-DIAG]` probe, c10) | cold 6.3 GB store; SCAN read rows with payload/BLOBs | `contract/test_answer_path_standards.py::test_s1_*` (plan has no `SCAN system_events`) |
+| S2 | recall recency order uses `idx_memory_chain_created` | widest scope 119 s cold, turn-start stall 40 s -> 0.000 s (EXPLAIN + timing, c07) | legacy rows keep `created_at` after big text; the sort walked overflow pages | `test_s2_*` (no `TEMP B-TREE FOR ORDER BY`) |
+| S3 | a step's answer path never waits for its physics; shape decisions fold back on `fold.ready` | reply held 16-106 s -> 0 s on the answer path (stack dump) | physics on `lane("physics")`; only shape decisions call `_der_physics_settle` | `test_s3_*` (finalize returns while the physics is blocked) |
+| S4 | ledger rows go through ONE ordered lane, and a blocked row reports itself | ~90 contending threads + "database is locked" -> zero lock errors (stack dump, eval logs) | thread-per-row on one connection fell back to the native writer | `contract/test_ledger_write_watchdog.py` (drives the real lane) |
+| S5 | each node sees the user's request word for word | c10 FAIL (rules lost in the paraphrase) -> PASS; coding 12/15 -> 15/15 | planner paraphrase dropped "qty <= 0" rules | coding eval (`evals/standards.json` once recorded) |
+| S6 | eval pass flags and `reply_s` per task | c10 reply 63-226 s -> 16.9 s | all of the above | `evals/standards.json` + `run_evals.py` STANDARDS check (exit 5 on regression; tolerance x1.5 + 10 s for cloud-model variance). Record with `--record-standard` after a clean full run (pending: after the TTS fix) |
 
 **How to run the evals safely (learned the hard way).**
 - Start the backend DETACHED, never with `preview_start` (a Claude crash kills a preview server,
@@ -43,28 +71,105 @@ live: in developer mode every tool-less DER step runs `backend/agent/node_execut
   the API, then sends WS `load_local_model`). The Brain is `gemma4:31b-cloud` on Ollama :11434.
 - Wait ~75 s after start: the backend freezes up to ~45 s after startup / model load
   (RetentionManager and warm-ups), and the harness preflight needs `/health` within 5 s.
+- Start the RUNNER detached too for anything over ~8 min (`Start-Process ... run_evals.py
+  --group coding -RedirectStandardOutput logs\eval_coding_stdout.log ...`): a tool timeout that
+  kills the runner skips its `finally`, which is how `data/iris_config.json` was left in
+  developer mode before.
 - Run small subsets: `python evals/run_evals.py --task c01_fix_off_by_one --task c10_create_module`
-  or `--group coding` (~20 min). Research tasks take 5-10 min each; run them one at a time.
+  or `--group coding` (~35 min now incl. harness gaps). Research tasks take 5-10 min each.
+- Read `reply_s` (time until the reply text), not `seconds`: the harness keeps the socket open
+  while the reply is SPOKEN, so `seconds` includes speech.
 - Use `127.0.0.1`, never `localhost`, for local llama-server ports (+2 s per request here).
 - NEVER sample the backend from outside (py-spy / `python -m asyncio ps`): it killed the backend
   and Claude Code. For timing, set `IRIS_STACK_DUMP_S=4` before starting the backend and read
-  `logs/stackdump.log` (first line `start_epoch`; dump k is at start + 4k s).
+  `logs/stackdump.log` (first line `start_epoch`; dump k is at start + 4k s). EXPLAIN QUERY PLAN
+  any query on the answer path: a SCAN of a table with big rows is a multi-second stall on a
+  cold 6 GB store.
 - Targeted test runs only, each with a time cap; `test_mcp_dispatch.py` deletes a tracked
-  fixture skill (restore with `git checkout`).
+  fixture skill (restore with `git checkout`). `test_der_chain_landing.py` copies the 6 GB store.
 - Known pre-existing test failures (not caused by this work): `test_capability_escalation::
   test_t23...`, `test_standing_list::test_edge...`, 3 in `test_decision_engine` (fake backend
   lacks `instruction`), 3 in `test_skill_creator` (wrong fixture path), 5 router tests in
-  `test_context_window_negotiation` (fake transport lacks `budget_check`), plus the stale list
-  in `pin_dc96cc9c9681`.
+  `test_context_window_negotiation` (fake transport lacks `budget_check`),
+  `contract/test_der_t8_all_nodes_contract::test_plan_steps_carry_node_record` (stub lambda
+  takes no args), `behavioral/test_der_success_synthesizes::test_success_path_deterministic_fallback...`,
+  both `test_mid_loop_injects_failure_warning_and_proven_approach`, plus the stale list in
+  `pin_dc96cc9c9681`.
 
-**Owner to-do.** `data/iris_config.json` still holds `"mode": "developer"` and a `projects`
-entry `iris-evals` from the crashed eval run: set `"mode": "personal"` and remove that entry
-(an automated rewrite was blocked). Nothing after this commit is pushed.
+**Owner to-do.** Done 2026-09-29: `data/iris_config.json` is back to `"mode": "personal"` with no
+`iris-evals` project. Nothing after commit `b4b62fa4` is committed or pushed.
 
 ---
 
 Running log of work after the Phase 1 commit (`a21b641c`). Each entry is also recorded in
 MCM (`record_edit` / `record_test` / `pin_add`).
+
+## 2026-09-29 (session aa473536) — c10, then answer-path latency
+
+### c10 fixed; coding 15/15
+
+- Cause: `_der_run_node` passed only `item.description` (the planner's paraphrase) to the node;
+  "qty <= 0 raises ValueError" and "ValueError when not enough" were lost, and the Brain wrote a
+  generic inventory class (KeyError, `< 0`). Fix: `NodeContext.task` = `plan.original_task`,
+  shown word for word above the STEP goal (`node_executor._user_message`). c10 8/8; full coding
+  group **15/15** (`evals/results/20260929-223059.json`).
+
+### Where turn time went (stack dumps, `IRIS_STACK_DUMP_S=4`)
+
+A 63-185 s turn held ~11 s of real work. Every stall found was on the answer path, none in
+model or physics math:
+
+| Stall | Measured | Cause | Fix |
+|---|---|---|---|
+| per-step physics in `_der_finalize_step` | 16-84 s | `calculate_eml` counts SCAN `system_events` (no `session_id` index) on a cold 6.3 GB file: 18.3 s python SQL cold vs 0.26 s native warm | `idx_system_events_session` (migration 001's definition, never applied) in `_PythonFallbackEngine._run_migrations`; physics moved off the answer path (below) |
+| turn-start DAG compile | 40 s | `ontology_recall` `ORDER BY created_at` on `memory_chain`: legacy rows keep `created_at` after big text, so the sort walked overflow pages (widest scope 119 s cold) | `idx_memory_chain_created` in `migrate_memory_chain_schema` (guarded) -> 0.000 s. First startup builds it once (~7.5 min) |
+| ledger write storm | ~90 threads | thread-per-row on one shared connection; "database is locked" fell back to the native writer and blocked | one ordered ledger lane |
+| harness "63 s" | ~20-26 s | the harness drain counts the reply's SPEECH | `reply_s` in the results |
+| c11 step 1 | ~110 s | Pocket-TTS model load (61.5 s) inside the turn starved `pytest` | NEXT (item 1) |
+
+### Physics side lane (Caducean fold-back)
+
+- `_der_submit_physics` / `_der_physics_step`: EML, integrator update, coupling, trajectory row,
+  rec==3 handling, homeostasis, controller refit, Immortus chain append and REQ-7 physics
+  narration run on `durability_queue.lane("physics")` (one FIFO consumer = sequential
+  integrator). Node-record stamping / goal contract / links stay inline.
+- Fold-back barrier `_der_physics_settle(owner, session)` (module level, so kernel stand-ins in
+  tests still run the guarded read) waits on `fold.ready` (set right after the integrator
+  update, not after the bookkeeping). Only SHAPE DECISIONS call it: streak-gate topology
+  override, both split-width reads, continuation expansion (rec read moved after the consult).
+  Modulation readers (planner temperature, envelope hint, edge scoring) never wait.
+  `DER_PHYSICS_FOLD_WAIT_S = 30` bounds a decision's wait, never cancels the update; it fired
+  once (106 s stall, before the index) and kept a bonus step COMPRESS would have dropped.
+- Envelope coords + topology stop fold in under `fold.lock` (`_der_fold_envelope`), whichever
+  of the lane and the envelope build finishes second.
+- Finding (not changed): the rec==3 `TopologyViolationException` was always swallowed by
+  finalize's own `except Exception`; it never halted the loop.
+
+### Lanes (`backend/utils/durability_queue.py`)
+
+- `_Lane`: one bounded FIFO + one daemon worker; optional single watcher thread per lane.
+  Module API = the default lane (unchanged callers); `lane(name)` for `physics` and `ledger`.
+- `tool_bridge._LEDGER_LANE` writes every ledger row; its watcher runs `_watch_ingest` on each
+  row, so a blocked row still logs "has not returned". After the change: zero "database is
+  locked" / "has not returned" lines in the eval runs. The Python writer does NOT retry
+  "locked": `execute`+`commit` on the shared connection would write a row twice.
+
+### Tests
+
+- Targeted: 61 finalize/envelope/split/narration/ledger tests pass; node executor 7/7.
+- Owner-approved test changes: `test_ledger_write_watchdog::test_the_writer_is_watched` now
+  drives the real ledger lane; `test_screenshot_memory::test_record_tool_event_forwards_screenshot_blob`
+  flushes the ledger lane before asserting; both copies of
+  `test_der_a1_a2_a3_memory_bridge::test_fragment_failed_output_stored` wait on the pacman
+  fragment worker (a sentinel) before asserting. No assertion changed.
+
+### Numbers (reply_s = time until the reply text)
+
+| Task | Before (harness s) | After, reply_s |
+|---|---|---|
+| c10 | 63-226 | **16.9** |
+| c07 | 63 (37 in-backend) | 75.3 (first turn after restart; 19 s planning + cold physics) |
+| c11 | 77-243 | 213.6 (TTS model load during the turn, item 1) |
 
 ## 2026-09-29 (session 5958c478)
 

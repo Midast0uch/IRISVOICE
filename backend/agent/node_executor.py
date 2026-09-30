@@ -63,6 +63,10 @@ class NodeContext:
     format_result: Callable[[str, Any], str]  # (tool, raw) -> text for the model
     tools: List[Dict[str, Any]]               # OpenAI function schemas
     prior_results: List[Dict[str, Any]] = field(default_factory=list)
+    # The user's request word for word. The step goal is the planner's
+    # paraphrase and drops details (coding eval c10, 2026-09-29: the goal kept
+    # "add, remove and count" but lost "qty <= 0 raises ValueError").
+    task: str = ""
     workdir: str = ""
     budget_s: float = 300.0
     max_tokens: int = 8192
@@ -129,8 +133,12 @@ def _failed(raw: Any) -> bool:
     return False
 
 
-def _user_message(goal: str, prior: List[Dict[str, Any]], limit: int) -> str:
-    parts = [f"STEP: {goal}"]
+def _user_message(goal: str, task: str, prior: List[Dict[str, Any]], limit: int) -> str:
+    parts = []
+    if task.strip() and task.strip() != goal.strip():
+        parts.append("THE WHOLE TASK (the user's request, word for word — every rule in it "
+                     "applies to this step's work):\n" + _clip(task.strip(), limit))
+    parts.append(f"STEP: {goal}")
     if prior:
         done = "\n\n".join(
             f"[step {r.get('step')}] {r.get('description', '')}\n{r.get('result', '')}" for r in prior
@@ -144,7 +152,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
     allowed = {t.get("function", {}).get("name") for t in ctx.tools}
     messages: List[Dict[str, Any]] = [
         {"role": "system", "content": _SYSTEM.format(workdir=ctx.workdir or "(current folder)")},
-        {"role": "user", "content": _user_message(goal, ctx.prior_results, ctx.result_chars)},
+        {"role": "user", "content": _user_message(goal, ctx.task, ctx.prior_results, ctx.result_chars)},
     ]
     calls: List[Dict[str, Any]] = []
     last_command_failed: Optional[bool] = None

@@ -24,8 +24,20 @@ it set out to fix, and one that would only surface much later as an incoherent
 trajectory. A SINGLE consumer draining a FIFO preserves submission order by
 construction.
 
-GUARANTEES
-----------
+LANES (2026-09-29)
+------------------
+One lane is one writer: a FIFO drained by one thread. Work that must not wait
+behind other work gets its OWN lane, so the lanes run side by side and never
+queue behind each other — the phase-model idea (docs/CADUCEAN_CONCURRENCY_MODEL.md)
+of letting many operations run at once at distinct positions, instead of one
+line everyone waits in. Measured reason: (1) above, thread-per-row, reached
+~90 threads all writing through one shared connection; each "database is
+locked" fell back to the native writer and blocked there, and every other DB
+write in the process waited in the same crowd. The module-level functions are
+the default lane; ``lane(name)`` returns a named one.
+
+GUARANTEES (per lane)
+---------------------
 * Order    — one worker thread, FIFO queue: writes land in submission order.
 * Bounded  — a fixed maxsize. If durability falls behind the agent, work is
              DROPPED and COUNTED, never accumulated without limit.
@@ -33,9 +45,10 @@ GUARANTEES
              write must not be able to fail a task that already succeeded.
 * Loud in the log — drops and failures are logged with a context identifier,
              because a silently discarded audit trail is the exact defect class
-             this codebase keeps rediscovering.
+             this codebase keeps rediscovering. A lane given a ``watch``
+             callback also reports a job that never returns.
 
-Deliberately a daemon thread: a worker wedged in a native FFI call cannot be
+Deliberately daemon threads: a worker wedged in a native FFI call cannot be
 joined, and a non-daemon worker would hang interpreter shutdown forever.
 """
 from __future__ import annotations
@@ -43,7 +56,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
-from typing import Any, Callable
+from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -51,93 +64,175 @@ logger = logging.getLogger(__name__)
 # that a stalled FFI layer cannot grow memory without bound.
 _MAX_PENDING = 512
 
-_q: "queue.Queue[tuple[str, Callable[..., Any], tuple, dict]]" = queue.Queue(
-    maxsize=_MAX_PENDING
-)
-_worker: threading.Thread | None = None
-_worker_lock = threading.Lock()
-_dropped = 0
+
+class _JobHandle:
+    """Thread-like view of one queued job (join / is_alive), for a watcher."""
+
+    __slots__ = ("_done",)
+
+    def __init__(self) -> None:
+        self._done = threading.Event()
+
+    def join(self, timeout: Optional[float] = None) -> None:
+        self._done.wait(timeout)
+
+    def is_alive(self) -> bool:
+        return not self._done.is_set()
 
 
-def _drain() -> None:
-    """Single consumer. Runs forever; never lets one bad write kill the loop."""
-    while True:
-        label, fn, args, kwargs = _q.get()
-        try:
-            fn(*args, **kwargs)
-        except Exception as exc:  # noqa: BLE001
-            # Swallowed on purpose: durability is best-effort and must never
-            # propagate into the agent. Logged so it is still diagnosable.
-            logger.warning("[durability] write failed label=%s: %s", label, exc)
-        finally:
-            _q.task_done()
+class _Lane:
+    """One ordered writer: a bounded FIFO drained by one daemon thread."""
 
-
-def _ensure_worker() -> None:
-    """Start the drain thread on first use (never at import time)."""
-    global _worker
-    if _worker is not None and _worker.is_alive():
-        return
-    with _worker_lock:
-        if _worker is not None and _worker.is_alive():
-            return
-        _worker = threading.Thread(
-            target=_drain, daemon=True, name="iris-durability"
+    def __init__(
+        self,
+        name: str,
+        watch: Optional[Callable[[Any, str], None]] = None,
+    ) -> None:
+        self.name = name
+        self._q: "queue.Queue[tuple[str, Callable[..., Any], tuple, dict]]" = queue.Queue(
+            maxsize=_MAX_PENDING
         )
-        _worker.start()
+        self._worker: threading.Thread | None = None
+        self._worker_lock = threading.Lock()
+        self._dropped = 0
+        # One watcher thread per lane (never one per job): it is handed each
+        # job as it starts and calls watch(handle, label), which may block
+        # up to its own bound. Jobs run one at a time, so one watcher suffices.
+        self._watch = watch
+        self._watch_q: "queue.Queue[tuple[_JobHandle, str]]" = queue.Queue()
 
+    def _drain(self) -> None:
+        """Single consumer. Runs forever; never lets one bad write kill the loop."""
+        while True:
+            label, fn, args, kwargs = self._q.get()
+            handle = _JobHandle()
+            if self._watch is not None:
+                self._watch_q.put((handle, label))
+            try:
+                fn(*args, **kwargs)
+            except Exception as exc:  # noqa: BLE001
+                # Swallowed on purpose: durability is best-effort and must never
+                # propagate into the agent. Logged so it is still diagnosable.
+                logger.warning(
+                    "[durability] write failed lane=%s label=%s: %s", self.name, label, exc
+                )
+            finally:
+                handle._done.set()
+                self._q.task_done()
+
+    def _watch_loop(self) -> None:
+        while True:
+            handle, label = self._watch_q.get()
+            try:
+                self._watch(handle, label)
+            except Exception:  # noqa: BLE001 — an observer never breaks the lane
+                pass
+
+    def _ensure_worker(self) -> None:
+        """Start the drain (and watch) thread on first use, never at import."""
+        if self._worker is not None and self._worker.is_alive():
+            return
+        with self._worker_lock:
+            if self._worker is not None and self._worker.is_alive():
+                return
+            self._worker = threading.Thread(
+                target=self._drain, daemon=True, name=f"iris-{self.name}"
+            )
+            self._worker.start()
+            if self._watch is not None:
+                threading.Thread(
+                    target=self._watch_loop, daemon=True, name=f"iris-{self.name}-watch"
+                ).start()
+
+    def submit(self, label: str, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> bool:
+        """Queue a write. Returns False if it was dropped. Never raises or blocks.
+
+        Bind VALUES, not mutable objects that the caller keeps editing: the write
+        executes later, so a list or dict handed in here may have moved on by then.
+        """
+        try:
+            self._ensure_worker()
+            self._q.put_nowait((label, fn, args, kwargs))
+            return True
+        except queue.Full:
+            self._dropped += 1
+            # Log the first drop and then every 50th, so a sustained backlog is
+            # visible without flooding the log with one line per lost write.
+            if self._dropped == 1 or self._dropped % 50 == 0:
+                logger.warning(
+                    "[durability] lane=%s queue full (%d pending) — dropped %d "
+                    "write(s), most recent label=%s",
+                    self.name, _MAX_PENDING, self._dropped, label,
+                )
+            return False
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[durability] submit failed lane=%s label=%s: %s", self.name, label, exc
+            )
+            return False
+
+    def in_worker(self) -> bool:
+        """True on this lane's drain thread. A job that waits on work queued
+        behind it here would wait on itself, so fold-back barriers skip here."""
+        return self._worker is not None and threading.current_thread() is self._worker
+
+    def pending(self) -> int:
+        """Approximate queue depth — for diagnostics/tests."""
+        return self._q.qsize()
+
+    def dropped(self) -> int:
+        """Total writes discarded because the queue was full."""
+        return self._dropped
+
+    def flush(self, timeout: float = 5.0) -> bool:
+        """Block until the queue drains. TESTS AND SHUTDOWN ONLY.
+
+        Never call this on a request path — it reintroduces exactly the blocking
+        this module exists to remove.
+        """
+        done = threading.Event()
+        if not self.submit("flush-sentinel", done.set):
+            return False
+        return done.wait(timeout)
+
+
+_default = _Lane("durability")
+_lanes: Dict[str, _Lane] = {}
+_lanes_lock = threading.Lock()
+
+
+def lane(name: str, watch: Optional[Callable[[Any, str], None]] = None) -> _Lane:
+    """The named lane, created on first use (``watch`` applies at creation)."""
+    with _lanes_lock:
+        existing = _lanes.get(name)
+        if existing is None:
+            existing = _Lane(name, watch=watch)
+            _lanes[name] = existing
+        return existing
+
+
+# ── The default lane (module API kept for existing callers) ─────────────────
 
 def submit(label: str, fn: Callable[..., Any], *args: Any, **kwargs: Any) -> bool:
-    """Queue a durability write. Returns False if it was dropped.
+    """Queue a durability write on the default lane. Returns False if dropped."""
+    return _default.submit(label, fn, *args, **kwargs)
 
-    Never raises and never blocks — callers are on a latency-critical path and
-    must be able to fire and forget. ``label`` identifies the write in the log.
 
-    Bind VALUES, not mutable objects that the caller keeps editing: the write
-    executes later, so a list or dict handed in here may have moved on by then.
-    """
-    global _dropped
-    try:
-        _ensure_worker()
-        _q.put_nowait((label, fn, args, kwargs))
-        return True
-    except queue.Full:
-        _dropped += 1
-        # Log the first drop and then every 50th, so a sustained backlog is
-        # visible without flooding the log with one line per lost write.
-        if _dropped == 1 or _dropped % 50 == 0:
-            logger.warning(
-                "[durability] queue full (%d pending) — dropped %d write(s), "
-                "most recent label=%s",
-                _MAX_PENDING, _dropped, label,
-            )
-        return False
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[durability] submit failed label=%s: %s", label, exc)
-        return False
+def in_worker() -> bool:
+    """True on the default lane's drain thread."""
+    return _default.in_worker()
 
 
 def pending() -> int:
-    """Approximate queue depth — for diagnostics/tests."""
-    return _q.qsize()
+    """Approximate default-lane queue depth — for diagnostics/tests."""
+    return _default.pending()
 
 
 def dropped() -> int:
-    """Total writes discarded because the queue was full."""
-    return _dropped
+    """Total default-lane writes discarded because the queue was full."""
+    return _default.dropped()
 
 
 def flush(timeout: float = 5.0) -> bool:
-    """Block until the queue drains. TESTS AND SHUTDOWN ONLY.
-
-    Never call this on a request path — it reintroduces exactly the blocking
-    this module exists to remove.
-    """
-    done = threading.Event()
-
-    def _sentinel() -> None:
-        done.set()
-
-    if not submit("flush-sentinel", _sentinel):
-        return False
-    return done.wait(timeout)
+    """Block until the default lane drains. TESTS AND SHUTDOWN ONLY."""
+    return _default.flush(timeout)

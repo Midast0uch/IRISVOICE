@@ -98,6 +98,11 @@ def test_record_tool_event_forwards_screenshot_blob():
             "sess1", "take_screenshot", "success",
             {"x": 1}, {"success": True}, screenshot_blob=b"SHOT",
         )
+        # The row is written on the ordered ledger lane (2026-09-29, owner-
+        # approved): wait for that background write before asserting on it.
+        import backend.agent.tool_bridge as _tb
+
+        assert _tb._LEDGER_LANE.flush(timeout=10), "ledger lane did not drain"
     assert mock_ingest.called
     _, kwargs = mock_ingest.call_args
     assert kwargs.get("screenshot_blob") == b"SHOT"

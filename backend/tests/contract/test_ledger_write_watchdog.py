@@ -68,12 +68,34 @@ class TestABlockedWriteIsVisible:
 
 
 class TestTheWatchdogIsActuallyWired:
-    def test_the_writer_is_watched(self):
+    def test_the_writer_is_watched(self, caplog, monkeypatch):
         """A watchdog nobody starts installs no visibility. This pins the
-        WIRING in `_record_tool_event` (the only writer of ledger rows)."""
+        WIRING of `_record_tool_event` (the only writer of ledger rows).
+
+        2026-09-29 (owner-approved change of this pin): rows moved from a
+        thread per row to ONE ordered ledger lane (~90 per-row threads were
+        measured contending live). The pin now drives the real lane: a row
+        that never returns must still be reported."""
+        import time
+
         src = inspect.getsource(tb.AgentToolBridge._record_tool_event)
-        assert "_ingest_thread" in src, "the write thread is no longer named"
-        assert "_watch_ingest" in src, (
+        assert "_LEDGER_LANE.submit" in src, (
+            "ledger rows no longer go through the watched ledger lane"
+        )
+        monkeypatch.setattr(tb, "_INGEST_WATCH_S", 0.05)
+        release = threading.Event()
+        try:
+            with caplog.at_level(logging.WARNING):
+                assert tb._LEDGER_LANE.submit("crawler_query", lambda: release.wait(5))
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and not any(
+                    "has not returned" in r.getMessage() for r in caplog.records
+                ):
+                    time.sleep(0.02)
+        finally:
+            release.set()
+
+        assert any("has not returned" in r.getMessage() for r in caplog.records), (
             "the ledger write is fire-and-forget again — a blocked write "
             "would leave no trace"
         )

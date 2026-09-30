@@ -100,6 +100,19 @@ def _watch_ingest(thread: Any, tool_name: str) -> None:
             )
     except Exception:  # noqa: BLE001 — a watchdog never breaks the caller
         pass
+
+
+# The ONE writer of ledger rows (2026-09-29). Rows were written by a daemon
+# thread per row, all through one shared connection: a live eval showed ~90 of
+# them at once, each "database is locked" falling back to the native writer and
+# blocking there, and every other write in the process waiting in the same
+# crowd. One ordered lane writes one row at a time instead; the lane's single
+# watcher runs _watch_ingest on each row, so a blocked row still reports itself.
+from backend.utils.durability_queue import lane as _durability_lane  # noqa: E402
+
+_LEDGER_LANE = _durability_lane(
+    "ledger", watch=lambda handle, tool_name: _watch_ingest(handle, tool_name)
+)
 from urllib.parse import urlparse  # _on_page_done:1833, also never imported
 
 # NOTE: `time` was never imported here, yet `_on_page_done` opens with
@@ -2219,11 +2232,10 @@ class AgentToolBridge:
         #   1. It serialised the ENTIRE result. For a crawl that is every
         #      fetched page's body — megabytes of JSON pushed through FFI into
         #      SQLite, scaling with how well the search worked.
-        #   2. It ran inline. Now it runs on a daemon thread, so a slow audit
-        #      write cannot stall the tool that already finished.
+        #   2. It ran inline. Now it runs on the ordered ledger lane, so a slow
+        #      audit write cannot stall the tool that already finished.
         try:
             import json
-            import threading as _threading
 
             from backend.gateway.iris_ffi import ffi_ingest_event
 
@@ -2316,24 +2328,16 @@ class AgentToolBridge:
                     tool_name, time.monotonic() - _t_ingest,
                 )
 
-            _ingest_thread = _threading.Thread(
-                target=_ingest, daemon=True, name=f"tool-event-{tool_name}",
-            )
-            _ingest_thread.start()
-            # WATCHDOG (2026-09-26 live finding). This was a fire-and-forget
-            # daemon thread, so a write that BLOCKED left no trace at all: the
-            # ledger simply stopped gaining rows while every log line said the
-            # record was built. Measured live: "[tool-event] meta set for
-            # crawler_query: escalated" appeared and no row ever landed, with
-            # neither the failure warning nor the "returned falsy" warning —
-            # and NOT the WAL size that first looked like the cause. A silent
-            # drop is the worst possible failure mode for a calibration ledger,
-            # so the write now reports on itself. The watchdog waits off the
-            # caller's thread: the tool path is never delayed by it.
-            _threading.Thread(
-                target=_watch_ingest, args=(_ingest_thread, tool_name),
-                daemon=True, name=f"tool-event-watch-{tool_name}",
-            ).start()
+            # One ordered ledger lane (_LEDGER_LANE), never a thread per row.
+            # WATCHDOG (2026-09-26 live finding): a write that BLOCKED used to
+            # leave no trace at all — the ledger simply stopped gaining rows
+            # while every log line said the record was built. The lane's
+            # watcher runs _watch_ingest on every row, off the caller's thread,
+            # so a blocked row still says so and the tool path never waits.
+            if not _LEDGER_LANE.submit(tool_name, _ingest):
+                logger.warning(
+                    "[tool-event] ledger lane full — row for %s dropped", tool_name
+                )
         except Exception as _rx_err:
             # Was `except Exception: pass` — a dropped audit row is a
             # diagnosable defect, never silence (session-345: five days of
