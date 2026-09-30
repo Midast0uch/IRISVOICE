@@ -5216,8 +5216,9 @@ class AgentKernel:
         # moment this document was produced (sourced from the Caducean
         # trajectory recorder). This is what lets W7/O1 do trajectory-proximity
         # recall ("data gathered while thinking like this") instead of a flat
-        # append. Falls back to "" if no trajectory has been recorded yet.
-        coords_from = ""
+        # append. None (NULL on the row) if no trajectory has been recorded yet
+        # (REQ-4 AC4.1: never "" as a stand-in for unknown).
+        coords_from: Optional[str] = None
         try:
             from backend.agent.caducean_trajectory import (
                 format_coords,
@@ -17878,7 +17879,9 @@ Respond with a JSON object:
                     _before_coord["xi"], _before_coord["u"],
                 )
             else:
-                _coords_from = format_coords(0.0, 0.0, 0.0, 0.0)
+                # REQ-4 AC4.1: no prior coordinate is UNKNOWN -> NULL on the
+                # row; "0.00,0.00,0.00,0.00" is a real point in the state space.
+                _coords_from = None
             _coords_to = format_coords(
                 _state_snapshot.get("x", _ex),
                 _state_snapshot.get("y", _ey),

@@ -895,6 +895,28 @@ def parse_coords(s: str) -> Tuple[float, float, float, float]:
         raise ValueError(f"Non-numeric value in coordinate string: {s!r}")
 
 
+def latest_coords_str(memory_interface: Any, *session_ids: str) -> Optional[str]:
+    """REQ-4 AC4.1: the newest recorded coordinate as ``format_coords`` text.
+
+    Tries each session id in order and returns the first hit. Returns None when
+    there is no store or no trajectory yet - a chain writer stores NULL for
+    "unknown", never a pseudo value or ``0.00,0.00,0.00,0.00``. Never raises.
+    """
+    if memory_interface is None:
+        return None
+    try:
+        recorder = get_trajectory_recorder(memory_interface)
+        for sid in session_ids:
+            if not sid:
+                continue
+            c = recorder.get_latest_coordinate(sid)
+            if c:
+                return format_coords(c["x"], c["y"], c["xi"], c["u"])
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[trajectory] latest_coords_str skipped: %s", exc)
+    return None
+
+
 class _NoopTrajectoryRecorder:
     """Disconnected recorder (pin_42ddd255162d).
 

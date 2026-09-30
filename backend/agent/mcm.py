@@ -124,17 +124,24 @@ class MCM:
                 logger.warning("[MCM] checkpoint save failed: %s", exc)
 
         # Append to memory chain (Immortus Layer 1b)
-        if self._store and self.thread_id:
+        # REQ-4 AC4.1: through the one chain writer (the CoordinateStore has no
+        # chain_append/chain_distill - the old call raised AttributeError every
+        # time, so this row was never written). Coordinate = the session's real
+        # reasoning state, or NULL - never a space-name list.
+        if self.thread_id:
             try:
-                self._store.chain_append(
+                from backend.agent.caducean_trajectory import latest_coords_str
+                from backend.gateway.iris_ffi import ffi_immortus_chain_append
+
+                _coord = latest_coords_str(self._mi, self.session_id)
+                ffi_immortus_chain_append(
                     thread_id=self.thread_id,
                     result="landmark",
-                    coords_from=["context"],
-                    coords_to=["capability"],
+                    coords_from=_coord,
+                    coords_to=_coord,
                     nbl_outcome=" ".join(nbl.split()[:6]),  # first 6 tokens
                     insight=f"MCM compress: {(active_task or '')[:60]}",
                 )
-                self._store.chain_distill(self.thread_id, threshold=50)
             except Exception as exc:
                 logger.warning("[MCM] chain_append failed: %s", exc)
 
