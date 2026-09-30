@@ -33,6 +33,7 @@ raise — a recall failure returns the widened/empty scope, never an error.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, List, Optional, Sequence
@@ -142,7 +143,7 @@ def filtered_chain_recall(
             c
             for c in (
                 "chain_id", "result", "node_type", "topic_domain",
-                "execution_domain", "insight", "created_at",
+                "execution_domain", "insight", "created_at", "coords_from",
             )
             if c in cols
         ]
@@ -351,3 +352,214 @@ def run_filtered_recall(conn, filters: RecallFilters, scope_out=None) -> list:
     except Exception as exc:
         logger.debug("[ontology_recall] filtered chain recall failed: %s", exc)
         return []
+
+
+# ── REQ-4 AC4.2 (K2): the relevance gate on the per-step neighbors ───────────
+#
+# The topic filter above only says a row is about the same area. A step must
+# not carry a row just because it is recent and same-topic: chain rows enter
+# the context only when they are relevant to THIS step's goal (owner rule
+# 2026-09-30, context debt). Relevance = token overlap between the step goal
+# and the row's insight/result head. No embedding on the step path (the CPU
+# embedder costs ~5 s/KB). State proximity and recency only RANK rows that
+# already passed. Nothing passes -> nothing is injected.
+
+# Candidate pool read from the chain per step. The gate may keep at most
+# ``keep`` of them (3, as before): a larger pool only widens what the gate can
+# find, it never widens what the step carries.
+CANDIDATE_POOL = 24
+_MIN_SHARED_TOKENS = 2      # a row must share this many goal tokens (or all, if fewer)
+_MIN_GOAL_COVERAGE = 0.4    # ... and cover this fraction of the goal's tokens
+_ROW_TEXT_HEAD = 240        # chars of ``result`` read for the match
+
+# Own tokenizer: importing crawler.rerank/_tok would load the whole crawler
+# package (crawl4ai) onto the DER step path.
+_TOKEN = re.compile(r"[a-z0-9]+")
+_STOP = frozenset(
+    "the and for with from into this that these those then than not are was "
+    "were been being its can will use using".split()
+)
+
+
+def _tokens(text: Any) -> set:
+    return {
+        t for t in _TOKEN.findall(str(text or "").lower())
+        if len(t) > 2 and t not in _STOP
+    }
+
+
+def _state_distance(state: Optional[Sequence[float]], coords_from: Any) -> float:
+    """Euclidean distance between the current state and a row's coordinate;
+    +inf when either is unknown, so such rows rank after rows with a position."""
+    try:
+        row = [float(p) for p in str(coords_from).split(",")]
+        if state is None or len(row) != 4:
+            return float("inf")
+        return round(sum((a - b) ** 2 for a, b in zip(state, row)) ** 0.5, 2)
+    except Exception:
+        return float("inf")
+
+
+def relevance_gate(
+    rows: List[dict],
+    goal: str,
+    topic_domain: Optional[str] = None,
+    state_fn=None,
+    keep: int = 3,
+) -> List[dict]:
+    """Keep only the rows relevant to ``goal``: same topic AND token overlap.
+
+    ``rows`` arrive newest-first (recall order). Survivors are ranked by state
+    proximity (``state_fn`` -> "x,y,xi,u" text or None; called only when more
+    than one row survived) then recency (the stable sort keeps recall order on
+    ties), and cut to ``keep``. Empty goal or no survivor -> []. Never raises.
+    """
+    try:
+        goal_tokens = _tokens(goal)
+        if not goal_tokens:
+            return []
+        need = min(_MIN_SHARED_TOKENS, len(goal_tokens))
+        kept: List[dict] = []
+        for r in rows:
+            if topic_domain and r.get("topic_domain") != topic_domain:
+                continue
+            text = "{} {}".format(
+                r.get("insight") or "", str(r.get("result") or "")[:_ROW_TEXT_HEAD]
+            )
+            shared = len(goal_tokens & _tokens(text))
+            if shared >= need and shared / len(goal_tokens) >= _MIN_GOAL_COVERAGE:
+                kept.append(r)
+        if len(kept) > 1 and state_fn is not None:
+            state = None
+            try:
+                raw = state_fn()
+                state = [float(p) for p in raw.split(",")] if raw else None
+            except Exception:
+                state = None
+            if state is not None:
+                kept.sort(key=lambda r: _state_distance(state, r.get("coords_from")))
+        return kept[:keep]
+    except Exception as exc:
+        logger.debug("[ontology_recall] relevance gate failed: %s", exc)
+        return []
+
+
+def gated_neighborhood(
+    conn,
+    filters: RecallFilters,
+    goal: str,
+    state_fn=None,
+    keep: int = 3,
+) -> List[dict]:
+    """The per-step neighbors: topic-filtered recall, then the relevance gate.
+
+    Logs one ``[chain_recall] cand=<n> kept=<k> ms=<t>`` line per call so the
+    rows-per-step before/after is answerable from data (AC4.4). Never raises.
+    """
+    t0 = time.perf_counter()
+    candidates = run_filtered_recall(conn, filters)
+    kept = relevance_gate(candidates, goal, filters.topic_domain, state_fn, keep)
+    logger.info(
+        "[chain_recall] cand=%d kept=%d ms=%.1f thread=%s",
+        len(candidates), len(kept), (time.perf_counter() - t0) * 1000.0,
+        filters.thread_id or "-",
+    )
+    return kept
+
+
+# ── REQ-4 AC4.3 (K3): the chain at a DECISION point ──────────────────────────
+#
+# A replan after a failure is where the chain changes the decision: it tells the
+# replanner what THIS task already tried, in order, and which mediators were
+# tried near the current state. It is read only there - never per turn or per
+# step (owner rule 2026-09-30). Bounded: <= 8 rows + 3 mediators, <= 900 chars.
+
+TIMELINE_ROWS = 8
+_TIMELINE_SQL = (
+    "SELECT chain_id, result, insight, nbl_outcome, created_at "
+    "FROM memory_chain WHERE thread_id = ? "
+    "ORDER BY created_at DESC, rowid DESC LIMIT ?"
+)
+_MEDIATORS_KEPT = 3
+_CONTEXT_MAX_CHARS = 900
+
+
+def chain_timeline(conn, thread_id: str, limit: int = TIMELINE_ROWS) -> List[dict]:
+    """The last ``limit`` chain rows of THIS thread, oldest first.
+
+    Read-only and bounded by ``limit``; the query orders by the indexed
+    ``created_at`` (S2). Never raises - a failed read returns [].
+    """
+    try:
+        if not thread_id or limit < 1:
+            return []
+        rows = conn.execute(_TIMELINE_SQL, (thread_id, int(limit))).fetchall()
+        keys = ("chain_id", "result", "insight", "nbl_outcome", "created_at")
+        return [dict(zip(keys, r)) for r in reversed(rows)]
+    except Exception as exc:
+        logger.debug("[ontology_recall] chain_timeline failed: %s", exc)
+        return []
+
+
+def replan_chain_context(
+    conn, thread_id: str, state: Optional[str] = None
+) -> str:
+    """K3: the text a replan-after-failure child carries; "" when the chain has
+    nothing for this thread. ``state`` is the current "x,y,xi,u" coordinate,
+    used only to rank the mediators by proximity. Logs one
+    ``[chain_recall] replan ...`` line (rows returned + ms per decision, AC4.4).
+    Never raises.
+    """
+    t0 = time.perf_counter()
+    timeline: List[dict] = []
+    mediators: List[str] = []
+    try:
+        timeline = chain_timeline(conn, thread_id)
+        from backend.gateway.iris_ffi import ffi_immortus_chain_query_mediators
+
+        vec = None
+        if state:
+            try:
+                vec = [float(p) for p in state.split(",")]
+            except Exception:
+                vec = None
+        tried = [
+            m for m in (ffi_immortus_chain_query_mediators(thread_id) or [])
+            if m.get("mediator") and m.get("mediator") != "none"
+        ]
+        # Newest first from the query; the stable sort keeps that on ties.
+        tried.sort(key=lambda m: _state_distance(vec, m.get("coords_from")))
+        seen: set = set()
+        for m in tried:
+            name = str(m["mediator"])[:40]
+            if name in seen:
+                continue
+            seen.add(name)
+            mediators.append("{}->{}".format(name, str(m.get("result") or "?")[:12]))
+            if len(mediators) >= _MEDIATORS_KEPT:
+                break
+    except Exception as exc:
+        logger.debug("[ontology_recall] replan mediators failed: %s", exc)
+
+    parts: List[str] = []
+    if timeline:
+        steps = []
+        for r in timeline:
+            outcome = str(r.get("result") or "")
+            outcome = outcome if len(outcome) <= 16 else ""  # long = a payload
+            steps.append(" ".join(
+                x for x in (
+                    str(r.get("nbl_outcome") or "step"),
+                    outcome,
+                    str(r.get("insight") or "")[:70],
+                ) if x
+            ))
+        parts.append("CHAIN TIMELINE (this task, oldest first): " + " > ".join(steps))
+    if mediators:
+        parts.append("MEDIATORS TRIED NEAR NOW: " + ", ".join(mediators))
+    logger.info(
+        "[chain_recall] replan rows=%d mediators=%d ms=%.1f thread=%s",
+        len(timeline), len(mediators), (time.perf_counter() - t0) * 1000.0,
+        thread_id or "-",
+    )
+    return ". ".join(parts)[:_CONTEXT_MAX_CHARS]

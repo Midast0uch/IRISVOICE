@@ -155,15 +155,20 @@ def _record_to_immortus(
     All FFI calls are try/except wrapped — never blocks the chat response.
     """
     try:
+        from backend.agent.caducean_trajectory import latest_coords_str
         from backend.gateway.iris_ffi import ffi_immortus_chain_append
+        from backend.memory import get_memory_interface
 
+        # REQ-4 AC4.1: the real reasoning-state coordinate after this turn, or
+        # NULL. The exchange does not move the state: it lands at one point.
+        _coord = latest_coords_str(get_memory_interface(), thread_id)
         ffi_immortus_chain_append(
             thread_id=thread_id,
             result="chat",
             nbl_outcome=response[:40],
             insight=f"turn:{turn_id} input:{text[:60]}",
-            coords_from=f"rest:input:{turn_id}",
-            coords_to=f"rest:output:{turn_id}",
+            coords_from=_coord,
+            coords_to=_coord,
         )
     except Exception as exc:
         logger.debug("[ChatREST] Immortus chain_append skipped: %s", exc)
@@ -686,8 +691,10 @@ async def fork_thread(thread_id: str, body: ForkRequest) -> ForkResponse:
             thread_id=new_id,
             result="fork",
             insight=f"forked from {thread_id} at message {body.message_id}",
-            coords_from=f"thread:{thread_id}",
-            coords_to=f"thread:{new_id}",
+            # REQ-4 AC4.1: a fork is a thread relation, not a point in reasoning
+            # state - NULL coords, never a "thread:<id>" pseudo value.
+            coords_from=None,
+            coords_to=None,
         )
     except Exception:
         logger.debug("[ChatREST] Immortus fork chain_append skipped")
