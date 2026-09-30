@@ -19,7 +19,7 @@ All robocopy invocations returned **exit code 1** (0-7 = success, 8+ = failure).
 
 | # | Payload | Destination | Result |
 |---|---|---|---|
-| 1 | site-packages (7.207 GB, 99,157 files) | `D:\PythonUser\Python314\site-packages` | copied, switch skipped (D1) |
+| 1 | site-packages (7.207 GB, 99,157 files) | `D:\PythonUser\Python314\site-packages` | copied + verified, switch skipped (D1) |
 | 2 | memory.db (6.16 GB) | `D:\IRIS\data\memory.db` | done + verified |
 | 3 | HF cache | `D:\hf-cache\huggingface` (not the plan's `D:/cache/...`) | done (D2) |
 | 4 | LM Studio models (38.620 GB, 30 files) | `D:\lmstudio\models` | done + verified |
@@ -28,7 +28,8 @@ All robocopy invocations returned **exit code 1** (0-7 = success, 8+ = failure).
 
 ## Step 1 — site-packages
 
-Copy completed to `D:\PythonUser\Python314\site-packages` (7.207 GB / 99,157 files).
+Copy **complete and verified**: `D:\PythonUser\Python314\site-packages` now holds
+99,157 files / 14,859 dirs / 7.207 GB, matching the source exactly (robocopy exit 1, 0 failed).
 
 **The rename + junction switch was NOT performed.** The plan's precondition 2
 was not satisfiable: the MCM MCP server (`C:\Python314\python.exe -m mcm.mcp_cad`,
