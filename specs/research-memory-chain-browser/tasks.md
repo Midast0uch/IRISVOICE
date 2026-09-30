@@ -109,3 +109,17 @@ consent gate skip + explore dispatch) - keep each edit small and local.
 - [ ] **TG-W:** Mode B UI drive: one browser task with a safe click (no prompt), an unsafe click
   (refused), an unsure click (question card; let it time out -> the agent pivots). Chromium
   working set measured idle and busy.
+
+## Wave M - memory that builds shape (D8) - after R, K and the K4 eval guard
+
+- [ ] **M1 memory router (Oracle `memory_need`, shadow).** DONE = one shadow row per DER step
+  with the gate's verdict as reference label + a Brain label on a sample; bar report lists the
+  consumer. NOT THIS = enforcement.
+- [ ] **M2 belief timeline.** DONE = two research runs on the same fact in different months
+  (fixture dates) produce one belief with two observations and a `changed` history the dashboard
+  can render; `claim_relation` shadow rows written. NOT THIS = an LLM on the answer path.
+- [ ] **M3 routes.** DONE = the consolidation job turns recorded finished tasks into routes
+  (non-empty traversal_sequence, Sigma path, outcome); a replayed task opening matches its route
+  and the plan context gets exactly one line; measured steps-to-success on a repeated eval task
+  before/after. NOT THIS = route injection when no match.
+- [ ] **M4 divergence** and **M5 cross-domain edges** - after M3 is measured.

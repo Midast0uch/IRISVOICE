@@ -115,3 +115,47 @@ If a design detail here is unreachable without an over-build, STOP and report (C
   true, reason}`; the session remembers refused marks for the rest of the task.
 - Oracle: a `click_safety_shadow` row module wired like `monitor_shadow` (`set_row_sink`, wired
   at `agent_kernel.py` ~967-972), one row per assessment with the gate verdict as reference label.
+
+## D8 Memory that builds shape (owner 2026-09-30: beyond recall; the Oracle, not RAG)
+
+Measured state (2026-09-30): 30 active landmarks, all `task_class='bootstrap'` (build-time), empty
+`traversal_sequence`; 6,256 landmark edges, all `similarity` at 0.4; 872 `mycelium_traversals` and
+887 `mycelium_plan_stats` rows recorded at runtime but never folded into shape. The chain holds
+~1,700 transitions with (after REQ-8) meaningful Sigma. The ingredients exist; nothing connects them.
+
+The model: memory is a MAP with a CLOCK, not a pile of text.
+- Chain = the clock: ordered transitions (Sigma_from -> Sigma_to, what was done, outcome).
+- Sigma = the phase of work (how much gathered vs consolidated, where in the cycle, attention).
+- Landmarks = places that recur: a crystallized ROUTE (sequence of step kinds + Sigma path +
+  outcome), not a document.
+- Edges = roads between places, TYPED (precedes, same_shape_other_domain, supersedes,
+  contradicts), each with hit/miss counts.
+- Oracle = the router: it decides WHETHER memory is needed and WHICH structure answers it, then a
+  structured query answers - never "top-k similar text into the prompt".
+
+Five mechanisms, in build order (each shadow-first where it steers anything):
+1. M1 Memory router (Oracle consumer `memory_need`, SHADOW): options `none | prior_facts |
+   procedure | what_failed_here | user_preference | continuity`, frame = step goal. The active
+   decision stays the relevance gate (K2/REQ-2) until the bar; the Brain labels a sample for
+   calibration. Only a non-`none` answer opens the matching lens. This is the owner's
+   "no context debt" rule made a learnable decision.
+2. M2 Belief timeline (research): every research claim becomes a belief with a history of
+   observations (date, source, value) on the chain; the Oracle types the relation of a new
+   observation to the belief (`claim_relation`: supports | updates | contradicts | unrelated,
+   SHADOW; the deterministic cross_check (R3) is the active label). A belief's observed
+   volatility sets its recheck need: stable facts can be answered from memory with their date,
+   volatile ones are re-searched. The dashboard shows how a fact changed.
+3. M3 Routes (procedural memory): a consolidation job folds finished tasks' chain segments into
+   landmark routes (step kinds + Sigma path + outcome), merging near-identical routes. At plan
+   time, when the live task's opening matches a route (shape match on Sigma path + step kinds, then
+   Oracle `route_match` SHADOW), the planner gets ONE line: the route's next step and its known
+   pitfall. Measure: steps-to-success and failure rate on repeated task classes, before/after.
+4. M4 Divergence: when the live Sigma path leaves the matched route (e.g. gathering far past the
+   route's usual consolidation point), raise it at the next decision point (a streak-gate input) -
+   earlier than the TOPO check.
+5. M5 Cross-domain shape: routes with the same Sigma-path shape in different topic domains get a
+   `same_shape_other_domain` edge; a proven procedure is offered across domains only when M3's
+   match holds and the Oracle agrees (SHADOW until the bar). This is where coordinates carry value
+   that text similarity cannot: shape is domain-independent.
+Consolidation (M2 folding, M3 routes, M5 edges, decay of unused edges) runs on an idle lane
+("sleep"), never on the answer path; it extends the existing DistillationProcess cycle.
