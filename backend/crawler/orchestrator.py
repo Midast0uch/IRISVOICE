@@ -434,6 +434,7 @@ class CrawlOrchestrator:
         excluded_urls: Optional[list] = None,
         seed_urls: Optional[list] = None,
         defer_extraction: bool = False,
+        on_dashboard: Optional[Callable[..., None]] = None,
     ) -> CrawlResult:
         """Public entry point. REQ-18 AC2 (T20): declare that this RUN needs the
         browser for its whole duration, so the pool's idle-stop cannot fire
@@ -456,7 +457,8 @@ class CrawlOrchestrator:
                 query, mode=mode, session_id=session_id, on_progress=on_progress,
                 max_pages=max_pages, min_pages=min_pages, timeout_s=timeout_s,
                 job_id=job_id, excluded_urls=excluded_urls, seed_urls=seed_urls,
-                defer_extraction=defer_extraction, _timing=_wt,
+                defer_extraction=defer_extraction, on_dashboard=on_dashboard,
+                _timing=_wt,
             )
             try:
                 _wt["pages_usable"] = sum(
@@ -488,9 +490,17 @@ class CrawlOrchestrator:
         excluded_urls: Optional[list] = None,
         seed_urls: Optional[list] = None,
         defer_extraction: bool = False,
+        on_dashboard: Optional[Callable[..., None]] = None,
         _timing: Optional[dict] = None,
     ) -> CrawlResult:
         """Run the full funnel. Never raises for crawl failures (REQ-17 AC1).
+
+        ``on_dashboard(dashboard_data, cited_markdown, source_urls)`` (spec
+        research-memory REQ-1 AC1.1/AC1.3): called once when the extraction
+        lands, on the sync path right after ``_emit_dashboard`` and on the
+        deferred path from the ``web_extract`` lane thread. It must be cheap and
+        thread-safe (it queues work elsewhere); a failure in it is logged and
+        never reaches the crawl.
 
         ``defer_extraction`` (spec websearch-vision-browser REQ-3 AC3.1 / D5):
         the agent path consumes raw page ``content``, never the DataExtractor
@@ -994,7 +1004,7 @@ class CrawlOrchestrator:
             self._submit_deferred_extract(
                 _emit, query=query, fetched=fetched, passages=passages, plan=plan,
                 cred_map=cred_map, session_id=session_id, job_id=job_id,
-                page_count=len(ok_pages),
+                page_count=len(ok_pages), on_dashboard=on_dashboard,
             )
             await self._drain_log_tasks()
             return result
@@ -1022,8 +1032,22 @@ class CrawlOrchestrator:
             _emit, query=query, title=plan.title, dashboard_data=dashboard_data,
             session_id=session_id, job_id=job_id, page_count=len(ok_pages),
         )
+        self._notify_dashboard(
+            on_dashboard, dashboard_data, cited_markdown, passages, job_id,
+        )
         await self._drain_log_tasks()
         return result
+
+    @staticmethod
+    def _notify_dashboard(on_dashboard, dashboard_data, cited_markdown, passages, job_id) -> None:
+        """Hand the landed extraction to the caller's hook. Never raises."""
+        if on_dashboard is None:
+            return
+        try:
+            urls = list(dict.fromkeys(p.url for p in (passages or []) if getattr(p, "url", "")))
+            on_dashboard(dashboard_data, cited_markdown or "", urls)
+        except Exception as exc:  # noqa: BLE001 - a memory hook never fails a crawl
+            logger.warning("[CrawlOrchestrator] on_dashboard failed job_id=%s: %s", job_id, exc)
 
     @staticmethod
     def _emit_dashboard(
@@ -1054,6 +1078,7 @@ class CrawlOrchestrator:
     def _submit_deferred_extract(
         self, _emit, *, query: str, fetched: CrawlResult, passages: list,
         plan: CrawlPlan, cred_map, session_id: str, job_id: str, page_count: int,
+        on_dashboard=None,
     ) -> None:
         """REQ-3 AC3.1: run extract_and_cite on durability_queue.lane("web_extract").
 
@@ -1087,12 +1112,17 @@ class CrawlOrchestrator:
                     "[CrawlOrchestrator] deferred extract failed job_id=%s: %s", job_id, exc,
                 )
                 dashboard_data = {"title": title, "summary": "", "key_findings": [], "sources": []}
+                _cited = ""
                 unsourced = []
             cred_map.unsourced_claims = unsourced
             logger.info(
                 "[web_timing] job_id=%s deferred extract_ms=%d",
                 job_id, int((time.monotonic() - t0) * 1000),
             )
+            # The record and the registry summary do not need the caller's loop
+            # (it may be closed already: each tool call runs on its own loop),
+            # so the hook runs here, before the loop check below.
+            self._notify_dashboard(on_dashboard, dashboard_data, _cited, passages, job_id)
             if loop is None or loop.is_closed():
                 logger.warning(
                     "[CrawlOrchestrator] deferred dashboard not emitted job_id=%s: "

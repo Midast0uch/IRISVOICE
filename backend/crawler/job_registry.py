@@ -35,10 +35,15 @@ class CrawlJob:
     finished_at: Optional[float] = None
     # Async waiter resolved when the job finishes (background completion signal).
     _event: "asyncio.Event" = field(default_factory=asyncio.Event)
+    # A summary that landed (deferred extraction) before the result was stored.
+    _late_summary: Optional[dict] = None
 
     def mark_complete(self, result: dict) -> None:
         self.status = "complete"
         self.result = result
+        if self._late_summary:
+            result.update(self._late_summary)
+            self._late_summary = None
         self.finished_at = time.time()
         self._event.set()
 
@@ -93,6 +98,22 @@ class JobRegistry:
             job = self._jobs.get(job_id)
             if job is not None:
                 job.mark_complete(result)
+
+    def attach_summary(self, job_id: str, summary: str, cited_markdown: str = "") -> None:
+        """AC1.3: the deferred extraction landed - the stored result gains its
+        summary. Sync and lock-free (one dict update) so the lane thread that
+        ran the extraction can call it; never raises."""
+        try:
+            job = self._jobs.get(job_id)
+            if job is None:
+                return
+            late = {"summary": summary or "", "cited_markdown": cited_markdown or ""}
+            if isinstance(job.result, dict):
+                job.result.update(late)
+            else:
+                job._late_summary = late
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[JobRegistry] attach_summary skipped job=%s: %s", job_id, exc)
 
     async def fail(self, job_id: str, error: str) -> None:
         async with self._lock:

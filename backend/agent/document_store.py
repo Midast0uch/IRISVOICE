@@ -430,7 +430,10 @@ class DocumentDataStore:
                 rows = self._conn.execute(
                     "SELECT document_id, fmt, conversation_id, sources, har_path, created_at, "
                     "turn_id, card_id, substr(content, 1, ?) "
-                    "FROM document_data WHERE conversation_id = ? ORDER BY created_at ASC",
+                    # A research record (fmt 'research') is memory, not a card:
+                    # it is never offered for rehydration.
+                    "FROM document_data WHERE conversation_id = ? AND fmt IS NOT 'research' "
+                    "ORDER BY created_at ASC",
                     (_TITLE_PREVIEW_CHARS, conversation_id),
                 ).fetchall()
                 return [
@@ -471,7 +474,8 @@ class DocumentDataStore:
                 "SELECT document_id, conversation_id, fmt, content, variants, "
                 "alternatives, trust, revision, source_document_id, sources, har_path, "
                 "turn_id, card_id "
-                "FROM document_data WHERE conversation_id = ? ORDER BY created_at ASC",
+                "FROM document_data WHERE conversation_id = ? AND fmt IS NOT 'research' "
+                "ORDER BY created_at ASC",
                 (conversation_id,),
             ).fetchall()
             return [
@@ -496,6 +500,38 @@ class DocumentDataStore:
             logger.warning("[DocumentDataStore] list_for_conversation failed: %s", exc)
             return []
 
+    def list_by_format(
+        self, fmt: str, limit: int = 50, conversation_id: Optional[str] = None
+    ) -> list:
+        """Metadata-only rows of one ``fmt``, newest first (no content blob).
+
+        The research history reads this: ``variants`` carries a small ``meta``
+        dict, so a listing never pays for the record bodies. Never raises.
+        """
+        try:
+            sql = (
+                "SELECT document_id, conversation_id, variants, created_at "
+                "FROM document_data WHERE fmt = ?"
+            )
+            args: list = [fmt]
+            if conversation_id:
+                sql += " AND conversation_id = ?"
+                args.append(conversation_id)
+            sql += " ORDER BY created_at DESC, rowid DESC LIMIT ?"
+            args.append(max(1, min(int(limit), 500)))
+            return [
+                {
+                    "document_id": r[0],
+                    "conversation_id": r[1],
+                    "variants": json.loads(r[2] or "{}"),
+                    "created_at": r[3],
+                }
+                for r in self._conn.execute(sql, args).fetchall()
+            ]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[DocumentDataStore] list_by_format failed: %s", exc)
+            return []
+
     def list_conversations(self) -> list:
         """Return every conversation that has at least one rendered document.
 
@@ -508,7 +544,8 @@ class DocumentDataStore:
         try:
             rows = self._conn.execute(
                 "SELECT conversation_id, COUNT(*) AS doc_count, MAX(created_at) AS latest "
-                "FROM document_data GROUP BY conversation_id ORDER BY latest DESC"
+                "FROM document_data WHERE fmt IS NOT 'research' "
+                "GROUP BY conversation_id ORDER BY latest DESC"
             ).fetchall()
             return [
                 {

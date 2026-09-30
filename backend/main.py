@@ -1129,6 +1129,8 @@ logger.info(f"CORS configured with allowed origins: {ALLOWED_ORIGINS}")
 from backend.api.status_snapshot import router as status_snapshot_router
 from backend.api.chat import router as chat_router
 from backend.api.crawl_stream import router as crawl_stream_router
+# Kept web research: history list + one record (spec research-memory REQ-3).
+from backend.api.research import router as research_router
 # Read-only Caducean introspection (GET /api/debug/caducean). The phase scheduler
 # and multi-session coupling ship DISABLED, and their metrics are otherwise
 # in-process only — this is how a live run is verified by hand.
@@ -1142,6 +1144,7 @@ from backend.api.frontend_logs import router as frontend_logs_router
 app.include_router(status_snapshot_router)
 app.include_router(chat_router)
 app.include_router(crawl_stream_router)
+app.include_router(research_router)
 app.include_router(caducean_debug_router)
 app.include_router(browser_surface_router)
 app.include_router(frontend_logs_router)

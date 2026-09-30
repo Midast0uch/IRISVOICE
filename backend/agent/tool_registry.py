@@ -1031,6 +1031,31 @@ def register_builtin_tools() -> None:
             permission_tier="read_only", parallel_safe=True,
         ),
         ToolSpec(
+            name="recall_research",
+            description=(
+                "Read EARLIER web research the system already kept (any conversation): "
+                "each record has the date, the query, a summary, and claims with their "
+                "source URLs. Pass ``query`` to find records close in meaning, or "
+                "``document_id`` (from a PRIOR RESEARCH section or an earlier call) to "
+                "read one. Use it to answer from or compare with what was found before "
+                "without searching again. Read-only; it stores nothing."
+            ),
+            parameters={
+                "query": {
+                    "type": "string",
+                    "description": "What the earlier research was about (matched by meaning).",
+                    "optional": True,
+                },
+                "document_id": {
+                    "type": "string",
+                    "description": "Exact id of one research record.",
+                    "optional": True,
+                },
+            },
+            category="memory", executor="internal", requires_internet=False,
+            permission_tier="read_only", parallel_safe=True,
+        ),
+        ToolSpec(
             name="combine_documents",
             description=(
                 "Combine several rendered documents into ONE new render (the "

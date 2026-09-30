@@ -1876,6 +1876,12 @@ class AgentToolBridge:
                 return await self._execute_get_rendered_documents(params, session_id)
             if tool_name == "list_conversations":
                 return await self._execute_list_conversations(params, session_id)
+            # Earlier research, by query or document id (spec research-memory
+            # REQ-2 AC2.4). A store READ - in AgentKernel._DER_READ_TOOLS (S11).
+            if tool_name == "recall_research":
+                from backend.agent.research_memory import recall_research_tool
+
+                return await recall_research_tool(params)
 
             # Combine several rendered documents into one (REQ-9). Local op.
             if tool_name == "combine_documents":
@@ -3150,6 +3156,20 @@ class AgentToolBridge:
         except Exception as exc:  # noqa: BLE001
             logger.debug("[crawler_query] job registry unavailable: %s", exc)
 
+        # Research memory (REQ-2): look for close earlier research beside the crawl.
+        from backend.agent import research_memory as _rm
+        _prior = _rm.start_prior_lookup(query, exclude_job_id=job_id)
+
+        def _on_dashboard(_d, _cited="", _urls=None) -> None:
+            # Runs when the extraction lands (web_extract lane thread): queue the
+            # research record, and give the registry result its summary (AC1.3).
+            _rm.land_dashboard(
+                query, _d, _cited, _urls, conversation_id=_conversation_id,
+                session_id=session_id, job_id=job_id,
+            )
+            if _registry is not None:
+                _registry.attach_summary(job_id, (_d or {}).get("summary", ""), _cited)
+
         try:
             from backend.crawler.orchestrator import get_crawl_orchestrator, CrawlProgress
             from backend.agent.tools.speak_tool import get_speak_tool
@@ -3442,6 +3462,7 @@ class AgentToolBridge:
                     # raw page `content`; the DataExtractor dashboard lands later
                     # on the web_extract lane, off the answer path.
                     defer_extraction=True,
+                    on_dashboard=_on_dashboard,
                     **_rec_kwargs,
                 )
             )
@@ -3601,6 +3622,7 @@ class AgentToolBridge:
                 "credibility_map": getattr(crawl_result, "credibility_map", None),
                 "citation_index": getattr(crawl_result, "citation_index", None),
             })
+        _new_text = _combined  # the new evidence the cross-check reads (before the machine lines)
 
         # REQ-13: feed crawl results into the SourceRegistry so the system
         # learns which URLs are credible for which topics. Runs best-effort.
@@ -3676,7 +3698,7 @@ class AgentToolBridge:
                     _combined += f"\n  (+{_n_rest} already-visited or over cap)"
         except Exception:
             pass
-        return {
+        _out = {
             "success": True,
             "query": query,
             "title": dashboard_data.get("title", query),
@@ -3694,6 +3716,7 @@ class AgentToolBridge:
             "credibility_map": getattr(crawl_result, "credibility_map", None),
             "citation_index": getattr(crawl_result, "citation_index", None),
         }
+        return await _rm.attach_prior(_out, _prior, _new_text)
 
     async def _execute_get_rendered_documents(self, params: Dict, session_id: str) -> Dict:
         """REQ-7/REQ-8: return the active conversation's rendered document DATA.
@@ -3997,6 +4020,10 @@ class AgentToolBridge:
         except Exception as exc:
             return {"success": False, "error": f"crawler modules unavailable: {exc}"}
 
+        # Research memory (REQ-2): look for close earlier research beside the search.
+        from backend.agent import research_memory as _rm
+        _prior = _rm.start_prior_lookup(query)
+
         try:
             # Route through CrawlOrchestrator — the SAME Crawl4AI subprocess path
             # crawler_query uses. It plans URLs via the LLM (Cerebras); NO search
@@ -4102,7 +4129,11 @@ class AgentToolBridge:
             _quick, _quick_fallback = await _quick_search_via_provider(
                 query, _QUICK_SEARCH_MAX_RESULTS, _ui_emit, _on_page)
             if _quick is not None:
-                return _quick
+                # Keep the result (queued on a lane), then build on earlier research.
+                _rm.land_quick_search(
+                    query, _quick, conversation_id=_conversation_id, session_id=session_id,
+                )
+                return await _rm.attach_prior(_quick, _prior, _quick.get("content", ""))
 
             orch = CrawlOrchestrator()
             crawl_result = await orch.research(
@@ -4110,6 +4141,10 @@ class AgentToolBridge:
                 mode="agent",
                 session_id=session_id,
                 on_progress=_combined_on_progress,
+                on_dashboard=lambda _d, _c="", _u=None: _rm.land_dashboard(
+                    query, _d, _c, _u, conversation_id=_conversation_id,
+                    session_id=session_id,
+                ),
             )
             _web_timing_absorb(getattr(crawl_result, "web_timing", None))
         except Exception as exc:
@@ -4148,7 +4183,7 @@ class AgentToolBridge:
             # REQ-8 edge case: the quick tier declined — record WHY in meta so
             # a silent degradation is answerable from the result itself.
             _envelope["meta"] = {"quick_search_fallback": _quick_fallback}
-        return _envelope
+        return await _rm.attach_prior(_envelope, _prior, _combined)
 
     async def _execute_open_url(self, params: Dict, session_id: str) -> Dict:
         """Agent tool: open a URL inside IRIS's in-app browser surface.

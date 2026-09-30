@@ -11487,8 +11487,20 @@ class IRISGateway:
                      "run_id": pl.get("run_id", ""), "question_id": pl.get("question_id", "")}
                 ))
 
+        def _remember(dashboard, cited_markdown="", source_urls=None) -> None:
+            # Research memory (spec research-memory REQ-1): the landed result is
+            # queued for storage on a lane - nothing here waits on it.
+            from .agent.research_memory import land_dashboard
+
+            land_dashboard(
+                query, dashboard, cited_markdown, source_urls,
+                conversation_id=str(payload.get("conversation_id") or ""),
+                session_id=session_id,
+            )
+
         result = await get_crawl_orchestrator().research(
             query, mode="ws", session_id=session_id, on_progress=_on_progress,
+            on_dashboard=_remember,
         )
 
         if result.error:
