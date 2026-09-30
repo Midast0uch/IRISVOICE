@@ -409,13 +409,20 @@ async def lifespan(app: FastAPI):
             raise
 
         # ==========================================================================
-        # TTS IS LAZY (REQ-5): Pocket-TTS is NOT pre-loaded at boot.
-        # Previously this spawned the tts_worker subprocess at startup, leaving a
-        # ~2.3 GB resident process at idle. The worker now spawns lazily on the
-        # first synthesize() call (TTSManager._ensure_worker), so idle memory is
-        # 0 for TTS. Tradeoff: the first voice response pays the ~55s model load.
+        # TTS LOADS WITH THE BACKEND (owner 2026-09-30; replaces REQ-5 lazy load).
+        # Lazy loading put the cold load inside turns: on 2026-09-29 the Pocket-TTS
+        # worker spawned on the first connect, needed 5 min 6 s on this machine's
+        # hard disk (110 s of imports cold vs 5 s warm), and its model load
+        # starved a coding step (pytest ~2 s -> ~110 s). The load now starts here,
+        # in the background, alongside the rest of startup, and /health + /ready
+        # report not-ready until it is ready, so no turn starts during it. Memory
+        # stays bounded by the worker growth recycle (TTSManager._max_growth_mb).
         # ==========================================================================
-        logger.info("  - TTS deferred (lazy load on first voice response)")
+        try:
+            get_tts_manager().prewarm()
+            logger.info("  - TTS loading in the background (backend ready when TTS is ready)")
+        except Exception as _tts_boot_exc:  # noqa: BLE001 — a load failure is reported by /health
+            logger.error(f"  - TTS boot load could not start: {_tts_boot_exc}")
 
         # ==========================================================================
         # WAKE WORD MODEL DISCOVERY AND CONFIGURATION WITH DIAGNOSTIC LOGGING
@@ -1217,7 +1224,25 @@ async def health_check():
             payload["model_runner"] = sup.health()
         except Exception as exc:
             payload["model_runner"] = {"status": "error", "error": str(exc)}
+    # Owner 2026-09-30: the backend is not ready until TTS is. While the worker
+    # loads, answer 503 so the frontend hook (and the eval preflight) wait
+    # instead of starting a turn during the load. A FAILED load is reported
+    # with 200 — never waited on forever.
+    tts = _tts_readiness()
+    payload["tts"] = tts
+    if tts.get("status") == "loading":
+        from fastapi.responses import JSONResponse
+
+        payload["status"] = "starting"
+        return JSONResponse(content=payload, status_code=503)
     return payload
+
+
+def _tts_readiness() -> dict:
+    try:
+        return get_tts_manager().readiness()
+    except Exception as exc:  # noqa: BLE001 — a probe never raises
+        return {"status": "error", "error": str(exc)}
 
 
 @app.get("/ready")
@@ -1225,7 +1250,7 @@ async def readiness_check():
     """Readiness probe — returns 200 only after full startup (agent + memory initialized).
     Frontend or health monitors can poll this before sending the first WS message."""
     is_ready = getattr(app.state, "ready", False)
-    if is_ready:
+    if is_ready and _tts_readiness().get("status") != "loading":
         return {"status": "ready", "service": "IRIS Backend"}
     from fastapi import Response
 

@@ -1,6 +1,6 @@
 # IRIS Voice — Full Audio Pipeline Architecture
 
-> **DEFINITIVE REFERENCE** — Last updated 2026-09-07 (session-306: AC28.2 TTS worker leak fixed via MKL fast-MM off + Known-Issues entry; TTS worker lifecycle REQ-28: lazy boot, connect pre-warm, idle unload/respawn, voice-state cache, post-synthesis compact).
+> **DEFINITIVE REFERENCE** — Last updated 2026-09-30 (execution audit: TTS now loads WITH the backend — /health + /ready are 503 until the worker is ready; warm-up sentence before "ready"; idle unload off by default, growth recycle + immediate reload; concurrent-spawn 300 s hang fixed; set_voice local-shadow fixed; the cold start is bounded by the C: hard disk — see Known Issues). Previous: 2026-09-07 (session-306: AC28.2 TTS worker leak fixed via MKL fast-MM off; REQ-28 lifecycle).
 > This document is the single source of truth for the audio pipeline. If the
 > code and this document ever disagree, treat this as a bug and update both.
 > All values below are verified against `backend/audio/voice_command.py`,
@@ -64,7 +64,7 @@ WebSocket broadcasts.
 | **AudioEngine** | `backend/audio/engine.py` | Manages mic input stream, frame listeners, half-duplex gate (`_tts_active`) | Single-threaded callback |
 | **AudioPipeline** | `backend/audio/pipeline.py` | PortAudio I/O streams, native C++ player, device enumeration | Callback + main |
 | **ViolawakeWakeWordDetector** | `backend/voice/violawake_detector.py` | Custom ONNX wake head + OpenWakeWord backbone, 320-sample frames, CPU-first | Audio callback |
-| **TTSManager (proxy)** | `backend/agent/tts.py` | Proxy to the Pocket-TTS subprocess worker; lazy at boot, pre-warms on WS connect, unloads worker after `IRIS_TTS_IDLE_TIMEOUT_S` quiet (default 600s), respawns on demand (singleflight); sends JSONL, yields audio | Proxy (main) + reaper daemon |
+| **TTSManager (proxy)** | `backend/agent/tts.py` | Proxy to the Pocket-TTS subprocess worker; loads at backend startup (`main.py` lifespan → `prewarm()` → `_load_until_ready`), backend not ready until TTS is (`readiness()` gates /health + /ready); idle unload OFF by default (`IRIS_TTS_IDLE_TIMEOUT_S=0`), growth recycle (`IRIS_TTS_MAX_GROWTH_MB`, 500) then immediate reload; respawns on demand (singleflight); sends JSONL, yields audio | Proxy (main) + reaper daemon |
 | **TTS Worker (subprocess)** | `backend/audio/tts_worker.py` | Pocket-TTS model + hash-guarded voice-state disk cache (`data/tts_voice_cache/`, 10.7s encode → ~0s load) + streaming synthesis + post-synthesis heap compact (gc → `_heapmin` → trim) in a SEPARATE PROCESS. Spawn env sets `MKL_DISABLE_FAST_MM=1` (operator override respected) — without it Intel MKL retains ~18MB per synthesis forever (see Known Issues, session-306) | Subprocess |
 | **VoiceCommandHandler** | `backend/audio/voice_command.py` | VAD, recording, STT orchestration, cadence detection, activation beep | Multi-threaded (VAD + STT + beep) |
 | **ParakeetTranscriber** | `backend/audio/voice_command.py` | sherpa-onnx Parakeet TDT 0.6B v3 int8 in a worker SUBPROCESS (`parakeet_sherpa_worker.py`, JSONL): lazy first-speech spawn (~2 s) + build (~4–13 s cold), CUDA default (`IRIS_PARAKEET_PROVIDER`), word timestamps | Spawner thread + reader thread (bounded round-trip) |
@@ -259,15 +259,37 @@ TTS echo from the interrupted playback decay before VAD speech detection begins.
 
 ### Phase 5: Text-to-Speech (TTS) — Streaming
 
-**Worker lifecycle (REQ-28, verified live 2026-09-07):** the worker does NOT
-start with the backend. `TTSManager` boots with no subprocess
-(`IRIS_TTS_EARLY_SPAWN=1` restores the old boot-time spawn); the first
-frontend WS connect fires `prewarm()` (once per process, non-blocking), and
-any synthesis path spawns on demand via `_ensure_worker` (300 s startup
-budget). After `IRIS_TTS_IDLE_TIMEOUT_S` seconds with no terminal synthesis
-event (default 600 s), the reaper daemon sends graceful `shutdown`, waits
-10 s, kills if needed, and detaches — the next request respawns transparently
-(singleflight via the existing locks; crash recovery unchanged). Measured
+**Worker lifecycle (2026-09-30, owner: "TTS ready with the backend"; replaces
+the REQ-5 lazy boot and the REQ-28 idle unload default):** the `main.py`
+lifespan calls `get_tts_manager().prewarm()`, which runs `_load_until_ready()`
+on a daemon thread alongside the rest of startup. `_load_until_ready` spawns
+the worker (`_ensure_worker`, 300 s startup budget for CALLERS) and then keeps
+reading for the worker's "ready" line in 30 s slices past that budget, so a
+slow cold load is adopted, never abandoned. `TTSManager.readiness()` reports
+`loading | ready | error | disabled | not_started`; while it is `loading`,
+`/health` answers **503** `{"status": "starting", "tts": {...}}` and `/ready`
+503, so the frontend hook and the eval preflight wait instead of starting a
+turn during the load. A FAILED load is reported with 200 + `tts.status =
+error` (never waited on forever). The worker synthesizes one warm-up sentence
+("Ready.") before it prints `ready`, so the first real sentence skips the
+one-time prompt cost (15.6 s measured cold on 2026-09-29, 171 ms after).
+Idle unload is OFF by default (`IRIS_TTS_IDLE_TIMEOUT_S=0`; a positive value
+restores it): Session 366 reverted an earlier "off" because memory grew
+without bound, and that growth is now capped by the growth recycle
+(`IRIS_TTS_MAX_GROWTH_MB`, default 500 MB over the post-load baseline) — after
+a growth recycle the reaper reloads the worker at once (`tts-recycle-load`), so
+it stays warm. Waiters: every `_wait_ready` caller stops as soon as ANY waiter
+has read the single "ready" line (`self._ready`), in 0.5 s slices; before this,
+concurrent first speakers waited their whole 300 s budget with the spawner
+holding `_proc_lock` (every TTS caller silent).
+
+*Previous lifecycle (REQ-28, verified live 2026-09-07), kept for history:* the
+worker did NOT start with the backend; the first frontend WS connect fired
+`prewarm()`, any synthesis path spawned on demand via `_ensure_worker` (300 s
+startup budget), and after `IRIS_TTS_IDLE_TIMEOUT_S` seconds with no terminal
+synthesis event (then default 600 s) the reaper sent graceful `shutdown`,
+waited 10 s, killed if needed, and detached — the next request respawned
+transparently (singleflight via the existing locks; crash recovery unchanged). Measured
 live: boot→no worker; connect→worker in ~7 s; first speech 54,720 samples in
 1.22 s; idle 97 s → process gone; next request → ready in 6 s, 52,800 samples.
 Floor effect: idle total 3350.7 → 1302.8 MB (−2047.9 MB returned, harness
@@ -981,9 +1003,9 @@ the fixed audio-pipeline costs:
 | Violawake (ONNX + OWW) | 0 | ~50 MB | Always (wake word) |
 | sherpa-onnx runtime | 0 | (included above) | No torch at STT runtime; cuDNN via torch bundle |
 | Native C++ player | 0 | ~1 MB | During TTS playback |
-| Pocket-TTS worker (subprocess) | 0 | **~2.05–2.3 GB commit** (~1.1 GB resident fresh, decaying toward ~0.3 GB over idle hours; 438 MB weights on disk) — live only; **0 at rest** (idle-unload, REQ-28). Spawn env MUST carry `MKL_DISABLE_FAST_MM=1` (else +25MB/synth leak, session-306) | On first speech after boot/connect; unloaded after quiet timeout |
+| Pocket-TTS worker (subprocess) | 0 | **~2.05–2.3 GB commit** (~1.1 GB resident fresh, decaying toward ~0.3 GB over idle hours; 438 MB weights on disk) — **resident while the backend runs** (2026-09-30: loads at startup, no idle unload by default; capped by the 500 MB growth recycle + reload). Spawn env MUST carry `MKL_DISABLE_FAST_MM=1` (else +25MB/synth leak, session-306) | From backend startup; recycled (and reloaded at once) only on growth |
 | **Total (audio pipeline, parakeet, TTS live)** | **~1 GB** | **~2.5 GB commit** | measured 2026-09-07: backend 1.30 + worker 2.05 GB |
-| **Total (audio pipeline, parakeet, TTS idle)** | **~1 GB** | **~1.3 GB commit** | measured 2026-09-07 post-unload (was 3.35–3.59 GB before REQ-28) |
+| **Total (audio pipeline, parakeet, TTS idle)** | **~1 GB** | **~1.3 GB commit** | measured 2026-09-07 post-unload (was 3.35–3.59 GB before REQ-28). Since 2026-09-30 the worker is not unloaded when idle, so the LIVE row applies at rest too (owner accepted the memory for "ready with the backend") |
 | **Total (audio pipeline, whisper)** | **0** | **~95 MB** | — |
 
 **Watchdog thresholds** (in `backend/core/memory_watchdog.py`):
@@ -1038,7 +1060,8 @@ LLM provider memory (separate, user-selected):
 - `backend/tests/test_conversation_kernel.py` — 12 tests
 - `backend/tests/test_voice_pipeline.py::TestStopListening` — 21 tests (phrase match incl. fillers/negatives, pipeline interception skips LLM/TTS, auto-relisten suppression, sleep entry, wake-word re-entry)
 - `backend/tests/contract/test_narration_broadcast.py` — 4 tests (narration speaking→idle order, serialization via the lane scheduler's single worker (REQ-7 AC7.1; the narration lock is removed), no-broadcast unwired, gateway wires broadcaster). Session-309 deduplicated the stale root twin into this file.
-- `backend/tests/unit/test_tts_lifecycle.py` — 16 tests (REQ-28: lazy boot, once-per-process prewarm, unload decision matrix, graceful reap + active sparing, respawn after reap, voice-state cache hit, post-synthesis compact hook, 2000-char split guard, worker spawn sets `MKL_DISABLE_FAST_MM=1` + respects operator override)
+- `backend/tests/behavioral/test_tts_memory_envelope_behavior.py` — concurrent first speaks spawn exactly one worker (hung before 2026-09-30, see Known Issues), warm-worker reuse, reap-then-speak respawn
+- `backend/tests/unit/test_tts_lifecycle.py` — 16 tests (REQ-28: no spawn in the constructor (the boot load comes from the lifespan since 2026-09-30), once-per-process prewarm, unload decision matrix, graceful reap + active sparing, respawn after reap, voice-state cache hit, post-synthesis compact hook, 2000-char split guard, worker spawn sets `MKL_DISABLE_FAST_MM=1` + respects operator override)
 - `backend/tests/contract/test_tts_subprocess_contract.py` — worker JSONL protocol (ping/synthesize/shutdown), float32 chunks at 24 kHz, crash recovery (spawns a REAL worker)
 - `backend/tests/unit/test_tts_pocket_load.py` — model-load contract; 1 test stale at HEAD (`test_tts_manager_uses_language_not_variant` pins the pre-split in-process loader — reported, not modified)
 
@@ -1085,6 +1108,42 @@ The `_monitor_words` function has a contract comment:
 ---
 
 ## Known Issues & Recent Fixes
+
+### TTS cold start landed inside turns; concurrent-spawn hang; set_voice always failed (fixed 2026-09-30)
+
+**Symptom (coding eval c11, 2026-09-29).** The worker spawned on the first WS
+connect at 23:16:21 and reported ready at 23:21:27 — **5 min 6 s**, past the
+300 s startup deadline, so every synthesis in between logged "Worker startup
+timed out" and produced ZERO audio. Its model load (23:20:23 → 23:21:23)
+landed inside a coding turn and starved the CPU: the step's `pytest` took
+~110 s instead of ~2 s. The first real sentence then paid "Prompting text
+took 15622 ms" (171 ms for the next).
+
+**Where the 5 minutes went (measured).** 3 min 47 s of Python imports before
+the model load (`from pocket_tts import TTSModel`; torch 54 s + pocket_tts
+55 s = **110 s cold on an idle machine vs 5.1 s warm** — the same files
+cached), 61.5 s model load, 2.8 s voice state from cache. Root cause of the
+cold number: **C: is a 97%-full 7200 rpm hard disk** (Toshiba DT01ACA100, 28 GB
+free) holding Python, site-packages, the HF cache and `data/memory.db`; D: is
+an almost empty NVMe SSD. The same cold-read cost shows up in SQLite scans
+and `pytest` startup. A move of the hot folders to D: is planned (owner
+decision 2026-09-30; plan in `docs/audits/2026-09-29/`).
+
+**Fixes.**
+- TTS loads with the backend and the probes gate on it (Phase 5 lifecycle
+  above) — no turn can start during the load.
+- Warm-up sentence before "ready" — removes the 15.6 s first-sentence cost.
+- Idle unload off by default; growth recycle + immediate reload.
+- **Concurrent-spawn hang:** only the waiter that read the single "ready" line
+  stopped; the others (including the spawner, holding `_proc_lock`) waited out
+  their 300 s budget. `_wait_ready` now stops on `self._ready`.
+  `test_tts_memory_envelope_behavior.py::test_concurrent_first_speak_spawns_exactly_one_worker`
+  hung at 120 s on the old code; it passes now.
+- **`set_voice` always reported `voice_error`:** `_voice_state = None` inside
+  `main()` had no `global`, so the name was local to all of `main()` and the
+  success check read that local `None` after `_load_voice_state()` had set the
+  module value (same defect class as CADUCEAN_ARCHITECTURE.md §10 rule 7).
+  `main()` now declares `global _voice_name, _voice_state` once.
 
 ### Parakeet silently ran on CPU for ~9 days — bad cuDNN path + silent fallback (fixed 2026-09-12)
 

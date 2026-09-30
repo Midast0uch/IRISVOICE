@@ -286,12 +286,23 @@ class TTSManager:
         # The owner's actual goal is: fast synthesis AND memory released when
         # idle, with no spike. That needs the per-synthesis GROWTH fixed, not the
         # unload removed - tracked as a separate defect below.
+        #
+        # 2026-09-30 (owner: "TTS should be ready with the backend"): idle unload
+        # is OFF by default again. What made that unsafe in Session 366 is now
+        # bounded separately: the growth-budget recycle below (500 MB over the
+        # post-load baseline) unloads a worker that grows, and the reaper then
+        # reloads it at once (_load_until_ready), so memory stays capped AND the
+        # worker stays warm. With the unload on, every quiet 10 min cost a full
+        # cold load on the next speech: 2-5 min on this machine's hard disk
+        # (c11 2026-09-29: the load landed in a turn and starved its pytest).
+        # IRIS_TTS_IDLE_TIMEOUT_S > 0 restores the idle unload.
         try:
             self._idle_timeout_s: float = float(
-                os.environ.get("IRIS_TTS_IDLE_TIMEOUT_S", "600") or 600
+                os.environ.get("IRIS_TTS_IDLE_TIMEOUT_S", "0") or 0
             )
         except ValueError:
-            self._idle_timeout_s = 600.0
+            self._idle_timeout_s = 0.0
+        self._last_unload_reason: Optional[str] = None
 
         # SESSION 366: the worker's COMMITTED memory grows per synthesis and
         # never returns to its post-load baseline (measured: 1304MB -> 2001MB
@@ -483,7 +494,7 @@ class TTSManager:
         elapsed = time.monotonic() - self._spawn_started_at
         return max(0.0, self._WORKER_STARTUP_TIMEOUT - elapsed)
 
-    def _wait_ready(self, timeout: float = 120.0) -> None:
+    def _wait_ready(self, timeout: float = 120.0, report_timeout: bool = True) -> None:
         """Poll the worker until it reports ready or the timeout elapses.
 
         Waits in short slices so the deadline is honoured: a single
@@ -496,7 +507,17 @@ class TTSManager:
             return
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            status = self._read_line(timeout=min(5.0, deadline - time.monotonic()))
+            # The worker sends ONE "ready" line, and several callers may wait
+            # on it at once (the spawner under _proc_lock, adopters without
+            # it). Whoever reads it sets _ready; every other waiter must stop
+            # on that flag, not on a line it will never see. Before this, the
+            # others waited their full budget (up to 300 s) — the spawner
+            # holding _proc_lock the whole time, silencing every TTS caller
+            # (test_concurrent_first_speak_spawns_exactly_one_worker hung).
+            # Short slices bound how late a waiter notices.
+            if self._ready:
+                return
+            status = self._read_line(timeout=min(0.5, deadline - time.monotonic()))
             if status is _WORKER_EOF:
                 self._ready = False
                 self._load_error = "worker exited during startup"
@@ -535,7 +556,7 @@ class TTSManager:
                 self._load_error = status.get("error")
                 logger.error(f"[TTSManager] Worker load error: {self._load_error}")
                 return
-        if not self._ready:
+        if not self._ready and report_timeout:
             self._load_error = "worker startup timeout"
             logger.error("[TTSManager] Worker startup timed out")
 
@@ -616,12 +637,61 @@ class TTSManager:
                 return
             self._connect_prewarm_done = True
             threading.Thread(
-                target=self._load_pocket_tts,
+                target=self._load_until_ready,
                 daemon=True,
-                name="tts-connect-prewarm",
+                name="tts-boot-load",
             ).start()
         except Exception:  # noqa: BLE001 — prewarm never breaks the caller
             pass
+
+    def _load_until_ready(self) -> None:
+        """Load the worker and keep waiting until it reports ready (background).
+
+        The startup deadline bounds a CALLER that waits for speech; this runs on
+        its own thread, so it outlasts the deadline and adopts a late "ready"
+        (a cold load on this machine's hard disk took 5 min 6 s, past the 300 s
+        deadline, 2026-09-29). Ends when ready or when the worker is gone.
+        """
+        try:
+            self._load_pocket_tts()
+            while (
+                not self._ready
+                and self._proc is not None
+                and self._proc.poll() is None
+            ):
+                # Past the deadline the worker is slow, not failed: keep reading
+                # for its "ready" line without re-reporting a timeout error.
+                self._wait_ready(timeout=30.0, report_timeout=False)
+                if not self._ready:
+                    logger.info(
+                        "[TTSManager] boot load still loading (%.0fs since spawn)",
+                        time.monotonic() - (self._spawn_started_at or time.monotonic()),
+                    )
+            logger.info(
+                "[TTSManager] boot load finished: ready=%s error=%s",
+                self._ready, self._load_error,
+            )
+        except Exception as exc:  # noqa: BLE001 — a background load never raises
+            logger.warning("[TTSManager] boot load failed: %s", exc)
+
+    def readiness(self) -> Dict[str, Any]:
+        """State for the /health and /ready probes.
+
+        loading: a worker is starting and has not reported ready — the backend
+        is not ready either (owner 2026-09-30: no turn may start during the
+        load). error: no worker and a load error — reported, never waited on.
+        """
+        if not self.config.get("tts_enabled", True):
+            return {"status": "disabled"}
+        if self._ready and self._proc is not None and self._proc.poll() is None:
+            return {"status": "ready"}
+        if self._proc is not None and self._proc.poll() is None:
+            return {"status": "loading"}
+        if self._load_error:
+            return {"status": "error", "error": str(self._load_error)}
+        if self._connect_prewarm_done:
+            return {"status": "loading"}  # the boot thread has not spawned yet
+        return {"status": "not_started"}
 
     def _worker_commit_mb(self) -> float:
         """The live worker's COMMITTED memory in MB, or 0.0 when unknown.
@@ -718,6 +788,7 @@ class TTSManager:
                 self._proc = None
                 self._ready = False
                 self._baseline_commit_mb = 0.0  # new worker -> new baseline
+                self._last_unload_reason = "idle" if _idle else "growth"
                 return True
         finally:
             self._synthesis_lock.release()
@@ -727,7 +798,13 @@ class TTSManager:
         while True:
             time.sleep(30)
             try:
-                self._reap_if_idle()
+                if self._reap_if_idle() and self._last_unload_reason == "growth":
+                    # A growth recycle caps memory; reload at once so the next
+                    # speech never pays a cold load (owner 2026-09-30).
+                    threading.Thread(
+                        target=self._load_until_ready, daemon=True,
+                        name="tts-recycle-load",
+                    ).start()
             except Exception as exc:  # noqa: BLE001 — reaper never dies loudly
                 logger.debug("[TTSManager] Idle sweep skipped: %s", exc)
 

@@ -22,7 +22,15 @@ router = APIRouter()
 # regardless of poll frequency. (Each call carries timeout=5, so a slow run
 # cannot leak a subprocess.)
 GIT_STATUS_TTL_SEC: float = 5.0
-_git_status_cache: dict[str, Any] = {"ts": 0.0, "value": None}
+# The TTL also scales with what the last run COST (2026-09-30): a run that
+# takes d seconds is not repeated for GIT_STATUS_COST_FACTOR * d seconds, so
+# this poll uses at most ~1/GIT_STATUS_COST_FACTOR of the disk's time. With a
+# fixed 5 s TTL and a 5 s timeout, a slow repo ran git back to back forever:
+# every run timed out (useless result) and kept the hard disk busy for its
+# whole 5 s, next to SQLite, the TTS load and pytest (eval c07, 2026-09-30:
+# "[git_status] git commands timed out" every ~5 s). A timeout counts as 5 s.
+GIT_STATUS_COST_FACTOR: float = 10.0
+_git_status_cache: dict[str, Any] = {"ts": 0.0, "value": None, "cost": 0.0}
 
 
 def get_git_status() -> dict[str, Any]:
@@ -86,11 +94,14 @@ def get_git_status() -> dict[str, Any]:
 def _cached_git_status() -> dict[str, Any]:
     """Return git status, re-running the subprocess at most once per TTL."""
     now = time.monotonic()
-    if _git_status_cache["value"] is not None and now - _git_status_cache["ts"] < GIT_STATUS_TTL_SEC:
+    ttl = max(GIT_STATUS_TTL_SEC, GIT_STATUS_COST_FACTOR * _git_status_cache["cost"])
+    if _git_status_cache["value"] is not None and now - _git_status_cache["ts"] < ttl:
         return _git_status_cache["value"]
     value = get_git_status()
-    _git_status_cache["ts"] = now
+    done = time.monotonic()
+    _git_status_cache["ts"] = done
     _git_status_cache["value"] = value
+    _git_status_cache["cost"] = done - now
     return value
 
 

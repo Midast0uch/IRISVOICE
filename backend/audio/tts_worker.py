@@ -552,6 +552,13 @@ def _pre_synthesize_fillers() -> None:
 
 def main() -> None:
     """Read JSONL commands from stdin, write JSONL responses to stdout."""
+    # Module state, declared once for the whole function. The set_voice
+    # branch below assigns _voice_state; without this declaration that one
+    # assignment made the name LOCAL to all of main() (2026-09-30): the warm-up
+    # raised UnboundLocalError, and set_voice read its own local None after
+    # _load_voice_state() had set the module value, so every voice change
+    # reported "voice_error" even when the voice loaded.
+    global _voice_name, _voice_state
     logger.info("TTS worker starting — loading model...")
 
     # Send loading status immediately so the parent knows we're alive
@@ -567,6 +574,18 @@ def main() -> None:
         )
         logger.error("Worker exiting due to load failure")
         sys.exit(1)
+
+    # Warm-up (2026-09-30): the first generation after a load pays a one-time
+    # cost ("Prompting text took 15622 ms" for the first real sentence on
+    # 2026-09-29, 171 ms for the next). Pay it here, so "ready" means warm and
+    # the first spoken reply is fast. Output discarded; failure is non-fatal.
+    try:
+        _t_warm = time.monotonic()
+        for _ in _model.generate_audio_stream(_voice_state, "Ready."):
+            pass
+        logger.info("Warm-up generation done in %.1fs", time.monotonic() - _t_warm)
+    except Exception as exc:  # noqa: BLE001 — a cold first sentence is slow, not wrong
+        logger.warning("Warm-up generation skipped: %s", exc)
 
     print(json.dumps({"status": "ready"}), flush=True)
     logger.info("TTS worker ready — listening for synthesis requests")
@@ -604,7 +623,6 @@ def main() -> None:
             _synthesize_and_hold(text, req_id)
 
         elif action == "set_voice":
-            global _voice_name
             new_voice = request.get("voice", "Cloned Voice")
             _voice_name = new_voice
             _voice_state = None
