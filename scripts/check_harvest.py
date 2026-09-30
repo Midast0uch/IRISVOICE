@@ -3,7 +3,9 @@ final_choice join presence."""
 import json
 import sqlite3
 
-con = sqlite3.connect("file:data/memory.db?mode=ro", uri=True)
+from _app_store import app_store_path  # the configured store, not a stale copy
+
+con = sqlite3.connect(f"file:{app_store_path()}?mode=ro", uri=True)
 con.row_factory = sqlite3.Row
 rows = []
 for r in con.execute(

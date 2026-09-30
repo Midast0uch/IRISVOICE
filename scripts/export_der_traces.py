@@ -160,7 +160,9 @@ def export_session(c: sqlite3.Connection, session_id: str) -> Dict[str, Any]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--db", default=os.path.join("data", "memory.db"))
+    from _app_store import app_store_path  # the configured store, not a stale copy
+
+    ap.add_argument("--db", default=app_store_path())
     ap.add_argument("--session")
     ap.add_argument("--outcome", help="filter by episode outcome_type (e.g. failure)")
     ap.add_argument("--since", help="ISO date lower bound")

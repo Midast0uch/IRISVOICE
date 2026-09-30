@@ -2,9 +2,11 @@
 
 ## START HERE (next session)
 
-**NEXT AGENT: read MCM `pin_069f18710552` (HANDOFF 4) first** — it assumes the owner has run
-`disk-move-plan.md` and lists the exact next steps (verify the move + Standard S9, address
-`pin_22b078571d73`, then the remaining audit items).
+**NEXT AGENT: read MCM `pin_069f18710552` (HANDOFF 4) first, then its ADDENDUM `pin_d4b9bd81e9f5`** (the disk move
+was executed 2026-09-30 — see `disk-move-execution-report.md`; the site-packages SWITCH and the
+reboot measurements are still the owner's; tooling scripts now resolve the store via
+`scripts/_app_store.py`; new item D5: the per-launch `__pycache__` purge). Then: verify the
+move + Standard S9, address `pin_22b078571d73`, then the remaining audit items.
 
 Read in this order: this section -> MCM pins `pin_069f18710552` (HANDOFF 4), `pin_8c65c2f38078` (HANDOFF 3),
 `pin_01a6c7f883b5` (STANDARDS — check before touching these paths), `pin_c8d898bc13c3`

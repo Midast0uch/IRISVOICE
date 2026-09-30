@@ -84,7 +84,9 @@ def _assert_meta_shape(dec: dict) -> list[str]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--shots", default=str(SCREENSHOTS))
-    ap.add_argument("--db", default=str(ROOT / "data" / "memory.db"))
+    from _app_store import app_store_path  # the configured store, not a stale copy
+
+    ap.add_argument("--db", default=app_store_path())
     args = ap.parse_args()
 
     ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")

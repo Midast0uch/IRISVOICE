@@ -391,7 +391,9 @@ def self_test() -> int:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--db", default=os.path.join("data", "memory.db"))
+    from _app_store import app_store_path  # the configured store, not a stale copy
+
+    ap.add_argument("--db", default=app_store_path())
     ap.add_argument("--self-test", action="store_true",
                     help="T12: assert no invariant passes on an empty store")
     ap.add_argument("--terminations", action="store_true",

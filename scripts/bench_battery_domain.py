@@ -25,7 +25,9 @@ PROMPTS = [
     ("CD-12", "list the tests in backend/tests/unit that mention decision_engine"),
 ]
 
-DB = r"C:\dev\IRISVOICE\data\memory.db"
+from _app_store import app_store_path  # noqa: E402 — the configured store, not a stale copy
+
+DB = app_store_path()
 SINCE = "2026-09-20"
 
 

@@ -25,7 +25,9 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 FIXTURE = ROOT / "scripts" / "fixtures" / "decision_engine_cases.json"
-DB = ROOT / "data" / "memory.db"
+from _app_store import app_store_path  # noqa: E402 — the configured store, not a stale copy
+
+DB = Path(app_store_path())
 SESSION = "calibration-fixture"
 
 # Mirror the live candidate set (real bridge menu + reserved options).

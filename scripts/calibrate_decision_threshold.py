@@ -261,7 +261,9 @@ def coverage_accuracy_curve(rows: list[dict], thresholds=None) -> list[dict]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--db", default="data/memory.db")
+    from _app_store import app_store_path  # the configured store, not a stale copy
+
+    ap.add_argument("--db", default=app_store_path())
     ap.add_argument("--since", default=None,
                     help="ISO date lower bound, e.g. 2026-09-20")
     ap.add_argument("--json", action="store_true", help="machine output")

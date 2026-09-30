@@ -86,8 +86,16 @@ class DiagnosticsManager:
             candidates = [
                 Path("bootstrap/coordinates.db"),
                 Path(__file__).parent.parent.parent / "bootstrap" / "coordinates.db",
-                Path("data/memory.db"),
             ]
+            # The application store from memory_config.json (moved to D: on
+            # 2026-09-30) — a CWD-relative "data/memory.db" would check a stale
+            # copy, or nothing once that copy is deleted.
+            try:
+                from backend.memory.config import resolve_memory_store_path
+
+                candidates.append(resolve_memory_store_path())
+            except Exception:  # noqa: BLE001 — a diagnostic never raises
+                candidates.append(Path("data/memory.db"))
             db_path = None
             for p in candidates:
                 if p.exists():

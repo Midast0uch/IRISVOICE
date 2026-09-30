@@ -332,7 +332,9 @@ def _print_report(rep: Dict[str, Any]) -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Per-consumer enforcement report (TG-7).")
-    ap.add_argument("--db", default=str(_REPO / "data" / "memory.db"))
+    from _app_store import app_store_path  # the configured store, not a stale copy
+
+    ap.add_argument("--db", default=app_store_path())
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--write", action="store_true",
                     help="persist the bar record (benchmarks/consumer_bar_record.json)")
