@@ -797,6 +797,12 @@ def _declare_node_metadata(cap: FetchCapability) -> None:
                 category="web",
                 permission_tier="read_only",
                 executor="crawler",
+                # fetch.vision is the crawl's internal recovery session, not a
+                # tool the LLM can call: the bridge has no executor for it and
+                # it once leaked into the tool-model grammar. The agent-facing
+                # way to drive a page is browser_open / browser_observe /
+                # browser_act. The node router still consults the spec.
+                hidden=(cap.name == "fetch.vision"),
             ))
         register_node(NodeSpec(
             tool=resolve_tool(cap.name),

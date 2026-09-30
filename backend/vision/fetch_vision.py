@@ -445,6 +445,12 @@ class FetchVisionCapability(FetchCapability):
                 try:
                     await session.act(action)
                     actions += 1
+                    # act() swallows a failed action into `last_error`; it used to
+                    # be read by nobody, so a failed click was recorded and
+                    # emitted as a success. `isinstance` because fakes may expose
+                    # any object here.
+                    _act_err = getattr(session, "last_error", None)
+                    _act_err = _act_err if isinstance(_act_err, str) and _act_err else ""
                     # REQ-4 AC1/AC3 (T6): measure the perceptual delta this
                     # action produced and record it on the trajectory, so a
                     # measurable change resets the no-progress streak even when
@@ -458,7 +464,8 @@ class FetchVisionCapability(FetchCapability):
                     _delta = visual_delta(_current_frame, _post)
                     trajectory.record(
                         action.kind, target=action.target or "",
-                        outcome="ok", visual_delta=_delta,
+                        outcome=f"error: {_act_err[:120]}" if _act_err else "ok",
+                        visual_delta=_delta,
                     )
                     if _post is not None:
                         _current_frame = _post
@@ -488,7 +495,12 @@ class FetchVisionCapability(FetchCapability):
                                 "reason": action.reason or "",
                                 "action_index": actions,
                                 "total": _MAX_LOOP_STEPS,
+                                # The action's real outcome (REQ-5 AC5.2): a failed
+                                # action is never reported as ok.
+                                "ok": not _act_err,
                             }
+                            if _act_err:
+                                payload["error"] = _act_err
                             # REQ-16 AC7: fold in the best-effort cursor point
                             # BrowserSession captured for this action (click/
                             # type -> x/y/viewport_w/viewport_h; scroll ->

@@ -4354,7 +4354,10 @@ class AgentKernel:
             openai_tools = [
                 t
                 for t in openai_tools
-                if t.get("function", {}).get("name") not in ("search", "crawler_query")
+                if t.get("function", {}).get("name") not in (
+                    "search", "crawler_query",
+                    "browser_open", "browser_observe", "browser_act",
+                )
             ]
         return openai_tools
 

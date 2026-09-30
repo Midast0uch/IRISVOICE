@@ -49,10 +49,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import random
 import re
 import time
 from enum import Enum
-from typing import Literal, Optional
+from typing import Any, Awaitable, Callable, Literal, Optional
 from dataclasses import dataclass
 
 from backend.crawler.capture_store import CAPTURE_SLOT_STRIDE, get_capture_store
@@ -107,6 +108,106 @@ _KEYRING_SERVICE = "iris_voice_sessions"
 _CLICK_INTERCEPTED_MARK = "intercepts pointer events"
 # Popup adoption settle budget (REQ-6 AC6.2): adopt fast, never stall the loop.
 _POPUP_SETTLE_TIMEOUT_MS = 5_000
+
+# ── Interactive control (browser_observe / browser_act) ─────────────────────
+# Set-of-Marks cap: the model reads the list, so it stays short. In-viewport
+# elements come first, so the cap drops the far-off-screen tail, not the page.
+_MAX_MARKS = 60
+# How long the overlay gets to glide to the target between the `approach` event
+# and the real input (REQ-5 AC5.1). Matches the overlay's compressed transit.
+_APPROACH_MS = int(os.environ.get("IRIS_BROWSER_APPROACH_MS", "180"))
+# Per-key delay bounds while typing (REQ-4 AC4.3): human-paced, never instant.
+_KEY_DELAY_MIN_S = 0.030
+_KEY_DELAY_MAX_S = 0.090
+# Typing is paced per key, so its wall time is len(text) * ~60 ms. Bounded.
+_MAX_TYPE_CHARS = 400
+_INTERACT_ACTIONS = ("click", "type", "select", "scroll", "back", "press")
+# Collects every visible interactive element, tags it `data-iris-mark=<id>` so
+# the act step can re-find the SAME node, and returns [{id, role, name, tag,
+# x, y, w, h, in_view, disabled}] plus a short visible-text digest. Order: the
+# elements on screen in document order, then the rest in document order; ids
+# are 1..N in that order. Hidden, zero-size and off-document nodes are skipped.
+# (Open shadow roots and cross-origin iframes are not entered.)
+_OBSERVE_JS = r"""
+(cap) => {
+  document.querySelectorAll('[data-iris-mark]').forEach(e => e.removeAttribute('data-iris-mark'));
+  const SEL = 'a[href], button, input:not([type=hidden]), select, textarea, summary, ' +
+    '[role=button], [role=link], [role=checkbox], [role=radio], [role=tab], [role=menuitem], ' +
+    '[role=switch], [role=option], [onclick], [contenteditable=""], [contenteditable="true"]';
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const docW = Math.max(document.documentElement.scrollWidth, vw);
+  const sx = window.scrollX || 0, sy = window.scrollY || 0;
+  const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
+  const clip = (s) => (s.length > 80 ? s.slice(0, 77) + '...' : s);
+  const nameOf = (el) => {
+    const tag = el.tagName.toLowerCase();
+    let n = el.getAttribute('aria-label');
+    if (!n) {
+      const lb = el.getAttribute('aria-labelledby');
+      if (lb) n = lb.split(/\s+/).map(i => { const r = document.getElementById(i); return r ? r.textContent : ''; }).join(' ');
+    }
+    if (!n && el.labels && el.labels.length) n = Array.from(el.labels).map(l => l.textContent).join(' ');
+    if (!n && tag === 'input') {
+      const t = (el.type || '').toLowerCase();
+      n = (t === 'submit' || t === 'button' || t === 'reset') ? (el.value || t) : (el.placeholder || el.title || el.name || '');
+    }
+    if (!n && tag === 'textarea') n = el.placeholder || el.title || el.name || '';
+    if (!n && tag !== 'select') n = el.innerText || el.textContent || '';
+    if (!n) { const im = el.querySelector('img[alt]'); if (im) n = im.getAttribute('alt'); }
+    if (!n) n = el.getAttribute('title') || el.getAttribute('alt') || el.getAttribute('name') || '';
+    return clip(clean(n));
+  };
+  const roleOf = (el) => {
+    const r = el.getAttribute('role');
+    if (r) return r;
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'a') return 'link';
+    if (tag === 'button' || tag === 'summary') return 'button';
+    if (tag === 'select') return 'combobox';
+    if (tag === 'textarea') return 'textbox';
+    if (tag === 'input') {
+      const t = (el.type || 'text').toLowerCase();
+      if (t === 'checkbox' || t === 'radio') return t;
+      if (t === 'submit' || t === 'button' || t === 'reset' || t === 'image') return 'button';
+      if (t === 'search') return 'searchbox';
+      if (t === 'range') return 'slider';
+      return 'textbox';
+    }
+    if (el.isContentEditable) return 'textbox';
+    return 'button';
+  };
+  const inView = [], offView = [];
+  document.querySelectorAll(SEL).forEach(el => {
+    const cs = getComputedStyle(el);
+    if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity) === 0) return;
+    const r = el.getBoundingClientRect();
+    if (r.width < 2 || r.height < 2) return;
+    if (r.right + sx <= 0 || r.bottom + sy <= 0 || r.left + sx >= docW) return;
+    const visible = r.bottom > 0 && r.top < vh && r.right > 0 && r.left < vw;
+    (visible ? inView : offView).push([el, r, visible]);
+  });
+  const picked = inView.concat(offView).slice(0, cap);
+  const marks = picked.map(([el, r, visible], i) => {
+    const id = i + 1;
+    el.setAttribute('data-iris-mark', String(id));
+    return {
+      id, role: roleOf(el), name: nameOf(el), tag: el.tagName.toLowerCase(),
+      x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height),
+      in_view: visible, disabled: !!el.disabled,
+    };
+  });
+  const digest = clean(document.body ? document.body.innerText : '').slice(0, 600);
+  return { marks, digest, vw, vh, title: document.title || '' };
+}
+"""
+# True when nothing paints over the element's centre (an overlay would eat the click).
+_HIT_TEST_JS = r"""
+(el) => {
+  const r = el.getBoundingClientRect();
+  const t = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+  return !t || t === el || el.contains(t) || t.contains(el);
+}
+"""
 
 # Session-331 (live T2): a realistic desktop UA. The Playwright default
 # advertises "HeadlessChrome/<ver>", which Bing detects and answers with a JS
@@ -355,6 +456,31 @@ def _role_name_selectors(role: str, name: str) -> "list[str]":
     return candidates
 
 
+def _draw_marks(png: bytes, marks: "list[dict]") -> Optional[bytes]:
+    """Draw each mark's number on a viewport screenshot; JPEG bytes (small enough
+    to ride in a tool result). None when Pillow is missing or the image is bad —
+    the text marks alone still answer, so this never raises."""
+    try:
+        import io
+        from PIL import Image, ImageDraw  # lazy: only when a vision model is live
+
+        img = Image.open(io.BytesIO(png)).convert("RGB")
+        draw = ImageDraw.Draw(img)
+        for m in marks:
+            x, y, w, h = m["x"], m["y"], m["w"], m["h"]
+            label = str(m["id"])
+            draw.rectangle([x, y, x + w, y + h], outline=(255, 0, 80), width=2)
+            tw = 7 * len(label) + 6
+            draw.rectangle([x, y, x + tw, y + 14], fill=(255, 0, 80))
+            draw.text((x + 3, y + 1), label, fill=(255, 255, 255))
+        out = io.BytesIO()
+        img.save(out, format="JPEG", quality=70)
+        return out.getvalue()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[browser_session] draw marks failed: %s", exc)
+        return None
+
+
 async def _inject_keyring_cookies(context: object, url: str, job_id: str) -> int:
     """Inject OS-keyring session cookies into a fresh context (REQ-12 AC12.1/12.2).
 
@@ -413,8 +539,15 @@ class BrowserSession:
         goal: str,
         bounds: Optional[SessionBounds] = None,
         page_offset: int = 0,
+        acquire: Optional[Callable[..., Awaitable[Any]]] = None,
     ) -> None:
         self._job_id = job_id
+        # Where open() gets its (browser, lease) from. None = the shared pool
+        # (every crawl/vision session). The interactive browser_* tools pass
+        # their own source: their session outlives one tool call, and the
+        # pool's Chromium is bound to the event loop that started it — a
+        # long-lived session on another loop hangs the pool's next user.
+        self._acquire = acquire
         self.url = url
         self.goal = goal
         self._bounds = bounds or SessionBounds()
@@ -466,6 +599,16 @@ class BrowserSession:
         # adopts the page + publishes its frame; the vision loop drains this
         # queue to emit CRAWLER_PAGE_FETCHED (emission stays the loop's job).
         self._adopted_popup_urls: list = []
+        # Set-of-Marks state for the interactive tools (observe() writes,
+        # interact() reads). `marks_seq` bumps on every observe so a caller can
+        # tell that an old numbering is gone. One lock per page (REQ-4 AC4.5):
+        # observe and interact never overlap on the same page.
+        self.last_marks: list = []
+        self.marks_seq = 0
+        self._action_lock = asyncio.Lock()
+        # Run-scoped monotonic sequence for CRAWLER_VISION_ACTION events the
+        # overlay de-duplicates by (run_id, seq) — approach and done each take one.
+        self._event_seq = 0
 
     # ── availability / observability ───────────────────────────────────────
 
@@ -516,8 +659,9 @@ class BrowserSession:
         # that is infrastructure, not browsing — the split is what makes the
         # cold/warm cost visible without re-measuring.
         _acquire_timer = StageTimer(self._job_id, "acquire")
+        _acquire_fn = self._acquire or browser_pool.acquire_browser
         try:
-            browser, lease = await browser_pool.acquire_browser(
+            browser, lease = await _acquire_fn(
                 max_lease_ms=self._bounds.max_wall_ms + 30_000,
             )
         except Exception as exc:  # noqa: BLE001 — pool-start failure (import or launch)
@@ -589,16 +733,20 @@ class BrowserSession:
                     "(%s) — resetting pool and retrying once",
                     self._job_id, _ctx_exc,
                 )
-                try:
-                    await browser_pool.reset_browser_pool()
-                except Exception:  # noqa: BLE001 — best-effort reset
-                    pass
+                # A private source owns its own browser and re-launches a dead
+                # one inside acquire; resetting the SHARED pool from here would
+                # tear down a browser that belongs to another loop.
+                if self._acquire is None:
+                    try:
+                        await browser_pool.reset_browser_pool()
+                    except Exception:  # noqa: BLE001 — best-effort reset
+                        pass
                 try:
                     if self._lease is not None:
                         self._lease.release()
                 except Exception:  # noqa: BLE001
                     pass
-                browser, lease = await browser_pool.acquire_browser(
+                browser, lease = await _acquire_fn(
                     max_lease_ms=self._bounds.max_wall_ms + 30_000,
                 )
                 self._lease = lease
@@ -1099,6 +1247,387 @@ class BrowserSession:
                 "[browser_session] action point capture failed job=%s: %s",
                 self._job_id, exc,
             )
+
+    # ── interactive control: observe / interact / navigate_to (REQ-4, REQ-5) ──
+    #
+    # These serve the agent-facing browser_* tools. Unlike act() (which runs a
+    # vision loop's bounded, selector-resolved, JS-teleport actions and swallows
+    # failures into `last_error`), interact() drives REAL mouse and keyboard
+    # input at an element's current centre, announces each action to the overlay
+    # BEFORE it happens, and RETURNS its outcome — a failed action is never
+    # reported as ok.
+
+    def _budget_error(self) -> Optional[str]:
+        """Why the session may not take another action, or None."""
+        if self._actions_taken >= self._bounds.max_actions:
+            return (
+                f"action budget exhausted ({self._actions_taken}/"
+                f"{self._bounds.max_actions}); call browser_open to start a fresh session"
+            )
+        if self.elapsed_ms > self._bounds.max_wall_ms:
+            return "session time budget exhausted; call browser_open to start a fresh session"
+        return None
+
+    def _renew_lease(self) -> None:
+        if self._lease is not None:
+            try:
+                self._lease.renew(self._bounds.max_wall_ms + 30_000)
+            except Exception:  # noqa: BLE001 — renewal must never fail an action
+                pass
+
+    def _emit_action(
+        self, emit: Optional[Callable[[str, dict], None]], phase: str, kind: str,
+        index: int, point: Optional[dict] = None, ok: Optional[bool] = None,
+        error: str = "", element_id: Optional[int] = None,
+    ) -> None:
+        """One CRAWLER_VISION_ACTION in the existing shape + `phase`/`ok`/`error`.
+
+        Never raises: a dead or missing frontend must not block the action
+        (REQ-5 AC5.4). `seq` is monotonic per session, so the overlay's
+        (run_id, seq) de-duplication keeps both halves of the pair.
+        """
+        if emit is None:
+            return
+        try:
+            self._event_seq += 1
+            payload = {
+                "run_id": self._job_id, "seq": self._event_seq, "job_id": self._job_id,
+                "url": self.url, "kind": kind, "reason": "",
+                "action_index": index, "total": self._bounds.max_actions,
+                "phase": phase, "escalated": False,
+            }
+            if point:
+                payload.update(point)
+            if element_id is not None:
+                payload["element_id"] = element_id
+            if ok is not None:
+                payload["ok"] = ok
+                if not ok:
+                    payload["error"] = error
+            emit("CRAWLER_VISION_ACTION", payload)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[browser_session] action emit failed job=%s: %s", self._job_id, exc)
+
+    async def _viewport_point(self, page: object, box: Optional[dict] = None) -> dict:
+        """Cursor-mirror fields for an action: x/y as 0..1 viewport fractions
+        (the hook's contract), viewport size and the absolute scroll position."""
+        vp = getattr(page, "viewport_size", None) or {}
+        width = int(vp.get("width") or 1366)
+        height = int(vp.get("height") or 768)
+        point: dict = {"viewport_w": width, "viewport_h": height}
+        if box:
+            point["x"] = min(1.0, max(0.0, (box["x"] + box["width"] / 2) / width))
+            point["y"] = min(1.0, max(0.0, (box["y"] + box["height"] / 2) / height))
+        try:
+            pos = await page.evaluate(
+                "(() => ({y: window.pageYOffset || document.documentElement.scrollTop || 0,"
+                " h: Math.max(document.documentElement.scrollHeight,"
+                " document.body ? document.body.scrollHeight : 0)}))()"
+            )
+            if isinstance(pos, dict):
+                point["scroll_y"] = int(pos.get("y") or 0)
+                point["scroll_height"] = int(pos.get("h") or 0)
+        except Exception:  # noqa: BLE001 — the mirror never costs an action
+            pass
+        return point
+
+    async def _announce_page(
+        self, emit: Optional[Callable[[str, dict], None]], force: bool = False,
+    ) -> None:
+        """Publish the live page to the capture store and tell the panel, so the
+        iframe follows the agent within one action (REQ-5 AC5.3). Best-effort.
+
+        ``force`` announces the already-published frame too (open() publishes
+        page 1 itself, so a dedupe would otherwise leave the panel unannounced)."""
+        page = self._page
+        if page is None:
+            return
+        try:
+            _live = str(getattr(page, "url", "") or "")
+            if _live.startswith(("http://", "https://")):
+                self.url = _live
+            before = self._frames_published
+            await self._publish_frame()
+            if emit is None or self.current_capture_page is None:
+                return  # nothing stored: nothing for the panel to show
+            if self._frames_published == before and not force:
+                return  # unchanged frame (deduped): the panel already has it
+            title = ""
+            try:
+                title = await page.title()
+            except Exception:  # noqa: BLE001
+                pass
+            emit("CRAWLER_PAGE_FETCHED", {
+                "url": self.url, "page_number": self._frames_published,
+                "total": self._frames_published, "host": _host_of(self.url),
+                "title": title, "snippet": "", "job_id": self._job_id,
+                "capture_page": self._page_number, "capture_available": True,
+            })
+        except Exception as exc:  # noqa: BLE001 — publication is off the hot path
+            logger.debug("[browser_session] announce failed job=%s: %s", self._job_id, exc)
+
+    async def _page_state(self) -> dict:
+        page = self._page
+        if page is None:
+            return {"url": self.url, "title": ""}
+        try:
+            title = await page.title()
+        except Exception:  # noqa: BLE001
+            title = ""
+        return {"url": str(getattr(page, "url", "") or self.url), "title": title}
+
+    async def observe(self, marked_screenshot: bool = False) -> dict:
+        """Set-of-Marks of the current page (REQ-4 AC4.2).
+
+        Tags every visible interactive element with ``data-iris-mark`` and
+        returns ``{ok, url, title, digest, marks, marks_seq, viewport,
+        marked_image}``. ``marked_image`` (JPEG bytes with the numbers drawn on)
+        is produced only when the caller says a vision model can use it. Never
+        raises; ``{"ok": False, "error": ...}`` on failure.
+        """
+        async with self._action_lock:
+            page = self._page
+            if page is None:
+                return {"ok": False, "error": "browser session is closed; call browser_open"}
+            self._renew_lease()
+            try:
+                data = await page.evaluate(_OBSERVE_JS, _MAX_MARKS)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[browser_session] observe failed job=%s: %s", self._job_id, exc)
+                return {"ok": False, "error": f"observe failed: {exc}"[:300]}
+            marks = list((data or {}).get("marks") or [])
+            self.last_marks = marks
+            self.marks_seq += 1
+            image: Optional[bytes] = None
+            if marked_screenshot:
+                try:
+                    raw = await page.screenshot(type="png")
+                    image = await asyncio.to_thread(
+                        _draw_marks, raw, [m for m in marks if m.get("in_view")],
+                    )
+                except Exception as exc:  # noqa: BLE001 — the text marks still answer
+                    logger.debug("[browser_session] marked screenshot failed job=%s: %s",
+                                 self._job_id, exc)
+            return {
+                "ok": True,
+                "url": str(getattr(page, "url", "") or self.url),
+                "title": str((data or {}).get("title") or ""),
+                "digest": str((data or {}).get("digest") or ""),
+                "marks": marks,
+                "marks_seq": self.marks_seq,
+                "viewport": {"w": (data or {}).get("vw"), "h": (data or {}).get("vh")},
+                "marked_image": image,
+            }
+
+    async def navigate_to(
+        self, url: str, emit: Optional[Callable[[str, dict], None]] = None,
+    ) -> dict:
+        """Navigate the live page (REQ-4 AC4.1 ``browser_open`` on an open
+        session) and publish the new page. Returns ``{ok, url, title}`` or
+        ``{ok: False, error}``; never raises."""
+        async with self._action_lock:
+            page = self._page
+            if page is None:
+                return {"ok": False, "error": "browser session is closed; call browser_open"}
+            over = self._budget_error()
+            if over:
+                return {"ok": False, "error": over}
+            self._actions_taken += 1
+            self._renew_lease()
+            try:
+                await page.goto(url, wait_until="domcontentloaded", timeout=_NAVIGATION_TIMEOUT_MS)
+            except Exception as exc:  # noqa: BLE001
+                # Same rule as open(): a goto TIMEOUT leaves a usable page; a
+                # hard network error (DNS, refused) does not.
+                if "net::ERR" in str(exc):
+                    self.last_error = f"navigate failed: {exc}"
+                    return {"ok": False, "error": f"could not load {url}: {str(exc)[:160]}"}
+                logger.info("[browser_session] nav did not settle job=%s url=%s (%s)",
+                            self._job_id, url, str(exc)[:120])
+            self.last_error = None
+            self.last_marks = []  # the old numbering belongs to the old page
+            await self._announce_page(emit)
+            state = await self._page_state()
+            return {"ok": True, **state}
+
+    async def interact(
+        self, action: str, element_id: Optional[int] = None, text: Optional[str] = None,
+        emit: Optional[Callable[[str, dict], None]] = None,
+    ) -> dict:
+        """One real mouse / keyboard action on the live page (REQ-4 AC4.3-4.5,
+        REQ-5 AC5.1-5.3).
+
+        Order is the contract: resolve the element (scroll into view, CURRENT
+        box) -> emit ``approach`` with x/y fractions -> wait the overlay travel
+        time -> real input -> emit ``done`` with ``ok`` (+ ``error``) -> publish
+        a capture when the page changed. An unknown/stale ``element_id`` returns
+        ``ok=False`` BEFORE any ``approach`` is emitted. Never raises.
+        """
+        action = (action or "").strip().lower()
+        if action not in _INTERACT_ACTIONS:
+            return {"ok": False, "error": f"unknown action {action!r}; use one of "
+                    + ", ".join(_INTERACT_ACTIONS)}
+        needs_element = action in ("click", "type", "select")
+        if needs_element and element_id is None:
+            return {"ok": False, "error": f"{action} needs an element_id from browser_observe"}
+        if action in ("type", "select") and not (text or ""):
+            return {"ok": False, "error": f"{action} needs text"}
+        if action == "type" and len(text) > _MAX_TYPE_CHARS:
+            return {"ok": False, "error": f"text too long for one type action (max {_MAX_TYPE_CHARS} chars)"}
+        if element_id is not None:
+            try:
+                element_id = int(element_id)
+            except (TypeError, ValueError):
+                return {"ok": False, "error": f"element_id must be a number, got {element_id!r}"}
+
+        async with self._action_lock:
+            page = self._page
+            if page is None:
+                return {"ok": False, "error": "browser session is closed; call browser_open"}
+            over = self._budget_error()
+            if over:
+                return {"ok": False, "error": over}
+            self._renew_lease()
+
+            # 1) Resolve BEFORE announcing: an action that cannot run must not
+            #    animate a cursor toward nothing.
+            locator = None
+            box: Optional[dict] = None
+            if element_id is not None:
+                locator, box, problem = await self._resolve_mark(page, element_id)
+                if problem:
+                    return {"ok": False, "error": problem, "marks_seq": self.marks_seq}
+
+            self._actions_taken += 1
+            index = self._actions_taken
+            _act_t0 = time.monotonic()
+            before_url = str(getattr(page, "url", "") or "")
+            try:
+                before_html = await page.content()
+            except Exception:  # noqa: BLE001
+                before_html = ""
+
+            # 2) Announce, then give the overlay its glide time.
+            point = await self._viewport_point(page, box)
+            if action == "scroll" and box is None:
+                point["x"], point["y"] = 0.5, 0.5  # the wheel turns at the viewport centre
+            self._emit_action(emit, "approach", action, index, point, element_id=element_id)
+            await asyncio.sleep(_APPROACH_MS / 1000.0)
+
+            # 3) Real input. Any failure is reported, never swallowed.
+            error = ""
+            try:
+                await self._perform(page, action, locator, box, text)
+            except Exception as exc:  # noqa: BLE001
+                error = f"{action} failed: {str(exc)[:200]}"
+                logger.warning("[browser_session] interact failed job=%s action=%s el=%s: %s",
+                               self._job_id, action, element_id, exc)
+            self.last_error = error or None
+
+            # 4) Let a triggered navigation/render land, then report.
+            try:
+                await page.wait_for_timeout(_MICRO_SETTLE_MS)
+                await page.wait_for_load_state("domcontentloaded", timeout=2_000)
+            except Exception:  # noqa: BLE001 — a page that never quiets is reported as-is
+                pass
+            page = self._page or page  # a click may have opened an adopted popup
+            done_point = await self._viewport_point(page, None)
+            done_point.pop("x", None)
+            done_point.pop("y", None)
+            self._emit_action(emit, "done", action, index, done_point,
+                              ok=not error, error=error, element_id=element_id)
+            record_stage(self._job_id, "action", int((time.monotonic() - _act_t0) * 1000),
+                         kind=action, index=index)
+
+            after_url = str(getattr(page, "url", "") or "")
+            try:
+                after_html = await page.content()
+            except Exception:  # noqa: BLE001
+                after_html = before_html
+            changed = (after_url != before_url) or (after_html != before_html)
+            if changed:
+                self.last_marks = [] if after_url != before_url else self.last_marks
+                await self._announce_page(emit)
+            state = await self._page_state()
+            result = {
+                "ok": not error, "action": action, "element_id": element_id,
+                "changed": changed, "marks_seq": self.marks_seq,
+                "capture_page": self.current_capture_page, **state,
+            }
+            if error:
+                result["error"] = error
+            return result
+
+    async def _resolve_mark(self, page: object, element_id: int):
+        """``(locator, box, problem)`` for a mark id from the LAST observe.
+
+        Scrolls the element into view and reads its CURRENT bounding box (the
+        observe-time box is stale after any scroll or reflow). ``problem`` names
+        what is wrong (REQ-4 AC4.4) and leaves the agent able to re-observe.
+        """
+        stale = f"element {element_id} not on page; call browser_observe"
+        if not any(m.get("id") == element_id for m in self.last_marks):
+            return None, None, stale
+        try:
+            locator = page.locator(f'[data-iris-mark="{element_id}"]')
+            if await locator.count() == 0:
+                return None, None, stale
+            locator = locator.first
+            await locator.scroll_into_view_if_needed(timeout=_ACTION_TIMEOUT_MS)
+            box = await locator.bounding_box(timeout=_ACTION_POINT_TIMEOUT_MS)
+            if not box or box["width"] <= 0 or box["height"] <= 0:
+                return None, None, f"element {element_id} is not visible; call browser_observe"
+            if not await locator.evaluate(_HIT_TEST_JS):
+                return None, None, (
+                    f"element {element_id} is covered by another element (a dialog or "
+                    f"overlay); close it first, then call browser_observe"
+                )
+            return locator, box, ""
+        except Exception as exc:  # noqa: BLE001 — a detached node is a stale id
+            logger.debug("[browser_session] resolve mark %s failed job=%s: %s",
+                         element_id, self._job_id, exc)
+            return None, None, stale
+
+    async def _perform(
+        self, page: object, action: str, locator: object, box: Optional[dict], text: Optional[str],
+    ) -> None:
+        """The input itself: Playwright mouse / keyboard, nothing synthetic
+        (except ``select``, whose native popup has no headless mouse target)."""
+        if action in ("click", "type") and box is not None:
+            cx = box["x"] + box["width"] / 2
+            cy = box["y"] + box["height"] / 2
+            await page.mouse.move(cx, cy, steps=8)
+            await page.mouse.click(cx, cy)
+        if action == "type":
+            # Replace, not append: select what is there, then type over it.
+            await locator.evaluate("el => { if (typeof el.select === 'function') el.select(); }")
+            for i, ch in enumerate(text):
+                if i:
+                    await asyncio.sleep(random.uniform(_KEY_DELAY_MIN_S, _KEY_DELAY_MAX_S))
+                await page.keyboard.type(ch)
+        elif action == "press":
+            if locator is not None:
+                await locator.focus(timeout=_ACTION_TIMEOUT_MS)  # focus, not click: no double-activate
+            await page.keyboard.press((text or "Enter").strip() or "Enter")
+        elif action == "select":
+            try:
+                await locator.select_option(label=text, timeout=_ACTION_TIMEOUT_MS)
+            except Exception:  # noqa: BLE001 — the option may be named by value
+                await locator.select_option(value=text, timeout=_ACTION_TIMEOUT_MS)
+        elif action == "scroll":
+            raw = (text or "down").strip().lower()
+            if raw in ("up", "top"):
+                dy = -600
+            elif raw == "bottom":
+                dy = 100_000
+            else:
+                dy = _parse_int(raw, default=600)
+            vp = getattr(page, "viewport_size", None) or {"width": 1366, "height": 768}
+            await page.mouse.move(vp["width"] / 2, vp["height"] / 2, steps=4)
+            await page.mouse.wheel(0, dy)
+        elif action == "back":
+            if await page.go_back(wait_until="domcontentloaded", timeout=_NAVIGATION_TIMEOUT_MS) is None:
+                raise RuntimeError("no previous page in history")
 
     # ── frames / walls / settle (REQ-9 AC1, REQ-7 wall detection) ──────────
 
