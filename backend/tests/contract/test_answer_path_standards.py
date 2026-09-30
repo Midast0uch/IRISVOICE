@@ -11,11 +11,16 @@ so a regression is caught before it costs a turn.
   S2  the recall recency order uses an index, with no temp sort.
       Measured: the unindexed ORDER BY created_at read every row — 119 s
       cold for the widest scope, a 40 s turn-start stall; with
-      idx_memory_chain_created, 0.000 s. (The table is small; the cost is
-      cold random reads across the 6.6 GB store — pin_22b078571d73.)
+      idx_memory_chain_created, 0.000 s. (Corrected 2026-09-30 by a full page
+      attribution: memory_chain held 4.89 GB in 37 huge rows, so the sort
+      walked their overflow pages — see S11.)
   S3  a step's answer path never waits for its physics update, and a shape
       decision still folds back on it. Measured: the inline update held the
       reply 16-106 s; on the physics lane the reply no longer waits.
+  S11 a document-store READ is never captured as a new document. Measured:
+      get_rendered_documents results were captured, nested and re-escaped
+      each round; 37 memory_chain rows grew to 4.84 GB (rows up to 841 MB)
+      of the 6.6 GB store.
 """
 from __future__ import annotations
 
@@ -189,3 +194,20 @@ def test_s3_finalize_does_not_wait_for_physics_and_decisions_fold_back(monkeypat
         _fold = getattr(kernel, "_der_physics_pending", {}).get("sess-std")
         if _fold is not None:
             _fold.done.wait(10)     # never leave the lane running into the next test
+
+
+def test_s11_store_read_results_are_never_captured():
+    """S11: a store read returns documents that are already stored; capturing
+    it nests every earlier document into a new one (size doubles per round)."""
+    from backend.agent.agent_kernel import AgentKernel
+
+    kernel = AgentKernel.__new__(AgentKernel)
+    listing = {"success": True, "conversation_id": "c", "documents": [
+        {"document_id": "d1", "format": "json", "content": "x" * 500}
+    ]}
+    for tool in AgentKernel._DER_READ_TOOLS:
+        assert AgentKernel._is_capture_worthy(kernel, tool, listing) is False, (
+            f"S11: {tool} result would be captured as a new document"
+        )
+    # A fresh gather is still captured (the gate is not simply closed).
+    assert AgentKernel._is_capture_worthy(kernel, "crawler_query", listing) is True

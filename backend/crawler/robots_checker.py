@@ -41,7 +41,7 @@ class RobotsChecker:
         """
         parsed = urlparse(url)
         domain = f"{parsed.scheme}://{parsed.netloc}"
-        rp = await self._get_parser(domain)
+        rp = await self._get_parser(domain, user_agent)
         if rp is None:
             return True  # Can't fetch robots.txt — assume allowed
         allowed = rp.can_fetch(user_agent, url)
@@ -49,7 +49,9 @@ class RobotsChecker:
             logger.warning("[RobotsChecker] %s blocked by robots.txt for %s", url, domain)
         return allowed
 
-    async def _get_parser(self, domain: str) -> Optional[RobotFileParser]:
+    async def _get_parser(
+        self, domain: str, user_agent: str = _USER_AGENT
+    ) -> Optional[RobotFileParser]:
         now = time.monotonic()
         cached = self._cache.get(domain)
         if cached and (now - cached[1]) < _CACHE_TTL_SECONDS:
@@ -58,7 +60,13 @@ class RobotsChecker:
         robots_url = f"{domain}/robots.txt"
         try:
             async with httpx.AsyncClient(timeout=_FETCH_TIMEOUT) as client:
-                resp = await client.get(robots_url, follow_redirects=True)
+                # Same identity the caller fetches pages with: a policy UA, not the
+                # library default (which robots.txt hosts commonly refuse).
+                resp = await client.get(
+                    robots_url,
+                    follow_redirects=True,
+                    headers={"User-Agent": user_agent},
+                )
                 if resp.status_code == 200:
                     rp = RobotFileParser()
                     rp.parse(resp.text.splitlines())

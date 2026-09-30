@@ -17,6 +17,9 @@ import json
 import logging
 import math
 import re
+import threading
+import time
+from collections import OrderedDict
 from datetime import datetime
 from typing import Any, Optional
 from urllib.parse import urlparse
@@ -31,6 +34,14 @@ Return ONLY a valid JSON array of strings. No markdown, no explanation.
 Example: ["ai hardware", "semiconductor", "nvidia", "market share"]
 Query: {query}
 """
+
+
+# Topic extraction is a model call (~1 s) and ONE search used to make four of them on
+# the same query (plan, resolve, rerank-learn, tool-bridge learn). The answer for a
+# query does not change inside a turn, so it is cached: at most one model call per
+# distinct query (spec A5 / AC3.3). Bounded, and short-lived so it cannot go stale.
+_TOPIC_CACHE_MAX = 128
+_TOPIC_CACHE_TTL_S = 600.0
 
 
 class SourceRegistry:
@@ -58,6 +69,10 @@ class SourceRegistry:
         self._threshold = threshold
         self._ttl_days = ttl_days
         self._category = "source_registry"
+        # query -> (topics, stored_at); LRU, guarded: the registry is a process
+        # singleton used from several event loops / threads.
+        self._topic_cache: "OrderedDict[str, tuple[list[str], float]]" = OrderedDict()
+        self._topic_cache_lock = threading.Lock()
 
     # ── Public API ──────────────────────────────────────────────────────
 
@@ -166,6 +181,30 @@ class SourceRegistry:
     # ── Topic extraction ────────────────────────────────────────────────
 
     async def _extract_topics(self, query: str) -> list[str]:
+        """Topic keywords for *query* - at most one model call per distinct query.
+
+        Cached (bounded LRU + TTL); the model call itself is
+        :meth:`_extract_topics_uncached`. A failed extraction is cached too: its
+        result is the deterministic query-as-topic fallback, and retrying a failing
+        model on every caller is exactly the repeated cost this cache removes.
+        """
+        if not query or not query.strip():
+            return []
+        _key = query.lower().strip()
+        with self._topic_cache_lock:
+            _hit = self._topic_cache.get(_key)
+            if _hit is not None and (time.monotonic() - _hit[1]) < _TOPIC_CACHE_TTL_S:
+                self._topic_cache.move_to_end(_key)
+                return list(_hit[0])
+        topics = await self._extract_topics_uncached(query)
+        with self._topic_cache_lock:
+            self._topic_cache[_key] = (list(topics), time.monotonic())
+            self._topic_cache.move_to_end(_key)
+            while len(self._topic_cache) > _TOPIC_CACHE_MAX:
+                self._topic_cache.popitem(last=False)
+        return topics
+
+    async def _extract_topics_uncached(self, query: str) -> list[str]:
         """LLM classifies the query into 3-5 topic keywords.
 
         Falls back to the query itself as a single topic on any error.

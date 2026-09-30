@@ -5529,6 +5529,12 @@ class AgentKernel:
         """
         if result is None:
             return False
+        # A store READ returns documents that are already stored. Capturing it
+        # made a new document holding the full content of every earlier one,
+        # which the next read nested and escaped again: 37 memory_chain rows
+        # grew to 4.84 GB of data/memory.db (rows up to 841 MB, 2026-09-30).
+        if tool_name in self._DER_READ_TOOLS:
+            return False
         if isinstance(result, dict):
             if "error" in result:
                 return False
@@ -7700,6 +7706,8 @@ class AgentKernel:
         # turn boundary so a new task may gather up to _MAX_CRAWLS_PER_TASK
         # distinct (refined) queries again.
         self._der_crawl_attempts = {}
+        # Spec A4: the quick-tier escalation flag is per-task like the budget.
+        self._der_quick_insufficient = set()
 
         # Use provided session_id or fall back to instance session_id
         if session_id is None:
@@ -14524,6 +14532,19 @@ Respond with a JSON object:
                               max_tokens=self.response_max_tokens(floor=400),
                               temperature=self.response_temperature())
             _out = _res.raw_text or ""
+            # Spec A6 (AC3.5): same rule as the success path - a stub answer is
+            # retried ONCE with the same inputs before the deterministic close.
+            _stub_floor_f = max(80, 40 * (len(completed_items) + len(queue.failed_ids)))
+            if _out.strip() and len(_out.strip()) < _stub_floor_f:
+                logger.warning(
+                    "[DER] failure synthesis stub (%d chars < %d floor) "
+                    "— retrying once with the same inputs",
+                    len(_out.strip()), _stub_floor_f,
+                )
+                _res = self.infer(_prompt, role="reasoning",
+                                  max_tokens=self.response_max_tokens(floor=400),
+                                  temperature=self.response_temperature())
+                _out = _res.raw_text or ""
             # Session-345 (live, conv-134): with thinking disabled the model
             # may answer the failure-summary prompt with the tool-call ARGS
             # JSON — `{"query": ..., "top_n": 10}` went straight to chat AND
@@ -14649,14 +14670,31 @@ Respond with a JSON object:
                 # covers every step by shape. Floor scales with steps so a
                 # true one-liner on a one-step ask still airs.
                 _syn_text = _syn.strip()
-                _syn_floor = max(80, 40 * len(completed_items))
+                # 40 chars per step. The old max(80, ...) contradicted the line
+                # above: it rejected a correct one-step one-liner (r02,
+                # 2026-09-30: a 46-char answer, twice) and served the raw close.
+                _syn_floor = 40 * max(1, len(completed_items))
                 if len(_syn_text) < _syn_floor:
+                    # Spec A6 (AC3.5): a stub is often a one-off (measured: a
+                    # 14-token turn on r02). Retry ONCE with the same inputs
+                    # before giving up; only a stub that persists falls to the
+                    # deterministic close (which never prints raw sources).
                     logger.warning(
                         "[DER] success synthesis stub (%d chars < %d floor) "
-                        "— deterministic fallback",
-                        len(_syn_text), _syn_floor,
+                        "— retrying once with the same inputs: %r",
+                        len(_syn_text), _syn_floor, _syn_text[:120],
                     )
-                    return ""
+                    _retry = self._synthesize_response(_task, _step_results)
+                    _retry_text = (_retry or "").strip()
+                    if len(_retry_text) >= _syn_floor:
+                        _syn_text = _retry_text
+                    else:
+                        logger.warning(
+                            "[DER] success synthesis stub persists after retry "
+                            "(%d chars < %d floor) — deterministic fallback",
+                            len(_retry_text), _syn_floor,
+                        )
+                        return ""
                 logger.info(
                     "[DER] success synthesis ran (REQ-12 AC1) — steps=%d",
                     len(completed_items),
@@ -14857,6 +14895,30 @@ Respond with a JSON object:
                 return _val.strip()
         return t
 
+    _SOURCE_HEADER_RE = re.compile(r"---\s*Source:\s*(\S+)\s*---")
+
+    @staticmethod
+    def _no_raw_source_dump(text: str) -> str:
+        """Spec A6 (AC3.5): a gather step's raw page content is never a user answer.
+
+        When a deterministic close would show ``--- Source: URL ---`` page text (the
+        r02 reply was exactly that), show which sources were read instead. Text
+        without source headers passes through unchanged.
+        """
+        _urls = AgentKernel._SOURCE_HEADER_RE.findall(text or "")
+        if not _urls:
+            return text
+        _hosts: list = []
+        for _u in _urls:
+            _h = re.sub(r"^https?://", "", _u).split("/")[0]
+            if _h and _h not in _hosts:
+                _hosts.append(_h)
+        return (
+            f"gathered content from {len(_urls)} source(s): "
+            + ", ".join(_hosts[:5])
+            + " - no written answer was produced from it"
+        )
+
     @staticmethod
     def _der_user_facing_evidence(item) -> str:
         """T8 / fix 7 (specs/tool-result-envelope REQ-2 AC2.3): user-facing
@@ -14882,11 +14944,15 @@ Respond with a JSON object:
             _error = str(getattr(_env, "error_type", "") or "").strip()
             if _summary:
                 _out = f"{_summary} (error: {_error})" if _error else _summary
-                return AgentKernel._smart_excerpt(_out, 400)
+                return AgentKernel._smart_excerpt(
+                    AgentKernel._no_raw_source_dump(_out), 400
+                )
             _status = str(getattr(_env, "status", "") or "").strip()
             if _status:
                 return _status
         _ev = AgentKernel._der_node_record_evidence(item)
+        if _ev:
+            _ev = AgentKernel._no_raw_source_dump(_ev)
         return AgentKernel._smart_excerpt(_ev, 400) if _ev else ""
 
     @staticmethod
@@ -15708,6 +15774,37 @@ Respond with a JSON object:
     _MAX_CRAWLS_PER_TASK = 3
     _GATHER_MIN_AMP = 0.35
 
+    def _der_note_quick_tier(self, tool: Optional[str], result: Any) -> None:
+        """Spec A4: keep the quick-tier -> crawler_query escalation state.
+
+        A `search` result that says ``requires_deep_crawl`` marks this
+        conversation so the gather gate (_mem_lookup) resolves the NEXT web goal
+        to `crawler_query`; dispatching a `crawler_query` spends that escalation,
+        so it happens once. Never raises - bookkeeping must not fail a step.
+        """
+        try:
+            _key = (
+                getattr(self, "conversation_id", "")
+                or getattr(self, "session_id", "")
+                or ""
+            )
+            _due = set(getattr(self, "_der_quick_insufficient", ()))
+            if tool == "crawler_query":
+                _due.discard(_key)
+            elif (
+                tool in ("search", "web_search")
+                and isinstance(result, dict)
+                and result.get("requires_deep_crawl")
+            ):
+                _due.add(_key)
+                logger.info(
+                    "[DER] quick tier insufficient conv=%s -> next web goal escalates "
+                    "to crawler_query (once)", _key,
+                )
+            self._der_quick_insufficient = _due
+        except Exception:  # noqa: BLE001
+            pass
+
     def _get_tool_box(self) -> ToolDecisionBox:
         """Return (caching) the ToolDecisionBox for this conversation.
 
@@ -15724,7 +15821,7 @@ Respond with a JSON object:
         def _mem_lookup(goal: str) -> Optional[Dict[str, Any]]:
             try:
                 from backend.agent.explorer import (
-                    AUTO_ENGINE, _is_web_intent, _pheromone_top1,
+                    AUTO_ENGINE, _is_web_intent, _pheromone_top1, _shape_web_query,
                 )
 
                 # ── pin_517dfcbda150: physics-driven gather sanction ──
@@ -15795,6 +15892,14 @@ Respond with a JSON object:
                     _is_web_goal = bool(_is_web_intent(goal, engine=AUTO_ENGINE))
                 except Exception:  # noqa: BLE001
                     pass
+                # Spec A4 (RC4): a quick-tier `search` that came back insufficient
+                # (requires_deep_crawl) sanctions ONE escalation to crawler_query.
+                # The flag is set when the search result lands and cleared when a
+                # crawler_query is dispatched (_der_note_quick_tier), never here -
+                # this gate runs more than once per step (session-345 finding).
+                _escalate = _is_web_goal and (
+                    _g_session in getattr(self, "_der_quick_insufficient", ())
+                )
                 _veto_reason: Optional[str] = None
                 if _is_web_goal:
                     # Explicit resource bound (REQ-3 AC3): a FRESH distinct web
@@ -15805,7 +15910,7 @@ Respond with a JSON object:
                     # cache-served repeat never existed (D6) and every repeat
                     # re-fetched at full price. The result is already in the
                     # document store; reading it IS the repeat's value.
-                    if _qkey in _attempted:
+                    if _qkey in _attempted and not _escalate:
                         logger.info(
                             "[DER] exact-repeat gather %r -> steer "
                             "get_rendered_documents (already gathered this turn)",
@@ -15861,6 +15966,23 @@ Respond with a JSON object:
                     # refusal. The mark happens at DISPATCH time (where the
                     # tool is actually paid for), not here.
                     from backend.agent.tool_registry import resolve_tool, capability_allowed
+                    # Spec A4 (D2): a factual web goal is answered from the quick
+                    # tier first - ONE provider call, no crawl - with the question
+                    # shaped out of the goal sentence. crawler_query is the
+                    # escalation (below), not the default.
+                    if not _escalate:
+                        _qspec = resolve_tool("search")
+                        if _qspec and capability_allowed(_qspec):
+                            _shaped_q = _shape_web_query(goal)
+                            logger.info(
+                                "[DER] web-intent -> search (quick tier) conv=%s query=%r",
+                                _g_session, _shaped_q[:80],
+                            )
+                            return {
+                                "tool": "search",
+                                "params": {"query": _shaped_q},
+                                "rationale": "web-intent (memory pre-filter)",
+                            }
                     spec = resolve_tool("crawler_query")
                     if spec and capability_allowed(spec):
                         params: Dict[str, Any] = {"query": goal}
@@ -16713,6 +16835,8 @@ Respond with a JSON object:
                         _dr_err = getattr(_dr, "error", None)
                         if _dr_err:
                             step_result = f"[STEP ERROR: {_dr_err}]"
+                if item.tool and _dr:
+                    self._der_note_quick_tier(item.tool, getattr(_dr, "result", None))
                 # W9 (O3): capture structured tool results
                 if item.tool and _dr and _dr.result is not None:
                     try:
@@ -16840,6 +16964,8 @@ Respond with a JSON object:
                         )
                     except Exception:
                         pass
+                if item.tool:
+                    self._der_note_quick_tier(item.tool, raw)
                 if item.tool and raw is not None:
                     try:
                         item.captured_doc_id = self._capture_tool_result(

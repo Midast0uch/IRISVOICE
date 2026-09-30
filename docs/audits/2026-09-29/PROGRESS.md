@@ -189,6 +189,43 @@ Exa URL planning 16 s, crawl 36 s (3 pages in ~6 s; both en.wikipedia.org URLs "
 Chrome-like User-Agent -> 403; a UA-policy User-Agent (app name + contact URL) -> 200 in 0.54 s,
 and the good page itself contains the word "challenge".
 
+**pin_22b078571d73 (b) RESOLVED — where the 6.6 GB went.** Full read-only page attribution of
+`data/memory.db` (a sequential walker over every b-tree / overflow page; `dbstat` is not compiled
+in): `memory_chain` **4.89 GB**, `document_data` 1.24 GB, `context_chunks` 0.22 GB, everything
+else < 0.01 GB, freelist 0.23 GB. **37 `memory_chain` rows hold 4.84 GB** (single rows up to
+841 MB; `content` and `result` duplicate each other, 2.44 GB each), threads `de-domain`
+(2026-09-20) and `r3`/`r4`/`r10` (2026-09-27). Each is a `get_rendered_documents` result
+(`{"success": true, "documents": [...]}` with the FULL content of every stored document)
+captured by `_capture_tool_result` as a NEW document, so the next read nests it again, escaped
+again — size doubles per round. CORRECTION: the 2026-09-30 note "memory_chain is small, the S2
+cost is cold random reads" was wrong (it sampled the first 200 rows); the ORIGINAL S2 explanation
+(the recency sort walked huge rows' overflow pages) was right. Index-build decision: NOT moved
+off startup — a background `CREATE INDEX` holds the write lock for its whole run (ledger/memory
+writes would fail with "database is locked"), the 7.5 min build happened only on this bloated
+store, which already has both indexes, and a fresh store builds them in milliseconds.
+Code fix: store-read tools (`_DER_READ_TOOLS`) are not capture-worthy. Data cleanup (owner):
+blank or delete the 37 rows, then VACUUM (back up first) -> the store shrinks to ~1.8 GB.
+
+**Spec rev 2 Wave A implemented + measured (research group, warm).** Before: r01 PASS 154 s, r02
+PASS 64 s (others not measured today; 2026-09-29: r02/r03 FAIL at 600 s). First run after Wave A:
+3/8 FAIL — the quick tier's new `results` list (title/url/300-char snippet) was read by
+`_format_tool_result` BEFORE `content` (its key order is result, results, content...), so the agent
+saw snippets only; and the success-synthesis floor `max(80, 40*steps)` rejected a correct 46-char
+one-step answer twice and served a raw JSON close. Fixed: key renamed `source_list` (the one new
+builder test that pinned the name updated with it), each source gets an equal share of the 8 k cap
+with its highlight first, floor = 40 chars per step (as its own comment intended), stub text logged.
+After: **7/8 PASS, reply_s r01 44, r02 15, r03 19, r04 10, r05 48, r06 20, r07 13, r08 13**
+(`evals/results` 2026-09-30 14:54). r06 answer is CORRECT (Tokyo 14,246,219 vs Osaka 2,816,247)
+but the check wants the word "million" — check unchanged (test rule). OPEN for the owner: A5 lane
+move conflicts with `contract/test_crawl_orchestrator_contract.py::test_funnel_order_and_events`
+(asserts `cited_markdown` + OPEN_TAB before CRAWLER_COMPLETE on return); A2's policy UA fails
+`contract/test_search_discovery_contract.py::test_capability_path_consults_robots_before_fetching`
+(asserts the robots UA `startswith("Mozilla")`; its purpose, gate UA == fetch UA, still holds).
+AC2.5 dropped (the only budget is the absolute run deadline, so a post-semaphore clock changes
+nothing). Findings logged for later: `_der_check_steering` returns before `_der_streak_gate` when
+no steering is queued — the stuck-streak gate (and its rec==3 override) runs only when the user
+steers.
+
 **Owner note (2026-09-30): websearch / research has always been slow and must improve.** Next:
 Mode A on the research group, one task at a time, timeline + stack dumps before any change.
 

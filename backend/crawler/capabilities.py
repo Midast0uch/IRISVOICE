@@ -23,6 +23,7 @@ from enum import Enum
 from typing import Optional, Protocol
 
 from backend.crawler.robots_checker import get_robots_checker
+from backend.crawler.usability import UsabilityReason
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +125,19 @@ class FetchOutcome:
 # Identity Tier-1 presents when fetching (REQ-5 AC3: the robots gate below
 # checks the SAME identity the fetch would present — checking any other UA
 # would be compliance theatre).
-_TIER1_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+#
+# A descriptive UA (app name + contact URL) that follows common bot policies — a
+# generic browser UA got 403 from Wikipedia (UA policy), a policy UA got 200 in
+# 0.54 s (measured 2026-09-30). Used for page fetches AND robots.txt. Override
+# with IRIS_CRAWL_USER_AGENT.
+_TIER1_USER_AGENT = os.environ.get("IRIS_CRAWL_USER_AGENT") or (
+    "IRISVoice/1.0 (+https://github.com/Midast0uch/IRISVOICE; research assistant)"
+)
+
+# Tier-2 setup steps (new_context / new_page) had no timeout: a wedged browser
+# held the URL until the whole run budget cut it. Bounded well inside the
+# per-URL budget; goto has its own 8 s bound below.
+_TIER2_STEP_TIMEOUT_S = 5.0
 
 
 class FetchCrawlCapability:
@@ -222,6 +235,16 @@ class FetchCrawlCapability:
         # remaining URL (measured: 45 s x 5 URLs = 157 s) and still fail. Return
         # the Tier-1 verdict so the caller sees the honest "challenge" outcome
         # at once. See _BROWSER_UNAVAILABLE_UNTIL.
+        # A bare 401/403 (verdict BLOCKED) is a refusal, not a challenge: a
+        # browser meets the same refusal, so the URL goes back to the caller to
+        # be parked and recorded — never fought with Chromium.
+        if outcome.verdict.reason == UsabilityReason.BLOCKED:
+            logger.info(
+                "[capabilities][job_id=%s] fetch.crawl Tier-1 blocked (%s) — "
+                "browser escalation SKIPPED: %s",
+                job_id, outcome.verdict.detail, url,
+            )
+            return outcome
         if _browser_latched():
             logger.info(
                 "[capabilities][job_id=%s] fetch.crawl Tier-1 unusable "
@@ -468,15 +491,19 @@ async def _fast_http_fetch_one(url, goal, job_id, page_offset, on_progress) -> F
         text = _strip_html_to_text(html)
         title = _extract_title(html, url)
 
-        # REQ-3 AC3.4 triggers: challenge page / CAPTCHA / 401 / 403.
-        challenged = is_challenge_page(html) or status in (401, 403)
+        # REQ-3 AC3.4 triggers: challenge page / CAPTCHA (markers) -> escalate.
+        # A bare 401/403 WITHOUT markers is "blocked": a refusal that Tier 2
+        # cannot fix, so it parks instead of escalating (spec A2, D3).
+        challenged = is_challenge_page(html)
+        blocked = status in (401, 403) and not challenged
+        _err = "challenge" if challenged else ("blocked" if blocked else None)
         page = PageData(
             url=url,
             title=title,
             markdown=text,
             html=None,
             metadata={},
-            error="challenge" if challenged else None,
+            error=_err,
             html_bytes=len(html),
         )
         verdict = page_is_usable(page)
@@ -491,11 +518,11 @@ async def _fast_http_fetch_one(url, goal, job_id, page_offset, on_progress) -> F
             "duration_ms": duration_ms,
             "content_length": len(html),
             "body_sha256": hashlib.sha256(html.encode("utf-8", "replace")).hexdigest(),
-            "error": "challenge" if challenged else None,
+            "error": _err,
             "capability": "fetch.crawl",
         }
 
-        if verdict.usable and not challenged:
+        if verdict.usable and not (challenged or blocked):
             # REQ-3 AC3.3: persist the capture + emit the page event so the
             # browser panel shows the page arriving — all without Chromium.
             try:
@@ -561,8 +588,10 @@ async def _browser_pool_fetch_one(url, goal, job_id, page_offset, on_progress) -
 
         browser, lease = await acquire_browser(max_lease_ms=45_000.0)
         # REQ-4 AC4.3: isolated context per fetch (cookies/storage/session).
-        context = await browser.new_context()
-        pg = await context.new_page()
+        context = await asyncio.wait_for(
+            browser.new_context(), timeout=_TIER2_STEP_TIMEOUT_S
+        )
+        pg = await asyncio.wait_for(context.new_page(), timeout=_TIER2_STEP_TIMEOUT_S)
         logger.info(
             "[capabilities][job_id=%s] Tier-2 browser fetch (goal=%r): %s",
             job_id, (goal or "")[:60], url,

@@ -100,6 +100,42 @@ def _is_web_intent(goal: str, *, engine: Any = None) -> bool:
     return _keyword
 
 
+# Filler a web goal carries about HOW to look ("search the web to confirm", "check a
+# source online", "look it up") - instructions to the agent, not words of the question.
+# Stripped so the quick tier searches the question itself, not the whole goal sentence
+# (spec A4 / RC4). Order matters: the longer phrases go first.
+_WEB_QUERY_FILLER = re.compile(
+    r"\b(?:please\s+)?(?:"
+    r"(?:using|use)\s+(?:a|the)\s+web\s*search(?:\s+to)?"
+    r"|(?:do\s+a\s+)?web\s*search(?:\s+for)?"
+    r"|search\s+(?:the\s+web|the\s+internet|on\s+the\s+internet|online)(?:\s+(?:for|to\s+confirm|and\s+confirm))?"
+    r"|check\s+(?:a|the|one)\s+source(?:s)?\s+online"
+    r"|check\s+online"
+    r"|look\s+(?:it\s+)?up(?:\s+online)?"
+    r"|to\s+confirm"
+    r"|and\s+confirm"
+    r")\b[\s:,;.]*",
+    re.IGNORECASE,
+)
+
+
+def _shape_web_query(goal: str) -> str:
+    """The question inside a web goal, with the 'how to look' filler removed.
+
+    Deterministic and side-effect free (it runs inside the tool gate, which is
+    consulted more than once per step). Returns ``goal`` unchanged when stripping
+    would leave fewer than two words - a shaped query must never be emptier than
+    the goal it came from.
+    """
+    text = (goal or "").strip()
+    shaped = _WEB_QUERY_FILLER.sub(" ", text)
+    shaped = re.sub(r"\s+", " ", shaped).strip(" :;,.-")
+    # a trailing sentence fragment with no letters left (e.g. a lone "?") is noise
+    if len(re.findall(r"[A-Za-z0-9]+", shaped)) < 2:
+        return text
+    return shaped
+
+
 WEB_INTENT_CONSUMER = "web_intent"
 
 # Session 366: the two-sided confidence margin for the JEV cascade (oracle.md

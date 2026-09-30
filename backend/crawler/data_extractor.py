@@ -31,6 +31,7 @@ from .crawler_engine import CrawlResult, PageData
 logger = logging.getLogger(__name__)
 
 _MAX_CONTEXT_CHARS = 12_000  # truncate combined markdown to avoid token overflow
+_EXTRACT_MAX_TOKENS = 1500   # the dashboard JSON (summary + a few sections), not an essay
 
 _EXTRACT_PROMPT = """\
 You are a data extraction assistant. Extract structured information from the crawled pages below.
@@ -115,9 +116,20 @@ class DataExtractor:
         return data
 
     def _call_llm(self, prompt: str) -> str:
+        """Synchronous LLM call (runs in the executor pool) on the LIGHT path.
+
+        `infer` is the model on the same router WITHOUT the `_respond_direct`
+        pipeline (episodic retrieval, tool attachment, the 8-round tool loop) - the
+        same pattern SourceRegistry._call_llm uses. This is a JSON-extraction call,
+        not an action, so tools stay off by construction (`infer` passes none). It
+        never raises: a backend failure returns empty text and `_parse` falls back.
+        """
         from backend.agent import get_agent_kernel  # lazy import
         kernel = get_agent_kernel("data_extractor")
-        return kernel._respond_direct(text=prompt, context={})
+        resp = kernel.infer(
+            prompt, role="reasoning", max_tokens=_EXTRACT_MAX_TOKENS, temperature=0.0
+        )
+        return getattr(resp, "raw_text", "") or ""
 
     def _parse(self, raw: str, result: CrawlResult, title: str) -> dict:
         """Extract JSON from LLM output with defensive fallback."""

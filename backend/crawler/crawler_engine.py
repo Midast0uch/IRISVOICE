@@ -277,6 +277,15 @@ class CrawlResult:
     # discrepancy, corroborations, condition/bundle splits). None when no schema
     # journey ran. The card's verified ✓/⚠ pills read THIS, never re-derived.
     verification: Optional[dict] = None
+    # --- spec A3 (quorum return): URLs cancelled because `min_pages` usable pages
+    # were already in (`cancelled_enough`). NOT dead and NOT parked — a cancelled
+    # URL was never attempted to the end. Optional with default.
+    cancelled_enough: list = field(default_factory=list)
+    # --- spec A7 (REQ-7): per-phase timings of one research run, read by the tool
+    # bridge to write the ONE web timing line per tool call. Keys: search_ms (URL
+    # planning), crawl_ms (fetch), extract_ms (extraction + citation) - first round;
+    # retry rounds are not included - plus pages_usable, pages_cancelled.
+    web_timing: dict = field(default_factory=dict)
 
 
 class CrawlerEngine:

@@ -42,14 +42,15 @@ class ExaSearchProvider(SearchProvider):
                 "EXA_API_KEY is not set. Provide the key to the constructor "
                 "or set the EXA_API_KEY environment variable."
             )
-        self._client = httpx.AsyncClient(
-            base_url=_EXA_BASE_URL,
-            headers={
-                "x-api-key": api_key,
-                "Content-Type": "application/json",
-            },
-            timeout=_SEARCH_TIMEOUT_S,
-        )
+        # No client is held here. The provider instance is cached for the whole
+        # process (search_providers.get_search_provider) but every tool call runs
+        # on a fresh event loop (tool_decision runs each call in its own loop); an
+        # httpx.AsyncClient bound to a closed loop raised "Event loop is closed"
+        # and sent the quick tier to the full crawl. A client is built per call.
+        self._headers = {
+            "x-api-key": api_key,
+            "Content-Type": "application/json",
+        }
 
     async def search(self, query: str, max_results: int = 10) -> SearchResult:
         """Execute a neural search via the Exa API.
@@ -70,15 +71,20 @@ class ExaSearchProvider(SearchProvider):
             return SearchResult(query=query, provider="exa")
 
         try:
-            resp = await self._client.post("/search", json={
-                "query": query,
-                "numResults": max_results,
-                "type": "auto",
-                "contents": {
-                    "text": True,
-                    "highlights": True,
-                },
-            })
+            async with httpx.AsyncClient(
+                base_url=_EXA_BASE_URL,
+                headers=self._headers,
+                timeout=_SEARCH_TIMEOUT_S,
+            ) as client:
+                resp = await client.post("/search", json={
+                    "query": query,
+                    "numResults": max_results,
+                    "type": "auto",
+                    "contents": {
+                        "text": True,
+                        "highlights": True,
+                    },
+                })
         except httpx.TimeoutException:
             raise SearchProviderError("upstream timeout")
         except httpx.RequestError as exc:
@@ -104,9 +110,12 @@ class ExaSearchProvider(SearchProvider):
         results = data.get("results", [])
         items = []
         for r in results:
+            # Exa returns ``text`` / ``highlights`` at the result's top level
+            # (verified live 2026-09-30); ``content.text`` is the older nested
+            # shape, kept as a fallback.
             content = r.get("content") or {}
-            content_text = content.get("text") or ""
-            highlights = content.get("highlights") or []
+            content_text = r.get("text") or content.get("text") or ""
+            highlights = r.get("highlights") or content.get("highlights") or []
             snippet = " ".join(highlights[:3]) if highlights else content_text[:500]
 
             items.append(SearchResultItem(
@@ -125,5 +134,4 @@ class ExaSearchProvider(SearchProvider):
         return SearchResult(query=query, results=items, provider="exa")
 
     async def close(self):
-        """Release the HTTP client (call when shutting down)."""
-        await self._client.aclose()
+        """No-op: the HTTP client is per call (see ``__init__``), nothing is held."""

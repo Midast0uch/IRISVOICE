@@ -42,6 +42,7 @@ class UsabilityReason(str, Enum):
     EMPTY = "empty"                # no markdown at all
     TOO_SHORT = "too_short"        # below MIN_CONTENT_CHARS
     CHALLENGE = "challenge"        # bot interstitial (REQ-4)
+    BLOCKED = "blocked"            # bare 401/403, no challenge markers (spec A2)
     TRANSPORT_ERROR = "transport_error"
 
 
@@ -128,6 +129,7 @@ def page_is_usable(page: PageData) -> UsabilityVerdict:
 
     Order of judgement:
       1. challenge (structural markers in HTML, or error="challenge")
+      1b. blocked (error="blocked": bare 401/403 with no challenge markers)
       2. transport error (any other ``page.error`` — REQ-1 AC3: ``error is
          None`` is NOT sufficient evidence of usability on its own)
       3. empty markdown (no text at all)
@@ -148,6 +150,13 @@ def page_is_usable(page: PageData) -> UsabilityVerdict:
     if page.markdown and _markdown_is_challenge(page.markdown):
         return UsabilityVerdict(
             False, UsabilityReason.CHALLENGE, "challenge boilerplate in text",
+        )
+    if page.error == "blocked":
+        # A bare 401/403 with NO challenge markers: the server refused us. A
+        # browser fares no better (it is the same refusal), so this parks and is
+        # recorded as a wall instead of escalating like a challenge.
+        return UsabilityVerdict(
+            False, UsabilityReason.BLOCKED, "error=blocked",
         )
     if page.error:
         return UsabilityVerdict(

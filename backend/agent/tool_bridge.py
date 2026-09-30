@@ -1903,7 +1903,15 @@ class AgentToolBridge:
             # Gated by the internet-access flag (see InternetGate above).  Routed
             # here BEFORE the MCP dispatch so it never reaches BrowserServer.
             if tool_name == "search":
-                result = await self._execute_web_search(params, session_id)
+                _wtm: dict = {}
+                _wt_tok = _WEB_TIMING.set(_wtm)
+                _wt0 = time.monotonic()
+                result = None
+                try:
+                    result = await self._execute_web_search(params, session_id)
+                finally:
+                    _WEB_TIMING.reset(_wt_tok)
+                    _log_web_timing(tool_name, session_id, _wt0, _wtm, result)
                 self._record_tool_event(
                     session_id, tool_name,
                     "success" if result.get("success") else "failure", params, result,
@@ -2109,6 +2117,10 @@ class AgentToolBridge:
                     return _crawl_opening
 
                 self._crawl_progress.pop(session_id, None)
+                _wtm = {}
+                _wt_tok = _WEB_TIMING.set(_wtm)
+                _wt0 = time.monotonic()
+                result = None
                 try:
                     result = await run_with_narration(
                         lambda: self._execute_crawler_query(params, session_id),
@@ -2119,6 +2131,8 @@ class AgentToolBridge:
                     )
                 finally:
                     self._crawl_progress.pop(session_id, None)
+                    _WEB_TIMING.reset(_wt_tok)
+                    _log_web_timing(tool_name, session_id, _wt0, _wtm, result)
                 self._record_tool_event(session_id, tool_name, "success" if result.get("success") else "failure", params, result, plan_title=plan_title)
                 return result
 
@@ -3299,6 +3313,8 @@ class AgentToolBridge:
                 pass  # UI emit must never disturb the crawl
             ev = progress.event
             pl = progress.payload
+            if ev == "CRAWLER_VISION_ACTION":
+                _web_timing_note_vision_event(pl)
             if ev == "CRAWLER_PAGE_FETCHED":
                 _on_page_done(
                     pl["url"], pl["page_number"], pl["total"],
@@ -3405,6 +3421,7 @@ class AgentToolBridge:
             pass  # never block on an event emit failure
         # ── REQ-9: structured log for card transition ──
         logger.info("Card transition", extra={"context": "card", "state": "processing_conversation", "session_id": session_id})
+        _web_timing_absorb(getattr(result, "web_timing", None))
 
         # pin_42ddd255162d: the fallback path can return pages WITH an
         # informational error note (worker timed out; plain-HTTP fallback
@@ -3976,6 +3993,8 @@ class AgentToolBridge:
                     pass
                 ev = getattr(progress, "event", "")
                 pl = getattr(progress, "payload", {}) or {}
+                if ev == "CRAWLER_VISION_ACTION":
+                    _web_timing_note_vision_event(pl)
                 if ev == "CRAWLER_PAGE_FETCHED":
                     _on_page(
                         pl.get("url", ""), pl.get("page_number", 0),
@@ -4005,6 +4024,7 @@ class AgentToolBridge:
                 session_id=session_id,
                 on_progress=_combined_on_progress,
             )
+            _web_timing_absorb(getattr(crawl_result, "web_timing", None))
         except Exception as exc:
             logger.exception("[web_search] crawl failed: %s", exc)
             return {"success": False, "error": f"search failed: {exc}"}
@@ -4149,6 +4169,58 @@ class AgentToolBridge:
 _agent_tool_bridge: Optional[AgentToolBridge] = None
 
 
+# ── Spec A7 (REQ-7): one timing line per web tool call ─────────────────────
+# The dispatch site of `search` / `crawler_query` owns a dict for the duration of one
+# call (a ContextVar, so parallel calls in one session never share it, and the tools'
+# own signatures stay unchanged); the tool and the crawl fill it; ONE structured line is
+# logged when the call ends. No metrics framework - a dict and a log line.
+_WEB_TIMING: "contextvars.ContextVar[Optional[dict]]" = contextvars.ContextVar(
+    "iris_web_timing", default=None
+)
+
+
+def _web_timing_add(key: str, n: int = 1) -> None:
+    """Add ``n`` to ``key`` in the current web call's timing dict (no-op outside one)."""
+    _d = _WEB_TIMING.get()
+    if _d is not None:
+        _d[key] = _d.get(key, 0) + n
+
+
+def _web_timing_note_vision_event(payload: Any) -> None:
+    """Count one CRAWLER_VISION_ACTION event: a cursor event, and a browser action unless
+    it is the pre-action 'approach' half of a pair."""
+    _web_timing_add("cursor_events")
+    if not (isinstance(payload, dict) and payload.get("phase") == "approach"):
+        _web_timing_add("browser_actions")
+
+
+def _web_timing_absorb(web_timing: Any) -> None:
+    """Fold a finished CrawlResult's per-phase timings into the current call's dict."""
+    if isinstance(web_timing, dict):
+        for _k, _v in web_timing.items():
+            if isinstance(_v, (int, float)):
+                _web_timing_add(_k, int(_v))
+
+
+def _log_web_timing(tool: str, session_id: str, t0: float, timing: dict, result: Any) -> None:
+    """The one line: every key always present (0 when the path did not measure it)."""
+    try:
+        _t = timing or {}
+        _res = result if isinstance(result, dict) else {}
+        logger.info(
+            "[web_timing] tool=%s session=%s job_id=%s ok=%s wall_ms=%d search_ms=%d "
+            "crawl_ms=%d pages_usable=%d pages_cancelled=%d extract_ms=%d "
+            "browser_actions=%d cursor_events=%d",
+            tool, session_id, _res.get("job_id", "") or "-", bool(_res.get("success")),
+            int((time.monotonic() - t0) * 1000),
+            _t.get("search_ms", 0), _t.get("crawl_ms", 0), _t.get("pages_usable", 0),
+            _t.get("pages_cancelled", 0), _t.get("extract_ms", 0),
+            _t.get("browser_actions", 0), _t.get("cursor_events", 0),
+        )
+    except Exception:  # noqa: BLE001 — a timing line never fails a tool call
+        pass
+
+
 # ── REQ-8 (T11): quick-search tier ─────────────────────────────────────────
 # How many provider results the instant-lookup tier asks for. Small on purpose:
 # `search` is a quick factual lookup (AC8.2 ≤ 500ms p50), not a research crawl —
@@ -4158,6 +4230,10 @@ _QUICK_SEARCH_MAX_RESULTS = 5
 # Content cap for the provider envelope, mirroring the deep path's cap so the
 # two tiers cannot return wildly different payload sizes for the same tool.
 _QUICK_SEARCH_CONTENT_CAP = 8_000
+
+# Under this many characters of combined source content the quick tier cannot
+# answer; its result carries requires_deep_crawl=True (spec A4 AC1.4).
+_QUICK_SEARCH_MIN_CONTENT_CHARS = 300
 
 
 async def _quick_search_via_provider(
@@ -4215,6 +4291,7 @@ async def _quick_search_via_provider(
         if _cls.endswith("SearchProvider") else _cls.lower()
     )
 
+    _t_search = time.monotonic()
     try:
         result = await provider.search(query, max_results=max_results)
     except SearchProviderError as exc:
@@ -4226,8 +4303,12 @@ async def _quick_search_via_provider(
                        source_name, query[:60], exc)
         return None, f"provider_exception: {type(exc).__name__}"
 
+    _web_timing_add("search_ms", int((time.monotonic() - _t_search) * 1000))
     items = [i for i in (getattr(result, "results", None) or [])
              if getattr(i, "url", "")]
+    _web_timing_add(
+        "pages_usable", len([i for i in items if (i.content or i.snippet or "").strip()])
+    )
     if not items:
         logger.info("[quick_search] source=%s urls=0 for %r — deep path",
                     source_name, query[:60])
@@ -4266,11 +4347,20 @@ async def _quick_search_via_provider(
 
     # ── Envelope: identical SHAPE to the deep path (the tool contract) ─────
     _parts: List[str] = []
+    _content_chars = 0  # REAL content only - the title/url stand-in below is not content
+    # Each source gets an equal share of the cap, its query-relevant snippet
+    # (Exa highlights) first. Filled in source order, the first page's full
+    # text crowded out the rest (r06, 2026-09-30: the Tokyo figure never
+    # reached the answer).
+    _share = max(400, _QUICK_SEARCH_CONTENT_CAP // max(1, len(items)))
     for _item in items:
-        _body = (_item.content or _item.snippet or "").strip()
+        _snip = (_item.snippet or "").strip()
+        _text = (_item.content or "").strip()
+        _body = f"{_snip}\n{_text}".strip() if _snip and _snip not in _text else (_text or _snip)
+        _content_chars += len(_body)
         if not _body:
             _body = _item.title or _item.url
-        _parts.append(f"--- Source: {_item.url} ---\n{_body}")
+        _parts.append(f"--- Source: {_item.url} ---\n{_body[:_share]}")
     _combined = "\n\n".join(_parts)
     if len(_combined) > _QUICK_SEARCH_CONTENT_CAP:
         _combined = _combined[:_QUICK_SEARCH_CONTENT_CAP] + "\n\n[...truncated...]"
@@ -4281,6 +4371,17 @@ async def _quick_search_via_provider(
         "content": _combined,
         "url": _urls[0],
         "sources": _urls,
+        # Spec A4 (AC1.4): title / url / snippet per source, and the escalation
+        # signal - True when the sources together carry too little content to
+        # answer from, so the caller sends the goal to crawler_query instead.
+        # NOT "results": _format_tool_result reads "results" before "content",
+        # so the agent saw these 300-char snippets instead of the page text
+        # (r01/r05/r06 lost their answers, 2026-09-30).
+        "source_list": [
+            {"title": i.title or "", "url": i.url, "snippet": (i.snippet or "")[:300]}
+            for i in items
+        ],
+        "requires_deep_crawl": _content_chars < _QUICK_SEARCH_MIN_CONTENT_CHARS,
         "trust": "untrusted",  # external tool result — route to reference zone
         # Additive attribution: which tier answered, and via which provider.
         # The provider's SELF-DECLARED identity wins (SearchResult.provider is

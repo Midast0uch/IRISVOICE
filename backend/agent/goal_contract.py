@@ -32,6 +32,17 @@ _STOPWORDS = frozenset({
 _ENUM_PREFIX_RE = re.compile(r"^\s*(?:\d+[.)]\s+|\(\d+\)\s*|[-*•]\s+)")
 _SPLIT_RE = re.compile(r"\s*(?:\n+|;+|\s+\d+[.)]\s+|\s*\(\d+\)\s*)\s*")
 _WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9]{3,}")
+# Page scaffolding a web tool result wraps around content: "--- Source: URL ---" headers,
+# the "--- Attempted:" / "--- Dead:" / "--- Outlinks ..." machine lines, bare-URL outlink
+# bullets, and the truncation marker. None of it is a deliverable, yet each line used to
+# become a "discovered fact" (and a needless bonus pass) - spec A6 / RC6.
+_SCAFFOLD_LINE_RE = re.compile(
+    r"^\s*(?:-{3,}\s*(?:source|attempted|dead|outlinks)\b.*"
+    r"|[-*•]\s+https?://\S+"
+    r"|\(\+\d+\s+already-visited.*\)"
+    r"|\[\.\.\.truncated\.\.\.\])\s*$",
+    re.IGNORECASE,
+)
 
 
 def _goal_cap(name: str, fallback: int) -> int:
@@ -102,6 +113,14 @@ def extract_required(request: str) -> Tuple[str, ...]:
     if not _stripped:
         logger.info("[goal-contract] extract fallback: empty request")
         return ("",)
+    # Spec A6: drop web-page scaffolding lines first. A text that is ONLY scaffolding
+    # has no deliverable at all (the empty fallback), not itself as a fact.
+    _kept = [_ln for _ln in _stripped.splitlines() if not _SCAFFOLD_LINE_RE.match(_ln)]
+    if len(_kept) != len(_stripped.splitlines()):
+        _stripped = "\n".join(_kept).strip()
+        if not _stripped:
+            logger.info("[goal-contract] extract fallback: scaffolding only")
+            return ("",)
     _parts: List[str] = []
     for _chunk in _SPLIT_RE.split(_stripped):
         _chunk = (_chunk or "").strip()

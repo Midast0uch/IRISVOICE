@@ -56,6 +56,11 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_PAGES = int(os.environ.get("CRAWL4AI_MAX_PAGES", "5"))
 _DEFAULT_MIN_PAGES = int(os.environ.get("CRAWL_MIN_PAGES", "3"))
+# Quorum return (spec A3, D4): once `min_pages` usable pages are in, dispatch_urls
+# waits at most this long for the remaining URLs, then cancels them. Without it
+# the crawl waited for its slowest URL (measured 2026-09-30: 3 pages in ~6 s, then
+# ~30 s more for two URLs that could not succeed).
+_QUORUM_GRACE_S = float(os.environ.get("IRIS_CRAWL_QUORUM_GRACE_S", "2"))
 # D3 fix (T36 live smoke, 2026-08-09): kept in lockstep with crawl_runner.py's
 # _DEFAULT_TIMEOUT_S (same env var, same fallback) — see that module for the
 # cold-vs-warm browser-launch measurement behind the 45s->90s change.
@@ -444,12 +449,23 @@ class CrawlOrchestrator:
         except Exception:  # noqa: BLE001 — warmth is best-effort
             _bp20 = None
             _declared = False
+        _wt: dict = {}
         try:
-            return await self._research_inner(
+            _result = await self._research_inner(
                 query, mode=mode, session_id=session_id, on_progress=on_progress,
                 max_pages=max_pages, min_pages=min_pages, timeout_s=timeout_s,
                 job_id=job_id, excluded_urls=excluded_urls, seed_urls=seed_urls,
+                _timing=_wt,
             )
+            try:
+                _wt["pages_usable"] = sum(
+                    1 for _p in (_result.pages or []) if page_is_usable(_p).usable
+                )
+                _wt["pages_cancelled"] = len(getattr(_result, "cancelled_enough", []) or [])
+                _result.web_timing = dict(_wt)
+            except Exception:  # noqa: BLE001 — a timing note never fails a run
+                pass
+            return _result
         finally:
             if _declared and _bp20 is not None:
                 try:
@@ -470,9 +486,16 @@ class CrawlOrchestrator:
         job_id: Optional[str] = None,
         excluded_urls: Optional[list] = None,
         seed_urls: Optional[list] = None,
+        _timing: Optional[dict] = None,
     ) -> CrawlResult:
         """Run the full funnel. Never raises for crawl failures (REQ-17 AC1)."""
         t_start = time.monotonic()
+
+        def _wt_add(key: str, t0: float) -> None:
+            # Spec A7: accumulate this phase's wall time into the caller's dict.
+            if _timing is not None:
+                _timing[key] = _timing.get(key, 0) + int((time.monotonic() - t0) * 1000)
+
         if not job_id:
             job_id = uuid.uuid4().hex
         # Session-326 shield 2 (owner: no dark gaps): the funnel speaks at
@@ -557,7 +580,9 @@ class CrawlOrchestrator:
                 job_id, len(_seed_fresh),
             )
         else:
+            _tp = time.monotonic()
             plan: CrawlPlan = await self._plan(query)
+            _wt_add("search_ms", _tp)
         # REQ-19 AC7: discovery attempts at most once per research run. Local
         # to this call (not instance state) — the orchestrator is a shared
         # singleton across concurrent runs (REQ-16: no shared mutable state).
@@ -635,6 +660,7 @@ class CrawlOrchestrator:
             self._backend_override is None
             and "fetch.crawl" in _capabilities_registered()
         )
+        _tf = time.monotonic()
         if dispatch_path:
             fetched = await self.dispatch_urls(
                 plan.urls,
@@ -643,6 +669,7 @@ class CrawlOrchestrator:
                 session_id=session_id,
                 on_progress=on_progress,
                 max_pages=max_pages,
+                min_pages=min_pages,
                 timeout_s=timeout_s,
                 excluded_urls=sorted(_excluded),
             )
@@ -659,6 +686,7 @@ class CrawlOrchestrator:
                 timeout_s=timeout_s,
                 job_id=job_id,
             )
+        _wt_add("crawl_ms", _tf)
         # REQ-19 AC6: mark vision-discovered URLs' pages so their provenance
         # is distinguishable from planner-supplied URLs (REQ-18 AC2 pattern).
         self._stamp_discovery_provenance(fetched, discovered_urls)
@@ -945,11 +973,13 @@ class CrawlOrchestrator:
 
         # 6) EXTRACT + CITE (REQ-8) — module implemented in T4
         from .cite import extract_and_cite
+        _te = time.monotonic()
         dashboard_data, cited_markdown, unsourced = await extract_and_cite(
             query=query, fetched=fetched, passages=passages,
             instructions=plan.instructions, result_type=plan.result_type,
             title=plan.title, extractor=self._extractor,
         )
+        _wt_add("extract_ms", _te)
         cred_map.unsourced_claims = unsourced
         cred_map.top_score = max((p.score for p in passages), default=0.0)
 
@@ -1050,6 +1080,7 @@ class CrawlOrchestrator:
         max_pages: int = _DEFAULT_MAX_PAGES,
         timeout_s: float = _DEFAULT_TIMEOUT_S,
         concurrency_limit: int = _DEFAULT_CONCURRENCY,
+        min_pages: int = _DEFAULT_MIN_PAGES,
         output_schema: Optional[dict] = None,
         extract: Optional[Callable[["PageData"], Optional[dict]]] = None,
         on_missing_fields: Optional[Callable[[list], list]] = None,
@@ -1069,6 +1100,10 @@ class CrawlOrchestrator:
         - AC5: when one raced capability returns first, the loser is cancelled.
         - Edge: both raced results usable -> crawl (cheaper) wins, the
           unnecessary race is logged for tuning.
+        - Quorum (spec A3): when ``min_pages`` usable pages are in, the rest get
+          ``_QUORUM_GRACE_S`` to finish, then are CANCELLED (``cancelled_enough``
+          — logged, never parked, never recorded as a wall). A schema journey
+          (``output_schema``) is exempt: its completeness is field coverage.
         - AC2.3 (REQ-2, T29): when ``output_schema`` declares required fields,
           completeness is evaluated after EVERY page outcome — the moment all
           required fields hold a non-None value the remaining queued and
@@ -1489,6 +1524,11 @@ class CrawlOrchestrator:
                         # be silently dropped — the run would simply have fewer
                         # citations and never say why (REQ-13 AC4 / REQ-15).
                         self._park_source(job_id, url, "challenge", _emit)
+                    elif outcome.verdict.reason == UsabilityReason.BLOCKED:
+                        # Bare 401/403 (spec A2): parked AND recorded by
+                        # _park_source (record_wall) so the next run skips the
+                        # domain; Tier 2 never ran for it.
+                        self._park_source(job_id, url, "blocked", _emit)
                     else:
                         logger.info(
                             "[CrawlOrchestrator] dispatch job_id=%s url=%s cap=%s "
@@ -1573,6 +1613,36 @@ class CrawlOrchestrator:
                     t.cancel()
 
         _terminator = asyncio.create_task(_terminate_on_satisfied()) if _early_terminator else None
+        # Quorum wait (spec A3, D4): FIRST_COMPLETED loop instead of one gather.
+        # Usable-ness is the single predicate (page_is_usable) over the filled slots.
+        _cancelled_enough: list[str] = []
+        _pending = set(tasks)
+        _quorum_at: Optional[float] = None
+        while _pending:
+            _wait_s = None if _quorum_at is None else max(0.0, _quorum_at - time.monotonic())
+            _done, _pending = await asyncio.wait(
+                _pending, timeout=_wait_s, return_when=asyncio.FIRST_COMPLETED,
+            )
+            if not _pending or _required_fields or min_pages < 1:
+                continue
+            if _quorum_at is None:
+                _usable_n = sum(1 for p in slots if p is not None and page_is_usable(p).usable)
+                if _usable_n >= min_pages:
+                    _quorum_at = time.monotonic() + _QUORUM_GRACE_S
+            elif time.monotonic() >= _quorum_at:
+                break
+        if _pending:
+            for _t in _pending:
+                _t.cancel()
+                _cu = capped[tasks.index(_t)]
+                _cancelled_enough.append(_cu)
+                logger.info(
+                    "[CrawlOrchestrator] cancelled_enough job_id=%s url=%s — %d usable "
+                    "page(s) in (min_pages=%d), grace %.1fs spent (not parked, not a wall)",
+                    job_id, _cu[:100], sum(
+                        1 for p in slots if p is not None and page_is_usable(p).usable
+                    ), min_pages, _QUORUM_GRACE_S,
+                )
         results = await asyncio.gather(*tasks, return_exceptions=True)
         if _terminator is not None:
             _terminator.cancel()
@@ -1683,6 +1753,8 @@ class CrawlOrchestrator:
                 _slot = slots[_di] if _di < len(slots or []) else None
                 _exc = results[_di] if _di < len(results or []) else None
                 _dead = _slot is None or isinstance(_exc, Exception)
+                if _du in _cancelled_enough:
+                    _dead = False  # cut by the quorum, never attempted to the end
                 if not _dead and _slot is not None:
                     try:
                         _dead = not page_is_usable(_slot).usable
@@ -1719,6 +1791,7 @@ class CrawlOrchestrator:
             har_entries=har_entries,
             har_path=_har_path,
             verification=verification,
+            cancelled_enough=list(_cancelled_enough),
         )
 
     async def _domain_failure_history(self, url: str, query: str) -> str:
@@ -1766,7 +1839,7 @@ class CrawlOrchestrator:
         # round-trip — this is what stopped spacedaily.com being re-fetched
         # 17 minutes after it proved itself walled.
         try:
-            if wall_kind in ("challenge", "walled", "bot_block"):
+            if wall_kind in ("challenge", "walled", "bot_block", "blocked"):
                 from urllib.parse import urlparse as _up2
                 from backend.agent.tool_errors import record_wall
 
@@ -2412,6 +2485,7 @@ class CrawlOrchestrator:
             crawled_at=datetime.now(timezone.utc).isoformat(), error=error,
             har_entries=getattr(fetched, "har_entries", []) or [],
             har_path=getattr(fetched, "har_path", None),
+            cancelled_enough=list(getattr(fetched, "cancelled_enough", []) or []),
         )
 
     def _apply_har_penalties(self, fetched: CrawlResult, query: str) -> None:
