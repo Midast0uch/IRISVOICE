@@ -4,6 +4,27 @@ Owner decision 2026-09-30: "Plan a move to D:". **Nothing in this plan runs
 automatically.** The owner runs each step with the backend and frontend
 stopped. Every step is reversible (rollback listed per step).
 
+## Handing this to an agent (owner may delegate Steps 1-4)
+
+Preconditions the agent MUST check before touching anything:
+
+1. **No eval or turn is running.** Check that no `run_evals.py` process
+   exists, then stop the backend (`start-backend.py`), the TTS worker
+   (`backend.audio.tts_worker`) and llama-server. `memory.db` must not be
+   moved while anything writes to it.
+2. **Step 1 needs ZERO Python processes** — Windows locks loaded DLLs
+   (torch, onnxruntime), so the folder rename fails. That includes the MCM
+   MCP server used by Claude Code sessions: an agent that has MCM tools
+   loaded holds those locks itself. Run Step 1 from a plain terminal, or
+   skip it and leave it to the owner.
+3. **Copy, verify, then switch** — never delete the source until the new
+   location has run the backend successfully; keep every `.old` folder.
+4. **Do NOT reboot and do NOT run Steps 0/5** — the cold measurements need a
+   reboot; the owner runs them.
+5. `setx` changes only NEW processes: start the backend from a new terminal.
+6. Report back: each step's result, the new paths, and any file that failed
+   to copy (robocopy exit codes 0-7 are success, 8+ are failures).
+
 ## Why (measured 2026-09-29/30)
 
 | Drive | Hardware | Size | Free |

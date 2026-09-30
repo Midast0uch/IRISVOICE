@@ -16,17 +16,31 @@ then (see the log): per-step physics on its own ordered lane with fold-back at s
 two missing indexes on the 6.3 GB `data/memory.db`, and one ordered ledger writer lane. c10 reply
 now arrives at **16.9 s** (was 63-226 s). Research group (1/6 baseline) not re-run.
 
+**Update 2026-09-30.** TTS cold start DONE (commit `19f8a6cb`, Standards S7): loads with the
+backend, `/health` 503 until ready, warm-up sentence, no idle unload, concurrent-spawn hang and
+`set_voice` local-shadow fixed, git-status disk hog fixed (S8). ROOT CAUSE of every cold number:
+**C: is a 97%-full 7200 rpm hard disk** (D: is an empty NVMe SSD) — cold 110 s vs warm 5.1 s for
+the same imports. Owner chose "plan a move to D:": `disk-move-plan.md` (owner-run). Open decisions:
+MCM `pin_22b078571d73` (topology halt; 7.5 min index build).
+
 **Next work, in order** (each with DONE / NOT THIS per CLAUDE.md):
-1. **TTS cold start** (owner request). The Pocket-TTS worker (438 MB) loads lazily and loads IN a
-   turn: c11 2026-09-29 23:20-23:21 the load took 61.5 s, starved the CPU, and the step's
-   `pytest` took ~110 s instead of ~2 s; "Worker startup timed out" fires repeatedly. DONE: the
-   worker is loaded before `/health` reports ready and no turn ever sees a startup timeout.
-   NOT THIS: a longer startup deadline.
-2. **Oracle takes decisions** (owner rule, memory `iris-oracle-takes-decisions`): first target —
-   the continuation consult asks the Brain for an expansion that COMPRESS (`rec=1`) then
-   discards; split "Oracle score, always" from "LLM expansion, only when the physics does not
-   decide". Check first whether `depth_route` scoring needs the LLM proposal as a candidate.
-   Keep only if measured significant; never starve Oracle rows (Session 366).
+1. DONE 2026-09-30: standard recorded from a full coding run, **15/15**, group wall time
+   ~36 min -> 18 min, replies 14-145 s (median ~50 s; c11 53 s, c10 16 s, c07 20 s) —
+   `evals/results/20260930-065124.json` -> `evals/standards.json`. Re-record after the owner runs
+   `disk-move-plan.md` (expect lower cold numbers).
+2. **Oracle takes decisions** (owner rule, memory `iris-oracle-takes-decisions`). First target
+   MEASURED AND DROPPED 2026-09-30: skipping the continuation consult's Brain call under COMPRESS
+   saves ~0.8 s/turn (423 prompt / 6 completion tokens) but leaves the `done` rows without their
+   Brain reference label (unpaired rows are unscorable — the Session 366 starvation).
+   Bar report 2026-09-30 (`scripts/consumer_enforcement_report.py`, active engine
+   gliner25-decide-onnx-int8): NOTHING enforced by the bar. Closest: `tool_choice` precision 1.0
+   at t=0.4 (22 rows above), AUROC 0.79, gap = ECE 0.107 > 0.05 (calibration only);
+   `presentation` precision 1.0 but ECE 0.565, one class; `done` 99 rows but precision 0.729;
+   `mode` 0.725, `escalate_incomplete` 0.728; `depth_met`/`depth_route` have no threshold for the
+   active engine. BLOCKER found: `scripts/calibrate_decision_threshold.py` and the enforcement
+   report disagree on the same rows (web_intent acc 1.0 in every band vs precision 0.377) — two
+   label rules. Reconcile the instruments FIRST, then fit calibration for `tool_choice`. Then a
+   per-turn breakdown of Brain calls by caller to find decisions worth moving.
 3. Turn-end bookkeeping before synthesis (`_save_card_footprint`, `mycelium_record_plan_stats`,
    `_store_task_episode` + crystallize, `_maybe_trigger_skill_creation`, agent_kernel ~10600-10745)
    -> an ordered lane; fold-back at the next turn's recall if recall must see it.
@@ -66,6 +80,8 @@ to fail on the old state. Change a number only with a new measurement and the re
 | S3 | a step's answer path never waits for its physics; shape decisions fold back on `fold.ready` | reply held 16-106 s -> 0 s on the answer path (stack dump) | physics on `lane("physics")`; only shape decisions call `_der_physics_settle` | `test_s3_*` (finalize returns while the physics is blocked) |
 | S4 | ledger rows go through ONE ordered lane, and a blocked row reports itself | ~90 contending threads + "database is locked" -> zero lock errors (stack dump, eval logs) | thread-per-row on one connection fell back to the native writer | `contract/test_ledger_write_watchdog.py` (drives the real lane) |
 | S5 | each node sees the user's request word for word | c10 FAIL (rules lost in the paraphrase) -> PASS; coding 12/15 -> 15/15 | planner paraphrase dropped "qty <= 0" rules | coding eval (`evals/standards.json` once recorded) |
+| S7 | TTS is ready with the backend; `/health` 503 while TTS loads, 200 + `tts.status=error` on a failed load | c11 reply 213.6 s -> 116.8 s; startup timeouts / zero audio in turns: many -> 0 (eval logs 2026-09-30) | lazy load landed inside turns (5 min 6 s cold on the C: hard disk) and starved pytest; now loads in the lifespan, warm-up before "ready", no idle unload (growth recycle caps memory) | `contract/test_startup_readiness_standards.py::test_s7_*`; hang: `behavioral/test_tts_memory_envelope_behavior.py::test_concurrent_first_speak_spawns_exactly_one_worker` |
+| S8 | the git-status poll never runs back to back on a slow repo | ran every 5 s, each run a 5 s timeout -> at most ~10% of disk time | fixed 5 s TTL + 5 s timeout on a huge dirty repo on the hard disk; TTL now x10 the last run's cost | `test_startup_readiness_standards.py::test_s8_*` |
 | S6 | eval pass flags and `reply_s` per task | c10 reply 63-226 s -> 16.9 s | all of the above | `evals/standards.json` + `run_evals.py` STANDARDS check (exit 5 on regression; tolerance x1.5 + 10 s for cloud-model variance). Record with `--record-standard` after a clean full run (pending: after the TTS fix) |
 
 **How to run the evals safely (learned the hard way).**

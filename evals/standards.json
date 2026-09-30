@@ -1,0 +1,96 @@
+{
+  "tasks": {
+    "c01_fix_off_by_one": {
+      "passed": true,
+      "reply_s": 144.6,
+      "source": "20260930-065124.json",
+      "models": []
+    },
+    "c02_add_slugify": {
+      "passed": true,
+      "reply_s": 52.9,
+      "source": "20260930-065124.json",
+      "models": []
+    },
+    "c03_rename_across_files": {
+      "passed": true,
+      "reply_s": 60.3,
+      "source": "20260930-065124.json",
+      "models": []
+    },
+    "c04_implement_from_tests": {
+      "passed": true,
+      "reply_s": 114.1,
+      "source": "20260930-065124.json",
+      "models": []
+    },
+    "c05_add_cli_flag": {
+      "passed": true,
+      "reply_s": 25.4,
+      "source": "20260930-065124.json",
+      "models": []
+    },
+    "c06_fix_import_error": {
+      "passed": true,
+      "reply_s": 64.1,
+      "source": "20260930-065124.json",
+      "models": []
+    },
+    "c07_config_defaults": {
+      "passed": true,
+      "reply_s": 20.3,
+      "source": "20260930-065124.json",
+      "models": []
+    },
+    "c08_write_tests": {
+      "passed": true,
+      "reply_s": 33.6,
+      "source": "20260930-065124.json",
+      "models": []
+    },
+    "c09_edit_long_file": {
+      "passed": true,
+      "reply_s": 19.2,
+      "source": "20260930-065124.json",
+      "models": []
+    },
+    "c10_create_module": {
+      "passed": true,
+      "reply_s": 15.9,
+      "source": "20260930-065124.json",
+      "models": []
+    },
+    "c11_two_bugs_two_files": {
+      "passed": true,
+      "reply_s": 52.7,
+      "source": "20260930-065124.json",
+      "models": []
+    },
+    "c12_add_method_long_class": {
+      "passed": true,
+      "reply_s": 22.4,
+      "source": "20260930-065124.json",
+      "models": []
+    },
+    "c13_explain_code": {
+      "passed": true,
+      "reply_s": 13.5,
+      "source": "20260930-065124.json",
+      "models": []
+    },
+    "c14_run_and_report": {
+      "passed": true,
+      "reply_s": 23.6,
+      "source": "20260930-065124.json",
+      "models": []
+    },
+    "c15_iterate_until_green": {
+      "passed": true,
+      "reply_s": 50.5,
+      "source": "20260930-065124.json",
+      "models": []
+    }
+  },
+  "recorded_at": "2026-09-30T06:51:24",
+  "why": "docs/audits/2026-09-29/PROGRESS.md -> Standards"
+}
