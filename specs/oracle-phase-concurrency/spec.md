@@ -22,6 +22,14 @@ Owner decisions (2026-10-01): keep Parakeet; keep the Oracle on the CPU; use the
   cognitive state). Priority: `call_context.call_class()` / `is_high_priority` (USER_TURN, SPEAK).
 
 ## Requirements
+- REQ-0 (owner, 2026-10-01) The Oracle has its OWN phase manager: its own registry instance, its
+  own tunables (`IRIS_ORACLE_PHASE_PERIOD_S` / `_MAX_WAIT_S` / `_K`, sized to measured decision
+  durations) and its own load signal. It never registers in the router's `phase_manager`
+  singleton and never reads `rate_meter`: the router paces provider rate limits (calls of seconds,
+  period 0.5 s); the Oracle paces the local CPU (decisions of ms-s). One shared instance would
+  couple two unrelated resources. Only the shared maths (`trig_coupling`, firing convention,
+  repulsion sign) is reused. Guard: Oracle oscillators never appear in `phase_manager.get_registry()`
+  and router oscillators never appear in the Oracle registry.
 - REQ-1 Each decision source is a phase PARTICIPANT: oscillator id
   `"{session}:{consumer_id}"` (one per consumer per session), quota group `"oracle"` (the CPU the
   Oracle runs on). Distinct oscillators start at distinct angles and are kept apart by the existing
