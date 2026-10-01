@@ -660,7 +660,24 @@ def _oracle_domain() -> Any:
         max_wait_s=_env_float("IRIS_ORACLE_PHASE_MAX_WAIT_S", 0.3),
         k=_env_float("IRIS_ORACLE_PHASE_K", 0.6),
         load_fn=_oracle_load_fraction,
+        # Exit-driven admission (IRIS_ORACLE_PHASE_EXIT): a run slot frees when
+        # a decision is DONE; the slot count is the CPU's own run capacity.
+        capacity_fn=_oracle_run_capacity if _oracle_phase_exit_enabled() else None,
     )
+
+
+def _oracle_phase_exit_enabled() -> bool:
+    return os.environ.get("IRIS_ORACLE_PHASE_EXIT", "").strip().lower() in (
+        "1", "true", "on", "yes",
+    )
+
+
+def _oracle_run_capacity() -> int:
+    """Runs the CPU hosts without sharing cores: logical cores / intra-op threads
+    (8 / 4 = 2 here) - the same number _oracle_load_fraction divides by."""
+    cores = os.cpu_count() or 1
+    intra = _oracle_intra_op or max(1, cores // 2)
+    return max(1, cores // max(1, intra))
 
 
 def _oracle_session_id() -> str:
@@ -1082,13 +1099,22 @@ class DecisionEngine:
         or scoring fails - never because another decision held a lock."""
         global _oracle_runs_in_flight, _oracle_intra_op
         t_start = self._clock()
+        _dom = _tok = None
         try:
-            # Participant "{session}:{consumer_id}"; priority classes bypass (0).
-            _oracle_domain().acquire(f"{_oracle_session_id()}:{consumer_id}")
+            # Participant "{session}:{consumer_id}"; priority classes bypass (0)
+            # on the timed gate, have right of way on the exit-driven one.
+            _dom = _oracle_domain()
+            _osc = f"{_oracle_session_id()}:{consumer_id}"
+            if _oracle_phase_exit_enabled():
+                _tok = _dom.enter(_osc)  # admitted when a run EXITS (natural exit)
+            else:
+                _dom.acquire(_osc)
         except Exception as e:  # noqa: BLE001 — fail-open: a gate fault admits
             logger.warning("decision_engine: phase gate failed open (%r)", e)
         phase_wait_ms = int((self._clock() - t_start) * 1000)
         if not self._enter_run():
+            if _tok is not None:
+                _dom.exit(_tok)
             return None
         try:
             backend = self._backend
@@ -1131,6 +1157,8 @@ class DecisionEngine:
             return None
         finally:
             self._exit_run()
+            if _tok is not None:
+                _dom.exit(_tok)  # the decision is done: free its slot
 
     def shadow(
         self,

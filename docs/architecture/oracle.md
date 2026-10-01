@@ -943,11 +943,53 @@ decisions get right of way (non-priority participants defer while a priority dec
 flight or waiting). That is a design change for the owner, measured with this bench before it
 ships; phase parameters were NOT tuned to beat the semaphore.
 
+### 19.7 The phase-native fix: exit-driven admission (owner choice A, 2026-10-01)
+
+Owner: keep the phase model, but let WHEN follow the "natural exit" of decisions and WHO follow
+the physics. Built in `PhaseDomain.enter()/exit()` behind `IRIS_ORACLE_PHASE_EXIT` (the timed
+gate `wait_for/acquire` is unchanged):
+
+- **When:** a decision starts only when a run slot is free — a slot frees when a decision is
+  DONE. Slots = the CPU's own run capacity (`_oracle_run_capacity`: 8 logical / 4 intra-op = 2),
+  the same number the load parameter already used. No timer admits work.
+- **Who:** each waiting decision gets its own position, placed at the widest gap on the dial; its
+  DUE TIME is fixed at arrival (arrival + time to its firing point) and waiters go in due-time
+  order. Priority classes (USER_TURN, SPEAK) have right of way.
+- Fail-open: a capacity fault falls back to the timed gate; a wait past 30 s admits and logs.
+
+Two shapes were measured and rejected on the way (same bench, 3 reps):
+
+| Shape | reply p50 / p95 | worst wait | why rejected |
+|---|---|---|---|
+| one shared position per consumer, +pi after a run | 269 / 345 ms | **route 8.9 s** | the busiest consumer (tool_choice, ~45% of the burst) got 1 turn in 7 |
+| one position per decision, LIVE position order | 262 / 348 ms | **route 5.4 s** | a waiter whose firing point passed while no slot was free jumped a full turn back |
+| **one position per decision, due time fixed at arrival** | **203 / 336 ms** | 1.7 s | shipped behind the flag |
+
+Final comparison (same session, quiet machine, `benchmarks/oracle_ctl_*.json`):
+
+| Config | decisions/s | reply p50 / p95 | per-decision under load p50 | worst wait | bitwise |
+|---|---|---|---|---|---|
+| phase, timed gate | 9.94 | 398 / 598 ms | 764 ms | 1.3 s | 297/297 |
+| **phase, exit-driven** | 8.64 | **203 / 336 ms** | 878 ms | 1.7 s | 297/297 |
+| semaphore N=2 (bench only) | 8.84 | 219 / 299 ms | 877 ms | 1.1 s | 297/297 |
+| semaphore N=3 (bench only) | 9.94 | 272 / 368 ms | 739 ms | 1.2 s | 297/297 |
+
+**Verdict: TIE with the semaphore N=2 within noise (best reply p50, p95 between N=2 and N=3).**
+Against the timed gate: reply wait halved, throughput -13% — the right trade for IRIS, where shadow
+scores run off the reply path. Honest description: with ~90 waiters the due times spread inside
+one period, so the order is close to arrival order with phase spacing; the physics part is that
+each decision's place comes from its position on the dial and its start from another's exit.
+Guard: `contract/test_phase_domain_exit_admission.py` (fails 4/4 on the previous code).
+
 **Batched "decide together" — tested, rejected (2026-10-01).** The export accepts a batch
 dimension (`input_ids ['batch','seq']`). K same-job `tool_choice` decisions in one pass (own
 attention mask each, padded): only 5-10% faster per decision (K=8: 927 -> 834 ms), and the
 answers MOVE — max |logit diff| 0.18 (K=2), 0.31 (K=4), 0.33 (K=8), and at K=8 one pick changed.
-Padding is not neutral for this export, so batching breaks the identity rule (REQ-3, §9).
+Re-tested WITHOUT padding (owner asked whether the test was wrong): K IDENTICAL inputs batched are
+bitwise identical, but K DIFFERENT texts of the SAME length still move up to 0.62 — the exported
+graph lets rows of a batch leak into each other (identical rows hide it). Padding was not the
+cause; the export is. Gain is at most ~10% because one decision already uses all 4 intra-op
+threads. Batching breaks the identity rule (REQ-3, §9) and stays out.
 
 Status: LIVE via `IRIS_ORACLE_PHASE=1` in the local `.env` (live gate passed 2026-10-01,  
 coding 15/15 + research 8/8, no standard regression); the code default stays off so the  

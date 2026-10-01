@@ -62,11 +62,22 @@ class PhaseDomain:
         k: float,
         amp_relax_tau_s: float = 1.0,
         load_fn: Optional[Callable[[], float]] = None,
+        capacity_fn: Optional[Callable[[], int]] = None,
     ) -> None:
         self.name = name
         self.period_s = period_s
         self.max_wait_s = max_wait_s
         self.k = k
+        # Completion-driven admission ("natural exit", owner 2026-10-01): when
+        # set, enter()/exit() admit a participant when a run EXITS, ordered by
+        # its position on the dial. None = the timed gate (wait_for) only.
+        self._capacity_fn = capacity_fn
+        self._exit_cv = threading.Condition()
+        self._in_flight = 0
+        self._prio_waiting = 0
+        self._waiting: Dict[str, int] = {}
+        self._entry_seq = 0
+        self._due_at: Dict[str, float] = {}
         self.registry = PhaseRegistry(
             k=k,
             amp_relax_tau_s=amp_relax_tau_s,
@@ -126,6 +137,116 @@ class PhaseDomain:
             await asyncio.sleep(_wait)
         return _wait
 
+    # ── completion-driven admission ("natural exit") ──────────────────────
+    # Measured why (oracle.md 19.6): the timed gate admits every participant
+    # within max_wait_s, so up to 8 Oracle runs shared 4 cores and a reply
+    # decision - which skips the gate - still landed in a crowded CPU (reply
+    # p50 506 ms vs 258 ms under a bench-only semaphore). Here WHEN comes from
+    # exits: a participant starts only when a run slot is free (a decision has
+    # finished), the slot count being the resource's own capacity. WHO comes
+    # from the physics: among waiters, the one nearest its firing point on the
+    # dial goes first (each waiting decision holds its own position, placed at
+    # the widest gap); priority classes have right of way. Fail-open: an internal error or a wait past safety_s admits.
+    def enter(self, oscillator_id: str, safety_s: float = 30.0) -> str:
+        """Block until this participant may run; pair every call with exit()."""
+        cap = None
+        try:
+            if self._capacity_fn is not None:
+                cap = max(1, int(self._capacity_fn()))
+        except Exception as _e:  # noqa: BLE001 — fail-open to the timed gate
+            logger.warning("[phase_domain] capacity unreadable domain=%s err=%s",
+                           self.name, _e)
+        if cap is None:
+            self.acquire(oscillator_id)
+            with self._exit_cv:
+                self._in_flight += 1
+            return f"{oscillator_id}#timed"  # exit() must not remove the consumer's position
+        high = is_high_priority(call_class())
+        deadline = _t.monotonic() + safety_s
+        with self._exit_cv:
+            # One position PER DECISION, placed at the widest gap and removed at
+            # exit. Measured: one shared position per consumer starved the
+            # busiest one (tool_choice, ~45% of the bench burst: worst wait
+            # 8.9 s) - after each run its single position jumped to the back.
+            self._entry_seq += 1
+            oscillator_id = f"{oscillator_id}#{self._entry_seq}"
+            if not high:
+                # The decision's DUE TIME is fixed at arrival from its position:
+                # registered at the widest gap, due when it reaches its firing
+                # point. Measured: ordering by the LIVE position starved a waiter
+                # whose firing point passed while no slot was free (it jumped a
+                # full turn back; route worst wait 5.4 s).
+                self._due_at[oscillator_id] = _t.monotonic() + self._arrival_wait(oscillator_id)
+            if high:
+                self._prio_waiting += 1
+            else:
+                self._waiting[oscillator_id] = self._waiting.get(oscillator_id, 0) + 1
+            try:
+                while True:
+                    if self._in_flight < cap and (
+                        high or (self._prio_waiting == 0
+                                 and self._most_due(oscillator_id))):
+                        break
+                    remaining = deadline - _t.monotonic()
+                    if remaining <= 0:
+                        logger.warning(
+                            "[phase_domain] ADMIT domain=%s osc=%s reason=safety_timeout "
+                            "in_flight=%d cap=%d", self.name, oscillator_id,
+                            self._in_flight, cap)
+                        break
+                    self._exit_cv.wait(remaining)
+            finally:
+                if high:
+                    self._prio_waiting -= 1
+                else:
+                    n = self._waiting.get(oscillator_id, 1) - 1
+                    if n > 0:
+                        self._waiting[oscillator_id] = n
+                    else:
+                        self._waiting.pop(oscillator_id, None)
+                    self._due_at.pop(oscillator_id, None)
+            self._in_flight += 1
+            self._exit_cv.notify_all()
+        return oscillator_id
+
+    def exit(self, token: str) -> None:
+        """The participant's run finished: free its slot and wake the waiters."""
+        with self._exit_cv:
+            self._in_flight = max(0, self._in_flight - 1)
+            self._exit_cv.notify_all()
+        try:
+            self.registry.unregister(token)  # the decision's position leaves the dial
+        except Exception:  # noqa: BLE001 — bookkeeping never blocks a run
+            pass
+        with self._seen_lock:
+            self._seen.pop(token, None)
+
+    def _arrival_wait(self, entry_id: str) -> float:
+        """Seconds from arrival to this decision's firing point on the dial.
+        Called under _exit_cv. Fail-open: 0.0 (due now)."""
+        try:
+            _reg = self.registry
+            _reg.register(oscillator_id=entry_id, quota_id=self.name,
+                          provider_label=self.name, natural_period_s=self.period_s)
+            self._touch(entry_id)
+            _reg.advance_all(self.name)
+            return max(0.0, float(_estimate_wait(_reg.get(entry_id))))
+        except Exception as _e:  # noqa: BLE001 — fail-open
+            logger.warning("[phase_domain] arrival position failed domain=%s err=%s",
+                           self.name, _e)
+            return 0.0
+
+    def _most_due(self, oscillator_id: str) -> bool:
+        """True when this waiter has the earliest due time among all waiters.
+        Called under _exit_cv. Fail-open: any error answers True."""
+        try:
+            mine = self._due_at.get(oscillator_id, 0.0)
+            return all(mine <= self._due_at.get(o, 0.0)
+                       for o in self._waiting if o != oscillator_id)
+        except Exception as _e:  # noqa: BLE001 — fail-open
+            logger.warning("[phase_domain] order failed domain=%s err=%s", self.name, _e)
+            return True
+
     # ── bookkeeping ───────────────────────────────────────────────────────
     def _touch(self, oscillator_id: str) -> None:
         """Remember when a participant was last seen; forget long-idle ones."""
@@ -155,6 +276,7 @@ def get_phase_domain(
     k: float,
     amp_relax_tau_s: float = 1.0,
     load_fn: Optional[Callable[[], float]] = None,
+    capacity_fn: Optional[Callable[[], int]] = None,
 ) -> PhaseDomain:
     """The ONE domain called ``name`` — created on first use, then reused.
 
@@ -171,6 +293,7 @@ def get_phase_domain(
                 k=k,
                 amp_relax_tau_s=amp_relax_tau_s,
                 load_fn=load_fn,
+                capacity_fn=capacity_fn,
             )
         return _d
 
