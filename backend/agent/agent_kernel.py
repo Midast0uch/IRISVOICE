@@ -4697,6 +4697,13 @@ class AgentKernel:
         leak into this one.
         """
         self._last_spoken_text = (spoken or "").strip()
+        if display or self._last_spoken_text:
+            # Taxonomy DELIVERY: the reply reached the user (lengths only, never the text).
+            _emit_event(
+                self, "ANSWER_GIVEN", thread_id=getattr(self, "_turn_session_id", None),
+                payload={"display_chars": len(display or ""),
+                         "spoken_chars": len(self._last_spoken_text)},
+            )
         return display or ""
 
     @staticmethod
@@ -5373,6 +5380,7 @@ class AgentKernel:
                         pass
 
         # ── DocumentDataStore: source-of-truth keyed by document_id (G4) ────
+        _doc_stored = False
         try:
             store = self._get_document_store()
             if store is not None:
@@ -5394,8 +5402,15 @@ class AgentKernel:
                     # both rendered, neither aware of the other.
                     turn_id=turn_id,
                 )
+                _doc_stored = True
         except Exception as exc:
             logger.warning("[AgentKernel] document_data store failed: %s", exc)
+        # Taxonomy DELIVERY: a document was produced (ids and sizes only, never content).
+        _emit_event(
+            self, "ARTIFACT_PRODUCED", thread_id=getattr(self, "_turn_session_id", None),
+            payload={"document_id": str(document_id), "format": fmt,
+                     "chars": len(content or ""), "trust": trust, "stored": _doc_stored},
+        )
 
         # Session 245 (live memory footer): surface the DOCUMENT STORE on the
         # card's footer — a websearch's crawled content landing in
