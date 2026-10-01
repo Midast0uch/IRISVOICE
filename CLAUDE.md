@@ -424,6 +424,10 @@ THE LOOP (details + commands: app-testing skill, Mode A):
      the measurement and a date (PHASE_DOMAINS / PROGRESS). Measured cost of skipping
      it: the Oracle phase domain sat off for a day after its bench passed; its live
      gate took one eval run.
+     When the gate PASSES in a live session, crystallize a LANDMARK for it
+     (record_test with the eval result -> define_feature -> crystallize_landmark,
+     description = flag, how it was measured, the numbers, the off switch).
+     Example: lm_d19b422b8d778746 (oracle-phase-domain-live).
 MEASUREMENT RULES: keep the machine quiet during a run (a disk scan turned a 20 s reply
 into 274 s); measure cold (after reboot) separately from warm (C: is a hard disk, cold
 reads 10-20x slower); a harness "LEAK" note can be your own edits during the run; use

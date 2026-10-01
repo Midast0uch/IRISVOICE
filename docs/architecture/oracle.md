@@ -288,7 +288,7 @@ threshold. `scripts/bench_oracle_threads.py` re-derives the optimum on any host.
 ### 8.2 Thread affinity and spinning — measured, not shipped (2026-10-01)
 
 Asked: can the ORT session go faster on this CPU (i7-7700, 4 cores / 8 logical)?
-`benchmarks/oracle_ort_options_bench.py` (intra-op 4 kept; 40 alone + 2x20 overlapping
+A one-off bench (removed after the result, owner request; it is in commit `d3b7405e`) (intra-op 4 kept; 40 alone + 2x20 overlapping
 decisions per variant; every distribution compared bitwise — all identical):
 
 | Variant | alone p50 | overlap p50 / p95 | decisions/s |
