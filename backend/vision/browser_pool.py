@@ -44,6 +44,8 @@ import time
 import uuid
 from typing import Optional
 
+from backend.vision.browser_host import get_browser_host
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -68,6 +70,35 @@ _HOLD_OPEN: bool = os.environ.get("IRIS_BROWSER_HOLD_OPEN", "0") == "1"
 # instead of pinning the run (or the pool start lock). Env-overridable; the
 # default is generous (a cold launch measured ~33s) but finite.
 _ACQUIRE_TIMEOUT_MS: int = int(os.environ.get("IRIS_BROWSER_ACQUIRE_TIMEOUT_MS", "90000"))
+
+# D5 memory bounds for the ONE Chromium (pool + agent sessions). Renderer count
+# and JS heap are capped, no GPU process, no extensions; crawl contexts also drop
+# media/font requests (see ``BLOCKED_CRAWL_RESOURCES``).
+_LAUNCH_ARGS = [
+    "--disable-blink-features=AutomationControlled",
+    "--renderer-process-limit=4",
+    "--js-flags=--max-old-space-size=256",
+    "--disable-gpu",
+    "--disable-dev-shm-usage",
+    "--disable-extensions",
+]
+BLOCKED_CRAWL_RESOURCES = frozenset({"media", "font"})
+
+
+async def block_heavy_resources(target) -> None:
+    """Drop media and fonts before they are fetched, on a crawl context or page
+    (D5 memory bound). Best-effort - a target without ``route`` just loads them."""
+
+    async def _gate(route) -> None:
+        if route.request.resource_type in BLOCKED_CRAWL_RESOURCES:
+            await route.abort()
+        else:
+            await route.continue_()
+
+    try:
+        await target.route("**/*", _gate)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[browser_pool] resource blocking not installed: %s", exc)
 
 # Shared Chromium process state. None until the first acquire_browser().
 _pw = None  # Playwright driver instance (opaque; typed loosely — lazy import)
@@ -141,24 +172,33 @@ def _touch_browser_use() -> None:
     Only schedules a watchdog when this module owns the browser (``_owned``),
     so a hypothetical externally-supplied browser is never idled out. Uses an
     asyncio task (not ``threading.Timer``) because the stop path is async
-    (``await browser.close()``); the touch always happens from inside an
-    already-running event loop (``acquire_browser`` is a coroutine).
+    (``await browser.close()``); that task runs on the browser host loop.
     """
-    global _last_browser_use, _idle_task
+    global _last_browser_use
     _last_browser_use = time.monotonic()
     if _HOLD_OPEN:
         return  # held open for the backend lifetime — no watchdog to schedule
+    if not _owned and _idle_task is None:
+        return  # nothing to schedule and nothing to cancel
+    # The watchdog task lives on the host loop (it stops the browser there). A
+    # touch can come from any loop or thread (declare/release_browser_run are
+    # sync), so the (re)schedule is handed to the host loop, never done here.
+    host = get_browser_host()
+    if host.on_loop():
+        _reschedule_idle_watch()
+    else:
+        host.loop().call_soon_threadsafe(_reschedule_idle_watch)
+
+
+def _reschedule_idle_watch() -> None:
+    """Replace the idle watchdog task. Runs ON the host loop."""
+    global _idle_task
     with _idle_task_lock:
         if _idle_task is not None:
             _idle_task.cancel()
             _idle_task = None
         if _owned:
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = None
-            if loop is not None:
-                _idle_task = loop.create_task(_idle_watch())
+            _idle_task = asyncio.get_running_loop().create_task(_idle_watch())
 
 
 async def _idle_watch() -> None:
@@ -343,10 +383,7 @@ async def _start_browser() -> None:
         # The args launch is tolerant of doubles (tests / alternate drivers)
         # that accept only ``headless`` — retry bare rather than crash the pool.
         try:
-            browser = await pw.chromium.launch(
-                headless=True,
-                args=["--disable-blink-features=AutomationControlled"],
-            )
+            browser = await pw.chromium.launch(headless=True, args=_LAUNCH_ARGS)
         except TypeError:
             browser = await pw.chromium.launch(headless=True)
     except Exception:
@@ -364,6 +401,17 @@ async def _start_browser() -> None:
 async def acquire_browser(max_lease_ms: float = 120_000.0):
     """Ensure the shared browser is running (starting it lazily on first use)
     and return ``(browser, lease)``.
+
+    The launch and every later touch of the browser run on the browser host loop
+    (``browser_host``), whichever loop calls this. The returned Browser is a
+    host-loop object: the caller must run the coroutines that use it on the host
+    loop too (``get_browser_host().run(...)``), or only hold the lease (prewarm).
+    """
+    return await get_browser_host().run(_acquire_browser_on_host(max_lease_ms))
+
+
+async def _acquire_browser_on_host(max_lease_ms: float):
+    """``acquire_browser`` body. Runs ON the host loop.
 
     The caller MUST release the returned lease on every exit path, including
     exceptions (``BrowserSession.close()`` does this). While the lease is
@@ -480,6 +528,11 @@ async def shutdown_browser_pool() -> None:
     Cancels the idle watchdog, drops all outstanding lease bookkeeping, and
     closes the browser if this module owns it. Idempotent; never raises.
     """
+    await get_browser_host().run(_shutdown_on_host())
+
+
+async def _shutdown_on_host() -> None:
+    """``shutdown_browser_pool`` body. Runs ON the host loop."""
     global _idle_task
     task = None
     with _idle_task_lock:
@@ -510,6 +563,11 @@ async def reset_browser_pool() -> None:
     corpse signature can call this to guarantee the poisoned handles are gone
     before retrying. Idempotent; never raises.
     """
+    await get_browser_host().run(_reset_on_host())
+
+
+async def _reset_on_host() -> None:
+    """``reset_browser_pool`` body. Runs ON the host loop."""
     global _idle_task
     task = None
     with _idle_task_lock:

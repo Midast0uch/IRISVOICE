@@ -555,6 +555,19 @@ async def _fast_http_fetch_one(url, goal, job_id, page_offset, on_progress) -> F
 
 
 async def _browser_pool_fetch_one(url, goal, job_id, page_offset, on_progress) -> FetchOutcome:
+    """Tier 2: hand the whole page fetch to the browser host loop.
+
+    The pooled Chromium lives on that loop (``browser_host``); every Playwright
+    call of the fetch must run there, whichever loop the crawl is on. Never raises.
+    """
+    from backend.vision.browser_host import get_browser_host
+
+    return await get_browser_host().run(
+        _browser_pool_fetch_one_on_host(url, goal, job_id, page_offset, on_progress)
+    )
+
+
+async def _browser_pool_fetch_one_on_host(url, goal, job_id, page_offset, on_progress) -> FetchOutcome:
     """Tier 2: pooled-browser fetch via backend.vision.browser_pool.
 
     REQ-3 AC3.5 / REQ-4 AC4.2/AC4.3. Uses ``acquire_browser()`` + an isolated
@@ -584,13 +597,14 @@ async def _browser_pool_fetch_one(url, goal, job_id, page_offset, on_progress) -
     context = None
     status = None
     try:
-        from backend.vision.browser_pool import acquire_browser
+        from backend.vision.browser_pool import acquire_browser, block_heavy_resources
 
         browser, lease = await acquire_browser(max_lease_ms=45_000.0)
         # REQ-4 AC4.3: isolated context per fetch (cookies/storage/session).
         context = await asyncio.wait_for(
             browser.new_context(), timeout=_TIER2_STEP_TIMEOUT_S
         )
+        await block_heavy_resources(context)
         pg = await asyncio.wait_for(context.new_page(), timeout=_TIER2_STEP_TIMEOUT_S)
         logger.info(
             "[capabilities][job_id=%s] Tier-2 browser fetch (goal=%r): %s",

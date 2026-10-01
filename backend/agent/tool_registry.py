@@ -79,6 +79,9 @@ class ToolSpec:
     # see them — the bridge cannot execute them. get_registry_tools skips
     # hidden specs; the node router still consults them.
     hidden: bool = False
+    # The tool enforces its own consent (browser_* run every action through the
+    # click-safety gate), so the generic permission prompt never fires for it.
+    self_gated: bool = False
 
 
 # ── Registry storage ────────────────────────────────────────────────────────
@@ -1172,7 +1175,7 @@ def register_builtin_tools() -> None:
             parameters={"url": {"type": "string", "description": "Full http(s) URL to open"}},
             required=["url"],
             category="web", executor="internal", requires_internet=True,
-            permission_tier="read_only", parallel_safe=False,
+            permission_tier="read_only", parallel_safe=False, self_gated=True,
         ),
         ToolSpec(
             name="browser_observe",
@@ -1185,7 +1188,7 @@ def register_builtin_tools() -> None:
             ),
             parameters={},
             category="web", executor="internal", requires_internet=True,
-            permission_tier="read_only", parallel_safe=False,
+            permission_tier="read_only", parallel_safe=False, self_gated=True,
         ),
         ToolSpec(
             name="browser_act",
@@ -1217,7 +1220,29 @@ def register_builtin_tools() -> None:
             },
             required=["action"],
             category="web", executor="internal", requires_internet=True,
-            permission_tier="side_effect", parallel_safe=False,
+            permission_tier="side_effect", parallel_safe=False, self_gated=True,
+        ),
+        ToolSpec(
+            name="browser_explore",
+            description=(
+                "Read the pages of the site open in the live browser that are relevant to "
+                "a goal: it follows the current page's same-site links that match the goal "
+                "(at most max_pages, default 5), reads each in a background tab, and returns "
+                "the page's address, title and best passage. Reads only - it clicks and "
+                "types nothing. Use it after 'browser_open' when the answer may sit on "
+                "other pages of the same site."
+            ),
+            parameters={
+                "goal": {"type": "string", "description": "What you are looking for on this site"},
+                "max_pages": {
+                    "type": "integer",
+                    "description": "Most pages to read (1-5, default 5)",
+                    "optional": True,
+                },
+            },
+            required=["goal"],
+            category="web", executor="internal", requires_internet=True,
+            permission_tier="read_only", parallel_safe=False, self_gated=True,
         ),
     ]
 

@@ -44,9 +44,19 @@ document.getElementById('q').addEventListener('keydown', function () { window.__
 _TWO = "<!doctype html><html><head><title>Fixture Two</title></head><body><h1>Second page</h1><a href='/'>Home</a></body></html>"
 
 
+_HEAVY = """<!doctype html><html><head><title>Heavy</title>
+<style>@font-face{font-family:x;src:url(/f.woff2)} body{font-family:x}</style></head><body>
+<h1>Heavy page</h1><p>Enough visible text for the crawl to call this page usable.</p>
+<video src="/clip.mp4" preload="auto"></video></body></html>"""
+
+
 class _Handler(http.server.BaseHTTPRequestHandler):
+    hits: list = []  # every request path the fixture server saw
+
     def do_GET(self):  # noqa: N802 — http.server API
-        body = (_TWO if self.path.startswith("/two.html") else _INDEX).encode("utf-8")
+        _Handler.hits.append(self.path)
+        page = _TWO if self.path.startswith("/two.html") else _HEAVY if self.path.startswith("/heavy.html") else _INDEX
+        body = page.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -77,6 +87,20 @@ def allow_loopback(monkeypatch):
 def tmp_captures(monkeypatch, tmp_path):
     monkeypatch.setattr(capture_store, "_store", capture_store.CaptureStore(root=str(tmp_path)))
     return tmp_path
+
+
+@pytest.fixture(autouse=True)
+def brain_judges_fixture_actions_safe(monkeypatch):
+    """The click-safety gate (W2) sends an ambiguous element (the fixture's "Press me")
+    to the Brain judge, and there is no model in this test. The rules stay real; only
+    the model call answers "safe" so these tests keep driving real input."""
+    from backend.agent import click_safety_shadow
+    from backend.agent.tools import click_safety
+
+    monkeypatch.setattr(click_safety, "_call_llm", lambda _p: '{"verdict": "safe", "reason": "fixture"}')
+    # No Oracle engine either: the shadow row's scoring would load the decision model
+    # on a background lane while the browser is being driven.
+    monkeypatch.setattr(click_safety_shadow, "ENGINE", None)
 
 
 class _Events:
@@ -337,47 +361,87 @@ async def test_observe_and_act_without_an_open_browser_say_so(conv):
         assert res["success"] is False and "browser_open" in res["error"]
 
 
-# ── why the session has its own loop and Chromium ──────────────────────────
+# ── one Chromium on one host loop (W1 / REQ-5) ─────────────────────────────
 
 
-async def test_a_live_session_does_not_block_the_shared_pool_on_another_loop(site, allow_loopback, conv, monkeypatch):
-    """The reason the tools own a private loop + Chromium (measured 2026-09-30): a
-    session built on the shared pool and held open makes the pool's next user on a
-    DIFFERENT loop (every crawl tool call runs on a fresh one) hang. With the private
-    browser a crawl-style pool user completes while the session is alive, and the
-    session never asks the pool for a browser."""
+def _chromium_tree():
+    """(processes, browser_main_processes, working_set_bytes, main_cmdlines) of this
+    process's Chromium descendants. Working set = summed RSS (Windows working set)."""
+    psutil = pytest.importorskip("psutil")
+    procs, mains, ws = 0, 0, 0
+    cmdlines: list = []
+    for p in psutil.Process().children(recursive=True):
+        try:
+            if not any(k in p.name().lower() for k in ("chrom", "headless_shell")):
+                continue
+            cmd = p.cmdline()
+            procs += 1
+            ws += p.memory_info().rss
+            if not any(a.startswith("--type=") for a in cmd):
+                mains += 1
+                cmdlines.append(cmd)
+        except psutil.Error:
+            continue
+    return procs, mains, ws, cmdlines
+
+
+async def test_a_session_and_a_crawl_fetch_on_another_loop_share_one_chromium(
+    site, allow_loopback, conv, monkeypatch, record_property,
+):
+    """W1 DONE: a pool crawl fetch (on a fresh event loop, as every crawl tool call
+    runs) and an agent browser session run at the same time and both succeed; the
+    backend launches exactly ONE Chromium, with the D5 memory flags; the crawl
+    context never requests media or fonts."""
     import asyncio
-    import threading
 
+    from backend.crawler import capabilities
     from backend.vision import browser_pool
 
-    real_acquire = browser_pool.acquire_browser
-    calls: list = []
+    await browser_pool.shutdown_browser_pool()  # a clean pool: count this test's launches
+    launches: list = []
+    real_start = browser_pool._start_browser
 
-    async def spy(*a, **k):
-        calls.append(threading.current_thread().name)
-        return await real_acquire(*a, **k)
+    async def counting_start():
+        launches.append(1)
+        await real_start()
 
-    monkeypatch.setattr(browser_pool, "acquire_browser", spy)
-    assert (await browser_tools.browser_open(conv, site + "/", None))["success"]
-    assert calls == [], "an interactive session must not take its browser from the shared pool"
+    monkeypatch.setattr(browser_pool, "_start_browser", counting_start)
+    _Handler.hits.clear()
+    # Warm the pool first (the plan-time prewarm does this in production): the crawl's
+    # per-page budget is 8 s of navigation and does not include a cold Chromium start
+    # that competes with the session's own open for the CPU.
+    _warm_browser, warm_lease = await browser_pool.acquire_browser()
+    warm_lease.release()
 
-    async def crawl_style_pool_user():
-        browser, lease = await browser_pool.acquire_browser()
-        try:
-            ctx = await browser.new_context()
-            page = await ctx.new_page()
-            await page.set_content("<i>pool-ok</i>")
-            return await page.inner_text("i")
-        finally:
-            lease.release()
-            await browser_pool.shutdown_browser_pool()  # same loop that started it
+    outcome: list = []
 
-    out: list = []
-    worker = threading.Thread(
-        target=lambda: out.append(asyncio.run(asyncio.wait_for(crawl_style_pool_user(), 60))),
-    )
+    def crawl_on_its_own_loop():
+        outcome.append(asyncio.run(asyncio.wait_for(
+            capabilities._browser_pool_fetch_one(site + "/heavy.html", "heavy page", "job-w1", 0, None), 90,
+        )))
+
+    worker = threading.Thread(target=crawl_on_its_own_loop)
     worker.start()
-    await asyncio.to_thread(worker.join, 90)
-    assert out == ["pool-ok"], "the shared pool hung or failed while a session was alive"
-    assert (await browser_tools.browser_observe(conv))["success"], "the session survived the pool user"
+    opened = await browser_tools.browser_open(conv, site + "/", None)
+    await asyncio.to_thread(worker.join, 120)
+
+    assert opened["success"], opened
+    (fetched,) = outcome
+    assert fetched.page is not None and "Heavy page" in fetched.page.markdown, fetched.verdict
+    assert len(launches) == 1, f"{len(launches)} Chromium launches for one crawl + one session"
+    assert (await browser_tools.browser_observe(conv))["success"], "the session survived the crawl fetch"
+
+    procs, mains, ws, cmdlines = _chromium_tree()
+    record_property("chromium_working_set_mb_one_crawl_one_session", round(ws / 1e6))
+    print(f"\n[W1] one crawl + one session: chromium procs={procs} browsers={mains} working_set={ws / 1e6:.0f} MB")
+    assert mains == 1, f"{mains} Chromium browser processes are alive"
+    flags = " ".join(cmdlines[0])
+    for flag in ("--renderer-process-limit=4", "--js-flags=--max-old-space-size=256", "--disable-gpu"):
+        assert flag in flags, f"{flag} missing from the launch"
+    assert "/heavy.html" in _Handler.hits
+    assert not {"/clip.mp4", "/f.woff2"} & set(_Handler.hits), "the crawl context fetched media or a font"
+
+    await browser_tools.close_conversation_browser(conv)
+    await browser_pool.shutdown_browser_pool()
+    _, mains_after, _, _ = _chromium_tree()
+    assert mains_after == 0, "the Chromium did not stop on shutdown"

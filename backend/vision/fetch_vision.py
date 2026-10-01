@@ -268,6 +268,23 @@ class FetchVisionCapability(FetchCapability):
         on_action: Optional[Callable[[dict], None]] = None,
         page_offset: int = 0,
     ) -> FetchOutcome:
+        """Run the action loop on the browser host loop (see ``browser_host``):
+        the session's Playwright objects live there, so the whole loop runs
+        there, whichever loop the crawl is on. Never raises."""
+        from backend.vision.browser_host import get_browser_host
+
+        return await get_browser_host().run(
+            self._fetch_one_on_host(url, goal, job_id, on_action, page_offset)
+        )
+
+    async def _fetch_one_on_host(
+        self,
+        url: str,
+        goal: str | GoalAnatomy,
+        job_id: str,
+        on_action: Optional[Callable[[dict], None]] = None,
+        page_offset: int = 0,
+    ) -> FetchOutcome:
         """Run the goal-directed action loop for one URL, bounded by
         SessionBounds. Always returns a FetchOutcome — never raises.
 

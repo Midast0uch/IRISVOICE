@@ -28,7 +28,7 @@ _DER_SIGNALS = [
 _EXTERNAL_TOOLS = frozenset({
     "web_search", "crawler_query",
     # Live browser control: what a page shows the agent is web content.
-    "browser_open", "browser_observe", "browser_act",
+    "browser_open", "browser_observe", "browser_act", "browser_explore",
 })
 
 # Zone used for external/web-derived fragments. Reuses the existing 'reference'

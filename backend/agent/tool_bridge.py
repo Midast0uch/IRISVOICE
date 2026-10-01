@@ -1389,14 +1389,39 @@ class AgentToolBridge:
                 _ctx.run(_web_timing_note_vision_event, payload)
             _ui_emit(_NS(event=event, payload=payload))
 
-        if tool_name == "browser_open":
-            return await browser_tools.browser_open(conversation_id, params.get("url") or "", _emit)
-        if tool_name == "browser_observe":
-            return await browser_tools.browser_observe(conversation_id, _emit)
-        return await browser_tools.browser_act(
-            conversation_id, params.get("action") or "", params.get("element_id"),
-            params.get("text"), _emit,
-        )
+        # The click-safety gate reads the task's goal and needs the ids for its
+        # question card; the context travels to the browser host loop with the call.
+        from backend.agent.tools import click_safety
+
+        _goal = ""
+        _turn = None
+        try:
+            from backend.agent.agent_kernel import get_agent_kernel
+
+            _kernel = get_agent_kernel(conversation_id, session_id)
+            _goal = str(getattr(_kernel, "_current_turn_text", "") or "")
+            _turn = getattr(_kernel, "_current_turn_id", None) or session_id
+        except Exception:  # noqa: BLE001 - the gate works without a goal
+            pass
+        _act_tok = click_safety.ACT_CONTEXT.set({
+            "goal": _goal, "turn_id": _turn, "session_id": session_id,
+            "conversation_id": conversation_id,
+        })
+        try:
+            if tool_name == "browser_open":
+                return await browser_tools.browser_open(conversation_id, params.get("url") or "", _emit)
+            if tool_name == "browser_observe":
+                return await browser_tools.browser_observe(conversation_id, _emit)
+            if tool_name == "browser_explore":
+                return await browser_tools.browser_explore(
+                    conversation_id, params.get("goal") or "", params.get("max_pages") or 5, _emit,
+                )
+            return await browser_tools.browser_act(
+                conversation_id, params.get("action") or "", params.get("element_id"),
+                params.get("text"), _emit,
+            )
+        finally:
+            click_safety.ACT_CONTEXT.reset(_act_tok)
 
     async def _handle_ask_user_question(self, params: Dict, session_id: str) -> Dict:
         """Handle the ask_user_question tool — ask user, wait for answer.
@@ -1742,7 +1767,11 @@ class AgentToolBridge:
                 tool_name, tier.value, level, _auto, action.value,
             )
 
-            if action.value in ("require_approval", "require_confirmation"):
+            # A self-gated tool enforces its own consent (browser_act -> the
+            # click-safety gate decides, escalating to the user only when unsure),
+            # so the generic prompt never fires for it.
+            _self_gated = bool(getattr(resolve_tool(tool_name), "self_gated", False))
+            if action.value in ("require_approval", "require_confirmation") and not _self_gated:
                 # T15 fail-fast (REQ-9 AC9.1/AC9.5): no approval UI attached
                 # → settle NOW with APPROVAL_UNAVAILABLE, never wait the
                 # 120 s timeout. Approval UI attached → fall through to the
@@ -1981,7 +2010,7 @@ class AgentToolBridge:
             # ── Live browser control (specs/websearch-vision-browser REQ-4/5) ──
             # One page per conversation; the user sees each action's cursor
             # glide before the input. Gated by the internet flag (registry).
-            if tool_name in ("browser_open", "browser_observe", "browser_act"):
+            if tool_name in ("browser_open", "browser_observe", "browser_act", "browser_explore"):
                 _wtm = {}
                 _wt_tok = _WEB_TIMING.set(_wtm)
                 _wt0 = time.monotonic()

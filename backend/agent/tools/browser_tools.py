@@ -6,19 +6,16 @@ class): ``browser_open`` loads a URL, ``browser_observe`` lists what can be
 clicked or typed into (Set-of-Marks), ``browser_act`` does it with real mouse and
 keyboard input while the overlay shows the cursor arriving first.
 
-WHY A PRIVATE LOOP AND A PRIVATE CHROMIUM. The DER loop runs every tool call on a
-fresh event loop (``tool_decision._run_async``), and a Playwright object only
-works on the loop that created it. The shared ``browser_pool`` Chromium is bound
-to whichever loop started it: measured 2026-09-30, a session held open on one
-loop makes the pool's next user on another loop HANG (and across two
-``asyncio.run`` calls the pooled browser is a corpse). A session that must
-outlive one tool call therefore lives on ONE dedicated loop thread with its own
-Chromium, and every tool call marshals onto it. Crawls keep the shared pool and
-never touch this browser.
+WHY ONE HOST LOOP. The DER loop runs every tool call on a fresh event loop
+(``tool_decision._run_async``), and a Playwright object only works on the loop
+that created it (measured 2026-09-30: a session held open on one loop made the
+pool's next user on another loop HANG). A session that must outlive one tool call
+therefore lives on the ONE browser host loop (``vision.browser_host``), and every
+tool call marshals onto it. The same loop hosts the crawl pool's Chromium, so the
+backend runs ONE Chromium; each conversation gets its own BrowserContext.
 
 Bounded: at most ``IRIS_BROWSER_MAX_SESSIONS`` sessions (default 2, LRU-closed),
-each idle-closed after ``_IDLE_TTL_S``; the private Chromium exits with its last
-session.
+each idle-closed after ``_IDLE_TTL_S``; the pool stops the Chromium when idle.
 """
 from __future__ import annotations
 
@@ -29,9 +26,12 @@ import os
 import threading
 import time
 import uuid
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
+
+from backend.agent.tools import click_safety
+from backend.vision.browser_host import get_browser_host
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +44,22 @@ _REAP_EVERY_S = 30.0
 # one DOM round trip plus the settle.
 _OPEN_TIMEOUT_S = 120.0
 _OBSERVE_TIMEOUT_S = 30.0
-_ACT_TIMEOUT_S = 60.0
-_LAUNCH_TIMEOUT_S = 60.0
+# act = the input itself (60 s) + the click-safety gate's Brain judge and the
+# user's answer window, so a question never eats the action's own time.
+_ACT_TIMEOUT_S = 60.0 + click_safety.JUDGE_TIMEOUT_S + click_safety.ASK_TIMEOUT_S
+# browser_explore: the whole read of the related pages, and one page's navigation.
+_EXPLORE_TIMEOUT_S = 30.0
+_EXPLORE_MAX_PAGES = 5
+_EXPLORE_NAV_MS = 8_000
+_EXPLORE_PASSAGE_CHARS = 400
+_LINKS_JS = (
+    "() => Array.from(document.querySelectorAll('a[href]')).slice(0, 300)"
+    ".map(a => [a.href, (a.innerText || a.getAttribute('aria-label') || '').trim().slice(0, 120)])"
+)
+_MAIN_TEXT_JS = (
+    "() => { const r = document.querySelector('article') || document.querySelector('main') "
+    "|| document.body; return r ? r.innerText : ''; }"
+)
 # A long interactive task takes many steps; the defaults for vision sessions
 # (12 actions / 60 s) are sized for a reading pass, not for this.
 _SESSION_MAX_ACTIONS = 150
@@ -54,106 +68,46 @@ _SESSION_MAX_WALL_MS = 900_000
 _MAX_IMAGE_B64 = 600_000
 
 
-class _NullLease:
-    """Stands in for a pool lease: the private browser is closed by its own
-    last session, not by an idle watchdog."""
-
-    def renew(self, *_a: Any, **_k: Any) -> None:
-        pass
-
-    def release(self) -> None:
-        pass
-
-
 @dataclass
 class _Entry:
     session: Any
     emit: Optional[Emit] = None
     last_used: float = field(default_factory=time.monotonic)
+    # Elements the click-safety gate refused (or the user declined) in this task:
+    # the agent must not retry the same one. Bounded.
+    refused: "deque[str]" = field(default_factory=lambda: deque(maxlen=64))
 
 
 class _BrowserRuntime:
-    """The dedicated loop thread, its sessions and its private Chromium.
+    """The agent's browser sessions, hosted on the shared browser host loop.
 
-    ``sessions`` and the browser handles are touched ONLY from the loop thread,
-    so they need no lock; ``run`` is the single way in from any other loop.
+    ``sessions`` is touched ONLY from the host loop, so it needs no lock; ``run``
+    is the single way in from any other loop. The Chromium is the pool's - one per
+    backend process - and each conversation gets its own BrowserContext from it.
     """
 
     def __init__(self) -> None:
-        self._start_lock = threading.Lock()
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._reaper_started = False
         self.sessions: "OrderedDict[str, _Entry]" = OrderedDict()
-        self._pw: Any = None
-        self._browser: Any = None
-        self._launch_lock: Optional[asyncio.Lock] = None
 
     def loop(self) -> asyncio.AbstractEventLoop:
-        with self._start_lock:
-            if self._loop is None:
-                loop = asyncio.new_event_loop()
-                threading.Thread(
-                    target=loop.run_forever, name="iris-browser-loop", daemon=True,
-                ).start()
-                asyncio.run_coroutine_threadsafe(self._reap_forever(), loop)
-                self._loop = loop
-            return self._loop
+        loop = get_browser_host().loop()
+        if not self._reaper_started:
+            self._reaper_started = True
+            asyncio.run_coroutine_threadsafe(self._reap_forever(), loop)
+        return loop
 
     async def run(self, coro: Any, timeout: float) -> Any:
-        """Run ``coro`` on the browser loop from any loop; cancel it on timeout."""
-        fut = asyncio.run_coroutine_threadsafe(coro, self.loop())
-        try:
-            return await asyncio.wait_for(asyncio.wrap_future(fut), timeout)
-        except BaseException:  # timeout or the caller being cancelled
-            fut.cancel()
-            raise
-
-    # ── private browser (loop thread only) ──────────────────────────────────
-
-    async def acquire(self, max_lease_ms: float = 0) -> tuple:
-        """Drop-in for ``browser_pool.acquire_browser`` (see BrowserSession)."""
-        if self._launch_lock is None:
-            self._launch_lock = asyncio.Lock()
-        async with self._launch_lock:
-            if self._browser is not None and not self._browser.is_connected():
-                await self.stop_browser()
-            if self._browser is None:
-                from playwright.async_api import async_playwright  # lazy, heavy
-
-                pw = await async_playwright().start()
-                try:
-                    self._browser = await asyncio.wait_for(
-                        pw.chromium.launch(
-                            headless=True,
-                            args=["--disable-blink-features=AutomationControlled"],
-                        ),
-                        _LAUNCH_TIMEOUT_S,
-                    )
-                except BaseException:
-                    try:
-                        await pw.stop()
-                    except Exception:  # noqa: BLE001
-                        pass
-                    raise
-                self._pw = pw
-                logger.info("[browser_tools] private browser started")
-            return self._browser, _NullLease()
-
-    async def stop_browser(self) -> None:
-        browser, pw = self._browser, self._pw
-        self._browser = self._pw = None
-        for closer in (browser, pw):
-            if closer is None:
-                continue
-            try:
-                await (closer.close() if closer is browser else closer.stop())
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("[browser_tools] private browser stop: %s", exc)
+        """Run ``coro`` on the host loop from any loop; cancel it on timeout."""
+        self.loop()
+        return await get_browser_host().run(coro, timeout)
 
     # ── session lifecycle (loop thread only) ────────────────────────────────
 
     async def close_entry(self, conv: str, reason: str) -> None:
-        """Close one conversation's session, tell the panel the run is over, and
-        stop the private Chromium when it was the last one. Never raises."""
+        """Close one conversation's session and tell the panel the run is over.
+        The shared Chromium stays up: the pool's idle watchdog stops it when no
+        crawl or session needs it. Never raises."""
         entry = self.sessions.pop(conv, None)
         if entry is None:
             return
@@ -168,8 +122,6 @@ class _BrowserRuntime:
         except Exception as exc:  # noqa: BLE001
             logger.debug("[browser_tools] session close conv=%s: %s", conv, exc)
         logger.info("[browser_tools] session closed conv=%s reason=%s", conv, reason)
-        if not self.sessions:
-            await self.stop_browser()
 
     async def _reap_forever(self) -> None:
         while True:
@@ -327,6 +279,25 @@ async def browser_act(
         return _fail(f"browser_act failed: {str(exc)[:200]}")
 
 
+async def browser_explore(
+    conversation_id: str, goal: str, max_pages: Any = 5, emit: Optional[Emit] = None,
+) -> Dict[str, Any]:
+    """Read the goal-relevant same-site pages linked from the live page (read-only)."""
+    goal = (goal or "").strip()
+    if not goal:
+        return _fail("browser_explore needs a goal")
+    try:
+        pages = max(1, min(int(max_pages or _EXPLORE_MAX_PAGES), _EXPLORE_MAX_PAGES))
+    except (TypeError, ValueError):
+        pages = _EXPLORE_MAX_PAGES
+    try:
+        return await _RT.run(_do_explore(conversation_id, goal, pages, emit), _EXPLORE_TIMEOUT_S + 5.0)
+    except asyncio.TimeoutError:
+        return _fail("browser_explore timed out")
+    except Exception as exc:  # noqa: BLE001
+        return _fail(f"browser_explore failed: {str(exc)[:200]}")
+
+
 async def close_conversation_browser(conversation_id: str) -> None:
     """Close a conversation's browser session (conversation end). Never raises."""
     try:
@@ -383,19 +354,14 @@ async def _do_open(conv: str, url: str, emit: Optional[Emit]) -> Dict[str, Any]:
             bounds=SessionBounds(
                 max_actions=_SESSION_MAX_ACTIONS, max_wall_ms=_SESSION_MAX_WALL_MS,
             ),
-            acquire=_RT.acquire,
         )
         try:
             await session.open()
         except Exception as exc:  # noqa: BLE001 — open() released what it held
             await session.close()
-            if not _RT.sessions:
-                await _RT.stop_browser()
             return _fail(f"browser unavailable: {str(exc)[:200]}")
         if not session.available():
             await session.close()
-            if not _RT.sessions:
-                await _RT.stop_browser()
             return _fail("browser unavailable: the browser could not be started")
         _RT.sessions[conv] = _Entry(session=session, emit=emit)
         _emit(emit, "OPEN_TAB", {
@@ -451,6 +417,44 @@ async def _do_observe(conv: str, want_image: bool, emit: Optional[Emit]) -> Dict
     return out
 
 
+async def _gate_action(entry: _Entry, action: str, mark: dict, text: Optional[str]) -> Optional[Dict[str, Any]]:
+    """The click-safety gate for one element action: ``None`` = go ahead, else the
+    refusal result (``ok=false, pivot=true``). No input is dispatched on a refusal.
+
+    safe -> act; unsafe -> refuse; unsure -> ask the user (bounded); a timeout or
+    a "no" refuses. Refused elements are remembered for the rest of the task.
+    One shadow row per assessment, off this path.
+    """
+    session = entry.session
+    ctx = click_safety.ACT_CONTEXT.get() or {}
+    page_url = str(getattr(getattr(session, "_page", None), "url", "") or getattr(session, "url", "") or "")
+    key = click_safety.mark_key(mark, page_url)
+    what = click_safety.describe(action, mark, page_url, text)
+    if key in entry.refused:
+        return click_safety.refusal(f"{what} was already refused in this task", "refused")
+
+    verdict, reason = await click_safety.assess(ctx.get("goal") or "", action, mark, page_url, text)
+    try:
+        from backend.agent import click_safety_shadow
+
+        click_safety_shadow.submit_assessment(f'{ctx.get("goal") or ""} | {what}', verdict)
+    except Exception as exc:  # noqa: BLE001 - the shadow never blocks an action
+        logger.debug("[browser_tools] click_safety shadow skipped: %s", exc)
+    if verdict == click_safety.SAFE:
+        return None
+    if verdict == click_safety.UNSAFE:
+        entry.refused.append(key)
+        return click_safety.refusal(f"{what} is not allowed: {reason}", verdict)
+    question = (
+        f"IRIS wants to {what}. Task: {(ctx.get('goal') or 'browse')[:160]}. "
+        f"Why I ask: {reason}. Allow it?"
+    )
+    if await click_safety.escalate(question, ctx):
+        return None
+    entry.refused.append(key)
+    return click_safety.refusal(f"the user did not approve: {what}", verdict)
+
+
 async def _do_act(
     conv: str, action: str, element_id: Any, text: Optional[str], emit: Optional[Emit],
 ) -> Dict[str, Any]:
@@ -458,11 +462,18 @@ async def _do_act(
     if entry is None:
         return _fail(problem)
     session = entry.session
-    target = ""
+    mark = None
     try:
-        target = _label(next((m for m in session.last_marks if m.get("id") == int(element_id)), None))
+        mark = next((m for m in session.last_marks if m.get("id") == int(element_id)), None)
     except (TypeError, ValueError):
         pass
+    target = _label(mark)
+    # An unknown element id never reaches the gate: interact() reports the stale id
+    # itself, before any input or cursor event.
+    if mark is not None:
+        blocked = await _gate_action(entry, action, mark, text)
+        if blocked is not None:
+            return blocked
     res = await session.interact(action, element_id, text, emit)
     if not res["ok"]:
         return _fail(res["error"])
@@ -478,4 +489,80 @@ async def _do_act(
         ),
         "url": res["url"], "title": res["title"], "changed": res["changed"],
         "marks_seq": res["marks_seq"], "trust": "untrusted",
+    }
+
+
+def _best_passage(text: str, goal: str) -> str:
+    """The paragraph of ``text`` that shares the most goal words (the first one when
+    none does), at most ``_EXPLORE_PASSAGE_CHARS`` long."""
+    from backend.crawler.cite import _tok
+    from backend.crawler.site_links import goal_tokens
+
+    want = goal_tokens(goal)
+    chunks = [c.strip() for c in (text or "").split("\n") if len(c.strip()) >= 40]
+    if not chunks:
+        return (text or "").strip()[:_EXPLORE_PASSAGE_CHARS]
+    best = max(chunks, key=lambda c: len(want & _tok(c)))
+    return best[:_EXPLORE_PASSAGE_CHARS]
+
+
+async def _read_related_page(context: Any, url: str, goal: str, budget_s: float) -> Dict[str, Any]:
+    """Open ``url`` in a throwaway tab of the session's context, read it, close it."""
+    from backend.vision.browser_pool import block_heavy_resources
+
+    page = await context.new_page()
+    try:
+        await block_heavy_resources(page)
+        await page.goto(url, wait_until="domcontentloaded",
+                        timeout=int(min(_EXPLORE_NAV_MS, max(1.0, budget_s) * 1000)))
+        title = (await page.title() or "").strip()[:120]
+        text = await page.evaluate(_MAIN_TEXT_JS)
+        return {"url": str(page.url or url), "title": title, "passage": _best_passage(text, goal)}
+    finally:
+        try:
+            await page.close()
+        except Exception:  # noqa: BLE001 - a leaked tab is closed with its context
+            pass
+
+
+async def _do_explore(conv: str, goal: str, max_pages: int, emit: Optional[Emit]) -> Dict[str, Any]:
+    """Visit the goal-relevant same-site links of the session's current page, one
+    background tab at a time, within ``_EXPLORE_TIMEOUT_S``. Reads only."""
+    from backend.crawler.site_links import rank_same_site
+
+    entry, problem = _need_session(conv, emit)
+    if entry is None:
+        return _fail(problem)
+    session = entry.session
+    page, context = getattr(session, "_page", None), getattr(session, "_context", None)
+    if page is None or context is None:
+        return _fail("no open browser for this conversation; call browser_open(url) first")
+    base = str(getattr(page, "url", "") or session.url)
+    links = [(str(h), str(t)) for h, t in await page.evaluate(_LINKS_JS)]
+    targets = rank_same_site(links, base, goal, limit=max_pages)
+    deadline = time.monotonic() + _EXPLORE_TIMEOUT_S
+    visited: list = []
+    for url in targets:
+        left = deadline - time.monotonic()
+        if left < 1.0:
+            break  # the time bound holds: what is read so far is returned
+        if await _egress_error(url):
+            continue
+        try:
+            visited.append(await _read_related_page(context, url, goal, left))
+        except Exception as exc:  # noqa: BLE001 - one bad page does not stop the rest
+            logger.debug("[browser_tools] explore %s failed conv=%s: %s", url, conv, exc)
+    try:
+        session._renew_lease()
+    except Exception:  # noqa: BLE001
+        pass
+    if not visited:
+        body = "No other page of this site that matches the goal could be read."
+    else:
+        body = f'Read {len(visited)} related page(s) of {base} for "{goal}":\n' + "\n".join(
+            f'[{i}] {p["url"]} - "{p["title"]}"\n    {p["passage"]}' for i, p in enumerate(visited, 1)
+        )
+    return {
+        "success": True, "content": body, "pages": visited,
+        "skipped": len(targets) - len(visited), "url": base, "trust": "untrusted",
     }
