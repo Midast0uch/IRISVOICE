@@ -36,6 +36,19 @@ EVIDENCE = frozenset({
 # and RL reward. claim (the model's own) and verifier (the system's own check)
 # are inside evidence.
 OUTSIDE_EVIDENCE = frozenset({"test", "completion", "user", "recurrence", "corroboration"})
+# Who produced the LABEL. Only rule and user labels are facts; oracle and brain
+# labels are guesses about the event (e.g. "this message was a confirmation").
+LABEL_SOURCES = frozenset({"rule", "user", "oracle", "brain"})
+TRUSTED_LABEL_SOURCES = frozenset({"rule", "user"})
+
+
+def counts_as_outside_evidence(evidence: str, label_source: str) -> bool:
+    """THE gate every decision that consumes evidence uses (chain genesis,
+    landmark promotion, RL reward). An event is outside evidence only when its
+    evidence kind is outside AND its label is a fact, not a model's guess - an
+    Oracle-typed CONFIRMATION must never promote anything until the Oracle has
+    earned enforcement (CLAUDE.md "the Oracle earns its jobs")."""
+    return evidence in OUTSIDE_EVIDENCE and label_source in TRUSTED_LABEL_SOURCES
 
 
 @dataclass(frozen=True)

@@ -66,3 +66,14 @@ def test_hash_signature_is_deterministic_and_never_a_stand_in():
     assert a != ea.hash_signature("3.00,1.00,1.05,0.35", "der", "general")
     assert ea.hash_signature(None, "der", "general") is None
     assert ea.hash_signature("rest:input:1", "der", "general") is None
+
+
+def test_only_facts_count_as_outside_evidence():
+    """An Oracle or Brain GUESS that a message confirms something is not outside
+    evidence; only rule- or user-produced labels are facts."""
+    assert ea.counts_as_outside_evidence("user", "user")
+    assert ea.counts_as_outside_evidence("test", "rule")
+    assert not ea.counts_as_outside_evidence("user", "oracle")
+    assert not ea.counts_as_outside_evidence("user", "brain")
+    assert not ea.counts_as_outside_evidence("verifier", "rule")
+    assert ea.TRUSTED_LABEL_SOURCES < ea.LABEL_SOURCES

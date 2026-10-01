@@ -258,6 +258,9 @@ def emit_event(
         if evidence not in ea.EVIDENCE:
             logger.warning("[memory_events] refused label=%s: evidence %r not in alphabet", label, evidence)
             return None
+        if label_source not in ea.LABEL_SOURCES:
+            logger.warning("[memory_events] refused label=%s: label_source %r unknown", label, label_source)
+            return None
         spec = ea.resolve_event_label(label)
         family = spec.family if spec else (family_hint if family_hint in ea.FAMILIES else None)
         valence = valence or (spec.valence if spec else None)
