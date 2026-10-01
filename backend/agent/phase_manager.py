@@ -39,7 +39,7 @@ import os
 import threading
 import time as _perf_t
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence
 
 from backend.agent.trig_coupling import splay_force, align_force
 from backend.agent.call_context import (
@@ -142,9 +142,24 @@ class PhaseRegistry:
     mutation happens under ``_lock`` (T6.5).
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        k: Optional[float] = None,
+        amp_relax_tau_s: Optional[float] = None,
+        default_period_s: Optional[float] = None,
+        load_fn: Optional[Callable[[], float]] = None,
+    ) -> None:
+        # The singleton passes nothing, so every ``None`` below falls back to
+        # the module tunables and the rate meter at CALL time — the router path
+        # is unchanged. A ``PhaseDomain`` (phase_domain.py) passes its OWN
+        # values, so a second registry never reads this module's tunables.
         self._oscillators: Dict[str, PhaseOscillator] = {}
         self._lock = threading.Lock()
+        self._k = k
+        self._amp_relax_tau_s = amp_relax_tau_s
+        self._default_period_s = default_period_s
+        self._load_fn = load_fn
 
     # ── registration (T3.2, T6.2) ────────────────────────────────────────
     def register(
@@ -182,7 +197,12 @@ class PhaseRegistry:
 
             _period = max(natural_period_s, MIN_PERIOD_S)
             if natural_period_s == 1.0:
-                _period = max(DEFAULT_PERIOD_S, MIN_PERIOD_S)
+                _period = max(
+                    DEFAULT_PERIOD_S
+                    if self._default_period_s is None
+                    else self._default_period_s,
+                    MIN_PERIOD_S,
+                )
             _theta = self._widest_gap(quota_id)
             _load = self._load_fraction(quota_id)
             _amp = max(1.0 - _load, R_MIN)
@@ -291,7 +311,9 @@ class PhaseRegistry:
                         _dt = 0.0  # already at/past firing point — stay due
 
                 # Per-oscillator signed coupling force (T6.1 — no abs!)
-                _coupling = splay_force(_osc.theta, _thetas, k=PHASE_K)
+                _coupling = splay_force(
+                    _osc.theta, _thetas, k=PHASE_K if self._k is None else self._k
+                )
 
                 # Phase advance: natural + coupling
                 _osc.theta = (_osc.theta + _omega * _dt + _coupling * _dt) % (
@@ -299,7 +321,11 @@ class PhaseRegistry:
                 )
 
                 # Amplitude relaxation: r ← lerp(r, target, dt / tau)
-                _tau = AMP_RELAX_TAU_S
+                _tau = (
+                    AMP_RELAX_TAU_S
+                    if self._amp_relax_tau_s is None
+                    else self._amp_relax_tau_s
+                )
                 _frac = min(1.0, _dt / _tau)
                 _osc.amplitude = _osc.amplitude + (_target_amp - _osc.amplitude) * _frac
                 _osc.amplitude = max(R_MIN, min(1.0, _osc.amplitude))
@@ -349,7 +375,16 @@ class PhaseRegistry:
         unmetered quota or zero ceiling → returns 0.0.  Dead ``_c is None``
         branch (F15) addressed: ``get_ceiling`` now always returns a float,
         so guard is explicit for zero/negative/inf only.
+
+        A registry built with its own ``load_fn`` (a ``PhaseDomain``) reads THAT
+        instead — its resource is not a provider rate limit. A failing
+        ``load_fn`` reads as 0.0 (fail-open: no load signal never blocks).
         """
+        if self._load_fn is not None:
+            try:
+                return max(0.0, min(1.0, float(self._load_fn())))
+            except Exception:  # noqa: BLE001 — a load fault must not stall the gate
+                return 0.0
         _d = get_rate_meter().draw(quota_id)
         _c = get_rate_meter().get_ceiling(quota_id)
         if _c <= 0 or math.isinf(_c):

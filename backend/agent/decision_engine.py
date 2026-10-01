@@ -44,6 +44,7 @@ import json
 import logging
 import os
 import re
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -488,6 +489,80 @@ def load_engine_config(
 # sync with the pool's `thread_name_prefix`.
 _INFER_THREAD_PREFIX = "iris-decision-inference"
 
+# ---------------------------------------------------------------------------
+# Oracle phase participation (flag IRIS_ORACLE_PHASE, default OFF)
+# ---------------------------------------------------------------------------
+# Spec: specs/oracle-phase-concurrency. Design: docs/architecture/PHASE_DOMAINS.md.
+# With the flag on, `decide` takes NO engine lock: it passes the Oracle's own
+# phase domain (a participant per "{session}:{consumer_id}", priority classes
+# bypass, fail-open) and then runs its own single-question session run, several
+# at once on the one loaded session (`InferenceSession.run` is thread-safe).
+# NOTHING shares a pass between questions (oracle.md S9). The resource enters the
+# domain only as a LOAD parameter - runs in flight over the CPU's run capacity
+# (logical cores / intra-op threads) - never as a cap or a semaphore.
+ORACLE_PHASE_DOMAIN = "decision.oracle_cpu"
+# Upper bound on how long shutdown waits for in-flight runs before it swaps the
+# backend anyway (a stuck ORT run must not hang process teardown).
+_SHUTDOWN_DRAIN_S = 30.0
+_ORACLE_RUNS_LOCK = threading.Lock()
+_oracle_runs_in_flight = 0   # model runs executing now, process-wide (one CPU)
+_oracle_intra_op = 0         # the loaded session's intra-op thread count
+
+
+def _oracle_phase_enabled() -> bool:
+    return os.environ.get("IRIS_ORACLE_PHASE", "").strip().lower() in (
+        "1", "true", "on", "yes",
+    )
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        v = os.environ.get(name)
+        return float(v) if v is not None else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _oracle_load_fraction() -> float:
+    """Load fed to the Oracle's phase domain: runs in flight / run capacity.
+
+    Capacity = logical cores / intra-op threads per run (8 / 4 = 2 here): how
+    many runs the CPU can host without sharing cores. It is a PARAMETER of the
+    mechanism (it slows the cadence through the amplitude), never a ceiling.
+    """
+    cores = os.cpu_count() or 1
+    intra = _oracle_intra_op or max(1, cores // 2)
+    return min(1.0, _oracle_runs_in_flight / max(1, cores // max(1, intra)))
+
+
+def _oracle_domain() -> Any:
+    from backend.agent.phase_domain import get_phase_domain
+
+    return get_phase_domain(
+        ORACLE_PHASE_DOMAIN,
+        # Sized to the measured Oracle decision (benchmarks/oracle_phase_classical.json:
+        # p50 138 ms alone): a participant is due again half a period after it
+        # fires, so 0.3 s -> ~150 ms, about one decision.
+        period_s=_env_float("IRIS_ORACLE_PHASE_PERIOD_S", 0.3),
+        max_wait_s=_env_float("IRIS_ORACLE_PHASE_MAX_WAIT_S", 0.3),
+        k=_env_float("IRIS_ORACLE_PHASE_K", 0.6),
+        load_fn=_oracle_load_fraction,
+    )
+
+
+def _oracle_session_id() -> str:
+    """The caller's session id when one is set, else ``default``.
+
+    Read from the correlation ContextVar only if that module is already loaded -
+    the engine never imports it (heavy), and `decide` takes no session argument.
+    """
+    mod = sys.modules.get("backend.monitoring.session_correlation")
+    try:
+        sid = mod._current_session_id.get() if mod is not None else None
+    except Exception:  # noqa: BLE001
+        sid = None
+    return sid or "default"
+
 
 class DecisionEngine:
     """One serialized ONNX scoring backend. CPU only. Lazy load. Never raises."""
@@ -512,6 +587,14 @@ class DecisionEngine:
         # never scores pays nothing.
         self._infer_pool: Any = None
         self._infer_pool_lock = threading.Lock()
+        # Phase path (IRIS_ORACLE_PHASE) shared state, each guarded by its own
+        # SMALL lock: counters; the one-time lazy load; and the run gate that
+        # keeps load/unload from racing an in-flight run (a refcount, not a cap).
+        self._counter_lock = threading.Lock()
+        self._load_lock = threading.Lock()
+        self._run_cv = threading.Condition()
+        self._runs = 0
+        self._closing = False
         # The ONNX scoring backend (lazy; the only scorer — no fallback model).
         self._backend: Any = None
         # Generative args model. Test seam ONLY: production injects no factory
@@ -550,7 +633,7 @@ class DecisionEngine:
                     return None
         return self._infer_pool
 
-    def _run_inference(self, fn: Callable[[], Any]) -> Any:
+    def _run_inference(self, fn: Callable[[], Any], concurrent: bool = False) -> Any:
         """AC30.5 (T42): run backend inference on the dedicated engine thread.
 
         Serialises the model work (which the engine lock already did) while
@@ -564,21 +647,48 @@ class DecisionEngine:
         NEVER retried after submission, because a retry would score twice.
         Runs inline when already on the inference thread, so a nested call
         cannot deadlock. Never raises.
+
+        ``concurrent=True`` (phase path) gives THIS run its own inference thread
+        instead of the single-worker pool, so runs overlap; the thread is named
+        with the same prefix, so inference still never runs on a step thread.
         """
         if threading.current_thread().name.startswith(_INFER_THREAD_PREFIX):
             return fn()
-        pool = self._get_infer_pool()
-        if pool is None:
-            return fn()
+        pool = None
+        submitted = None
+        if concurrent:
+            from concurrent.futures import Future
+
+            submitted = Future()
+
+            def _work() -> None:
+                try:
+                    submitted.set_result(fn())
+                except BaseException as exc:  # noqa: BLE001 — handed to the waiter
+                    submitted.set_exception(exc)
+
+            try:
+                threading.Thread(
+                    target=_work, name=f"{_INFER_THREAD_PREFIX}-run", daemon=True
+                ).start()
+            except Exception:  # noqa: BLE001 — cannot spawn: run inline, never lose it
+                return fn()
+        else:
+            pool = self._get_infer_pool()
+            if pool is None:
+                return fn()
         try:
-            return pool.submit(fn).result(
+            if submitted is None:
+                submitted = pool.submit(fn)
+            return submitted.result(
                 timeout=float(self._cfg.acquire_timeout_s) * 2.0 + 5.0
             )
         except Exception as e:  # noqa: BLE001 — never lose a decision to plumbing
             from concurrent.futures import TimeoutError as _FuturesTimeout
 
             if isinstance(e, _FuturesTimeout):
-                self.counters.lock_timeouts += 1
+                with self._counter_lock:
+                    self.counters.lock_timeouts += 1
                 logger.warning(
                     "decision_engine: inference overran its budget on the "
                     "dedicated thread — returning no verdict"
@@ -704,9 +814,23 @@ class DecisionEngine:
     def shutdown(self) -> None:
         """Free the backend. Idempotent. Called from the lifespan teardown."""
         with self._lock:
-            backend, self._backend = self._backend, None
-            self._llm = None
-            self._load_attempted = False
+            # Phase path: never swap the backend under an in-flight run. New runs
+            # wait at the gate (`_closing`); in-flight ones finish first. With
+            # the flag off `_runs` is always 0, so this returns at once.
+            with self._run_cv:
+                self._closing = True
+                if not self._run_cv.wait_for(
+                    lambda: self._runs == 0, timeout=_SHUTDOWN_DRAIN_S
+                ):
+                    logger.warning(
+                        "decision_engine: shutdown drain timed out with %d run(s) "
+                        "in flight", self._runs,
+                    )
+                backend, self._backend = self._backend, None
+                self._llm = None
+                self._load_attempted = False
+                self._closing = False
+                self._run_cv.notify_all()
         # AC30.5 (T42): the dedicated inference thread is engine-owned, so it
         # must not outlive the engine.
         pool, self._infer_pool = self._infer_pool, None
@@ -761,6 +885,8 @@ class DecisionEngine:
         ]
         if not opts:
             return None
+        if _oracle_phase_enabled():
+            return self._decide_phase(consumer_id, opts, frame, instruction)
         t_start = self._clock()  # REQ-26: lock-wait separated from compute
         if not self._lock.acquire(timeout=self._cfg.acquire_timeout_s):
             self.counters.lock_timeouts += 1
@@ -798,6 +924,97 @@ class DecisionEngine:
             return None
         finally:
             self._lock.release()
+
+    # -- phase path (IRIS_ORACLE_PHASE) -------------------------------------
+
+    def _enter_run(self) -> bool:
+        """Take a run slot (load/unload gate) and make sure the backend is loaded.
+
+        A refcount, not a cap: any number of runs may hold a slot. Shutdown waits
+        for the count to drain, and new entries wait only while it is closing.
+        """
+        with self._run_cv:
+            while self._closing:
+                self._run_cv.wait()
+            self._runs += 1
+        ok = False
+        try:
+            if self._backend is not None:
+                ok = True
+            else:
+                with self._load_lock:  # the lazy load happens ONCE, not per caller
+                    ok = self._load()
+        finally:
+            if not ok:
+                self._exit_run()
+        return ok
+
+    def _exit_run(self) -> None:
+        with self._run_cv:
+            self._runs -= 1
+            self._run_cv.notify_all()
+
+    def _decide_phase(
+        self,
+        consumer_id: str,
+        opts: Sequence[str],
+        frame: Dict[str, Any],
+        instruction: Optional[str],
+    ) -> Optional[DecisionScore]:
+        """`decide` under the Caducean phase model: no engine lock, one question
+        per run, runs overlap. Returns None only when the engine is unavailable
+        or scoring fails - never because another decision held a lock."""
+        global _oracle_runs_in_flight, _oracle_intra_op
+        t_start = self._clock()
+        try:
+            # Participant "{session}:{consumer_id}"; priority classes bypass (0).
+            _oracle_domain().acquire(f"{_oracle_session_id()}:{consumer_id}")
+        except Exception as e:  # noqa: BLE001 — fail-open: a gate fault admits
+            logger.warning("decision_engine: phase gate failed open (%r)", e)
+        phase_wait_ms = int((self._clock() - t_start) * 1000)
+        if not self._enter_run():
+            return None
+        try:
+            backend = self._backend
+            intra = (getattr(backend, "session_options", None) or {}).get(
+                "intra_op_num_threads"
+            )
+            if isinstance(intra, int) and intra > 0:
+                _oracle_intra_op = intra
+            t0 = self._clock()
+            with _ORACLE_RUNS_LOCK:
+                _oracle_runs_in_flight += 1
+            try:
+                ds = self._run_inference(
+                    lambda: backend.decide(
+                        consumer_id, opts, frame, instruction=instruction
+                    ),
+                    concurrent=True,
+                )
+            finally:
+                with _ORACLE_RUNS_LOCK:
+                    _oracle_runs_in_flight -= 1
+            scoring_ms = int((self._clock() - t0) * 1000)
+            if ds is None:
+                return None
+            with self._counter_lock:
+                self.counters.decisions += 1
+                self.counters.bump_consumer(consumer_id)
+            total_ms = int((self._clock() - t_start) * 1000)
+            logger.info(
+                "%s decide consumer=%s chosen=%s conf=%.3f "
+                "candidates=%d scoring_latency_ms=%d phase_wait_ms=%d "
+                "decision_latency_ms=%d backend=%s",
+                ENGINE_NAME, consumer_id, ds.chosen, ds.confidence,
+                len(ds.distribution),
+                scoring_ms, phase_wait_ms, total_ms, self.model_id,
+            )
+            return ds
+        except Exception as e:  # noqa: BLE001 — never raises
+            logger.warning("decision_engine scoring failed: %r", e)
+            return None
+        finally:
+            self._exit_run()
 
     def noul(
         self,
