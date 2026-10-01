@@ -200,16 +200,26 @@ def _bounded_json(obj: Any) -> Optional[str]:
     return text
 
 
-def cause_key_for(error_text: str) -> Optional[str]:
-    """The FAULTLINE cause address of a failure text (reused lattice, never re-modelled)."""
+def cause_key_of_label(label: str) -> Optional[str]:
+    """The FAULTLINE cause address of a registered error label, or None."""
     try:
-        from backend.agent.tool_errors import classify_exception_from_message, resolve_label
+        from backend.agent.tool_errors import resolve_label
 
-        spec = resolve_label(classify_exception_from_message(error_text or ""))
+        spec = resolve_label(label)
         if spec is None:
             return None
         d = spec.dimensions
         return f"{d.retryable}|{d.blame}|{d.info_state}"
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def cause_key_for(error_text: str) -> Optional[str]:
+    """The FAULTLINE cause address of a failure text (reused lattice, never re-modelled)."""
+    try:
+        from backend.agent.tool_errors import classify_exception_from_message
+
+        return cause_key_of_label(classify_exception_from_message(error_text or ""))
     except Exception:  # noqa: BLE001
         return None
 
@@ -631,3 +641,126 @@ def session_evidence(conn, thread_id: str) -> Dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         logger.debug("[memory_events] session_evidence failed: %s", exc)
     return out
+
+
+# ── rule emitters: knowledge / memory / environment (taxonomy v1, build step 2) ──
+#
+# Each takes a connection and never raises; callers reach them through ``submit``
+# (the memory_events lane), never inline on the answer path. They write
+# references (ids, hosts, counts), never content (S12). Recall and knowledge
+# events do not get a chain reference row: they are bookkeeping about memory,
+# and a chain row would feed back into the next recall ("recall of recall").
+
+def submit(mi, fn_name: str, **kwargs) -> bool:
+    """Queue ``fn_name(conn, coords=..., **kwargs)`` on lane("memory_events") using the
+    memory interface's connection. For emitters that have no kernel (the kernel has
+    its own owner-bound ``_memory_events_submit``). Returns False when nothing was queued."""
+    try:
+        from backend.agent.ontology_recall import resolve_mycelium_conn
+        from backend.utils.durability_queue import lane
+
+        conn = resolve_mycelium_conn(mi)
+        if conn is None:
+            return False
+
+        def _job() -> None:
+            try:
+                from backend.agent.caducean_trajectory import latest_coords_str
+
+                coords = latest_coords_str(mi, kwargs.get("thread_id") or "")
+            except Exception:  # noqa: BLE001
+                coords = None
+            globals()[fn_name](conn, coords=coords, **kwargs)
+
+        return bool(lane("memory_events").submit(f"memory_events:{fn_name}", _job))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[memory_events] submit %s skipped: %s", fn_name, exc)
+        return False
+
+
+# A prior claim nothing re-checked, older than this, is a belief to re-check.
+_BELIEF_STALE_DAYS = 30
+
+
+def record_cross_check(conn, *, thread_id: Optional[str], checks: List[dict],
+                       coords: Optional[str] = None) -> List[str]:
+    """Knowledge events from one research cross-check (backend/agent/research_memory).
+
+    ``checks`` are slim rows: label (confirmed | changed | not_rechecked | new),
+    claim_id, prior_id, prior_date, independent (the confirming source is a different
+    host than the prior claim's). confirmed -> CLAIM_CORROBORATED (evidence
+    ``corroboration`` only when independent, else ``verifier``: the system's own
+    check); changed -> CLAIM_UPDATED; not_rechecked and older than 30 days ->
+    BELIEF_STALE. ``links.claim`` is the stable claim id: one claim = one hyperedge."""
+    written: List[str] = []
+    try:
+        ensure_schema(conn)
+        today = time.time()
+        for c in checks or []:
+            label = c.get("label")
+            evidence = "none"
+            if label == "confirmed":
+                event = "CLAIM_CORROBORATED"
+                evidence = "corroboration" if c.get("independent") else "verifier"
+            elif label == "changed":
+                event, evidence = "CLAIM_UPDATED", "verifier"
+            elif label == "not_rechecked" and _age_days(c.get("prior_date"), today) >= _BELIEF_STALE_DAYS:
+                event = "BELIEF_STALE"
+            else:
+                continue  # "new", or a recent claim nobody re-checked: no knowledge event
+            eid = emit_event(
+                conn, label=event, evidence=evidence, thread_id=thread_id, sigma_from=coords,
+                sigma_to=coords, links={"claim": c.get("claim_id")},
+                payload={"prior_id": c.get("prior_id"), "prior_date": c.get("prior_date"),
+                         "check": label}, chain=False,
+            )
+            if eid:
+                written.append(event)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[memory_events] record_cross_check failed: %s", exc)
+    return written
+
+
+def _age_days(date_text: Optional[str], now: float) -> float:
+    try:
+        return (now - time.mktime(time.strptime(str(date_text)[:10], "%Y-%m-%d"))) / 86400.0
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+def record_research_observed(conn, *, thread_id: Optional[str], document_id: str,
+                             claim_ids: List[str], sources: int, corroborated: bool,
+                             coords: Optional[str] = None) -> List[str]:
+    """OBSERVED: a research record landed. Evidence ``none``; ``corroboration`` when one
+    claim is stated by >= 2 independent sources (different hosts)."""
+    try:
+        ensure_schema(conn)
+        eid = emit_event(
+            conn, label="OBSERVED", evidence="corroboration" if corroborated else "none",
+            thread_id=thread_id, sigma_from=coords, sigma_to=coords,
+            payload={"document_id": document_id, "claim_ids": list(claim_ids)[:12],
+                     "sources": int(sources)}, chain=False,
+        )
+        return ["OBSERVED"] if eid else []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[memory_events] record_research_observed failed doc=%s: %s", document_id, exc)
+        return []
+
+
+def record_source_unreliable(conn, *, domain: str, reason: str = "wall",
+                             thread_id: Optional[str] = None,
+                             coords: Optional[str] = None) -> List[str]:
+    """SOURCE_UNRELIABLE: a source proved walled (the wall ledger's transition). The
+    domain is a reference, the classification is the system's own (evidence verifier)."""
+    try:
+        ensure_schema(conn)
+        eid = emit_event(
+            conn, label="SOURCE_UNRELIABLE", evidence="verifier", thread_id=thread_id,
+            sigma_from=coords, sigma_to=coords,
+            cause_key=cause_key_of_label("walled"),
+            payload={"domain": str(domain)[:120], "reason": reason}, chain=False,
+        )
+        return ["SOURCE_UNRELIABLE"] if eid else []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[memory_events] record_source_unreliable failed domain=%s: %s", domain, exc)
+        return []

@@ -3745,7 +3745,7 @@ class AgentToolBridge:
             "credibility_map": getattr(crawl_result, "credibility_map", None),
             "citation_index": getattr(crawl_result, "citation_index", None),
         }
-        return await _rm.attach_prior(_out, _prior, _new_text)
+        return await _rm.attach_prior(_out, _prior, _new_text, thread_id=session_id)
 
     async def _execute_get_rendered_documents(self, params: Dict, session_id: str) -> Dict:
         """REQ-7/REQ-8: return the active conversation's rendered document DATA.
@@ -4162,7 +4162,7 @@ class AgentToolBridge:
                 _rm.land_quick_search(
                     query, _quick, conversation_id=_conversation_id, session_id=session_id,
                 )
-                return await _rm.attach_prior(_quick, _prior, _quick.get("content", ""))
+                return await _rm.attach_prior(_quick, _prior, _quick.get("content", ""), thread_id=session_id)
 
             orch = CrawlOrchestrator()
             crawl_result = await orch.research(
@@ -4212,7 +4212,7 @@ class AgentToolBridge:
             # REQ-8 edge case: the quick tier declined — record WHY in meta so
             # a silent degradation is answerable from the result itself.
             _envelope["meta"] = {"quick_search_fallback": _quick_fallback}
-        return await _rm.attach_prior(_envelope, _prior, _combined)
+        return await _rm.attach_prior(_envelope, _prior, _combined, thread_id=session_id)
 
     async def _execute_open_url(self, params: Dict, session_id: str) -> Dict:
         """Agent tool: open a URL inside IRIS's in-app browser surface.

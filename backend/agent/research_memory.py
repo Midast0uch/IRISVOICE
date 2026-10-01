@@ -65,6 +65,7 @@ _STOP = frozenset(
     "this from or".split()
 )
 _SUBJECT_MATCH = 0.6           # share of a claim's subject words a sentence must hold
+PRIOR_HEADING = "PRIOR RESEARCH (earlier searches close to this one):"
 
 
 def _get_mi() -> Any:
@@ -200,6 +201,63 @@ def fragment_text(rec: dict) -> str:
     return text.strip()
 
 
+# ── knowledge events (taxonomy v1: one claim = one hyperedge) ───────────────
+
+
+def claim_id(text: str) -> str:
+    """A stable id for a claim's SUBJECT: a hash of its normalized subject words (numbers
+    and stop words removed), so the same claim restated later - with a new number - lands
+    on the same id and its history is one hyperedge."""
+    subject = " ".join(sorted(_subject(text))) or re.sub(r"\s+", " ", str(text or "")).strip().lower()
+    return "claim-" + hashlib.sha1(subject.encode("utf-8")).hexdigest()[:12]
+
+
+def _corroborated(claims: List[dict]) -> bool:
+    """True when one claim (same subject AND same numbers) is stated by >= 2 sources on
+    different hosts: independent sources agree."""
+    hosts: Dict[tuple, set] = {}
+    for c in claims or []:
+        key = (claim_id(c["text"]), frozenset(_numbers(c["text"])))
+        hosts.setdefault(key, set()).update(_host(u) for u in c.get("urls") or [])
+    return any(len(h) >= 2 for h in hosts.values())
+
+
+def _source_host(new_text: str, evidence: str) -> str:
+    """The host of the page a new-evidence sentence came from ('--- Source: url ---' blocks)."""
+    try:
+        i = (new_text or "").find((evidence or "")[:80]) if evidence else -1
+        j = new_text.rfind("--- Source: ", 0, i) if i >= 0 else -1
+        if j < 0:
+            return ""
+        start = j + len("--- Source: ")
+        return _host(new_text[start:new_text.find(" ---", start)].strip())
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _emit_cross_check(checks: List[dict], new_text: str, thread_id: str, mi: Any = None) -> None:
+    """Queue the knowledge events of one cross-check on the memory_events lane."""
+    try:
+        slim = []
+        for c in checks:
+            if c.get("label") not in ("confirmed", "changed", "not_rechecked"):
+                continue
+            prior_hosts = {_host(u) for u in c.get("urls") or []}
+            new_host = _source_host(new_text, c.get("new_evidence", "")) if c["label"] == "confirmed" else ""
+            slim.append({
+                "label": c["label"], "claim_id": claim_id(c["claim"]), "prior_id": c.get("prior_id", ""),
+                "prior_date": c.get("prior_date", ""),
+                "independent": bool(new_host and prior_hosts and new_host not in prior_hosts),
+            })
+        if slim:
+            from backend.memory import memory_events
+
+            memory_events.submit(mi or _get_mi(), "record_cross_check",
+                                 thread_id=thread_id or None, checks=slim)
+    except Exception as exc:  # noqa: BLE001 - typing never fails a tool call
+        logger.debug("[research_memory] cross-check events skipped: %s", exc)
+
+
 # ── write path (off the answer path) ───────────────────────────────────────
 
 
@@ -308,6 +366,16 @@ def _write_record(rec: dict, mi: Any = None) -> None:
             )
     except Exception as exc:  # noqa: BLE001
         logger.warning("[research_memory] fragment not queued id=%s: %s", doc_id, exc)
+    try:
+        from backend.memory import memory_events
+
+        memory_events.submit(
+            mi, "record_research_observed", thread_id=rec["session_id"] or conv or None,
+            document_id=doc_id, claim_ids=[claim_id(c["text"]) for c in rec["claims"]],
+            sources=len(rec["sources"]), corroborated=_corroborated(rec["claims"]),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[research_memory] observed event skipped id=%s: %s", doc_id, exc)
     logger.info("[research_memory] stored id=%s conv=%s claims=%d sources=%d",
                 doc_id, conv, len(rec["claims"]), len(rec["sources"]))
 
@@ -553,7 +621,7 @@ def format_prior_section(
     if not records:
         return ""
     today = today or datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    lines = ["PRIOR RESEARCH (earlier searches close to this one):"]
+    lines = [PRIOR_HEADING]
     for rec in records[:3]:
         body = rec.get("summary") or "; ".join(
             c["text"] for c in (rec.get("claims") or [])[:2]
@@ -575,12 +643,14 @@ def format_prior_section(
 
 async def attach_prior(
     result: dict, lookup: Optional[PriorLookup], new_text: str,
-    new_claims: Optional[List[str]] = None,
+    new_claims: Optional[List[str]] = None, *, thread_id: str = "",
 ) -> dict:
     """Put the PRIOR + CROSS-CHECK section at the head of ``result["content"]``.
 
     The head survives the evidence excerpting the synthesis applies. A result
-    with no close prior is returned untouched. Never raises.
+    with no close prior is returned untouched. The cross-check also becomes
+    knowledge events (CLAIM_CORROBORATED / CLAIM_UPDATED / BELIEF_STALE) on the
+    memory_events lane, under ``thread_id``. Never raises.
     """
     try:
         if lookup is None or not isinstance(result, dict) or not result.get("success"):
@@ -588,7 +658,9 @@ async def attach_prior(
         records = await lookup.wait()
         if not records:
             return result
-        section = format_prior_section(records, cross_check(records, new_text, new_claims))
+        checks = cross_check(records, new_text, new_claims)
+        _emit_cross_check(checks, new_text, thread_id)
+        section = format_prior_section(records, checks)
         if section:
             result["content"] = section + "\n\n" + (result.get("content") or "")
             result.setdefault("meta", {})["prior_research"] = [r["id"] for r in records]
