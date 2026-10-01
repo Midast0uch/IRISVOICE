@@ -190,6 +190,35 @@ def _physics_action(tool, success: bool) -> int:
     return 0 if (tool or "none") in _PHYSICS_GATHER_TOOLS else 1
 
 
+def _memory_events_submit(owner, fn_name: str, **kwargs) -> None:
+    """Typed execution events (spec research-memory-chain-browser D9 / Wave E)
+    on lane("memory_events"): never on the answer path, never raises. The
+    coordinate is read inside the job (the step's physics may land first)."""
+    try:
+        from backend.agent.ontology_recall import resolve_mycelium_conn
+        from backend.utils.durability_queue import lane
+
+        mi = getattr(owner, "_memory_interface", None)
+        conn = resolve_mycelium_conn(mi)
+        if conn is None:
+            return
+
+        def _job() -> None:
+            from backend.memory import memory_events as _me
+
+            try:
+                from backend.agent.caducean_trajectory import latest_coords_str
+
+                coords = latest_coords_str(mi, kwargs.get("thread_id", ""))
+            except Exception:  # noqa: BLE001
+                coords = None
+            getattr(_me, fn_name)(conn, coords=coords, **kwargs)
+
+        lane("memory_events").submit(f"memory_events:{fn_name}", _job)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[memory_events] submit %s skipped: %s", fn_name, exc)
+
+
 def _der_topology_halt(owner, session_id: str) -> None:
     """Stop the line on a TOPO_VIOLATION (rec==3) at a step boundary.
 
@@ -10152,15 +10181,16 @@ Respond with a JSON object:
                             _rec_parts = []
                             if getattr(_rec, "prior_summary", ""):
                                 _rec_parts.append(
-                                    # 300 as before; 1200 only for a replan-
+                                    # 300 as before; 1600 only for a replan-
                                     # after-failure child whose summary carries
-                                    # the bounded (<= 900) chain block (K3) -
-                                    # no other node grows (owner: no context
-                                    # debt).
+                                    # the bounded case trail (<= 400, D9) and
+                                    # chain block (<= 900, K3) - no other node
+                                    # grows (owner: no context debt).
                                     "UNDERSTANDING: " + _rec.prior_summary[
-                                        :1200 if (
+                                        :1600 if (
                                             "CHAIN TIMELINE" in _rec.prior_summary
                                             or "MEDIATORS TRIED" in _rec.prior_summary
+                                            or "KNOWN CASE" in _rec.prior_summary
                                         ) else 300
                                     ]
                                 )
@@ -10863,6 +10893,14 @@ Respond with a JSON object:
                 ]
                 _full_content = "\n".join(
                     f"[Step {i + 1}] {o}" for i, o in enumerate(step_outputs) if o
+                )
+                # Spec D9: task completion is outside evidence for this task's
+                # FIXes (-> VERIFIED_FIX + LESSON candidate); closes its cases.
+                _memory_events_submit(
+                    self, "record_task_end",
+                    thread_id=_session,
+                    task_id=f"{_session}:{_turn_id or ''}",
+                    success=(outcome == "success"),
                 )
                 self._store_task_episode(
                     task_summary=plan.original_task,
@@ -14063,10 +14101,19 @@ Respond with a JSON object:
                         _chain_sid,
                         latest_coords_str(self._memory_interface, _chain_sid),
                     )
-                    if _chain_ctx:
-                        _prior_summary = (
-                            f"{(_prior_summary or '')[:300]} {_chain_ctx}".strip()
-                        )
+                    # Spec D9 / E3: when this failure matches a KNOWN CASE, its
+                    # trail (the verified fix, dead ends to avoid, dependency
+                    # status) rides first - the most actionable line (<= 400).
+                    from backend.memory.memory_events import case_trail
+
+                    _trail = case_trail(
+                        _chain_conn, getattr(item, "tool", None),
+                        step_result or str(getattr(item, "result", "") or ""),
+                    )
+                    if _chain_ctx or _trail:
+                        _prior_summary = " ".join(
+                            p for p in ((_prior_summary or "")[:300], _trail, _chain_ctx) if p
+                        ).strip()
             except Exception as _chain_exc:  # noqa: BLE001 — advisory context
                 logger.debug("[DER] replan chain context skipped: %s", _chain_exc)
 
@@ -18379,6 +18426,22 @@ Respond with a JSON object:
             )
         except Exception:
             pass
+
+        # Spec D9 (Wave E): the step becomes a typed event (BUG / ATTEMPT /
+        # DEAD_END / FIX ...) with the label the verifier gave it - event-level
+        # credit. Values are bound now; the write runs on its own lane.
+        _memory_events_submit(
+            self, "record_step",
+            thread_id=_session,
+            task_id=f"{_session}:{_turn_id or ''}",
+            step_id=str(getattr(item, "step_id", "") or ""),
+            tool=getattr(item, "tool", None),
+            params=dict(item.params) if isinstance(getattr(item, "params", None), dict) else None,
+            success=bool(step_success),
+            verified=str(_verified or ""),
+            error_text=(str(step_result or "")[:2000] if not step_success else ""),
+            description=str(getattr(item, "description", "") or "")[:300],
+        )
 
         # ── Phase 2 (D2.1): unified recovery — verification FAILED uses the
         # SAME _split_step operator as the physics trigger. No separate graft

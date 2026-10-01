@@ -812,8 +812,14 @@ class MyceliumInterface:
         outcome: str,
         task_entry_label: Optional[str] = None,
         source_channel: Optional[str] = None,
+        evidence_kinds: Optional[List[str]] = None,
     ) -> Optional[Landmark]:
         """
+        ``evidence_kinds``: OUTSIDE evidence this session produced (task_complete,
+        test_pass, user_confirm). A crystallized landmark starts as a CANDIDATE and
+        is promoted only by evidence (landmark policy, spec D9); a merge with
+        another session's landmark adds ``recurrence``.
+
         Crystallise a Landmark from the current session in causal order (Req 12.7):
           1. condense()
           2. index.save()
@@ -843,6 +849,8 @@ class MyceliumInterface:
         merged = self._merger.try_merge(landmark)
         surviving = merged or landmark
 
+        self._apply_landmark_policy(session_id, landmark, surviving, evidence_kinds)
+
         self._ep_indexer.backfill_landmark(session_id, surviving.landmark_id)
 
         # Record session position in topology chart (Task 11.3)
@@ -855,6 +863,51 @@ class MyceliumInterface:
             logger.debug("[interface] topology record_session_position failed: %s", exc)
 
         return surviving
+
+    def _apply_landmark_policy(self, session_id, new_lm, surviving, evidence_kinds) -> None:
+        """Spec D9: event-level route + dependencies, evidence, recurrence. Never raises."""
+        try:
+            from backend.memory.memory_events import session_evidence
+            from backend.memory.mycelium.landmark import (
+                add_landmark_evidence,
+                set_landmark_falsification,
+            )
+
+            conn = self._conn
+            ev = session_evidence(conn, session_id)
+            set_landmark_falsification(conn, surviving.landmark_id, ev["depends_on"],
+                                       ev["verified_steps"])
+            recurrence = False
+            if surviving is not new_lm:
+                # A merge happened: the absorbed landmark's evidence moves to the
+                # survivor, and a merge across sessions is independent recurrence.
+                absorbed_id = (
+                    new_lm.landmark_id if surviving.landmark_id != new_lm.landmark_id
+                    else (conn.execute(
+                        "SELECT absorbed_id FROM mycelium_landmark_merges WHERE survivor_id = ? "
+                        "ORDER BY created_at DESC LIMIT 1", (surviving.landmark_id,),
+                    ).fetchone() or (None,))[0]
+                )
+                row = conn.execute(
+                    "SELECT evidence, conversation_ref FROM mycelium_landmarks WHERE landmark_id = ?",
+                    (absorbed_id,),
+                ).fetchone() if absorbed_id else None
+                if row is not None:
+                    for e in json.loads(row[0] or "[]"):
+                        add_landmark_evidence(conn, surviving.landmark_id, e.get("kind", ""),
+                                              e.get("ref", ""), e.get("session", ""))
+                    refs = {row[1], surviving.conversation_ref}
+                    if len({r for r in refs if r}) > 1:
+                        recurrence = True
+                        add_landmark_evidence(conn, surviving.landmark_id, "recurrence",
+                                              f"merged {absorbed_id}", session_id)
+            for kind in dict.fromkeys(list(evidence_kinds or []) + ev["kinds"]):
+                add_landmark_evidence(conn, surviving.landmark_id, kind, "episode", session_id)
+            logger.debug("[interface] landmark policy applied lm=%s recurrence=%s",
+                         surviving.landmark_id, recurrence)
+        except Exception as exc:  # noqa: BLE001 — policy never blocks crystallization
+            logger.warning("[interface] landmark policy failed lm=%s: %s",
+                           getattr(surviving, "landmark_id", "?"), exc)
 
     # ------------------------------------------------------------------
     # Session lifecycle

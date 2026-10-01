@@ -106,6 +106,9 @@ STARTS WHEN: DER-DAG execution, websearch and developer mode are foundationally 
 coordinate events written to the memory store are meaningful and trustworthy (REQ-8 Sigma +
 Wave E events/landmark policy in `specs/research-memory-chain-browser/`).
 ALREADY STARTED (2026-09-30): the brief's event types and landmark policy (7.9, 7.11) as Wave E.
+RELATED (owner): `specs/wormhole-aperture/` (Hex Topology recall: Hash Signature -> hex binning ->
+Hyperedges with Beta-Bernoulli scoring; APERTURE delivery) - a major planned memory improvement, not
+implemented, partly stale (nodes changed); refresh it against the current code before building.
 
 ## 8. Machine facts that shape every measurement
 

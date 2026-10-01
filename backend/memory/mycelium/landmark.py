@@ -39,6 +39,134 @@ _DECAY_NON_PERMANENT: float = 0.005  # per day — still consolidating
 # blocks crystallisation (Req 15.12)
 _TRUST_CAP_FRACTION: float = 0.30
 
+# ── Landmark policy (spec research-memory-chain-browser D9; brief 7.9) ─────
+# A landmark says a claim is TRUE; activation_count says how USEFUL its recall
+# has been. Two numbers, never one. Tiers: candidate -> landmark -> stale |
+# demoted. Only outside evidence promotes; the model's own claim never does.
+# PROMOTE_MIN_EVIDENCE counts independent (kind, session) pairs; it is a start
+# value to be set from the brief's section 9 measurements.
+OUTSIDE_EVIDENCE = frozenset({"task_complete", "test_pass", "user_confirm", "recurrence"})
+PROMOTE_MIN_EVIDENCE = 2
+_POLICY_COLUMNS = (
+    ("tier", "TEXT DEFAULT 'candidate'"),
+    ("evidence", "TEXT DEFAULT '[]'"),
+    ("depends_on", "TEXT DEFAULT '[]'"),
+    ("falsify_if", "TEXT"),
+    ("last_verified", "REAL"),
+    ("contradictions", "INTEGER DEFAULT 0"),
+)
+
+
+def ensure_landmark_policy_columns(conn) -> None:
+    """Idempotent ALTER for live stores. On first add, the permanent bootstrap
+    landmarks (seeded from build-verified, test-backed landmarks) become tier
+    'landmark'; every other existing row stays a candidate."""
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(mycelium_landmarks)")}
+    if not cols:
+        return
+    added_tier = False
+    for name, decl in _POLICY_COLUMNS:
+        if name not in cols:
+            conn.execute(f"ALTER TABLE mycelium_landmarks ADD COLUMN {name} {decl}")
+            added_tier = added_tier or name == "tier"
+    if added_tier:
+        conn.execute(
+            "UPDATE mycelium_landmarks SET tier = 'landmark', evidence = ? "
+            "WHERE is_permanent = 1 AND task_class = 'bootstrap'",
+            (json.dumps([{"kind": "test_pass", "ref": "bootstrap build graph",
+                          "session": "bootstrap", "at": time.time()}]),),
+        )
+        logger.info("[landmark] policy columns added; bootstrap landmarks -> tier landmark")
+    conn.commit()
+
+
+def _independent(evidence: List[dict]) -> int:
+    return len({(e.get("kind"), e.get("session")) for e in evidence
+                if e.get("kind") in OUTSIDE_EVIDENCE})
+
+
+def add_landmark_evidence(conn, landmark_id: str, kind: str, ref: str = "",
+                          session: str = "") -> Optional[str]:
+    """Record one piece of evidence and re-derive the tier. Returns the tier.
+
+    A kind outside OUTSIDE_EVIDENCE (e.g. the model's own claim) is refused.
+    A stale landmark returns to 'landmark' on new evidence; a demoted one stays
+    demoted (its history is the point) - a new crystallization starts fresh.
+    """
+    if kind not in OUTSIDE_EVIDENCE:
+        logger.info("[landmark] evidence refused kind=%s landmark=%s (not outside evidence)",
+                    kind, landmark_id)
+        return None
+    ensure_landmark_policy_columns(conn)
+    row = conn.execute(
+        "SELECT tier, evidence FROM mycelium_landmarks WHERE landmark_id = ?", (landmark_id,)
+    ).fetchone()
+    if row is None:
+        return None
+    tier, raw = row[0] or "candidate", row[1]
+    try:
+        evidence = list(json.loads(raw or "[]"))
+    except Exception:  # noqa: BLE001
+        evidence = []
+    evidence.append({"kind": kind, "ref": ref[:200], "session": session, "at": time.time()})
+    new_tier = tier
+    if tier == "stale":
+        new_tier = "landmark"
+    elif tier == "candidate" and _independent(evidence) >= PROMOTE_MIN_EVIDENCE:
+        new_tier = "landmark"
+    conn.execute(
+        "UPDATE mycelium_landmarks SET evidence = ?, tier = ?, last_verified = ? WHERE landmark_id = ?",
+        (json.dumps(evidence[-50:]), new_tier, time.time(), landmark_id),
+    )
+    if new_tier != tier:
+        logger.info("[landmark] counter promoted landmark=%s %s -> %s", landmark_id, tier, new_tier)
+    conn.commit()
+    return new_tier
+
+
+def mark_landmarks_stale_by_dependency(conn, path: str) -> int:
+    """A changed dependency: a 'landmark' becomes 'stale' (flagged, re-checked)."""
+    ensure_landmark_policy_columns(conn)
+    like = "%" + json.dumps(path)[1:-1] + "%"
+    return conn.execute(
+        "UPDATE mycelium_landmarks SET tier = 'stale' WHERE tier = 'landmark' AND depends_on LIKE ?",
+        (like,),
+    ).rowcount
+
+
+def demote_landmarks_for_thread(conn, thread_id: Optional[str], reason: str) -> int:
+    """A contradicting failure demotes the landmarks that session produced."""
+    if not thread_id:
+        return 0
+    ensure_landmark_policy_columns(conn)
+    n = conn.execute(
+        "UPDATE mycelium_landmarks SET tier = 'demoted', contradictions = contradictions + 1, "
+        "falsify_if = COALESCE(falsify_if, '') || ? WHERE conversation_ref = ? "
+        "AND tier IN ('candidate', 'landmark', 'stale')",
+        (f" | contradicted: {reason[:120]}", thread_id),
+    ).rowcount
+    if n:
+        logger.info("[landmark] counter demoted n=%d thread=%s reason=%s", n, thread_id, reason[:80])
+    return n
+
+
+def set_landmark_falsification(conn, landmark_id: str, depends_on: List[str],
+                               verified_steps: List[str]) -> None:
+    """Event-level credit: the route is the session's VERIFIED step events, and
+    what it depends on is what those events touched."""
+    ensure_landmark_policy_columns(conn)
+    falsify = ("a dependency changes (" + ", ".join(d[:60] for d in depends_on[:5]) + ")"
+               if depends_on else None)
+    conn.execute(
+        "UPDATE mycelium_landmarks SET depends_on = ?, falsify_if = COALESCE(?, falsify_if), "
+        "traversal_sequence = CASE WHEN ? != '[]' THEN ? ELSE traversal_sequence END "
+        "WHERE landmark_id = ?",
+        (json.dumps(depends_on[:50]), falsify, json.dumps(verified_steps[:50]),
+         json.dumps(verified_steps[:50]), landmark_id),
+    )
+    conn.commit()
+
+
 # Source priority for conflict resolution: higher index = higher authority
 _SOURCE_PRIORITY: Dict[str, int] = {
     "statement": 0,
@@ -435,7 +563,18 @@ class LandmarkIndex:
         new_count = row[0] + 1
         coordinate_cluster = row[1]
 
-        is_permanent = 1 if new_count >= PERMANENCE_THRESHOLD else 0
+        # Usefulness (activations) alone never makes a claim permanent: the
+        # landmark must also be TRUE by outside evidence (tier 'landmark').
+        try:
+            ensure_landmark_policy_columns(self._conn)
+            _tier = (self._conn.execute(
+                "SELECT tier FROM mycelium_landmarks WHERE landmark_id = ?", (landmark_id,)
+            ).fetchone() or ("candidate",))[0] or "candidate"
+        except Exception:  # noqa: BLE001
+            _tier = "candidate"
+        if _tier == "stale":
+            logger.info("[landmark] counter stale_used landmark=%s", landmark_id)
+        is_permanent = 1 if (new_count >= PERMANENCE_THRESHOLD and _tier == "landmark") else 0
 
         self._conn.execute(
             """

@@ -367,11 +367,20 @@ class MemoryInterface:
                 self._mycelium.record_outcome(
                     empty_path, myc_outcome, episode.session_id, episode.task_summary
                 )
+                # Landmark policy (spec D9): only OUTSIDE evidence promotes. A
+                # successful task and a user confirmation are evidence; the
+                # score itself (partly the model's own success claim) is not.
+                _evidence = []
+                if getattr(episode, "outcome_type", "") == "success":
+                    _evidence.append("task_complete")
+                if getattr(episode, "user_confirmed", False):
+                    _evidence.append("user_confirm")
                 self._mycelium.crystallize_landmark(
                     session_id=episode.session_id,
                     cumulative_score=score,
                     outcome=myc_outcome,
                     task_entry_label=episode.task_summary,
+                    evidence_kinds=_evidence,
                 )
             except Exception as _myc_err:
                 logger.debug(

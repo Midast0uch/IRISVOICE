@@ -110,6 +110,14 @@ def test_activate_promotes_to_permanent_at_threshold(mem_conn):
 
     index = LandmarkIndex(mem_conn)
     index.save(landmark)
+    # Owner landmark policy (2026-09-30, spec research-memory-chain-browser
+    # D9): usefulness alone no longer makes a claim permanent - it must also be
+    # TRUE by outside evidence (tier 'landmark'). The setup supplies the two
+    # independent pieces of evidence; the threshold assertion is unchanged.
+    from backend.memory.mycelium.landmark import add_landmark_evidence
+
+    add_landmark_evidence(mem_conn, landmark.landmark_id, "task_complete", "ep", "sess5")
+    add_landmark_evidence(mem_conn, landmark.landmark_id, "test_pass", "pytest", "sess5")
     for _ in range(8):
         index.activate(landmark.landmark_id)
 

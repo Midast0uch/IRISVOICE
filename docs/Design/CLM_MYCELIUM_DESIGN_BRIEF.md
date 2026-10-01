@@ -14,7 +14,7 @@ MCM SDK (the EXTERNAL build tool Claude Code uses: `.mcm/coordinates.db`, `mcm_c
 | landmarks | `mycelium_landmarks` (`backend/memory/mycelium/landmark.py`), NOT the MCM build landmarks (`landmarks` table seeded from the build graph) |
 | NBL `CORE:473`, `_ctx` payloads | MCM build-tool notation. The app has its own NBL string (`backend/memory/nbl.py`, `MYCELIUM: context:[...]`) |
 | `mcm_compress`, `get_session` | MCM build-tool calls - NOT app features. The app's context trimming today is DCP (`backend/agent/dcp.py`) |
-| Hex Topology (Hash Signature -> Hexagonal binning -> Hyperedge), Beta-Bernoulli | NOT present in the app code (checked 2026-09-30) |
+| Hex Topology (Hash Signature -> Hexagonal binning -> Hyperedge), Beta-Bernoulli | the app's own WORMHOLE + APERTURE design, `specs/wormhole-aperture/` (Draft, NOT implemented, partly stale: Mycelium nodes changed since). Not in code yet (checked 2026-09-30). Its base exists: `mycelium_edges` hit/miss/observation counts with a diminishing-alpha posterior (`scorer.py`) - recall USEFULNESS, kept separate from landmark TRUTH (7.9) |
 | knowledge pins in `memory.db` | app-side pins (`backend/memory/pin_store.py`; `mycelium_pins` exists, 0 rows) |
 | `coordinates.db` | the MCM build store; transfers to the app only at hand-off (CLAUDE.md "WHAT DONE LOOKS LIKE") |
 

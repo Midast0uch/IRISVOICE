@@ -653,6 +653,17 @@ def initialise_mycelium_schema(conn) -> None:
     except Exception as _oc_exc:
         logger.warning("[db] mycelium_edges observation_count ALTER skipped: %s", _oc_exc)
 
+    # Landmark policy columns + typed-event cases (spec research-memory-chain-
+    # browser D9 / Wave E). Idempotent; never blocks store init.
+    try:
+        from backend.memory.mycelium.landmark import ensure_landmark_policy_columns
+        from backend.memory.memory_events import ensure_schema as _ensure_cases
+
+        ensure_landmark_policy_columns(conn)
+        _ensure_cases(conn)
+    except Exception as _lp_exc:
+        logger.warning("[db] landmark policy / memory_cases migration skipped: %s", _lp_exc)
+
     # -------------------------------------------------------------------------
     # Block 6 — Batch execution records (vision-goal-directed-search REQ-19, T5)
     # -------------------------------------------------------------------------
