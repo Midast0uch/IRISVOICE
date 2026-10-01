@@ -1365,15 +1365,18 @@ async def set_launcher_mode(request: dict):
 
         _WT_TIMEOUT_S = 20.0
         if mode == "developer":
-            wt_info = await _asyncio.wait_for(
-                _asyncio.to_thread(dev_worktree.setup), timeout=_WT_TIMEOUT_S
-            )
-            if wt_info.get("status") == "ok":
-                cfg["worktree_path"] = wt_info.get("worktree_path")
-                cfg["worktree_branch"] = wt_info.get("branch")
-                logger.info(f"[Mode] Worktree ready at {wt_info.get('worktree_path')}")
+            # Owner 2026-10-01: NEVER create the agent sandbox on a mode switch -
+            # ask before every creation. The switch ran `git worktree add` of the
+            # whole repo (13-17 min of hard-disk checkout, unbounded, every time;
+            # it ran across eval tasks). The sandbox is to become a SEPARATE repo
+            # (.mcm/GOALS.md); until then an existing one is reused, none is made.
+            existing = dev_worktree.get_worktree_path()
+            if existing:
+                cfg["worktree_path"] = existing
+                cfg["worktree_branch"] = dev_worktree._branch_name()
+                logger.info(f"[Mode] Reusing existing worktree at {existing}")
             else:
-                logger.warning(f"[Mode] Worktree setup failed: {wt_info.get('error')}")
+                logger.info("[Mode] developer mode: no agent sandbox created (ask first)")
         elif mode == "personal":
             teardown = await _asyncio.wait_for(
                 _asyncio.to_thread(dev_worktree.teardown, merge=False),

@@ -135,6 +135,18 @@ Three rules decide whether it works - keep the design compatible with them now:
 3. TRUST PER SOURCE: score each peer by how often its shared fixes held up locally - the same
    Beta-Bernoulli machinery that scores a recall (specs/wormhole-aperture REQ-4).
 
+### 7c. LATER (after the developer-mode CLI design): IRIS builds upon itself (owner, 2026-10-01)
+
+Not a priority now; it becomes one once developer mode (CLI design etc.) is finished.
+- The agent's sandbox is a COMPLETELY SEPARATE REPO from the main one - not a `git worktree` of
+  it. (Today's worktree was a full checkout of this repo, created on every switch to developer
+  mode: 13-17 min of hard-disk work, unbounded, and it ran across eval tasks.)
+- Creating it ALWAYS asks the user first (done 2026-10-01: the mode switch creates nothing; the
+  developer prompt makes the agent ask before it edits IRIS source or creates a sandbox).
+- To design: the flow by which the agent builds on itself and pushes updates seamlessly - from
+  the sandbox repo, through the measured loop (evals, standards, landmarks), to the user's
+  approval, to the main repo - without the agent ever writing the live codebase directly.
+
 ## 8. Machine facts that shape every measurement
 
 - `C:` is a 97%-full 7200 rpm hard disk (repo, Python, `data/memory.db`); `D:` is an NVMe SSD

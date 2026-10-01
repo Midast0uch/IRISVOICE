@@ -2601,8 +2601,12 @@ class AgentKernel:
                 "Changes here do NOT affect the live codebase until the session "
                 "ends and the user approves the diff in the Launcher.\n"
                 if worktree_path
-                else "You have full access to the IRISVOICE source code. "
-                "Always commit your changes to the iris-agent branch. "
+                # Owner 2026-10-01: no sandbox is created without asking. With
+                # none, the agent may READ the IRIS source but must ask the user
+                # (ask_user_question) before it creates a sandbox or edits IRIS.
+                else "You may read the IRISVOICE source code. No isolated sandbox "
+                "exists: before you edit any IRIS source file or create a sandbox, "
+                "ask the user with ask_user_question and wait for the answer. "
                 "Never commit to main or IRISVOICEv.3.\n"
             )
 
