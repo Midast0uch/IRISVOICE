@@ -124,7 +124,8 @@ _MAX_TYPE_CHARS = 400
 _INTERACT_ACTIONS = ("click", "type", "select", "scroll", "back", "press")
 # Collects every visible interactive element, tags it `data-iris-mark=<id>` so
 # the act step can re-find the SAME node, and returns [{id, role, name, tag,
-# x, y, w, h, in_view, disabled}] plus a short visible-text digest. Order: the
+# x, y, w, h, in_view, disabled, +href/type/download/form when present}] plus a
+# short visible-text digest. Order: the
 # elements on screen in document order, then the rest in document order; ids
 # are 1..N in that order. Hidden, zero-size and off-document nodes are skipped.
 # (Open shadow roots and cross-origin iframes are not entered.)
@@ -176,6 +177,19 @@ _OBSERVE_JS = r"""
     if (el.isContentEditable) return 'textbox';
     return 'button';
   };
+  // What the click-safety gate reads (W2): where a link goes, the input type, and
+  // what the enclosing form collects ("type:autocomplete:name" per field).
+  const formOf = (el) => {
+    const f = el.form || el.closest('form');
+    if (!f) return null;
+    const fields = [];
+    f.querySelectorAll('input:not([type=hidden]), select, textarea').forEach(c => {
+      if (fields.length >= 12) return;
+      fields.push([(c.type || c.tagName).toLowerCase(), (c.getAttribute('autocomplete') || '').toLowerCase(),
+                   (c.name || c.id || '').toLowerCase().slice(0, 30)].join(':'));
+    });
+    return { fields, action: (f.getAttribute('action') || '').slice(0, 200) };
+  };
   const inView = [], offView = [];
   document.querySelectorAll(SEL).forEach(el => {
     const cs = getComputedStyle(el);
@@ -190,11 +204,19 @@ _OBSERVE_JS = r"""
   const marks = picked.map(([el, r, visible], i) => {
     const id = i + 1;
     el.setAttribute('data-iris-mark', String(id));
-    return {
+    const mark = {
       id, role: roleOf(el), name: nameOf(el), tag: el.tagName.toLowerCase(),
       x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height),
       in_view: visible, disabled: !!el.disabled,
     };
+    const href = el.tagName === 'A' ? (el.href || '') : (el.getAttribute('formaction') || '');
+    if (href) mark.href = href.slice(0, 300);
+    const itype = (el.getAttribute('type') || '').toLowerCase();
+    if (itype) mark.type = itype;
+    if (el.hasAttribute('download')) mark.download = true;
+    const form = formOf(el);
+    if (form) mark.form = form;
+    return mark;
   });
   const digest = clean(document.body ? document.body.innerText : '').slice(0, 600);
   return { marks, digest, vw, vh, title: document.title || '' };

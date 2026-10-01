@@ -79,6 +79,9 @@ class ToolSpec:
     # see them — the bridge cannot execute them. get_registry_tools skips
     # hidden specs; the node router still consults them.
     hidden: bool = False
+    # The tool enforces its own consent (browser_* run every action through the
+    # click-safety gate), so the generic permission prompt never fires for it.
+    self_gated: bool = False
 
 
 # ── Registry storage ────────────────────────────────────────────────────────
@@ -1147,7 +1150,7 @@ def register_builtin_tools() -> None:
             parameters={"url": {"type": "string", "description": "Full http(s) URL to open"}},
             required=["url"],
             category="web", executor="internal", requires_internet=True,
-            permission_tier="read_only", parallel_safe=False,
+            permission_tier="read_only", parallel_safe=False, self_gated=True,
         ),
         ToolSpec(
             name="browser_observe",
@@ -1160,7 +1163,7 @@ def register_builtin_tools() -> None:
             ),
             parameters={},
             category="web", executor="internal", requires_internet=True,
-            permission_tier="read_only", parallel_safe=False,
+            permission_tier="read_only", parallel_safe=False, self_gated=True,
         ),
         ToolSpec(
             name="browser_act",
@@ -1192,7 +1195,7 @@ def register_builtin_tools() -> None:
             },
             required=["action"],
             category="web", executor="internal", requires_internet=True,
-            permission_tier="side_effect", parallel_safe=False,
+            permission_tier="side_effect", parallel_safe=False, self_gated=True,
         ),
     ]
 

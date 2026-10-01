@@ -974,6 +974,10 @@ class AgentKernel:
             # site but no row path at all, so it could never be scored however
             # often it ran. Same single-writer sink as the other two.
             _ex_rows.set_row_sink(_shadow_sink)
+            # click_safety (W2): the browser click gate's Oracle shadow rows.
+            from backend.agent import click_safety_shadow as _cs_rows
+
+            _cs_rows.set_row_sink(_shadow_sink)
             logger.info(
                 "[AgentKernel] shadow row sink installed "
                 "(monitor + surface + web_intent)"

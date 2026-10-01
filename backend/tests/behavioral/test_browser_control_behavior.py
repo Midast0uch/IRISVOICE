@@ -89,6 +89,16 @@ def tmp_captures(monkeypatch, tmp_path):
     return tmp_path
 
 
+@pytest.fixture(autouse=True)
+def brain_judges_fixture_actions_safe(monkeypatch):
+    """The click-safety gate (W2) sends an ambiguous element (the fixture's "Press me")
+    to the Brain judge, and there is no model in this test. The rules stay real; only
+    the model call answers "safe" so these tests keep driving real input."""
+    from backend.agent.tools import click_safety
+
+    monkeypatch.setattr(click_safety, "_call_llm", lambda _p: '{"verdict": "safe", "reason": "fixture"}')
+
+
 class _Events:
     """The emit seam the tool bridge hands the session; records wall time per event."""
 
@@ -393,6 +403,11 @@ async def test_a_session_and_a_crawl_fetch_on_another_loop_share_one_chromium(
 
     monkeypatch.setattr(browser_pool, "_start_browser", counting_start)
     _Handler.hits.clear()
+    # Warm the pool first (the plan-time prewarm does this in production): the crawl's
+    # per-page budget is 8 s of navigation and does not include a cold Chromium start
+    # that competes with the session's own open for the CPU.
+    _warm_browser, warm_lease = await browser_pool.acquire_browser()
+    warm_lease.release()
 
     outcome: list = []
 

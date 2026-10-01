@@ -26,10 +26,11 @@ import os
 import threading
 import time
 import uuid
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
 
+from backend.agent.tools import click_safety
 from backend.vision.browser_host import get_browser_host
 
 logger = logging.getLogger(__name__)
@@ -43,7 +44,9 @@ _REAP_EVERY_S = 30.0
 # one DOM round trip plus the settle.
 _OPEN_TIMEOUT_S = 120.0
 _OBSERVE_TIMEOUT_S = 30.0
-_ACT_TIMEOUT_S = 60.0
+# act = the input itself (60 s) + the click-safety gate's Brain judge and the
+# user's answer window, so a question never eats the action's own time.
+_ACT_TIMEOUT_S = 60.0 + click_safety.JUDGE_TIMEOUT_S + click_safety.ASK_TIMEOUT_S
 # A long interactive task takes many steps; the defaults for vision sessions
 # (12 actions / 60 s) are sized for a reading pass, not for this.
 _SESSION_MAX_ACTIONS = 150
@@ -57,6 +60,9 @@ class _Entry:
     session: Any
     emit: Optional[Emit] = None
     last_used: float = field(default_factory=time.monotonic)
+    # Elements the click-safety gate refused (or the user declined) in this task:
+    # the agent must not retry the same one. Bounded.
+    refused: "deque[str]" = field(default_factory=lambda: deque(maxlen=64))
 
 
 class _BrowserRuntime:
@@ -379,6 +385,44 @@ async def _do_observe(conv: str, want_image: bool, emit: Optional[Emit]) -> Dict
     return out
 
 
+async def _gate_action(entry: _Entry, action: str, mark: dict, text: Optional[str]) -> Optional[Dict[str, Any]]:
+    """The click-safety gate for one element action: ``None`` = go ahead, else the
+    refusal result (``ok=false, pivot=true``). No input is dispatched on a refusal.
+
+    safe -> act; unsafe -> refuse; unsure -> ask the user (bounded); a timeout or
+    a "no" refuses. Refused elements are remembered for the rest of the task.
+    One shadow row per assessment, off this path.
+    """
+    session = entry.session
+    ctx = click_safety.ACT_CONTEXT.get() or {}
+    page_url = str(getattr(getattr(session, "_page", None), "url", "") or getattr(session, "url", "") or "")
+    key = click_safety.mark_key(mark, page_url)
+    what = click_safety.describe(action, mark, page_url, text)
+    if key in entry.refused:
+        return click_safety.refusal(f"{what} was already refused in this task", "refused")
+
+    verdict, reason = await click_safety.assess(ctx.get("goal") or "", action, mark, page_url, text)
+    try:
+        from backend.agent import click_safety_shadow
+
+        click_safety_shadow.submit_assessment(f'{ctx.get("goal") or ""} | {what}', verdict)
+    except Exception as exc:  # noqa: BLE001 - the shadow never blocks an action
+        logger.debug("[browser_tools] click_safety shadow skipped: %s", exc)
+    if verdict == click_safety.SAFE:
+        return None
+    if verdict == click_safety.UNSAFE:
+        entry.refused.append(key)
+        return click_safety.refusal(f"{what} is not allowed: {reason}", verdict)
+    question = (
+        f"IRIS wants to {what}. Task: {(ctx.get('goal') or 'browse')[:160]}. "
+        f"Why I ask: {reason}. Allow it?"
+    )
+    if await click_safety.escalate(question, ctx):
+        return None
+    entry.refused.append(key)
+    return click_safety.refusal(f"the user did not approve: {what}", verdict)
+
+
 async def _do_act(
     conv: str, action: str, element_id: Any, text: Optional[str], emit: Optional[Emit],
 ) -> Dict[str, Any]:
@@ -386,11 +430,18 @@ async def _do_act(
     if entry is None:
         return _fail(problem)
     session = entry.session
-    target = ""
+    mark = None
     try:
-        target = _label(next((m for m in session.last_marks if m.get("id") == int(element_id)), None))
+        mark = next((m for m in session.last_marks if m.get("id") == int(element_id)), None)
     except (TypeError, ValueError):
         pass
+    target = _label(mark)
+    # An unknown element id never reaches the gate: interact() reports the stale id
+    # itself, before any input or cursor event.
+    if mark is not None:
+        blocked = await _gate_action(entry, action, mark, text)
+        if blocked is not None:
+            return blocked
     res = await session.interact(action, element_id, text, emit)
     if not res["ok"]:
         return _fail(res["error"])
