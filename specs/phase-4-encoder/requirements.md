@@ -229,7 +229,8 @@ chat model for VRAM or appearing where a reasoning model should.
 
 **Acceptance Criteria:**
 - AC1: THE SYSTEM SHALL register Embedding-350M with `purpose="embedding"`.
-- AC2: WHERE ColBERT-350M is enabled THE SYSTEM SHALL register it with `purpose="rerank"`.
+- AC2: ~~WHERE ColBERT-350M is enabled THE SYSTEM SHALL register it with `purpose="rerank"`.~~
+  RETIRED 2026-10-01 (owner): the placeholder had no model, no caller and no gate; removed.
 - AC3: THE SYSTEM SHALL NOT make either bindable to `reasoning` or `tool_execution` — **including in
   the settings panel's Brain/Tool selectors**, not only in the chat switcher.
   ⚠️ [`ModelInferenceSection.tsx:80`](components/ModelInferenceSection.tsx:80) builds
@@ -290,7 +291,7 @@ their document.
 - AC5: WHERE Embedding-350M's recall is materially below baseline THEN THE SYSTEM SHALL report that
   as a **finding** and the swap SHALL NOT be defaulted on. **Do not adjust the probe set to close
   the gap.**
-- AC6: THE SYSTEM SHALL gate ColBERT-350M on this measurement.
+- AC6: ~~THE SYSTEM SHALL gate ColBERT-350M on this measurement.~~ RETIRED 2026-10-01 with AC2.
 
 **Edge Cases:**
 - Probe set too small to distinguish → report the inconclusive result; that is a valid outcome.

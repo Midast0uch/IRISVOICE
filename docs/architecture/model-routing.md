@@ -138,10 +138,10 @@ by CT-F6/CT-S1-class contract tests (see §8).
 
 `purpose` (`"chat" | "embedding" | "rerank"`, default `"chat"`) lets non-chat providers be
 declared and later excluded without a separate code path (`provider.py:36-38`,
-`iris_config.py:190-191`). Two encoder providers register this way at router init
-(`provider.py:115-151`): `embedding:lfm25-emb-350m` unconditionally, `rerank:lfm25-colbert-350m`
-only behind `IRIS_ENABLE_COLBERT` — deferred until its retrieval quality is measured
-(`provider.py:120-123`).
+`iris_config.py:190-191`). One encoder provider registers this way at router init
+(`register_builtin_encoder_providers`): `embedding:lfm25-emb-350m`, unconditionally. (The
+`rerank:lfm25-colbert-350m` placeholder behind `IRIS_ENABLE_COLBERT` was REMOVED 2026-10-01 by the
+owner: no model, no caller, no quality gate.)
 
 The exclusion is enforced at the **UI candidate-list** level, not by a backend guard on the bind
 call itself:

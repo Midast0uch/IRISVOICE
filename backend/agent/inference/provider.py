@@ -148,12 +148,11 @@ def register_builtin_encoder_providers() -> None:
     (REQ-6 AC1/AC2/AC4). They are NOT bound to reasoning/tool_execution, so they
     can never serve as the user's brain or tool runner.
 
-    Embedding-350M is always registered (purpose="embedding"). ColBERT-350M
-    (purpose="rerank") is deferred behind a quality gate (REQ-7 AC6) and only
-    registered when explicitly enabled via IRIS_ENABLE_COLBERT, so it stays out
-    of the default provider list until its retrieval quality is measured.
+    Embedding-350M is always registered (purpose="embedding"). The ColBERT-350M
+    rerank placeholder (IRIS_ENABLE_COLBERT) was REMOVED 2026-10-01 (owner): no
+    model on disk, no caller of a "rerank" provider, no quality gate. Re-add it
+    only when a measured retrieval gap needs it.
     """
-    import os
     from .registry import get_provider_registry
 
     reg = get_provider_registry()
@@ -168,15 +167,3 @@ def register_builtin_encoder_providers() -> None:
                 purpose="embedding",
             )
         )
-
-    if os.environ.get("IRIS_ENABLE_COLBERT", "").lower() in ("1", "true", "yes"):
-        if reg.get("rerank:lfm25-colbert-350m") is None:
-            reg.add(
-                ProviderInstance(
-                    id="rerank:lfm25-colbert-350m",
-                    label="LFM2.5 ColBERT 350M (rerank)",
-                    kind=ProviderKind.INPROCESS,
-                    model="LFM2.5-ColBERT-350M",
-                    purpose="rerank",
-                )
-            )

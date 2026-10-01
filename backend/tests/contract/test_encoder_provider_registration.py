@@ -38,22 +38,16 @@ def test_encoder_provider_not_bindable_to_chat_roles():
     assert "embedding:lfm25-emb-350m" not in bound_ids
 
 
-def test_colbert_registration_gated():
+def test_colbert_placeholder_is_gone():
+    """Owner 2026-10-01: the ColBERT rerank placeholder (IRIS_ENABLE_COLBERT) was
+    removed - no model, no caller, no gate. The old test pinned the flag; this
+    pins that no flag can register it again (spec phase-4 REQ-7 AC2/AC6 retired)."""
     from backend.agent.inference.provider import register_builtin_encoder_providers
     from backend.agent.inference.registry import get_provider_registry
 
-    # Default: ColBERT NOT registered (deferred behind quality gate, REQ-7 AC6).
-    os.environ.pop("IRIS_ENABLE_COLBERT", None)
-    register_builtin_encoder_providers()
-    reg = get_provider_registry()
-    assert reg.get("rerank:lfm25-colbert-350m") is None
-
-    # Enabled: registered with purpose=rerank.
     os.environ["IRIS_ENABLE_COLBERT"] = "1"
     try:
         register_builtin_encoder_providers()
-        colbert = reg.get("rerank:lfm25-colbert-350m")
-        assert colbert is not None
-        assert colbert.purpose == "rerank"
+        assert get_provider_registry().get("rerank:lfm25-colbert-350m") is None
     finally:
         os.environ.pop("IRIS_ENABLE_COLBERT", None)
