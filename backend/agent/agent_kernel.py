@@ -16754,6 +16754,13 @@ Respond with a JSON object:
             tools=tools, prior_results=_prior_results, task=task, workdir=workdir,
             conv_id=self.conversation_id or "", on_call=_shadow,
         ))
+        # What the node actually did, for the step's physics action (REQ-8 redo).
+        try:
+            item.node_calls = [
+                (str(c.get("tool") or ""), bool(c.get("ok"))) for c in (result.calls or [])
+            ]
+        except Exception:  # noqa: BLE001 - bookkeeping never fails a step
+            item.node_calls = []
         return result.as_step_result(), result.success
 
     def _der_run_step_execution(
@@ -17975,6 +17982,9 @@ Respond with a JSON object:
             "step_number": item.step_number,
             "step_id": item.step_id,
             "tool": item.tool,
+            # (tool, ok) for every call a NODE step made (set in _der_run_node);
+            # the physics action reads what the step did, not item.tool (None).
+            "node_calls": list(getattr(item, "node_calls", None) or []),
             "success": bool(step_success),
             "verified": verified,
             "from_voice": bool(from_voice),
@@ -18042,8 +18052,8 @@ Respond with a JSON object:
         # ── CADUCEAN UPDATE + IMMORTUS + TRAJECTORY RECORD ──
         try:
             from backend.gateway.iris_ffi import (
+                ffi_caducean_calculate_eml,
                 ffi_caducean_update,
-                ffi_calculate_eml,
                 ffi_immortus_chain_append,
             )
             from backend.agent.caducean_trajectory import (
@@ -18057,19 +18067,17 @@ Respond with a JSON object:
                 self._memory_interface
             ).get_latest_coordinate(_session)
 
-            _action = 0
-            if vals["tool"] in ("run_command", "git_commit", "git_push"):
-                _action = 1
-            elif not step_success:
-                _action = 2
-            _eml_score, _ex, _ey = ffi_calculate_eml(_session)
-            # v2: balance clamped to [0.1, 3.0] (was [0.1, 2.0]).
-            # Note: the v2 baseline divisor is 2.3418 per the field theory
-            # (see docs/cad_v2_architecture.md §2.2). The current EML
-            # returns a raw score, not a balance; the kernel clamps to
-            # the safe range defensively. The TrajectoryController may
-            # override the constant via ffi_caducean_set_params.
-            _balance = max(0.1, min(3.0, _eml_score))
+            # REQ-8 redo (backend/agent/physics_action.py): the action comes from
+            # what the step DID - for a node step, the tools it actually called -
+            # and the balance from the v2 state EML over the design divisor. The
+            # old inputs were constants (action 0, EML 12.51 -> balance 3.0), so
+            # Sigma was a step counter; replayed before going live
+            # (scripts/replay_sigma.py).
+            from backend.agent.physics_action import balance_from_eml, step_action
+
+            _action = step_action(vals["tool"], step_success, vals.get("node_calls"))
+            _eml_score, _ex, _ey = ffi_caducean_calculate_eml(_session)
+            _balance = balance_from_eml(_eml_score)
             ffi_caducean_update(_session, _action, _balance)
 
             # v2: fetch recommendation code AFTER the update so we can

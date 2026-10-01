@@ -158,7 +158,9 @@ def test_s3_finalize_does_not_wait_for_physics_and_decisions_fold_back(monkeypat
         eml_ran.set()
         return 1.0, 0.0, 0.0
 
-    monkeypatch.setattr(_ffi, "ffi_calculate_eml", _slow_eml)
+    # The physics step reads the v2 state EML since the REQ-8 redo
+    # (backend/agent/physics_action.py); the block moves with the call.
+    monkeypatch.setattr(_ffi, "ffi_caducean_calculate_eml", _slow_eml)
     monkeypatch.setattr(_ct_module, "get_trajectory_recorder", lambda mi: _Recorder())
     monkeypatch.setattr(_eb_module, "get_event_bus", lambda: _Bus())
 
