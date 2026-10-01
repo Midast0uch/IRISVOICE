@@ -94,21 +94,27 @@ The live, ordered list is PROGRESS.md "Next work". At the time of this move:
 4. Turn-end bookkeeping onto an ordered lane; the per-launch `__pycache__` purge (item D5).
 5. Reply surface Phase A; execution audit Phase 2 rest, Phase 3, the live execution matrix.
 
-### 7a. NEXT after the audit work items: context as a rubber band (owner, 2026-09-30)
+### 7a. NEXT after the audit work items: ONE memory program - CLM rubber band + Wormhole/Aperture/NodeChains (owner, 2026-09-30)
 
-Brief: `docs/Design/CLM_MYCELIUM_DESIGN_BRIEF.md` (read its TERM MAP first - it mixes MCM build-tool
-words with the app's memory). Idea: the live context window shrinks and stretches back on demand,
-because everything is in the memory (`data/memory.db`: Mycelium spaces, the Immortus chain as the
-time layer, landmarks); the model edits a live VIEW, the record stays append-only, placeholders
-carry the coordinate/time/domain to re-expand. Replaces the surface-level DCP trimming over time.
-Source: "Context Language Models" (arXiv 2609.37725; github.com/facebookresearch/context-language-models).
+These ship TOGETHER (owner): they are one valve seen from two sides and they learn from one stream.
+- CLM (`docs/Design/CLM_MYCELIUM_DESIGN_BRIEF.md`; arXiv 2609.37725,
+  github.com/facebookresearch/context-language-models): the live context window shrinks and
+  stretches back on demand - the model edits a live VIEW, the record stays append-only,
+  placeholders carry the address to re-expand. Decides what LEAVES the window. Replaces DCP.
+- WORMHOLE + APERTURE + NODE CHAINS (`specs/wormhole-aperture/`, Draft, not implemented, partly
+  stale - nodes changed; refresh against the code first): Stage A Wormhole (state hash of quantized
+  Sigma + domains -> hex neighbours -> hyperedges with Beta-Bernoulli posteriors; cause and outcome
+  lattices as recall axes, REQ-46), Stage B Aperture (single-slot, boundary-claimed delivery -
+  decides what ENTERS the window), Stage C NodeChains (successful node paths become chains; pivots
+  are events; variants from proven pivots). Node chains are the proof that curation worked.
+- SHARED FOUNDATION (build and MEASURE first): the event alphabet `docs/Design/EVENT_TAXONOMY.md`
+  (closed lattices; owner review pending) + Wave E typed events and the landmark policy
+  (`specs/research-memory-chain-browser/` D9, built 2026-09-30) + a meaningful Sigma (REQ-8,
+  built; live eval guard pending). How well the aperture works is decided by how well events and
+  landmarks are curated (owner) - measure curation quality (EVENT_TAXONOMY section 8) before
+  Stage A-C build on it.
 STARTS WHEN: DER-DAG execution, websearch and developer mode are foundationally good, and the
-coordinate events written to the memory store are meaningful and trustworthy (REQ-8 Sigma +
-Wave E events/landmark policy in `specs/research-memory-chain-browser/`).
-ALREADY STARTED (2026-09-30): the brief's event types and landmark policy (7.9, 7.11) as Wave E.
-RELATED (owner): `specs/wormhole-aperture/` (Hex Topology recall: Hash Signature -> hex binning ->
-Hyperedges with Beta-Bernoulli scoring; APERTURE delivery) - a major planned memory improvement, not
-implemented, partly stale (nodes changed); refresh it against the current code before building.
+coordinate events in the memory store are meaningful and trustworthy.
 
 ## 8. Machine facts that shape every measurement
 
