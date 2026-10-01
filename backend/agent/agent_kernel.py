@@ -1054,6 +1054,10 @@ class AgentKernel:
             from backend.agent import click_safety_shadow as _cs_rows
 
             _cs_rows.set_row_sink(_shadow_sink)
+            # event taxonomy step 3: user_feedback / event_family / event_type:*.
+            from backend.agent import event_oracle as _eo_rows
+
+            _eo_rows.set_row_sink(_shadow_sink)
             logger.info(
                 "[AgentKernel] shadow row sink installed "
                 "(monitor + surface + web_intent)"
@@ -7883,6 +7887,16 @@ class AgentKernel:
         # session_id fallback is the documented behavior (docstring above).
         _conv_id = conversation_id or getattr(self, "conversation_id", None) or session_id
         self.conversation_id = _conv_id
+
+        # Event taxonomy step 3: EVERY user message (text and voice enter here) gets
+        # an Oracle `user_feedback` shadow decision. Queues one lane job and returns;
+        # never on the answer path, never changes the turn.
+        try:
+            from backend.agent.event_oracle import observe_user_message
+
+            observe_user_message(self, text, thread_id=_conv_id, turn_id=turn_id, from_voice=from_voice)
+        except Exception as _eo_err:  # noqa: BLE001 - an observer never blocks a turn
+            logger.debug("[AgentKernel] event oracle observe skipped: %r", _eo_err)
 
         # Reset thinking from any previous call so stale data never leaks
         self._pending_thinking = ""
