@@ -7,7 +7,14 @@ archived there); CLAUDE.md/AGENTS.md now carry "BUILD + VERIFY IRIS — THE MEAS
 "READING THIS CODEBASE — PHASE MODEL, PHYSICS, LANES"; validate every change with the
 `app-testing` skill, Mode A (`.opencode/skills/app-testing/SKILL.md`) — MCM `pin_6c81e87956b8`.
 
-**NEXT AGENT (2026-09-30, latest): read MCM `pin_57d2554decaf` (HANDOFF 5) FIRST.** Research
+**NEXT AGENT (2026-10-01, latest): read MCM `pin_522fe69c7e61` (HANDOFF 6) FIRST.** It lists
+what session 64237209 built (store 6.6 -> 0.28 GB, S12; one Chromium + click-safety browser; research
+memory; relevance-gated Immortus chain; meaningful Sigma - LIVE GUARD PENDING; event taxonomy v1 +
+emitters + Oracle shadow consumers; Oracle phase domain behind `IRIS_ORACLE_PHASE`, default off) and
+what is left. Owner priority: the AUDIT work items below come first; then the live gates in HANDOFF 6.
+Nothing after `3d9d802f` is pushed.
+
+**Previous: read MCM `pin_57d2554decaf` (HANDOFF 5).** Research
 Wave A is done and measured (research 7/8, r01 154 s -> 44 s); the owner APPROVED three follow-ups
 (extractor off the answer path, test changes that improve the feature, store cleanup of 4.84 GB
 with a no-regrowth guard); then spec Wave B (real browser control,
