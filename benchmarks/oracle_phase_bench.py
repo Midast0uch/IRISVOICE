@@ -27,6 +27,13 @@ PROTOCOL
 
 MEASUREMENT RULE: keep the machine quiet while this runs.
 
+THIRD CONFIG (2026-10-01, CONCURRENCY_MODEL S7 open thread 3): ``--config semaphore
+--permits N`` - a classical control. The engine runs with NO lock and NO phase gate
+(IRIS_ORACLE_PHASE=1 with the gate neutralised INSIDE THIS PROCESS ONLY), and every
+decide() passes a priority semaphore of N permits: USER_TURN / SPEAK waiters go to
+the front, FIFO within a level. Nothing here is shipped: decision_engine.py and
+phase_domain.py are not changed (oracle.md S19.5 has the result).
+
 Usage:
     python benchmarks/oracle_phase_bench.py --label classical
     IRIS_ORACLE_PHASE=1 python benchmarks/oracle_phase_bench.py --label phase
@@ -36,6 +43,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import heapq
 import json
 import logging
 import os
@@ -67,6 +75,18 @@ _BOOL_INSTRUCTIONS = {
 _REVIEW_LABELS = ("pass", "refine", "veto")
 _REVIEW_INSTRUCTION = "Should this completed step pass, be refined, or be vetoed?"
 _NARRATION_LABELS = ("speak_all", "speak_first_only", "stay_silent")
+# Jobs the original workload did not cover (oracle.md S19): interpret, guard,
+# shape, classify_event - so the bench measures the real job mix.
+_EXTRA = (
+    ("mode", ("quick", "spec", "implement", "review"),
+     "Is this a quick answer or a build task? user said: {g}"),
+    ("click_safety", ("safe", "unsafe", "unsure"),
+     "ACTION: click 'Delete account' on {g}"),
+    ("presentation", ("plain_text", "markdown", "artifact"),
+     "ANSWER HEAD: here is the comparison you asked for about {g}"),
+    ("event_family", ("problem", "safety", "memory", "delivery"),
+     "EVENT: step failed with a timeout while {g}"),
+)
 _NARRATION_INSTRUCTION = (
     "How much of this plan's narration should be spoken aloud: every beat, "
     "only the first, or nothing?"
@@ -125,6 +145,10 @@ def build_workload() -> List[Dict[str, Any]]:
     for i in range(6):
         items.append({"consumer": "narration", "options": list(_NARRATION_LABELS),
                       "long": False, "goal": f"NARRATE: tell the user about task {i}, {_STEP_RESULTS[i % 6]}"})
+    for i in range(8):
+        cid, labels, tmpl = _EXTRA[i % len(_EXTRA)]
+        items.append({"consumer": cid, "options": list(labels), "long": False,
+                      "goal": tmpl.format(g=_STEP_RESULTS[i % 6])})
     # The long input: the whole planner prompt, every step output included.
     long_goal = "OBJECTIVE: finish the report. " + " ".join(
         f"STEP {n} RESULT: {_STEP_RESULTS[n % 6]}" for n in range(400))
@@ -153,6 +177,60 @@ def _pct(xs: List[float], p: float) -> float:
     return s[min(len(s) - 1, max(0, int(round(p * (len(s) - 1)))))]
 
 
+class _PrioritySemaphore:
+    """N permits; high-priority waiters go first, FIFO within a level. BENCH ONLY."""
+
+    def __init__(self, permits: int) -> None:
+        self._free = permits
+        self._cv = threading.Condition()
+        self._heap: List[tuple] = []
+        self._seq = 0
+
+    def acquire(self, high: bool) -> None:
+        with self._cv:
+            self._seq += 1
+            ticket = (0 if high else 1, self._seq)
+            heapq.heappush(self._heap, ticket)
+            while not (self._free > 0 and self._heap[0] == ticket):
+                self._cv.wait()
+            heapq.heappop(self._heap)
+            self._free -= 1
+            self._cv.notify_all()
+
+    def release(self) -> None:
+        with self._cv:
+            self._free += 1
+            self._cv.notify_all()
+
+
+def _install_semaphore(eng: Any, permits: int) -> None:
+    """The classical control: no engine lock (phase path), no phase gate (stubbed
+    in THIS process only), a priority semaphore around every decision."""
+    from backend.agent import decision_engine as de
+    from backend.agent.call_context import call_class, is_high_priority
+
+    class _NoGate:
+        def acquire(self, *_a: Any, **_k: Any) -> float:
+            return 0.0
+
+    de._oracle_domain = lambda: _NoGate()
+    sem = _PrioritySemaphore(permits)
+    inner = eng.decide
+
+    def decide(consumer_id: str, options: Any, frame: Any, instruction: Any = None) -> Any:
+        sem.acquire(is_high_priority(call_class()))
+        try:
+            return inner(consumer_id, options, frame, instruction)
+        finally:
+            sem.release()
+
+    eng.decide = decide
+
+
+_ANSWERS_PER_BURST = 5
+_ANSWER_SPACING_S = 0.8
+
+
 def _burst(eng: Any, items: List[Dict[str, Any]], n_threads: int,
            answer_item: int, answer_after_s: float) -> Dict[str, Any]:
     from backend.agent.call_context import CallClass, call_class_scope
@@ -166,7 +244,7 @@ def _burst(eng: Any, items: List[Dict[str, Any]], n_threads: int,
 
     results: Dict[int, List[Dict[str, Any]]] = {i: [] for i in range(len(items))}
     res_lock = threading.Lock()
-    answer: Dict[str, Any] = {}
+    answers: List[Dict[str, Any]] = []
     # workers + the answer thread + this (main) thread
     barrier = threading.Barrier(n_threads + 2)
 
@@ -178,10 +256,15 @@ def _burst(eng: Any, items: List[Dict[str, Any]], n_threads: int,
                 results[idx].append(r)
 
     def answer_thread() -> None:
+        # Several reply-path decisions spread through the burst, so p50/p95
+        # mean something (was one per rep).
         barrier.wait()
-        time.sleep(answer_after_s)
-        with call_class_scope(CallClass.USER_TURN):
-            answer.update(_call(eng, items[answer_item]))
+        t0 = time.perf_counter()
+        for k in range(_ANSWERS_PER_BURST):
+            due = answer_after_s + k * _ANSWER_SPACING_S
+            time.sleep(max(0.0, due - (time.perf_counter() - t0)))
+            with call_class_scope(CallClass.USER_TURN):
+                answers.append(_call(eng, items[answer_item]))
 
     threads = [threading.Thread(target=worker, args=(s,), name=f"bench-w{n}")
                for n, s in enumerate(shares)]
@@ -194,12 +277,15 @@ def _burst(eng: Any, items: List[Dict[str, Any]], n_threads: int,
         t.join()
     wall = time.perf_counter() - t_start
     threads[-1].join()
-    return {"wall_s": wall, "results": results, "answer": answer}
+    return {"wall_s": wall, "results": results, "answers": answers}
 
 
-def run(label: str, n_threads: int, reps: int, out: Path) -> Dict[str, Any]:
+def run(label: str, n_threads: int, reps: int, out: Path,
+        config: str = "env", permits: int = 2) -> Dict[str, Any]:
     logging.disable(logging.WARNING - 1)  # the engine logs every decision at INFO
-    from backend.agent.decision_engine import DecisionEngine, load_engine_config
+    if config == "semaphore":
+        os.environ["IRIS_ORACLE_PHASE"] = "1"  # no engine lock; the gate is stubbed below
+    from backend.agent.decision_engine import DecisionEngine, load_engine_config, oracle_job
 
     _register_consumers()
     items = build_workload()
@@ -207,6 +293,8 @@ def run(label: str, n_threads: int, reps: int, out: Path) -> Dict[str, Any]:
     eng = DecisionEngine(cfg)
     if not eng._load():
         raise SystemExit("MODEL DID NOT LOAD - no benchmark possible")
+    if config == "semaphore":
+        _install_semaphore(eng, permits)
     for it in items[:6]:  # warm-up, not measured
         eng.decide(it["consumer"], it["options"], {"goal": it["goal"]})
 
@@ -231,6 +319,8 @@ def run(label: str, n_threads: int, reps: int, out: Path) -> Dict[str, Any]:
         diffs: List[float] = []
         bitwise_equal = 0
         compared = 0
+        waits_by_consumer: Dict[str, List[float]] = {}
+        waits_by_job: Dict[str, List[float]] = {}
         for idx, rs in b["results"].items():
             for r in rs:
                 if not r["ok"]:
@@ -239,15 +329,29 @@ def run(label: str, n_threads: int, reps: int, out: Path) -> Dict[str, Any]:
                 completed += 1
                 lat.append(r["ms"])
                 ratios.append(r["ms"] / max(alone[idx]["ms"], 1e-6))
+                # Fairness: the extra time under load (queueing + contention).
+                cid = items[idx]["consumer"]
+                w = r["ms"] - alone[idx]["ms"]
+                waits_by_consumer.setdefault(cid, []).append(w)
+                waits_by_job.setdefault(oracle_job(cid).name, []).append(w)
                 ref, got = alone[idx]["dist"], r["dist"]
                 compared += 1
                 same = ref == got
                 bitwise_equal += int(same)
                 if not same:
                     diffs.append(max(abs(a[2] - g[2]) for a, g in zip(ref, got)))
-        ans = b["answer"]
         ans_alone = alone[answer_item]["ms"]
+        ans_ms = [a["ms"] for a in b["answers"] if a.get("ok")]
+        ans = {"ok": len(ans_ms) == len(b["answers"]) and bool(ans_ms),
+               "ms": statistics.median(ans_ms) if ans_ms else 0.0}
         rep_out.append({
+            "answer_path_ms_all": [round(x, 1) for x in ans_ms],
+            "fairness_wait_ms": {
+                "by_consumer": {c: {"p95": round(_pct(v, 0.95), 1), "max": round(max(v), 1)}
+                                for c, v in sorted(waits_by_consumer.items())},
+                "by_job": {j: {"p95": round(_pct(v, 0.95), 1), "max": round(max(v), 1)}
+                           for j, v in sorted(waits_by_job.items())},
+            },
             "rep": rep,
             "issued": completed + wasted,
             "completed": completed,
@@ -295,8 +399,22 @@ def run(label: str, n_threads: int, reps: int, out: Path) -> Dict[str, Any]:
             r["distributions_bitwise_equal_to_alone"] for r in rep_out),
         "max_abs_prob_diff": max(r["max_abs_prob_diff"] for r in rep_out),
     }
+    _all_ans = [x for r in rep_out for x in r["answer_path_ms_all"]]
+    agg["answer_path_p50_ms"] = round(_pct(_all_ans, 0.5), 1)
+    agg["answer_path_p95_ms"] = round(_pct(_all_ans, 0.95), 1)
+    agg["answer_path_samples"] = len(_all_ans)
+    for _k in ("by_consumer", "by_job"):
+        _names = sorted({n for r in rep_out for n in r["fairness_wait_ms"][_k]})
+        agg[f"fairness_{_k}"] = {
+            n: {"p95_mean": round(statistics.fmean(
+                    r["fairness_wait_ms"][_k][n]["p95"] for r in rep_out
+                    if n in r["fairness_wait_ms"][_k]), 1),
+                "max": round(max(r["fairness_wait_ms"][_k][n]["max"] for r in rep_out
+                                 if n in r["fairness_wait_ms"][_k]), 1)}
+            for n in _names}
     doc = {
         "label": label,
+        "config": config if config != "semaphore" else f"semaphore(N={permits})",
         "phase_flag": os.environ.get("IRIS_ORACLE_PHASE", "(unset)"),
         "host_cpu_count": os.cpu_count(),
         "session_options": getattr(backend, "session_options", None),
@@ -346,12 +464,16 @@ def main() -> int:
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--out", default=None)
     ap.add_argument("--compare", nargs=2, metavar=("A", "B"))
+    ap.add_argument("--config", choices=("env", "semaphore"), default="env",
+                    help="env = lock or phase by IRIS_ORACLE_PHASE; semaphore = the "
+                         "classical control (bench only)")
+    ap.add_argument("--permits", type=int, default=2)
     args = ap.parse_args()
     if args.compare:
         compare(*args.compare)
         return 0
     out = Path(args.out) if args.out else _REPO / "benchmarks" / f"oracle_phase_{args.label}.json"
-    run(args.label, args.threads, args.reps, out)
+    run(args.label, args.threads, args.reps, out, args.config, args.permits)
     return 0
 
 
