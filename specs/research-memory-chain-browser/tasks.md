@@ -123,3 +123,18 @@ consent gate skip + explore dispatch) - keep each edit small and local.
   and the plan context gets exactly one line; measured steps-to-success on a repeated eval task
   before/after. NOT THIS = route injection when no match.
 - [ ] **M4 divergence** and **M5 cross-domain edges** - after M3 is measured.
+
+## Wave E - typed events and the landmark policy (D9; owner: implement now)
+
+- [ ] **E1 events + cases.** DONE = behavioral test on a temp store: a task with a failing step,
+  a failed retry and a verified fix, then task success, produces BUG, DEAD_END, FIX, VERIFIED_FIX
+  (+ a LESSON candidate) chain rows in time order for ONE case with depends_on; an edit of a
+  dependency marks the case stale; the same BUG after VERIFIED_FIX demotes it (history kept); all
+  writes on the lane (a blocked lane does not delay finalize). NOT THIS = an LLM classifier,
+  events on the answer path, rewriting old rows.
+- [ ] **E2 landmark tiers + evidence.** DONE = contract tests: a new landmark is a candidate; one
+  evidence kind does not promote; two do; the model's claim alone never does; is_permanent stays 0
+  for a candidate whatever its activations; a dependency edit -> stale; a contradiction ->
+  demoted with evidence kept. Existing landmark tests still pass (state every change).
+- [ ] **E3 trail at failure.** DONE = contract test: the replan-after-failure context contains the
+  case trail when the signature matches, and nothing when it does not; counters logged.

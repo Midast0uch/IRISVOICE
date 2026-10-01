@@ -159,3 +159,50 @@ Five mechanisms, in build order (each shadow-first where it steers anything):
    that text similarity cannot: shape is domain-independent.
 Consolidation (M2 folding, M3 routes, M5 edges, decay of unused edges) runs on an idle lane
 ("sleep"), never on the answer path; it extends the existing DistillationProcess cycle.
+
+## D9 Typed events and the landmark policy (owner 2026-09-30; brief `docs/Design/CLM_MYCELIUM_DESIGN_BRIEF.md` 7.9, 7.11)
+
+Measured state: the app records ONE event type (`system_events.tool_execution`, 5,653 rows); step
+verification exists (`der_commits.verified_label`: VERIFIED 1,060 / UNVERIFIED 83 / FAILED 20) but
+feeds nothing; landmarks crystallize at episode end from the run score (>= 0.45, not "miss"),
+cluster = the 6 most-used Mycelium nodes of ALL spaces (not this session's), permanence = 8
+activations (usage, not truth); no evidence types, no dependencies, no staleness, no demotion.
+
+Events (one module `backend/memory/memory_events.py`, written on `durability_queue.lane("memory_events")`,
+never on the answer path; each event is a chain row - the time layer - `nbl_outcome='event:<TYPE>'`,
+`file_path=<case_id>`, compact JSON `result`, real Sigma):
+- BUG: a step failed (success False or verified FAILED) -> open or reuse the CASE keyed by the error
+  signature (`sha1(tool + normalized first error line)[:12]`; digits, paths, hex, quotes stripped).
+- ATTEMPT: an UNVERIFIED step while a case of this task is open.
+- DEAD_END: a failed step while a case of this task is open (a negative marker; the action
+  signature `tool + target` is stored so a repeat can be counted).
+- FIX: a VERIFIED step after a BUG in the same task (the step the verifier touched - event-level
+  credit, never the whole run).
+- VERIFIED_FIX: outside evidence for a FIX: the task completes successfully, or a later test
+  command passes, or the user confirms. Only these deposit trail strength. The model's claim never.
+- LESSON: the FIX step's own description, model-authored, stored as a CANDIDATE with provenance
+  (case id, chain row, Sigma); it never promotes itself and re-enters context as data.
+Cases (`memory_cases`: case_id, signature, tool, status open|fixed|verified|stale|demoted,
+depends_on JSON (files/commands/urls the fix touched), falsify_if, attempts, dead_ends,
+verified_count, last_verified, contradictions, first_seen, last_seen). A later edit of a dependency
+marks the case STALE; a BUG with the same signature after VERIFIED_FIX is a CONTRADICTION ->
+`demoted`, history kept.
+
+Landmark policy (`mycelium_landmarks` gains tier, evidence JSON, depends_on JSON, falsify_if,
+last_verified, contradictions; idempotent ALTER like the memory_chain migration):
+- Tiers: candidate -> landmark -> stale | demoted. A crystallized landmark starts as CANDIDATE.
+- Promotion needs OUTSIDE evidence of >= 2 kinds or sessions among: task_complete (episode success),
+  test_pass (a VERIFIED test command in the session), user_confirm, recurrence (a merge with an
+  independent session's landmark). The model's claim never counts. The threshold is a constant to
+  be set from the brief's section 9 measurements, starting at 2.
+- Event-level credit: the landmark's traversal_sequence records the VERIFIED step events of the
+  session (chain row ids), not the whole run.
+- Truth vs usefulness stay separate numbers: tier/evidence = truth; activation_count = recall
+  usefulness. `is_permanent` requires tier == landmark AND the activation threshold.
+- Falsification: depends_on from the verified events (files, commands, urls) + falsify_if text;
+  a dependency edit -> stale (re-check on next use, flagged when shown); a contradicting failure ->
+  demoted (kept).
+Trail surfacing (7.11, relevance by construction - owner rule): ONLY at a replan after a failure,
+when the live BUG signature matches a case: one block (<= 400 chars) with the fix, times verified,
+last verified, dependency status, dead ends to avoid. Counters logged for the section 9 tests:
+promoted, demoted, stale_used, repeated_dead_end.

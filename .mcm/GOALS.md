@@ -94,6 +94,19 @@ The live, ordered list is PROGRESS.md "Next work". At the time of this move:
 4. Turn-end bookkeeping onto an ordered lane; the per-launch `__pycache__` purge (item D5).
 5. Reply surface Phase A; execution audit Phase 2 rest, Phase 3, the live execution matrix.
 
+### 7a. NEXT after the audit work items: context as a rubber band (owner, 2026-09-30)
+
+Brief: `docs/Design/CLM_MYCELIUM_DESIGN_BRIEF.md` (read its TERM MAP first - it mixes MCM build-tool
+words with the app's memory). Idea: the live context window shrinks and stretches back on demand,
+because everything is in the memory (`data/memory.db`: Mycelium spaces, the Immortus chain as the
+time layer, landmarks); the model edits a live VIEW, the record stays append-only, placeholders
+carry the coordinate/time/domain to re-expand. Replaces the surface-level DCP trimming over time.
+Source: "Context Language Models" (arXiv 2609.37725; github.com/facebookresearch/context-language-models).
+STARTS WHEN: DER-DAG execution, websearch and developer mode are foundationally good, and the
+coordinate events written to the memory store are meaningful and trustworthy (REQ-8 Sigma +
+Wave E events/landmark policy in `specs/research-memory-chain-browser/`).
+ALREADY STARTED (2026-09-30): the brief's event types and landmark policy (7.9, 7.11) as Wave E.
+
 ## 8. Machine facts that shape every measurement
 
 - `C:` is a 97%-full 7200 rpm hard disk (repo, Python, `data/memory.db`); `D:` is an NVMe SSD
