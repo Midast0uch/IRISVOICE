@@ -33,6 +33,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -281,6 +282,14 @@ def resolve_model_dir(explicit: Optional[str] = None) -> Optional[str]:
 # `inter_op` threads on a single-request-at-a-time workload only oversubscribes.
 _INTER_OP_THREADS = 1
 
+# Several runs may be in flight on the one session (IRIS_ORACLE_PHASE; see
+# decision_engine._decide_phase), so the per-call telemetry must not be shared
+# mutable state. The run counters bump under a MODULE-level lock (a stand-in
+# runner built without __init__ still works), and the per-call stage timers live
+# in thread-local state: encode() and logits() of one call run on one thread.
+_STATS_LOCK = threading.Lock()
+_TL = threading.local()
+
 # Input length cap (label structure + text). The encoder is DeBERTa-v3 with 512
 # positions and GLiNER trains on ~384 words; nothing capped the text, so the
 # `done` monitor - which passes the whole planner prompt, every step output
@@ -355,10 +364,8 @@ class _OnnxRunner:
         self.run_calls = 0
         # AC30.6 (T38): per-stage attribution for the LAST call, so a tuning
         # change can be blamed on a stage instead of on "the engine". Cheap:
-        # perf_counter is ~50ns against a ~117ms inference.
-        self._tok_seconds = 0.0
-        self._encode_ms = 0.0
-        self._tokenize_ms = 0.0
+        # perf_counter is ~50ns against a ~117ms inference. The in-progress
+        # timers are thread-local (_TL); `stage_ms` is the last COMPLETED call.
         self.stage_ms: Dict[str, float] = {
             "tokenize_ms": 0.0, "encode_ms": 0.0,
             "session_ms": 0.0, "post_ms": 0.0,
@@ -371,7 +378,7 @@ class _OnnxRunner:
             ids = self._cache[piece] = self.tok.encode(
                 piece, add_special_tokens=False
             ).ids
-        self._tok_seconds += time.perf_counter() - _t
+        _TL.tok_s = getattr(_TL, "tok_s", 0.0) + (time.perf_counter() - _t)
         return ids
 
     def _structure(self, task: Task) -> tuple[list[int], list[int]]:
@@ -396,9 +403,10 @@ class _OnnxRunner:
         return hit
 
     def encode(self, text: str, tasks: list[Task]) -> tuple[list[int], list[int]]:
-        self.encode_calls += 1
+        with _STATS_LOCK:
+            self.encode_calls += 1
         _t0 = time.perf_counter()
-        _tok_before = self._tok_seconds
+        _tok_before = getattr(_TL, "tok_s", 0.0)
         if not text.endswith((".", "!", "?")):
             text = (text + ".") if text else "."
         ids: list[int] = []
@@ -417,13 +425,14 @@ class _OnnxRunner:
                 break
             ids += piece
         # AC30.6: tokenizer work separated from structure assembly.
-        self._encode_ms = (time.perf_counter() - _t0) * 1000.0
-        self._tokenize_ms = (self._tok_seconds - _tok_before) * 1000.0
+        _TL.encode_ms = (time.perf_counter() - _t0) * 1000.0
+        _TL.tokenize_ms = (getattr(_TL, "tok_s", 0.0) - _tok_before) * 1000.0
         return ids, positions
 
     def logits(self, text: str, tasks: list[Task]) -> dict[str, dict[str, float]]:
         ids, positions = self.encode(text, tasks)
-        self.run_calls += 1
+        with _STATS_LOCK:
+            self.run_calls += 1
         _t_run = time.perf_counter()
         (out,) = self.session.run(["logits"], {
             "input_ids": np.asarray([ids], dtype=np.int64),
@@ -436,8 +445,8 @@ class _OnnxRunner:
         _t_end = time.perf_counter()
         # AC30.6 (T38): the breakdown the bench reports.
         self.stage_ms = {
-            "tokenize_ms": round(self._tokenize_ms, 3),
-            "encode_ms": round(self._encode_ms - self._tokenize_ms, 3),
+            "tokenize_ms": round(_TL.tokenize_ms, 3),
+            "encode_ms": round(_TL.encode_ms - _TL.tokenize_ms, 3),
             "session_ms": round((_t_post - _t_run) * 1000.0, 3),
             "post_ms": round((_t_end - _t_post) * 1000.0, 3),
         }
