@@ -209,7 +209,19 @@ Three coding runs, same machine (`evals/results/`): `20261001-104424` (start) re
    r04 10 -> 25 s slower - research has no recorded standard yet, record one). P4 PASSED:
    `IRIS_ORACLE_PHASE=1` is now set in `.env` (local, untracked - like `IRIS_PHASE_SCHEDULER`).
 
-OPEN (in order): record a research standard (`--record-standard` after a clean run); move shadow scores
+6. **Later the same day** (commits `c3484f51`..`eee33b94`): ColBERT placeholder REMOVED (owner);
+   Sigma REDONE by node calls (`52e6e851`, `scripts/replay_sigma.py` replays on the native
+   engine; landmark `lm_34630e8be75c70ce`); the developer-mode switch no longer runs a 13-17 min
+   `git worktree add` of the whole repo (owner: ask before every creation; separate-repo sandbox
+   in GOALS 7c); `faulthandler.enable` armed after 3 native crashes in python314.dll at offset
+   0x2ab7db (`logs/crash_traceback.log`); classical vs phase vs semaphore control (oracle.md
+   19.6: semaphore won reply latency) -> owner choice A: EXIT-DRIVEN admission in the phase
+   domain (oracle.md 19.7; tie with the semaphore, reply p50 398 -> 203 ms), live gate passed
+   (`20261001-163433`: 15/15, no regression, reply sum **340 s**; landmark
+   `lm_f34858a6bdab8028`; `IRIS_ORACLE_PHASE_EXIT=1` in `.env`). Batched "decide together"
+   rejected twice (the export leaks rows into each other; oracle.md 19.6).
+
+OPEN (in order): coupling gate (needs a two-session eval; Sigma now varies); record a research standard (`--record-standard` after a clean run); move shadow scores
 from the FIFO lane to phase participants (rows stay on their writer); `depth_met` still inline
 (0.4-0.9 s, feeds the continuation only when enforced); `mode` / `narration` / `presentation`
 shadow scores inline (counts in the `Oracle inline decisions` log line); streak-gate-only-on-
