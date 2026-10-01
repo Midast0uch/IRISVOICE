@@ -285,6 +285,24 @@ needed, and the earlier session's numbers were reproduced independently
 Threads do not change the maths, so this lever can never invalidate the
 threshold. `scripts/bench_oracle_threads.py` re-derives the optimum on any host.
 
+### 8.2 Thread affinity and spinning — measured, not shipped (2026-10-01)
+
+Asked: can the ORT session go faster on this CPU (i7-7700, 4 cores / 8 logical)?
+`benchmarks/oracle_ort_options_bench.py` (intra-op 4 kept; 40 alone + 2x20 overlapping
+decisions per variant; every distribution compared bitwise — all identical):
+
+| Variant | alone p50 | overlap p50 / p95 | decisions/s |
+|---|---|---|---|
+| shipped (spinning on, no affinity) | 125-144 ms | 201-203 / 219-286 ms | 9.1-9.9 |
+| `session.intra_op.allow_spinning=0` | 117-142 ms | 193-203 / 202-239 ms | 9.7-10.3 |
+| affinity, one pool thread per physical core (`3;5;7`) | 139 ms | 207 / 229 ms | 9.5 |
+| affinity + spinning off | 134 ms | 215 / 268 ms | 9.0 |
+
+Affinity is slower. Spinning off moved within the run-to-run noise (three runs: better,
+worse, better). `ORT_ENABLE_ALL` and the thread counts were already set (§8.1). Nothing
+shipped: the CPU path is at its floor for this model; the levers that remain are a shorter
+input (§19) or a different model (a new calibrated identity).
+
 
 ## 9. What is deliberately NOT here
 
@@ -835,21 +853,55 @@ costs ~117 ms with 2 labels and 5 words, ~160 ms with 6 labels. Under 150 ms is 
 only for very short text (~20 ids) and small menus. Below that needs a smaller model (a new
 calibrated identity — benchmark first), not a smaller budget.
 
-### 19.5 Jobs and the phase domain
+### 19.5 Jobs and the phase domain — one dial, one position per consumer (owner-agreed 2026-10-01)
 
-ONE domain for the Oracle, `decision.oracle_cpu`, because every job runs on the same CPU
-(PHASE_DOMAINS: one domain per layer + resource; a participant belongs to exactly one
-domain). Jobs are NOT separate domains: two domains on one CPU would each see only their own
-load and could not repel each other — the collisions the model exists to prevent. Inside the
-domain every consumer is a participant (`"{session}:{consumer}"`) with its own angle, so
-decisions overlap without a lock. Per-job natural periods (a 128-id job fires less often
-than a 64-id one) are the next measured step, not built.
+```mermaid
+flowchart LR
+    subgraph DIAL["decision.oracle_cpu — ONE domain (one CPU = one resource)"]
+        direction TB
+        P1(("s:tool_choice"))
+        P2(("s:web_intent"))
+        P3(("s:mode"))
+        P4(("default:review_verdict"))
+        P5(("default:done"))
+        P6(("default:depth_route"))
+    end
+    ANS["answer path<br/>(step / turn threads)"] --> P1 & P2 & P3
+    LANE["lane oracle_shadow<br/>(1 shadow run at a time)"] --> P4 & P5 & P6
+    DIAL --> RUN["ONE ORT session, intra-op 4<br/>run capacity = 8 logical / 4 = 2 runs"]
+    RUN --> SINK["rows -> one ordered writer"]
+```
 
-Today's `oracle_shadow` lane is a FIFO: shadow scores run one at a time, beside the
-answer-path decisions. With `IRIS_ORACLE_PHASE=1` they overlap with answer-path decisions
-(no engine lock). Moving shadow scores from the FIFO to phase participants is the next step
-after the live gate; the ROW WRITES stay on their one ordered writer (that order is a
-correctness rule, PHASE_DOMAINS "Memory (side lanes)").
+**The rules, and why:**
+
+1. **ONE domain for every job.** All jobs run on the same CPU, and PHASE_DOMAINS gives one
+   domain per layer + resource. Separate domains per job would each see only their own load
+   and could not repel each other — the collisions the model exists to prevent.
+2. **Every consumer holds its OWN position** (participant `"{session}:{consumer_id}"`). The
+   job sets what the model reads (§19.2-19.3), not where the consumer sits on the dial.
+3. **One period for the dial.** Per-job periods (~2x each job's decision time: 0.55 s for
+   64-id jobs, 0.75 s for 96, 0.85 s for 128) were MEASURED and REJECTED
+   (`benchmarks/oracle_phase_bench.py`, 3 reps each, bitwise 91/91 in both):
+
+   | | decisions/s | answer-path decision in the burst |
+   |---|---|---|
+   | one period 0.3 s (shipped) | 9.8-10.1 | 487-587 ms |
+   | per-job periods | 6.2-6.6 | 427-586 ms |
+
+   A third less throughput for no answer-path gain (`oracle_phase_jobs_*.json`).
+4. **Shadow scores are already on the dial.** `lane("oracle_shadow")` calls `decide()`,
+   which passes the phase gate on any thread (participant per consumer). The lane is a
+   FIFO, so at most ONE shadow run is in flight; with a run capacity of 2 this leaves one
+   slot for the answer path. That is deliberate: in the 8-thread burst bench an answer-path
+   decision took ~4x its alone time from CPU contention even with the priority bypass, so
+   more concurrent shadow runs would cost the reply. The ROW WRITES stay on their one
+   ordered writer (a correctness rule, PHASE_DOMAINS "Memory (side lanes)").
+5. **Priority.** USER_TURN / SPEAK decisions bypass the gate (wait 0). Live coding run:
+   phase_wait p50 0 ms, max 252 ms over 342 decisions.
+
+Status: LIVE via `IRIS_ORACLE_PHASE=1` in the local `.env` (live gate passed 2026-10-01,
+coding 15/15 + research 8/8, no standard regression); the code default stays off so the
+tests that unset the flag keep pinning the lock path.
 
 ## 20. Superseded material (was §18)
 

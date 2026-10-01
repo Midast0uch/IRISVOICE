@@ -418,6 +418,12 @@ THE LOOP (details + commands: app-testing skill, Mode A):
      PROGRESS "Standards" + a guard that FAILS on the old state (a contract test on the
      structural cause, or evals/standards.json with a stated tolerance). Prove it fails.
   7. Record in MCM; commit with `git commit -F <file>` (PowerShell here-strings break).
+  8. A FLAG IS NOT DONE (owner, 2026-10-01). A feature behind a flag that is OFF is
+     unfinished: its live gate (step 2 + 5 on the real app) is part of DONE. Run the
+     gate in the same session, then switch it on or write down WHY it stays off, with
+     the measurement and a date (PHASE_DOMAINS / PROGRESS). Measured cost of skipping
+     it: the Oracle phase domain sat off for a day after its bench passed; its live
+     gate took one eval run.
 MEASUREMENT RULES: keep the machine quiet during a run (a disk scan turned a 20 s reply
 into 274 s); measure cold (after reboot) separately from warm (C: is a hard disk, cold
 reads 10-20x slower); a harness "LEAK" note can be your own edits during the run; use
