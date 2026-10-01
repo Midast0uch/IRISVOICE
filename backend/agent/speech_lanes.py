@@ -120,6 +120,22 @@ def _node_text(node: "UtteranceNode") -> str:
     return text if isinstance(text, str) else ""
 
 
+def _emit_narrated(node: "UtteranceNode") -> None:
+    """Taxonomy DELIVERY: speech was produced (the play finished). Lane, node id and
+    length only - never the text. Rides lane("memory_events"); never raises."""
+    try:
+        from backend.agent.event_emit import emit
+
+        known = node.session_id != "unknown" and node.turn_id != "unknown"
+        emit(
+            None, "NARRATED", thread_id=node.session_id if known else None,
+            episode_id=f"{node.session_id}:{node.turn_id}" if known else None,
+            payload={"node_id": node.id, "lane": node.lane, "chars": len(_node_text(node))},
+        )
+    except Exception:  # noqa: BLE001 - an event never stops the speech worker
+        logger.debug("[speech_lanes] NARRATED emit skipped", exc_info=True)
+
+
 def _normalized_opening(text: str) -> str:
     """First BEAT_OPENING_WORDS alnum words, lowercased (AC10.12 matching)."""
     import re as _re
@@ -1404,6 +1420,8 @@ class SpeechScheduler:
                 # Feed the anti-repetition ring (AC10.12) with spoken beats.
                 self._recent_openings.append(_normalized_opening(_node_text(node)))
         self._obs.record_node_outcome(node)
+        if node.state == STATE_DONE:
+            _emit_narrated(node)
 
     def _handle_node_failure(self, node: UtteranceNode, *, detail: str) -> None:
         """Fail a node, free gates, keep the turn going (REQ-8 AC8.1).

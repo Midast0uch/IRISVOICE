@@ -30,6 +30,28 @@ from backend.agent.event_bus import (
 
 logger = logging.getLogger(__name__)
 
+# Taxonomy label a question's purpose types when it is ASKED. "safety" is absent on
+# purpose: the click-safety gate types its own question (ESCALATED_UNSURE).
+_ASKED_LABEL = {"clarify": "CLARIFY_ASKED", "decide": "ESCALATED"}
+
+
+def _emit_question_event(question: "Question", label: str, evidence: str = "none", **cost) -> None:
+    """Rule-labelled event for a question (docs/Design/EVENT_TAXONOMY.md section 6):
+    ids and purpose only, never the question text. Rides lane("memory_events");
+    never raises, never blocks."""
+    try:
+        from backend.agent.event_emit import emit
+
+        emit(
+            None, label, evidence=evidence, thread_id=question.session_id or None,
+            conversation_id=getattr(question, "conversation_id", None),
+            cost=cost or None,
+            payload={"question_id": question.question_id, "purpose": question.purpose,
+                     "options": len(question.options)},
+        )
+    except Exception:  # noqa: BLE001 - an event never blocks a question
+        logger.debug("[AskUser] event %s skipped", label, exc_info=True)
+
 ASK_USER_QUESTION_TIMEOUT = 120  # seconds
 FILLER_INTERVAL = 30  # seconds between filler re-prompts
 MAX_FILLERS = 2
@@ -73,6 +95,12 @@ class Question:
     kind: str = "choice"  # "choice" | "browser_takeover"
     takeover_url: Optional[str] = None
     reason: Optional[str] = None
+    # Event taxonomy (docs/Design/EVENT_TAXONOMY.md): WHY the agent asks.
+    #   "clarify" - what the user means (intent: CLARIFY_ASKED / CLARIFY_ANSWERED)
+    #   "decide"  - the agent hands a decision to the user (control: ESCALATED)
+    #   "safety"  - the click-safety gate asks; the gate types its own events
+    # A timeout is NO_RESPONSE for every purpose.
+    purpose: str = "clarify"
 
 
 @dataclass
@@ -128,6 +156,7 @@ class AskUserTool:
         conversation_id: Optional[str] = None,
         context: Optional[dict] = None,
         session_id: Optional[str] = None,
+        purpose: str = "clarify",
     ) -> Question:
         """Ask a question and return immediately (non-blocking).
 
@@ -147,6 +176,7 @@ class AskUserTool:
             timeout_seconds=timeout_seconds,
             turn_id=turn_id,
             session_id=session_id,
+            purpose=purpose,
         )
         if conversation_id:
             question.conversation_id = conversation_id
@@ -177,6 +207,8 @@ class AskUserTool:
             "[AskUser] Asked: %s (options=%d, timeout=%ds)",
             text[:60], len(options or []), timeout_seconds,
         )
+        if purpose in _ASKED_LABEL:
+            _emit_question_event(question, _ASKED_LABEL[purpose])
         return question
 
     # ── T3 (REQ-5): question sets ───────────────────────────────────────────
@@ -254,6 +286,8 @@ class AskUserTool:
             "[AskUser] Asked set=%s (%d question(s), timeout=%ds)",
             qset.set_id, len(qset.questions), timeout_seconds,
         )
+        for q in qset.questions:
+            _emit_question_event(q, "CLARIFY_ASKED")
         return qset
 
     def wait_for_set(
@@ -288,6 +322,7 @@ class AskUserTool:
                         data={"question_id": question.question_id, "set_id": qset.set_id},
                         turn_id=question.turn_id,
                     )
+                    _emit_question_event(question, "NO_RESPONSE", ms=int(question.timeout_seconds * 1000))
             if now - last_filler >= filler_interval:
                 for question in open_questions:
                     if question.question_id in self._pending:
@@ -316,6 +351,10 @@ class AskUserTool:
             },
             turn_id=question.turn_id,
         )
+        if question.purpose == "clarify":
+            # The user answered (evidence "user"); ms = how long they took.
+            _emit_question_event(question, "CLARIFY_ANSWERED", evidence="user",
+                                 ms=int((time.time() - question.created_at) * 1000))
         return question
 
     # ── T13 (REQ-13): non-blocking mode + first-wins funnel ────────────────
@@ -504,6 +543,7 @@ class AskUserTool:
             data={"question_id": question.question_id},
             turn_id=question.turn_id,
         )
+        _emit_question_event(question, "NO_RESPONSE", ms=int(question.timeout_seconds * 1000))
         return question
 
     # ── T11 (REQ-10): contextual browser takeover ────────────────────────
@@ -558,6 +598,7 @@ class AskUserTool:
             kind="browser_takeover",
             takeover_url=takeover_url,
             reason=reason,
+            purpose="decide",
         )
         if conversation_id:
             question.conversation_id = conversation_id
@@ -603,6 +644,7 @@ class AskUserTool:
             "[AskUser] browser takeover asked url=%s reason=%s site=%r qid=%s (REQ-10)",
             takeover_url, reason, site_name, question.question_id,
         )
+        _emit_question_event(question, _ASKED_LABEL["decide"])
         return question
 
 

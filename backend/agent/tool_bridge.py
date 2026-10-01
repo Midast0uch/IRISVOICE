@@ -175,6 +175,21 @@ DESKTOP_CONTROL_TOOLS = frozenset({
 })
 
 
+def _emit_permission_denied(bridge, tool_name: str, session_id: str, reason: str,
+                            evidence: str = "verifier") -> None:
+    """Taxonomy SAFETY: the consent / capability gate refused a tool call. Tool name and
+    reason code only. Rides lane("memory_events"); never raises."""
+    try:
+        from backend.agent.event_emit import emit
+
+        conv = getattr(bridge, "_active_conversation_id", {}).get(session_id)
+        emit(None, "PERMISSION_DENIED", evidence=evidence, thread_id=session_id or None,
+             conversation_id=conv or None,
+             payload={"tool": tool_name, "reason": reason})
+    except Exception:  # noqa: BLE001 - an event never changes a gate verdict
+        logger.debug("[ToolBridge] PERMISSION_DENIED event skipped", exc_info=True)
+
+
 def _approval_ui_attached(session_id: str) -> bool:
     """T15 (REQ-9 AC9.5 / REQ-12 AC12.1): is an approval UI attached?
 
@@ -1664,6 +1679,9 @@ class AgentToolBridge:
                 if req.status == "pending":
                     resolved = await perm_system.get_response_async(req)
                     if resolved.status == "denied":
+                        _emit_permission_denied(
+                            self, tool_name, session_id, "capability_override_denied", evidence="user",
+                        )
                         return {
                             "success": False,
                             "error": f"Permission denied for tool '{tool_name}'",
@@ -1698,6 +1716,7 @@ class AgentToolBridge:
             # desktop-denied call would wrongly report "Internet access is
             # disabled". capability_denied_by() names the true blocker.
             denied = capability_denied_by(spec)
+            _emit_permission_denied(self, tool_name, session_id, f"capability_{denied}_disabled")
             if denied == "internet":
                 logger.warning(
                     "[InternetGate] Tool '%s' blocked — internet access disabled", tool_name
@@ -1825,6 +1844,9 @@ class AgentToolBridge:
                     if resolved.status == "denied":
                         logger.info(
                             "[Permissions] resolved tool=%s action=denied", tool_name
+                        )
+                        _emit_permission_denied(
+                            self, tool_name, session_id, "consent_denied", evidence="user",
                         )
                         return {
                             "success": False,

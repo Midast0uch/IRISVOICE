@@ -442,9 +442,14 @@ async def _gate_action(entry: _Entry, action: str, mark: dict, text: Optional[st
         logger.debug("[browser_tools] click_safety shadow skipped: %s", exc)
     if verdict == click_safety.SAFE:
         return None
+    # Taxonomy SAFETY: the verdict becomes an event (no element text: it is untrusted).
+    # The rules' reason names the element's label, so only the action and role are kept.
+    _facts = {"action": action, "role": str(mark.get("role") or "")}
     if verdict == click_safety.UNSAFE:
+        click_safety.emit_event(ctx, "UNSAFE_REFUSED", evidence="verifier", payload=_facts)
         entry.refused.append(key)
         return click_safety.refusal(f"{what} is not allowed: {reason}", verdict)
+    click_safety.emit_event(ctx, "ESCALATED_UNSURE", payload=_facts)
     question = (
         f"IRIS wants to {what}. Task: {(ctx.get('goal') or 'browse')[:160]}. "
         f"Why I ask: {reason}. Allow it?"
@@ -473,6 +478,13 @@ async def _do_act(
     if mark is not None:
         blocked = await _gate_action(entry, action, mark, text)
         if blocked is not None:
+            # Taxonomy CONTROL: a refused element means the agent reaches the goal another
+            # way (trigger = the NodeOutcome Reason of a policy refusal).
+            click_safety.emit_event(
+                click_safety.ACT_CONTEXT.get(), "PIVOT", evidence="verifier",
+                trigger=click_safety.PIVOT_TRIGGER, action_signature=f"browser_act:{action}",
+                payload={"verdict": blocked.get("verdict"), "action": action},
+            )
             return blocked
     res = await session.interact(action, element_id, text, emit)
     if not res["ok"]:

@@ -193,30 +193,36 @@ def _physics_action(tool, success: bool) -> int:
 def _memory_events_submit(owner, fn_name: str, **kwargs) -> None:
     """Typed execution events (spec research-memory-chain-browser D9 / Wave E)
     on lane("memory_events"): never on the answer path, never raises. The
-    coordinate is read inside the job (the step's physics may land first)."""
-    try:
-        from backend.agent.ontology_recall import resolve_mycelium_conn
-        from backend.utils.durability_queue import lane
+    coordinate is read inside the job (the step's physics may land first).
+    The body lives in backend/agent/event_emit.py (shared with the rule emitters
+    of the event taxonomy, which also run outside the kernel)."""
+    from backend.agent.event_emit import submit
 
-        mi = getattr(owner, "_memory_interface", None)
-        conn = resolve_mycelium_conn(mi)
-        if conn is None:
-            return
+    submit(owner, fn_name, **kwargs)
 
-        def _job() -> None:
-            from backend.memory import memory_events as _me
 
-            try:
-                from backend.agent.caducean_trajectory import latest_coords_str
+def _emit_event(owner, label: str, **kw) -> None:
+    """A rule-labelled taxonomy event (CONTROL / DELIVERY ...) on the same lane.
+    Module level on purpose: stand-in kernels bind only some methods."""
+    from backend.agent.event_emit import emit
 
-                coords = latest_coords_str(mi, kwargs.get("thread_id", ""))
-            except Exception:  # noqa: BLE001
-                coords = None
-            getattr(_me, fn_name)(conn, coords=coords, **kwargs)
+    emit(owner, label, **kw)
 
-        lane("memory_events").submit(f"memory_events:{fn_name}", _job)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("[memory_events] submit %s skipped: %s", fn_name, exc)
+
+def _der_budget_exit(tokens_used: int, token_budget: int, elapsed_s: float,
+                     turn_budget_s: float, queue) -> Optional[str]:
+    """Which budget cut the DER loop short: "tokens", "turn_time" or "steps"; None
+    when the plan ran to the end. Mirrors the loop condition, so the BUDGET_HIT
+    event is typed by the SAME test that stopped the loop. Module level (stand-ins)."""
+    if queue.is_complete():
+        return None
+    if tokens_used >= token_budget:
+        return "tokens"
+    if elapsed_s >= turn_budget_s:
+        return "turn_time"
+    if queue.hit_cycle_limit():
+        return "steps"
+    return None
 
 
 def _der_recall_delivered(owner, item, source: str, refs, session_id: str) -> None:
@@ -281,6 +287,9 @@ def _der_topology_halt(owner, session_id: str) -> None:
         "[DER] TOPO_VIOLATION landed session=%s step=%s - halting for recovery",
         session_id, getattr(fold, "step", None),
     )
+    _emit_event(owner, "HALTED", evidence="verifier", thread_id=session_id,
+                step_index=str(getattr(fold, "step", "") or ""),
+                payload={"cause": "TOPO_VIOLATION"})
     raise TopologyViolationException(session_id=session_id)
 
 
@@ -4728,6 +4737,13 @@ class AgentKernel:
         leak into this one.
         """
         self._last_spoken_text = (spoken or "").strip()
+        if display or self._last_spoken_text:
+            # Taxonomy DELIVERY: the reply reached the user (lengths only, never the text).
+            _emit_event(
+                self, "ANSWER_GIVEN", thread_id=getattr(self, "_turn_session_id", None),
+                payload={"display_chars": len(display or ""),
+                         "spoken_chars": len(self._last_spoken_text)},
+            )
         return display or ""
 
     @staticmethod
@@ -5404,6 +5420,7 @@ class AgentKernel:
                         pass
 
         # ── DocumentDataStore: source-of-truth keyed by document_id (G4) ────
+        _doc_stored = False
         try:
             store = self._get_document_store()
             if store is not None:
@@ -5425,8 +5442,15 @@ class AgentKernel:
                     # both rendered, neither aware of the other.
                     turn_id=turn_id,
                 )
+                _doc_stored = True
         except Exception as exc:
             logger.warning("[AgentKernel] document_data store failed: %s", exc)
+        # Taxonomy DELIVERY: a document was produced (ids and sizes only, never content).
+        _emit_event(
+            self, "ARTIFACT_PRODUCED", thread_id=getattr(self, "_turn_session_id", None),
+            payload={"document_id": str(document_id), "format": fmt,
+                     "chars": len(content or ""), "trust": trust, "stored": _doc_stored},
+        )
 
         # Session 245 (live memory footer): surface the DOCUMENT STORE on the
         # card's footer — a websearch's crawled content landing in
@@ -5849,6 +5873,7 @@ class AgentKernel:
                 turn_id=turn_id,
                 conversation_id=conversation_id,
                 context=_ctx,
+                purpose="decide",
             )
         except Exception as exc:
             logger.warning("[AgentKernel] web format escalation failed: %s", exc)
@@ -7941,6 +7966,8 @@ class AgentKernel:
         import uuid
 
         task_id = turn_id or str(uuid.uuid4())
+        # Taxonomy events of this turn share one episode id (same as Wave E's task id).
+        self._event_episode_id = f"{session_id}:{task_id}"
         metrics = TurnMetrics(turn_id=task_id)
         # REQ-13 AC4 (reply-surface-contract T18): give the reply seam a cheap,
         # fire-and-forget handle on this turn's metrics so the first
@@ -9738,6 +9765,16 @@ Respond with a JSON object:
             for step in plan.steps
         ]
         queue = DirectorQueue(objective=plan.original_task, items=items)
+        # Taxonomy CONTROL: the plan is accepted. Episode id = Wave E's task id.
+        self._event_episode_id = f"{_session}:{_turn_id or ''}"
+        _plan_rec = getattr(items[0], "node_record", None) if items else None
+        _emit_event(
+            self, "PLAN_MADE", thread_id=_session,
+            exec_domain=getattr(_plan_rec, "execution_domain", None),
+            topic_domain=getattr(_plan_rec, "topic_domain", None),
+            payload={"steps": len(items), "strategy": getattr(plan, "strategy", None),
+                     "task_class": task_class},
+        )
 
         # ── Goal contract T4 (specs/goal-contract-coverage, REQ-1) ──
         # Build the deterministic required-fact set once per turn, validate
@@ -10755,6 +10792,21 @@ Respond with a JSON object:
                         ReviewVerdict.PASS,
                         from_voice,
                     )
+
+        # Taxonomy CONTROL: a budget (tokens, turn time, steps) cut the loop short.
+        _budget_kind = _der_budget_exit(
+            _tokens_used, _token_budget, time.perf_counter() - _der_start_time,
+            _DER_TURN_BUDGET_S, queue,
+        )
+        if _budget_kind:
+            _emit_event(
+                self, "BUDGET_HIT", evidence="verifier", thread_id=_session,
+                trigger="budget_exceeded",  # nodes/outcome.Reason.BUDGET_EXCEEDED
+                cost={"ms": int((time.perf_counter() - _der_start_time) * 1000)},
+                payload={"budget": _budget_kind, "tokens_used": int(_tokens_used),
+                         "token_budget": int(_token_budget),
+                         "steps_done": len(completed_items)},
+            )
 
         # ── OUTCOME RECORDING (ordered per spec: clear → stats → episode)
         # NOTE: _store_task_episode internally calls mycelium_record_outcome
@@ -12823,6 +12875,15 @@ Respond with a JSON object:
                 recovery_seeds=list(_cands),
             )
             queue.add_item(_rec_item)
+            # Taxonomy CONTROL: the router chose another way after a node failure;
+            # trigger = the NodeOutcome Reason (closed lattice).
+            _emit_event(
+                self, "PIVOT", evidence="verifier", thread_id=_session,
+                trigger=outcome.reason.value, step_index=str(getattr(item, "step_id", "") or ""),
+                action_signature=f"{recovery.name}:{_host0}",
+                payload={"from_tool": tool, "to_tool": recovery.name,
+                         "recovery_step": _rec_item.step_id},
+            )
             logger.info(
                 "[DER:recovery] ENQUEUED (job board): parent=%s node=%s dead=%d "
                 "host=%s seeds=%d",
@@ -14249,6 +14310,20 @@ Respond with a JSON object:
                     self, _child, _src, [],
                     getattr(self, "_der_session", None) or self.session_id or "",
                 )
+        # Taxonomy CONTROL: a failed verification changes the plan (REPLAN) by
+        # fanning the step out (SPLIT); a physics split is only the SPLIT.
+        _ev_rec = getattr(item, "node_record", None)
+        _ev = dict(
+            evidence="verifier", thread_id=getattr(self, "_der_session", None),
+            step_index=str(getattr(item, "step_id", "") or ""),
+            exec_domain=getattr(_ev_rec, "execution_domain", None),
+            topic_domain=getattr(_ev_rec, "topic_domain", None),
+            payload={"trigger": trigger, "width": width, "depth": item.depth_layer,
+                     "probe": _probe, "blocker_named": _blocker_named},
+        )
+        if trigger == "verify_failed":
+            _emit_event(self, "REPLAN", **_ev)
+        _emit_event(self, "SPLIT", **_ev)
         # Reset failure counters so Sub-Loops aren't penalized as parent continuation (REQ-12 AC3)
         try:
             if hasattr(self, "_get_tool_box"):

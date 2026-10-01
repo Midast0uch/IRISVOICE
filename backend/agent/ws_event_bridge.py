@@ -108,6 +108,37 @@ _CARD_EVENTS: Tuple[IRISStreamEvent, ...] = (
 )
 
 
+# Events that put a card in front of the user (taxonomy DELIVERY: CARD_SHOWN).
+_CARD_SHOWN_EVENTS: Tuple[IRISStreamEvent, ...] = (
+    IRISStreamEvent.TASK_START,
+    IRISStreamEvent.DOCUMENT_RENDER,
+    IRISStreamEvent.QUESTION_ASK,
+    IRISStreamEvent.PERMISSION_REQUEST,
+)
+
+
+def _emit_card_shown(evt: IRISStreamEvent, payload, data, session_id, conv_id) -> None:
+    """Taxonomy DELIVERY: a card event was delivered (ids only, never the content).
+    Called after the card-free-turn gate, so a withheld card is NOT a shown card.
+    Rides lane("memory_events"); never raises."""
+    try:
+        from backend.agent.artifact_policy import card_event_turn_id
+        from backend.agent.event_emit import emit, peek_kernel
+
+        sid = session_id if session_id and session_id not in ("default", "unknown") else None
+        kernel = peek_kernel(conv_id, sid)
+        turn = card_event_turn_id(payload)
+        episode = getattr(kernel, "_event_episode_id", None) or (
+            f"{sid}:{turn}" if sid and turn else None
+        )
+        refs = {k: data[k] for k in ("card_id", "document_id", "question_id", "request_id")
+                if data.get(k)}
+        emit(kernel, "CARD_SHOWN", thread_id=sid, conversation_id=conv_id, episode_id=episode,
+             payload={"event": evt.value, **refs})
+    except Exception:  # noqa: BLE001 - an event never blocks a card
+        logger.debug("[WSEventBridge] CARD_SHOWN emit skipped", exc_info=True)
+
+
 class WSEventBridge:
     """Subscribes to EventBus events and broadcasts them to the WebSocket.
 
@@ -214,6 +245,8 @@ class WSEventBridge:
                     # Loop not captured yet (events before server startup). Skip.
                     logger.debug("[WSEventBridge] no main loop yet; skipping %s", evt.value)
                     return
+                if evt in _CARD_SHOWN_EVENTS:
+                    _emit_card_shown(evt, payload, data, session_id, conv_id)
                 if (
                     session_id
                     and session_id != "default"
