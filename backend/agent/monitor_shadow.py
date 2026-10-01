@@ -182,6 +182,7 @@ def monitor_bool(
     enforced: bool = False,
     threshold: float = 0.8,
     defer: bool = False,
+    criteria_version: Optional[str] = None,
 ) -> Tuple[bool, str, Optional[dict]]:
     """One monitor judgment: (value, text, shadow_row).
 
@@ -210,10 +211,10 @@ def monitor_bool(
             value = bool(brain_bool_fn())
         except Exception as e:  # noqa: BLE001 — fail closed, never raise
             logger.warning("[monitor] %s brain bool failed: %r", consumer_id, e)
-            _submit_shadow(consumer_id, statement, engine, None)
+            _submit_shadow(consumer_id, statement, engine, None, criteria_version)
             return False, "", None
         text = "" if value else _safe_text(brain_text_fn)
-        _submit_shadow(consumer_id, statement, engine, value)
+        _submit_shadow(consumer_id, statement, engine, value, criteria_version)
         return value, text, None
 
     noul = score_monitor_bool(consumer_id, statement, engine=engine)
@@ -237,13 +238,17 @@ def monitor_bool(
 
 
 def _submit_shadow(consumer_id: str, statement: str, engine: Any,
-                   brain_bool: Optional[bool]) -> None:
+                   brain_bool: Optional[bool],
+                   criteria_version: Optional[str] = None) -> None:
     """Score + emit one shadow row on the ``oracle_shadow`` lane. Values are
     bound now (the statement and the Brain's answer), so the row pairs what
     THIS turn saw. Never raises; a full lane is counted by the lane."""
     def _job() -> None:
         noul = score_monitor_bool(consumer_id, statement, engine=engine)
-        emit_row(shadow_row(consumer_id, noul, brain_bool=brain_bool))
+        row = shadow_row(consumer_id, noul, brain_bool=brain_bool)
+        if row is not None and criteria_version:
+            row["criteria_version"] = criteria_version
+        emit_row(row)
 
     try:
         from backend.utils.durability_queue import lane

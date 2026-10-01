@@ -2572,6 +2572,7 @@ class ToolDecisionBox:
         pushes_used: int = 0,
         session_id: str = "",
         threshold: Optional[float] = None,
+        async_: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """SHADOW: which continuation should the loop take now that the Brain
         says it is done? Records the row and returns it; the caller's behaviour
@@ -2599,7 +2600,27 @@ class ToolDecisionBox:
         first step rather than a compromise.
 
         Never raises: a shadow consumer must never block a reply.
+
+        ``async_=True`` (the kernel's mode): the score and its row run on
+        lane("oracle_shadow") and this returns None at once - 69 inline scores,
+        33 s per coding eval run, sat on the continuation path (2026-10-01).
         """
+        if async_:
+            try:
+                from backend.utils.durability_queue import lane
+
+                _kw = dict(
+                    incumbent_route=incumbent_route, coverage=coverage,
+                    open_facts=list(open_facts or []), criteria=criteria,
+                    grade=grade, depth_met=depth_met, pushes_used=pushes_used,
+                    session_id=session_id, threshold=threshold,
+                )
+                if not lane("oracle_shadow").submit(
+                        "depth_route", lambda: self.depth_route(**_kw)):
+                    logger.warning("[TOOL_DECISION] depth_route row dropped (lane full)")
+            except Exception as _e:  # noqa: BLE001 — an observer never blocks
+                logger.warning("[TOOL_DECISION] depth_route submit failed: %r", _e)
+            return None
         _thr = self._decision_threshold if threshold is None else float(threshold)
         eng = self._engine()
         if eng is None:

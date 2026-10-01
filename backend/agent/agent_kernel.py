@@ -150,6 +150,35 @@ def _turn_in_flight(fn):
     return _wrapper
 
 
+_MONITOR_STATEMENT_CHARS = 900
+
+
+def _monitor_statement(objective: str, completed_items, n: int = 4) -> str:
+    """The Oracle's input for the `done` / `on_track` monitors: the objective
+    and one bounded status line per recent step (~150-250 tokens).
+
+    They used to score the Brain's whole continuation prompt, cut at the
+    engine's 512-id cap: the instructions plus raw step outputs, so every
+    call ran the longest input the model takes - `done` p50 2.3 s, max 4.3 s
+    over 69 calls of one coding eval (2026-10-01), against ~0.2 s for a short
+    input. The question needs the goal and what each step returned, nothing
+    more. Shape change = new calibrated identity: rows carry criteria v2.
+    """
+    lines = [f"OBJECTIVE: {str(objective or '')[:300]}", "STEPS:"]
+    for it in list(completed_items or [])[-n:]:
+        env = getattr(it, "envelope", None)
+        try:
+            state = env.line() if env is not None else (
+                str(getattr(it, "result", "") or "")[:160])
+        except Exception:  # noqa: BLE001 - a status line is best-effort
+            state = ""
+        lines.append(
+            f"[{getattr(it, 'step_number', '?')}] "
+            f"{str(getattr(it, 'description', '') or '')[:80]}: {state[:200]}"
+        )
+    return "\n".join(lines)[:_MONITOR_STATEMENT_CHARS]
+
+
 def _der_physics_settle(owner, session_id: str) -> None:
     """Fold-back point of the physics side lane.
 
@@ -1039,6 +1068,9 @@ class AgentKernel:
                 logger.debug(
                     f"[AgentKernel] Reviewer engine unavailable: {_rv_eng_err}"
                 )
+            # The same single writer, reached from lane("oracle_shadow"): the
+            # review_verdict score leaves the step's answer path (2026-10-01).
+            self._reviewer.set_shadow_sink(self._shadow_row_sink)
             logger.info("[AgentKernel] Reviewer initialized (DER)")
         except Exception as _rv_err:
             logger.warning(f"[AgentKernel] Reviewer unavailable: {_rv_err}")
@@ -20134,6 +20166,7 @@ Respond with a JSON object:
                 depth_met=_dv.get("met"),
                 pushes_used=int(getattr(self, "_depth_push_count", 0) or 0),
                 session_id=str(getattr(self, "session_id", "") or ""),
+                async_=True,  # shadow score off the continuation path
             )
         except Exception:  # noqa: BLE001 — an observer never blocks a reply
             pass
@@ -20303,7 +20336,8 @@ Respond with a JSON object:
                 # session and looked unwired. Caught the moment the bare `pass`
                 # became a logged warning.
                 _done_value, _done_text, _done_row = _ms.monitor_bool(
-                    "done", prompt,
+                    "done", _monitor_statement(task_objective, completed_items),
+                    criteria_version="done/v2",
                     brain_bool_fn=lambda: data.get("done") is True,
                     brain_text_fn=lambda: str(data.get("description", "") or ""),
                     engine=_ms.AUTO_ENGINE,
@@ -20481,7 +20515,9 @@ Respond with a JSON object:
                     # and a 2-name unpack raised ValueError before emit_row,
                     # losing every `on_track` row in silence.
                     _ot_value, _ot_text, _ot_row = _ms.monitor_bool(
-                        "on_track", prompt,
+                        "on_track",
+                        _monitor_statement(task_objective, completed_items),
+                        criteria_version="on_track/v2",
                         brain_bool_fn=lambda: bool(data.get("on_track", True)),
                         brain_text_fn=lambda: str(
                             data.get("suggestion", "") or ""),

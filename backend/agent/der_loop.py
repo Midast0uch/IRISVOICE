@@ -991,6 +991,18 @@ class Reviewer:
         self.last_shadow_verdict: Optional[dict] = None
         self._review_engine_override = None
         self._review_engine_set = False
+        # Installed by the kernel (its single row writer). With a sink the
+        # engine score runs on lane("oracle_shadow") and the row goes to the
+        # sink from there; without one (tests) the score stays inline.
+        self._shadow_sink = None
+
+    def set_shadow_sink(self, sink) -> None:
+        """Score review_verdict OFF the answer path, writing through *sink*.
+
+        Measured 2026-10-01 (coding eval): 98 inline scores, p50 586 ms, 59 s
+        per run held on the reply path for rows nothing on it reads.
+        """
+        self._shadow_sink = sink
 
     def review(
         self,
@@ -1085,6 +1097,28 @@ class Reviewer:
                 f"RECENT RESULTS: "
                 f"{' | '.join((s.result or '')[:120] for s in completed_steps[-3:])}"
             )[:800]
+            sink = self._shadow_sink
+            if callable(sink):
+                def _job(_goal=goal, _verdict=brain_verdict):
+                    _row = self._review_row(engine, _goal, _verdict)
+                    if _row is not None:
+                        sink(_row)
+
+                from backend.utils.durability_queue import lane
+
+                if not lane("oracle_shadow").submit("review_verdict", _job):
+                    logger.warning("[Reviewer] shadow verdict dropped (lane full)")
+                return None
+            row = self._review_row(engine, goal, brain_verdict)
+            self.last_shadow_verdict = row
+            return row
+        except Exception as _e:  # noqa: BLE001 — a shadow never breaks review
+            logger.debug("[Reviewer] shadow verdict failed: %r", _e)
+            return None
+
+    def _review_row(self, engine, goal: str, brain_verdict) -> Optional[dict]:
+        """One engine score of a review, as a shadow PAIR row (or None)."""
+        try:
             ds = engine.decide(
                 self.REVIEW_CONSUMER, list(self.REVIEW_LABELS), {"goal": goal}
             )
@@ -1110,7 +1144,6 @@ class Reviewer:
                 "brain_choice": getattr(brain_verdict, "value", str(brain_verdict)),
                 "shadow": True,
             }
-            self.last_shadow_verdict = row
             return row
         except Exception as _e:  # noqa: BLE001 — a shadow never breaks review
             logger.debug("[Reviewer] shadow verdict failed: %r", _e)
