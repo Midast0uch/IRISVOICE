@@ -23,6 +23,19 @@ def _sd():
     return _sounddevice
 
 
+# ONE utterance on the audio device at a time, process-wide. sounddevice keeps a
+# single global "last stream" and sd.play() stops it before starting a new one;
+# the native player is one object per pipeline. Two threads playing at once -
+# two sessions speaking, or the speech watchdog failing a wedged node while its
+# play thread still runs - stopped a stream another thread was using: an access
+# violation in python314.dll that killed the backend (2026-10-01 17:01, proven by
+# the faulthandler stack: sounddevice.stop inside start_stream, beside a second
+# play thread for the SAME utterance; the 15:18 crash has the same fault offset).
+# Bounded wait: a stuck device costs one utterance's audio, never the process.
+_PLAYBACK_LOCK = threading.Lock()
+_PLAYBACK_WAIT_S = 60.0
+
+
 class AudioPipeline:
     """
     Manages real-time audio I/O:
@@ -289,6 +302,19 @@ class AudioPipeline:
 
     def play_stream(self, audio_chunks, sample_rate: int = None,
                      playback_started_event: "threading.Event | None" = None):
+        """Play a stream with the audio device held exclusively (see _PLAYBACK_LOCK)."""
+        if not _PLAYBACK_LOCK.acquire(timeout=_PLAYBACK_WAIT_S):
+            logger.error("[AudioPipeline] play_stream skipped: the audio device was "
+                         "busy for %.0fs (another utterance still playing)", _PLAYBACK_WAIT_S)
+            return
+        try:
+            return self._play_stream_exclusive(audio_chunks, sample_rate,
+                                               playback_started_event)
+        finally:
+            _PLAYBACK_LOCK.release()
+
+    def _play_stream_exclusive(self, audio_chunks, sample_rate: int = None,
+                               playback_started_event: "threading.Event | None" = None):
         """Stream audio from an iterable of float32 chunks.
 
         Opens the native player ONCE, pushes every chunk without blocking
@@ -363,6 +389,17 @@ class AudioPipeline:
                 raise
 
     def play_audio(self, audio_data: np.ndarray, sample_rate: int = None):
+        """Play audio with the audio device held exclusively (see _PLAYBACK_LOCK)."""
+        if not _PLAYBACK_LOCK.acquire(timeout=_PLAYBACK_WAIT_S):
+            logger.error("[AudioPipeline] play_audio skipped: the audio device was "
+                         "busy for %.0fs (another utterance still playing)", _PLAYBACK_WAIT_S)
+            return
+        try:
+            return self._play_audio_exclusive(audio_data, sample_rate)
+        finally:
+            _PLAYBACK_LOCK.release()
+
+    def _play_audio_exclusive(self, audio_data: np.ndarray, sample_rate: int = None):
         """Play audio through the system default output device.
 
         Prefers the native C++ ring-buffer player when available for sub-5ms
