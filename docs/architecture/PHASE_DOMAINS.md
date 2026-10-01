@@ -1,7 +1,7 @@
 # Phase Domains - one Caducean phase model, one dimension per application layer
 
-Status: design direction from the owner, 2026-10-01 (session 64237209). NOT built beyond the first
-instance (the Oracle domain, `specs/oracle-phase-concurrency/`). Read with
+Status: architecture (design direction from the owner, 2026-10-01 (session 64237209). NOT built beyond the first
+instance (the Oracle domain, `specs/oracle-phase-concurrency/`)). Read with
 `docs/CADUCEAN_CONCURRENCY_MODEL.md` (the model) and `docs/CADUCEAN_ARCHITECTURE.md` (the boundary).
 
 ## The idea (owner)
