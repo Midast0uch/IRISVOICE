@@ -58,6 +58,25 @@ try:
 except Exception as _fh_exc:  # never let a diagnostic block startup
     print(f"   Faulthandler setup skipped: {_fh_exc}")
 
+# ── Always: a native crash leaves the Python stacks behind ───────────────────
+# The backend died 3 times (2026-09-30 11:21, 2026-10-01 13:10 and 15:18) with
+# an access violation (0xc0000005) inside python314.dll at the SAME offset, and
+# left no traceback: nothing had called faulthandler.enable(). With it, a fatal
+# signal writes every thread's Python stack to logs/crash_traceback.log
+# (appended, timestamped). Standard library, no cost until a crash.
+try:
+    import faulthandler as _fh_crash
+    import time as _fh_time
+
+    _crash_fh = open(base_dir / "logs" / "crash_traceback.log", "a",
+                     encoding="utf-8", errors="replace")
+    _crash_fh.write(f"\n=== backend start {_fh_time.strftime('%Y-%m-%d %H:%M:%S')} "
+                    f"pid {os.getpid()} ===\n")
+    _crash_fh.flush()
+    _fh_crash.enable(file=_crash_fh, all_threads=True)
+except Exception as _fh_crash_exc:  # never let a diagnostic block startup
+    print(f"   Crash traceback handler skipped: {_fh_crash_exc}")
+
 # ── Never trust or write stale bytecode ──────────────────────────────────────
 # A prior incident had a running backend (PID 15768) executing OLD .pyc bytecode
 # from __pycache__ while the source on disk already carried a fix — the edit was
