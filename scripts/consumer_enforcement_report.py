@@ -75,7 +75,11 @@ from backend.agent.consumer_bar import (  # noqa: E402
 
 # REQ-18 AC18.1: reuse the project's ONE calibration implementation rather than
 # writing a second one that could disagree with it.
-from scripts.calibrate_decision_threshold import _auroc, _ece_brier  # noqa: E402
+from scripts.calibrate_decision_threshold import (  # noqa: E402
+    _auroc,
+    _ece_brier,
+    decision_label,
+)
 
 
 def load_rows(
@@ -123,31 +127,14 @@ def load_rows(
                 skipped["other_backend"] += 1
                 continue
             shadow = bool(d.get("shadow")) or str(d.get("route") or "") == "shadow"
-            if shadow:
-                # TWO reference shapes, because there are two kinds of consumer
-                # (2026-09-27):
-                #   - a BOOL consumer (sufficient, done, has_gaps, ...) records
-                #     the Brain's answer as `brain_bool`;
-                #   - a LABEL consumer (mode, review_verdict, web_intent, ...)
-                #     records it as `brain_choice`, because its answer is a NAME.
-                # Collapsing a name to a bool would manufacture agreement and
-                # inflate precision, so a name is compared with a name. A row
-                # carrying NEITHER reference still has no label and is counted
-                # separately as skipped, never assumed correct.
-                brain_bool = d.get("brain_bool")
-                brain_choice = d.get("brain_choice")
-                if brain_choice is not None:
-                    correct = str(d.get("chosen")) == str(brain_choice)
-                elif brain_bool is not None:
-                    correct = bool(d.get("chosen")) == bool(brain_bool)
-                else:
-                    skipped["no_label"] += 1
-                    continue
-            else:
-                # Identical to _load_decisions: a route-only row carries no
-                # outcome, so it is not evidence of a wrong pick.
-                outcome = None if payload.get("tool") == "no_tool" else r["outcome"]
-                correct = outcome in ("success", "reason", None)
+            # THE label (calibrate_decision_threshold.decision_label): shadow
+            # rows by parity with the Brain (name vs name, bool vs bool),
+            # dispatched rows by outcome. One rule, so the two instruments
+            # cannot disagree again (they did: web_intent 1.0 vs 0.377).
+            correct = decision_label(r["outcome"], payload, d)
+            if correct is None:
+                skipped["no_label"] += 1
+                continue
             rows.append({
                 "consumer_id": str(cid),
                 "engine": str(d.get("engine") or ""),

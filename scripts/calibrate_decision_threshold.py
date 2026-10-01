@@ -45,8 +45,41 @@ def _connect(db: str) -> sqlite3.Connection:
     return c
 
 
-def _load_decisions(db: str, since: str | None = None) -> list[dict]:
+def decision_label(outcome, payload: dict, d: dict) -> bool | None:
+    """THE label of one decision row - the ONE rule both instruments use.
+
+    A SHADOW row (the engine scored, the legacy path decided) is correct when
+    the engine's `chosen` agrees with the Brain's recorded answer: name vs
+    name (`brain_choice`) or bool vs bool (`brain_bool`). Its event outcome
+    is the outcome of the BRAIN's pick, so it says nothing about the engine.
+    Scoring a shadow row by outcome read web_intent as accuracy 1.0 in every
+    band while its parity precision was 0.377 (2026-09-30).
+
+    A DISPATCHED row is correct when the event outcome is success/reason; a
+    route-only row (`no_tool`) carries no outcome and is not evidence of a
+    wrong pick. Returns None for a shadow row with no reference: unlabelled,
+    to be counted as skipped, never scored.
+    """
+    shadow = bool(d.get("shadow")) or str(d.get("route") or "") == "shadow"
+    if shadow:
+        if d.get("brain_choice") is not None:
+            return str(d.get("chosen")) == str(d["brain_choice"])
+        if d.get("brain_bool") is not None:
+            return bool(d.get("chosen")) == bool(d["brain_bool"])
+        return None
+    if payload.get("tool") == "no_tool":
+        outcome = None
+    return outcome in ("success", "reason", None)
+
+
+def _load_decisions(
+    db: str, since: str | None = None, skipped: dict | None = None
+) -> list[dict]:
+    """Every labelled decision row. Pass `skipped` to receive the count of
+    shadow rows dropped for having no reference (never scored as correct)."""
     rows: list[dict] = []
+    if skipped is not None:
+        skipped.setdefault("no_label", 0)
     with _connect(db) as c:
         q = (
             "SELECT event_id, session_id, outcome, interaction_payload, "
@@ -64,7 +97,11 @@ def _load_decisions(db: str, since: str | None = None) -> list[dict]:
             d = payload.get("decision")
             if not isinstance(d, dict):
                 continue
-            outcome = None if payload.get("tool") == "no_tool" else r["outcome"]
+            correct = decision_label(r["outcome"], payload, d)
+            if correct is None:
+                if skipped is not None:
+                    skipped["no_label"] += 1
+                continue
             rows.append(
                 {
                     "engine": d.get("engine"),
@@ -76,7 +113,7 @@ def _load_decisions(db: str, since: str | None = None) -> list[dict]:
                     "retried": bool(d.get("retried")),
                     "latency_ms": d.get("decision_latency_ms")
                     or d.get("engine_latency_ms"),
-                    "correct": outcome in ("success", "reason", None),
+                    "correct": correct,
                     "created_at": r["created_at"],
                 }
             )
@@ -273,13 +310,15 @@ def main() -> int:
     if not db.is_file():
         print(f"UNVERIFIED: db not found: {db}")
         return 4
+    skipped: dict = {}
     try:
-        rows = _load_decisions(str(db), args.since)
+        rows = _load_decisions(str(db), args.since, skipped)
     except sqlite3.Error as e:  # encrypted DBs surface here (SQLCipher)
         print(f"UNVERIFIED: cannot read ledger ({e})")
         return 4
 
-    out: dict = {"n_rows": len(rows), "refuse_below": REFUSE_BELOW}
+    out: dict = {"n_rows": len(rows), "refuse_below": REFUSE_BELOW,
+                 "skipped": skipped}
     # group by consumer x engine model (AC6.1 edge)
     by_model = defaultdict(list)
     for r in rows:
@@ -314,7 +353,8 @@ def main() -> int:
     if args.json:
         print(json.dumps(out, indent=2))
     else:
-        print(f"decision rows: {out['n_rows']}")
+        print(f"decision rows: {out['n_rows']}  "
+              f"skipped (shadow, no reference): {skipped.get('no_label', 0)}")
         for name, g in out["groups"].items():
             print(f"\n[{name}] n={g['n']}")
             print(f"  latency p50/p95 ms: {g['latency_p50_ms']} / "

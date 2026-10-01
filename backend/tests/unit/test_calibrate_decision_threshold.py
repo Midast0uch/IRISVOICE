@@ -111,3 +111,45 @@ class TestCalibrate:
             finally:
                 _s.argv = old
         assert rc == 4 and "UNVERIFIED" in buf.getvalue()
+
+
+class TestOneLabelRule:
+    """Both instruments grade a row with ONE rule (2026-10-01).
+
+    Before: calibrate scored a SHADOW row by its event outcome - the outcome
+    of the Brain's pick - so a disagreeing engine pick read as correct
+    (web_intent accuracy 1.0 in every band vs parity precision 0.377).
+    """
+
+    def _rows(self):
+        shadow = dict(_row(route="shadow"), consumer_id="web_intent",
+                      engine="g25", chosen="search")
+        return [
+            # engine disagrees with the Brain; the Brain's tool succeeded
+            ("success", "search", dict(shadow, brain_choice="crawler_query")),
+            # engine agrees with the Brain
+            ("success", "search", dict(shadow, brain_choice="search")),
+            # shadow row with no reference: unlabelled, skipped
+            ("success", "search", dict(shadow)),
+        ]
+
+    def test_shadow_rows_graded_by_parity_not_outcome(self, tmp_path):
+        db = tmp_path / "m.db"
+        _make_db(db, self._rows())
+        skipped: dict = {}
+        rows = _load_mod()._load_decisions(str(db), skipped=skipped)
+        assert [r["correct"] for r in rows] == [False, True]
+        assert skipped == {"no_label": 1}
+
+    def test_both_instruments_agree_row_for_row(self, tmp_path):
+        import sys
+        if str(ROOT) not in sys.path:
+            sys.path.insert(0, str(ROOT))
+        from scripts.consumer_enforcement_report import load_rows
+
+        db = tmp_path / "m.db"
+        _make_db(db, self._rows())
+        cal = [r["correct"] for r in _load_mod()._load_decisions(str(db))]
+        rep, skipped = load_rows(str(db))
+        assert cal == [r["correct"] for r in rep]
+        assert skipped["no_label"] == 1

@@ -66,10 +66,18 @@ MCM `pin_22b078571d73` (topology halt; 7.5 min index build).
    at t=0.4 (22 rows above), AUROC 0.79, gap = ECE 0.107 > 0.05 (calibration only);
    `presentation` precision 1.0 but ECE 0.565, one class; `done` 99 rows but precision 0.729;
    `mode` 0.725, `escalate_incomplete` 0.728; `depth_met`/`depth_route` have no threshold for the
-   active engine. BLOCKER found: `scripts/calibrate_decision_threshold.py` and the enforcement
-   report disagree on the same rows (web_intent acc 1.0 in every band vs precision 0.377) — two
-   label rules. Reconcile the instruments FIRST, then fit calibration for `tool_choice`. Then a
-   per-turn breakdown of Brain calls by caller to find decisions worth moving.
+   active engine. BLOCKER FIXED 2026-10-01: `scripts/calibrate_decision_threshold.py` scored a
+   SHADOW row by its event outcome (the outcome of the Brain's pick), so web_intent read acc 1.0
+   in every band vs parity precision 0.377. Now ONE rule, `decision_label()` in the calibrate
+   script, used by both instruments (shadow = parity with `brain_choice`/`brain_bool`, no
+   reference = skipped and counted; dispatched = outcome). Guard:
+   `unit/test_calibrate_decision_threshold.py::TestOneLabelRule` (fails on the old script).
+   Live store after the fix, active engine, both instruments identical: `tool_choice` 401 rows,
+   ECE 0.059 (bar 0.05), 22 above threshold; `web_intent` 1138 rows, precision 0.381, ECE 0.49
+   (conf < 0.5 agrees 97%, 0.5-0.6 agrees 4% — confidence is anti-calibrated there).
+   Next: fit calibration for `tool_choice`. Then a per-turn breakdown of Brain calls by caller
+   to find decisions worth moving. Pre-existing: `test_missing_db_unverified` fails
+   (`from _app_store import` in `main()` needs `scripts/` on `sys.path`).
 3. Turn-end bookkeeping before synthesis (`_save_card_footprint`, `mycelium_record_plan_stats`,
    `_store_task_episode` + crystallize, `_maybe_trigger_skill_creation`, agent_kernel ~10600-10745)
    -> an ordered lane; fold-back at the next turn's recall if recall must see it.
