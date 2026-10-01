@@ -80,6 +80,37 @@ def ensure_landmark_policy_columns(conn) -> None:
     conn.commit()
 
 
+_EVENT_IDS_MAX = 20     # landmark ids typed per call (a sweep is bounded; the count is kept)
+
+
+def _emit_landmark_event(conn, label: str, landmark_ids: List[str], *, evidence: str = "none",
+                         evidence_kind: str = "", thread_id: Optional[str] = None,
+                         payload: Optional[dict] = None) -> None:
+    """Type a tier change as LANDMARK_PROMOTED / _STALE / _DEMOTED (memory family).
+
+    Written on the SAME connection inside the caller's open transaction (the caller
+    commits): no second writer, no lock wait. No chain reference row - the landmark
+    row is the durable record. ``evidence_kind`` is a policy kind (task_complete, test_pass,
+    user_confirm, recurrence), mapped into the alphabet. Never raises: a tier change never
+    fails on typing."""
+    try:
+        from backend.memory import memory_events as me
+
+        if evidence_kind:
+            evidence = me._EVIDENCE_OF.get(evidence_kind, "none")
+
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memory_events'"
+        ).fetchone() is None:
+            me.ensure_schema(conn)
+        for lid in landmark_ids[:_EVENT_IDS_MAX]:
+            me.emit_event(conn, label=label, evidence=evidence, thread_id=thread_id,
+                          payload={"landmark": lid, "total": len(landmark_ids), **(payload or {})},
+                          commit=False, chain=False)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[landmark] %s event skipped: %s", label, exc)
+
+
 def _independent(evidence: List[dict]) -> int:
     return len({(e.get("kind"), e.get("session")) for e in evidence
                 if e.get("kind") in OUTSIDE_EVIDENCE})
@@ -120,6 +151,9 @@ def add_landmark_evidence(conn, landmark_id: str, kind: str, ref: str = "",
     )
     if new_tier != tier:
         logger.info("[landmark] counter promoted landmark=%s %s -> %s", landmark_id, tier, new_tier)
+        _emit_landmark_event(conn, "LANDMARK_PROMOTED", [landmark_id], evidence_kind=kind,
+                             thread_id=session or None,
+                             payload={"from": tier, "to": new_tier, "kind": kind})
     conn.commit()
     return new_tier
 
@@ -128,10 +162,17 @@ def mark_landmarks_stale_by_dependency(conn, path: str) -> int:
     """A changed dependency: a 'landmark' becomes 'stale' (flagged, re-checked)."""
     ensure_landmark_policy_columns(conn)
     like = "%" + json.dumps(path)[1:-1] + "%"
-    return conn.execute(
+    ids = [r[0] for r in conn.execute(
+        "SELECT landmark_id FROM mycelium_landmarks WHERE tier = 'landmark' AND depends_on LIKE ?",
+        (like,),
+    ).fetchall()]
+    n = conn.execute(
         "UPDATE mycelium_landmarks SET tier = 'stale' WHERE tier = 'landmark' AND depends_on LIKE ?",
         (like,),
     ).rowcount
+    if n:
+        _emit_landmark_event(conn, "LANDMARK_STALE", ids, payload={"path": path[:200]})
+    return n
 
 
 def demote_landmarks_for_thread(conn, thread_id: Optional[str], reason: str) -> int:
@@ -139,6 +180,10 @@ def demote_landmarks_for_thread(conn, thread_id: Optional[str], reason: str) -> 
     if not thread_id:
         return 0
     ensure_landmark_policy_columns(conn)
+    ids = [r[0] for r in conn.execute(
+        "SELECT landmark_id FROM mycelium_landmarks WHERE conversation_ref = ? "
+        "AND tier IN ('candidate', 'landmark', 'stale')", (thread_id,),
+    ).fetchall()]
     n = conn.execute(
         "UPDATE mycelium_landmarks SET tier = 'demoted', contradictions = contradictions + 1, "
         "falsify_if = COALESCE(falsify_if, '') || ? WHERE conversation_ref = ? "
@@ -147,6 +192,9 @@ def demote_landmarks_for_thread(conn, thread_id: Optional[str], reason: str) -> 
     ).rowcount
     if n:
         logger.info("[landmark] counter demoted n=%d thread=%s reason=%s", n, thread_id, reason[:80])
+        # A contradicting failure is the system's own observation: evidence verifier.
+        _emit_landmark_event(conn, "LANDMARK_DEMOTED", ids, evidence="verifier",
+                             thread_id=thread_id, payload={"reason": reason[:120]})
     return n
 
 

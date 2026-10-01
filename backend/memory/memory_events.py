@@ -313,14 +313,15 @@ def _flush(conn, thread_id: str, pending: List[dict], coords: Optional[str]) -> 
             conn, label=ev["label"], evidence=ev.get("evidence", "none"), thread_id=thread_id,
             episode_id=ev.get("task"), step_index=ev.get("step"), cause_key=ev.get("cause_key"),
             sigma_from=coords, sigma_to=coords, action_signature=ev.get("action"),
-            links={"case": ev.get("case")} if ev.get("case") else None,
+            links={**(ev.get("links") or {}), **({"case": ev["case"]} if ev.get("case") else {})} or None,
             payload=ev.get("payload"), insight=ev.get("insight", ""),
-            chain_outcome=ev.get("chain_outcome"),
+            chain_outcome=ev.get("chain_outcome"), chain=ev.get("chain", True),
         )
 
 
 # Outside-evidence kinds of the policy -> the alphabet's evidence values.
-_EVIDENCE_OF = {"task_complete": "completion", "test_pass": "test", "user_confirm": "user"}
+_EVIDENCE_OF = {"task_complete": "completion", "test_pass": "test", "user_confirm": "user",
+                "recurrence": "recurrence"}
 
 
 def _words(tool: Optional[str]) -> Dict[str, str]:
@@ -389,6 +390,36 @@ def _mark_stale_dependents(conn, path: str, task_id: str) -> int:
     return n
 
 
+_RECALL_TRACES_MAX = 6      # recalls credited per step (a step receives at most a few)
+
+
+def new_recall_trace_id() -> str:
+    """The id that follows one delivered recall to the outcome of the step it reached."""
+    return "rt-" + uuid.uuid4().hex[:12]
+
+
+def _attribute_recalls(conn, trace_ids: Optional[List[str]], failed: bool, verified: str,
+                       step_id: str, task_id: str, pending: List[dict]) -> List[str]:
+    """RECALL_HELPED / RECALL_MISLED for the recalls delivered to this step. A trace
+    that already has an outcome event is skipped (a retried finalize never double-counts)."""
+    written: List[str] = []
+    label = "RECALL_MISLED" if failed else "RECALL_HELPED"
+    # The verifier ruled on the step -> inside evidence; no ruling -> none.
+    evidence = "verifier" if verified in ("VERIFIED", "FAILED") else "none"
+    for trace in list(trace_ids or [])[:_RECALL_TRACES_MAX]:
+        done = conn.execute(
+            "SELECT 1 FROM memory_events WHERE label IN ('RECALL_HELPED', 'RECALL_MISLED') "
+            "AND links LIKE ? LIMIT 1", ("%" + str(trace) + "%",),
+        ).fetchone()
+        if done:
+            continue
+        pending.append(dict(label=label, evidence=evidence, step=step_id, task=task_id,
+                            links={"recall_trace_id": trace}, chain=False,
+                            payload={"step": step_id, "task": task_id, "verified": verified}))
+        written.append(label)
+    return written
+
+
 # ── the two entry points ────────────────────────────────────────────────────
 
 def record_step(
@@ -404,8 +435,15 @@ def record_step(
     error_text: str = "",
     description: str = "",
     coords: Optional[str] = None,
+    recall_trace_ids: Optional[List[str]] = None,
 ) -> List[str]:
-    """Type one finished DER step. Returns the event types written."""
+    """Type one finished DER step. Returns the event types written.
+
+    ``recall_trace_ids`` are the recalls DELIVERED to this step (attribution v1,
+    Wormhole REQ-17): each gets one RECALL_HELPED (the step did not fail) or
+    RECALL_MISLED (it failed). A recall never delivered to the step is never
+    credited, and a trace is credited at most once.
+    """
     try:
         ensure_schema(conn)
         now = time.time()
@@ -512,6 +550,8 @@ def record_step(
                                     payload={"kind": "test_pass", "step": step_id, "task": task_id,
                                              "command": _target(params)}))
                 written += _verify_fixed(conn, task_id, "test_pass", pending)
+        written += _attribute_recalls(conn, recall_trace_ids, failed, verified, step_id, task_id,
+                                      pending)
         _flush(conn, thread_id, pending, coords)
         return written
     except Exception as exc:  # noqa: BLE001 — typing never breaks the lane
@@ -676,6 +716,27 @@ def submit(mi, fn_name: str, **kwargs) -> bool:
     except Exception as exc:  # noqa: BLE001
         logger.debug("[memory_events] submit %s skipped: %s", fn_name, exc)
         return False
+
+
+def record_recall_delivered(conn, *, thread_id: str, task_id: str, step_id: str, source: str,
+                            recall_trace_id: str, refs: Optional[List[str]] = None,
+                            coords: Optional[str] = None) -> List[str]:
+    """RECALL_DELIVERED: memory entered THIS step's context. ``source`` names the path
+    (neighbors | prior_research | known_case | chain_timeline); ``refs`` are ids only.
+    The step carries ``recall_trace_id`` to its outcome (record_step attributes it)."""
+    try:
+        ensure_schema(conn)
+        eid = emit_event(
+            conn, label="RECALL_DELIVERED", evidence="none", thread_id=thread_id,
+            episode_id=task_id, step_index=step_id, sigma_from=coords, sigma_to=coords,
+            links={"recall_trace_id": recall_trace_id},
+            payload={"source": source, "refs": [str(r)[:64] for r in (refs or [])[:5] if r]},
+            chain=False,
+        )
+        return ["RECALL_DELIVERED"] if eid else []
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[memory_events] record_recall_delivered failed step=%s: %s", step_id, exc)
+        return []
 
 
 # A prior claim nothing re-checked, older than this, is a belief to re-check.
