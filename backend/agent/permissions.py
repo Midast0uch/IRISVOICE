@@ -563,6 +563,22 @@ def get_permission_action(
 # ── Permission system ──────────────────────────────────────────────────────
 
 
+def _emit_permission_event(req: ToolPermissionRequest, label: str, evidence: str = "none",
+                           **kw: Any) -> None:
+    """Taxonomy FEEDBACK: the user's answer to a permission request (APPROVAL / DENIAL,
+    evidence "user") or its expiry (NO_RESPONSE). Ids and tool name only. Rides
+    lane("memory_events"); never raises."""
+    try:
+        from backend.agent.event_emit import emit
+
+        emit(None, label, evidence=evidence, thread_id=req.session_id or None,
+             payload={"request_id": req.request_id, "tool": req.tool_name,
+                      "tier": getattr(req.tier, "value", str(req.tier)), "kind": "permission"},
+             **kw)
+    except Exception:  # noqa: BLE001 - an event never blocks a permission answer
+        logger.debug("[Permissions] event %s skipped", label, exc_info=True)
+
+
 class ToolPermissionSystem:
     """Manages tool permission requests and approvals.
 
@@ -750,6 +766,10 @@ class ToolPermissionSystem:
                 },
                 turn_id=req.turn_id,
             )
+            _emit_permission_event(
+                req, "APPROVAL" if approved else "DENIAL", evidence="user",
+                cost={"ms": int((time.time() - req.created_at) * 1000)},
+            )
 
             return req
 
@@ -780,6 +800,9 @@ class ToolPermissionSystem:
             )
         except Exception:
             pass
+        _emit_permission_event(
+            request, "NO_RESPONSE", cost={"ms": int(request.timeout_seconds * 1000)},
+        )
 
     def get_response(self, request: ToolPermissionRequest, poll_interval: float = 0.1) -> ToolPermissionRequest:
         """Block until the permission request is resolved (approved/denied/timed_out).

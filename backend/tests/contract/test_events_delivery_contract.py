@@ -61,6 +61,9 @@ def test_answer_given_row_at_the_reply_exit(store):  # noqa: F811
 
 def test_answer_given_through_the_real_structured_response_path(store):  # noqa: F811
     k = _kernel(store)
+    # The presentation observer is a daemon thread that loads the decision engine: it is not
+    # under test here and its CPU use starves the lane drain (measured: ~10 s on a cold run).
+    k._observe_surface_async = lambda *a, **kw: None
     out = AgentKernel._process_structured_response(k, ANSWER, turn_id="turn-dl", conversation_id="c1")
     assert out == ANSWER
     (row,) = rows(store, "ANSWER_GIVEN")

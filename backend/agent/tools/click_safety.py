@@ -32,6 +32,9 @@ SAFE, UNSAFE, UNSURE = "safe", "unsafe", "unsure"
 ASK_TIMEOUT_S = 45
 JUDGE_TIMEOUT_S = 8.0
 _YES, _NO = "Yes, do it", "No, find another way"
+# The trigger of the PIVOT a refusal causes: nodes/outcome.Reason.PERMISSION_DENIED.value
+# (a literal so the gate stays free of the node package; a contract test pins the match).
+PIVOT_TRIGGER = "permission_denied"
 
 # The task context of the call in flight (goal + the ids the question card needs).
 # The tool bridge sets it around a browser tool call; BrowserHost.run carries it
@@ -240,12 +243,30 @@ async def escalate(question: str, ctx: Optional[dict]) -> bool:
             text=question, options=[_YES, _NO], allow_other=False,
             timeout_seconds=int(ASK_TIMEOUT_S), turn_id=ctx.get("turn_id"),
             conversation_id=ctx.get("conversation_id"), session_id=ctx.get("session_id"),
+            purpose="safety",
         )
         resolved = await asyncio.to_thread(tool.wait_for_answer, asked)
-        return resolved.status == "answered" and str(resolved.answer or "").strip().lower().startswith("yes")
+        approved = resolved.status == "answered" and str(resolved.answer or "").strip().lower().startswith("yes")
+        if resolved.status == "answered":  # a timeout is NO_RESPONSE, typed by the tool
+            emit_event(ctx, "APPROVAL" if approved else "DENIAL", evidence="user",
+                       payload={"question_id": asked.question_id, "source": "click_safety"})
+        return approved
     except Exception as exc:  # noqa: BLE001
         logger.warning("[click_safety] escalation failed: %s", exc)
         return False
+
+
+def emit_event(ctx: Optional[dict], label: str, evidence: str = "none", **kw: Any) -> None:
+    """A rule-labelled taxonomy event for the task in ``ctx`` (ACT_CONTEXT): the gate's
+    verdicts, the user's answer, the pivot. Rides lane("memory_events"); never raises."""
+    try:
+        from backend.agent.event_emit import emit
+
+        ctx = ctx or {}
+        emit(None, label, evidence=evidence, thread_id=ctx.get("session_id"),
+             conversation_id=ctx.get("conversation_id"), **kw)
+    except Exception:  # noqa: BLE001 - an event never blocks the gate
+        logger.debug("[click_safety] event %s skipped", label, exc_info=True)
 
 
 def refusal(reason: str, verdict: str) -> Dict[str, Any]:

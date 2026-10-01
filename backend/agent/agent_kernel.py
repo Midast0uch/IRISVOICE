@@ -5833,6 +5833,7 @@ class AgentKernel:
                 turn_id=turn_id,
                 conversation_id=conversation_id,
                 context=_ctx,
+                purpose="decide",
             )
         except Exception as exc:
             logger.warning("[AgentKernel] web format escalation failed: %s", exc)
