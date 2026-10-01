@@ -14489,7 +14489,7 @@ Respond with a JSON object:
     # gate or graft decision that key off _DER_GATHER_TOOLS.
     _DER_READ_TOOLS = {
         "get_rendered_documents", "get_document", "read_document",
-        "get_rendered_document",
+        "get_rendered_document", "recall_research",
     }
 
     # Tools whose result is a command's output: exit code + stdout/stderr.
@@ -20342,6 +20342,7 @@ Tool execution results:
 Based on the tool results above, provide a natural response to the user's request.
 If any tools failed, address those issues in your response.
 Cover every part of the user's request. If the results lack some asked part, say which part is missing in one line — never skip it in silence.
+If a CROSS-CHECK section is present, say which facts are confirmed since the earlier date and which changed.
 
 {_READABLE_FORMAT_RULES}
 """
