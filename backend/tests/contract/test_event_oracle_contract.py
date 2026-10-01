@@ -451,6 +451,13 @@ def test_the_bar_report_lists_all_three_consumers(conn, tmp_path, monkeypatch):
     me.emit_event(conn, label="BUG", evidence="none", thread_id="t", chain=False)
     eo.schedule_pass(conn, None, force=True)
     _settle()
+    # The pass hands scoring across two lanes; in a busy test process one more
+    # hop can still be in flight after _settle. Wait (bounded) for the rows the
+    # assertions below need - the contract is "eventually, on a lane".
+    for _ in range(20):
+        if {"event_family", "event_type:problem"} <= {m.get("consumer") for m in ledger}:
+            break
+        _settle()
 
     db = tmp_path / "ledger.db"
     c = sqlite3.connect(str(db))
