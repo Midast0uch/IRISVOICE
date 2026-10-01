@@ -46,6 +46,11 @@ _lock = threading.Lock()
 _proc = None            # subprocess.Popen of the owned llama-server
 _idle_timer: Optional[threading.Timer] = None
 _disabled = False       # user turned the sidecar off
+# An adopted (not spawned) server that PROVED it can embed. The capability
+# probe ran on EVERY ensure_running after a backend restart (adoption is the
+# normal case: the sidecar survives restarts) - a second request per embed.
+# Cleared whenever /health fails, so a replaced server is probed again.
+_adopted_capable = False
 
 
 def _binary() -> Optional[str]:
@@ -85,8 +90,9 @@ def _embeddings_capable(timeout_s: float = 3.0) -> bool:
     adoption path (never on every embed).
     """
     try:
-        import httpx
-        r = httpx.post(
+        # Pooled client (as _health_ok): httpx.post() built a new client + SSL
+        # context per call - 9 stack dumps of one eval turn (2026-10-01).
+        r = _get_client().post(
             f"http://127.0.0.1:{_SIDECAR_PORT}/v1/embeddings",
             json={"input": "ping", "model": "probe"},
             timeout=timeout_s,
@@ -191,11 +197,16 @@ def _warm_inference() -> None:
 
 def ensure_running() -> bool:
     """Idempotently ensure the sidecar is reachable. Never raises."""
-    global _disabled, _idle_timer
+    global _disabled, _idle_timer, _adopted_capable
     with _lock:
         if _disabled:
             return False
-        if _health_ok():
+        if not _health_ok():
+            _adopted_capable = False
+        elif _proc is not None or _adopted_capable:
+            _touch_locked()
+            return True
+        else:
             # A server we did NOT spawn is adopted only if it can actually
             # EMBED. The sidecar deliberately SURVIVES backend restarts, so
             # after a restart the thing on the port is usually the previous
@@ -204,7 +215,8 @@ def ensure_running() -> bool:
             # 404'd (EmbeddingService then fell back to a hash and step
             # verification degraded). Checking only when we do not own the
             # process keeps the cost off the hot path.
-            if _proc is not None or _embeddings_capable():
+            if _embeddings_capable():
+                _adopted_capable = True
                 _touch_locked()
                 return True
             logger.warning(

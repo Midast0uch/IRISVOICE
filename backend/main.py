@@ -312,10 +312,18 @@ async def lifespan(app: FastAPI):
         # "loads in ~1-2 s" assumption only holds warm). Delayed 90 s so boot
         # + Next.js compilation finish first (the original OOM-race concern);
         # daemon thread, never blocks startup; warm_up() no-ops if loaded.
+        # 2026-10-01: a fixed +90 s landed INSIDE the first turn (eval c01):
+        # the HDD import held that turn's first pytest for 220 s. Now: at
+        # least 90 s after boot AND 20 s with no turn in flight (IdleTracker
+        # .busy() covers the whole turn, not only the arriving message).
         def _delayed_whisper_warm_up(_handler=voice_handler):
             try:
                 import time as _t
+                from backend.core.idle_tracker import get_idle_tracker as _git
+
                 _t.sleep(90)
+                while not _git().is_idle(threshold_s=20.0):
+                    _t.sleep(5)
                 _handler.warm_up()
             except Exception as _w_exc:
                 logger.warning(
@@ -328,7 +336,7 @@ async def lifespan(app: FastAPI):
         )
         _whisper_warm_thread.start()
         logger.info(
-            "    [+] [VOICE HANDLER] faster-whisper background warm-up scheduled (+90 s)"
+            "    [+] [VOICE HANDLER] faster-whisper background warm-up scheduled (+90 s, then 20 s idle)"
         )
 
         # ==========================================================================

@@ -128,6 +128,28 @@ _der_recovery_lock = threading.Lock()
 # ── Physics side lane helpers (see AgentKernel._der_submit_physics). Module
 # level on purpose: a kernel stand-in that binds only some methods must still
 # run the read a barrier guards, so the barrier cannot live on the class.
+def _turn_in_flight(fn):
+    """Mark the whole turn busy on the process IdleTracker (every entry: voice,
+    chat, the developer orchestrator). Background work that waits for idle
+    (whisper warm-up, distillation) then waits for the turn to END - not only
+    for input to stop: a fixed-delay warm-up fired inside eval c01 and its HDD
+    import held the first pytest for 220 s (2026-10-01)."""
+    import functools
+
+    @functools.wraps(fn)
+    def _wrapper(*args, **kwargs):
+        try:
+            from backend.core.idle_tracker import get_idle_tracker
+
+            busy = get_idle_tracker().busy()
+        except Exception:  # noqa: BLE001 - a tracker fault never blocks a turn
+            return fn(*args, **kwargs)
+        with busy:
+            return fn(*args, **kwargs)
+
+    return _wrapper
+
+
 def _der_physics_settle(owner, session_id: str) -> None:
     """Fold-back point of the physics side lane.
 
@@ -7900,6 +7922,7 @@ class AgentKernel:
             "try again, or rephrase your question."
         )
 
+    @_turn_in_flight
     @restores_call_class
     def process_text_message(
         self,
@@ -7971,6 +7994,11 @@ class AgentKernel:
         import uuid
 
         task_id = turn_id or str(uuid.uuid4())
+        # The frontend's turn id for everything this turn emits outside the DER
+        # parameters (render_document cards, tool-bridge rows, card snapshots).
+        # 13 sites read it; nothing assigned it, so all of them got None and a
+        # rendered card never joined its live turn (HANDOFF 6 finding).
+        self._current_turn_id = turn_id
         # Taxonomy events of this turn share one episode id (same as Wave E's task id).
         self._event_episode_id = f"{session_id}:{task_id}"
         metrics = TurnMetrics(turn_id=task_id)
@@ -19743,6 +19771,51 @@ Respond with a JSON object:
         except Exception:
             return False
 
+    def _goal_contract_bound_cover_push(self, open_facts: List[str]) -> List[str]:
+        """Bound the "cover the open required fact" push per fact.
+
+        Each call counts one push for the first open fact. A fact pushed
+        GOAL_COVER_PUSH_MAX times without being covered is BLOCKED (reason
+        no_progress) and the next open fact is tried. Returns the facts still
+        worth a push. Measured 2026-10-01 (eval c06): the push had no bound -
+        36 pushes on a fact no step could cover, reply 366 s vs 64 s. (The
+        streak gate's coverage-stall brake runs only when the user steers.)
+        """
+        try:
+            from backend.agent.der_constants import GOAL_COVER_PUSH_MAX
+
+            _st = getattr(self, "_goal_contract_state", None)
+            if _st is None:
+                return open_facts
+            _pushes = _st.setdefault("cover_pushes", {})
+            _left = list(open_facts)
+            while _left:
+                _k = str(_left[0]).strip().lower()
+                if int(_pushes.get(_k, 0)) < GOAL_COVER_PUSH_MAX:
+                    _pushes[_k] = int(_pushes.get(_k, 0)) + 1
+                    return _left
+                _blocked = _st.get("blocked") or []
+                _blocked.append({
+                    "fact": str(_left[0]),
+                    "reason": "no_progress",
+                    "evidence": f"{GOAL_COVER_PUSH_MAX} pushes, still not covered",
+                })
+                _st["blocked"] = _blocked
+                _counters = _st.get("counters") or {}
+                _counters["facts_blocked"] = len(_blocked)
+                _st["counters"] = _counters
+                logger.info(
+                    "[goal-contract] fact BLOCKED (no_progress after %d pushes) "
+                    "conv=%s: %r",
+                    GOAL_COVER_PUSH_MAX, getattr(self, "conversation_id", ""),
+                    str(_left[0])[:160],
+                )
+                _left = _left[1:]
+            return []
+        except Exception as _bp_exc:  # noqa: BLE001 - a bound never breaks the loop
+            logger.warning("[goal-contract] cover-push bound failed: %r", _bp_exc)
+            return open_facts
+
     def _goal_contract_open_facts(self) -> List[str]:
         """Goal contract T6 (REQ-3 AC3.2/AC3.6): required facts neither covered
         nor blocked. Advisory helper — empty when no contract exists."""
@@ -20254,6 +20327,9 @@ Respond with a JSON object:
                     brain_bool_fn=lambda: data.get("done") is True,
                     brain_text_fn=lambda: str(data.get("description", "") or ""),
                     engine=_ms.AUTO_ENGINE,
+                    # shadow score off the reply path (4.3 s at turn end,
+                    # eval c04 2026-10-01); the row is emitted from the lane
+                    defer=True,
                 )
                 _ms.emit_row(_done_row)
             except Exception as _mon_err:  # noqa: BLE001 — advisory observer
@@ -20276,6 +20352,8 @@ Respond with a JSON object:
                     _gc_open_now = self._goal_contract_open_facts()
                 except Exception:
                     _gc_open_now = []
+                if _gc_open_now:
+                    _gc_open_now = self._goal_contract_bound_cover_push(_gc_open_now)
                 if _gc_open_now:
                     logger.info(
                         "[goal-contract] gap open (%d facts) — requesting "
@@ -20428,6 +20506,7 @@ Respond with a JSON object:
                         brain_text_fn=lambda: str(
                             data.get("suggestion", "") or ""),
                         engine=_ms.AUTO_ENGINE,
+                        defer=True,  # shadow score off the reply path
                     )
                     _ms.emit_row(_ot_row)
                 except Exception as _mon_err:  # noqa: BLE001 — advisory observer

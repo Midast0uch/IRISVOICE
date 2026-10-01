@@ -181,6 +181,7 @@ def monitor_bool(
     engine: Any = None,
     enforced: bool = False,
     threshold: float = 0.8,
+    defer: bool = False,
 ) -> Tuple[bool, str, Optional[dict]]:
     """One monitor judgment: (value, text, shadow_row).
 
@@ -196,7 +197,25 @@ def monitor_bool(
 
     Fail-closed (AC14.4): an unavailable/below-threshold Noul leaves the Brain
     in charge; a raising Brain yields ``(False, "")``.
+
+    ``defer=True`` (SHADOW only): the reply does not wait for the score. The
+    Brain answers first; the Noul is scored on the ``oracle_shadow`` lane (one
+    ordered writer) and its row goes to :func:`emit_row` from there, so the
+    returned row is None. Measured 2026-10-01 (eval c04): the turn-end `done`
+    and `on_track` scores held the reply 4.3 s + 1.3 s for rows nothing reads
+    on the answer path.
     """
+    if defer and not enforced:
+        try:
+            value = bool(brain_bool_fn())
+        except Exception as e:  # noqa: BLE001 — fail closed, never raise
+            logger.warning("[monitor] %s brain bool failed: %r", consumer_id, e)
+            _submit_shadow(consumer_id, statement, engine, None)
+            return False, "", None
+        text = "" if value else _safe_text(brain_text_fn)
+        _submit_shadow(consumer_id, statement, engine, value)
+        return value, text, None
+
     noul = score_monitor_bool(consumer_id, statement, engine=engine)
 
     _engine_decides = bool(
@@ -215,6 +234,24 @@ def monitor_bool(
         return False, "", shadow_row(consumer_id, noul, brain_bool=None)
     text = "" if value else _safe_text(brain_text_fn)
     return value, text, shadow_row(consumer_id, noul, brain_bool=value)
+
+
+def _submit_shadow(consumer_id: str, statement: str, engine: Any,
+                   brain_bool: Optional[bool]) -> None:
+    """Score + emit one shadow row on the ``oracle_shadow`` lane. Values are
+    bound now (the statement and the Brain's answer), so the row pairs what
+    THIS turn saw. Never raises; a full lane is counted by the lane."""
+    def _job() -> None:
+        noul = score_monitor_bool(consumer_id, statement, engine=engine)
+        emit_row(shadow_row(consumer_id, noul, brain_bool=brain_bool))
+
+    try:
+        from backend.utils.durability_queue import lane
+
+        if not lane("oracle_shadow").submit(f"monitor:{consumer_id}", _job):
+            logger.warning("[monitor] %s shadow row dropped (lane full)", consumer_id)
+    except Exception as e:  # noqa: BLE001 — a shadow never raises
+        logger.warning("[monitor] %s shadow submit failed: %r", consumer_id, e)
 
 
 def sufficiency_gate(

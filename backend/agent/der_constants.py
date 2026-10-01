@@ -392,6 +392,11 @@ GOAL_CEILING_CAP = 8
 GOAL_STALL_RATE = 0.05
 # Gain of the goal-gap forcing term on the cognitive u (KD-3).
 GOAL_FORCING_GAIN = 0.5
+# Max "cover the open required fact" pushes for ONE fact in one turn. Past it
+# the fact is BLOCKED (reason no_progress) and reported, not pushed again.
+# Measured 2026-10-01 (eval c06): with no bound, a fact no step could cover
+# drew 36 pushes and the reply took 366 s instead of 64 s.
+GOAL_COVER_PUSH_MAX = 2
 
 
 def is_shallow_verified(

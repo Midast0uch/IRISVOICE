@@ -32,6 +32,15 @@ _STOPWORDS = frozenset({
 _ENUM_PREFIX_RE = re.compile(r"^\s*(?:\d+[.)]\s+|\(\d+\)\s*|[-*•]\s+)")
 _SPLIT_RE = re.compile(r"\s*(?:\n+|;+|\s+\d+[.)]\s+|\s*\(\d+\)\s*)\s*")
 _WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9]{3,}")
+# A prohibition ("do not change app.py") is kept by NOT acting, so no step can
+# cover it; as a required fact it drew a push per boundary (eval c06,
+# 2026-10-01: 36 pushes, reply 366 s). Nodes still see it - every node gets
+# the user's request word for word (S5).
+_PROHIBITION_RE = re.compile(
+    r"^(?:and\s+|but\s+)?(?:do\s+not|don'?t|never|must\s+not|should\s+not|"
+    r"shouldn'?t|without)\b",
+    re.IGNORECASE,
+)
 # Page scaffolding a web tool result wraps around content: "--- Source: URL ---" headers,
 # the "--- Attempted:" / "--- Dead:" / "--- Outlinks ..." machine lines, bare-URL outlink
 # bullets, and the truncation marker. None of it is a deliverable, yet each line used to
@@ -145,6 +154,9 @@ def extract_required(request: str) -> Tuple[str, ...]:
     for _p in _parts:
         _f = _clean_fact(_p)
         if not _f:
+            continue
+        if _PROHIBITION_RE.match(_f):
+            logger.info("[goal-contract] prohibition, not a deliverable: %r", _f[:120])
             continue
         _k = _norm(_f)
         if _k in _seen:

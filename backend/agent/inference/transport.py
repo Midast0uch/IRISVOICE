@@ -1611,7 +1611,15 @@ class OllamaTransport:
         _timeout = float(timeout_s) if timeout_s else 120.0
         _tool_calls: List[Dict[str, Any]] = []
         try:
-            with _httpx.Client(timeout=_httpx.Timeout(_timeout)) as _client:
+            # verify=get_ssl_context(): the shared context. Without it httpx
+            # built a new one per call (ssl.create_default_context reads the
+            # Windows cert store) - 14 stack dumps (~56 s) of one eval turn
+            # sat there, every Brain call on Ollama paying it (2026-10-01).
+            from backend.utils.ssl_context import get_ssl_context
+
+            with _httpx.Client(
+                timeout=_httpx.Timeout(_timeout), verify=get_ssl_context()
+            ) as _client:
                 _resp = _client.post(url, json=payload)
                 # The provider publishes its own RPM ceiling on every response;
                 # learning it only from 429s meant guessing 30 against a real 5.

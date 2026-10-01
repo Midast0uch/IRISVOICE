@@ -520,8 +520,19 @@ class TTSManager:
             status = self._read_line(timeout=min(0.5, deadline - time.monotonic()))
             if status is _WORKER_EOF:
                 self._ready = False
-                self._load_error = "worker exited during startup"
-                logger.error("[TTSManager] Worker exited during startup")
+                # stdout closed: the child is exiting. Its exit code is the only
+                # trace of WHY (a boot load once hung > 7 min and the worker
+                # exited with no traceback and no code in the log).
+                _p, rc = self._proc, None
+                try:
+                    rc = _p.wait(timeout=2.0) if _p is not None else None
+                except Exception:  # noqa: BLE001 - still closing; report unknown
+                    rc = _p.poll() if _p is not None else None
+                self._load_error = f"worker exited during startup (exit code {rc})"
+                logger.error(
+                    "[TTSManager] Worker exited during startup pid=%s exit_code=%s",
+                    getattr(_p, "pid", None), rc,
+                )
                 return
             if status is None:
                 continue  # still loading, no line yet
