@@ -554,23 +554,6 @@ async def _fast_http_fetch_one(url, goal, job_id, page_offset, on_progress) -> F
         )
 
 
-async def _block_heavy_resources(context) -> None:
-    """Crawl contexts read text: drop media and fonts before they are fetched
-    (D5 memory bound). Best-effort - a context without ``route`` just loads them."""
-    from backend.vision.browser_pool import BLOCKED_CRAWL_RESOURCES
-
-    async def _gate(route) -> None:
-        if route.request.resource_type in BLOCKED_CRAWL_RESOURCES:
-            await route.abort()
-        else:
-            await route.continue_()
-
-    try:
-        await context.route("**/*", _gate)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("[capabilities] resource blocking not installed: %s", exc)
-
-
 async def _browser_pool_fetch_one(url, goal, job_id, page_offset, on_progress) -> FetchOutcome:
     """Tier 2: hand the whole page fetch to the browser host loop.
 
@@ -614,14 +597,14 @@ async def _browser_pool_fetch_one_on_host(url, goal, job_id, page_offset, on_pro
     context = None
     status = None
     try:
-        from backend.vision.browser_pool import acquire_browser
+        from backend.vision.browser_pool import acquire_browser, block_heavy_resources
 
         browser, lease = await acquire_browser(max_lease_ms=45_000.0)
         # REQ-4 AC4.3: isolated context per fetch (cookies/storage/session).
         context = await asyncio.wait_for(
             browser.new_context(), timeout=_TIER2_STEP_TIMEOUT_S
         )
-        await _block_heavy_resources(context)
+        await block_heavy_resources(context)
         pg = await asyncio.wait_for(context.new_page(), timeout=_TIER2_STEP_TIMEOUT_S)
         logger.info(
             "[capabilities][job_id=%s] Tier-2 browser fetch (goal=%r): %s",

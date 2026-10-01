@@ -94,9 +94,13 @@ def brain_judges_fixture_actions_safe(monkeypatch):
     """The click-safety gate (W2) sends an ambiguous element (the fixture's "Press me")
     to the Brain judge, and there is no model in this test. The rules stay real; only
     the model call answers "safe" so these tests keep driving real input."""
+    from backend.agent import click_safety_shadow
     from backend.agent.tools import click_safety
 
     monkeypatch.setattr(click_safety, "_call_llm", lambda _p: '{"verdict": "safe", "reason": "fixture"}')
+    # No Oracle engine either: the shadow row's scoring would load the decision model
+    # on a background lane while the browser is being driven.
+    monkeypatch.setattr(click_safety_shadow, "ENGINE", None)
 
 
 class _Events:

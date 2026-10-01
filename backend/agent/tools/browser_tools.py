@@ -47,6 +47,19 @@ _OBSERVE_TIMEOUT_S = 30.0
 # act = the input itself (60 s) + the click-safety gate's Brain judge and the
 # user's answer window, so a question never eats the action's own time.
 _ACT_TIMEOUT_S = 60.0 + click_safety.JUDGE_TIMEOUT_S + click_safety.ASK_TIMEOUT_S
+# browser_explore: the whole read of the related pages, and one page's navigation.
+_EXPLORE_TIMEOUT_S = 30.0
+_EXPLORE_MAX_PAGES = 5
+_EXPLORE_NAV_MS = 8_000
+_EXPLORE_PASSAGE_CHARS = 400
+_LINKS_JS = (
+    "() => Array.from(document.querySelectorAll('a[href]')).slice(0, 300)"
+    ".map(a => [a.href, (a.innerText || a.getAttribute('aria-label') || '').trim().slice(0, 120)])"
+)
+_MAIN_TEXT_JS = (
+    "() => { const r = document.querySelector('article') || document.querySelector('main') "
+    "|| document.body; return r ? r.innerText : ''; }"
+)
 # A long interactive task takes many steps; the defaults for vision sessions
 # (12 actions / 60 s) are sized for a reading pass, not for this.
 _SESSION_MAX_ACTIONS = 150
@@ -266,6 +279,25 @@ async def browser_act(
         return _fail(f"browser_act failed: {str(exc)[:200]}")
 
 
+async def browser_explore(
+    conversation_id: str, goal: str, max_pages: Any = 5, emit: Optional[Emit] = None,
+) -> Dict[str, Any]:
+    """Read the goal-relevant same-site pages linked from the live page (read-only)."""
+    goal = (goal or "").strip()
+    if not goal:
+        return _fail("browser_explore needs a goal")
+    try:
+        pages = max(1, min(int(max_pages or _EXPLORE_MAX_PAGES), _EXPLORE_MAX_PAGES))
+    except (TypeError, ValueError):
+        pages = _EXPLORE_MAX_PAGES
+    try:
+        return await _RT.run(_do_explore(conversation_id, goal, pages, emit), _EXPLORE_TIMEOUT_S + 5.0)
+    except asyncio.TimeoutError:
+        return _fail("browser_explore timed out")
+    except Exception as exc:  # noqa: BLE001
+        return _fail(f"browser_explore failed: {str(exc)[:200]}")
+
+
 async def close_conversation_browser(conversation_id: str) -> None:
     """Close a conversation's browser session (conversation end). Never raises."""
     try:
@@ -457,4 +489,80 @@ async def _do_act(
         ),
         "url": res["url"], "title": res["title"], "changed": res["changed"],
         "marks_seq": res["marks_seq"], "trust": "untrusted",
+    }
+
+
+def _best_passage(text: str, goal: str) -> str:
+    """The paragraph of ``text`` that shares the most goal words (the first one when
+    none does), at most ``_EXPLORE_PASSAGE_CHARS`` long."""
+    from backend.crawler.cite import _tok
+    from backend.crawler.site_links import goal_tokens
+
+    want = goal_tokens(goal)
+    chunks = [c.strip() for c in (text or "").split("\n") if len(c.strip()) >= 40]
+    if not chunks:
+        return (text or "").strip()[:_EXPLORE_PASSAGE_CHARS]
+    best = max(chunks, key=lambda c: len(want & _tok(c)))
+    return best[:_EXPLORE_PASSAGE_CHARS]
+
+
+async def _read_related_page(context: Any, url: str, goal: str, budget_s: float) -> Dict[str, Any]:
+    """Open ``url`` in a throwaway tab of the session's context, read it, close it."""
+    from backend.vision.browser_pool import block_heavy_resources
+
+    page = await context.new_page()
+    try:
+        await block_heavy_resources(page)
+        await page.goto(url, wait_until="domcontentloaded",
+                        timeout=int(min(_EXPLORE_NAV_MS, max(1.0, budget_s) * 1000)))
+        title = (await page.title() or "").strip()[:120]
+        text = await page.evaluate(_MAIN_TEXT_JS)
+        return {"url": str(page.url or url), "title": title, "passage": _best_passage(text, goal)}
+    finally:
+        try:
+            await page.close()
+        except Exception:  # noqa: BLE001 - a leaked tab is closed with its context
+            pass
+
+
+async def _do_explore(conv: str, goal: str, max_pages: int, emit: Optional[Emit]) -> Dict[str, Any]:
+    """Visit the goal-relevant same-site links of the session's current page, one
+    background tab at a time, within ``_EXPLORE_TIMEOUT_S``. Reads only."""
+    from backend.crawler.site_links import rank_same_site
+
+    entry, problem = _need_session(conv, emit)
+    if entry is None:
+        return _fail(problem)
+    session = entry.session
+    page, context = getattr(session, "_page", None), getattr(session, "_context", None)
+    if page is None or context is None:
+        return _fail("no open browser for this conversation; call browser_open(url) first")
+    base = str(getattr(page, "url", "") or session.url)
+    links = [(str(h), str(t)) for h, t in await page.evaluate(_LINKS_JS)]
+    targets = rank_same_site(links, base, goal, limit=max_pages)
+    deadline = time.monotonic() + _EXPLORE_TIMEOUT_S
+    visited: list = []
+    for url in targets:
+        left = deadline - time.monotonic()
+        if left < 1.0:
+            break  # the time bound holds: what is read so far is returned
+        if await _egress_error(url):
+            continue
+        try:
+            visited.append(await _read_related_page(context, url, goal, left))
+        except Exception as exc:  # noqa: BLE001 - one bad page does not stop the rest
+            logger.debug("[browser_tools] explore %s failed conv=%s: %s", url, conv, exc)
+    try:
+        session._renew_lease()
+    except Exception:  # noqa: BLE001
+        pass
+    if not visited:
+        body = "No other page of this site that matches the goal could be read."
+    else:
+        body = f'Read {len(visited)} related page(s) of {base} for "{goal}":\n' + "\n".join(
+            f'[{i}] {p["url"]} - "{p["title"]}"\n    {p["passage"]}' for i, p in enumerate(visited, 1)
+        )
+    return {
+        "success": True, "content": body, "pages": visited,
+        "skipped": len(targets) - len(visited), "url": base, "trust": "untrusted",
     }

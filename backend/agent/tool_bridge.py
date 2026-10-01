@@ -1412,6 +1412,10 @@ class AgentToolBridge:
                 return await browser_tools.browser_open(conversation_id, params.get("url") or "", _emit)
             if tool_name == "browser_observe":
                 return await browser_tools.browser_observe(conversation_id, _emit)
+            if tool_name == "browser_explore":
+                return await browser_tools.browser_explore(
+                    conversation_id, params.get("goal") or "", params.get("max_pages") or 5, _emit,
+                )
             return await browser_tools.browser_act(
                 conversation_id, params.get("action") or "", params.get("element_id"),
                 params.get("text"), _emit,
@@ -2000,7 +2004,7 @@ class AgentToolBridge:
             # ── Live browser control (specs/websearch-vision-browser REQ-4/5) ──
             # One page per conversation; the user sees each action's cursor
             # glide before the input. Gated by the internet flag (registry).
-            if tool_name in ("browser_open", "browser_observe", "browser_act"):
+            if tool_name in ("browser_open", "browser_observe", "browser_act", "browser_explore"):
                 _wtm = {}
                 _wt_tok = _WEB_TIMING.set(_wtm)
                 _wt0 = time.monotonic()

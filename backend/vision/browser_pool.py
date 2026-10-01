@@ -84,6 +84,22 @@ _LAUNCH_ARGS = [
 ]
 BLOCKED_CRAWL_RESOURCES = frozenset({"media", "font"})
 
+
+async def block_heavy_resources(target) -> None:
+    """Drop media and fonts before they are fetched, on a crawl context or page
+    (D5 memory bound). Best-effort - a target without ``route`` just loads them."""
+
+    async def _gate(route) -> None:
+        if route.request.resource_type in BLOCKED_CRAWL_RESOURCES:
+            await route.abort()
+        else:
+            await route.continue_()
+
+    try:
+        await target.route("**/*", _gate)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[browser_pool] resource blocking not installed: %s", exc)
+
 # Shared Chromium process state. None until the first acquire_browser().
 _pw = None  # Playwright driver instance (opaque; typed loosely — lazy import)
 _browser = None  # Chromium Browser instance (opaque)

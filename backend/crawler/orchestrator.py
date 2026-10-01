@@ -61,6 +61,11 @@ _DEFAULT_MIN_PAGES = int(os.environ.get("CRAWL_MIN_PAGES", "3"))
 # the crawl waited for its slowest URL (measured 2026-09-30: 3 pages in ~6 s, then
 # ~30 s more for two URLs that could not succeed).
 _QUORUM_GRACE_S = float(os.environ.get("IRIS_CRAWL_QUORUM_GRACE_S", "2"))
+# D6 same-site hop: fewer kept passages than this, from a site that produced relevant
+# ones, earns ONE hop to that site's most goal-relevant links (depth 1, bounded).
+_HOP_MIN_KEPT = 3
+_HOP_MAX_LINKS = 4
+_HOP_BUDGET_S = 15.0
 # D3 fix (T36 live smoke, 2026-08-09): kept in lockstep with crawl_runner.py's
 # _DEFAULT_TIMEOUT_S (same env var, same fallback) — see that module for the
 # cold-vs-warm browser-launch measurement behind the 45s->90s change.
@@ -955,6 +960,24 @@ class CrawlOrchestrator:
                     passages = self._split_passages(ok_pages)
                     cred_map = score_credibility(ok_pages, passages)
                     rerank_outcome = rerank_passages(passages, broader_query, cred_map)
+
+        # D6 / W3: the kept passages are few, from a site that produced relevant ones ->
+        # one same-site hop. Keep the hop's result only if it kept at least as much.
+        if rerank_outcome.state == RerankState.OK and len(rerank_outcome.kept) < _HOP_MIN_KEPT:
+            _hop_pages = await self._same_site_hop(
+                query, ok_pages, rerank_outcome.kept, backend=backend, plan=plan,
+                _emit=_emit, job_id=job_id, excluded=_excluded, max_pages=max_pages,
+            )
+            if _hop_pages:
+                _hop_all = ok_pages + _hop_pages
+                _hop_passages = self._split_passages(_hop_all)
+                _hop_cred = score_credibility(_hop_all, _hop_passages)
+                _hop_outcome = rerank_passages(_hop_passages, query, _hop_cred)
+                if _hop_outcome.state == RerankState.OK and len(_hop_outcome.kept) >= len(rerank_outcome.kept):
+                    ok_pages, passages, cred_map, rerank_outcome = (
+                        _hop_all, _hop_passages, _hop_cred, _hop_outcome,
+                    )
+                    fetched.pages.extend(_hop_pages)
 
         # REQ-3 AC3: extract_and_cite is UNREACHABLE with an empty passage set.
         # Covers: retry budget exhausted + still below threshold, retry fetched
@@ -2426,6 +2449,51 @@ class CrawlOrchestrator:
         except Exception as exc:
             logger.warning("[CrawlOrchestrator] planner failed: %s", exc)
             return CrawlPlan(urls=[], instructions="", result_type="mixed", title=query[:60])
+
+    async def _same_site_hop(
+        self, query: str, ok_pages: list[PageData], kept: list, *, backend, plan,
+        _emit, job_id: str, excluded: set, max_pages: int,
+    ) -> list[PageData]:
+        """Fetch the most goal-relevant same-site links of the hosts whose pages
+        produced the kept passages: one hop (depth 1), at most ``_HOP_MAX_LINKS``
+        pages, ``_HOP_BUDGET_S`` seconds, through the same fetch backend. Returns the
+        usable new pages; never raises (a failed hop is just no extra pages)."""
+        try:
+            from urllib.parse import urlparse
+
+            from .site_links import extract_links, rank_same_site
+
+            relevant_hosts = {(urlparse(p.url).netloc or "").lower() for p in kept}
+            seen = {p.url for p in ok_pages} | set(excluded)
+            ranked: list[str] = []
+            for page in ok_pages:
+                if (urlparse(page.url).netloc or "").lower() not in relevant_hosts:
+                    continue
+                links = extract_links(page.markdown or "", page.html or "", page.url)
+                for url in rank_same_site(links, page.url, query, exclude=seen | set(ranked),
+                                          limit=_HOP_MAX_LINKS):
+                    ranked.append(url)
+            urls = ranked[:_HOP_MAX_LINKS]
+            if not urls:
+                return []
+            logger.info(
+                "[CrawlOrchestrator] same-site hop job_id=%s kept=%d urls=%d",
+                job_id, len(kept), len(urls),
+            )
+            _emit("CRAWLER_PROGRESS", {"stage": "exploring", "message": "Reading related pages…"})
+            hop = await asyncio.wait_for(
+                backend.fetch(
+                    query=query, urls=urls, instructions=plan.instructions,
+                    max_pages=min(max_pages, _HOP_MAX_LINKS),
+                    on_page_done=self._page_emitter(_emit, f"{job_id}_hop"),
+                    timeout_s=_HOP_BUDGET_S, job_id=f"{job_id}_hop",
+                ),
+                _HOP_BUDGET_S + 2.0,
+            )
+            return [p for p in hop.pages if page_is_usable(p).usable]
+        except Exception as exc:  # noqa: BLE001 - the hop is a bonus, never a failure
+            logger.info("[CrawlOrchestrator] same-site hop skipped job_id=%s: %s", job_id, exc)
+            return []
 
     def _split_passages(self, pages: list[PageData]) -> list[Passage]:
         """Split each page into ~300-600 token logical chunks (REQ-4)."""

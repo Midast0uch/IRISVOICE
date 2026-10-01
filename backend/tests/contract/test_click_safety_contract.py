@@ -73,6 +73,13 @@ def test_browser_tools_are_self_gated_and_others_are_not():
     for name in _BROWSER_TOOLS:
         assert resolve_tool(name).self_gated is True, name
     assert resolve_tool("write_file").self_gated is False
+    # W3: browser_explore reads other pages of the site and acts on nothing.
+    explore = resolve_tool("browser_explore")
+    assert explore.self_gated is True and explore.permission_tier == "read_only"
+    assert explore.required == ["goal"] and explore.requires_internet is True
+    from backend.agent.mcm_protocol.actions.pacman_fragment import is_external_tool
+
+    assert is_external_tool("browser_explore")
 
 
 async def test_no_permission_request_for_browser_tools_with_auto_approve_off(monkeypatch):
