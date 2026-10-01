@@ -116,6 +116,25 @@ These ship TOGETHER (owner): they are one valve seen from two sides and they lea
 STARTS WHEN: DER-DAG execution, websearch and developer mode are foundationally good, and the
 coordinate events in the memory store are meaningful and trustworthy.
 
+### 7b. LATER (after 7a, once there is a significant user base): the hive network (owner, 2026-10-01)
+
+A Nostr + Tailscale network where users and their agents share bugs, fixes and features - a
+message board of understanding, like Buzz (owner's analogy: the spiders of "Children of Time"
+passing learned understanding between individuals). It works because every IRIS runs the same
+memory and DER-DAG executions: the closed event alphabet (`docs/Design/EVENT_TAXONOMY.md`) makes
+one user's node chains and cases readable by every other user - the alphabet IS the protocol
+(version it with `schema_version`). Nostr signs every event (provenance per peer); Tailscale gives
+private meshes for trusted groups; `landmark_bridges` already has remote project/instance fields.
+Three rules decide whether it works - keep the design compatible with them now:
+1. SHARE UNDERSTANDING, NOT DATA: error signatures, chain sequences in the alphabet, evidence
+   counts. Never paths, code, page text or personal content (event payloads already hold
+   references, not content).
+2. REMOTE KNOWLEDGE IS A HINT, NEVER PROOF: a shared fix enters as a CANDIDATE, counts at most as
+   `recurrence` evidence, and becomes a landmark only after it passes LOCALLY (test, completion,
+   user). Otherwise one bad or malicious peer spreads a false "verified fix" to everyone.
+3. TRUST PER SOURCE: score each peer by how often its shared fixes held up locally - the same
+   Beta-Bernoulli machinery that scores a recall (specs/wormhole-aperture REQ-4).
+
 ## 8. Machine facts that shape every measurement
 
 - `C:` is a 97%-full 7200 rpm hard disk (repo, Python, `data/memory.db`); `D:` is an NVMe SSD

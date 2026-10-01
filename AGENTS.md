@@ -450,10 +450,59 @@ IRIS is not a request/response harness. Read changes through these rules
     calibration rows (keep the Brain reference label).
   - STAND-INS: many tests bind only some kernel methods — put barriers/helpers that guard a
     read at module level, or the stand-in silently skips the guarded read.
-  - A COMPUTED SIGNAL MUST CHANGE BEHAVIOR (CADUCEAN_ARCHITECTURE §10): a raise swallowed by
-    its own broad except (the topology halt), a local that shadows a module global (the TTS
-    worker's set_voice), a probe returning a default — grep for these before believing a
-    feature works.
+  - A COMPUTED SIGNAL MUST CHANGE BEHAVIOR (CADUCEAN_ARCHITECTURE §10) AND HAVE A SANE
+    VALUE — see HIDDEN FAILURES below.
+
+NOVEL CONCEPTS — READ THEM AS THEY ARE, NOT AS THEIR LOOK-ALIKES (2026-10-01)
+
+Most IRIS concepts resemble something common in training data and are NOT it. An agent
+that reasons from the look-alike builds the wrong thing and writes tests that pass on it.
+Before changing one, read its doc AND its code. If your plan sounds like the middle
+column, stop and re-read the right one.
+
+  | Concept (doc)                          | It is NOT                          | It IS                                              |
+  |----------------------------------------|------------------------------------|----------------------------------------------------|
+  | Phase scheduler (CONCURRENCY_MODEL,    | a rate limiter, lock, budget, cap  | positions on a dial kept apart by repulsion;       |
+  |  architecture/PHASE_DOMAINS.md)        |                                    | overlap allowed; one domain per layer; domains     |
+  |                                        |                                    | share code, never state                            |
+  | Caducean Sigma (x, y, xi, u)           | a progress counter / step index    | the phase of work (expand vs compress, cycle       |
+  |                                        |                                    | angle, attention); must vary with what steps DID   |
+  | Immortus chain (memory_chain)          | a log, a transcript, a vector store| the time layer: ordered transitions + REFERENCES   |
+  |                                        |                                    | (never payloads); enters context only if relevant  |
+  | Landmark (mycelium_landmarks)          | a cache, a summary, a popular note | a claim proven TRUE by outside evidence; recall    |
+  |                                        |                                    | usefulness (activations) is a separate number      |
+  | Event alphabet (Design/EVENT_TAXONOMY) | an enum you may extend             | closed lattices that node chains hash; add LABELS  |
+  |                                        |                                    | (words) freely, never VALUES                       |
+  | Oracle (architecture/oracle.md)        | an LLM; a classifier you can batch | one local model, ONE question per run, shadow      |
+  |                                        |                                    | until the bar; its guesses are never evidence      |
+  | Lanes (utils/durability_queue)         | background threads, fire-and-forget| one ordered writer per resource - the way to write |
+  |                                        |                                    | the shared store                                   |
+  | Evidence                               | "the agent says it worked";        | outside only: test, completion, user, recurrence,  |
+  |                                        | "the verifier liked it"            | corroboration - from rule/user labels only         |
+
+HIDDEN FAILURES — CHECK VALUES, NOT ONLY CODE (2026-10-01)
+
+Every hidden failure found so far had one shape: the code ran, the tests were green, and a
+VALUE was wrong that nobody looked at. Measured cases: data/memory.db grew to 6.6 GB of
+re-nested copies (S11/S12); Sigma was a step counter for weeks (balance always at its 3.0
+clamp, the EML a constant 12.51, y = 0 - REQ-8); landmarks never learned (30 bootstrap
+rows; 6,256 edges, all one type); coordinate recall had no production caller; two threads
+wrote one sqlite connection (it surfaced as a flaky test). For every change:
+  1. LOOK AT THE VALUES on real data - the live store read-only, a replay of recorded
+     traces, or a live eval - as distributions, not one sample. Zero variance, everything
+     at a clamp, one constant, or pseudo values ("rest:", "0,0,0,0", lists) is a FAILURE.
+  2. REPLAY BEFORE YOU SWITCH: physics, memory and Oracle changes run offline over
+     recorded traces (der_fan_traces, memory_chain, calibration rows) before going live.
+  3. EVERY SIGNAL NEEDS A PRODUCTION CALLER AND A CONSUMER THAT CHANGES BEHAVIOR. Grep for
+     callers outside tests before believing a feature is live.
+  4. COUNT SILENT FALLBACKS: a swallowing except must log or count. A fallback on a path
+     that should never fall back is an alarm (a raise swallowed by its own broad except -
+     the topology halt; a local shadowing a module global - the TTS worker's set_voice; a
+     probe returning a default).
+  5. A FLAKY TEST IS A FINDING. Never re-run to green; find the shared state.
+  6. GROWTH HAS A BUDGET: row size, store size, queue depth - measured, with a guard.
+  7. A GUARD MUST FAIL ON THE OLD STATE - prove it (copy the file aside; the git stash
+     stack is shared with worktrees - never a bare git stash/pop).
 
 ---
 
