@@ -448,6 +448,11 @@ def test_the_bar_report_lists_all_three_consumers(conn, tmp_path, monkeypatch):
                                                "event_family": ("problem", 0.9),
                                                "event_type:problem": ("BUG", 0.9)}))
     eo.observe_user_message(_owner(conn, brain=_Brain("correction")), "that is wrong", thread_id="t")
+    # One writer per connection: production writes every event from the
+    # memory_events lane. Writing from this thread while that lane still writes
+    # was concurrent use of ONE sqlite connection ("bad parameter or other API
+    # misuse" in combined runs) - settle first, then write.
+    _settle()
     me.emit_event(conn, label="BUG", evidence="none", thread_id="t", chain=False)
     eo.schedule_pass(conn, None, force=True)
     _settle()

@@ -18,7 +18,15 @@ from backend.memory.mycelium.landmark import (
     mark_landmarks_stale_by_dependency,
     set_landmark_falsification,
 )
-from backend.tests.contract.test_event_emitters_knowledge_contract import _rows, store  # noqa: F401
+from backend.tests.contract.test_event_emitters_knowledge_contract import _rows as _rows_now, store  # noqa: F401
+from backend.utils.durability_queue import lane
+
+
+def _rows(conn, label=None):
+    """Landmark events are written by the memory_events lane (one writer per
+    connection); read after it drains."""
+    assert lane("memory_events").flush(10.0)
+    return _rows_now(conn, label)
 
 
 # ── MEMORY ──────────────────────────────────────────────────────────────────
@@ -69,7 +77,8 @@ def test_recall_events_never_enter_the_chain(store):
 
 @pytest.fixture()
 def lm_conn():
-    c = sqlite3.connect(":memory:")
+    # Like the production Mycelium connection: usable from the lane thread.
+    c = sqlite3.connect(":memory:", check_same_thread=False)
     initialise_mycelium_schema(c)
     ensure_landmark_policy_columns(c)
     c.execute(

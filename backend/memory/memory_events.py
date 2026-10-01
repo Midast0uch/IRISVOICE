@@ -21,6 +21,7 @@ import hashlib
 import json
 import logging
 import re
+import threading
 import time
 import uuid
 from typing import Any, Dict, Iterable, List, Optional
@@ -106,8 +107,27 @@ CREATE INDEX IF NOT EXISTS idx_memory_events_ts ON memory_events(ts);
 """
 
 
+_SCHEMA_LOCK = threading.Lock()
+
+
 def ensure_schema(conn) -> None:
-    conn.executescript(_SCHEMA)
+    """Create the tables if missing. The app store creates them at startup
+    (db.py); at runtime this is a guard on a connection SHARED across threads.
+    It never uses executescript: that COMMITs any open transaction on the
+    connection - another thread's half-done write - and collided with
+    concurrent statements ("bad parameter or other API misuse", seen in tests).
+    One single-statement probe; DDL statement by statement only when missing."""
+    with _SCHEMA_LOCK:
+        have = {r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name IN ('memory_cases', 'memory_events')"
+        )}
+        if have == {"memory_cases", "memory_events"}:
+            return
+        for stmt in _SCHEMA.split(";"):
+            if stmt.strip():
+                conn.execute(stmt)
+        conn.commit()
 
 
 # ── signatures and dependencies ─────────────────────────────────────────────

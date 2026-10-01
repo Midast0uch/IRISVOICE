@@ -64,11 +64,16 @@ def ensure_landmark_policy_columns(conn) -> None:
     cols = {r[1] for r in conn.execute("PRAGMA table_info(mycelium_landmarks)")}
     if not cols:
         return
+    missing = [(n, d) for n, d in _POLICY_COLUMNS if n not in cols]
+    if not missing:
+        # Nothing to do - and no commit: this runs on a connection shared
+        # across threads, where a stray commit would land another writer's
+        # half-done transaction.
+        return
     added_tier = False
-    for name, decl in _POLICY_COLUMNS:
-        if name not in cols:
-            conn.execute(f"ALTER TABLE mycelium_landmarks ADD COLUMN {name} {decl}")
-            added_tier = added_tier or name == "tier"
+    for name, decl in missing:
+        conn.execute(f"ALTER TABLE mycelium_landmarks ADD COLUMN {name} {decl}")
+        added_tier = added_tier or name == "tier"
     if added_tier:
         conn.execute(
             "UPDATE mycelium_landmarks SET tier = 'landmark', evidence = ? "
@@ -99,14 +104,25 @@ def _emit_landmark_event(conn, label: str, landmark_ids: List[str], *, evidence:
         if evidence_kind:
             evidence = me._EVIDENCE_OF.get(evidence_kind, "none")
 
-        if conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memory_events'"
-        ).fetchone() is None:
+        from backend.utils.durability_queue import lane
+
+        ids = list(landmark_ids[:_EVENT_IDS_MAX])
+        total = len(landmark_ids)
+
+        def _write(commit: bool) -> None:
             me.ensure_schema(conn)
-        for lid in landmark_ids[:_EVENT_IDS_MAX]:
-            me.emit_event(conn, label=label, evidence=evidence, thread_id=thread_id,
-                          payload={"landmark": lid, "total": len(landmark_ids), **(payload or {})},
-                          commit=False, chain=False)
+            for lid in ids:
+                me.emit_event(conn, label=label, evidence=evidence, thread_id=thread_id,
+                              payload={"landmark": lid, "total": total, **(payload or {})},
+                              commit=commit, chain=False)
+
+        # ONE writer per resource (CLAUDE.md lanes): on the memory_events lane the
+        # event joins the caller's transaction; from any other thread it is handed
+        # to that lane, so it never races the lane on the shared connection.
+        if lane("memory_events").in_worker():
+            _write(False)
+        else:
+            lane("memory_events").submit(f"landmark_event:{label}", _write, True)
     except Exception as exc:  # noqa: BLE001
         logger.debug("[landmark] %s event skipped: %s", label, exc)
 
