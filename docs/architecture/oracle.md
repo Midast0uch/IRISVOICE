@@ -4,9 +4,8 @@
 > `tool-decision-engine.md`. The engine's *name* is Oracle; the *model* it runs  
 > keeps its own identity, and that distinction is load-bearing — see §2.
 >
-> **2026-10-01: start at §19 (Jobs)** — every consumer belongs to a job that fixes its  
-> input, budget and shadow path; the job diagram is there. Sections below §19 that  
-> describe per-site inputs are history.
+> **2026-10-01: read §0 (current state) first, then §19 (Jobs).** Sections between §1 and
+> §17 describe the engine as of 2026-09-26/27; where §0 or §19 disagree, those win.
 >
 > **Last verified: 2026-09-26 (session 360)** against the running app, not against  
 > memory. Every number below says where it came from. Anything not re-measured is  
@@ -15,6 +14,78 @@
 > threshold, 3 consumers) and was wrong in every one of those respects.
 
 ---
+
+## 0. Current state (2026-10-01, session f2fd8db3) — read first
+
+**The Oracle work is PAUSED here (owner): back to the audit tasks.** What is live, what was
+learned, and what is open when the Oracle work resumes.
+
+### 0.1 What runs now
+
+| Part | State | Where |
+|---|---|---|
+| Model | GLiNER2.5-Decide ONNX int8, CPU, intra-op 4 — unchanged | §1, §8 |
+| Input | every consumer belongs to a JOB (interpret / route / guard / judge_step / judge_goal / shape / classify_event); the engine renders the job's fields and cuts the text at the job budget (64-128 ids) | §19.2-19.4 |
+| Shadow scores | off the reply path: `done`, `on_track` (`monitor_bool(defer=)`), `review_verdict` (`Reviewer.set_shadow_sink`), `depth_route` (`async_=`), new consumers via `DecisionEngine.shadow()` (lane `oracle_shadow`) | §19.3 |
+| Concurrency | phase domain `decision.oracle_cpu`, EXIT-DRIVEN admission: a decision starts when a run slot frees (2 slots = CPU capacity), due-time order from the dial, reply decisions first. `.env`: `IRIS_ORACLE_PHASE=1`, `IRIS_ORACLE_PHASE_EXIT=1` (local, untracked; code defaults off) | §19.5-19.7 |
+| Enforcement | NO consumer enforced; all shadow until each meets the bar (rows >= 100, precision >= 0.90, ECE <= 0.05) | §17 |
+| Calibration instruments | ONE label rule (`calibrate_decision_threshold.decision_label`) for the calibrate script and the enforcement report | §7.1 |
+
+### 0.2 Measured (all numbers from this session)
+
+| What | Before -> after | Evidence |
+|---|---|---|
+| Coding eval, total reply time (15 tasks, all pass) | 1385 s -> 535 -> 461 -> **340 s** | `evals/results/20261001-104424`, `-111006`, `-120004`, `-163433` |
+| Worst single Oracle decision | 2.3 s -> 0.42 s (job budgets) | `benchmarks/oracle_jobs_bench.py` |
+| Shadow scores on the reply path, per coding run | `done` 167 s, `on_track` 61 s, `review_verdict` 59 s, `depth_route` 33 s -> 0 | backend logs, §19.1 |
+| Reply-path decision under a burst (p50) | lock 1091 ms, timed phase 398-506 ms -> exit-driven **203 ms** (tie with a bench-only semaphore N=2, 219 ms) | `benchmarks/oracle_ctl_*.json`, §19.6-19.7 |
+| Distributions under concurrency | 297/297 bitwise identical in every config | same files |
+
+### 0.3 Learned (do not relearn these)
+
+1. **Latency is input length.** 30 words 150 ms, 400 words 2.3 s; floor ~117 ms. ORT tuning
+   (ENABLE_ALL, threads, affinity, spinning) is exhausted — §8.1-8.2.
+2. **Only `frame["goal"]` reached the model** before jobs; every other frame field was dead.
+3. **A shadow score must not sit on the reply path** — it changes nothing the reply uses.
+4. **Batching changes answers on this export**: different rows of one batch leak into each other
+   (up to 0.62), identical rows do not; gain <= ~12%. Batching is DROPPED (owner) — §19.6.
+5. **The timed phase gate oversubscribes the CPU** (up to 8 runs on 4 cores); the fix is to admit
+   on EXITS, not to tune periods (per-job periods measured worse: -35% throughput) — §19.5-19.7.
+6. **One position per consumer starves the busiest consumer** under exit admission (8.9 s); one
+   position per decision with a due time fixed at arrival fixes it — §19.7.
+7. **The tool_choice SHADOW menu was the registry head** (4 vision tools) — rows before commit
+   `6bf92d5a` are not calibration evidence.
+8. **Two instruments, two label rules** gave web_intent 1.0 vs 0.377 — one rule now (§7.1).
+
+### 0.4 Open when the Oracle work resumes
+
+- **Coupling gate (in progress 2026-10-01)** — see the line below; owner note: if coupling works,
+  it may give the "decide together" outcome without batching.
+- `depth_met`, `mode`, `narration`, `presentation` still scored inline (read the
+  `Oracle inline decisions` log line; move each unenforced one to `engine.shadow()`).
+- One `tool_choice` decision took 4.7-5.9 s twice (live) — not explained.
+- `tool_choice` calibration: recollect rows after `6bf92d5a`, then fit (ECE 0.059 vs bar 0.05).
+- `web_intent` confidence is anti-calibrated (conf < 0.5 agrees 97%, 0.5-0.6 agrees 4%).
+- Per-turn breakdown of Brain calls by caller, to find decisions worth moving to the Oracle.
+- `browser_next` / `web_depth` (Wave C) shadow consumers — the ROUTE job over Set-of-Marks.
+- Possibly: a smaller model or a re-export with independent batch rows — only with a benchmark
+  and a new calibrated identity.
+
+**Coupling result (2026-10-01, `evals/run_pairs.py`, two coding sessions at once, 7 pairs,
+3 runs per config, alternating, restart between):** T4 PASS - 236 `[CoupledRegistry]` lines,
+always one nucleus + one barrier, rational (both sessions `der`, c_eff 1.0). T8 INCONCLUSIVE -
+completed 14/14 in all 6 runs; collisions 0 (`429s=0` every turn); Explorer steps added 3/5/4
+(off) vs 6/5/4 (on); reply sum 512/563/360 s (off, mean 478) vs 416/378/644 s (on, mean 479).
+No measurable effect; per CLAUDE.md step 8 coupling STAYS OFF with this reason. It does not
+group or co-decide anything: it nudges each session's Sigma parameter `a` (the nudge sat at its
+0.05 bound). Untested: the irrational branch (voice + research sessions; the mode is global, so
+the pair runner can only pair coding sessions). Files: `evals/results/pairs-[BC][123]-*.json`.
+
+Commits of this work, in order: `569e1698` `6bf92d5a` `d16f833c` `fbfea380` `689911e3`
+`e58c34a2` `d3b7405e` `c3484f51` `6ef18575` `eee33b94` `cea17800` `fb53cb6d`. Landmarks:
+`lm_d19b422b8d778746` (phase domain live), `lm_f34858a6bdab8028` (exit-driven admission live),
+`lm_34630e8be75c70ce` (Sigma redo live). Pins: `pin_4da84ad5416c`, `pin_392275852934`,
+`pin_097ddaf3521f`, `pin_dffd95f2fd71`; handoff `pin_e62617d22e5a` (HANDOFF 7).
 
 ## 1. What Oracle is
 
@@ -200,6 +271,10 @@ prints its rule:
 - A **dispatched** row (a real tool ran) is correct when the event outcome is  
   `success`/`reason` — the same rule `calibrate_decision_threshold.py` already  
   applies, kept identical on purpose.
+- Since 2026-10-01 both instruments call ONE function,
+  `scripts/calibrate_decision_threshold.py::decision_label` (the calibrate script had scored
+  shadow rows by OUTCOME - the Brain's pick - and read web_intent as 1.0 in every band). Guard:
+  `unit/test_calibrate_decision_threshold.py::TestOneLabelRule`.
 - A **shadow** row (Oracle scored, the legacy path decided) is correct when the  
   engine's `chosen` AGREES with the Brain's actual `brain_bool`. That agreement  
   IS the parity the bar measures. A shadow row with no reference answer is  
@@ -355,7 +430,7 @@ python scripts/accumulate_rows.py --count 5 --delay 30 --web
 Enforcement flags: `IRIS_DECISION_ENFORCE` (comma list; default `tool_choice`).  
 An empty value means full shadow — record but never act.
 
-## 11. Open items (honest, 2026-09-27)
+## 11. Open items (honest, 2026-09-27) — SUPERSEDED by §0.4 (2026-10-01); kept as history
 
 1. **ORT thread tuning** — CLOSED 2026-09-26. It was already tuned in an earlier  
    session, and this session RE-MEASURED it on this box: intra=4 → p50 153.9 ms  

@@ -7,8 +7,12 @@ archived there); CLAUDE.md/AGENTS.md now carry "BUILD + VERIFY IRIS — THE MEAS
 "READING THIS CODEBASE — PHASE MODEL, PHYSICS, LANES"; validate every change with the
 `app-testing` skill, Mode A (`.opencode/skills/app-testing/SKILL.md`) — MCM `pin_6c81e87956b8`.
 
-**NEXT AGENT (2026-10-01, session f2fd8db3, latest): read the log section "2026-10-01 (session
-f2fd8db3)" below FIRST** - measured answer-path fixes (coding reply sum 1385 s -> 461 s, 15/15),
+**NEXT AGENT: read MCM `pin_e62617d22e5a` (HANDOFF 7) FIRST.** The Oracle work is done and
+PAUSED (owner); go back to the audit items - HANDOFF 7 sections C (everything carried over from
+HANDOFF 6/5, with status), D (new open items) and F (suggested order).
+
+**Previous (2026-10-01, session f2fd8db3): the log section "2026-10-01 (session
+f2fd8db3)" below** - measured answer-path fixes (coding reply sum 1385 s -> 461 s, 15/15),
 Sigma physics REVERTED (K4 live guard failed), Oracle JOBS (oracle.md §19), Oracle phase domain
 live gate. Then HANDOFF 6 for the older context.
 
@@ -221,7 +225,13 @@ Three coding runs, same machine (`evals/results/`): `20261001-104424` (start) re
    `lm_f34858a6bdab8028`; `IRIS_ORACLE_PHASE_EXIT=1` in `.env`). Batched "decide together"
    rejected twice (the export leaks rows into each other; oracle.md 19.6).
 
-OPEN (in order): coupling gate (needs a two-session eval; Sigma now varies); record a research standard (`--record-standard` after a clean run); move shadow scores
+7. **Audio crash root-caused** (`9a375780` armed faulthandler; `fb53cb6d`): two threads played
+   one utterance (sounddevice's global stream) -> access violation; one process-wide playback
+   lock. **Coupling gate** (`evals/run_pairs.py`): T4 PASS, T8 INCONCLUSIVE (means 478 vs 479 s,
+   14/14 everywhere, 0 collisions) -> coupling stays off (oracle.md §0). **Oracle work PAUSED
+   (owner) - back to the audit items.** HANDOFF 7 pin lists everything open.
+
+OPEN (in order): see HANDOFF 7 (sections C + D); record a research standard (`--record-standard` after a clean run); move shadow scores
 from the FIFO lane to phase participants (rows stay on their writer); `depth_met` still inline
 (0.4-0.9 s, feeds the continuation only when enforced); `mode` / `narration` / `presentation`
 shadow scores inline (counts in the `Oracle inline decisions` log line); streak-gate-only-on-
