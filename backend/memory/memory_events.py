@@ -369,27 +369,45 @@ def _merge_list(raw: Optional[str], extra: Iterable[str], keep: int = 50) -> str
     return json.dumps(cur[-keep:])
 
 
-def _mark_stale_dependents(conn, path: str, task_id: str) -> int:
-    """A changed dependency makes VERIFIED knowledge stale (re-check on next use)."""
+def _mark_stale_dependents(conn, path: str, task_id: str, pending: Optional[List[dict]] = None,
+                           step_id: Optional[str] = None) -> int:
+    """A changed dependency makes VERIFIED knowledge stale (re-check on next use).
+
+    When rows changed and ``pending`` is given, the change is also a typed
+    DEPENDENCY_CHANGED event (environment family): the path and the counts.
+    """
     if not path:
         return 0
     like = "%" + json.dumps(path)[1:-1] + "%"
-    n = conn.execute(
+    cases = conn.execute(
         "UPDATE memory_cases SET status = 'stale' WHERE status = 'verified' "
         "AND depends_on LIKE ? AND (open_task IS NULL OR open_task != ?)",
         (like, task_id),
     ).rowcount
+    landmarks = 0
     try:
         from backend.memory.mycelium.landmark import mark_landmarks_stale_by_dependency
 
-        n += mark_landmarks_stale_by_dependency(conn, path)
+        landmarks = mark_landmarks_stale_by_dependency(conn, path)
     except Exception as exc:  # noqa: BLE001
         logger.debug("[memory_events] landmark staleness skipped: %s", exc)
+    n = cases + landmarks
     if n:
         logger.info("[memory_events] stale dependents=%d path=%s task=%s", n, path[:80], task_id)
+        if pending is not None:
+            pending.append(dict(label="DEPENDENCY_CHANGED", evidence="none", step=step_id,
+                                task=task_id, insight=f"dependency changed: {path[:80]}",
+                                payload={"path": path[:200], "cases": cases,
+                                         "landmarks": landmarks}))
     return n
 
 
+# A tool failure with a rate-limit / quota / budget cause (FAULTLINE label rate_limited).
+_RESOURCE_LIMIT_RE = re.compile(
+    r"rate[ _-]?limit|too many requests|quota(?![a-z])|(?:http|status(?: code)?|error|code)[ :=]*429(?!\d)"
+    r"|429 too many|budget (?:exceeded|exhausted)",
+    re.IGNORECASE,
+)
 _RECALL_TRACES_MAX = 6      # recalls credited per step (a step receives at most a few)
 
 
@@ -542,7 +560,7 @@ def record_step(
                     written.append("ATTEMPT")
             if tool in _EDIT_TOOLS:
                 for dep in deps:
-                    _mark_stale_dependents(conn, dep, task_id)
+                    _mark_stale_dependents(conn, dep, task_id, pending, step_id)
             if verified == "VERIFIED" and is_test_command(tool, params):
                 pending.append(dict(label="OBSERVED", evidence="test", action=act, step=step_id,
                                     task=task_id, insight=description,
@@ -550,6 +568,13 @@ def record_step(
                                     payload={"kind": "test_pass", "step": step_id, "task": task_id,
                                              "command": _target(params)}))
                 written += _verify_fixed(conn, task_id, "test_pass", pending)
+        if failed and _RESOURCE_LIMIT_RE.search(error_text or ""):
+            pending.append(dict(label="RESOURCE_LIMIT", evidence="none", action=act, step=step_id,
+                                task=task_id, insight=description,
+                                cause_key=cause_key_of_label("rate_limited"),
+                                payload={"action": act, "tool": tool, "step": step_id,
+                                         "task": task_id}))
+            written.append("RESOURCE_LIMIT")
         written += _attribute_recalls(conn, recall_trace_ids, failed, verified, step_id, task_id,
                                       pending)
         _flush(conn, thread_id, pending, coords)
