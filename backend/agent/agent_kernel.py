@@ -219,6 +219,42 @@ def _memory_events_submit(owner, fn_name: str, **kwargs) -> None:
         logger.debug("[memory_events] submit %s skipped: %s", fn_name, exc)
 
 
+def _der_recall_delivered(owner, item, source: str, refs, session_id: str) -> None:
+    """Memory entered THIS step's context (taxonomy v1, memory family). Mints the
+    recall_trace_id, carries it on the step to its outcome (record_step then types
+    RECALL_HELPED or RECALL_MISLED for it), and types RECALL_DELIVERED on the
+    memory_events lane. Only recalls delivered to a step are ever credited to it.
+    Module level on purpose (stand-in kernels bind only some methods). Never raises."""
+    try:
+        from backend.memory.memory_events import new_recall_trace_id
+
+        trace = new_recall_trace_id()
+        traces = getattr(item, "recall_trace_ids", None)
+        if traces is None:
+            traces = item.recall_trace_ids = []
+        traces.append(trace)
+        _memory_events_submit(
+            owner, "record_recall_delivered", thread_id=session_id,
+            task_id=f"{session_id}:{getattr(owner, '_der_turn_id', None) or ''}",
+            step_id=str(getattr(item, "step_id", "") or ""), source=source,
+            recall_trace_id=trace, refs=list(refs or [])[:5],
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[memory_events] recall delivery not typed: %s", exc)
+
+
+def _der_prior_research_delivered(owner, item, step_result, session_id: str) -> None:
+    """A PRIOR RESEARCH section at the head of a tool result IS memory delivered to the
+    step that ran the tool (research_memory.attach_prior put it there)."""
+    try:
+        from backend.agent.research_memory import PRIOR_HEADING
+
+        if PRIOR_HEADING in str(step_result or ""):
+            _der_recall_delivered(owner, item, "prior_research", [], session_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[memory_events] prior research delivery not typed: %s", exc)
+
+
 def _der_topology_halt(owner, session_id: str) -> None:
     """Stop the line on a TOPO_VIOLATION (rec==3) at a step boundary.
 
@@ -9589,6 +9625,7 @@ Respond with a JSON object:
         # _turn_choke_check — the stream chunk loops call it per SSE line.
         self._der_start_time = _der_start_time
         self._der_session = _session
+        self._der_turn_id = _turn_id
         self._der_turn_active = True
         self._der_last_client_check = 0.0
 
@@ -10159,14 +10196,17 @@ Respond with a JSON object:
                     try:
                         # K2: only rows that passed the relevance gate reach
                         # here; no row -> no block (nothing injected).
-                        _nb_block = _der_neighbors_block(
-                            self._der_recall_neighborhood(item, _session)
-                        )
+                        _nb_rows = self._der_recall_neighborhood(item, _session)
+                        _nb_block = _der_neighbors_block(_nb_rows)
                         if _nb_block:
                             _prior = getattr(item, "coordinate_signal", "") or ""
                             item.coordinate_signal = (
                                 _prior + "\nRELEVANT NEIGHBORS: " + _nb_block
                             ).strip()
+                            _der_recall_delivered(
+                                self, item, "neighbors",
+                                [r.get("chain_id") for r in _nb_rows[:3]], _session,
+                            )
                     except Exception as _nb_exc:
                         loud_error(_nb_exc, "ontology_recall_neighborhood")
 
@@ -14101,6 +14141,7 @@ Respond with a JSON object:
         # rule 2026-09-30: no chain data per turn/step). Bounded (<= 900 chars)
         # and never raises; rows the physics lane has not landed yet are simply
         # absent (no wait: the replan is not worth stalling the answer path).
+        _recall_sources: List[str] = []
         if trigger == "verify_failed":
             try:
                 from backend.agent.caducean_trajectory import latest_coords_str
@@ -14132,6 +14173,9 @@ Respond with a JSON object:
                         _prior_summary = " ".join(
                             p for p in ((_prior_summary or "")[:300], _trail, _chain_ctx) if p
                         ).strip()
+                        _recall_sources = [
+                            s for s, t in (("known_case", _trail), ("chain_timeline", _chain_ctx)) if t
+                        ]
             except Exception as _chain_exc:  # noqa: BLE001 — advisory context
                 logger.debug("[DER] replan chain context skipped: %s", _chain_exc)
 
@@ -14198,6 +14242,13 @@ Respond with a JSON object:
             "[DER] _split_step trigger=%s u=%.2f width=%d depth=%d",
             trigger, u, width, item.depth_layer,
         )
+        # Taxonomy v1: the replan recalls were delivered to EVERY child (each carries them).
+        for _src in _recall_sources:
+            for _child in children:
+                _der_recall_delivered(
+                    self, _child, _src, [],
+                    getattr(self, "_der_session", None) or self.session_id or "",
+                )
         # Reset failure counters so Sub-Loops aren't penalized as parent continuation (REQ-12 AC3)
         try:
             if hasattr(self, "_get_tool_box"):
@@ -18445,6 +18496,8 @@ Respond with a JSON object:
         except Exception:
             pass
 
+        _der_prior_research_delivered(self, item, step_result, _session)
+
         # Spec D9 (Wave E): the step becomes a typed event (BUG / ATTEMPT /
         # DEAD_END / FIX ...) with the label the verifier gave it - event-level
         # credit. Values are bound now; the write runs on its own lane.
@@ -18459,6 +18512,7 @@ Respond with a JSON object:
             verified=str(_verified or ""),
             error_text=(str(step_result or "")[:2000] if not step_success else ""),
             description=str(getattr(item, "description", "") or "")[:300],
+            recall_trace_ids=list(getattr(item, "recall_trace_ids", None) or []),
         )
 
         # ── Phase 2 (D2.1): unified recovery — verification FAILED uses the

@@ -236,8 +236,28 @@ def record_wall(domain: str) -> None:
     if not d:
         return
     try:
+        newly_walled = not is_walled(d)
         with _wall_lock:
             _wall_ledger[d] = time.monotonic()
+        if newly_walled:
+            _type_source_unreliable(d)
+    except Exception:
+        pass
+
+
+def _type_source_unreliable(domain: str) -> None:
+    """The ledger's TRANSITION (not walled -> walled) is a SOURCE_UNRELIABLE knowledge event
+    (taxonomy v1), queued on the memory_events lane. A repeat wall inside the TTL is no new
+    fact. Skips when the memory package was never loaded (no store to write to)."""
+    try:
+        import sys
+
+        memory = sys.modules.get("backend.memory")
+        mi = memory.get_memory_interface() if memory is not None else None
+        if mi is not None:
+            from backend.memory import memory_events
+
+            memory_events.submit(mi, "record_source_unreliable", domain=domain)
     except Exception:
         pass
 
