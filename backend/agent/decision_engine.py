@@ -108,6 +108,112 @@ CONSUMERS: Tuple[str, ...] = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Oracle JOBS (2026-10-01, owner). A job is the KIND of question: it fixes what
+# the model reads (which frame fields, in which order) and how much of it (a
+# text budget in token ids). Every consumer belongs to one job; the engine - not
+# the call site - builds the input, so a new consumer cannot be slow or blind by
+# accident. Measured why (coding eval 2026-10-01): inputs ranged 30-400 words
+# because each site built its own, latency follows length (30 words 150 ms,
+# 400 words 2.3 s), and only frame["goal"] ever reached the model - depth_route's
+# coverage/open facts and depth_met's evidence were built and never read.
+# Reference fields (incumbent_route, brain_*) are NEVER listed: a row whose
+# input carries the answer measures nothing. docs/architecture/oracle.md S19.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class OracleJob:
+    name: str
+    question: str                 # the kind of question (documentation)
+    fields: Tuple[str, ...]       # frame fields read, in order ("goal" = the text)
+    budget_ids: int               # text token budget (label structure is extra)
+
+
+ORACLE_JOBS: Dict[str, OracleJob] = {j.name: j for j in (
+    OracleJob("interpret", "what does the user's message mean?",
+              ("goal",), 64),
+    OracleJob("route", "which of these next actions? (the menu carries the content)",
+              ("coverage", "open_facts", "depth_met", "grade", "goal"), 64),
+    OracleJob("guard", "is this action safe to take without asking?",
+              ("goal",), 64),
+    OracleJob("judge_step", "did this step do its part?",
+              ("goal",), 96),
+    OracleJob("judge_goal", "is the objective met, deep and sufficient?",
+              ("goal", "open_facts", "evidence"), 128),
+    OracleJob("shape", "how should this answer be delivered?",
+              ("goal",), 96),
+    OracleJob("classify_event", "which event family/type is this?",
+              ("goal",), 64),
+    OracleJob("general", "a consumer not yet assigned to a job",
+              ("goal",), 128),
+)}
+
+CONSUMER_JOBS: Dict[str, str] = {
+    "mode": "interpret", "web_intent": "interpret", "user_feedback": "interpret",
+    "tool_choice": "route", "recovery_strategy": "route", "retry_same": "route",
+    "depth_route": "route", "browser_next": "route", "web_depth": "route",
+    "click_safety": "guard", "needs_action": "guard", "use_thinking": "guard",
+    "review_verdict": "judge_step", "on_track": "judge_step",
+    "escalate_incomplete": "judge_step", "has_gaps": "judge_step",
+    "done": "judge_goal", "depth_met": "judge_goal", "sufficient": "judge_goal",
+    "presentation": "shape", "narration": "shape",
+    "event_family": "classify_event",
+}
+
+
+def oracle_job(consumer_id: str) -> OracleJob:
+    """The job of a consumer (``event_type:<family>`` -> classify_event)."""
+    name = CONSUMER_JOBS.get(consumer_id)
+    if name is None and str(consumer_id).startswith("event_type:"):
+        name = "classify_event"
+    return ORACLE_JOBS[name or "general"]
+
+
+# Off-path threads: the ordered lanes ("iris-<lane>") and the shadow scorers'
+# own threads. A decision on any other thread is one a caller waits for. Counted
+# per consumer (no I/O here; a report joins the counts with the enforced set: an
+# unenforced consumer with inline counts is a measurement the reply waited for).
+_OFF_PATH_THREAD_PREFIXES = ("iris-", "shadow-")
+INLINE_DECISION_COUNTS: Dict[str, int] = {}
+_INLINE_COUNT_LOCK = threading.Lock()
+
+
+def _note_inline_shadow(consumer_id: str) -> None:
+    """Count a decision scored on a non-lane thread. Never raises."""
+    try:
+        if threading.current_thread().name.startswith(_OFF_PATH_THREAD_PREFIXES):
+            return
+        with _INLINE_COUNT_LOCK:
+            INLINE_DECISION_COUNTS[consumer_id] = INLINE_DECISION_COUNTS.get(consumer_id, 0) + 1
+    except Exception:  # noqa: BLE001 - an observer never blocks a decision
+        pass
+
+
+def _fmt_field(value: Any) -> str:
+    if isinstance(value, (list, tuple)):
+        return "; ".join(str(v) for v in value[:6])
+    if isinstance(value, float):
+        return f"{value:.2f}"
+    return str(value)
+
+
+def job_input(consumer_id: str, frame: Dict[str, Any]) -> Dict[str, Any]:
+    """The frame the backend scores: the job's fields rendered in order into the
+    text, plus the job's text budget. A frame holding only ``goal`` renders to
+    the same text as before, so those consumers keep their calibrated input
+    (except where the budget now cuts a longer text)."""
+    job = oracle_job(consumer_id)
+    parts = []
+    for f in job.fields:
+        v = (frame or {}).get(f)
+        if v is None or v == "" or v == [] or v == ():
+            continue
+        parts.append(str(v) if f == "goal" else f"{f}: {_fmt_field(v)}")
+    return {"goal": "\n".join(parts), "_max_text_ids": job.budget_ids,
+            "_job": job.name}
+
+
 @dataclass(frozen=True)
 class CandidateScore:
     name: str        # option name (tool name, surface name, or DELEGATE/NONE)
@@ -885,6 +991,9 @@ class DecisionEngine:
         ]
         if not opts:
             return None
+        # THE input rule (Oracle jobs): the engine builds what the model reads.
+        frame = job_input(consumer_id, frame)
+        _note_inline_shadow(consumer_id)
         if _oracle_phase_enabled():
             return self._decide_phase(consumer_id, opts, frame, instruction)
         t_start = self._clock()  # REQ-26: lock-wait separated from compute
@@ -1015,6 +1124,60 @@ class DecisionEngine:
             return None
         finally:
             self._exit_run()
+
+    def shadow(
+        self,
+        consumer_id: str,
+        options: Sequence[str],
+        frame: Dict[str, Any],
+        *,
+        sink: Callable[[dict], None],
+        reference: Optional[Dict[str, Any]] = None,
+        instruction: Optional[str] = None,
+    ) -> bool:
+        """THE shadow call: score OFF the answer path and hand the row to *sink*.
+
+        A shadow decision only produces a calibration row, so nothing the caller
+        does may wait for it. The score runs on lane("oracle_shadow"); the row is
+        the standard shape plus *reference* (``brain_choice`` / ``brain_bool``
+        and any extra fields - bind VALUES now, the job runs later) and the
+        consumer's job. Returns False when the lane refused the job (counted by
+        the lane, logged here). Never raises. oracle.md S19.
+        """
+        _ref = dict(reference or {})
+        _opts = list(options)
+        _frame = dict(frame or {})
+
+        def _job() -> None:
+            ds = self.decide(consumer_id, _opts, _frame, instruction)
+            if ds is None:
+                return  # no engine / no criteria: never fabricate a row
+            row = {
+                "consumer_id": consumer_id,
+                "engine": self.model_id or ENGINE_NAME,
+                "job": oracle_job(consumer_id).name,
+                "chosen": ds.chosen,
+                "confidence": round(float(ds.confidence), 4),
+                "candidates": [
+                    {"name": c.name, "prob": round(float(c.prob), 4)}
+                    for c in (ds.distribution or ())
+                ],
+                "engine_latency_ms": ds.engine_latency_ms,
+                "shadow": True,
+            }
+            row.update(_ref)
+            sink(row)
+
+        try:
+            from backend.utils.durability_queue import lane
+
+            ok = lane("oracle_shadow").submit(f"shadow:{consumer_id}", _job)
+            if not ok:
+                logger.warning("%s shadow %s dropped (lane full)", ENGINE_NAME, consumer_id)
+            return ok
+        except Exception as e:  # noqa: BLE001 - a shadow never raises
+            logger.warning("%s shadow %s submit failed: %r", ENGINE_NAME, consumer_id, e)
+            return False
 
     def noul(
         self,

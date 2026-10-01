@@ -69,6 +69,9 @@ _DECISION_META_KEYS = (
     # does not pass, so the ledger row reached the report with no reference and
     # was counted as no_label instead of scored.
     "brain_choice",
+    # job (2026-10-01): the Oracle job (decision_engine.ORACLE_JOBS) the row was
+    # scored under - its input recipe and budget. Off this list it is dropped.
+    "job",
 )
 
 # How long a ledger write may run before it is reported as stuck. A write that

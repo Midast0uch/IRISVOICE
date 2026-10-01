@@ -164,8 +164,10 @@ def _monitor_statement(objective: str, completed_items, n: int = 4) -> str:
     input. The question needs the goal and what each step returned, nothing
     more. Shape change = new calibrated identity: rows carry criteria v2.
     """
-    lines = [f"OBJECTIVE: {str(objective or '')[:300]}", "STEPS:"]
-    for it in list(completed_items or [])[-n:]:
+    # Newest step first: the engine cuts the text at the job's budget (Oracle
+    # jobs, judge_goal = 128 ids), and the cut must drop the OLDEST step.
+    lines = [f"OBJECTIVE: {str(objective or '')[:200]}", "STEPS (newest first):"]
+    for it in reversed(list(completed_items or [])[-n:]):
         env = getattr(it, "envelope", None)
         try:
             state = env.line() if env is not None else (
@@ -6709,7 +6711,7 @@ class AgentKernel:
                     # to (Oracle, Brain, criteria version). Bump it whenever the
                     # instruction or the frame SHAPE changes - a shape change is
                     # a new calibrated identity (oracle.md 8).
-                    "criteria_version": "depth_met/v1",
+                    "criteria_version": "depth_met/v2",
                 }
 
                 def _depth_strong_judge() -> bool:
@@ -6759,7 +6761,7 @@ class AgentKernel:
                 # 25.6.3: the criteria version rides on every row (the key is on
                 # tool_bridge._DECISION_META_KEYS, or the ledger would drop it).
                 if _depth_row is not None:
-                    _depth_row["criteria_version"] = "depth_met/v1"
+                    _depth_row["criteria_version"] = "depth_met/v2"
                 _ss_depth.emit_row(_depth_row)
                 # Share the verdict with the CONTINUATION decision, which is the
                 # only place that can make the loop actually do more work. The

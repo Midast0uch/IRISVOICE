@@ -402,7 +402,8 @@ class _OnnxRunner:
             hit = self._structure_cache[key] = (ids, positions)
         return hit
 
-    def encode(self, text: str, tasks: list[Task]) -> tuple[list[int], list[int]]:
+    def encode(self, text: str, tasks: list[Task],
+               max_text_ids: Optional[int] = None) -> tuple[list[int], list[int]]:
         with _STATS_LOCK:
             self.encode_calls += 1
         _t0 = time.perf_counter()
@@ -419,9 +420,14 @@ class _OnnxRunner:
             ids += rel_ids
             positions += [base + p for p in rel_positions]
         ids += self._ids("[SEP_TEXT]")
+        # The job's text budget (Oracle jobs, decision_engine.ORACLE_JOBS):
+        # latency follows length, so the text is cut at the budget; the label
+        # structure is never cut. _MAX_INPUT_IDS stays the absolute ceiling.
+        _text_cap = len(ids) + (int(max_text_ids) if max_text_ids else _MAX_INPUT_IDS)
+        _cap = min(_MAX_INPUT_IDS, _text_cap)
         for m in _WORDS.finditer(text):
             piece = self._ids(m.group().lower())
-            if len(ids) + len(piece) > _MAX_INPUT_IDS:
+            if len(ids) + len(piece) > _cap:
                 break
             ids += piece
         # AC30.6: tokenizer work separated from structure assembly.
@@ -429,8 +435,9 @@ class _OnnxRunner:
         _TL.tokenize_ms = (getattr(_TL, "tok_s", 0.0) - _tok_before) * 1000.0
         return ids, positions
 
-    def logits(self, text: str, tasks: list[Task]) -> dict[str, dict[str, float]]:
-        ids, positions = self.encode(text, tasks)
+    def logits(self, text: str, tasks: list[Task],
+               max_text_ids: Optional[int] = None) -> dict[str, dict[str, float]]:
+        ids, positions = self.encode(text, tasks, max_text_ids)
         with _STATS_LOCK:
             self.run_calls += 1
         _t_run = time.perf_counter()
@@ -659,8 +666,12 @@ class GlinerOnnx:
                 )
                 return None
             t0 = self._clock()
-            lg = self._runner.logits(
-                str(frame.get("goal", "")), [task])[task.name]
+            _text = str(frame.get("goal", ""))
+            _budget = frame.get("_max_text_ids")  # set by the engine's job input
+            lg = (
+                self._runner.logits(_text, [task], _budget) if _budget
+                else self._runner.logits(_text, [task])
+            )[task.name]
             # Softmax over labels (exclusive Task) — NO sharpening; natively
             # calibrated (D13). Duplicate labels would collapse in the dict —
             # guarded at menu composition (AC21.8).

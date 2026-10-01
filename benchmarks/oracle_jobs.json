@@ -1,0 +1,55 @@
+{
+  "model": "gliner25-decide-onnx-int8",
+  "reps": 9,
+  "jobs": {
+    "interpret": {
+      "consumer": "mode",
+      "budget_ids": 64,
+      "labels": 4,
+      "p50_ms": 268.2,
+      "max_ms": 352.8
+    },
+    "route": {
+      "consumer": "tool_choice",
+      "budget_ids": 64,
+      "labels": 6,
+      "p50_ms": 264.9,
+      "max_ms": 276.0
+    },
+    "guard": {
+      "consumer": "click_safety",
+      "budget_ids": 64,
+      "labels": 3,
+      "p50_ms": 267.1,
+      "max_ms": 272.1
+    },
+    "judge_step": {
+      "consumer": "review_verdict",
+      "budget_ids": 96,
+      "labels": 3,
+      "p50_ms": 363.7,
+      "max_ms": 378.5
+    },
+    "judge_goal": {
+      "consumer": "done",
+      "budget_ids": 128,
+      "labels": 2,
+      "p50_ms": 416.7,
+      "max_ms": 434.6
+    },
+    "shape": {
+      "consumer": "presentation",
+      "budget_ids": 96,
+      "labels": 3,
+      "p50_ms": 364.7,
+      "max_ms": 370.4
+    },
+    "classify_event": {
+      "consumer": "event_family",
+      "budget_ids": 64,
+      "labels": 4,
+      "p50_ms": 281.8,
+      "max_ms": 314.8
+    }
+  }
+}

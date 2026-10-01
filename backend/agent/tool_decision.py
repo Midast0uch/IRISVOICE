@@ -2689,6 +2689,9 @@ class ToolDecisionBox:
                 # oracle.md 14.2: the parity reference, under the key the ledger
                 # passes through and the report reads.
                 "brain_choice": incumbent_route,
+                # v2 (2026-10-01): the Oracle job input now renders coverage,
+                # open facts, depth_met and grade - before, only `goal` was read.
+                "criteria_version": "depth_route/v2",
                 "shadow": True,
             }
             self._record_shadow_row(row, session_id=session_id)
