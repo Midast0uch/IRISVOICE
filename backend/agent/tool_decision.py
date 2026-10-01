@@ -794,6 +794,34 @@ class ToolDecisionBox:
         clean = [n for n in names if n and n not in controls]
         return clean[:reserved] + controls
 
+    @staticmethod
+    def _vision_tool_names(tools: list) -> list:
+        return [
+            t.get("name") for t in tools
+            if (t.get("category") or "").lower() == "vision" and t.get("name")
+        ]
+
+    @staticmethod
+    def _order_engine_names(names: list, vision_names: list, goal: str) -> list:
+        """THE menu order, before the cap cuts it - one rule for the engine
+        route and the shadow scorer, so the shadow measures the menu the
+        engine would really score.
+
+        Vision-relevant step: the vision tools go first (REQ-16; the cap must
+        never silently delete a sighted option). Developer mode otherwise: the
+        coding tools go first - the registry lists vision tools FIRST, so in a
+        coding task the cap left the Oracle scoring vision tools while
+        read/grep/run never made the menu (execution audit, 2026-09-29; the
+        shadow path kept that defect until 2026-10-01: 278 tool_choice rows
+        where the Brain's tool was never on the menu).
+        """
+        if _vision_relevant(goal):
+            return list(vision_names) + [n for n in names if n not in vision_names]
+        if _developer_mode():
+            front = [n for n in _DEV_MENU_ORDER if n in names]
+            return front + [n for n in names if n not in front]
+        return list(names)
+
     def _resolve_decision_threshold(self, explicit: Optional[float]) -> float:
         """The confidence threshold for THIS backend (AC22.1 / AC25.8).
 
@@ -924,31 +952,14 @@ class ToolDecisionBox:
             # even when the memory pre-filter dropped them — the candidate cap
             # must never silently delete a sighted option. Vision tools are
             # kept ahead of the cap truncation for vision-relevant steps.
+            # Vision tools are kept ahead of the cap truncation for
+            # vision-relevant steps; developer steps rank the coding tools
+            # first. The menu WIDTH is unchanged, so the calibrated threshold
+            # still applies. One rule, shared with the shadow scorer.
             needs_vision = _vision_relevant(goal)
-            vision_front: list = []
-            if needs_vision:
-                vision_names = [
-                    t.get("name")
-                    for t in all_tools
-                    if (t.get("category") or "").lower() == "vision"
-                    and t.get("name")
-                ]
-                vision_front = vision_names
-                names = vision_names + [n for n in names if n not in vision_names]
-            if not needs_vision and _developer_mode():
-                # The menu is cut to the cap in list order, and the registry
-                # lists vision tools FIRST - so in a coding task the Oracle was
-                # scoring vision tools while read/grep/run never made the menu
-                # (execution audit, 2026-09-29). Developer steps rank the coding
-                # tools first; the menu WIDTH is unchanged, so the calibrated
-                # threshold still applies.
-                _front = [n for n in _DEV_MENU_ORDER if n in names]
-                names = _front + [n for n in names if n not in _front]
+            names = self._order_engine_names(
+                names, self._vision_tool_names(all_tools), goal)
             _cap = getattr(getattr(engine, "_cfg", None), "candidate_cap", 8)
-            if vision_front:
-                # guaranteed in: vision names stay at the front; the composed
-                # menu below reserves them a slot ahead of the control labels
-                names = vision_front + [n for n in names if n not in vision_front]
             # AC21.8: compose the menu ONCE — registry names + DELEGATE/NONE,
             # total width = cap. The engine truncates internally to the same
             # cap, so a menu composed wider than cap would lose the control
@@ -1576,17 +1587,23 @@ class ToolDecisionBox:
             eng = self._engine()
             if eng is None:
                 return None
+            registry = self._get_available_tools() or []
             names = [
                 n for n in (
                     candidates if candidates is not None
-                    else [
-                        t.get("name")
-                        for t in (self._get_available_tools() or [])
-                    ]
+                    else [t.get("name") for t in registry]
                 ) if n
             ]
             if not names:
                 return None
+            # The engine route's order rule, over the tools the Brain was
+            # OFFERED (callers pass them): a vision tool the Brain never had
+            # is not put on the menu.
+            names = self._order_engine_names(
+                names,
+                [n for n in self._vision_tool_names(registry) if n in names],
+                goal or "",
+            )
             _cap = getattr(getattr(eng, "_cfg", None), "candidate_cap", 6)
             menu = self._compose_engine_menu(
                 names, self._DE_DELEGATE, self._DE_NONE, _cap)

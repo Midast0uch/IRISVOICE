@@ -3701,6 +3701,11 @@ class AgentKernel:
                         goal=text,
                         observed_tool=_name,
                         observed_params=_params,
+                        # the menu the Brain was OFFERED this turn
+                        candidates=[
+                            (t.get("function") or {}).get("name")
+                            for t in (_tools or [])
+                        ] or None,
                         session_id=self.conversation_id or "voice",
                         conversation_id=self.conversation_id or "",
                         async_=True,
@@ -16690,7 +16695,10 @@ Respond with a JSON object:
             return raw if raw is not None else {"success": False, "error": getattr(dr, "error", "") or "no result"}
 
         tools = [t for t in self._get_openai_tools() if t.get("function", {}).get("name") in DEV_NODE_TOOLS]
-        workdir = (getattr(self._tool_bridge, "_session_workdirs", None) or {}).get(_session, "")
+        # The shadow scores the menu the node's model was OFFERED, not the
+        # registry's first names (which are vision tools).
+        _offered = [t["function"]["name"] for t in tools]
+        workdir =(getattr(self._tool_bridge, "_session_workdirs", None) or {}).get(_session, "")
         goal = item.description or item.objective_anchor or ""
 
         def _shadow(name, params):
@@ -16698,6 +16706,7 @@ Respond with a JSON object:
             # on a daemon thread, so the node pays no latency.
             box.record_shadow_tool_choice(
                 goal=goal, observed_tool=name, observed_params=params,
+                candidates=_offered,
                 session_id=self.conversation_id or "voice",
                 conversation_id=self.conversation_id or "", async_=True,
             )
