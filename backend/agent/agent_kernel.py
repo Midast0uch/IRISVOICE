@@ -10152,10 +10152,17 @@ Respond with a JSON object:
                             _rec_parts = []
                             if getattr(_rec, "prior_summary", ""):
                                 _rec_parts.append(
-                                    # 1200: a replan-after-failure child also
-                                    # carries the bounded (<= 900) chain
-                                    # timeline (K3); other nodes stay < 300.
-                                    f"UNDERSTANDING: {_rec.prior_summary[:1200]}"
+                                    # 300 as before; 1200 only for a replan-
+                                    # after-failure child whose summary carries
+                                    # the bounded (<= 900) chain block (K3) -
+                                    # no other node grows (owner: no context
+                                    # debt).
+                                    "UNDERSTANDING: " + _rec.prior_summary[
+                                        :1200 if (
+                                            "CHAIN TIMELINE" in _rec.prior_summary
+                                            or "MEDIATORS TRIED" in _rec.prior_summary
+                                        ) else 300
+                                    ]
                                 )
                             if getattr(_rec, "ruled_out", ""):
                                 _rec_parts.append(f"RULED OUT: {_rec.ruled_out[:200]}")
@@ -14058,7 +14065,7 @@ Respond with a JSON object:
                     )
                     if _chain_ctx:
                         _prior_summary = (
-                            f"{_prior_summary} {_chain_ctx}".strip()
+                            f"{(_prior_summary or '')[:300]} {_chain_ctx}".strip()
                         )
             except Exception as _chain_exc:  # noqa: BLE001 — advisory context
                 logger.debug("[DER] replan chain context skipped: %s", _chain_exc)
