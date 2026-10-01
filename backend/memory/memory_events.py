@@ -27,7 +27,15 @@ from typing import Any, Dict, Iterable, List, Optional
 
 logger = logging.getLogger(__name__)
 
-EVENT_TYPES = ("BUG", "ATTEMPT", "DEAD_END", "FIX", "VERIFIED_FIX", "LESSON")
+# Problem-family words. Coding steps use the coding words (BUG/FIX/VERIFIED_FIX);
+# every other domain uses the generic ones (docs/Design/EVENT_TAXONOMY.md).
+EVENT_TYPES = ("BUG", "ATTEMPT", "DEAD_END", "FIX", "VERIFIED_FIX", "LESSON",
+               "OBSTACLE", "RESOLUTION", "VERIFIED_RESOLUTION")
+_CODING_TOOLS = frozenset({
+    "run_command", "write_file", "edit_file", "create_directory", "delete_file", "move_file",
+    "git_commit", "git_push", "git_diff", "git_status", "git_log",
+})
+_PAYLOAD_MAX = 2000
 
 _EDIT_TOOLS = frozenset({"write_file", "edit_file", "create_directory", "delete_file", "move_file"})
 _TEST_RE = re.compile(
@@ -63,6 +71,38 @@ CREATE TABLE IF NOT EXISTS memory_cases (
 );
 CREATE INDEX IF NOT EXISTS idx_memory_cases_signature ON memory_cases(signature);
 CREATE INDEX IF NOT EXISTS idx_memory_cases_open_task ON memory_cases(open_task);
+CREATE TABLE IF NOT EXISTS memory_events (
+    event_id         TEXT PRIMARY KEY,
+    ts               REAL NOT NULL,
+    schema_version   INTEGER NOT NULL,
+    episode_id       TEXT,
+    step_index       TEXT,
+    thread_id        TEXT,
+    family           TEXT,
+    label            TEXT NOT NULL,
+    valence          TEXT,
+    actor            TEXT,
+    evidence         TEXT NOT NULL,
+    cause_key        TEXT,
+    outcome_key      TEXT,
+    trigger          TEXT,
+    exec_domain      TEXT,
+    topic_domain     TEXT,
+    label_source     TEXT NOT NULL,
+    label_confidence REAL,
+    sigma_from       TEXT,
+    sigma_to         TEXT,
+    hash_signature   TEXT,
+    hash_scheme      INTEGER,
+    action_signature TEXT,
+    cost             TEXT,
+    links            TEXT,
+    payload          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_memory_events_episode ON memory_events(episode_id, ts);
+CREATE INDEX IF NOT EXISTS idx_memory_events_label ON memory_events(family, label);
+CREATE INDEX IF NOT EXISTS idx_memory_events_hash ON memory_events(hash_signature);
+CREATE INDEX IF NOT EXISTS idx_memory_events_ts ON memory_events(ts);
 """
 
 
@@ -151,13 +191,134 @@ def _append_event(thread_id: str, etype: str, case_id: str, payload: dict,
         logger.warning("[memory_events] chain append failed type=%s case=%s: %s", etype, case_id, exc)
 
 
-def _flush(conn, thread_id: str, pending: List[tuple], coords: Optional[str]) -> None:
-    """Commit the case changes FIRST, then append the chain rows: the chain
-    writer uses its own connection to the same file, so an open transaction
-    here would make it wait on the lock."""
+def _bounded_json(obj: Any) -> Optional[str]:
+    if obj is None:
+        return None
+    text = json.dumps(obj, ensure_ascii=False, default=str)
+    if len(text) > _PAYLOAD_MAX:  # references, never content (S12)
+        text = json.dumps({"truncated": True, "head": text[:_PAYLOAD_MAX - 60]})
+    return text
+
+
+def cause_key_for(error_text: str) -> Optional[str]:
+    """The FAULTLINE cause address of a failure text (reused lattice, never re-modelled)."""
+    try:
+        from backend.agent.tool_errors import classify_exception_from_message, resolve_label
+
+        spec = resolve_label(classify_exception_from_message(error_text or ""))
+        if spec is None:
+            return None
+        d = spec.dimensions
+        return f"{d.retryable}|{d.blame}|{d.info_state}"
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def emit_event(
+    conn,
+    *,
+    label: str,
+    evidence: str = "none",
+    thread_id: Optional[str] = None,
+    episode_id: Optional[str] = None,
+    step_index: Optional[str] = None,
+    family_hint: Optional[str] = None,
+    valence: Optional[str] = None,
+    actor: Optional[str] = None,
+    cause_key: Optional[str] = None,
+    outcome_key: Optional[str] = None,
+    trigger: Optional[str] = None,
+    exec_domain: Optional[str] = None,
+    topic_domain: Optional[str] = None,
+    label_source: str = "rule",
+    label_confidence: Optional[float] = 1.0,
+    sigma_from: Optional[str] = None,
+    sigma_to: Optional[str] = None,
+    action_signature: Optional[str] = None,
+    cost: Optional[dict] = None,
+    links: Optional[dict] = None,
+    payload: Optional[dict] = None,
+    insight: str = "",
+    chain: bool = True,
+    chain_outcome: Optional[str] = None,
+    commit: bool = True,
+) -> Optional[str]:
+    """THE canonical event writer (docs/Design/EVENT_TAXONOMY.md section 7).
+
+    Writes one ``memory_events`` row - the typed record the Oracle, Wormhole and
+    CLM training read - then a compact reference row on the Immortus chain (the
+    time layer). Alphabet values are validated: a value outside a closed lattice
+    is refused (logged, nothing written) - never coerced. An unregistered LABEL
+    is Layer 3: written with the family hint (or none), and counted.
+    Returns the event_id, or None when refused or on error. Never raises.
+    """
+    try:
+        from backend.memory import event_alphabet as ea
+
+        if evidence not in ea.EVIDENCE:
+            logger.warning("[memory_events] refused label=%s: evidence %r not in alphabet", label, evidence)
+            return None
+        spec = ea.resolve_event_label(label)
+        family = spec.family if spec else (family_hint if family_hint in ea.FAMILIES else None)
+        valence = valence or (spec.valence if spec else None)
+        actor = actor or (spec.actor if spec else None)
+        if (valence is not None and valence not in ea.VALENCES) or (
+                actor is not None and actor not in ea.ACTORS):
+            logger.warning("[memory_events] refused label=%s: valence/actor outside the alphabet", label)
+            return None
+        if spec is None:
+            logger.info("[memory_events] unclassified label=%s family_hint=%s (Layer 3)", label, family_hint)
+        event_id = "ev-" + uuid.uuid4().hex[:16]
+        conn.execute(
+            "INSERT INTO memory_events (event_id, ts, schema_version, episode_id, step_index, "
+            "thread_id, family, label, valence, actor, evidence, cause_key, outcome_key, trigger, "
+            "exec_domain, topic_domain, label_source, label_confidence, sigma_from, sigma_to, "
+            "hash_signature, hash_scheme, action_signature, cost, links, payload) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (event_id, time.time(), ea.SCHEMA_VERSION, episode_id, step_index, thread_id, family,
+             label, valence, actor, evidence, cause_key, outcome_key, trigger, exec_domain,
+             topic_domain, label_source, label_confidence, sigma_from, sigma_to,
+             ea.hash_signature(sigma_to or sigma_from, exec_domain, topic_domain), ea.HASH_SCHEME,
+             action_signature, _bounded_json(cost), _bounded_json(links), _bounded_json(payload)),
+        )
+        if commit:
+            conn.commit()
+        if chain and thread_id:
+            ref = {"event_id": event_id, **(payload or {})}
+            case_id = str((links or {}).get("case") or "")
+            _append_event(thread_id, chain_outcome or label, case_id, ref, insight, sigma_to or sigma_from)
+        return event_id
+    except Exception as exc:  # noqa: BLE001 - an event never breaks the lane
+        logger.warning("[memory_events] emit failed label=%s: %s", label, exc)
+        return None
+
+
+def _flush(conn, thread_id: str, pending: List[dict], coords: Optional[str]) -> None:
+    """Commit the case changes FIRST, then write the events: the chain writer
+    uses its own connection to the same file, so an open transaction here would
+    make it wait on the lock."""
     conn.commit()
-    for etype, case_id, payload, insight in pending:
-        _append_event(thread_id, etype, case_id, payload, insight, coords)
+    for ev in pending:
+        emit_event(
+            conn, label=ev["label"], evidence=ev.get("evidence", "none"), thread_id=thread_id,
+            episode_id=ev.get("task"), step_index=ev.get("step"), cause_key=ev.get("cause_key"),
+            sigma_from=coords, sigma_to=coords, action_signature=ev.get("action"),
+            links={"case": ev.get("case")} if ev.get("case") else None,
+            payload=ev.get("payload"), insight=ev.get("insight", ""),
+            chain_outcome=ev.get("chain_outcome"),
+        )
+
+
+# Outside-evidence kinds of the policy -> the alphabet's evidence values.
+_EVIDENCE_OF = {"task_complete": "completion", "test_pass": "test", "user_confirm": "user"}
+
+
+def _words(tool: Optional[str]) -> Dict[str, str]:
+    """The problem-family words for a step's domain (coding words for coding tools)."""
+    if (tool or "") in _CODING_TOOLS:
+        return {"OBSTACLE": "BUG", "RESOLUTION": "FIX", "VERIFIED_RESOLUTION": "VERIFIED_FIX"}
+    return {"OBSTACLE": "OBSTACLE", "RESOLUTION": "RESOLUTION",
+            "VERIFIED_RESOLUTION": "VERIFIED_RESOLUTION"}
 
 
 # ── case helpers ────────────────────────────────────────────────────────────
@@ -242,7 +403,8 @@ def record_step(
         deps = dependencies(tool, params)
         act = action_signature(tool, params)
         written: List[str] = []
-        pending: List[tuple] = []
+        pending: List[dict] = []
+        words = _words(tool)
         failed = (not success) or verified == "FAILED"
         case = _open_case(conn, task_id)
 
@@ -259,8 +421,10 @@ def record_step(
                 if repeat:
                     logger.info("[memory_events] counter repeated_dead_end case=%s action=%s",
                                 case["case_id"], act[:80])
-                pending.append(("DEAD_END", case["case_id"],
-                                {"action": act, "step": step_id, "task": task_id}, description))
+                pending.append(dict(label="DEAD_END", case=case["case_id"], evidence="verifier",
+                                    action=act, step=step_id, task=task_id, insight=description,
+                                    cause_key=cause_key_for(error_text),
+                                    payload={"action": act, "step": step_id, "task": task_id}))
                 written.append("DEAD_END")
             else:
                 sig = error_signature(tool, error_text or description)
@@ -298,8 +462,10 @@ def record_step(
                         (case_id, sig, tool, _first_error_line(error_text)[:300], task_id,
                          thread_id, json.dumps(deps), now, now),
                     )
-                pending.append(("BUG", case_id, payload, description))
-                written.append("BUG")
+                pending.append(dict(label=words["OBSTACLE"], case=case_id, evidence="verifier",
+                                    action=act, step=step_id, task=task_id, insight=description,
+                                    cause_key=cause_key_for(error_text), payload=payload))
+                written.append(words["OBSTACLE"])
         else:
             if case is not None:
                 if verified == "VERIFIED":
@@ -311,24 +477,30 @@ def record_step(
                          f"error signature {case['signature']} recurs, or a dependency changes",
                          now, case["case_id"]),
                     )
-                    pending.append(("FIX", case["case_id"],
-                                    {"action": act, "step": step_id, "task": task_id, "depends_on": deps},
-                                    description))
-                    written.append("FIX")
+                    pending.append(dict(label=words["RESOLUTION"], case=case["case_id"],
+                                        evidence="verifier", action=act, step=step_id, task=task_id,
+                                        insight=description,
+                                        payload={"action": act, "step": step_id, "task": task_id,
+                                                 "depends_on": deps}))
+                    written.append(words["RESOLUTION"])
                 else:
                     conn.execute(
                         "UPDATE memory_cases SET attempts = attempts + 1, last_seen = ? WHERE case_id = ?",
                         (now, case["case_id"]),
                     )
-                    pending.append(("ATTEMPT", case["case_id"],
-                                    {"action": act, "step": step_id, "task": task_id}, description))
+                    pending.append(dict(label="ATTEMPT", case=case["case_id"], evidence="none",
+                                        action=act, step=step_id, task=task_id, insight=description,
+                                        payload={"action": act, "step": step_id, "task": task_id}))
                     written.append("ATTEMPT")
             if tool in _EDIT_TOOLS:
                 for dep in deps:
                     _mark_stale_dependents(conn, dep, task_id)
             if verified == "VERIFIED" and is_test_command(tool, params):
-                pending.append(("evidence:test_pass", "", {"step": step_id, "task": task_id,
-                                "command": _target(params)}, description))
+                pending.append(dict(label="OBSERVED", evidence="test", action=act, step=step_id,
+                                    task=task_id, insight=description,
+                                    chain_outcome="evidence:test_pass",
+                                    payload={"kind": "test_pass", "step": step_id, "task": task_id,
+                                             "command": _target(params)}))
                 written += _verify_fixed(conn, task_id, "test_pass", pending)
         _flush(conn, thread_id, pending, coords)
         return written
@@ -350,7 +522,7 @@ def record_task_end(
     try:
         ensure_schema(conn)
         written: List[str] = []
-        pending: List[tuple] = []
+        pending: List[dict] = []
         if success:
             written += _verify_fixed(conn, task_id, "task_complete", pending)
             if user_confirmed:
@@ -370,29 +542,32 @@ def _verify_fixed(conn, task_id: str, evidence: str, pending: List[tuple],
     written: List[str] = []
     marks = ",".join("?" * len(statuses))
     rows = conn.execute(
-        f"SELECT case_id, signature, fix_step, fix_desc, depends_on, status FROM memory_cases "
+        f"SELECT case_id, signature, fix_step, fix_desc, depends_on, status, tool FROM memory_cases "
         f"WHERE open_task = ? AND status IN ({marks})",
         (task_id, *statuses),
     ).fetchall()
     now = time.time()
-    for case_id, sig, fix_step, fix_desc, deps, status in rows:
+    for case_id, sig, fix_step, fix_desc, deps, status, tool in rows:
         conn.execute(
             "UPDATE memory_cases SET status = 'verified', verified_count = verified_count + 1, "
             "last_verified = ?, strength = strength + 1, last_seen = ? WHERE case_id = ?",
             (now, now, case_id),
         )
-        pending.append(("VERIFIED_FIX", case_id,
-                        {"signature": sig, "evidence": evidence, "fix_step": fix_step, "task": task_id},
-                        fix_desc or ""))
-        written.append("VERIFIED_FIX")
+        pending.append(dict(label=_words(tool)["VERIFIED_RESOLUTION"], case=case_id,
+                            evidence=_EVIDENCE_OF.get(evidence, "none"), step=fix_step, task=task_id,
+                            insight=fix_desc or "",
+                            payload={"signature": sig, "evidence": evidence, "fix_step": fix_step,
+                                     "task": task_id}))
+        written.append(_words(tool)["VERIFIED_RESOLUTION"])
         if status == "fixed":
             # The fix step's own description is model-authored: a CANDIDATE, data not
             # instructions, linked to the case it summarizes (provenance).
-            pending.append(("LESSON", case_id,
-                            {"candidate": True, "author": "model", "text": (fix_desc or "")[:300],
-                             "provenance": {"case": case_id, "fix_step": fix_step, "depends_on":
-                                            json.loads(deps or "[]")}},
-                            fix_desc or ""))
+            pending.append(dict(label="LESSON", case=case_id, evidence="claim", step=fix_step,
+                                task=task_id, insight=fix_desc or "",
+                                payload={"candidate": True, "author": "model",
+                                         "text": (fix_desc or "")[:300],
+                                         "provenance": {"case": case_id, "fix_step": fix_step,
+                                                        "depends_on": json.loads(deps or "[]")}}))
             written.append("LESSON")
     return written
 
@@ -445,7 +620,8 @@ def session_evidence(conn, thread_id: str) -> Dict[str, Any]:
                 data = {}
             if outcome == "evidence:test_pass" and "test_pass" not in out["kinds"]:
                 out["kinds"].append("test_pass")
-            if outcome in ("event:FIX", "event:VERIFIED_FIX"):
+            if outcome in ("event:FIX", "event:VERIFIED_FIX", "event:RESOLUTION",
+                           "event:VERIFIED_RESOLUTION"):
                 for dep in data.get("depends_on") or []:
                     if dep not in out["depends_on"]:
                         out["depends_on"].append(dep)
