@@ -4,6 +4,10 @@
 > `tool-decision-engine.md`. The engine's *name* is Oracle; the *model* it runs
 > keeps its own identity, and that distinction is load-bearing — see §2.
 >
+> **2026-10-01: start at §19 (Jobs)** — every consumer belongs to a job that fixes its
+> input, budget and shadow path; the job diagram is there. Sections below §19 that
+> describe per-site inputs are history.
+>
 > **Last verified: 2026-09-26 (session 360)** against the running app, not against
 > memory. Every number below says where it came from. Anything not re-measured is
 > marked as such. The previous revision described the retired LFM build
@@ -737,7 +741,117 @@ route means changing one of these lines — not the engine.
 occurrence, and one that never reaches the bar spends it forever (§17.2). `tier0_classify`
 is the recorded non-fit for exactly this reason.
 
-## 18. Superseded material
+## 19. Jobs — the engine owns the input, the budget and the shadow path (2026-10-01)
+
+**Read this before adding or changing a consumer.** A *job* is the KIND of question
+the Oracle is asked. The job — not the call site — decides what the model reads and how
+much of it. Code: `decision_engine.ORACLE_JOBS`, `CONSUMER_JOBS`, `oracle_job()`,
+`job_input()`, `DecisionEngine.shadow()`. Guard: `contract/test_oracle_jobs_contract.py`.
+
+### 19.1 Why (measured, coding eval 2026-10-01)
+
+| Finding | Number |
+|---|---|
+| Latency follows input length (real model, quiet box) | 30 words 150 ms · 120 words 430 ms · 400 words (the 512-id cap) 2.3 s |
+| Inputs varied by call site | 30 words (`tool_choice`) to 400 words (`done` got the Brain's whole prompt) |
+| Shadow scores the reply waited for, one eval run | `done` 166.7 s · `on_track` 60.5 s · `review_verdict` 59.0 s · `depth_route` 32.7 s |
+| Fields built and never read | the backend reads ONLY `frame["goal"]`: `depth_route`'s coverage / open facts / depth_met and `depth_met`'s evidence never reached the model |
+
+Each new consumer repeated the same choices (its own text, inline or not), so each needed
+its own speed fix. The job table makes those choices once.
+
+### 19.2 The jobs
+
+```mermaid
+flowchart TB
+    subgraph DOMAIN["Phase domain decision.oracle_cpu — one CPU, one dial (IRIS_ORACLE_PHASE)"]
+        direction TB
+        subgraph ANSWER["The reply waits for these (keep them short)"]
+            INT["INTERPRET · 64 ids<br/>what does the user's message mean?<br/>reads: goal"]
+            RTE["ROUTE · 64 ids<br/>which next action? the MENU carries the content<br/>reads: coverage, open_facts, depth_met, grade, goal"]
+            GRD["GUARD · 64 ids<br/>is this action safe without asking?<br/>reads: goal (action + element + page)"]
+        end
+        subgraph JUDGE["Judgments (shadow until each earns the bar)"]
+            JST["JUDGE_STEP · 96 ids<br/>did this step do its part?<br/>reads: goal (step + result line)"]
+            JGO["JUDGE_GOAL · 128 ids<br/>is the objective met, deep, sufficient?<br/>reads: goal, open_facts, evidence"]
+            SHP["SHAPE · 96 ids<br/>how should the answer be delivered?"]
+            CEV["CLASSIFY_EVENT · 64 ids<br/>which event family / type?"]
+        end
+    end
+    INT --- I1["mode · web_intent · user_feedback"]
+    RTE --- R1["tool_choice · recovery_strategy (+retry_same) · depth_route<br/>browser_next* (pick a DOM element from Set-of-Marks) · web_depth*"]
+    GRD --- G1["click_safety (browser action on a DOM element) · needs_action · use_thinking"]
+    JST --- S1["review_verdict · on_track · escalate_incomplete · has_gaps"]
+    JGO --- J1["done · depth_met · sufficient"]
+    SHP --- P1["presentation · narration"]
+    CEV --- E1["event_family · event_type:&lt;family&gt;"]
+```
+
+`*` = planned (spec research-memory-chain-browser Wave C), not built. A consumer with no
+entry runs as `general` (goal only, 128 ids) and the guard test names it.
+
+**The browser has TWO jobs, on purpose.** Choosing WHICH element to act on is a ROUTE
+question: the DOM state enters as the menu — the Set-of-Marks labels of the candidate
+elements — plus a short goal; the model never reads raw DOM. Deciding whether that action
+is SAFE is a GUARD question about one already-chosen action. Today the Brain picks the
+element (`browser_act` arguments) and the click-safety gate (rules → Brain → ask the user)
+decides safety; the Oracle only SHADOWS `click_safety`. `browser_next` is the Wave C
+shadow consumer that will measure the element choice.
+
+### 19.3 The rules the engine enforces
+
+1. **Input.** `decide()` renders the job's fields, in order, into the text (lists as
+   `a; b; c`, floats to 2 places). A frame that holds only `goal` renders the same text as
+   before, so those consumers keep their calibrated input (unless the budget now cuts it).
+2. **Budget.** The ONNX backend stops adding text at the job's `budget_ids`; the label
+   structure is never cut; 512 stays the absolute ceiling. Owner maximum: 128.
+3. **No reference in the input.** Reference fields (`brain_choice`, `brain_bool`,
+   `incumbent_route`) are never listed in a job — a row whose input carries the answer
+   measures nothing.
+4. **Shadow is off the path.** A shadow consumer calls
+   `engine.shadow(consumer, options, frame, sink=..., reference={...})`: the score runs on
+   `lane("oracle_shadow")` and the row (standard shape + `job` + reference) goes to the sink.
+   `decide()` is for answers the caller USES.
+5. **Counted, not trusted.** `INLINE_DECISION_COUNTS` counts decisions scored on a non-lane
+   thread, per consumer (no I/O on the decision path). An unenforced consumer with inline
+   counts is a measurement the reply waited for.
+6. **A changed input is a new calibrated identity.** Bump the consumer's
+   `criteria_version` (`depth_met/v2`, `depth_route/v2`, `done/v2`, `on_track/v2`).
+
+### 19.4 Measured per job (`benchmarks/oracle_jobs_bench.py`, real model, long inputs)
+
+| Job | Budget | p50 | max |
+|---|---|---|---|
+| interpret (mode) | 64 | 268 ms | 353 ms |
+| route (tool_choice, 6 labels) | 64 | 265 ms | 276 ms |
+| guard (click_safety) | 64 | 267 ms | 272 ms |
+| classify_event | 64 | 282 ms | 315 ms |
+| judge_step (review_verdict) | 96 | 364 ms | 379 ms |
+| shape (presentation) | 96 | 365 ms | 370 ms |
+| judge_goal (done) | 128 | 417 ms | 435 ms |
+
+Worst case 2.3 s → 0.42 s. **The floor, honestly:** one decision on this model and CPU
+costs ~117 ms with 2 labels and 5 words, ~160 ms with 6 labels. Under 150 ms is reachable
+only for very short text (~20 ids) and small menus. Below that needs a smaller model (a new
+calibrated identity — benchmark first), not a smaller budget.
+
+### 19.5 Jobs and the phase domain
+
+ONE domain for the Oracle, `decision.oracle_cpu`, because every job runs on the same CPU
+(PHASE_DOMAINS: one domain per layer + resource; a participant belongs to exactly one
+domain). Jobs are NOT separate domains: two domains on one CPU would each see only their own
+load and could not repel each other — the collisions the model exists to prevent. Inside the
+domain every consumer is a participant (`"{session}:{consumer}"`) with its own angle, so
+decisions overlap without a lock. Per-job natural periods (a 128-id job fires less often
+than a 64-id one) are the next measured step, not built.
+
+Today's `oracle_shadow` lane is a FIFO: shadow scores run one at a time, beside the
+answer-path decisions. With `IRIS_ORACLE_PHASE=1` they overlap with answer-path decisions
+(no engine lock). Moving shadow scores from the FIFO to phase participants is the next step
+after the live gate; the ROW WRITES stay on their one ordered writer (that order is a
+correctness rule, PHASE_DOMAINS "Memory (side lanes)").
+
+## 20. Superseded material (was §18)
 
 **Superseded material.** The previous revision of this document described the
 LFM2-350M-Extract build (`llama-cpp-python`, `softmax_tau=0.5` sharpening, an

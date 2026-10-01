@@ -186,6 +186,13 @@ def _note_inline_shadow(consumer_id: str) -> None:
             return
         with _INLINE_COUNT_LOCK:
             INLINE_DECISION_COUNTS[consumer_id] = INLINE_DECISION_COUNTS.get(consumer_id, 0) + 1
+            total = sum(INLINE_DECISION_COUNTS.values())
+            snapshot = dict(INLINE_DECISION_COUNTS) if total % 100 == 0 else None
+        if snapshot is not None:
+            # The reader: one line per 100 inline decisions. A consumer listed
+            # here that is not enforced is a measurement the reply waited for.
+            logger.info("%s inline decisions (process total %d): %s",
+                        ENGINE_NAME, total, snapshot)
     except Exception:  # noqa: BLE001 - an observer never blocks a decision
         pass
 

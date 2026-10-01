@@ -7,7 +7,12 @@ archived there); CLAUDE.md/AGENTS.md now carry "BUILD + VERIFY IRIS — THE MEAS
 "READING THIS CODEBASE — PHASE MODEL, PHYSICS, LANES"; validate every change with the
 `app-testing` skill, Mode A (`.opencode/skills/app-testing/SKILL.md`) — MCM `pin_6c81e87956b8`.
 
-**NEXT AGENT (2026-10-01, latest): read MCM `pin_522fe69c7e61` (HANDOFF 6) FIRST.** It lists
+**NEXT AGENT (2026-10-01, session f2fd8db3, latest): read the log section "2026-10-01 (session
+f2fd8db3)" below FIRST** - measured answer-path fixes (coding reply sum 1385 s -> 461 s, 15/15),
+Sigma physics REVERTED (K4 live guard failed), Oracle JOBS (oracle.md §19), Oracle phase domain
+live gate. Then HANDOFF 6 for the older context.
+
+**Previous (2026-10-01): read MCM `pin_522fe69c7e61` (HANDOFF 6) FIRST.** It lists
 what session 64237209 built (store 6.6 -> 0.28 GB, S12; one Chromium + click-safety browser; research
 memory; relevance-gated Immortus chain; meaningful Sigma - LIVE GUARD PENDING; event taxonomy v1 +
 emitters + Oracle shadow consumers; Oracle phase domain behind `IRIS_ORACLE_PHASE`, default off) and
@@ -121,6 +126,11 @@ to fail on the old state. Change a number only with a new measurement and the re
 | S8 | the git-status poll never runs back to back on a slow repo | ran every 5 s, each run a 5 s timeout -> at most ~10% of disk time | fixed 5 s TTL + 5 s timeout on a huge dirty repo on the hard disk; TTL now x10 the last run's cost | `test_startup_readiness_standards.py::test_s8_*` |
 | S10 | the Oracle model hash comes from a cache on a repeat start (`data/oracle_model_hash.json`, keyed by abs path + size + mtime_ns) | ~16 s of `_hash_model_file` frames at startup -> 0; start -> first Oracle decide 23.0 / 38.6 / 70.4 s -> 5.3 s (one run, model file warm) (stack dump + log, 2026-09-30) | `load()` read the 642 MB model twice (ORT session + sha256) on the C: hard disk, competing with the TTS worker load | `contract/test_startup_readiness_standards.py::test_s10_*` (unchanged file is not read again; a changed file is re-hashed) |
 | S12 | one `memory_chain` row is bounded (`iris_ffi._CHAIN_RESULT_CAP` = 64 K chars + a `truncated` marker) and stored once (legacy `content` written empty; every reader reads `result`) | `data/memory.db` 6.61 GB -> 0.277 GB (VACUUM, 2026-09-30); 28 rows > 1 MB held 4.83 GB, each byte twice; 84 captured store listings in `document_data` held 1.23 GB | S11 stopped new nested captures; the chain writer still copied any size into both `result` and `content` | `contract/test_answer_path_standards.py::test_s12_*` (legacy-shape store; fails on the old writer); `contract/test_document_data_store.py::test_s12_*` (document chain row is a reference) |
+| S13 | a user turn is never "idle": background warm-ups wait for the turn to END | c01 reply 351 s -> 78 s (whisper warm-up held the first pytest 220 s; stack dumps, 2026-10-01) | `IdleTracker.busy()` via `_turn_in_flight` on `process_text_message` (voice, chat AND the dev orchestrator); warm-up waits 90 s + 20 s idle | `contract/test_idle_tracker_turn_busy.py` |
+| S14 | a SHADOW Oracle score never holds the reply | per coding run: done 166.7 s, on_track 60.5 s, review_verdict 59.0 s, depth_route 32.7 s inline -> 0 (lane `oracle_shadow`) | `monitor_bool(defer=)`, `Reviewer.set_shadow_sink`, `depth_route(async_=)`, `DecisionEngine.shadow()` for new consumers; `INLINE_DECISION_COUNTS` logged every 100 | `contract/test_monitor_shadow_off_answer_path.py` |
+| S15 | Oracle input bounded by its JOB (<= 128 ids) | worst decision 2.3 s -> 0.42 s (`benchmarks/oracle_jobs_bench.py`); live `done` p50 2331 -> 774 ms | `ORACLE_JOBS` + `job_input()` in `decide`; backend cuts text at the budget | `contract/test_oracle_jobs_contract.py` + the bench |
+| S16 | the goal-contract push is bounded per fact; a prohibition is not a deliverable | c06 reply 366 s (36 pushes) -> 58 s / 27 s | `GOAL_COVER_PUSH_MAX = 2` then BLOCKED no_progress; `_PROHIBITION_RE` | `contract/test_goal_contract_cover_bound.py` |
+| S17 | every transport HTTP client reuses the process TLS context | 14 dumps (~56 s) of one turn in `ssl.create_default_context` -> 0 | `verify=get_ssl_context()` on the Ollama client; sidecar probe pooled + adoption remembered | `contract/test_transport_shared_ssl.py` |
 | S6 | eval pass flags and `reply_s` per task | c10 reply 63-226 s -> 16.9 s | all of the above | `evals/standards.json` + `run_evals.py` STANDARDS check (exit 5 on regression; tolerance x1.5 + 10 s for cloud-model variance). Record with `--record-standard` after a clean full run (pending: after the TTS fix) |
 
 **How to run the evals safely (learned the hard way).**
@@ -163,6 +173,51 @@ to fail on the old state. Change a number only with a new measurement and the re
 
 Running log of work after the Phase 1 commit (`a21b641c`). Each entry is also recorded in
 MCM (`record_edit` / `record_test` / `pin_add`).
+
+## 2026-10-01 (session f2fd8db3) — measured answer path, physics revert, Oracle jobs + phase
+
+Three coding runs, same machine (`evals/results/`): `20261001-104424` (start) reply sum 1385 s
+-> `111006` 535 s -> `120004` 461 s (Oracle jobs + `IRIS_ORACLE_PHASE=1`); 15/15 each,
+"STANDARDS: no regression" on the last two. Commits: `569e1698` `6bf92d5a` `d16f833c`
+`ebeea6ce` `8c9443f5` `fbfea380` `689911e3` (+ this doc). Nothing pushed.
+
+1. **Oracle instruments agree** (`569e1698`): calibrate scored SHADOW rows by event outcome;
+   one `decision_label()` now. **Shadow `tool_choice` menu** (`6bf92d5a`): both kernel callers
+   passed no candidates, so 278/278 rows scored a vision-only menu (Brain's tool never on it).
+   tool_choice rows before `6bf92d5a` are not calibration evidence.
+2. **Stalls found by stack dumps** (`d16f833c`): whisper warm-up inside c01 (S13); turn-end
+   shadow monitors inline (S14); a new TLS context per Ollama call + sidecar re-probe (S17);
+   goal-contract loop on "do not change app.py" (S16); `_current_turn_id` had 13 readers and no
+   writer; TTS worker exit code now logged.
+3. **K4 guard FAILED -> `adbf69f8` reverted** (`ebeea6ce`, owner rule). `caducean_trajectories`
+   eval-c*: before action 0 on 47/47 rows, after action 1 on 98/98 - a coding step is a NODE
+   with no tool, so `_physics_action(None)` = COMPRESS always; rec never 1, so the continuation
+   gate never suppressed an Explorer step (11 -> 0; Explorer steps 6 -> 55; replies ~2x).
+   Before K4 the brake was ALSO a constant (rec ~1). Path back: classify a node step by
+   `NodeResult.calls`, replay on node traces, live guard. A real continuation-termination rule
+   is still owed (it rides a constant today).
+4. **Oracle jobs** (`fbfea380`, `689911e3`; oracle.md §19 has the diagram): latency follows input
+   length (30 words 150 ms, 400 words 2.3 s); the backend read ONLY `frame["goal"]`. Now
+   `ORACLE_JOBS` (interpret / route / guard / judge_step / judge_goal / shape / classify_event,
+   budgets 64-128 ids) and `job_input()` in `decide`; `DecisionEngine.shadow()` is the off-path
+   call; criteria versions bumped (`done/v2`, `on_track/v2`, `depth_met/v2`, `depth_route/v2`).
+   Per-job bench p50 265-417 ms. Floor: ~117 ms (2 labels, 5 words) - under 150 ms needs a
+   smaller model, not a smaller budget.
+5. **Oracle phase domain live gate (P4)**: coding run 3 with `IRIS_ORACLE_PHASE=1`: no
+   regression, phase_wait p50 0 ms / max 252 ms over 342 decisions. Research run
+   `20261001-120656`: 8/8, no regression (r01 44 -> 22 s, r05 48 -> 34 s; r03 19 -> 27 s and
+   r04 10 -> 25 s slower - research has no recorded standard yet, record one). P4 PASSED:
+   `IRIS_ORACLE_PHASE=1` is now set in `.env` (local, untracked - like `IRIS_PHASE_SCHEDULER`).
+
+OPEN (in order): record a research standard (`--record-standard` after a clean run); move shadow scores
+from the FIFO lane to phase participants (rows stay on their writer); `depth_met` still inline
+(0.4-0.9 s, feeds the continuation only when enforced); `mode` / `narration` / `presentation`
+shadow scores inline (counts in the `Oracle inline decisions` log line); streak-gate-only-on-
+steering (owner decision; c06 proved the brake is needed); `tool_choice` live max 5.9 s once
+(not explained); Sigma redo by node calls; the HANDOFF 6 list (Wave U, Wave C browser_next).
+Pre-existing failures verified on committed code this session: 9 Oracle fakes lacking
+`instruction`; `test_bt_gc6_*` x2 (MCP file_manager); `test_encode_with_meta_backend_is_hash`
+(fails while the embedding sidecar runs); `test_missing_db_unverified` (`_app_store` import).
 
 ## 2026-09-30 (session 64237209) — HANDOFF 5 follow-ups: A5, test change, store cleanup (S12)
 
