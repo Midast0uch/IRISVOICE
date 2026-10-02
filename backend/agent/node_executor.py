@@ -111,6 +111,10 @@ class NodeContext:
     # only for vision work. An unbound tool_execution role falls back to the
     # router's default role (router.resolve), i.e. the Brain.
     role: str = "tool_execution"
+    # Eval C (owner 2026-10-02): the Brain helps a STRUGGLING tool model. Set
+    # only when the helper is a different model than `role` (a model cannot
+    # help itself); None = no helper. One handover per node at most.
+    helper_role: Optional[str] = None
 
 
 @dataclass
@@ -120,6 +124,7 @@ class NodeResult:
     calls: List[Dict[str, Any]] = field(default_factory=list)
     error: str = ""
     last_command_failed: bool = False
+    helped: str = ""  # why the helper took over ("" = it did not)
 
     def as_step_result(self) -> str:
         lines = [self.summary.strip() or "(no summary)"]
@@ -171,6 +176,11 @@ _UNCHANGED_HINT = (
     "UNCHANGED RESULT: this call returned exactly what your previous call "
     "returned (above). Repeating it changes nothing - take the NEXT action of "
     "the step, or finish the step."
+)
+
+_HANDOVER_NOTE = (
+    "A stronger model continues this step from here. Trouble so far: {why}. "
+    "Use everything above, do what is still missing, then finish the step."
 )
 
 _MAX_MALFORMED = 2
@@ -246,6 +256,21 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
     last_key: Optional[str] = None
     last_res_key: Optional[str] = None
     repeats = 0
+    role = ctx.role
+    helped = ""
+    edit_failures = 0
+
+    def _hand_over(why: str) -> bool:
+        """Switch this node to the helper model once; True when it happened."""
+        nonlocal role, helped, repeats, malformed, last_key, last_res_key
+        if helped or not ctx.helper_role or ctx.helper_role == role:
+            return False
+        logger.info("[run_node] conv=%s helper takes over (%s): %s -> %s",
+                    ctx.conv_id, why, role, ctx.helper_role)
+        role, helped = ctx.helper_role, why
+        repeats = malformed = 0
+        last_key = last_res_key = None
+        return True
     calls: List[Dict[str, Any]] = []
     last_command_failed: Optional[bool] = None
     deadline = time.monotonic() + ctx.budget_s
@@ -257,7 +282,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                 break
             try:
                 text, _think, tool_calls = ctx.generate(
-                    ctx.role, messages, tools=tools, max_tokens=ctx.max_tokens,
+                    role, messages, tools=tools, max_tokens=ctx.max_tokens,
                     temperature=0.2, timeout_s=min(remaining, 300.0), thinking=False,
                 )
             except (MalformedToolCallError, EmptyModelResponseError) as slip:
@@ -269,20 +294,29 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                 logger.info("[run_node] conv=%s model slip %s (%d in a row)",
                             ctx.conv_id, type(slip).__name__, malformed)
                 if malformed > _MAX_MALFORMED:
+                    if _hand_over(f"{malformed} model slips in a row"):
+                        messages.append({"role": "user", "content": _HANDOVER_NOTE.format(
+                            why="the previous model's answers were empty or invalid")})
+                        continue
                     raise
                 messages.append({"role": "user", "content": (
                     _MALFORMED_HINT if isinstance(slip, MalformedToolCallError) else _EMPTY_HINT)})
                 continue
             malformed = 0
             if not tool_calls:
-                # The Brain judges its own step (it knows whether failing tests
+                # The model judges its own step (it knows whether failing tests
                 # were the goal or the problem); the failing last command is
                 # still stated in the step result for the verifier and the turn.
                 ok, reason, summary = _status(text or "")
+                if not ok and _hand_over(f"step reported failure: {reason}"[:120]):
+                    messages.append({"role": "assistant", "content": text or ""})
+                    messages.append({"role": "user", "content": _HANDOVER_NOTE.format(
+                        why=f"the step reported failure ({reason or 'no reason'})")})
+                    continue
                 logger.info("[run_node] conv=%s done: %d call(s), success=%s, last_cmd_failed=%s",
                             ctx.conv_id, len(calls), ok, bool(last_command_failed))
                 return NodeResult(ok, summary, calls, reason if not ok else "",
-                                  last_command_failed=bool(last_command_failed))
+                                  last_command_failed=bool(last_command_failed), helped=helped)
             messages.append({"role": "assistant", "content": text or None, "tool_calls": tool_calls})
             batch_failed = False
             batch_results: List[str] = []
@@ -307,10 +341,12 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                     repeats += 1
                     logger.info("[run_node] conv=%s repeated call %s %s (%d in a row)",
                                 ctx.conv_id, name, _target(params or {}), repeats)
-                    if repeats >= _MAX_REPEATS:
+                    if repeats >= _MAX_REPEATS and not _hand_over(
+                            f"stuck repeating {name} {_target(params or {})}".strip()):
                         return NodeResult(False, text or "", calls,
                                           f"stuck repeating {name} {_target(params or {})}".strip(),
-                                          last_command_failed=bool(last_command_failed))
+                                          last_command_failed=bool(last_command_failed),
+                                          helped=helped)
                     messages.append({"role": "tool", "tool_call_id": tc.get("id") or name,
                                      "name": name, "content": _REPEAT_HINT})
                     continue
@@ -331,6 +367,11 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                         raw = {"success": False, "error": f"{type(exc).__name__}: {exc}", "error_type": "exception"}
                 failed = _failed(raw)
                 batch_failed = batch_failed or failed
+                if failed and name == "edit_file":
+                    # exact-quote edits are where a small model fails most
+                    edit_failures += 1
+                    if edit_failures >= 2:
+                        _hand_over("edit_file failed twice")
                 if name == "run_command":
                     last_command_failed = failed
                 # args: the identifying keys only (never a file body) - what
@@ -350,10 +391,12 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                     repeats += 1
                     logger.info("[run_node] conv=%s unchanged result %s %s (%d in a row)",
                                 ctx.conv_id, name, _target(params or {}), repeats)
-                    if repeats >= _MAX_REPEATS:
+                    if repeats >= _MAX_REPEATS and not _hand_over(
+                            f"stuck repeating {name} {_target(params or {})}".strip()):
                         return NodeResult(False, text or "", calls,
                                           f"stuck repeating {name} {_target(params or {})}".strip(),
-                                          last_command_failed=bool(last_command_failed))
+                                          last_command_failed=bool(last_command_failed),
+                                          helped=helped)
                     content = _UNCHANGED_HINT
                 else:
                     last_res_key, repeats = res_key, 0
@@ -378,13 +421,14 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                                 bool(last_command_failed))
                     return NodeResult(True, (summary + "\n\nTool results:\n"
                                              + "\n\n".join(batch_results)).strip(),
-                                      calls, last_command_failed=bool(last_command_failed))
+                                      calls, last_command_failed=bool(last_command_failed),
+                                      helped=helped)
         # Budget spent with work still requested: ask for an honest status.
         messages.append({"role": "user", "content": (
             "The time budget for this step is used up. Say what you did and what is unfinished.")})
-        text, _think, _ = ctx.generate(ctx.role, messages, tools=None, max_tokens=1024,
+        text, _think, _ = ctx.generate(role, messages, tools=None, max_tokens=1024,
                                        temperature=0.2, timeout_s=120.0)
-        return NodeResult(False, text or "", calls, "node time budget used up")
+        return NodeResult(False, text or "", calls, "node time budget used up", helped=helped)
     except Exception as exc:  # noqa: BLE001 — a broken node is a failed step, not a crashed turn
         logger.warning("[run_node] conv=%s failed: %s", ctx.conv_id, exc)
-        return NodeResult(False, text or "", calls, f"{type(exc).__name__}: {exc}")
+        return NodeResult(False, text or "", calls, f"{type(exc).__name__}: {exc}", helped=helped)

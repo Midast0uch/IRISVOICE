@@ -262,6 +262,70 @@ def test_a_reread_after_an_edit_still_runs():
     assert executed == ["read_file", "write_file", "read_file"]
 
 
+# ── 6. eval C: the Brain helps a struggling tool model ───────────────────
+
+
+def _helper_ctx(script, results=None, helper="reasoning"):
+    roles = []
+    replies = iter(script)
+
+    def gen(role, messages, **kw):
+        roles.append(role)
+        r = next(replies)
+        if isinstance(r, Exception):
+            raise r
+        return r[0], "", r[1]
+
+    results = results or {}
+    ctx = NodeContext(generate=gen, execute=lambda n, p: results.get(n, {"success": True}),
+                      format_result=lambda n, r: json.dumps(r), tools=TOOLS, helper_role=helper,
+                      budget_s=30)
+    return ctx, roles
+
+
+def test_the_helper_takes_over_a_step_the_tool_model_reports_failed():
+    ctx, roles = _helper_ctx([("Could not do it.\nSTATUS: failed: no idea", []),
+                              ("Fixed it.\nSTATUS: done", [])])
+    r = run_node("fix m.py", ctx)
+    assert roles == ["tool_execution", "reasoning"]
+    assert r.success and r.helped.startswith("step reported failure")
+
+
+def test_the_helper_takes_over_a_stuck_tool_model():
+    stuck = ("", [_call("read_file", {"path": "m.py"})])
+    ctx, roles = _helper_ctx([stuck, stuck, stuck, stuck, ("Done.\nSTATUS: done", [])],
+                             {"read_file": {"success": True, "content": "x"}})
+    r = run_node("read m.py", ctx)
+    assert roles[-1] == "reasoning" and r.success and r.helped.startswith("stuck repeating")
+
+
+def test_the_helper_takes_over_after_two_failed_edits():
+    TOOLS_E = TOOLS + [{"type": "function", "function": {"name": "edit_file", "parameters": {}}}]
+    roles = []
+    replies = iter([("", [_call("edit_file", {"path": "m.py", "old": "a", "new": "b"})]),
+                    ("", [_call("edit_file", {"path": "m.py", "old": "c", "new": "d"})]),
+                    ("Done.\nSTATUS: done", [])])
+
+    def gen(role, messages, **kw):
+        roles.append(role)
+        t, calls = next(replies)
+        return t, "", calls
+
+    ctx = NodeContext(generate=gen, execute=lambda n, p: {"success": False, "error": "old text not found"},
+                      format_result=lambda n, r: json.dumps(r), tools=TOOLS_E, helper_role="reasoning")
+    r = run_node("edit m.py", ctx)
+    assert roles == ["tool_execution", "tool_execution", "reasoning"]
+    assert r.helped == "edit_file failed twice"
+
+
+def test_no_helper_when_it_is_the_same_model_and_at_most_one_handover():
+    ctx, roles = _helper_ctx([("Could not.\nSTATUS: failed: x", [])], helper=None)
+    assert run_node("x", ctx).success is False and roles == ["tool_execution"]
+    ctx, roles = _helper_ctx([("No.\nSTATUS: failed: a", []), ("Still no.\nSTATUS: failed: b", [])])
+    r = run_node("x", ctx)
+    assert roles == ["tool_execution", "reasoning"] and r.success is False and r.error == "b"
+
+
 # ── 4. node calls ask for no hidden reasoning ─────────────────────────────
 
 

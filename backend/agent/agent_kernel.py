@@ -16879,11 +16879,19 @@ Respond with a JSON object:
                 conversation_id=self.conversation_id or "", async_=True,
             )
 
+        # Eval C (owner 2026-10-02): the Brain helps a struggling tool model -
+        # only when they are different models (a model cannot help itself).
+        _helper = None
+        try:
+            if self._router.resolve("tool_execution").id != self._router.resolve("reasoning").id:
+                _helper = "reasoning"
+        except Exception as _hr_exc:  # noqa: BLE001 - no helper, the node still runs
+            logger.debug("[DER] node helper unresolved: %r", _hr_exc)
         result = run_node(goal, NodeContext(
             generate=_generate, execute=_execute,
             format_result=lambda name, raw: self._format_tool_result_for_step(raw, name),
             tools=tools, prior_results=_prior_results, task=task, workdir=workdir,
-            conv_id=self.conversation_id or "", on_call=_shadow,
+            conv_id=self.conversation_id or "", on_call=_shadow, helper_role=_helper,
         ))
         # What the node actually did, for the step's physics action (REQ-8 redo).
         try:
