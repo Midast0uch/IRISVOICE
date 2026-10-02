@@ -1225,6 +1225,17 @@ class InferenceRouter:
         }
         if _window is not None and self._accepts_num_ctx(transport):
             _gen_kwargs["num_ctx"] = _window
+        # Per-call thinking choice (node tool calls: off). Only a transport
+        # that names `thinking` gets it - a stray keyword would raise TypeError.
+        _thinking = kwargs.pop("thinking", None)
+        if _thinking is not None:
+            import inspect as _inspect
+
+            try:
+                if "thinking" in _inspect.signature(transport.generate).parameters:
+                    _gen_kwargs["thinking"] = _thinking
+            except (TypeError, ValueError):
+                pass
 
         result = transport.generate(
             effective_model,

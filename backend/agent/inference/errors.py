@@ -15,6 +15,22 @@ honestly (see ``specs/der-loop-integrity-display`` REQ-1 and
 from typing import Optional
 
 
+class MalformedToolCallError(RuntimeError):
+    """The server could not parse the MODEL's own tool-call arguments as JSON.
+
+    llama-server parses tool calls server-side and answers HTTP 500 when the
+    model wrote invalid JSON (eval 2026-10-01: a 2.6B tool model put raw line
+    breaks inside a file-content string). That is a model error the caller
+    can feed back to the model - never a connection failure (it was reported
+    as "Could not connect" and failed the whole step).
+    """
+
+    def __init__(self, endpoint: str, detail: str) -> None:
+        self.endpoint = endpoint
+        self.detail = detail
+        super().__init__(f"MalformedToolCallError: {endpoint}: {detail[:200]}")
+
+
 class RateLimitedError(RuntimeError):
     """Raised when a provider refuses a request with HTTP 429 and all
     configured retry attempts are exhausted.

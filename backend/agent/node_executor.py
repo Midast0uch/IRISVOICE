@@ -1,5 +1,10 @@
 """Node executor — one DER node runs as a bounded work loop (execution audit, Phase 2).
 
+Owner decision (2026-10-01) supersedes the engine choice below: the loaded
+TOOL MODEL (role tool_execution) runs node calls; the Brain only for vision.
+The 2026-09-29 failure was a small model choosing ONE tool from a goal string;
+here it runs the full loop with the request, earlier results and tool results.
+
 Owner decision (2026-09-29): ONE engine. The DER-DAG stays the planner and
 brancher; each node runs a bounded loop through ``run_node(goal, ctx)``, in
 this module and not in agent_kernel.py. The old seam — "one node = one tool
@@ -30,6 +35,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+from backend.agent.inference.errors import MalformedToolCallError
+
 logger = logging.getLogger(__name__)
 
 # The developer tool family offered inside a node (developer mode first).
@@ -40,10 +47,10 @@ DEV_NODE_TOOLS = (
 
 _SYSTEM = (
     "You are doing ONE step of a larger coding task, in the project folder "
-    "{workdir}. Use the tools to do the step, then answer with a short plain "
+    "(written `.`). Use the tools to do the step, then answer with a short plain "
     "summary of what you did and what the result was — with no tool call.\n"
     "Rules:\n"
-    "- Paths are relative to the project folder.\n"
+    "- Paths are relative to the project folder: `main.py`, `pkg/mod.py`.\n"
     "- Read a file before you change it.\n"
     "- Change an existing file with edit_file: `old` must be copied exactly from "
     "the file and match once. Use write_file only for a new file or a full rewrite.\n"
@@ -100,6 +107,10 @@ class NodeContext:
     # Owner decision: the Oracle advises and records shadow rows in node
     # loops. Called with (tool, params) for every Brain call; must not block.
     on_call: Optional[Callable[[str, dict], None]] = None
+    # Owner 2026-10-01: the loaded tool model does node tool calls; the Brain
+    # only for vision work. An unbound tool_execution role falls back to the
+    # router's default role (router.resolve), i.e. the Brain.
+    role: str = "tool_execution"
 
 
 @dataclass
@@ -144,6 +155,13 @@ def _clip(text: str, limit: int) -> str:
 
 _ID_KEYS = ("path", "file_path", "command", "pattern", "query", "url")
 
+_MAX_MALFORMED = 2
+_MALFORMED_HINT = (
+    "Your last tool call was rejected: its arguments were not valid JSON. Inside "
+    "JSON strings write a line break as \\n, a tab as \\t, and a quote as \\\". "
+    "Send the tool call again."
+)
+
 
 def _target(params: dict) -> str:
     for key in ("path", "file_path", "command", "pattern", "query"):
@@ -159,6 +177,23 @@ def _failed(raw: Any) -> bool:
         rc = raw.get("returncode")
         return rc not in (None, 0)
     return False
+
+
+def _relative(text: str, workdir: str) -> str:
+    """Write the project folder as `.` in what the model reads. A small model
+    copied the long absolute path and cut it ("c03_rename_across_f" for
+    "c03_rename_across_files", eval 2026-10-01); every failed read followed.
+    The bridge anchors relative paths to the session folder."""
+    if not text or not workdir:
+        return text or ""
+    base = workdir.rstrip("\\/")
+    if len(base) < 4:
+        return text
+    for form in {base, base.replace("\\", "/"), base.replace("\\", "\\\\")}:
+        for sep in ("\\\\", "\\", "/"):
+            text = re.sub(re.escape(form + sep), "./", text, flags=re.I)
+        text = re.sub(re.escape(form), ".", text, flags=re.I)
+    return text
 
 
 def _user_message(goal: str, task: str, prior: List[Dict[str, Any]], limit: int) -> str:
@@ -179,10 +214,12 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
     """Run one node to completion. Never raises."""
     allowed = {t.get("function", {}).get("name") for t in ctx.tools}
     messages: List[Dict[str, Any]] = [
-        {"role": "system", "content": _SYSTEM.format(workdir=ctx.workdir or "(current folder)")},
-        {"role": "user", "content": _user_message(goal, ctx.task, ctx.prior_results, ctx.result_chars)},
+        {"role": "system", "content": _SYSTEM},
+        {"role": "user", "content": _relative(
+            _user_message(goal, ctx.task, ctx.prior_results, ctx.result_chars), ctx.workdir)},
     ]
     tools = _with_close_args(ctx.tools)
+    malformed = 0
     calls: List[Dict[str, Any]] = []
     last_command_failed: Optional[bool] = None
     deadline = time.monotonic() + ctx.budget_s
@@ -192,10 +229,23 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
             remaining = deadline - time.monotonic()
             if remaining <= 5:
                 break
-            text, _think, tool_calls = ctx.generate(
-                "reasoning", messages, tools=tools, max_tokens=ctx.max_tokens,
-                temperature=0.2, timeout_s=min(remaining, 300.0),
-            )
+            try:
+                text, _think, tool_calls = ctx.generate(
+                    ctx.role, messages, tools=tools, max_tokens=ctx.max_tokens,
+                    temperature=0.2, timeout_s=min(remaining, 300.0), thinking=False,
+                )
+            except MalformedToolCallError:
+                # The server rejected the model's own tool-call JSON (a small
+                # model writes raw line breaks inside file text). Like invalid
+                # arguments, it goes back to the model - twice in a row fails.
+                malformed += 1
+                logger.info("[run_node] conv=%s malformed tool-call JSON (%d in a row)",
+                            ctx.conv_id, malformed)
+                if malformed > _MAX_MALFORMED:
+                    raise
+                messages.append({"role": "user", "content": _MALFORMED_HINT})
+                continue
+            malformed = 0
             if not tool_calls:
                 # The Brain judges its own step (it knows whether failing tests
                 # were the goal or the problem); the failing last command is
@@ -249,7 +299,8 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                                        if isinstance(params, dict) and params.get(k)}})
                 logger.info("[run_node] conv=%s %s %s -> %s", ctx.conv_id, name,
                             _target(params or {}), "FAILED" if failed else "ok")
-                content = _clip(ctx.format_result(name, raw) or "", ctx.result_chars)
+                content = _clip(_relative(ctx.format_result(name, raw) or "", ctx.workdir),
+                                ctx.result_chars)
                 batch_results.append(f"[{name} {_target(params or {})}]\n{content}")
                 messages.append({
                     "role": "tool", "tool_call_id": tc.get("id") or name, "name": name,
@@ -275,7 +326,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
         # Budget spent with work still requested: ask for an honest status.
         messages.append({"role": "user", "content": (
             "The time budget for this step is used up. Say what you did and what is unfinished.")})
-        text, _think, _ = ctx.generate("reasoning", messages, tools=None, max_tokens=1024,
+        text, _think, _ = ctx.generate(ctx.role, messages, tools=None, max_tokens=1024,
                                        temperature=0.2, timeout_s=120.0)
         return NodeResult(False, text or "", calls, "node time budget used up")
     except Exception as exc:  # noqa: BLE001 — a broken node is a failed step, not a crashed turn

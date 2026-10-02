@@ -25,7 +25,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, List, Optional, Tuple, Protocol
 
 from backend.agent.call_context import call_class, priority_index
-from backend.agent.inference.errors import RateLimitedError
+from backend.agent.inference.errors import MalformedToolCallError, RateLimitedError
 from backend.agent.rate_meter import get_rate_meter
 
 logger = logging.getLogger(__name__)
@@ -996,6 +996,7 @@ class OpenAICompatTransport:
         timeout_s: Optional[float] = None,
         num_ctx: Optional[int] = None,
         budget_check: Optional[Callable[[], None]] = None,
+        thinking: Optional[bool] = None,
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         import httpx as _httpx
         from backend.utils.ssl_context import get_ssl_context
@@ -1027,6 +1028,13 @@ class OpenAICompatTransport:
         _body["extra_body"] = {
             "chat_template_kwargs": {"enable_thinking": True}
         }
+        # A per-call choice (2026-10-01): node tool calls on the local tool
+        # model ask for no hidden reasoning. llama-server reads
+        # chat_template_kwargs at the TOP level of the request; "extra_body" is
+        # an OpenAI-client convention it does not read.
+        if thinking is not None:
+            _body["chat_template_kwargs"] = {"enable_thinking": bool(thinking)}
+            _body["extra_body"] = {"chat_template_kwargs": {"enable_thinking": bool(thinking)}}
 
         if chunk_callback:
             _text, _think, _tools = self._stream(
@@ -1258,6 +1266,7 @@ class OpenAICompatTransport:
                 with _httpx.Client(
                     timeout=_httpx.Timeout(timeout_s or 60.0), verify=get_ssl_context()
                 ) as _client:
+                    _last_5xx = None
                     for _try_url in [url, url_v1]:
                         try:
                             _resp = _client.post(
@@ -1267,6 +1276,8 @@ class OpenAICompatTransport:
                                 },
                                 json=body,
                             )
+                            if _resp.status_code >= 500:
+                                _last_5xx = _resp
                             if _resp.status_code == 429:
                                 _rate_limited = True
                                 _retry_after = parse_retry_after(
@@ -1292,6 +1303,16 @@ class OpenAICompatTransport:
                         except Exception:
                             continue
                     else:
+                        # The server ANSWERED with a 5xx: say what it said. Only
+                        # no answer at all is a connection failure.
+                        if _last_5xx is not None:
+                            _detail = _last_5xx.text or ""
+                            if "Failed to parse tool call arguments" in _detail:
+                                raise MalformedToolCallError(self._endpoint, _detail[:400])
+                            raise RuntimeError(
+                                f"{self._endpoint} returned "
+                                f"{_last_5xx.status_code}: {_detail[:200]}"
+                            )
                         raise RuntimeError(
                             f"Could not connect to "
                             f"{self._endpoint}"

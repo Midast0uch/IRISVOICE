@@ -915,6 +915,24 @@ class AgentToolBridge:
 
         return tools
 
+    def _over_rate_limit(self, session_id: str, tool_name: str, params: Any = None) -> bool:
+        """Owner 2026-10-01: only DESTRUCTIVE tools are rate-limited. The 10
+        per minute per tool limit turned a fast local tool model's ordinary
+        reads into "Rate limit exceeded" errors it then retried in a loop (24
+        in one coding eval, 0 with the slower cloud Brain). "Destructive" is
+        the permission system's own verdict (classify_tool), the same one that
+        decides when to ask the user."""
+        if not self._security_filter:
+            return False
+        try:
+            from backend.agent.permissions import PermissionTier, classify_tool
+
+            if classify_tool(tool_name, params) != PermissionTier.DESTRUCTIVE:
+                return False
+        except Exception as exc:  # unknown tier: keep the limit
+            logger.debug("[AgentToolBridge] tier lookup failed for %s: %r", tool_name, exc)
+        return self._security_filter.check_tool_execution_rate_limit(session_id, tool_name)
+
     # Tool Execution Methods
 
     async def execute_vision_tool(self, tool_name: str, params: Dict, session_id: str = "unknown") -> Dict:
@@ -928,7 +946,7 @@ class AgentToolBridge:
 
         try:
             # Check rate limit
-            if self._security_filter and self._security_filter.check_tool_execution_rate_limit(session_id, tool_name):
+            if self._over_rate_limit(session_id, tool_name, params):
                 logger.warning(
                     f"[AgentToolBridge] Rate limit exceeded for {tool_name}")
                 return {"error": "Rate limit exceeded for tool execution"}
@@ -1059,7 +1077,7 @@ class AgentToolBridge:
 
         try:
             # Check rate limit
-            if self._security_filter and self._security_filter.check_tool_execution_rate_limit(session_id, tool_name):
+            if self._over_rate_limit(session_id, tool_name, params):
                 logger.warning(
                     f"[AgentToolBridge] Rate limit exceeded for {tool_name}")
                 return {"error": "Rate limit exceeded for tool execution"}
@@ -1254,7 +1272,7 @@ class AgentToolBridge:
 
         try:
             # Check rate limit
-            if self._security_filter and self._security_filter.check_tool_execution_rate_limit(session_id, tool_name):
+            if self._over_rate_limit(session_id, tool_name, params):
                 logger.warning(
                     f"[AgentToolBridge] Rate limit exceeded for {tool_name}")
                 return {"error": "Rate limit exceeded for tool execution"}
