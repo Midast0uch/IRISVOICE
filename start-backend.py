@@ -246,6 +246,14 @@ def _kill_port(port: int) -> None:
 
 _kill_port(BACKEND_PORT)
 
+# A killed backend keeps its LISTENING socket for a few seconds while Windows
+# tears the process tree down; checking at once failed two restarts on
+# 2026-10-01 although the port was free seconds later. Wait for the release.
+import time as _time
+_release_deadline = _time.monotonic() + 15.0
+while _port_occupied(BACKEND_PORT) and _time.monotonic() < _release_deadline:
+    _time.sleep(0.5)
+
 # Verify the configured port is actually free. We must NOT silently fall back
 # to another port (e.g. 8091): the frontend is hardcoded to 8090, so a drift
 # would leave the UI in a permanent "reconnecting" state. If the port is still

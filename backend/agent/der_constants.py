@@ -300,6 +300,10 @@ STUCK_STREAK_N = 2
 # Consecutive success+new+matched steps with an unmoved verified_fraction
 # (idling-in-neutral) before the gate fires.
 IDLE_STREAK_N = 2
+# Replans the gate may force in one run. A replan that did not unstick the run
+# rarely helps again; unbounded, it fed a storm (coding c15, 2026-10-01: 10+
+# replans of 0-call steps, 49 Brain calls). Past the cap the plan continues.
+STREAK_GATE_MAX_FIRES = 2
 # Any load-bearing step with match != matched caps the run below full pass
 # (AC5.6) — the load-bearing veto on run grade.
 LOAD_BEARING_VETO = True

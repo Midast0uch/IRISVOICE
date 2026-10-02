@@ -308,6 +308,8 @@ class DirectorQueue:
     # Settled-step count at the stuck-streak gate's last evaluation: the gate
     # decides again only after a new step settles (a replan adds none).
     streak_gate_settled: int = -1
+    # Replans the gate forced in this run (capped by STREAK_GATE_MAX_FIRES).
+    streak_gate_fires: int = 0
 
     # ── Mode management (Phase 3) ──────────────────────────────────────
 

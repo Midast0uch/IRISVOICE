@@ -52,8 +52,33 @@ _SYSTEM = (
     "- Do only this step. Do not ask the user questions.\n"
     "End your final answer with one line: `STATUS: done` when the step's goal is "
     "met (a step that only has to OBSERVE failing tests is met once you saw "
-    "them), or `STATUS: failed: <reason>` when it is not."
+    "them), or `STATUS: failed: <reason>` when it is not.\n"
+    "When a tool call will finish the step, set its `step_done` argument to true "
+    "and put a one-line summary of the step in `step_summary`: if every tool call "
+    "in that answer succeeds, the step ends there and you are not asked again."
 )
+
+# Every node tool takes these two optional arguments (owner 2026-10-01). A
+# model that sends tool calls leaves the text part empty (gemma via Ollama:
+# 0 of 15 steps closed through a STATUS line in the tool answer), but it fills
+# arguments, so the closing signal rides on the call. Removed before dispatch.
+_CLOSE_ARGS = {
+    "step_done": {"type": "boolean",
+                  "description": "true when this call finishes the step"},
+    "step_summary": {"type": "string",
+                     "description": "with step_done: one line on what the step did"},
+}
+
+
+def _with_close_args(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out = []
+    for t in tools:
+        fn = dict(t.get("function") or {})
+        params = dict(fn.get("parameters") or {"type": "object"})
+        params["properties"] = {**(params.get("properties") or {}), **_CLOSE_ARGS}
+        fn["parameters"] = params
+        out.append({**t, "function": fn})
+    return out
 
 
 @dataclass
@@ -154,6 +179,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
         {"role": "system", "content": _SYSTEM.format(workdir=ctx.workdir or "(current folder)")},
         {"role": "user", "content": _user_message(goal, ctx.task, ctx.prior_results, ctx.result_chars)},
     ]
+    tools = _with_close_args(ctx.tools)
     calls: List[Dict[str, Any]] = []
     last_command_failed: Optional[bool] = None
     deadline = time.monotonic() + ctx.budget_s
@@ -164,7 +190,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
             if remaining <= 5:
                 break
             text, _think, tool_calls = ctx.generate(
-                "reasoning", messages, tools=ctx.tools, max_tokens=ctx.max_tokens,
+                "reasoning", messages, tools=tools, max_tokens=ctx.max_tokens,
                 temperature=0.2, timeout_s=min(remaining, 300.0),
             )
             if not tool_calls:
@@ -177,14 +203,24 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                 return NodeResult(ok, summary, calls, reason if not ok else "",
                                   last_command_failed=bool(last_command_failed))
             messages.append({"role": "assistant", "content": text or None, "tool_calls": tool_calls})
+            batch_failed = False
+            batch_results: List[str] = []
+            batch_done = False
+            batch_summaries: List[str] = []
             for tc in tool_calls:
                 fn = tc.get("function") or {}
                 name = fn.get("name", "")
                 raw_args = fn.get("arguments") or "{}"
                 try:
                     params = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
-                except ValueError:
+                except (ValueError, TypeError):
                     params = None
+                if isinstance(params, dict):
+                    if params.pop("step_done", False) is True:
+                        batch_done = True
+                    _sum = params.pop("step_summary", None)
+                    if isinstance(_sum, str) and _sum.strip():
+                        batch_summaries.append(_sum.strip())
                 if params is None:
                     raw: Any = {"success": False, "error": "arguments were not valid JSON; send a JSON object"}
                 elif name not in allowed:
@@ -200,15 +236,35 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                     except Exception as exc:  # noqa: BLE001 — typed result, the model reacts
                         raw = {"success": False, "error": f"{type(exc).__name__}: {exc}", "error_type": "exception"}
                 failed = _failed(raw)
+                batch_failed = batch_failed or failed
                 if name == "run_command":
                     last_command_failed = failed
                 calls.append({"tool": name, "target": _target(params or {}), "ok": not failed})
                 logger.info("[run_node] conv=%s %s %s -> %s", ctx.conv_id, name,
                             _target(params or {}), "FAILED" if failed else "ok")
+                content = _clip(ctx.format_result(name, raw) or "", ctx.result_chars)
+                batch_results.append(f"[{name} {_target(params or {})}]\n{content}")
                 messages.append({
                     "role": "tool", "tool_call_id": tc.get("id") or name, "name": name,
-                    "content": _clip(ctx.format_result(name, raw) or "", ctx.result_chars),
+                    "content": content,
                 })
+            # Closed in the same answer (owner 2026-10-01): the step's last
+            # call used to cost one more model call only to hear "done". The
+            # summary was written before the results, so the results go with it
+            # (later steps read them instead of reading the files again). Any
+            # failed tool still gets the follow-up call.
+            if not batch_failed and (batch_done or _STATUS.search(text or "")):
+                ok, _reason, summary = _status(text or "")
+                if batch_done:
+                    ok = True
+                    summary = "\n".join(batch_summaries) or summary
+                if ok:
+                    logger.info("[run_node] conv=%s done in the tool answer: %d call(s), "
+                                "last_cmd_failed=%s", ctx.conv_id, len(calls),
+                                bool(last_command_failed))
+                    return NodeResult(True, (summary + "\n\nTool results:\n"
+                                             + "\n\n".join(batch_results)).strip(),
+                                      calls, last_command_failed=bool(last_command_failed))
         # Budget spent with work still requested: ask for an honest status.
         messages.append({"role": "user", "content": (
             "The time budget for this step is used up. Say what you did and what is unfinished.")})

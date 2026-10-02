@@ -288,6 +288,58 @@ def test_bt2_topo_violation_forces_fire_regardless_of_streaks(monkeypatch):
     assert len(k.steering_calls) == 1
 
 
+def test_bt2_gate_replans_at_most_twice_per_run():
+    """c15 2026-10-01: each replan made 0-call steps that read as stuck again;
+    the gate replanned 10+ times (49 Brain calls). Past the cap it holds."""
+    from backend.agent.der_constants import STREAK_GATE_MAX_FIRES
+    from backend.agent.tool_envelope import ToolResultEnvelope
+
+    k = _Kernel()
+    plan, queue = _queue_with_envelopes([
+        ("new", "matched", "none"),
+        ("repeat_of_s1", "matched", "circling"),
+        ("repeat_of_s1", "matched", "circling"),
+    ])
+    fired = [k._der_streak_gate(plan, queue, "sess")]
+    for n in range(4, 8):  # every boundary settles one more stuck step
+        it = QueueItem(step_id=f"s{n}", step_number=n, description=f"step {n}")
+        it.envelope = ToolResultEnvelope(status="success", summary="s", match="matched",
+                                         novelty="repeat_of_s1", stuck_shape="circling",
+                                         step_id=f"s{n}")
+        queue.items.append(it)
+        queue.completed_ids.append(it.step_id)
+        fired.append(k._der_streak_gate(plan, queue, "sess"))
+    assert STREAK_GATE_MAX_FIRES == 2
+    assert fired == [True, True, False, False, False]
+    assert len(k.steering_calls) == 2
+
+
+def test_node_steps_are_keyed_by_their_calls_not_by_the_empty_tool():
+    """A node item has no tool and no params, so params_digest(None, {}) was
+    one key for every node step: any node read as a repeat of the first."""
+    from backend.agent.tool_envelope import params_digest
+
+    def node(i, calls):
+        it = QueueItem(step_id=f"s{i}", step_number=i, description=f"node {i}")
+        it.node_digest = params_digest("run_node", {"calls": calls})
+        return it
+
+    k = _Kernel()
+    queue = DirectorQueue(objective="o", items=[])
+    completed = []
+    a = node(1, [["read_file", "test_roman.py"]])
+    _run_finalize(k, queue, a, "Read the tests: 10 cases for to_roman.", True, completed)
+    completed.append(a)
+    b = node(2, [["run_command", "pytest test_roman.py"]])
+    _run_finalize(k, queue, b, "Ran pytest: 7 failed, 3 passed.", True, completed)
+    completed.append(b)
+    assert b.envelope.novelty == "new"
+    # the same calls again IS a repeat - the detector still works
+    c = node(3, [["run_command", "pytest test_roman.py"]])
+    _run_finalize(k, queue, c, "Ran pytest again: 7 failed, 3 passed.", True, completed)
+    assert c.envelope.novelty == "repeat_of_s2"
+
+
 def test_bt2_gate_failure_is_advisory(monkeypatch):
     k = _Kernel()
     plan, queue = _queue_with_envelopes([
@@ -303,6 +355,45 @@ def test_bt2_gate_failure_is_advisory(monkeypatch):
     monkeypatch.setattr(te, "evaluate_streak", _boom)
     assert not k._der_streak_gate(plan, queue, "sess")
     assert k.steering_calls == []
+
+
+# ── Continuation consult: no Brain call under COMPRESS (owner 2026-10-01) ───
+
+
+def _finalize_last_step(k, rec, monkeypatch):
+    """Finalize the only step of a FULL-mode queue (so the queue completes)
+    with the physics recommending `rec`; return the consult calls made."""
+    from backend.agent.der_loop import ExecutionMode
+    import backend.gateway.iris_ffi as ffi
+
+    consults = []
+    k._der_plan_next_step = lambda *a, **kw: consults.append(a) or None
+    monkeypatch.setattr(ffi, "ffi_caducean_recommend", lambda _s: rec)
+    item = QueueItem(step_id="s1", step_number=1, description="run the tests")
+    queue = DirectorQueue(objective="obj", items=[item], mode=ExecutionMode.FULL)
+    queue.completed_ids.append("s1")
+    _run_finalize(k, queue, item, "3 passed", True, [])
+    return consults
+
+
+def test_continuation_consult_makes_no_brain_call_under_compress(monkeypatch):
+    """13 of 18 consults in one coding run ran under COMPRESS and their
+    answer was discarded (the plan may not grow there)."""
+    assert _finalize_last_step(_Kernel(), 1, monkeypatch) == []
+
+
+def test_continuation_consult_still_runs_outside_compress(monkeypatch):
+    assert len(_finalize_last_step(_Kernel(), 2, monkeypatch)) == 1
+
+
+def test_full_mode_progress_check_is_gone():
+    """Its Brain call ran after every step from step 3 on and the caller
+    ignored the answer (16 calls in one coding run)."""
+    from pathlib import Path
+
+    src = Path("backend/agent/agent_kernel.py").read_text(encoding="utf-8")
+    assert "def _der_check_full_progress" not in src
+    assert "self._der_check_full_progress(" not in src
 
 
 # ── BT-3: embed warm — failure swallowed, success encodes warmup ────────────

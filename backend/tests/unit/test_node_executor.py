@@ -123,6 +123,58 @@ def test_every_valid_call_reaches_the_shadow_hook_and_a_broken_hook_is_harmless(
     assert executed == [("read_file", {"path": "m.py"})] and r.success
 
 
+def test_status_in_the_tool_answer_closes_the_step_without_another_call():
+    """Owner 2026-10-01: the last call of every step cost one more model call
+    only to hear "done" (~43 of 205 Brain calls in one coding run)."""
+    script = [("Ran the app; it starts.\nSTATUS: done",
+               [_call("run_command", {"command": "python app.py"})])]
+    ctx, seen, executed = _ctx(script, {"run_command": {"success": True, "returncode": 0,
+                                                        "stdout": "area 3.14"}})
+    r = run_node("run the app to verify the fix", ctx)
+    assert len(seen) == 1, "the step must end without a second model call"
+    assert executed == [("run_command", {"command": "python app.py"})]
+    assert r.success and r.summary.startswith("Ran the app; it starts.")
+    # the summary was written before the result, so the result goes with it
+    assert "area 3.14" in r.summary
+
+
+def test_step_done_argument_closes_the_step_and_never_reaches_the_tool():
+    """A tool-calling model leaves the text part empty (gemma via Ollama: 0 of
+    15 steps closed through a STATUS line), so the close rides on the call."""
+    script = [("", [_call("edit_file", {"path": "m.py", "old": "a", "new": "b",
+                                        "step_done": True,
+                                        "step_summary": "Renamed a to b in m.py."})])]
+    ctx, seen, executed = _ctx(script, {"edit_file": {"success": True}})
+    r = run_node("rename a to b", ctx)
+    assert len(seen) == 1
+    assert executed == [("edit_file", {"path": "m.py", "old": "a", "new": "b"})]
+    assert r.success and r.summary.startswith("Renamed a to b in m.py.")
+
+
+def test_every_offered_tool_carries_the_close_arguments():
+    offered = []
+
+    def gen(role, messages, tools=None, **k):
+        offered.extend(tools or [])
+        return "done", "", []
+
+    ctx = NodeContext(generate=gen, execute=lambda n, p: {}, format_result=lambda n, r: "",
+                      tools=TOOLS)
+    run_node("x", ctx)
+    props = [t["function"]["parameters"]["properties"] for t in offered]
+    assert props and all("step_done" in p and "step_summary" in p for p in props)
+    assert "properties" not in TOOLS[0]["function"]["parameters"], "shared schemas mutated"
+
+
+def test_a_failed_tool_in_a_closing_answer_still_gets_the_follow_up_call():
+    script = [("Edited it.\nSTATUS: done", [_call("edit_file", {"path": "m.py", "old": "x", "new": "y"})]),
+              ("The edit did not apply; old text not found.\nSTATUS: failed: edit not applied", [])]
+    ctx, seen, _ = _ctx(script, {"edit_file": {"success": False, "error": "old text not found"}})
+    r = run_node("fix m.py", ctx)
+    assert len(seen) == 2
+    assert r.success is False and r.error == "edit not applied"
+
+
 def test_a_broken_brain_is_a_failed_node_not_a_crash():
     def boom(*a, **k):
         raise RuntimeError("Ollama returned 500")

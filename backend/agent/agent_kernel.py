@@ -218,6 +218,18 @@ def _der_physics_settle(owner, session_id: str) -> None:
         )
 
 
+def _step_digest(item) -> str:
+    """Repeat-detection key of a settled step: a node step is the calls it
+    made (``node_digest``, set by ``_der_run_node``); a direct tool step is
+    its tool + params. Module level on purpose (stand-in kernels)."""
+    _nd = getattr(item, "node_digest", None)
+    if isinstance(_nd, str) and _nd:
+        return _nd
+    from backend.agent.tool_envelope import params_digest
+
+    return params_digest(getattr(item, "tool", None), getattr(item, "params", None))
+
+
 def _memory_events_submit(owner, fn_name: str, **kwargs) -> None:
     """Typed execution events (spec research-memory-chain-browser D9 / Wave E)
     on lane("memory_events"): never on the answer path, never raises. The
@@ -11801,10 +11813,7 @@ Respond with a JSON object:
             _seen_params: Dict[str, str] = {}
             _step_summaries: List[str] = []
             for _pit in completed_items:
-                _pd = params_digest(
-                    getattr(_pit, "tool", None),
-                    getattr(_pit, "params", None),
-                )
+                _pd = _step_digest(_pit)
                 if _pd:
                     _seen_params.setdefault(_pd, getattr(_pit, "step_id", ""))
                 _pe = getattr(_pit, "envelope", None)
@@ -11940,10 +11949,7 @@ Respond with a JSON object:
                     or ""
                 ),
                 tool=getattr(item, "tool", None),
-                params_digest=params_digest(
-                    getattr(item, "tool", None),
-                    getattr(item, "params", None),
-                ),
+                params_digest=_step_digest(item),
                 verified_fraction=_env_frac,
                 prev_verified_fraction=_prev_frac,
                 raw_doc_id=_raw_doc_id,
@@ -12038,10 +12044,7 @@ Respond with a JSON object:
                 # -> first step that ran it. FIFO-capped likewise.
                 _sd = dict(getattr(self, "_der_seen_dispatches", {}))
                 _sdb = dict(_sd.get(_conv, {}))
-                _pd_self = params_digest(
-                    getattr(item, "tool", None),
-                    getattr(item, "params", None),
-                )
+                _pd_self = _step_digest(item)
                 _sdb.setdefault(_pd_self, item.step_id)
                 while len(_sdb) > 200:
                     _sdb.pop(next(iter(_sdb)))
@@ -12227,6 +12230,17 @@ Respond with a JSON object:
                     )
                 return False
 
+            from backend.agent.der_constants import STREAK_GATE_MAX_FIRES
+
+            if queue.streak_gate_fires >= STREAK_GATE_MAX_FIRES:
+                _counters["gate_capped"] = _counters.get("gate_capped", 0) + 1
+                logger.info(
+                    "[DER:streak-gate] would fire (%s) but the run already "
+                    "replanned %d time(s) - plan continues", reason,
+                    queue.streak_gate_fires,
+                )
+                return False
+            queue.streak_gate_fires += 1
             _counters["gate_fired"] += 1
             # Goal contract (REQ-7 AC7.2): a coverage-stall fire is a
             # coverage stall — count it on the contract so the stall rate
@@ -16733,6 +16747,15 @@ Respond with a JSON object:
             ]
         except Exception:  # noqa: BLE001 - bookkeeping never fails a step
             item.node_calls = []
+        # A node's identity for repeat detection is the calls it made: its
+        # item has no tool and no params (the planner emits goals only), so
+        # params_digest(None, {}) was one key for EVERY node step and any node
+        # could read as a repeat of another (c15, 2026-10-01: a replan storm).
+        from backend.agent.tool_envelope import params_digest
+
+        item.node_digest = params_digest("run_node", {"calls": [
+            [str(c.get("tool") or ""), str(c.get("target") or "")] for c in (result.calls or [])
+        ]})
         return result.as_step_result(), result.success
 
     def _der_run_step_execution(
@@ -19459,6 +19482,27 @@ Respond with a JSON object:
                 getattr(queue.mode, "value", queue.mode),
                 _cont_complete, "RUN" if _cont_run else "SKIP",
             )
+            # `rec == 1` (caducean COMPRESS) forbids growing the plan, so under
+            # COMPRESS the consult can change nothing: a "not done" answer was
+            # discarded and a "done" answer ends a queue that is already
+            # complete. Owner 2026-10-01: skip its Brain call (13 of 18 consults
+            # in one coding run were discarded; they ran only to give the paused
+            # Oracle `done`/`depth_route` rows - Session 366's reason). Fold-back:
+            # rec decides whether the consult runs, so it is read first.
+            if _cont_run:
+                _der_physics_settle(self, _session)
+                try:
+                    from backend.gateway.iris_ffi import ffi_caducean_recommend
+
+                    _rec_now = ffi_caducean_recommend(_session)
+                except Exception:
+                    _rec_now = 2
+                if _rec_now == 1:
+                    _cont_run = False
+                    logger.info(
+                        "[DER] continuation consult skipped during COMPRESS "
+                        "(rec=1) - the plan cannot expand"
+                    )
             if _cont_run:
                 _next_tool = self._der_plan_next_step(
                     plan.original_task,
@@ -19467,35 +19511,6 @@ Respond with a JSON object:
                     _turn_id,
                     step_outputs=step_outputs,
                 )
-                # Session 366: the consult now RUNS whenever the queue completes
-                # in an expanding mode. `rec == 1` (caducean COMPRESS) still stops
-                # the plan from GROWING - which is what the gate was written for
-                # ("do NOT expand the plan with new explorer steps") - but it must
-                # not stop the consult itself, because the consult is ALSO the
-                # "are we actually done?" check and the ONLY site that scores
-                # `depth_route` and `done`. MEASURED before this change: every
-                # completed turn logged `continuation gate: rec=1 ... SKIP`, so
-                # those consumers could never produce a row however much traffic
-                # was driven. The EXPANSION is discarded; the SCORE is kept.
-                # Fold-back: rec decides only whether this expansion is
-                # kept, so it is read here — after the consult — and the
-                # physics update ran alongside the consult's model call.
-                _rec_now = 2
-                if _next_tool:
-                    _der_physics_settle(self, _session)
-                    try:
-                        from backend.gateway.iris_ffi import ffi_caducean_recommend
-
-                        _rec_now = ffi_caducean_recommend(_session)
-                    except Exception:
-                        _rec_now = 2
-                if _next_tool and _rec_now == 1:
-                    logger.info(
-                        "[DER] continuation step SUPPRESSED during COMPRESS "
-                        "(rec=1) - consult ran and scored, plan does not expand: %r",
-                        str(_next_tool.get("description", ""))[:120],
-                    )
-                    _next_tool = None
                 if _next_tool:
                     # GOAL ONLY: the continuation step carries no tool/params.
                     # _der_run_step_execution resolves it via the single resolver
@@ -19562,14 +19577,10 @@ Respond with a JSON object:
                     except Exception:
                         pass  # never block the DER loop on an emit failure
 
-            # If mode is FULL and multiple steps completed,
-            # also check for overall progress and re-synthesize.
-            if queue.mode == ExecutionMode.FULL and len(completed_items) >= 3:
-                self._der_check_full_progress(
-                    plan.original_task,
-                    completed_items,
-                    _turn_id,
-                )
+            # The FULL-mode progress check (_der_check_full_progress) was
+            # REMOVED 2026-10-01 (owner): one Brain call after every step from
+            # step 3 on, and the caller ignored its answer (16 calls in one
+            # coding run, 1 "drift", logged only).
         except Exception as _explorer_exc:
             logger.warning(
                 "[DER] Explorer escalation failed: %s", _explorer_exc
@@ -20441,99 +20452,6 @@ Respond with a JSON object:
         except Exception as exc:
             logger.warning(
                 "[DER] _der_plan_next_step failed: %s", exc
-            )
-            return None
-
-    def _der_check_full_progress(
-        self,
-        task_objective: str,
-        completed_items: List,
-        turn_id: Optional[str] = None,
-    ) -> Optional[str]:
-        """
-        FULL mode: check overall task progress and return a synthesis
-        suggestion if the task is drifting.  Returns None if on track.
-        Called every 3 steps in FULL mode.
-        """
-        try:
-            if len(completed_items) < 2:
-                return None
-
-            done_summary = "\n".join(
-                f"  {i.step_number}. {i.description}"
-                for i in completed_items[-5:]
-            )
-
-            prompt = (
-                "You are the Director's navigator. Assess progress so far.\n\n"
-                f"OBJECTIVE: {task_objective}\n\n"
-                f"STEPS DONE ({len(completed_items)}):\n{done_summary}\n\n"
-                "Is the task on track toward completion? Are we drifting or stuck?\n"
-                "Respond with JSON only:\n"
-                '{"on_track": true|false, "note": "short assessment", '
-                '"suggestion": "what to do next if not on track"}'
-            )
-
-            response = self.infer(
-                prompt, role="reasoning", max_tokens=300, temperature=0.1
-            )
-            raw = response.raw_text or ""
-
-            import re as _re
-            import json as _json
-
-            m = _re.search(r"\{[\s\S]+\}", raw)
-            if m:
-                data = _json.loads(m.group())
-                # REQ-14 AC14.1 (T18): shadow-score the `on_track` consumer and
-                # emit the row. The Brain's drift verdict still decides; the
-                # engine only observes (AC14.2 — it never writes the note or the
-                # suggestion).
-                try:
-                    from backend.agent import monitor_shadow as _ms
-
-                    # 3-TUPLE, not 2 (2026-09-27) - same defect as the `done`
-                    # site above: monitor_bool returns (value, text, shadow_row)
-                    # and a 2-name unpack raised ValueError before emit_row,
-                    # losing every `on_track` row in silence.
-                    _ot_value, _ot_text, _ot_row = _ms.monitor_bool(
-                        "on_track",
-                        _monitor_statement(task_objective, completed_items),
-                        criteria_version="on_track/v2",
-                        brain_bool_fn=lambda: bool(data.get("on_track", True)),
-                        brain_text_fn=lambda: str(
-                            data.get("suggestion", "") or ""),
-                        engine=_ms.AUTO_ENGINE,
-                        defer=True,  # shadow score off the reply path
-                    )
-                    _ms.emit_row(_ot_row)
-                except Exception as _mon_err:  # noqa: BLE001 — advisory observer
-                    # VISIBLE, but still ADVISORY (2026-09-27) — see the twin
-                    # comment on the `done` site above: a bare `pass` here hid a
-                    # lost calibration row completely.
-                    logger.warning(
-                        "[monitor] on_track shadow consult failed "
-                        "(row NOT recorded): %r",
-                        _mon_err,
-                    )
-                if not data.get("on_track", True):
-                    note = data.get("note", "")
-                    suggestion = data.get("suggestion", "")
-                    logger.info(
-                        "[DER] FULL mode progress check — drift detected: %s", note
-                    )
-                    if suggestion:
-                        # The suggestion is logged for debugging but not
-                        # automatically applied — the Director decides.
-                        logger.info(
-                            "[DER] FULL mode suggestion: %s", suggestion
-                        )
-                    return note
-            return None
-
-        except Exception as exc:
-            logger.warning(
-                "[DER] _der_check_full_progress failed: %s", exc
             )
             return None
 

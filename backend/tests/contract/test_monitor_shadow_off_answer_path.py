@@ -82,7 +82,11 @@ def test_kernel_turn_end_monitors_defer():
             consumers[c.args[0].value] = (
                 isinstance(kw.get("defer"), ast.Constant) and kw["defer"].value is True)
     assert consumers.get("done") is True, "`done` shadow score is back on the reply path"
-    assert consumers.get("on_track") is True, "`on_track` shadow score is back on the reply path"
+    # `on_track` had one site, the FULL-mode progress check, REMOVED 2026-10-01
+    # (owner: its Brain call's answer was ignored). Any monitor that comes back
+    # - on_track or another - must defer too.
+    inline = sorted(k for k, deferred in consumers.items() if not deferred)
+    assert not inline, f"shadow score(s) back on the reply path: {inline}"
 
 
 # ── review_verdict, depth_route, and the monitor input size (2026-10-01) ──
