@@ -749,6 +749,15 @@ async def lifespan(app: FastAPI):
                         f"    [Model] Restored provider={_provider} "
                         f"reasoning={_reasoning} tool={_tool_exec}"
                     )
+                    # The bound API models' real windows, read from their
+                    # providers on a daemon thread (unknown = 8192 budget).
+                    try:
+                        from backend.agent.inference.provider_catalog import prefetch_api_windows
+
+                        _wr = app.state.agent_kernel._router
+                        prefetch_api_windows([_wr.resolve(_role) for _role in ("reasoning", "tool_execution")])
+                    except Exception as _pw:
+                        logger.warning(f"  - API window prefetch skipped: {_pw}")
                 except Exception as _me:
                     logger.warning(
                         f"  - Could not restore model config to kernel: {_me}"

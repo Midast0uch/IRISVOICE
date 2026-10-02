@@ -306,3 +306,85 @@ def model_belongs_to_provider(
     if not cat:
         return True
     return any(m.get("id") == model_id for m in cat)
+
+
+# ── Context windows the API providers publish (their own /models list) ─────
+#
+# An API model missing from the kernel's _KNOWN_CONTEXT_WINDOWS table fell to
+# the 8192 default, while a local model gets its real loaded n_ctx. Eval runs
+# 2026-10-02: Brain mercury-2.5 (Inception publishes 260000) and OpenRouter
+# nemotron-3-super (262144) were both budgeted as 8192. OpenRouter and
+# Inception publish `context_length` in GET {base}/models; OpenRouter's
+# `top_provider.context_length` is the window actually served. NVIDIA
+# publishes none (its models keep the table/default).
+#
+# The kernel only READS this cache (no network inside a window lookup); the
+# gateway fills it off the answer path at startup and on every role bind.
+_API_WINDOWS: Dict[str, Dict[str, int]] = {}  # base url -> {model id: tokens}
+_API_WINDOWS_FETCHING: set = set()
+
+
+def api_context_window(base_url: str, model: Optional[str]) -> Optional[int]:
+    """Window *model* has at the provider behind *base_url*, if it published one."""
+    if not base_url or not model:
+        return None
+    return (_API_WINDOWS.get(base_url.rstrip("/")) or {}).get(model)
+
+
+def _fetch_api_windows(provider_id: str, base_url: str, api_key: str) -> None:
+    import logging
+    import time
+
+    import httpx
+
+    from backend.utils.ssl_context import get_ssl_context
+
+    log = logging.getLogger(__name__)
+    t0 = time.monotonic()
+    try:
+        r = httpx.get(f"{base_url}/models", timeout=10.0, verify=get_ssl_context(),
+                      headers={"Authorization": f"Bearer {api_key}"} if api_key else {})
+        if r.status_code != 200:
+            log.warning("[ctx_window] provider=%s %s/models answered %d - API windows stay unknown",
+                        provider_id, base_url, r.status_code)
+            return
+        windows: Dict[str, int] = {}
+        for m in r.json().get("data") or []:
+            top = m.get("top_provider") if isinstance(m.get("top_provider"), dict) else {}
+            n = top.get("context_length") or m.get("context_length")
+            if isinstance(m.get("id"), str) and isinstance(n, int) and n > 0:
+                windows[m["id"]] = n
+        _API_WINDOWS[base_url] = windows
+        log.info("[ctx_window] provider=%s published windows for %d model(s) in %.1fs",
+                 provider_id, len(windows), time.monotonic() - t0)
+    except Exception as exc:  # noqa: BLE001 - a lookup aid; the table/default still apply
+        log.warning("[ctx_window] provider=%s %s/models failed: %s", provider_id, base_url, exc)
+    finally:
+        _API_WINDOWS_FETCHING.discard(base_url)
+
+
+def prefetch_api_windows(instances) -> None:
+    """Fill the window cache for the API *instances* on a daemon thread.
+
+    Never blocks and never raises; one fetch per provider base URL per process.
+    """
+    import threading
+
+    try:
+        from backend.agent.inference.keyring import get_secret
+        from backend.agent.inference.provider import ProviderKind
+    except Exception:  # noqa: BLE001
+        return
+    for inst in instances or []:
+        try:
+            if inst is None or inst.kind != ProviderKind.API or not inst.api_base_url:
+                continue
+            base = inst.api_base_url.rstrip("/")
+            if base in _API_WINDOWS or base in _API_WINDOWS_FETCHING:
+                continue
+            _API_WINDOWS_FETCHING.add(base)
+            key = (inst.api_key or get_secret(inst.id) or "").strip()
+            threading.Thread(target=_fetch_api_windows, args=(inst.id, base, key),
+                             name=f"ctx-window-{inst.id}", daemon=True).start()
+        except Exception:  # noqa: BLE001
+            continue

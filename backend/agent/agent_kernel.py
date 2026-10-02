@@ -2231,6 +2231,23 @@ class AgentKernel:
             except Exception:
                 pass
 
+        # 2b. Authoritative for an API model: the window its provider publishes
+        #     in its own /models list (provider_catalog.api_context_window; the
+        #     gateway prefetches it off the answer path, this only reads the
+        #     cache). 2026-10-02: mercury-2.5 (260000) and OpenRouter
+        #     nemotron-3-super (262144) fell to the 8192 default, and the Brain
+        #     answered "read_file returned no content" for a file the node read.
+        _r = getattr(self, "_router", None)
+        if _r is not None:
+            try:
+                from backend.agent.inference.provider_catalog import api_context_window
+
+                _n_api = api_context_window(getattr(_r.resolve(role), "api_base_url", ""), model)
+                if _n_api:
+                    return ResolvedWindow(_n_api, "authoritative")
+            except Exception:
+                pass
+
         # 3. Table — (provider, substring) registry lookup, case-insensitive.
         model_lower = model.lower().strip()
         for reg_provider, reg_substring, tokens in self._KNOWN_CONTEXT_WINDOWS:

@@ -484,6 +484,10 @@ def _extract_ollama_usage(payload: Dict[str, Any]) -> Optional[Dict[str, int]]:
 # ---------------------------------------------------------------------------
 
 
+# Upper bound on the hidden-reasoning room added to an API call's max_tokens.
+_REASONING_HEADROOM_MAX = 16384
+
+
 class ApiHttpxTransport:
     """Remote API provider via direct httpx streaming.
 
@@ -509,6 +513,23 @@ class ApiHttpxTransport:
         # InferenceRouter.generate() after each call so the kernel can credit
         # the pill's counter with a REAL number instead of an estimate.
         self.last_usage: Optional[Dict[str, int]] = None
+        # model -> hidden reasoning tokens it was seen to spend (bounded: one
+        # entry per model). A caller's max_tokens is the ANSWER budget; a model
+        # that reasons in hidden tokens spends them from the same cap.
+        # 2026-10-02, mercury-2.5 at max_tokens=1024: 818-979 reasoning tokens,
+        # finish_reason=length, content 0-345 chars (empty or cut mid-plan).
+        self._reasoning_headroom: Dict[str, int] = {}
+
+    def _learn_reasoning(self, model: str, result: Dict[str, Any]) -> int:
+        """Record the hidden reasoning tokens a response reports; return them."""
+        try:
+            _rt = int(((result.get("usage") or {}).get("completion_tokens_details") or {})
+                      .get("reasoning_tokens") or 0)
+        except (TypeError, ValueError, AttributeError):
+            return 0
+        if _rt > self._reasoning_headroom.get(model, 0):
+            self._reasoning_headroom[model] = min(_rt, _REASONING_HEADROOM_MAX)
+        return _rt
 
     def _record_success(
         self, text: str, usage: Optional[Dict[str, int]] = None
@@ -593,7 +614,8 @@ class ApiHttpxTransport:
         body: Dict[str, Any] = {
             "model": model,
             "messages": messages,
-            "max_tokens": max_tokens,
+            # answer budget + the hidden reasoning this model was seen to spend
+            "max_tokens": max_tokens + self._reasoning_headroom.get(model, 0),
             "temperature": temperature,
         }
         if tools:
@@ -612,7 +634,7 @@ class ApiHttpxTransport:
                 model,
                 msg_count,
                 total_chars,
-                max_tokens,
+                body["max_tokens"],
                 temperature,
             )
         except Exception:
@@ -837,6 +859,7 @@ class ApiHttpxTransport:
         _t0 = _perf_t.perf_counter()
         result = None
         _rate_limited = False
+        _grown = False
         for attempt in range(3):
             _record_attempt(self)
             if budget_check is not None:
@@ -875,6 +898,20 @@ class ApiHttpxTransport:
                             f"{_resp.text[:200]}"
                         )
                     result = _resp.json()
+                    # Cut at the cap by hidden reasoning: the SAME payload
+                    # would be cut again, so resend once with room for it.
+                    _rt = self._learn_reasoning(model, result)
+                    if (_rt and not _grown and attempt < 2
+                            and result.get("choices", [{}])[0].get("finish_reason") == "length"):
+                        _grown = True
+                        body = {**body, "max_tokens": body["max_tokens"]
+                                + min(2 * _rt, _REASONING_HEADROOM_MAX)}
+                        logger.warning(
+                            "[ApiHttpx] answer cut by %d hidden reasoning tokens "
+                            "(finish_reason=length) -- resending with max_tokens=%d",
+                            _rt, body["max_tokens"],
+                        )
+                        continue
                     # REQ-6 AC6.3: an empty response (no content AND no
                     # tool_calls) retries the SAME payload before raising —
                     # the Empty disease hit 4 downstream call sites

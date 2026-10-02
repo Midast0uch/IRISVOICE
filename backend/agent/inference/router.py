@@ -438,7 +438,13 @@ class InferenceRouter:
         """
         if not messages:
             return messages
-        reserve = max(256, int(max_tokens or 0)) + 256
+        # The answer reserve takes at most HALF the window. A node asks for
+        # max_tokens=8192; on an 8192 window the old reserve (8192 + 256) left
+        # a 256-token prompt budget, so every API node call went out as
+        # system + last message only - the node never saw its own tool results
+        # (2026-10-02: budget=256 on every call, up to 14 messages dropped).
+        # A longer answer stops at the window (finish_reason=length) instead.
+        reserve = min(max(256, int(max_tokens or 0)), int(window) // 2) + 256
         budget = max(256, int(window) - reserve)
         if cls._estimate_prompt_tokens(messages, tools) <= budget:
             return messages

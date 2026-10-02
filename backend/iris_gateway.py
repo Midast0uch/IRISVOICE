@@ -10988,6 +10988,10 @@ class IRISGateway:
             # authority over the binding.
             _stamp = time.time()
             _router.bind_role(role, instance_id, model_override, selected_at=_stamp)
+            # The model's real window, read from its provider off this path
+            # (an unknown API window is budgeted as 8192).
+            from backend.agent.inference.provider_catalog import prefetch_api_windows
+            prefetch_api_windows([_router.registry.get(instance_id)])
 
             # REQ-7 AC1/AC3: log off the critical path â€” a logging failure
             # must never fail the bind. High-frequency switching still logs
