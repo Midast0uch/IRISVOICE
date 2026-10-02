@@ -275,6 +275,22 @@ def _approval_unavailable_result(
 RUN_COMMAND_DEFAULT_TIMEOUT_S = 300
 RUN_COMMAND_MAX_TIMEOUT_S = 600
 
+# A command that reads its script from standard input. run_command's session
+# shell (PowerShell on Windows) reads ITS commands from a stdin pipe, and a
+# native child inherits that pipe: `python - <<'PY'` swallowed the following
+# lines, including the shell's completion marker, and waited for the 300 s
+# limit (eval c02, 2026-10-02: two such calls, 300 s + 266 s of a 636 s reply).
+_STDIN_SCRIPT = re.compile(
+    r"<<|\b(?:python3?|py|node)(?:\.exe)?\s+-(?:\s|$)|^\s*(?:python3?|py|node)(?:\.exe)?\s*$",
+    re.IGNORECASE,
+)
+_STDIN_SCRIPT_ERROR = (
+    "This command reads its script from standard input (a heredoc '<<' or "
+    "'python -'), which this shell cannot give it: it would wait until the "
+    "time limit. Write the script to a file with write_file, then run the file "
+    "(for example: python check.py). The shell is Windows PowerShell."
+)
+
 
 def _command_timeout(requested) -> int:
     """run_command's own timeout: the model may ask for more, within bounds.
@@ -735,7 +751,10 @@ class AgentToolBridge:
                 "type": "string"}, "force": {"type": "boolean", "description": "Force push (default false)"}}, "category": "git"},
 
             # Shell — developer mode command runner (sandboxed to repo directory)
-            {"name": "run_command", "description": "Run a shell command in the project directory (npm, python, pytest, etc.)", "parameters": {"command": {
+            {"name": "run_command", "description": "Run a shell command in the project directory (npm, python, pytest, etc.)" + (
+                " The shell is Windows PowerShell 5.1: no bash heredocs (<<), join commands with ';' not '&&'."
+                " A command must not read standard input: to run a script, write it to a file first, then run the file."
+                if os.name == "nt" else ""), "parameters": {"command": {
                 "type": "string", "description": "Command to run"}, "cwd": {"type": "string", "description": "Working directory (defaults to IRISVOICE root)"}}, "category": "shell"},
 
             {
@@ -3020,6 +3039,8 @@ class AgentToolBridge:
                         "format ", "del /f /s /q C:\\")
             if any(raw.startswith(b) for b in _BLOCKED):
                 return {"success": False, "error": "Blocked: destructive system command"}
+            if os.name == "nt" and _STDIN_SCRIPT.search(raw):
+                return {"success": False, "error": _STDIN_SCRIPT_ERROR, "error_type": "permanent"}
             # T0c: same session-shell substrate as user `>` commands — the
             # shell IS the pipe, so pipes/&& work and cwd/env persist.
             # REQ-19 AC2: non-zero exit is a result (success:True + returncode),
