@@ -122,6 +122,10 @@ PROVIDER_PRESETS: list[dict] = [
      "api_base_url": "https://api.anthropic.com/v1"},
     {"id": "venice", "label": "Venice AI", "kind": "api", "needs_key": True,
      "api_base_url": "https://api.venice.ai/api/v1"},
+    # OpenAI-compatible; its model ids are already in provider_catalog.py
+    # (owner 2026-10-02: a cloud Brain next to a local tool model).
+    {"id": "openrouter", "label": "OpenRouter", "kind": "api", "needs_key": True,
+     "api_base_url": "https://openrouter.ai/api/v1"},
     {"id": "lmstudio", "label": "LM Studio", "kind": "local_openai", "needs_key": False,
      "api_base_url": "http://localhost:1234"},
     {"id": "ollama", "label": "Ollama", "kind": "ollama", "needs_key": False,
