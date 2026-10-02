@@ -160,7 +160,13 @@ def _clip(text: str, limit: int) -> str:
 
 _ID_KEYS = ("path", "file_path", "command", "pattern", "query", "url")
 
-_MAX_REPEATS = 3
+# Tools that change the project: a step that used one does not close in the
+# same answer - the model looks at the effect first.
+_CHANGE_TOOLS = frozenset({"edit_file", "write_file", "create_directory"})
+
+# Two repeats show a model is stuck (eval C 2026-10-02: 8-14 repeats per
+# struggling task at 3, each repeat one more model call before the handover).
+_MAX_REPEATS = 2
 _REPEAT_HINT = (
     "REPEATED CALL - not run again: you just made this exact call and its result "
     "is above, unchanged. Use that result and take the NEXT action of the step "
@@ -321,6 +327,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
             batch_failed = False
             batch_results: List[str] = []
             batch_done = False
+            batch_changed = False
             batch_summaries: List[str] = []
             for tc in tool_calls:
                 fn = tc.get("function") or {}
@@ -367,6 +374,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                         raw = {"success": False, "error": f"{type(exc).__name__}: {exc}", "error_type": "exception"}
                 failed = _failed(raw)
                 batch_failed = batch_failed or failed
+                batch_changed = batch_changed or (name in _CHANGE_TOOLS and not failed)
                 if failed and name == "edit_file":
                     # exact-quote edits are where a small model fails most
                     edit_failures += 1
@@ -410,7 +418,11 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
             # summary was written before the results, so the results go with it
             # (later steps read them instead of reading the files again). Any
             # failed tool still gets the follow-up call.
-            if not batch_failed and (batch_done or _STATUS.search(text or "")):
+            # Not after a change (2026-10-02, eval C c12): a small model set
+            # step_done on its own edit, the edit "succeeded" as a call, and
+            # the step closed with a buggy method nobody ran. A step that
+            # changed a file looks at the effect first - one more call.
+            if not batch_failed and not batch_changed and (batch_done or _STATUS.search(text or "")):
                 ok, _reason, summary = _status(text or "")
                 if batch_done:
                     ok = True

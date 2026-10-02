@@ -140,15 +140,32 @@ def test_status_in_the_tool_answer_closes_the_step_without_another_call():
 
 def test_step_done_argument_closes_the_step_and_never_reaches_the_tool():
     """A tool-calling model leaves the text part empty (gemma via Ollama: 0 of
-    15 steps closed through a STATUS line), so the close rides on the call."""
-    script = [("", [_call("edit_file", {"path": "m.py", "old": "a", "new": "b",
+    15 steps closed through a STATUS line), so the close rides on the call.
+    (Closed on a READ: since 2026-10-02 a change never closes in the same
+    answer - see the next test.)"""
+    script = [("", [_call("read_file", {"path": "m.py",
                                         "step_done": True,
-                                        "step_summary": "Renamed a to b in m.py."})])]
-    ctx, seen, executed = _ctx(script, {"edit_file": {"success": True}})
-    r = run_node("rename a to b", ctx)
+                                        "step_summary": "Read m.py: 6 lines."})])]
+    ctx, seen, executed = _ctx(script, {"read_file": {"success": True, "content": "x"}})
+    r = run_node("read m.py", ctx)
     assert len(seen) == 1
-    assert executed == [("edit_file", {"path": "m.py", "old": "a", "new": "b"})]
-    assert r.success and r.summary.startswith("Renamed a to b in m.py.")
+    assert executed == [("read_file", {"path": "m.py"})]
+    assert r.success and r.summary.startswith("Read m.py: 6 lines.")
+
+
+def test_a_step_that_changed_a_file_looks_at_the_effect_before_closing():
+    """Eval C c12 (2026-10-02): a small model set step_done on its own edit;
+    the step closed with a buggy method that nobody ran."""
+    script = [("", [_call("edit_file", {"path": "m.py", "old": "a", "new": "b",
+                                        "step_done": True, "step_summary": "Edited."})]),
+              ("", [_call("run_command", {"command": "pytest -q"})]),
+              ("Tests pass.\nSTATUS: done", [])]
+    ctx, seen, executed = _ctx(script, {"edit_file": {"success": True},
+                                        "run_command": {"success": True, "returncode": 0}})
+    r = run_node("fix m.py", ctx)
+    assert len(seen) == 3, "the edit must get a follow-up call"
+    assert [e[0] for e in executed] == ["edit_file", "run_command"]
+    assert r.success
 
 
 def test_every_offered_tool_carries_the_close_arguments():
