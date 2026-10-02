@@ -157,6 +157,61 @@ def test_tool_results_are_written_relative_too():
     assert _relative(f"FAILED {_WD}\\test_x.py::test_a", _WD) == "FAILED ./test_x.py::test_a"
 
 
+# ── 5. stuck detector: the same call right after itself ───────────────────
+
+
+def _call(name, args, i=0):
+    return {"id": f"c{i}", "type": "function",
+            "function": {"name": name, "arguments": json.dumps(args)}}
+
+
+def test_an_identical_repeat_is_not_run_again():
+    """TwIL-LM3-Pro read the same file ~230 times in one step (2026-10-02)."""
+    executed = []
+    replies = iter([("", [_call("read_file", {"path": "m.py"})]),
+                    ("", [_call("read_file", {"path": "m.py"})]),
+                    ("Read it.\nSTATUS: done", [])])
+
+    def gen(role, messages, **kw):
+        t, calls = next(replies)
+        return t, "", calls
+
+    ctx = NodeContext(generate=gen, execute=lambda n, p: executed.append((n, p)) or {"success": True, "content": "x"},
+                      format_result=lambda n, r: json.dumps(r), tools=TOOLS)
+    r = run_node("read m.py", ctx)
+    assert executed == [("read_file", {"path": "m.py"})]
+    assert r.success
+
+
+def test_three_repeats_in_a_row_end_the_step():
+    def gen(role, messages, **kw):
+        return "", "", [_call("read_file", {"path": "m.py"})]
+
+    # budget_s=8 keeps the OLD code (no detector) from looping 300 s here; the
+    # detector ends the step after 3 repeats, long before the budget.
+    ctx = NodeContext(generate=gen, execute=lambda n, p: {"success": True, "content": "x"},
+                      format_result=lambda n, r: json.dumps(r), tools=TOOLS, budget_s=8)
+    r = run_node("read m.py", ctx)
+    assert r.success is False and r.error.startswith("stuck repeating read_file")
+
+
+def test_a_reread_after_an_edit_still_runs():
+    executed = []
+    replies = iter([("", [_call("read_file", {"path": "m.py"})]),
+                    ("", [_call("write_file", {"path": "m.py", "content": "y"})]),
+                    ("", [_call("read_file", {"path": "m.py"})]),
+                    ("Done.\nSTATUS: done", [])])
+
+    def gen(role, messages, **kw):
+        t, calls = next(replies)
+        return t, "", calls
+
+    ctx = NodeContext(generate=gen, execute=lambda n, p: executed.append(n) or {"success": True},
+                      format_result=lambda n, r: json.dumps(r), tools=TOOLS)
+    run_node("rewrite m.py", ctx)
+    assert executed == ["read_file", "write_file", "read_file"]
+
+
 # ── 4. node calls ask for no hidden reasoning ─────────────────────────────
 
 

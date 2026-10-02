@@ -155,6 +155,13 @@ def _clip(text: str, limit: int) -> str:
 
 _ID_KEYS = ("path", "file_path", "command", "pattern", "query", "url")
 
+_MAX_REPEATS = 3
+_REPEAT_HINT = (
+    "REPEATED CALL - not run again: you just made this exact call and its result "
+    "is above, unchanged. Use that result and take the NEXT action of the step "
+    "(for example edit or write the file), or finish the step."
+)
+
 _MAX_MALFORMED = 2
 _MALFORMED_HINT = (
     "Your last tool call was rejected: its arguments were not valid JSON. Inside "
@@ -220,6 +227,13 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
     ]
     tools = _with_close_args(ctx.tools)
     malformed = 0
+    # Stuck detector (2026-10-01): a small local model called read_file on the
+    # same file ~230 times in one step, each result unchanged; only the 300 s
+    # budget ended it. The SAME call right after itself is not run again; three
+    # such repeats in a row end the step. A different call in between (an
+    # edit, a test run) breaks the run, so re-reading after a change is fine.
+    last_key: Optional[str] = None
+    repeats = 0
     calls: List[Dict[str, Any]] = []
     last_command_failed: Optional[bool] = None
     deadline = time.monotonic() + ctx.budget_s
@@ -274,6 +288,19 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                     _sum = params.pop("step_summary", None)
                     if isinstance(_sum, str) and _sum.strip():
                         batch_summaries.append(_sum.strip())
+                key = json.dumps([name, params], sort_keys=True, default=str) if params is not None else None
+                if key is not None and key == last_key:
+                    repeats += 1
+                    logger.info("[run_node] conv=%s repeated call %s %s (%d in a row)",
+                                ctx.conv_id, name, _target(params or {}), repeats)
+                    if repeats >= _MAX_REPEATS:
+                        return NodeResult(False, text or "", calls,
+                                          f"stuck repeating {name} {_target(params or {})}".strip(),
+                                          last_command_failed=bool(last_command_failed))
+                    messages.append({"role": "tool", "tool_call_id": tc.get("id") or name,
+                                     "name": name, "content": _REPEAT_HINT})
+                    continue
+                last_key, repeats = key, 0
                 if params is None:
                     raw: Any = {"success": False, "error": "arguments were not valid JSON; send a JSON object"}
                 elif name not in allowed:
