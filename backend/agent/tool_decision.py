@@ -2030,8 +2030,11 @@ class ToolDecisionBox:
                 # gathered docs (the observed 15:45+ loop: LLM kept resolving
                 # get_rendered_documents → DUPLICATE CALL → step never committed
                 # → agent gave up and asked the user).
+                # read_command_output: polling a running command with the same
+                # handle is how the agent watches it; its output changes, and
+                # the node's own "unchanged result" detector catches a real loop.
                 _IDEMPOTENT_READ_TOOLS = frozenset(
-                    {"get_rendered_documents", "recall_memory", "read_file"}
+                    {"get_rendered_documents", "recall_memory", "read_file", "read_command_output"}
                 )
                 if (
                     decision.tool

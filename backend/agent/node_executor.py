@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 DEV_NODE_TOOLS = (
     "read_file", "edit_file", "write_file", "grep_files", "glob_files",
     "list_directory", "create_directory", "run_command", "git_status", "git_diff",
+    "read_command_output", "stop_command",
 )
 
 _SYSTEM = (
@@ -165,7 +166,7 @@ def _clip(text: str, limit: int) -> str:
     return text[:head] + f"\n... [{len(text) - limit} chars cut] ...\n" + text[-(limit - head):]
 
 
-_ID_KEYS = ("path", "file_path", "command", "pattern", "query", "url")
+_ID_KEYS = ("path", "file_path", "command", "pattern", "query", "url", "handle")
 
 # Tools that change the project: a step that used one does not close in the
 # same answer - the model looks at the effect first.
@@ -205,7 +206,7 @@ _MALFORMED_HINT = (
 
 
 def _target(params: dict) -> str:
-    for key in ("path", "file_path", "command", "pattern", "query"):
+    for key in ("path", "file_path", "command", "pattern", "query", "handle"):
         if params.get(key):
             return str(params[key])[:80]
     return ""

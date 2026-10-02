@@ -14876,7 +14876,7 @@ Respond with a JSON object:
     }
 
     # Tools whose result is a command's output: exit code + stdout/stderr.
-    _SHELL_RESULT_TOOLS = {"run_command", "read_shell_output"}
+    _SHELL_RESULT_TOOLS = {"run_command", "read_shell_output", "read_command_output", "stop_command"}
 
     @staticmethod
     def _der_evidence_cap(tool: Optional[str]) -> int:
@@ -15801,12 +15801,22 @@ Respond with a JSON object:
             # exit code buried. Readable text with the exit code FIRST, so the
             # verifier and every later step can see whether the command failed.
             if _t in AgentKernel._SHELL_RESULT_TOOLS and isinstance(raw, dict) \
-                    and "returncode" in raw:
+                    and ("returncode" in raw or "running" in raw or "stdout" in raw):
                 _out = "\n".join(
                     s for s in (str(raw.get("stdout") or "").rstrip(),
                                 str(raw.get("stderr") or "").rstrip()) if s
                 )
-                return f"[exit code {raw.get('returncode')}]\n{_out or '(no output)'}"
+                # A command still running (stalled or a server), or one that
+                # was stopped / timed out, says so first - with its output.
+                if raw.get("running"):
+                    _head = f"[still running, handle {raw.get('handle')}] {raw.get('note') or ''}".rstrip()
+                elif raw.get("returncode") is not None:
+                    _head = f"[exit code {raw.get('returncode')}]"
+                elif raw.get("success") is False:
+                    _head = f"[{raw.get('error') or 'command failed'}]"
+                else:
+                    _head = f"[{raw.get('status') or 'done'}]"
+                return f"{_head}\n{_out or '(no output)'}"
             if _t in AgentKernel._DER_READ_TOOLS and isinstance(raw, dict):
                 _docs = raw.get("documents")
                 if isinstance(_docs, list) and _docs:

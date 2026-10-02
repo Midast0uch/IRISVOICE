@@ -293,7 +293,9 @@ def _run_command_description() -> str:
     """run_command's description names the shell the command will run in."""
     base = ("Run one command in the project directory (npm, python, pytest, etc.). "
             "Each command runs fresh in the project directory with no input: "
-            "to run a script, write it to a file first, then run the file.")
+            "to run a script, write it to a file first, then run the file. "
+            "A command that waits (no output, no CPU for 30 s) or a server returns "
+            "early with a handle and keeps running: read_command_output / stop_command.")
     if _agent_shell_name() == "powershell":
         return base + " The shell is Windows PowerShell 5.1: no bash heredocs (<<), join commands with ';' not '&&'."
     return base + " The shell is bash."
@@ -766,6 +768,10 @@ class AgentToolBridge:
                 "type": "string"}, "force": {"type": "boolean", "description": "Force push (default false)"}}, "category": "git"},
 
             # Shell — developer mode command runner (sandboxed to repo directory)
+            {"name": "read_command_output", "description": "Status and new output of a run_command that is still running (by its handle, e.g. cmd-1a2b3c). Ends with its exit code once it finished.", "parameters": {"handle": {
+                "type": "string", "description": "The handle run_command returned"}}, "category": "shell"},
+            {"name": "stop_command", "description": "Stop a run_command that is still running (by its handle) and return its last output.", "parameters": {"handle": {
+                "type": "string", "description": "The handle run_command returned"}}, "category": "shell"},
             {"name": "run_command", "description": _run_command_description(), "parameters": {"command": {
                 "type": "string", "description": "Command to run"}, "cwd": {"type": "string", "description": "Working directory (defaults to IRISVOICE root)"}}, "category": "shell"},
 
@@ -2197,7 +2203,7 @@ class AgentToolBridge:
             git_tools = {
                 "git_status", "git_diff", "git_log",
                 "git_commit", "git_create_branch", "git_checkout",
-                "git_push", "run_command",
+                "git_push", "run_command", "read_command_output", "stop_command",
             }
             if tool_name in git_tools:
                 result = await self._execute_dev_tool(tool_name, params, session_id)
@@ -2885,7 +2891,7 @@ class AgentToolBridge:
         except Exception as exc:
             return {"success": False, "error": f"{tool_name} failed: {exc}"}
 
-    def _broadcast_shell_line(self, session_id: str, line: str) -> None:
+    def _broadcast_shell_line(self, session_id: str, line: str, cmd_id: str = "") -> None:
         """T0c DONE: agent-launched commands appear in the terminal panel.
 
         Fire-and-forget terminal_output to every WS client of this session.
@@ -2908,7 +2914,7 @@ class AgentToolBridge:
                         await ws.send_to_client(
                             cid,
                             {"type": "terminal_output", "line": line,
-                             "proc_id": f"agent-{session_id[:8]}"},
+                             "proc_id": f"agent-{session_id[:8]}", "cmd_id": cmd_id},
                         )
                     except Exception:
                         pass  # dead client must not break the pump
@@ -2916,6 +2922,34 @@ class AgentToolBridge:
             _asyncio.get_running_loop().create_task(_send_all())
         except Exception as exc:
             logger.debug("[ToolBridge][%s] panel broadcast skipped: %s", session_id, exc)
+
+    def _broadcast_command_event(self, session_id: str, event: Dict[str, Any]) -> None:
+        """One agent command's status for the workspace display (agent_command).
+
+        {id, command, status: running|waiting|done|failed|timed_out|stopped,
+        elapsed_s, exit_code?, idle_s?}. Same fire-and-forget path as the lines.
+        """
+        try:
+            import asyncio as _asyncio
+
+            from backend.ws_manager import get_websocket_manager
+
+            ws = get_websocket_manager()
+            clients = ws.get_clients_for_session(session_id)
+            if not clients:
+                return
+            msg = {"type": "agent_command", "payload": dict(event)}
+
+            async def _send_all() -> None:
+                for cid in clients:
+                    try:
+                        await ws.send_to_client(cid, msg)
+                    except Exception:
+                        pass
+
+            _asyncio.get_running_loop().create_task(_send_all())
+        except Exception as exc:
+            logger.debug("[ToolBridge][%s] command event skipped: %s", session_id, exc)
 
     async def _execute_dev_tool(self, tool_name: str, params: Dict, session_id: str) -> Dict:
         """Execute git or shell commands for developer mode.
@@ -2969,18 +3003,27 @@ class AgentToolBridge:
                 cmd_str = cmd
 
             out_lines: list = []
+            cur: dict = {}
 
             def _sink(line: str):
                 out_lines.append(line)
-                self._broadcast_shell_line(session_id, line)
+                self._broadcast_shell_line(session_id, line, cur.get("id", ""))
+
+            def _event(ev: dict):
+                cur["id"] = ev.get("id", "")
+                self._broadcast_command_event(session_id, ev)
 
             # One process per agent command, stdin closed (run_isolated): the
             # session shell's stdin pipe is never shared with a model's command.
             # An argv list runs with no shell at all.
             res = await get_subprocess_manager().run_isolated(
                 session_id, cmd if isinstance(cmd, (list, tuple)) else cmd_str,
-                workdir=cwd, timeout=timeout, on_output=_sink,
+                workdir=cwd, timeout=timeout, on_output=_sink, on_event=_event,
             )
+            if res.get("running"):
+                # Stalled or a server: control is back, the command keeps going.
+                return {"success": True, "running": True, "handle": res.get("handle"),
+                        "note": res.get("note", ""), "stdout": res.get("stdout", "")}
             if res.get("success"):
                 return {
                     "success": True,
@@ -2994,7 +3037,20 @@ class AgentToolBridge:
             if res.get("queued"):
                 # Cap queueing is informational; the command still ran.
                 logger.info("[ToolBridge][%s] %s", session_id, res.get("message"))
-            return {"success": False, "error": str(res.get("error", "command failed"))}
+            # A timeout / flood / stop keeps the output so far: the agent sees
+            # where it stopped, not only that it did.
+            return {"success": False, "error": str(res.get("error", "command failed")),
+                    "stdout": res.get("stdout") or "\n".join(out_lines[-40:]).strip()}
+
+        # ── read_command_output / stop_command (a backgrounded command) ──
+        if tool_name in ("read_command_output", "stop_command"):
+            from backend.dev.subprocess_manager import get_subprocess_manager
+
+            handle = str(params.get("handle") or "").strip()
+            if not handle:
+                return {"success": False, "error": "handle is required (from a run_command that is still running)"}
+            return await get_subprocess_manager().command_status(
+                session_id, handle, stop=(tool_name == "stop_command"))
 
         # ── git_status ──────────────────────────────────────────────
         if tool_name == "git_status":

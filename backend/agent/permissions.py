@@ -105,6 +105,7 @@ class ToolPermissionResponse:
 # Tools that only read state — never modify anything
 _READ_ONLY_TOOLS: set = {
     "read_file",
+    "read_command_output",
     "speak",
     "search",
     "crawler_query",
@@ -160,6 +161,7 @@ _SIDE_EFFECT_TOOLS: set = {
     "replace_in_file",
     "run_command",
     "execute_script",
+    "stop_command",
 }
 
 # Tools that are destructive — irreversible

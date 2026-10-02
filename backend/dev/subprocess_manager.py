@@ -37,6 +37,20 @@ MAX_OUTPUT_BYTES = 1 * 1024 * 1024  # hard per-command output cap → terminate
 RATE_WINDOW_SECONDS = 5.0           # sliding window for the rate bound
 RATE_WINDOW_BYTES = 2 * 1024 * 1024 # output allowed per window before kill
 OUTPUT_BUFFER_LINES = 500           # bounded retained output per session
+STALL_SECONDS = 30.0                # no output AND no CPU this long = waiting, not working
+WATCH_TICK_SECONDS = 2.0            # how often a running agent command is looked at
+MAX_BACKGROUND_PER_SESSION = 4      # running handles kept per session (oldest stopped)
+TAIL_LINES = 40                     # output lines returned with a status
+
+# Environment for agent commands: nothing may stop to ask a person. A tool that
+# opens an editor, a pager, a password prompt or a credential window would wait
+# forever; Python buffers piped output, so a working script would look silent.
+_NON_INTERACTIVE_ENV = {
+    "GIT_TERMINAL_PROMPT": "0", "GCM_INTERACTIVE": "never", "GIT_EDITOR": "true",
+    "EDITOR": "true", "VISUAL": "true", "GIT_PAGER": "cat", "PAGER": "cat",
+    "CI": "1", "PIP_NO_INPUT": "1", "npm_config_yes": "true",
+    "PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8",
+}
 
 OutputCallback = Callable[[str], Awaitable[None]]
 
@@ -112,6 +126,8 @@ class ShellSession:
         self._rate_window: deque = deque()   # (monotonic_ts, nbytes)
         self.buffer: deque = deque(maxlen=OUTPUT_BUFFER_LINES)  # bounded tail
         self._on_output: Optional[OutputCallback] = None
+        self.lines_total = 0                 # lines seen (read cursor for a handle)
+        self.last_output_at = time.monotonic()
 
     def set_output_callback(self, cb: Optional[OutputCallback]) -> None:
         """Set the streaming sink for this shell's output lines."""
@@ -119,7 +135,7 @@ class ShellSession:
 
     # ── lifecycle ───────────────────────────────────────────────────────
 
-    async def start(self, argv: Optional[list] = None) -> None:
+    async def start(self, argv: Optional[list] = None, env: Optional[dict] = None) -> None:
         """Spawn the platform shell reading commands from stdin.
 
         With *argv*: spawn that ONE command instead, with an empty, closed
@@ -136,6 +152,7 @@ class ShellSession:
             self.proc = await asyncio.create_subprocess_exec(
                 *argv,
                 cwd=self.spawn_workdir or None,
+                env=env,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,  # pipe, not terminal: merge
@@ -295,7 +312,9 @@ class ShellSession:
                 continue
 
             self.buffer.append(line)
+            self.lines_total += 1
             now = time.monotonic()
+            self.last_output_at = now
             nbytes = len(raw)
             self._cmd_bytes += nbytes
             self._rate_window.append((now, nbytes))
@@ -338,6 +357,59 @@ class ShellSession:
             self._done.set()
 
 
+def _tree_cpu_seconds(pid: int) -> Optional[float]:
+    """User+system CPU seconds of *pid* and its children; None if unreadable."""
+    try:
+        import psutil
+
+        p = psutil.Process(pid)
+        total = sum(p.cpu_times()[:2])
+        for c in p.children(recursive=True):
+            try:
+                total += sum(c.cpu_times()[:2])
+            except psutil.Error:
+                continue
+        return total
+    except Exception:  # noqa: BLE001 - no reading = no CPU evidence, output still counts
+        return None
+
+
+def _tail(proc: "ShellSession") -> str:
+    return "\n".join(list(proc.buffer)[-TAIL_LINES:]).strip()
+
+
+def _emit(proc: "ShellSession", status: str, **extra) -> None:
+    cb = getattr(proc, "on_event", None)
+    if cb is None:
+        return
+    try:
+        cb({"id": proc.handle, "command": proc.command[:300], "status": status,
+            "elapsed_s": round(time.monotonic() - proc.started_at, 1), **extra})
+    except Exception as exc:  # noqa: BLE001 - display never breaks a command
+        logger.debug("[SubprocessManager] command event failed: %s", exc)
+
+
+def _finish(proc: "ShellSession", error: Optional[str] = None, status: Optional[str] = None) -> dict:
+    """Final result of an agent command (and its last display event), once."""
+    if getattr(proc, "final_status", None) is None:
+        if status is None:
+            status = ("failed" if proc._flood_reason else "stopped" if proc._aborted
+                      else "done" if (proc._exit_code or 0) == 0 else "failed")
+        proc.final_status = status
+        _emit(proc, status, exit_code=proc._exit_code)
+    tail = _tail(proc)
+    if error or proc._flood_reason or proc._aborted:
+        res = {"success": False, "error": error or proc._flood_reason or "aborted by user", "stdout": tail}
+        if proc._flood_reason:
+            res["flood"] = True
+        if status == "timed_out" or proc.final_status == "timed_out":
+            res["timed_out"] = True
+        if proc._aborted and not error and not proc._flood_reason:
+            res["aborted"] = True
+        return res
+    return {"success": True, "exit_code": proc._exit_code}
+
+
 class SubprocessManager:
     """Registry of session shells + the global concurrency cap (T2).
 
@@ -349,6 +421,7 @@ class SubprocessManager:
     def __init__(self, max_concurrent: int = DEFAULT_MAX_CONCURRENT) -> None:
         self._shells: dict[str, ShellSession] = {}
         self._one_shots: dict[str, set] = {}  # session -> running agent commands
+        self._jobs: dict[str, dict] = {}      # session -> {handle: backgrounded command}
         self._lock = asyncio.Lock()
         self._sem = asyncio.Semaphore(max_concurrent)
         self._max_concurrent = max_concurrent
@@ -476,6 +549,7 @@ class SubprocessManager:
         workdir: Optional[str] = None,
         timeout: Optional[float] = None,
         on_output: Optional[OutputCallback] = None,
+        on_event: Optional[Callable[[dict], None]] = None,
     ) -> dict:
         """Run ONE agent command in its own process, stdin closed.
 
@@ -485,52 +559,148 @@ class SubprocessManager:
         2026-10-02). Here nothing can read the command stream. A str runs in
         agent_shell(); a list/tuple is an argv, run with no shell. Same global
         cap, output bounds, timeout and tree kill as execute(); abort() kills it.
-        Returns execute()'s shape.
+
+        Stall watch (owner 2026-10-02): every WATCH_TICK_SECONDS the command's
+        output and its process tree's CPU are read. No output AND no CPU for
+        STALL_SECONDS means it waits on something (network, a lock, a prompt)
+        or is a server - the call returns at once with running=True, a handle
+        and the output so far, and the command keeps running (command_status
+        reads or stops it). A busy command (CPU in use) is never cut short.
+        Every failed end carries the last TAIL_LINES of output. on_event gets
+        one dict per status change (running / waiting / done / failed /
+        timed_out / stopped) for the workspace display.
         """
         current = asyncio.get_running_loop()
         home = self._home_loop
         if home is not None and home.is_running() and current is not home:
             fut = asyncio.run_coroutine_threadsafe(
-                self._run_isolated_impl(session_id, command, workdir, timeout, on_output),
+                self._run_isolated_impl(session_id, command, workdir, timeout, on_output, on_event),
                 home,
             )
             return await asyncio.wrap_future(fut)
-        return await self._run_isolated_impl(session_id, command, workdir, timeout, on_output)
+        return await self._run_isolated_impl(session_id, command, workdir, timeout, on_output, on_event)
 
-    async def _run_isolated_impl(self, session_id, command, workdir, timeout, on_output) -> dict:
+    async def _run_isolated_impl(self, session_id, command, workdir, timeout, on_output,
+                                 on_event=None) -> dict:
         argv = list(command) if isinstance(command, (list, tuple)) else agent_shell()[1] + [command]
         proc = ShellSession(session_id, workdir or os.getcwd())
         proc._on_output = on_output
+        proc.handle = f"cmd-{uuid.uuid4().hex[:6]}"
+        proc.command = command if isinstance(command, str) else " ".join(map(str, command))
+        proc.started_at = time.monotonic()
+        proc.deadline = proc.started_at + timeout if timeout else None
+        proc.on_event = on_event
+        # Backgrounding needs a loop that outlives this call: the shells' home
+        # loop. An ephemeral loop (no home loop yet) waits to the end instead.
+        can_background = self._home_loop is not None and asyncio.get_running_loop() is self._home_loop
         await self._sem.acquire()
+        held = True
         self._one_shots.setdefault(session_id, set()).add(proc)
         try:
             try:
-                await proc.start(argv=argv)
+                await proc.start(argv=argv, env={**os.environ, **_NON_INTERACTIVE_ENV})
             except OSError as exc:
                 return {"success": False, "error": f"could not start command: {exc}"}
-            try:
-                if timeout is not None:
-                    await asyncio.wait_for(proc._done.wait(), timeout=timeout)
-                else:
-                    await proc._done.wait()
-            except asyncio.TimeoutError:
-                await proc.kill()
-                return {"success": False, "error": f"command exceeded {timeout}s — terminated",
-                        "timed_out": True}
-            if proc._flood_reason:
-                return {"success": False, "error": proc._flood_reason, "flood": True}
-            if proc._aborted:
-                return {"success": False, "error": "aborted by user", "aborted": True}
-            return {"success": True, "exit_code": proc._exit_code}
+            _emit(proc, "running")
+            cpu_prev, cpu_active_at = None, proc.started_at
+            while True:
+                try:
+                    await asyncio.wait_for(proc._done.wait(), timeout=WATCH_TICK_SECONDS)
+                    return _finish(proc)
+                except asyncio.TimeoutError:
+                    pass
+                now = time.monotonic()
+                if proc.deadline is not None and now >= proc.deadline:
+                    await proc.kill()
+                    return _finish(proc, error=f"command exceeded {timeout:.0f}s — terminated",
+                                   status="timed_out")
+                cpu = _tree_cpu_seconds(proc.proc.pid)
+                if cpu is not None and (cpu_prev is None or cpu - cpu_prev >= 0.05):
+                    cpu_active_at = now
+                cpu_prev = cpu if cpu is not None else cpu_prev
+                quiet = now - max(proc.last_output_at, cpu_active_at)
+                if quiet >= STALL_SECONDS and can_background:
+                    # Waiting on something (network, a lock, a prompt) or a
+                    # server: hand control back to the agent, keep it running.
+                    self._one_shots[session_id].discard(proc)
+                    self._sem.release()
+                    held = False
+                    self._keep_in_background(session_id, proc)
+                    _emit(proc, "waiting", idle_s=round(quiet))
+                    return {
+                        "success": True, "running": True, "handle": proc.handle,
+                        "elapsed_s": round(now - proc.started_at), "idle_s": round(quiet),
+                        "stdout": _tail(proc),
+                        "note": (f"still running after {now - proc.started_at:.0f}s with no output "
+                                 f"and no CPU for {quiet:.0f}s - it is waiting on something, or it "
+                                 f"is a server. Handle {proc.handle}: read_command_output to look "
+                                 f"again, stop_command to stop it."),
+                    }
         finally:
-            self._one_shots.get(session_id, set()).discard(proc)
-            self._sem.release()
+            if held:
+                self._one_shots.get(session_id, set()).discard(proc)
+                self._sem.release()
+
+    def _keep_in_background(self, session_id: str, proc: "ShellSession") -> None:
+        jobs = self._jobs.setdefault(session_id, {})
+        jobs[proc.handle] = proc
+        while len(jobs) > MAX_BACKGROUND_PER_SESSION:   # bounded: stop the oldest
+            oldest = next(iter(jobs))
+            asyncio.ensure_future(jobs.pop(oldest).kill())
+        asyncio.ensure_future(self._reap(session_id, proc))
+
+    async def _reap(self, session_id: str, proc: "ShellSession") -> None:
+        """A background command ends by itself or at its own deadline."""
+        try:
+            remaining = None if proc.deadline is None else max(0.0, proc.deadline - time.monotonic())
+            await asyncio.wait_for(proc._done.wait(), timeout=remaining)
+            _finish(proc)
+        except asyncio.TimeoutError:
+            await proc.kill()
+            _finish(proc, error="time limit reached in the background — terminated", status="timed_out")
+        except Exception as exc:  # noqa: BLE001 - a reaper never raises into the loop
+            logger.debug("[SubprocessManager][%s] reap %s failed: %s", session_id, proc.handle, exc)
+
+    async def command_status(self, session_id: str, handle: str, stop: bool = False) -> dict:
+        """Status + new output of a background agent command; *stop* kills it first."""
+        current = asyncio.get_running_loop()
+        home = self._home_loop
+        if home is not None and home.is_running() and current is not home:
+            fut = asyncio.run_coroutine_threadsafe(self._command_status(session_id, handle, stop), home)
+            return await asyncio.wrap_future(fut)
+        return await self._command_status(session_id, handle, stop)
+
+    async def _command_status(self, session_id: str, handle: str, stop: bool) -> dict:
+        proc = self._jobs.get(session_id, {}).get(handle)
+        if proc is None:
+            return {"success": False,
+                    "error": f"no running command {handle!r} (it ended and was read, or the handle is wrong)"}
+        if stop and not proc._done.is_set():
+            await proc.kill()
+            _finish(proc, error="stopped by the agent", status="stopped")
+        now = time.monotonic()
+        new = proc.lines_total - getattr(proc, "read_cursor", 0)
+        proc.read_cursor = proc.lines_total
+        lines = list(proc.buffer)[-new:] if new > 0 else []
+        done = proc._done.is_set()
+        if done:
+            self._jobs.get(session_id, {}).pop(handle, None)
+        out = {
+            "success": True, "handle": handle, "running": not done,
+            "status": getattr(proc, "final_status", None) or ("running" if not done else "done"),
+            "elapsed_s": round(now - proc.started_at),
+            "idle_s": round(now - proc.last_output_at),
+            "stdout": "\n".join(lines[-TAIL_LINES:]).strip() or "(no new output)",
+        }
+        if done and proc._exit_code is not None:
+            out["returncode"] = proc._exit_code
+        return out
 
     # ── abort / status (existing semantics preserved) ───────────────────
 
     async def abort(self, session_id: str) -> None:
         """Kill the session's shell tree and its agent commands. Next input respawns (reported)."""
-        for one in list(self._one_shots.get(session_id, ())):
+        for one in list(self._one_shots.get(session_id, ())) + list(self._jobs.pop(session_id, {}).values()):
             await one.kill()
         shell = self._shells.get(session_id)
         if shell is None:
