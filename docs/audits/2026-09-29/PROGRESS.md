@@ -7,7 +7,12 @@ archived there); CLAUDE.md/AGENTS.md now carry "BUILD + VERIFY IRIS — THE MEAS
 "READING THIS CODEBASE — PHASE MODEL, PHYSICS, LANES"; validate every change with the
 `app-testing` skill, Mode A (`.opencode/skills/app-testing/SKILL.md`) — MCM `pin_6c81e87956b8`.
 
-**NEXT AGENT: read MCM `pin_21357eeec9fc` (HANDOFF 8) FIRST** - it supersedes HANDOFF 7's order
+**NEXT AGENT: read MCM `pin_12c36422de28` (HANDOFF 9) FIRST** - it supersedes HANDOFF 8's order of
+work: re-measure all 15 coding tasks x 2 setups (API tool / local TwIL tool) with model + tool call
+counts and system vs provider time; system-side speed; C6 model-call stall bound; unify the Inference
+Console into Monitor (and feed it from the router); c14; then H8 C4-C10; vision/browser addendum.
+
+**Previous: NEXT AGENT: read MCM `pin_21357eeec9fc` (HANDOFF 8) FIRST** - it supersedes HANDOFF 7's order
 of work: Brain calls cut (S19), turn-end bookkeeping off the reply path (S20), the local TOOL MODEL
 now runs node calls with a Brain helper, node/step audit fixes, new providers (OpenRouter, Inception
 Labs, NVIDIA), startup findings (owner actions: Defender exclusions + D: NVMe). Open, in order:
