@@ -11,6 +11,19 @@ archived there); CLAUDE.md/AGENTS.md now carry "BUILD + VERIFY IRIS — THE MEAS
 work: re-measure all 15 coding tasks x 2 setups (API tool / local TwIL tool) with model + tool call
 counts and system vs provider time; system-side speed; C6 model-call stall bound; unify the Inference
 Console into Monitor (and feed it from the router); c14; then H8 C4-C10; vision/browser addendum.
+**ALSO READ the addendum `pin_7125f6739038` (browser control + vision, 2026-10-02)** and the audit
+addendum (`execution-audit.html`, section "Addendum 2026-10-02 · Browser control and vision", rows
+V1-V15). Owner goal: the user never needs another browser - IRIS ships one. Two live browser runs
+failed and the vision model took no part. Fixed: V1 restore crash + V13 window cap (`289d2ce0`),
+browser tools in developer nodes / web toggle the only gate (`35c315bd`). Fix order for Phase B1:
+V2 V3 V4 (vision discovery: local server excluded, false 'can see' probe, paid probing) -> V5 V6 V7
+(one resolver + auto-load driven by the fallback ladder, owner decision) -> V9 (API vision from
+provider metadata) -> V8 (vision in the browser loop) -> V12 (replan relevance gate); then live runs
+(mercury + local LFM2.5-VL-3B fallback; Ternary-Bonsai-2-27B with its own vision) and a browser eval
+group with a standard. Phase B2 (the experience: live screencast by default, shared wheel, plan on
+the page, action timeline, Oracle browser_next/web_depth, persistent profile, warm Chromium) and
+V10 (= C4 one engine) / V11 / V14 / V15 follow. How the next agent orders this against HANDOFF 9 C:
+C1 re-measure first (it decides what costs most), then B1, then the rest by measured cost.
 
 **Previous: NEXT AGENT: read MCM `pin_21357eeec9fc` (HANDOFF 8) FIRST** - it supersedes HANDOFF 7's order
 of work: Brain calls cut (S19), turn-end bookkeeping off the reply path (S20), the local TOOL MODEL
