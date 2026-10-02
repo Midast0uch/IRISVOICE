@@ -223,6 +223,10 @@ def test_resolve_vision_provider_propagates_vision_model_unavailable(monkeypatch
     router.roles.bind("reasoning", "cohere")
 
     monkeypatch.setattr(vl, "_discover_reusable_vision_server", lambda base_url="": None)
+    # V5 (2026-10-02): tier 3 also answers when the chosen vision model can be
+    # autoloaded. "Nothing borrowable" here also means "nothing loadable" -
+    # this machine has a real pin and an empty slot.
+    monkeypatch.setattr(vl, "vision_autoload_possible", lambda: False)
 
     with pytest.raises(vl.VisionModelUnavailable):
         router.resolve_vision_provider()
@@ -244,6 +248,10 @@ def test_resolve_vision_client_also_propagates_the_raise(monkeypatch):
     router.roles.bind("reasoning", "cohere")
 
     monkeypatch.setattr(vl, "_discover_reusable_vision_server", lambda base_url="": None)
+    # V5 (2026-10-02): tier 3 also answers when the chosen vision model can be
+    # autoloaded. "Nothing borrowable" here also means "nothing loadable" -
+    # this machine has a real pin and an empty slot.
+    monkeypatch.setattr(vl, "vision_autoload_possible", lambda: False)
 
     with pytest.raises(vl.VisionModelUnavailable):
         resolve_vision_client(router)

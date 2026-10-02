@@ -277,6 +277,12 @@ class TestResolveVisionProviderHierarchy:
             "backend.tools.lfm_vl_provider._discover_reusable_vision_server",
             lambda base_url="": None,
         )
+        # V5 (2026-10-02): tier 3 also answers when the chosen vision model can be
+        # autoloaded. "Nothing borrowable" here also means "nothing loadable" -
+        # this machine has a real pin and an empty slot.
+        monkeypatch.setattr(
+            "backend.tools.lfm_vl_provider.vision_autoload_possible", lambda: False,
+        )
 
         with pytest.raises(VisionModelUnavailable):
             router.resolve_vision_provider()

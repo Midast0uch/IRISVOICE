@@ -55,8 +55,16 @@ _VISION_PORT: int = int(os.environ.get("IRIS_VISION_PORT", "8082"))
 # (endpoint, cred_ref, vision_model) — vision_model is the user's pinned VLM id
 # ("" => auto-pick first multimodal). Registered borrowed candidates (tests/advanced).
 _EXTRA_VISION_ENDPOINTS: list[tuple[str, Optional[str], str]] = []
-# (endpoint, preferred_model) -> model_id if capable
-_VISION_CAPABILITY_CACHE: dict[tuple[str, str], Optional[str]] = {}
+# (endpoint, preferred_model) -> (model_id if capable else None, monotonic stamp).
+# Positive AND negative verdicts expire after _CAPABILITY_TTL_S: a server that
+# loads (or drops) a projector later is re-proved, and a dead or text-only
+# endpoint is not re-probed on every resolution inside the window (V4).
+_VISION_CAPABILITY_CACHE: dict[tuple[str, str], tuple[Optional[str], float]] = {}
+_CAPABILITY_TTL_S = 300.0
+# A local server lists only what it serves (llama-server: the loaded model;
+# router mode: a few), but an Ollama-style catalog lists every pulled model and
+# answers each probe by LOADING it. Bound the image round trips per endpoint.
+_LOCAL_PROBE_CAP = 4
 
 # Reuse state: set when discovery selects a borrowed server. _call()/health_check()
 # consult these so vision traffic is actually routed to the borrowed server.
@@ -64,11 +72,18 @@ _reused_vision_base_url: Optional[str] = None
 _reused_vision_auth: Optional[str] = None
 _reused_vision_model: Optional[str] = None
 
-# A valid 1x1 PNG (67 bytes). Used only for the capability probe — the model
-# never sees anything meaningful; we just need an image_url it must accept.
-_TINY_PNG_B64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgYGAAAAAEAAH2FzhVAAAAAElFTkSuQmCC"
+# The capability probe image: 32x16 PNG, left half solid red, right half solid
+# blue. "HTTP 200 with choices" is NOT proof of sight — a text-only server
+# (live: NVIDIA openai/gpt-oss-20b) drops the image and answers anyway (V3).
+# Proof is the model NAMING both colours; a blind guess names both rarely.
+_PROBE_PNG_B64 = (
+    "iVBORw0KGgoAAAANSUhEUgAAACAAAAAQCAIAAAD4YuoOAAAAIElEQVR42mP4z8BAEiJR+X+GUQtGLRi1YNSCUQuGggUAUKb+ELySDi8AAAAASUVORK5CYII="
 )
+_PROBE_PROMPT = (
+    "The image has a left half and a right half, each one solid colour. "
+    "Name the two colours, left first, in at most four words."
+)
+_PROBE_EXPECT = ("red", "blue")
 
 
 def set_vision_candidate_endpoints(endpoints) -> None:
@@ -150,9 +165,12 @@ def _load_candidate_endpoints_from_config() -> list[tuple[str, Optional[str], st
     """Return (endpoint, cred_ref, vision_model_pin) for configured providers that
     are OpenAI-compatible AND have both an endpoint and a credential.
 
-    ``vision_model_pin`` is the user's preferred VLM id (set via the vision card
-    dropdown); when non-empty the probe PREFERS that exact model instead of
-    auto-picking the first multimodal one. Excludes LM_STUDIO (own routing path)
+    The third field is the model to try FIRST on that endpoint. LOCAL_OPENAI
+    providers and the shared server get the user's vision pin (a scanned GGUF
+    path from the vision card dropdown - meaningful only to a local server).
+    An API provider gets ITS OWN configured model: a paid catalog is never
+    scanned with image requests (V4 - NVIDIA lists 81 models), and a local
+    file path means nothing to it. Excludes LM_STUDIO (own routing path)
     and OLLAMA (different API shape). Safe to call anytime: reads only the local
     config JSON; the credential itself is never read here (only its keyring key,
     ``cred_ref``, resolved lazily at probe time)."""
@@ -173,7 +191,10 @@ def _load_candidate_endpoints_from_config() -> list[tuple[str, Optional[str], st
         if not _ep:
             continue
         _cred = getattr(_p, "cred_ref", "") or ""
-        _out.append((_ep, _cred or None, _pin))
+        _first = _pin if getattr(_p, "kind", "") == "LOCAL_OPENAI" else (
+            getattr(_p, "model", "") or ""
+        )
+        _out.append((_ep, _cred or None, _first))
     # The SHARED local model server enters the candidate set when it is
     # running AND its active model was loaded with a projector (the
     # truthful signal is vision_loaded, set only when --mmproj actually made
@@ -206,30 +227,42 @@ def _fetch_provider_secret(cred_ref: Optional[str]) -> Optional[str]:
         return None
 
 
+def _is_local_endpoint(url: str) -> bool:
+    """True for a server on this machine (no money, no catalog of strangers)."""
+    try:
+        from urllib.parse import urlparse
+
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:  # noqa: BLE001 — an unparsable URL is not local
+        return False
+    return host in ("127.0.0.1", "localhost", "::1")
+
+
 def _candidate_vision_specs(base_url: str) -> list[tuple[str, Optional[str], str]]:
     """All borrowed candidates to probe, as (normalised_endpoint, cred_ref,
-    vision_model), excluding the IRIS-owned `base_url`."""
-    _default = _normalise_vision_base_url(
-        base_url or f"http://127.0.0.1:{_VISION_PORT}/v1"
-    )
+    first_model), LOCAL servers first.
+
+    No endpoint is excluded: the old rule dropped `base_url` (default
+    127.0.0.1:8082) as "IRIS-owned" - a leftover from the deleted 18181 spawn
+    server. 8082 IS the shared local model server, so the rule made the local
+    VLM unreachable for tier 3 (V2). `base_url` is kept for the call shape."""
+    del base_url
     _out: list[tuple[str, Optional[str], str]] = []
     _seen: set[str] = set()
-    # 1. Configured providers (primary source). vision_model may be "" (auto).
-    for _ep, _cred, _vm in _load_candidate_endpoints_from_config():
+    # 1. Configured providers + the shared server (primary source).
+    # 2. Explicitly registered endpoints (tests / advanced callers).
+    _raw = list(_load_candidate_endpoints_from_config()) + [
+        (_e[0], _e[1], _e[2]) for _e in _EXTRA_VISION_ENDPOINTS if _e
+    ]
+    for _ep, _cred, _vm in _raw:
         _norm = _normalise_vision_base_url(_ep)
-        if not _norm or _norm in _seen or _norm == _default:
+        if not _norm or _norm in _seen:
             continue
         _seen.add(_norm)
         _out.append((_norm, _cred, _vm))
-    # 2. Explicitly registered endpoints (tests / advanced callers). No pin.
-    for _e in _EXTRA_VISION_ENDPOINTS:
-        if not _e:
-            continue
-        _norm = _normalise_vision_base_url(_e[0])
-        if not _norm or _norm in _seen or _norm == _default:
-            continue
-        _seen.add(_norm)
-        _out.append((_norm, _e[1], _e[2]))
+    # Local first (V4): a local VLM costs nothing and is the owner's fallback;
+    # paid API endpoints are probed only when no local server can see.
+    _out.sort(key=lambda c: not _is_local_endpoint(c[0]))
     return _out
 
 
@@ -240,10 +273,16 @@ def _probe_vision_capability(
     OpenAI-compatible server we can safely reuse; otherwise None. Never raises.
 
     If `preferred_model` is set, that exact model id is tested FIRST; if it is
-    multimodal we use it (the user's pinned choice, e.g. lfm2.5-vl-3b). Only if
-    the preferred model is absent/not-multimodal do we fall back to scanning ALL
-    models and returning the first multimodal one (router-mode servers hosting an
-    LLM + VLM on one process, routed by the `model` field)."""
+    multimodal we use it (the user's pinned choice, e.g. lfm2.5-vl-3b).
+
+    A LOCAL endpoint then falls back to the models it lists (router-mode
+    servers hosting an LLM + VLM on one process, routed by the `model` field),
+    at most _LOCAL_PROBE_CAP image round trips. A REMOTE endpoint is tried on
+    `preferred_model` ONLY - never a scan of a paid catalog (V4).
+
+    Published metadata decides before any image is sent: an entry that states
+    its input modalities (OpenRouter `architecture.input_modalities`, a
+    `capabilities` list) is trusted - image -> capable, no image -> skipped."""
     _headers = {"Authorization": f"Bearer {auth}"} if auth else None
     try:
         import httpx
@@ -258,21 +297,43 @@ def _probe_vision_capability(
         _models = _data.get("data", []) if isinstance(_data, dict) else []
         if not _models:
             return None
+        _meta = {
+            str((_m or {}).get("id")): _published_vision(_m)
+            for _m in _models if isinstance(_m, dict) and _m.get("id")
+        }
         _probe_timeout = float(os.environ.get("IRIS_VISION_PROBE_TIMEOUT_S", "15"))
-        # Prefer the pinned model (tested first); fall back to scanning all.
         # The pin may be a local model PATH (from the vision-card dropdown, which
         # lists scanned GGUF paths) while a borrowed router-mode server serves
         # models by FILENAME — so also try the basename to bridge the two.
+        # The bridge is for FILE pins only: a remote id like "org/model" is a
+        # different model once cut ("cline-pass/kimi-k3" -> "kimi-k3").
+        _local = _is_local_endpoint(base_url)
         _order: list = []
         if preferred_model:
             _order.append(preferred_model)
             _base = os.path.basename(preferred_model)
-            if _base and _base != preferred_model:
+            _file_pin = "\\" in preferred_model or preferred_model.lower().endswith(".gguf")
+            if _base and _base != preferred_model and (_local or _file_pin):
                 _order.append(_base)
-        _order += [(_m or {}).get("id") for _m in _models]
+        if _local:
+            # Ollama lists "<name>:<tag>-cloud" models: remote models behind
+            # the local port - never probed as a local fallback.
+            _order += [m for m in _meta if not m.lower().endswith("cloud")]
+        _probes = 0
+        _tried: set = set()
         for _model_id in _order:
-            if not _model_id:
+            if not _model_id or _model_id in _tried:
                 continue
+            _tried.add(_model_id)
+            _published = _meta.get(_model_id)
+            if _published is True:
+                return _model_id
+            if _published is False:
+                continue
+            if _local:
+                if _probes >= _LOCAL_PROBE_CAP:
+                    break
+                _probes += 1
             if _model_is_multimodal(base_url, _model_id, _headers, _probe_timeout):
                 return _model_id
         return None
@@ -280,12 +341,31 @@ def _probe_vision_capability(
         return None
 
 
+def _published_vision(entry: dict) -> Optional[bool]:
+    """What a /models entry PUBLISHES about image input: True, False, or None
+    when it says nothing (then only the probe can tell). Never raises."""
+    try:
+        _arch = entry.get("architecture")
+        if isinstance(_arch, dict) and isinstance(_arch.get("input_modalities"), list):
+            return "image" in [str(m).lower() for m in _arch["input_modalities"]]
+        for _key in ("input_modalities", "modalities"):
+            if isinstance(entry.get(_key), list):
+                return "image" in [str(m).lower() for m in entry[_key]]
+        _caps = entry.get("capabilities")
+        if isinstance(_caps, list) and _caps:
+            _caps_l = [str(c).lower() for c in _caps]
+            return "vision" in _caps_l or "multimodal" in _caps_l
+    except Exception:  # noqa: BLE001 — unreadable metadata says nothing
+        return None
+    return None
+
+
 def _model_is_multimodal(
     base_url: str, model_id: str, headers: Optional[dict], timeout: float
 ) -> bool:
-    """Proof that `model_id` on this server accepts an image: a minimal 1x1-PNG
-    round trip. Returns True iff the completion succeeds (no error payload).
-    Never raises."""
+    """Proof that `model_id` on this server SEES an image: it must name both
+    colours of the red|blue probe image. A 200 with choices is not enough - a
+    text-only model drops the image and still answers (V3). Never raises."""
     try:
         import httpx
 
@@ -301,14 +381,17 @@ def _model_is_multimodal(
                             {
                                 "type": "image_url",
                                 "image_url": {
-                                    "url": f"data:image/png;base64,{_TINY_PNG_B64}"
+                                    "url": f"data:image/png;base64,{_PROBE_PNG_B64}"
                                 },
                             },
-                            {"type": "text", "text": "reply with the single word: ok"},
+                            {"type": "text", "text": _PROBE_PROMPT},
                         ],
                     }
                 ],
-                "max_tokens": 1,
+                # Headroom for a short answer; a model that hides reasoning
+                # first may still run out - that reads as "cannot see".
+                "max_tokens": 64,
+                "temperature": 0,
             },
             timeout=timeout,
         )
@@ -318,10 +401,19 @@ def _model_is_multimodal(
             _j = _resp.json()
         except Exception:
             return False
-        if isinstance(_j, dict) and "error" in _j:
+        if not isinstance(_j, dict) or "error" in _j:
             return False
-        _choices = _j.get("choices") if isinstance(_j, dict) else None
-        return bool(_choices)
+        _choices = _j.get("choices") or [{}]
+        _msg = (_choices[0] or {}).get("message") or {}
+        _text = str(_msg.get("content") or "").lower()
+        _ok = all(_c in _text for _c in _PROBE_EXPECT)
+        if not _ok:
+            logger.info(
+                "[LFMVLProvider] probe model=%s at %s did not name the probe "
+                "colours (answer=%r): not vision-capable",
+                model_id, base_url, _text[:80],
+            )
+        return _ok
     except Exception:
         return False
 
@@ -333,10 +425,11 @@ def _is_verified_vision_capable(
     capable, else None. Cache keyed by (endpoint, preferred_model) so a pinned
     choice and an auto-scan don't collide."""
     _key = (url, preferred_model or "")
-    if _key in _VISION_CAPABILITY_CACHE:
-        return _VISION_CAPABILITY_CACHE[_key]
+    _hit = _VISION_CAPABILITY_CACHE.get(_key)
+    if _hit is not None and time.monotonic() - _hit[1] < _CAPABILITY_TTL_S:
+        return _hit[0]
     _model_id = _probe_vision_capability(url, auth=auth, preferred_model=preferred_model)
-    _VISION_CAPABILITY_CACHE[_key] = _model_id
+    _VISION_CAPABILITY_CACHE[_key] = (_model_id, time.monotonic())
     return _model_id
 
 
@@ -411,53 +504,119 @@ _VISION_AUTOLOAD_HINT = os.environ.get("IRIS_VISION_AUTOLOAD_MODEL", "").strip()
 _autoload_lock = threading.Lock()
 
 
-def _find_autoload_vision_model() -> Optional[str]:
-    """Pick the projector-backed GGUF to serve vision, or None.
+def _read_vision_fallback_ladder() -> list:
+    """The user's ordered vision models (model browser, REQ-10): a list of
+    scanned GGUF paths, first = most wanted. Never raises."""
+    try:
+        from backend.iris_config import load_config
 
-    Consent anchor: the ONLY candidates considered are the user's persisted
-    vision choice (the vision-card dropdown pin, ``field_values['vision']
-    ['vision_model']``) or an explicit ``IRIS_VISION_AUTOLOAD_MODEL`` hint.
-    With neither, this returns None — autoload NEVER picks a model on its
-    own, so a fresh install (or a test machine) cannot have gigabytes loaded
-    without a recorded choice. Matching is a filename/path substring match
-    over projector-backed scan entries — the SAME pairing the model browser
-    shows (has_vision/mmproj_path). Never raises.
-    """
-    hint = _VISION_AUTOLOAD_HINT
-    if not hint:
+        return [str(p) for p in (load_config().inference.vision_fallback_ladder or []) if p]
+    except Exception:  # noqa: BLE001 — a broken config means no ladder
+        return []
+
+
+def _autoload_hints() -> list:
+    """The models autoload may load, in order - ONE mechanism (V7, owner
+    decision 2026-10-02): an explicit IRIS_VISION_AUTOLOAD_MODEL hint, else
+    the vision fallback ladder, else (empty ladder) the vision card pin."""
+    if _VISION_AUTOLOAD_HINT:
+        return [_VISION_AUTOLOAD_HINT]
+    ladder = _read_vision_fallback_ladder()
+    if ladder:
+        return ladder
+    try:
+        pin = _read_global_vision_model_pin()
+    except Exception:  # noqa: BLE001 — a broken config means no autoload
+        pin = ""
+    return [pin] if pin else []
+
+
+def _hint_matches(hint: str, entry: dict) -> bool:
+    """Does a hint name this scan entry?
+
+    A PATH hint matches by file name or by resolved path: the pin says
+    D:\\lmstudio\\models\\..., the scan walks C:\\Users\\...\\.lmstudio\\models
+    (a junction to the same folder), so a substring of the full path never
+    matched (V6). A NAME hint ("LFM2.5-VL-3B") stays a substring match."""
+    h = hint.strip()
+    if not h:
+        return False
+    if any(sep in h for sep in ("/", "\\")) or h.lower().endswith(".gguf"):
+        if os.path.basename(h).lower() == str(entry.get("filename", "")).lower():
+            return True
         try:
-            hint = _read_global_vision_model_pin()
-        except Exception:  # noqa: BLE001 — a broken config means no autoload
-            hint = ""
-    if not hint:
-        return None
-    hint = hint.lower()
+            return os.path.normcase(os.path.realpath(h)) == os.path.normcase(
+                os.path.realpath(str(entry.get("path", "")))
+            )
+        except Exception:  # noqa: BLE001 — an unresolvable path does not match
+            return False
+    hl = h.lower()
+    return (
+        hl in str(entry.get("path", "")).lower()
+        or hl in str(entry.get("filename", "")).lower()
+        or hl in str(entry.get("display_name", "")).lower()
+    )
+
+
+def _find_autoload_vision_models() -> list:
+    """The projector-backed GGUF paths autoload may load, in hint order.
+
+    Consent anchor: the ONLY candidates considered are the user's recorded
+    choices (``_autoload_hints``). With none, this returns [] — autoload
+    NEVER picks a model on its own, so a fresh install (or a test machine)
+    cannot have gigabytes loaded without a recorded choice. Candidates are
+    projector-backed scan entries — the SAME pairing the model browser shows
+    (has_vision/mmproj_path). Never raises.
+    """
+    hints = _autoload_hints()
+    if not hints:
+        return []
     try:
         from backend.agent.local_model_manager import get_local_model_manager
 
         entries = get_local_model_manager().scan_models()
     except Exception as exc:  # noqa: BLE001
         logger.info("[LFMVLProvider] autoload: model scan failed: %s", exc)
-        return None
-    candidates = [
-        e for e in (entries or [])
-        if e.get("mmproj_path") and e.get("path")
-    ]
-    matches = [
-        e for e in candidates
-        if hint in str(e.get("path", "")).lower()
-        or hint in str(e.get("filename", "")).lower()
-        or hint in str(e.get("display_name", "")).lower()
-    ]
-    if not matches:
-        logger.info(
-            "[LFMVLProvider] autoload: pinned model %r matched no "
-            "projector-backed model on disk",
-            hint,
-        )
-        return None
-    matches.sort(key=lambda e: e.get("filename", ""))
-    return matches[0]["path"]
+        return []
+    candidates = sorted(
+        (e for e in (entries or []) if e.get("mmproj_path") and e.get("path")),
+        key=lambda e: e.get("filename", ""),
+    )
+    out: list = []
+    for hint in hints:
+        for e in candidates:
+            if _hint_matches(hint, e) and e["path"] not in out:
+                out.append(e["path"])
+                break
+        else:
+            logger.info(
+                "[LFMVLProvider] autoload: chosen model %r matched no "
+                "projector-backed model on disk",
+                hint,
+            )
+    return out
+
+
+def _find_autoload_vision_model() -> Optional[str]:
+    """The first model autoload would load, or None."""
+    found = _find_autoload_vision_models()
+    return found[0] if found else None
+
+
+def vision_autoload_possible() -> bool:
+    """Cheap answer for the router's tier 3 (V5): could autoload give us a
+    vision server right now? Enabled, a recorded choice exists, and the
+    shared slot is empty. No disk scan here - the load itself checks the
+    file and the projector, and its failure reaches the caller loudly."""
+    if not _VISION_AUTOLOAD_ENABLED:
+        return False
+    hints = _autoload_hints()
+    if not hints:
+        return False
+    paths = [h for h in hints if any(s in h for s in ("/", "\\"))]
+    if paths and len(paths) == len(hints) and not any(os.path.exists(p) for p in paths):
+        return False
+    return not _shared_slot_is_resident()
 
 
 def _shared_slot_is_resident() -> bool:
@@ -525,8 +684,8 @@ def _maybe_autoprovision_vision_server() -> bool:
                 "on the shared slot (eviction is never automatic)"
             )
             return False
-        model_path = _find_autoload_vision_model()
-        if not model_path:
+        model_paths = _find_autoload_vision_models()
+        if not model_paths:
             logger.info(
                 "[LFMVLProvider] autoload: no projector-backed model on disk; "
                 "vision stays unavailable (load one via the model browser)"
@@ -537,34 +696,37 @@ def _maybe_autoprovision_vision_server() -> bool:
 
         from backend.agent.local_model_manager import get_local_model_manager
 
-        logger.info(
-            "[LFMVLProvider] autoload: empty shared slot — loading %s "
-            "(with_projector, bounded %.0fs)",
-            model_path, _VISION_AUTOLOAD_TIMEOUT_S,
-        )
-
-        async def _load():
+        async def _load(path: str):
             return await asyncio.wait_for(
                 get_local_model_manager().load_model(
-                    model_path, with_projector=True,
+                    path, with_projector=True,
                 ),
                 timeout=_VISION_AUTOLOAD_TIMEOUT_S,
             )
 
-        try:
-            ok = bool(asyncio.run(_load()))
-        except Exception as exc:  # noqa: BLE001 — bounded carry, loud degrade
-            logger.warning("[LFMVLProvider] autoload failed: %s", exc)
-            return False
-        if not ok:
-            logger.warning("[LFMVLProvider] autoload: load reported failure")
-            return False
-        # The capability cache may hold a stale NEGATIVE probe for this
-        # endpoint from the pre-load world — drop it so discovery re-proves
-        # the fresh server instead of reusing "not multimodal: measured".
-        _VISION_CAPABILITY_CACHE.clear()
-        logger.info("[LFMVLProvider] autoload complete: %s", model_path)
-        return True
+        # Down the ladder: the next choice loads only when the one before it
+        # failed (VRAM pre-flight, a broken file, the bound).
+        for model_path in model_paths:
+            logger.info(
+                "[LFMVLProvider] autoload: empty shared slot — loading %s "
+                "(with_projector, bounded %.0fs)",
+                model_path, _VISION_AUTOLOAD_TIMEOUT_S,
+            )
+            try:
+                ok = bool(asyncio.run(_load(model_path)))
+            except Exception as exc:  # noqa: BLE001 — bounded carry, loud degrade
+                logger.warning("[LFMVLProvider] autoload failed for %s: %s", model_path, exc)
+                continue
+            if not ok:
+                logger.warning("[LFMVLProvider] autoload: load reported failure for %s", model_path)
+                continue
+            # The capability cache may hold a stale NEGATIVE probe for this
+            # endpoint from the pre-load world — drop it so discovery re-proves
+            # the fresh server instead of reusing "not multimodal: measured".
+            _VISION_CAPABILITY_CACHE.clear()
+            logger.info("[LFMVLProvider] autoload complete: %s", model_path)
+            return True
+        return False
     finally:
         _autoload_lock.release()
 
@@ -737,22 +899,28 @@ def _ensure_vision_server_running(base_url: str = "") -> bool:
          caller turns that into a clean VisionModelUnavailable user-facing
          decline — never a spawn, never a silent degrade.
     """
-    requested_port = _VISION_PORT
-
-    # ── 1. fast path, no lock ──
+    # ── 1. fast path, no lock: the VERIFIED selection is still up ──
+    # Only a server discovery proved multimodal counts. The old fast path
+    # pinged the default 8082 and returned True for ANY model there - a
+    # text-only tool model read as "vision ready" (V3).
     # base_url ALREADY ENDS IN /v1 (LFMVLConfig.base_url), so the endpoint is
     # "/models" — NOT "/v1/models". Appending /v1 again produced .../v1/v1/models,
     # which 404s forever (live proof 2026-08-10). Keep hitting /models.
-    _active = _active_vision_base_url(base_url or f"http://127.0.0.1:{requested_port}/v1")
-    try:
-        import httpx
-        _auth = _active_vision_auth()
-        _headers = {"Authorization": f"Bearer {_auth}"} if _auth else None
-        r = httpx.get(f"{_active}/models", headers=_headers, timeout=1.0)
-        if r.status_code == 200:
-            return True
-    except Exception:
-        pass
+    _active = _reused_vision_base_url
+    if _active:
+        try:
+            import httpx
+            _auth = _active_vision_auth()
+            _headers = {"Authorization": f"Bearer {_auth}"} if _auth else None
+            r = httpx.get(f"{_active}/models", headers=_headers, timeout=1.0)
+            if r.status_code == 200:
+                return True
+        except Exception:
+            pass
+        # It went away: forget its verdict too, then re-discover below.
+        for _k in [k for k in _VISION_CAPABILITY_CACHE if k[0] == _active]:
+            _VISION_CAPABILITY_CACHE.pop(_k, None)
+        _reset_reused_vision_server()
 
     # ── 2. discover a borrowed multimodal server ──
     try:
@@ -910,10 +1078,14 @@ class LFMVLProvider:
         the IRIS-owned llama-server) is reachable and has a vision model loaded.
         Returns True if server responds, False otherwise.
         """
+        # Only a server discovery PROVED multimodal is healthy for vision: the
+        # default 8082 answers /models for a text-only model too (V3).
+        _base = _reused_vision_base_url
+        if not _base:
+            return False
         try:
             import httpx
 
-            _base = _active_vision_base_url(self.config.base_url)
             _auth = _active_vision_auth()
             _headers = {"Authorization": f"Bearer {_auth}"} if _auth else None
             response = httpx.get(

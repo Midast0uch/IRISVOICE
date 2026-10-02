@@ -933,29 +933,39 @@ class InferenceRouter:
         # server hosting a projector-backed model, or a configured
         # LOCAL_OPENAI/API provider). When nothing verifies, the router fails
         # loudly — never a spawn, never a silent text-only degrade.
+        # When nothing is up but the user's chosen vision model can be loaded
+        # into the EMPTY shared slot, tier 3 answers requires_load=True: the
+        # load runs on the first vision call (LFMVLProvider._call ->
+        # _ensure_vision_server_running, off the event loop). Raising here
+        # first made that autoload unreachable from the router (V5).
         free_vram = _free_vram_gb()
         try:
             from backend.tools.lfm_vl_provider import (
                 VisionModelUnavailable,
                 _discover_reusable_vision_server,
+                vision_autoload_possible,
             )
 
+            requires_load = False
             if _discover_reusable_vision_server("") is None:
-                raise VisionModelUnavailable(
-                    "vision-single-server: no shared multimodal server is "
-                    "available to borrow (tier-3 is borrow-only; spawn was "
-                    "removed). Load a projector-backed model on the local "
-                    "model server, or configure a multimodal provider."
-                )
+                if not vision_autoload_possible():
+                    raise VisionModelUnavailable(
+                        "vision-single-server: no shared multimodal server is "
+                        "available to borrow and no chosen vision model can be "
+                        "loaded into an empty slot. Load a projector-backed "
+                        "model on the local model server, or configure a "
+                        "multimodal provider."
+                    )
+                requires_load = True
             logger.info(
                 "[resolve_vision_provider] ctx=%s tier=fallback provider=shared-vision "
-                "requires_load=False free_vram_gb=%.2f takes_lease=False",
-                ctx, free_vram,
+                "requires_load=%s free_vram_gb=%.2f takes_lease=False",
+                ctx, requires_load, free_vram,
             )
             return VisionResolution(
                 tier="fallback",
                 provider_id="shared_vision_server",
-                requires_load=False,
+                requires_load=requires_load,
                 free_vram_gb=free_vram,
                 takes_lease=False,
             )

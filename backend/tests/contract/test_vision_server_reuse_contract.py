@@ -32,6 +32,13 @@ import backend.tools.lfm_vl_provider as vl
 # ---------------------------------------------------------------------------
 
 
+def _seen_answer(payload) -> str:
+    """What a model that SEES answers: the probe image's two colours for the
+    capability probe (V3 - "200 with choices" is no longer proof), "ok" for
+    any other vision request."""
+    return "red, blue" if vl._PROBE_PROMPT in str(payload) else "ok"
+
+
 class _FakeResponse:
     def __init__(self, status_code: int = 200, json_data: dict | None = None):
         self.status_code = status_code
@@ -87,7 +94,7 @@ class _FakeHttpx:
             # A text-only server typically rejects the image_url with an error
             # payload even when it returns HTTP 200.
             return _FakeResponse(200, {"error": {"message": "image_url not supported"}})
-        return _FakeResponse(200, {"choices": [{"message": {"content": "ok"}}]})
+        return _FakeResponse(200, {"choices": [{"message": {"content": _seen_answer(json)}}]})
 
 
 # ---------------------------------------------------------------------------
@@ -310,7 +317,7 @@ class _RouterModeFake:
             # A text-only model rejects the image_url with an error payload.
             return _FakeResponse(200, {"error": {"message": "image_url not supported"}})
         # Any other model (the VLM) accepts the image and completes.
-        return _FakeResponse(200, {"choices": [{"message": {"content": "ok"}}]})
+        return _FakeResponse(200, {"choices": [{"message": {"content": _seen_answer(json)}}]})
 
 
 class TestMultiModelRouterProbe:
@@ -384,7 +391,7 @@ class _PinnedRouterFake:
         if _mid == "llama-3.1-8b":
             return _FakeResponse(200, {"error": {"message": "image_url not supported"}})
         # bonsai27B and lfm2.5-vl-3b both accept the image.
-        return _FakeResponse(200, {"choices": [{"message": {"content": "ok"}}]})
+        return _FakeResponse(200, {"choices": [{"message": {"content": _seen_answer(json)}}]})
 
 
 class TestVisionModelPin:
@@ -459,6 +466,10 @@ class TestSharedServerAutoCandidate:
             lambda: _Mgr(),
         )
         monkeypatch.setattr(vl, "_read_global_vision_model_pin", lambda: "")
+        # Hermetic: this machine's real config has its own LOCAL_OPENAI
+        # provider on 8082; the claim here is about the shared-server entry.
+        import backend.iris_config as _ic
+        monkeypatch.setattr(_ic, "load_config", lambda: _FakeConfig())
         candidates = vl._load_candidate_endpoints_from_config()
         assert all("8082" not in c[0] for c in candidates)
 
@@ -512,7 +523,7 @@ class TestGlobalVisionModelPin:
             def post(self, url, json=None, timeout=1.0, headers=None):
                 _mid = (json or {}).get("model")
                 if _mid == "lfm2.5-vl-3b.gguf":
-                    return _FakeResponse(200, {"choices": [{"message": {"content": "ok"}}]})
+                    return _FakeResponse(200, {"choices": [{"message": {"content": _seen_answer(json)}}]})
                 return _FakeResponse(200, {"error": {"message": "not found"}})
 
         _rf = _BasenameServer()

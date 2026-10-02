@@ -19,6 +19,19 @@ import asyncio
 import time
 
 
+@pytest.fixture(autouse=True)
+def _server_really_down(monkeypatch):
+    """"Server down" means NOTHING can serve vision: no autoload of the user's
+    pinned model (this machine has one; since V6 the pin matches, so the
+    "down" tests loaded the real 3B VLM, 56 s) and no probes of the real
+    configured API providers."""
+    import backend.tools.lfm_vl_provider as vl
+
+    monkeypatch.setattr(vl, "_VISION_AUTOLOAD_ENABLED", False)
+    monkeypatch.setattr(vl, "_load_candidate_endpoints_from_config", lambda: [])
+    monkeypatch.setattr(vl, "_reused_vision_base_url", None)
+
+
 # â”€â”€ Import checks â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def test_lfm_vl_provider_importable():

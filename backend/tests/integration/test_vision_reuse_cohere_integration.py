@@ -24,6 +24,13 @@ import backend.iris_config as iris_config_mod
 import backend.tools.lfm_vl_provider as vl
 
 
+def _seen_answer(payload) -> str:
+    """What a model that SEES answers: the probe image's two colours for the
+    capability probe (V3 - "200 with choices" is no longer proof), "ok" for
+    any other vision request."""
+    return "red, blue" if vl._PROBE_PROMPT in str(payload) else "ok"
+
+
 class _FakeResponse:
     def __init__(self, status_code: int = 200, json_data: dict | None = None):
         self.status_code = status_code
@@ -66,7 +73,7 @@ class _FakeHttpx:
         self.post_calls.append(url)
         _kind = self._kind(url)
         if _kind == "multimodal":
-            return _FakeResponse(200, {"choices": [{"message": {"content": "ok"}}]})
+            return _FakeResponse(200, {"choices": [{"message": {"content": _seen_answer(json)}}]})
         if _kind == "textonly":
             return _FakeResponse(200, {"error": {"message": "image_url not supported"}})
         raise ConnectionError(f"unexpected POST {url}")
@@ -110,6 +117,10 @@ def integration_harness(monkeypatch):
     monkeypatch.setattr(vl, "_reused_vision_model", None)
     monkeypatch.setattr(vl, "_VISION_CAPABILITY_CACHE", {})
     monkeypatch.setattr(vl, "_lifecycle_callback", None)
+    # The lifecycle debounce is module state too: an "error" emitted by an
+    # earlier test < 1 s ago made this test's own "error" a dropped duplicate
+    # (it passed alone, failed after test_vision_autoload_contract).
+    monkeypatch.setattr(vl, "_last_lifecycle", ("", 0.0))
     monkeypatch.setattr(vl, "_load_candidate_endpoints_from_config",
                         vl._load_candidate_endpoints_from_config)
     monkeypatch.setattr(vl, "_EXTRA_VISION_ENDPOINTS", [])
