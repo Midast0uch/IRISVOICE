@@ -16850,12 +16850,34 @@ Respond with a JSON object:
 
         box = self._get_tool_box()
 
+        # A node belongs to ONE turn. Eval C c04 (2026-10-02, conv-622): the
+        # 600 s budget sent the reply while a recovery node was starting in a
+        # batch thread; the turn's finally then made the router's choke check
+        # inert and the node made model and tool calls for 3 more minutes,
+        # into the next task. Every node call first checks that its turn is
+        # still the live one and was not stopped (budget or user "stop").
+        # A stand-in kernel with no DER state counts as live.
+        def _turn_live() -> bool:
+            if getattr(self, "_der_stop_requested", False):
+                return False
+            if getattr(self, "_der_turn_active", True) is False:
+                return False
+            live_id = getattr(self, "_der_turn_id", None)
+            return _turn_id is None or live_id is None or live_id == _turn_id
+
+        _ended = "turn ended (reply sent or stopped); this node does no more work"
+
         def _generate(role, messages, **kw):
+            if not _turn_live():
+                logger.info("[run_node] conv=%s turn=%s %s", self.conversation_id, _turn_id, _ended)
+                raise RuntimeError(_ended)
             out = self._router.generate(role, messages, **kw)
             self._accrue_tokens("", getattr(self._router, "last_usage", None), source="run_node")
             return out
 
         def _execute(name, params):
+            if not _turn_live():
+                return {"success": False, "error": _ended, "error_type": "aborted"}
             dr = box.dispatch(
                 Decision(kind=DecisionKind.TOOL, tool=name, params=params, source="run_node"),
                 session_id=_session, conversation_id=self.conversation_id,
