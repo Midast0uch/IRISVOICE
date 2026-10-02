@@ -50,6 +50,44 @@ def _ps_quote(path: str) -> str:
     return "'" + path.replace("'", "''") + "'"
 
 
+_AGENT_SHELL: Optional[tuple] = None  # (name, argv prefix), resolved once
+
+
+def agent_shell() -> tuple:
+    """(name, argv prefix) of the shell that runs ONE agent command.
+
+    Windows: Git Bash when installed - the models write bash (heredocs, &&) -
+    else PowerShell. Never System32\\bash.exe: that is the WSL launcher and runs
+    the command inside Linux. POSIX: bash, else sh.
+    """
+    global _AGENT_SHELL
+    if _AGENT_SHELL is None:
+        if os.name == "nt":
+            bash = None
+            git = shutil.which("git")
+            # git is ...\Git\cmd\git.exe or ...\Git\mingw64\bin\git.exe
+            root = os.path.dirname(git) if git else ""
+            for _ in range(3 if git else 0):
+                root = os.path.dirname(root)
+                for rel in (("bin", "bash.exe"), ("usr", "bin", "bash.exe")):
+                    cand = os.path.join(root, *rel)
+                    if os.path.isfile(cand):
+                        bash = cand
+                        break
+                if bash:
+                    break
+            _AGENT_SHELL = (
+                ("bash", [bash, "--noprofile", "--norc", "-c"]) if bash
+                else ("powershell", ["powershell", "-NoProfile", "-NonInteractive", "-Command"])
+            )
+        else:
+            sh = shutil.which("bash") or "/bin/sh"
+            _AGENT_SHELL = ("bash" if sh.endswith("bash") else "sh", [sh, "-c"])
+        logger.info("[SubprocessManager] agent commands run in %s (%s)",
+                    _AGENT_SHELL[0], _AGENT_SHELL[1][0])
+    return _AGENT_SHELL
+
+
 class ShellSession:
     """One persistent shell subprocess for one conversation session.
 
@@ -81,13 +119,19 @@ class ShellSession:
 
     # ── lifecycle ───────────────────────────────────────────────────────
 
-    async def start(self) -> None:
-        """Spawn the platform shell reading commands from stdin."""
-        if os.name == "nt":
-            argv = ["powershell", "-NoExit", "-Command", "-"]
-        else:
-            shell = os.environ.get("SHELL") or shutil.which("bash") or "/bin/sh"
-            argv = [shell]
+    async def start(self, argv: Optional[list] = None) -> None:
+        """Spawn the platform shell reading commands from stdin.
+
+        With *argv*: spawn that ONE command instead, with an empty, closed
+        stdin (an agent command - see SubprocessManager.run_isolated).
+        """
+        one_shot = argv is not None
+        if not one_shot:
+            if os.name == "nt":
+                argv = ["powershell", "-NoExit", "-Command", "-"]
+            else:
+                shell = os.environ.get("SHELL") or shutil.which("bash") or "/bin/sh"
+                argv = [shell]
         try:
             self.proc = await asyncio.create_subprocess_exec(
                 *argv,
@@ -103,6 +147,10 @@ class ShellSession:
             self.proc = None
             raise
 
+        if one_shot and self.proc.stdin is not None:
+            # An empty pipe, closed: a reader sees end-of-file. Not DEVNULL - on
+            # Windows NUL counts as a console, and `python -` opened its REPL.
+            self.proc.stdin.close()
         self._reader_task = asyncio.create_task(
             self._reader(), name=f"shell-reader-{self.session_id}"
         )
@@ -300,6 +348,7 @@ class SubprocessManager:
 
     def __init__(self, max_concurrent: int = DEFAULT_MAX_CONCURRENT) -> None:
         self._shells: dict[str, ShellSession] = {}
+        self._one_shots: dict[str, set] = {}  # session -> running agent commands
         self._lock = asyncio.Lock()
         self._sem = asyncio.Semaphore(max_concurrent)
         self._max_concurrent = max_concurrent
@@ -418,10 +467,71 @@ class SubprocessManager:
             self.drop_shell(session_id)
         return res
 
+    # ── agent commands: one process each, no shared stdin ───────────────
+
+    async def run_isolated(
+        self,
+        session_id: str,
+        command,
+        workdir: Optional[str] = None,
+        timeout: Optional[float] = None,
+        on_output: Optional[OutputCallback] = None,
+    ) -> dict:
+        """Run ONE agent command in its own process, stdin closed.
+
+        The session shell reads its commands from a stdin pipe that a native
+        child inherits: `python - <<'PY'` swallowed the next lines, including
+        the completion marker, and waited for the 300 s limit (eval c02,
+        2026-10-02). Here nothing can read the command stream. A str runs in
+        agent_shell(); a list/tuple is an argv, run with no shell. Same global
+        cap, output bounds, timeout and tree kill as execute(); abort() kills it.
+        Returns execute()'s shape.
+        """
+        current = asyncio.get_running_loop()
+        home = self._home_loop
+        if home is not None and home.is_running() and current is not home:
+            fut = asyncio.run_coroutine_threadsafe(
+                self._run_isolated_impl(session_id, command, workdir, timeout, on_output),
+                home,
+            )
+            return await asyncio.wrap_future(fut)
+        return await self._run_isolated_impl(session_id, command, workdir, timeout, on_output)
+
+    async def _run_isolated_impl(self, session_id, command, workdir, timeout, on_output) -> dict:
+        argv = list(command) if isinstance(command, (list, tuple)) else agent_shell()[1] + [command]
+        proc = ShellSession(session_id, workdir or os.getcwd())
+        proc._on_output = on_output
+        await self._sem.acquire()
+        self._one_shots.setdefault(session_id, set()).add(proc)
+        try:
+            try:
+                await proc.start(argv=argv)
+            except OSError as exc:
+                return {"success": False, "error": f"could not start command: {exc}"}
+            try:
+                if timeout is not None:
+                    await asyncio.wait_for(proc._done.wait(), timeout=timeout)
+                else:
+                    await proc._done.wait()
+            except asyncio.TimeoutError:
+                await proc.kill()
+                return {"success": False, "error": f"command exceeded {timeout}s — terminated",
+                        "timed_out": True}
+            if proc._flood_reason:
+                return {"success": False, "error": proc._flood_reason, "flood": True}
+            if proc._aborted:
+                return {"success": False, "error": "aborted by user", "aborted": True}
+            return {"success": True, "exit_code": proc._exit_code}
+        finally:
+            self._one_shots.get(session_id, set()).discard(proc)
+            self._sem.release()
+
     # ── abort / status (existing semantics preserved) ───────────────────
 
     async def abort(self, session_id: str) -> None:
-        """Kill the session's shell tree. Next input respawns (reported)."""
+        """Kill the session's shell tree and its agent commands. Next input respawns (reported)."""
+        for one in list(self._one_shots.get(session_id, ())):
+            await one.kill()
         shell = self._shells.get(session_id)
         if shell is None:
             return

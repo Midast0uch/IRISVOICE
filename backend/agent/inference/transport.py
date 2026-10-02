@@ -892,6 +892,17 @@ class ApiHttpxTransport:
                     # The provider publishes its own RPM ceiling on every response;
                     # learning it only from 429s meant guessing 30 against a real 5.
                     _observe_advertised_limit(self, _resp.headers)
+                    # A gateway 5xx is the provider's transient fault: retry
+                    # once, so the caller (a node) keeps its history. Eval c03
+                    # 2026-10-02: Inception answered 504 after a 120 s stall,
+                    # the node failed and its step ran again from the start.
+                    if _resp.status_code in (502, 503, 504) and attempt == 0:
+                        logger.warning(
+                            "[ApiHttpx] provider %d (attempt 1/3) -- retrying once",
+                            _resp.status_code,
+                        )
+                        _perf_t.sleep(1.0)
+                        continue
                     if _resp.status_code != 200:
                         raise RuntimeError(
                             f"API returned {_resp.status_code}: "

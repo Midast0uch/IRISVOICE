@@ -173,6 +173,14 @@ def _repo_status() -> set:
     return paths
 
 
+# A command the agent's shell could not parse or find (owner 2026-10-02: count
+# them every run; a rise means the agent writes for the wrong shell).
+_SHELL_SYNTAX_RE = re.compile(
+    r"syntax error|command not found|is not recognized as (?:the name|an internal)|"
+    r"ParserError|is not a valid statement separator|Missing file specification|"
+    r"The '<' operator is reserved", re.IGNORECASE)
+
+
 # ── one turn over the WebSocket ──────────────────────────────────────────────
 
 async def _run_turn(task: dict, conv_id: str, workdir: Path | None, timeout_s: float) -> dict:
@@ -182,6 +190,7 @@ async def _run_turn(task: dict, conv_id: str, workdir: Path | None, timeout_s: f
     record: dict = {
         "reply": "", "documents": [], "event_counts": {}, "tools": [],
         "permissions": 0, "questions": 0, "timed_out": False, "ws_error": None,
+        "shell_syntax_errors": 0,
     }
     prompt = task["prompt"].replace("{workdir}", str(workdir) if workdir else "")
 
@@ -248,6 +257,9 @@ async def _run_turn(task: dict, conv_id: str, workdir: Path | None, timeout_s: f
                 name = payload.get("tool") or payload.get("tool_name") or payload.get("name")
                 if name and mtype == "tool:call":
                     record["tools"].append(str(name))
+            elif mtype == "terminal_output":
+                if _SHELL_SYNTAX_RE.search(str(msg.get("line") or payload.get("line") or "")):
+                    record["shell_syntax_errors"] += 1
             elif mtype == "document:render":
                 content = payload.get("content")
                 if isinstance(content, str):
@@ -425,6 +437,7 @@ async def _run(tasks: list, keep: bool, done: list) -> list:
                 "tools": rec["tools"], "web_used": web_used,
                 "permissions": rec["permissions"], "questions": rec["questions"],
                 "reply_head": rec["reply"][:400], "event_counts": rec["event_counts"],
+                "shell_syntax_errors": rec.get("shell_syntax_errors", 0),
             })
             log.info("    %s in %.0fs (reply at %ss)  %s", "PASS" if passed else "FAIL", seconds,
                      reply_s, "; ".join(notes))
@@ -558,6 +571,7 @@ def main() -> int:
     print("-" * 72)
     for group, g in summary.items():
         print(f"{group:<10} {g['passed']}/{g['total']}")
+    print(f"shell syntax errors: {sum(r.get('shell_syntax_errors', 0) for r in results)}")
 
     out = RESULTS_DIR / f"{time.strftime('%Y%m%d-%H%M%S')}.json"
     _write_results(results, out)

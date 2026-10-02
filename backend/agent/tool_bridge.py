@@ -284,6 +284,21 @@ _STDIN_SCRIPT = re.compile(
     r"<<|\b(?:python3?|py|node)(?:\.exe)?\s+-(?:\s|$)|^\s*(?:python3?|py|node)(?:\.exe)?\s*$",
     re.IGNORECASE,
 )
+def _agent_shell_name() -> str:
+    from backend.dev.subprocess_manager import agent_shell
+    return agent_shell()[0]
+
+
+def _run_command_description() -> str:
+    """run_command's description names the shell the command will run in."""
+    base = ("Run one command in the project directory (npm, python, pytest, etc.). "
+            "Each command runs fresh in the project directory with no input: "
+            "to run a script, write it to a file first, then run the file.")
+    if _agent_shell_name() == "powershell":
+        return base + " The shell is Windows PowerShell 5.1: no bash heredocs (<<), join commands with ';' not '&&'."
+    return base + " The shell is bash."
+
+
 _STDIN_SCRIPT_ERROR = (
     "This command reads its script from standard input (a heredoc '<<' or "
     "'python -'), which this shell cannot give it: it would wait until the "
@@ -751,10 +766,7 @@ class AgentToolBridge:
                 "type": "string"}, "force": {"type": "boolean", "description": "Force push (default false)"}}, "category": "git"},
 
             # Shell — developer mode command runner (sandboxed to repo directory)
-            {"name": "run_command", "description": "Run a shell command in the project directory (npm, python, pytest, etc.)" + (
-                " The shell is Windows PowerShell 5.1: no bash heredocs (<<), join commands with ';' not '&&'."
-                " A command must not read standard input: to run a script, write it to a file first, then run the file."
-                if os.name == "nt" else ""), "parameters": {"command": {
+            {"name": "run_command", "description": _run_command_description(), "parameters": {"command": {
                 "type": "string", "description": "Command to run"}, "cwd": {"type": "string", "description": "Working directory (defaults to IRISVOICE root)"}}, "category": "shell"},
 
             {
@@ -2962,8 +2974,12 @@ class AgentToolBridge:
                 out_lines.append(line)
                 self._broadcast_shell_line(session_id, line)
 
-            res = await get_subprocess_manager().execute(
-                session_id, cmd_str, workdir=cwd, timeout=timeout, on_output=_sink
+            # One process per agent command, stdin closed (run_isolated): the
+            # session shell's stdin pipe is never shared with a model's command.
+            # An argv list runs with no shell at all.
+            res = await get_subprocess_manager().run_isolated(
+                session_id, cmd if isinstance(cmd, (list, tuple)) else cmd_str,
+                workdir=cwd, timeout=timeout, on_output=_sink,
             )
             if res.get("success"):
                 return {
@@ -3039,7 +3055,7 @@ class AgentToolBridge:
                         "format ", "del /f /s /q C:\\")
             if any(raw.startswith(b) for b in _BLOCKED):
                 return {"success": False, "error": "Blocked: destructive system command"}
-            if os.name == "nt" and _STDIN_SCRIPT.search(raw):
+            if _agent_shell_name() == "powershell" and _STDIN_SCRIPT.search(raw):
                 return {"success": False, "error": _STDIN_SCRIPT_ERROR, "error_type": "permanent"}
             # T0c: same session-shell substrate as user `>` commands — the
             # shell IS the pipe, so pipes/&& work and cwd/env persist.
