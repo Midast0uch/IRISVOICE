@@ -35,7 +35,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
-from backend.agent.inference.errors import MalformedToolCallError
+from backend.agent.inference.errors import EmptyModelResponseError, MalformedToolCallError
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +162,11 @@ _REPEAT_HINT = (
     "(for example edit or write the file), or finish the step."
 )
 
+_EMPTY_HINT = (
+    "Your last answer was empty. Answer with a tool call that does the next "
+    "part of the step, or with a short summary and the STATUS line."
+)
+
 _UNCHANGED_HINT = (
     "UNCHANGED RESULT: this call returned exactly what your previous call "
     "returned (above). Repeating it changes nothing - take the NEXT action of "
@@ -255,16 +260,18 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                     ctx.role, messages, tools=tools, max_tokens=ctx.max_tokens,
                     temperature=0.2, timeout_s=min(remaining, 300.0), thinking=False,
                 )
-            except MalformedToolCallError:
-                # The server rejected the model's own tool-call JSON (a small
-                # model writes raw line breaks inside file text). Like invalid
-                # arguments, it goes back to the model - twice in a row fails.
+            except (MalformedToolCallError, EmptyModelResponseError) as slip:
+                # A model slip, not a dead server: the server rejected the
+                # model's own tool-call JSON (raw line breaks inside file text),
+                # or the model answered with nothing at all. It goes back to the
+                # model; more than two in a row fail the step.
                 malformed += 1
-                logger.info("[run_node] conv=%s malformed tool-call JSON (%d in a row)",
-                            ctx.conv_id, malformed)
+                logger.info("[run_node] conv=%s model slip %s (%d in a row)",
+                            ctx.conv_id, type(slip).__name__, malformed)
                 if malformed > _MAX_MALFORMED:
                     raise
-                messages.append({"role": "user", "content": _MALFORMED_HINT})
+                messages.append({"role": "user", "content": (
+                    _MALFORMED_HINT if isinstance(slip, MalformedToolCallError) else _EMPTY_HINT)})
                 continue
             malformed = 0
             if not tool_calls:

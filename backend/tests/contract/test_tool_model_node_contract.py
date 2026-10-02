@@ -90,6 +90,27 @@ def test_a_rejected_tool_call_is_fed_back_and_the_step_continues():
     assert "not valid JSON" in seen[1][-1]["content"]
 
 
+def test_an_empty_model_answer_is_fed_back_and_the_step_continues():
+    """TwIL-LM3-Pro answered with nothing twice in one live check; the node
+    used to fail on the spot ("Empty response from http://127.0.0.1:8082")."""
+    from backend.agent.inference.errors import EmptyModelResponseError
+
+    seen = []
+    replies = iter([EmptyModelResponseError("Empty response from http://127.0.0.1:8082"),
+                    ("Done.\nSTATUS: done", [])])
+
+    def gen(role, messages, **kw):
+        seen.append([dict(m) for m in messages])
+        r = next(replies)
+        if isinstance(r, Exception):
+            raise r
+        return r[0], "", r[1]
+
+    r = run_node("check m.py", _ctx(gen))
+    assert r.success, r.error
+    assert "answer was empty" in seen[1][-1]["content"]
+
+
 def test_three_rejections_in_a_row_fail_the_step_honestly():
     def gen(role, messages, **kw):
         raise MalformedToolCallError("http://127.0.0.1:8082", "Failed to parse tool call arguments")

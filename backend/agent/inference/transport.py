@@ -25,7 +25,7 @@ from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, List, Optional, Tuple, Protocol
 
 from backend.agent.call_context import call_class, priority_index
-from backend.agent.inference.errors import MalformedToolCallError, RateLimitedError
+from backend.agent.inference.errors import EmptyModelResponseError, MalformedToolCallError, RateLimitedError
 from backend.agent.rate_meter import get_rate_meter
 
 logger = logging.getLogger(__name__)
@@ -924,7 +924,7 @@ class ApiHttpxTransport:
         _tool_calls = _msg.get("tool_calls") or []
 
         if not _reply and not _tool_calls:
-            raise RuntimeError("Empty response from API")
+            raise EmptyModelResponseError("Empty response from API")
 
         thinking, clean = parse_thinking(_reply)
         return clean or "(I see.)", thinking, _tool_calls
@@ -1367,7 +1367,7 @@ class OpenAICompatTransport:
             #   "[WARNING] LM Studio not reachable at http://localhost:1234"
             # A wrong provider name in an error is worse than no name: it points
             # at the one place the fault is NOT.
-            raise RuntimeError(f"Empty response from {self._endpoint}")
+            raise EmptyModelResponseError(f"Empty response from {self._endpoint}")
 
         thinking, clean = parse_thinking(_reply)
         return clean or "(I see.)", thinking, _tool_calls
@@ -1677,7 +1677,7 @@ class OllamaTransport:
             thinking, clean = parse_thinking(_reply) if _reply else ("", "")
             return clean, thinking, _tool_calls
         if not _reply:
-            raise RuntimeError("Empty response from Ollama")
+            raise EmptyModelResponseError("Empty response from Ollama")
 
         # ── FIX (session 154): fire chunk_callback on non-streaming path
         if chunk_callback and _reply:

@@ -31,6 +31,16 @@ class MalformedToolCallError(RuntimeError):
         super().__init__(f"MalformedToolCallError: {endpoint}: {detail[:200]}")
 
 
+class EmptyModelResponseError(RuntimeError):
+    """The model answered with neither text nor a tool call.
+
+    Same message as the plain RuntimeError it replaces, so every existing
+    handler still catches it; a node loop can now tell this model slip apart
+    from a dead server and ask again (2026-10-02: TwIL-LM3-Pro, 2 of 8 node
+    failures in one live check were this).
+    """
+
+
 class RateLimitedError(RuntimeError):
     """Raised when a provider refuses a request with HTTP 429 and all
     configured retry attempts are exhausted.
