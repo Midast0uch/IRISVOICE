@@ -284,6 +284,17 @@ def _is_write_tool(tool_name: str) -> bool:
     return any(tool_name.startswith(p) for p in write_prefixes)
 
 
+# Tools whose success changes the files a later call reads (same set as
+# memory_events._EDIT_TOOLS; importing that module costs ~5 s of
+# backend.memory init). A successful one bumps ToolDecisionBox._change_epoch,
+# so an identical call AFTER it is new work, not a repeat: c04 (2026-10-02,
+# conv-622) re-ran its tests after each edit and the dispatcher blocked 22
+# test runs and 36 writes as "loop detected".
+_FILE_CHANGE_TOOLS = frozenset(
+    {"write_file", "edit_file", "create_directory", "delete_file", "move_file"}
+)
+
+
 # specs/tool-decision-engine REQ-16: exact-token triggers for vision relevance.
 # Keeps 'view' OUT and 'screenshot' IN — a sighted decision must be earned.
 # REQ-3 (T3): the isolated token "what's" is REMOVED — it falsely fired on
@@ -649,6 +660,9 @@ class ToolDecisionBox:
         self._idem_cache: Dict[str, tuple[Any, float]] = {}  # key -> (result, expiry_ts) REQ-11
         self._tool_fails: Dict[str, int] = {}  # tool_name -> consecutive failures REQ-12
         self._last_call: Dict[str, tuple[str, bool, int]] = {}  # tool -> (args_hash, success, repeat_count) REQ-12
+        # Count of successful file changes (_FILE_CHANGE_TOOLS). Part of every
+        # repeat/cache/replay key: the same call on changed files is not a repeat.
+        self._change_epoch = 0
         self._tool_call_nodes: list[ToolCallNode] = []  # REQ-13
         # (tool, args_hash) -> how many times that exact call came back with a
         # PERMANENT error. Deliberately NOT cleared by reset_failure_counters():
@@ -1994,9 +2008,11 @@ class ToolDecisionBox:
                     raise RuntimeError("ToolDecisionBox has no tool_bridge injected")
 
                 # ── Duplicate-call detection (REQ-12 AC2) — before execute ──
-                _args_hash = hashlib.md5(
+                # "@epoch": the same args on changed files are a new call.
+                _raw_hash = hashlib.md5(
                     json.dumps(decision.params, sort_keys=True, default=str).encode()
                 ).hexdigest()[:12]
+                _args_hash = f"{_raw_hash}@{self._change_epoch}"
                 _prev = self._last_call.get(decision.tool)  # (args_hash, success)
                 # Duplicate: same args, last was success, AND we've already
                 # allowed one silent repeat (idempotency-safe retry).
@@ -2056,7 +2072,9 @@ class ToolDecisionBox:
                 # ── Idempotency check (REQ-11) ──────────────────────────
                 _ik = ""
                 if turn_id and decision.tool:
-                    _ik = _make_idempotency_key(turn_id, decision.tool, decision.params)
+                    _ik = _make_idempotency_key(
+                        f"{turn_id}@{self._change_epoch}", decision.tool, decision.params
+                    )
                     _now = time.time()
                     if _ik in self._idem_cache and self._idem_cache[_ik][1] < _now:
                         del self._idem_cache[_ik]
@@ -2239,8 +2257,25 @@ class ToolDecisionBox:
                         self._permanent_failed_args.get(_pf_key, 0) + 1
                     )
 
+                # A successful file change starts a new epoch. Re-stamp THIS
+                # call with it, so an identical retry right after it (nothing
+                # changed in between) still matches as a repeat / cache hit.
+                if success and decision.tool in _FILE_CHANGE_TOOLS:
+                    self._change_epoch += 1
+                    _new_hash = f"{_raw_hash}@{self._change_epoch}"
+                    _prev = self._last_call.get(decision.tool)
+                    if _prev and _prev[0] == _args_hash:
+                        self._last_call[decision.tool] = (_new_hash, _prev[1], _prev[2])
+                    _args_hash = _new_hash
+                    if _ik:
+                        _ik = _make_idempotency_key(
+                            f"{turn_id}@{self._change_epoch}", decision.tool, decision.params
+                        )
+
                 # ── Idempotency store (REQ-11) ──────────────────────────
-                if _ik and _is_write_tool(decision.tool):
+                # Successes only: a hit is replayed as success=True, so a
+                # cached failure would report a write that never happened.
+                if _ik and success and _is_write_tool(decision.tool):
                     self._idem_cache[_ik] = (result, time.time() + _IDEMPOTENCY_TTL)
                     logger.info(
                         "[TOOL_DISPATCH] idempotency cache STORE key=%s tool=%s ttl=%ds conv=%s",

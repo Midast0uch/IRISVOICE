@@ -51,18 +51,29 @@ async def main() -> None:
                                   max_size=2**24, ping_interval=None) as ws:
         await ws.send(json.dumps({"type": "load_local_model",
                                   "payload": {"model_path": PATH, "with_projector": False}}))
+        # Hold the socket until the backend reports the model "loaded": the
+        # handler registers the model (kernel wire, role binding, config) AFTER
+        # the port opens, and closing the socket at port-open cancelled it
+        # (2026-10-02: llama-server up on 8082, config still "unloaded").
         t1 = time.time()
-        while time.time() - t1 < 240:
+        hold_until = None
+        while time.time() - t1 < 400:
+            if hold_until and time.time() > hold_until:
+                return
             try:
                 m = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
-                if m.get("type") == "ping":
-                    await ws.send(json.dumps({"type": "pong", "payload": {}}))
             except asyncio.TimeoutError:
-                pass
-            if port_open():
-                print(f"{PORT} accepting after", round(time.time() - t1), "s")
-                return
-        print("model server never came up")
+                continue
+            if m.get("type") == "ping":
+                await ws.send(json.dumps({"type": "pong", "payload": {}}))
+            elif m.get("type") == "local_model_status" and not hold_until:
+                status = (m.get("payload") or {}).get("status")
+                print("model", status, "after", round(time.time() - t1), "s")
+                if status != "loaded":
+                    return
+                hold_until = time.time() + 30  # post-status registration
+        if not hold_until:
+            print("model never reported loaded")
 
 
 if __name__ == "__main__":
