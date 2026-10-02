@@ -9,7 +9,11 @@ archived there); CLAUDE.md/AGENTS.md now carry "BUILD + VERIFY IRIS — THE MEAS
 
 **Latest (2026-10-01 evening, session e5b83fff): log "2026-10-01 (session e5b83fff)" below** -
 HANDOFF 7 C1 (brake at every boundary, idle arm shadow, S18) and C9 (dead failure-warning path
-removed) DONE, coding 15/15, reply sum 278 s. Continue HANDOFF 7 F from C5.
+removed) DONE, coding 15/15, reply sum 278 s. Then (same session): Brain calls per task cut
+(S19), C5 turn-end bookkeeping off the reply path (S20), node-ripple chokepoint `_step_calls`,
+skills must recur. NEXT: eval B (tool model runs every node call), eval C (Brain helper), then one
+engine in both modes (owner rule: developer mode = self-modification only), step size, the hung
+cloud call (see the log entry).
 
 **NEXT AGENT: read MCM `pin_e62617d22e5a` (HANDOFF 7) FIRST.** The Oracle work is done and
 PAUSED (owner); go back to the audit items - HANDOFF 7 sections C (everything carried over from
@@ -140,6 +144,8 @@ to fail on the old state. Change a number only with a new measurement and the re
 | S16 | the goal-contract push is bounded per fact; a prohibition is not a deliverable | c06 reply 366 s (36 pushes) -> 58 s / 27 s | `GOAL_COVER_PUSH_MAX = 2` then BLOCKED no_progress; `_PROHIBITION_RE` | `contract/test_goal_contract_cover_bound.py` |
 | S17 | every transport HTTP client reuses the process TLS context | 14 dumps (~56 s) of one turn in `ssl.create_default_context` -> 0 | `verify=get_ssl_context()` on the Ollama client; sidecar probe pooled + adoption remembered | `contract/test_transport_shared_ssl.py` |
 | S18 | the stuck-streak brake decides at EVERY step boundary (not only when the user steers), once per newly settled step; its idle arm is shadow-only | brake reached only with a queued steering record (never in practice) -> every boundary; idle arm live: coding 14/15 (5/15 false fires, c15 replan dropped the fix step, `20261001-194110`) -> idle shadow: 15/15, reply sum 278 s, 6 shadow fires all on passing runs (`20261001-202503`) | gate moved in front of the steering early return; `DirectorQueue.streak_gate_settled`; idle = "fraction unmoved", which reads and a first red test run always are | `contract/test_der_steering_channels.py::test_stuck_streak_brakes_without_any_steering`, `::test_brake_does_not_refire_until_a_new_step_settles` (both fail on the old code); `behavioral/test_envelope_loop_behavior.py::test_bt2_idling_streak_is_shadow_only` |
+| S19 | no Brain call whose answer changes nothing; a step closes in its last tool call; node steps are keyed by their calls; <= 2 brake replans per run | 205 Brain calls / 15 coding tasks (60% node loop, ~43 close-only, 16 ignored progress checks, 13 consults discarded under COMPRESS) -> 133 before reply (eval D `20261001-221317`), 29/46 steps closed in the tool call | `step_done`/`step_summary` args on node tools; `_der_check_full_progress` removed; consult skipped under COMPRESS; `_step_digest`; `STREAK_GATE_MAX_FIRES` | `unit/test_node_executor.py` (close-in-tool-answer, step_done), `behavioral/test_envelope_loop_behavior.py` (no consult under COMPRESS, progress check gone, node key, max 2 replans) |
+| S20 | turn-end bookkeeping never holds the reply; the next turn folds back before planning | 2-8.5 s per task between run grade and synthesis (stack dumps: `crystallize_landmark -> _auto_connect`) -> 0 on the reply path | one ordered job on `lane("memory_events")` (`_turn_end_submit` / `_turn_end_settle`) | `contract/test_turn_end_off_answer_path.py` |
 | S6 | eval pass flags and `reply_s` per task | c10 reply 63-226 s -> 16.9 s | all of the above | `evals/standards.json` + `run_evals.py` STANDARDS check (exit 5 on regression; tolerance x1.5 + 10 s for cloud-model variance). Record with `--record-standard` after a clean full run (pending: after the TTS fix) |
 
 **How to run the evals safely (learned the hard way).**
@@ -221,7 +227,42 @@ MCM (`record_edit` / `record_test` / `pin_add`).
   `_save_card_footprint` reads `self._active_card_id` (capture it if moved). The store's lane
   writer is `lane("memory_events")` (`record_task_end` is already submitted there just before the
   episode). A fold-back is needed: the next turn reads episodes in `_build_context` / `_plan_task`.
-  Measure which call costs the ~1.2 s before moving any.
+  Measure which call costs the ~1.2 s before moving any. -> DONE later the same session (S20).
+- **Brain calls per task (owner: fewer calls for ALL tasks, not the suite).** Breakdown of
+  `20261001-202503`: 205 calls; node loop 122 (N tool calls cost N+1: the node ends only on an
+  answer without a tool call), FULL-mode progress check 16 (answer ignored), continuation consult 18
+  (13 under COMPRESS, discarded), synthesis 17, planning ~18. Built: close a step through
+  `step_done`/`step_summary` tool args (a STATUS line in the tool answer never fired - the model
+  leaves the text empty when it calls tools), progress check removed, consult skipped under
+  COMPRESS (S19). A2 (`20261001-212212`) exposed a replan storm on c15 (49 calls): node steps had
+  ONE repeat key (`params_digest(None, {})`), so with the brake at every boundary any node could read
+  as a repeat -> `_step_digest` (node = its calls) + `STREAK_GATE_MAX_FIRES = 2`. A2b
+  (`20261001-213633`, 5 tasks): 81 -> 58 calls, Brain time 59.9 -> 48.7 s.
+- **Node ripple audit (owner).** Since 2026-09-29 a step is a node loop with many calls and no
+  `item.tool`. Graft / sufficiency / recovery seed: no live fault in developer mode (gather-tool
+  checks never match a node; nodes have no web tools) - wrong once web tools enter nodes. Seven
+  data readers took `item.tool` -> one chokepoint `_step_calls` (see commit `4ba39ae8`). Not moved
+  on purpose: envelope `capture_skipped` (a node would read as flat_tire) and verify mode.
+  Pre-existing, found on the way: `tests/contract/test_subloop_footprint_contract.py` and
+  `tests/behavioral/test_subloop_footprint_survives_pruning.py` fail at the session start too - a
+  split child's footprint holds "RESOLVE: ..." instead of the parent's objective (split ripple);
+  `behavioral/test_der_phase0.py` x5 fail on committed code.
+- **Skills.** With real calls, capture fired on every coding run (5 one-task "skills" named after
+  the first tool, overwriting each other; deleted with the owner's approval). Now a shape must recur
+  in >= 3 successful similar episodes and is named by the whole shape.
+- **Eval D (`20261001-221317`): 15/15**, 133 Brain calls before reply, Brain time 128 s (run 2:
+  139 s); reply sum 410 s of which c02 = 129 s: one cloud synthesis call HUNG 120 s (timeout ->
+  deterministic reply). Earlier runs had 43 s / 12 s single-call stalls. OPEN: a hung cloud call
+  costs the user minutes - measure the stall rate, then bound it (e.g. no first token in N s ->
+  cancel + one retry). Reply time without the hang is flat (282 vs 271 s): fewer calls, but node
+  prompts grew (closed steps carry tool output) and the ~6 s/task kernel floor did not move.
+- **Owner rules recorded** (`pin_7f8931e36169`): developer mode = self-modification only (engine,
+  tools, graft/sufficiency/recovery the same in both modes); permissions ask only on destructive
+  tools; personal mode gets the "add project folder" toolbar; ChatView redesign in both modes
+  (frontend item, not started). Tool model for ALL node calls, Brain helper on struggle
+  (`pin_0c6b61417b81`) - evals B and C next.
+- Ops: `start-backend.py` waits up to 15 s for the killed backend's port; after a restart only a
+  health 200 from the NEW pid counts (the old one answers for a few seconds).
 
 ## 2026-10-01 (session f2fd8db3) — measured answer path, physics revert, Oracle jobs + phase
 
