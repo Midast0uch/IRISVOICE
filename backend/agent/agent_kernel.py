@@ -7410,9 +7410,12 @@ class AgentKernel:
         context_package=None,
         mode: str = "full",
         session_id: str = "unknown",
+        recall_query: Optional[str] = None,
     ) -> Optional[ExecutionPlan]:
         """
         DER-aware planning wrapper. Returns ExecutionPlan (or None on failure).
+        ``recall_query``: what episodic recall searches with, when ``text`` is
+        not the user's request (a re-plan directive) - default ``text``.
         Mode + maturity-aware temperature:
           debug/review  → 0.0  (deterministic — finding bugs, not exploring)
           implement      → 0.1  (low — structured code generation)
@@ -7505,7 +7508,9 @@ class AgentKernel:
                 self._memory_interface, "episodic"
             ):
                 episodic_context = (
-                    self._memory_interface.episodic.assemble_episodic_context(text)
+                    self._memory_interface.episodic.assemble_episodic_context(
+                        recall_query or text
+                    )
                     or ""
                 )
         except Exception as _ep_exc:
@@ -12464,6 +12469,17 @@ Respond with a JSON object:
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
 
             _mode = queue.mode.value if getattr(queue, "mode", None) else "full"
+            # V12 (2026-10-02 live): the re-plan saw ONLY the directive ("Replan
+            # required: the run is stuck ...") - no user request - and recall
+            # searched with that header, so other stuck runs' episodes ("Read
+            # the existing notes file") became the new plan of a Wikipedia
+            # task. The planner gets the request + the directive; recall
+            # searches with the request alone.
+            _orig = str(getattr(plan, "original_task", "") or "") if plan else ""
+            _plan_text = (
+                _orig + "\n\n" + text if _orig and _orig not in (text or "") else text
+            )
+            _recall = _orig or text
             if budget_deadline is not None:
                 _timeout_s = budget_deadline - time.perf_counter()
                 if _timeout_s <= 0:
@@ -12477,7 +12493,8 @@ Respond with a JSON object:
                 def _replan() -> None:
                     try:
                         _box["plan"] = self._plan_task(
-                            text, session_id=_session, mode=_mode,
+                            _plan_text, session_id=_session, mode=_mode,
+                            recall_query=_recall,
                         )
                     except BaseException as _exc:  # noqa: BLE001 — boxed, re-raised below
                         _box["exc"] = _exc
@@ -12502,9 +12519,10 @@ Respond with a JSON object:
                 _rev = _box.get("plan")
             else:
                 _rev = self._plan_task(
-                    text,
+                    _plan_text,
                     session_id=_session,
                     mode=_mode,
+                    recall_query=_recall,
                 )
             if _rev is None or not getattr(_rev, "steps", None):
                 logger.info(

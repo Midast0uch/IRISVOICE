@@ -608,12 +608,18 @@ class EpisodicStore:
         self,
         task: str,
         limit: int = 2,
-        session_id: Optional[str] = None
+        session_id: Optional[str] = None,
+        min_score: float = 0.5,
     ) -> List[Dict[str, Any]]:
         """
         Find top-N semantically similar failure episodes for warnings.
         
         Uses cosine similarity to find failures most relevant to current task.
+        Only failures at ``min_score`` or above count (V12, measured
+        2026-10-02 on the live store, lfm25-emb-350m: unrelated failures top
+        out at 0.27, median ~0.04; a related task scores 0.4-0.55, the same
+        task 0.87). With no floor, the 2 nearest failures - unrelated ones -
+        reached every planning prompt as "WARNINGS FROM PAST FAILURES".
         
         Args:
             task: The task query
@@ -629,9 +635,12 @@ class EpisodicStore:
         # dead backend on every search — treat "complete" like "idle".
         rm = get_reindex_manager()
         if rm is not None and rm.progress().get("state", "idle") not in ("idle", "complete"):
-            return rm.search_failures(
-                query=task, limit=limit, session_id=session_id,
-            )
+            return [
+                ep for ep in rm.search_failures(
+                    query=task, limit=limit, session_id=session_id,
+                )
+                if float(ep.get("similarity", 1.0) or 0.0) >= min_score
+            ]
 
         # Get embedding for query with provenance
         meta = self._embed.encode_with_meta(task)
@@ -678,7 +687,7 @@ class EpisodicStore:
         # Sort by similarity (highest first) and return top N
         scored_failures.sort(key=lambda x: x[0], reverse=True)
         
-        results = [ep for _, ep in scored_failures[:limit]]
+        results = [ep for sim, ep in scored_failures if sim >= min_score][:limit]
         
         logger.debug(f"[EpisodicStore] Found {len(results)} similar failures for task: {task[:50]}...")
         return results
