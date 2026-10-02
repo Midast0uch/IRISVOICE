@@ -126,6 +126,10 @@ PROVIDER_PRESETS: list[dict] = [
     # (owner 2026-10-02: a cloud Brain next to a local tool model).
     {"id": "openrouter", "label": "OpenRouter", "kind": "api", "needs_key": True,
      "api_base_url": "https://openrouter.ai/api/v1"},
+    # Inception Labs (Mercury diffusion models), OpenAI-compatible. Owner
+    # 2026-10-02: Mercury as the cloud Brain for eval C.
+    {"id": "inceptionlabs", "label": "Inception Labs", "kind": "api", "needs_key": True,
+     "api_base_url": "https://api.inceptionlabs.ai/v1"},
     {"id": "lmstudio", "label": "LM Studio", "kind": "local_openai", "needs_key": False,
      "api_base_url": "http://localhost:1234"},
     {"id": "ollama", "label": "Ollama", "kind": "ollama", "needs_key": False,

@@ -178,7 +178,15 @@ PROVIDER_MODEL_CATALOG: Dict[str, List[Dict[str, str]]] = {
         {"id": "mistralai/Mistral-Small-24B-Instruct-2501", "name": "Mistral Small 24B"},
         {"id": "mistralai/Mixtral-8x22B-Instruct-v0.1", "name": "Mixtral 8x22B"},
     ],
+    "inceptionlabs": [
+        # docs.inceptionlabs.ai/get-started/models (2026-10-02); both support tool calling
+        {"id": "mercury-2.5", "name": "Mercury 2.5"},
+        {"id": "mercury-2", "name": "Mercury 2"},
+    ],
     "openrouter": [
+        {"id": "poolside/laguna-xs-2.1:free", "name": "Poolside Laguna XS 2.1 (free)"},
+        {"id": "poolside/laguna-s-2.1:free", "name": "Poolside Laguna S 2.1 (free)"},
+        {"id": "nvidia/nemotron-3-super-120b-a12b:free", "name": "Nemotron 3 Super 120B (free)"},
         {"id": "deepseek/deepseek-r1", "name": "DeepSeek R1"},
         {"id": "deepseek/deepseek-chat", "name": "DeepSeek V3"},
         {"id": "anthropic/claude-3.7-sonnet", "name": "Claude 3.7 Sonnet"},
