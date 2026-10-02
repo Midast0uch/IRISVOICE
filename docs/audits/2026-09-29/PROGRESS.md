@@ -7,7 +7,13 @@ archived there); CLAUDE.md/AGENTS.md now carry "BUILD + VERIFY IRIS — THE MEAS
 "READING THIS CODEBASE — PHASE MODEL, PHYSICS, LANES"; validate every change with the
 `app-testing` skill, Mode A (`.opencode/skills/app-testing/SKILL.md`) — MCM `pin_6c81e87956b8`.
 
-**Latest (2026-10-01 evening, session e5b83fff): log "2026-10-01 (session e5b83fff)" below** -
+**NEXT AGENT: read MCM `pin_21357eeec9fc` (HANDOFF 8) FIRST** - it supersedes HANDOFF 7's order
+of work: Brain calls cut (S19), turn-end bookkeeping off the reply path (S20), the local TOOL MODEL
+now runs node calls with a Brain helper, node/step audit fixes, new providers (OpenRouter, Inception
+Labs, NVIDIA), startup findings (owner actions: Defender exclusions + D: NVMe). Open, in order:
+idempotency/DUPLICATE write_file on c04, work after the reply ([AMEND]), full eval C + standard.
+
+**Earlier the same session (2026-10-01 evening, session e5b83fff): log "2026-10-01 (session e5b83fff)" below** -
 HANDOFF 7 C1 (brake at every boundary, idle arm shadow, S18) and C9 (dead failure-warning path
 removed) DONE, coding 15/15, reply sum 278 s. Then (same session): Brain calls per task cut
 (S19), C5 turn-end bookkeeping off the reply path (S20), node-ripple chokepoint `_step_calls`,
@@ -263,6 +269,20 @@ MCM (`record_edit` / `record_test` / `pin_add`).
   (`pin_0c6b61417b81`) - evals B and C next.
 - Ops: `start-backend.py` waits up to 15 s for the killed backend's port; after a restart only a
   health 200 from the NEW pid counts (the old one answers for a few seconds).
+- **2026-10-02 (same session) - local tool model + Brain helper.** Owner: the loaded tool model does
+  node calls (`e143f8ce`); four SYSTEM faults it hit were fixed (rate limit only on destructive tools;
+  llama-server 500 on the model's malformed tool JSON fed back instead of "Could not connect"; the
+  project folder written `.`; thinking off per call). Then: stuck detector (`821d6554`, `a0388d1f`),
+  empty answer fed back (`4b198227`), Brain helper once per node when tool != Brain (`6abfc62d`), no
+  early close after a change + 2 repeats (`318095aa`), node sees DONE WHEN / parent step / review
+  note (`ab58586b`; step/node audit: 1 node per step in all 15 tasks, but the verifier graded a
+  criterion the node never saw), .py syntax check on writes (`8d7f3ec9`). Voice: split lines in
+  plain words (owner). Providers: OpenRouter, Inception Labs (mercury-2.5), NVIDIA (`e7097371`,
+  `e2f22557`, `9cab968d`). Eval C (mercury-2.5 Brain + TwIL-LM3-Pro tool, `20261002-095120`): 11/15;
+  re-runs `20261002-101407`, `20261002-103355`: c05/c06 4-8x faster, c08/c12/c13 PASS; c04 still
+  FAILS (30 failed writes; 58 DUPLICATE CALL + idempotency cache HITs on write_file - next item).
+  Startup measured: cold backend 23 min, frontend 23 min + 404s (poisoned Turbopack cache, fixed by
+  clearing .next/dev); git poller fixed (`9cab968d`). MCM `pin_21357eeec9fc` (HANDOFF 8).
 
 ## 2026-10-01 (session f2fd8db3) — measured answer path, physics revert, Oracle jobs + phase
 
