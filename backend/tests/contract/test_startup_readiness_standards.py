@@ -114,6 +114,39 @@ def test_s8_git_status_cache_scales_with_cost(monkeypatch):
     assert len(calls) == 2
 
 
+def test_s8_a_timed_out_git_status_backs_off_ten_minutes(monkeypatch):
+    """2026-10-02: after a timeout the poller re-ran every ~50 s for 20 min of
+    a cold start, each run killed at 5 s - the disk kept walking the repo."""
+    import backend.api.status_snapshot as s
+
+    calls: list = []
+    monkeypatch.setattr(s, "get_git_status",
+                        lambda: calls.append(1) or {"error": "timeout", "status": [], "log": [], "dirty": False})
+    monkeypatch.setattr(s, "_git_status_cache", {"ts": 0.0, "value": None, "cost": 0.0})
+    s._cached_git_status()
+    s._git_status_cache["ts"] = time.monotonic() - 120  # two minutes later
+    s._cached_git_status()
+    assert len(calls) == 1, "a timed-out git status re-ran within 10 minutes"
+
+
+def test_s8_the_git_poller_takes_no_index_lock(monkeypatch):
+    """A killed `git status` left .git/index.lock behind and every later
+    commit failed ("index.lock: File exists")."""
+    import subprocess
+
+    import backend.api.status_snapshot as s
+
+    argvs: list = []
+
+    def _run(argv, **kw):
+        argvs.append(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(s.subprocess, "run", _run)
+    s.get_git_status()
+    assert argvs and all(a[:2] == ["git", "--no-optional-locks"] for a in argvs)
+
+
 def test_s10_oracle_model_hash_hit_reads_no_model_bytes(tmp_path, monkeypatch):
     """S10: a repeat start with an unchanged model file returns the cached
     digest without reading the file; a changed file is hashed again."""

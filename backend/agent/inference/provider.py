@@ -130,6 +130,10 @@ PROVIDER_PRESETS: list[dict] = [
     # 2026-10-02: Mercury as the cloud Brain for eval C.
     {"id": "inceptionlabs", "label": "Inception Labs", "kind": "api", "needs_key": True,
      "api_base_url": "https://api.inceptionlabs.ai/v1"},
+    # NVIDIA hosted NIM API (build.nvidia.com), OpenAI-compatible
+    # (docs.api.nvidia.com: POST /v1/chat/completions). Owner 2026-10-02.
+    {"id": "nvidia", "label": "NVIDIA", "kind": "api", "needs_key": True,
+     "api_base_url": "https://integrate.api.nvidia.com/v1"},
     {"id": "lmstudio", "label": "LM Studio", "kind": "local_openai", "needs_key": False,
      "api_base_url": "http://localhost:1234"},
     {"id": "ollama", "label": "Ollama", "kind": "ollama", "needs_key": False,

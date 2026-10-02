@@ -178,6 +178,13 @@ PROVIDER_MODEL_CATALOG: Dict[str, List[Dict[str, str]]] = {
         {"id": "mistralai/Mistral-Small-24B-Instruct-2501", "name": "Mistral Small 24B"},
         {"id": "mistralai/Mixtral-8x22B-Instruct-v0.1", "name": "Mixtral 8x22B"},
     ],
+    "nvidia": [
+        # owner's picks 2026-10-02 (NVIDIA NIM model ids)
+        {"id": "deepseek-ai/deepseek-v4.1-flash", "name": "DeepSeek V4.1 Flash"},
+        {"id": "z-ai/glm-5.3-flash", "name": "GLM 5.3 Flash"},
+        {"id": "moonshotai/kimi-k3", "name": "Kimi K3"},
+        {"id": "google/gemma-4-31b-it", "name": "Gemma 4 31B IT"},
+    ],
     "inceptionlabs": [
         # docs.inceptionlabs.ai/get-started/models (2026-10-02); both support tool calling
         {"id": "mercury-2.5", "name": "Mercury 2.5"},

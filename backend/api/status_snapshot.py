@@ -30,6 +30,11 @@ GIT_STATUS_TTL_SEC: float = 5.0
 # whole 5 s, next to SQLite, the TTS load and pytest (eval c07, 2026-09-30:
 # "[git_status] git commands timed out" every ~5 s). A timeout counts as 5 s.
 GIT_STATUS_COST_FACTOR: float = 10.0
+GIT_STATUS_TIMEOUT_BACKOFF_SEC: float = 600.0
+# `--no-optional-locks` (2026-10-02): a plain `git status` refreshes the index
+# under .git/index.lock; killed by the 5 s timeout it left the lock behind and
+# every later commit failed with "index.lock: File exists". Background pollers
+# must not take that lock.
 _git_status_cache: dict[str, Any] = {"ts": 0.0, "value": None, "cost": 0.0}
 
 
@@ -55,7 +60,7 @@ def get_git_status() -> dict[str, Any]:
         # git status therefore never ran, and the exception was logged as a
         # WARNING every 5s forever (a large share of the ~1 GB iris.log).
         result = subprocess.run(
-            ["git", "status", "--porcelain"],
+            ["git", "--no-optional-locks", "status", "--porcelain"],
             cwd=project_root,
             capture_output=True,
             text=True,
@@ -66,7 +71,7 @@ def get_git_status() -> dict[str, Any]:
 
         # Get recent log (last 5 commits)
         log_result = subprocess.run(
-            ["git", "log", "--oneline", "-5"],
+            ["git", "--no-optional-locks", "log", "--oneline", "-5"],
             cwd=project_root,
             capture_output=True,
             text=True,
@@ -101,7 +106,14 @@ def _cached_git_status() -> dict[str, Any]:
     done = time.monotonic()
     _git_status_cache["ts"] = done
     _git_status_cache["value"] = value
-    _git_status_cache["cost"] = done - now
+    # A timed-out run is useless and was killed mid-way; retrying in 50 s
+    # (10 x 5 s) kept the hard disk walking the repo during cold starts
+    # (2026-10-02: a timeout every ~35-50 s for 20 min while TTS took 19 min
+    # to load). Back off 10 minutes after a timeout.
+    _git_status_cache["cost"] = (
+        GIT_STATUS_TIMEOUT_BACKOFF_SEC / GIT_STATUS_COST_FACTOR
+        if value.get("error") == "timeout" else done - now
+    )
     return value
 
 
