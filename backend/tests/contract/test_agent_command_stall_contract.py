@@ -112,3 +112,26 @@ def test_git_commit_without_a_message_does_not_open_an_editor(tmp_path):
 def test_an_unknown_handle_is_a_clear_error():
     res = _go(lambda m: m.command_status("s", "cmd-nope"))
     assert res["success"] is False and "no running command" in res["error"]
+
+
+def test_the_user_can_stop_a_running_command_and_the_display_hears_it():
+    """Workspace Stop button (agent_command_stop): foreground or background."""
+    events = []
+
+    async def body(m):
+        async def stop_soon():
+            await asyncio.sleep(1.0)
+            handle = next(e["id"] for e in events if e["status"] == "running")
+            return await m.stop_handle(handle)
+        stopper = asyncio.ensure_future(stop_soon())
+        t0 = time.monotonic()
+        res = await m.run_isolated("s", f'{PY} -c "import time\nwhile True: time.sleep(0.01); sum(range(5000))"',
+                                   workdir=".", timeout=60, on_event=events.append)
+        return res, await stopper, time.monotonic() - t0, await m.stop_handle("cmd-gone")
+
+    res, found, took, gone = _go(body)
+    assert found is True and gone is False and took < 10
+    assert res["success"] is False and res.get("aborted")
+    assert events[-1]["status"] == "stopped"
+    # the display contract the workspace store reads
+    assert {"id", "command", "status", "elapsed_s"} <= set(events[0])

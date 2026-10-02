@@ -13,6 +13,7 @@ import { Xur } from '@/components/Xur'
 import { HelpPanel } from '@/components/terminal/HelpPanel'
 import { FloatingPanel } from './FloatingPanel'
 import { useAgentTaskEvents } from '@/hooks/useAgentTaskEvents'
+import { AgentCommandsPanel } from './AgentCommandsPanel'
 import { Focus, Terminal, Eye, EyeOff, Archive as ArchiveIcon, LayoutGrid, HelpCircle, Undo2, Redo2, Camera, RotateCcw } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 
@@ -343,6 +344,9 @@ export function DeveloperWorkspace({ conversationId }: { conversationId?: string
         </div>
 
         {/* TerminalSection removed — ChatWing now owns the single hybrid CLI (TerminalSlideOver) via terminalScrollback store. Workspace's Term tab was duplicate. */}
+
+        {/* The agent's commands, live: state, timer, output, Stop. Hidden until one runs. */}
+        <AgentCommandsPanel />
 
         <AnimatePresence initial={false}>
           {showArchive && (

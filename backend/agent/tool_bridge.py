@@ -3033,7 +3033,10 @@ class AgentToolBridge:
                 }
             if res.get("aborted"):
                 # REQ-19: aborted is not a tool defect.
-                return {"success": False, "error": "aborted", "aborted": True}
+                # The user stopped it (abort, or the workspace Stop button).
+                return {"success": False, "error": "stopped by the user", "aborted": True,
+                        "error_type": "aborted",
+                        "stdout": res.get("stdout") or "\n".join(out_lines[-40:]).strip()}
             if res.get("queued"):
                 # Cap queueing is informational; the command still ran.
                 logger.info("[ToolBridge][%s] %s", session_id, res.get("message"))

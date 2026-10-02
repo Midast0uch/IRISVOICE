@@ -934,6 +934,13 @@ class IRISGateway:
                 # Developer mode Ã¢â‚¬â€ route query to CLI tool via DevOrchestrator
                 await self._handle_dev_cli(session_id, client_id, message)
 
+            elif msg_type == "agent_command_stop":
+                # Workspace Stop button: the user stops ONE agent command.
+                from .dev.subprocess_manager import get_subprocess_manager
+                _h = str((message.get("payload") or {}).get("id") or "").strip()
+                _ok = await get_subprocess_manager().stop_handle(_h) if _h else False
+                self._logger.info("[agent_command_stop] id=%s found=%s session=%s", _h, _ok, session_id)
+
             elif msg_type == "dev_abort":
                 # Developer mode Ã¢â‚¬â€ abort active CLI subprocess for this session
                 await self._handle_dev_abort(session_id, client_id)

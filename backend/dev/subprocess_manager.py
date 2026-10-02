@@ -696,6 +696,33 @@ class SubprocessManager:
             out["returncode"] = proc._exit_code
         return out
 
+    async def stop_handle(self, handle: str) -> bool:
+        """The USER stops one agent command (workspace Stop button).
+
+        Foreground or background, any session (handles are unique). The agent
+        sees "aborted by user" / status stopped. True when a command was found.
+        """
+        current = asyncio.get_running_loop()
+        home = self._home_loop
+        if home is not None and home.is_running() and current is not home:
+            fut = asyncio.run_coroutine_threadsafe(self.stop_handle(handle), home)
+            return await asyncio.wrap_future(fut)
+        for session_id, procs in list(self._one_shots.items()):
+            for proc in list(procs):
+                if getattr(proc, "handle", None) == handle:
+                    await proc.kill()
+                    logger.info("[SubprocessManager][%s] %s stopped by the user", session_id, handle)
+                    return True
+        for session_id, jobs in list(self._jobs.items()):
+            proc = jobs.get(handle)
+            if proc is not None:
+                if not proc._done.is_set():
+                    await proc.kill()
+                    _finish(proc, error="stopped by the user", status="stopped")
+                logger.info("[SubprocessManager][%s] %s stopped by the user", session_id, handle)
+                return True
+        return False
+
     # ── abort / status (existing semantics preserved) ───────────────────
 
     async def abort(self, session_id: str) -> None:

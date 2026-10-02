@@ -1,4 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useSyncExternalStore } from "react"
+// Side-effect import: the agent command store installs its window listeners
+// from app start, so a command that runs before the workspace opens is kept.
+import "@/stores/agentCommandStore"
 import type { OpenTabMsg, CloseTabMsg, CrawlerStartedMsg, CrawlerPageMsg, CrawlerErrorMsg, CrawlerCompleteMsg, CrawlerProgressMsg, CrawlerPhaseMsg, CrawlerVisionActionMsg, CrawlerSourceParkedMsg, CrawlerSourcesAddedMsg } from "@/types/iris"
 
 // WebSocket connection states
@@ -1912,6 +1915,15 @@ export function useIRISWebSocket(
       case 'terminal_output': {
         if (typeof window !== 'undefined') {
           window.dispatchEvent(new CustomEvent('iris:terminal_output', { detail: payload }))
+        }
+        break
+      }
+
+      // One agent command's status: { id, command, status, elapsed_s,
+      // exit_code?, idle_s? } — the workspace Live commands panel.
+      case 'agent_command': {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('iris:agent_command', { detail: payload }))
         }
         break
       }
