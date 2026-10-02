@@ -151,7 +151,15 @@ def _supports_vision_api(instance: ProviderInstance) -> bool:
     for reg_provider, reg_substring in AgentKernel._KNOWN_VISION_MODELS:
         if reg_provider == provider_id and reg_substring in model:
             return True
-    return False
+    # V9: what the provider's own /models list published (filled off the
+    # answer path by prefetch_api_windows at startup and on every bind).
+    # A cache read - still no I/O here.
+    from .provider_catalog import api_published_vision
+
+    return api_published_vision(
+        getattr(instance, "api_base_url", "") or "",
+        getattr(instance, "model", "") or "",
+    ) is True
 
 
 def _supports_vision_ollama(instance: ProviderInstance) -> bool:

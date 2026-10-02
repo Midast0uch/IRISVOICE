@@ -245,3 +245,34 @@ def test_v4_ollama_cloud_models_are_not_local_fallbacks(monkeypatch):
     _install(monkeypatch, server)
     assert vl._probe_vision_capability("http://localhost:11434/v1") == "llava:7b"
     assert server.posted == ["llava:7b"]
+
+
+# ── V9: an API Brain/tool that PUBLISHES image input serves vision itself ───
+
+
+def test_v9_published_image_input_makes_an_api_model_see(monkeypatch):
+    import backend.agent.inference.provider_catalog as pc
+    from backend.agent.inference.provider import ProviderInstance, ProviderKind
+    from backend.agent.inference.router import supports_vision
+
+    monkeypatch.setattr(pc, "_API_WINDOWS", {})
+    monkeypatch.setattr(pc, "_API_VISION", {})
+
+    def _get(url, timeout=10.0, verify=None, headers=None):
+        return _Resp(200, {"data": [
+            {"id": "qwen/qwen3-vl-30b", "context_length": 131072,
+             "architecture": {"input_modalities": ["text", "image"]}},
+            {"id": "poolside/laguna-xs-2.1:free", "context_length": 65536,
+             "architecture": {"input_modalities": ["text"]}},
+        ]})
+
+    monkeypatch.setattr(httpx, "get", _get)
+    pc._fetch_api_windows("openrouter", "https://openrouter.ai/api/v1", "")
+
+    def _inst(model):
+        return ProviderInstance(id="openrouter", label="OpenRouter", kind=ProviderKind.API,
+                                model=model, api_base_url="https://openrouter.ai/api/v1")
+
+    assert supports_vision(_inst("qwen/qwen3-vl-30b")) is True
+    assert supports_vision(_inst("poolside/laguna-xs-2.1:free")) is False
+    assert supports_vision(_inst("never-published")) is False

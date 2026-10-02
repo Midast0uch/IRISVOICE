@@ -342,22 +342,11 @@ def _probe_vision_capability(
 
 
 def _published_vision(entry: dict) -> Optional[bool]:
-    """What a /models entry PUBLISHES about image input: True, False, or None
-    when it says nothing (then only the probe can tell). Never raises."""
-    try:
-        _arch = entry.get("architecture")
-        if isinstance(_arch, dict) and isinstance(_arch.get("input_modalities"), list):
-            return "image" in [str(m).lower() for m in _arch["input_modalities"]]
-        for _key in ("input_modalities", "modalities"):
-            if isinstance(entry.get(_key), list):
-                return "image" in [str(m).lower() for m in entry[_key]]
-        _caps = entry.get("capabilities")
-        if isinstance(_caps, list) and _caps:
-            _caps_l = [str(c).lower() for c in _caps]
-            return "vision" in _caps_l or "multimodal" in _caps_l
-    except Exception:  # noqa: BLE001 — unreadable metadata says nothing
-        return None
-    return None
+    """What a /models entry PUBLISHES about image input (one reader, shared
+    with the API window prefetch)."""
+    from backend.agent.inference.provider_catalog import published_image_input
+
+    return published_image_input(entry)
 
 
 def _model_is_multimodal(

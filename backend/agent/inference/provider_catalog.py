@@ -322,6 +322,39 @@ def model_belongs_to_provider(
 # gateway fills it off the answer path at startup and on every role bind.
 _API_WINDOWS: Dict[str, Dict[str, int]] = {}  # base url -> {model id: tokens}
 _API_WINDOWS_FETCHING: set = set()
+# The same /models list states what each model takes as INPUT (OpenRouter
+# `architecture.input_modalities`). An API Brain/tool that publishes image
+# input serves vision itself (router tier 1/2) instead of the small local VLM
+# fallback; before this only a hand table (openai/anthropic/gemini) counted (V9).
+_API_VISION: Dict[str, Dict[str, bool]] = {}  # base url -> {model id: takes images}
+
+
+def published_image_input(entry) -> Optional[bool]:
+    """What a /models entry PUBLISHES about image input: True, False, or None
+    when it says nothing. Never raises."""
+    try:
+        if not isinstance(entry, dict):
+            return None
+        arch = entry.get("architecture")
+        if isinstance(arch, dict) and isinstance(arch.get("input_modalities"), list):
+            return "image" in [str(m).lower() for m in arch["input_modalities"]]
+        for key in ("input_modalities", "modalities"):
+            if isinstance(entry.get(key), list):
+                return "image" in [str(m).lower() for m in entry[key]]
+        caps = entry.get("capabilities")
+        if isinstance(caps, list) and caps:
+            caps_l = [str(c).lower() for c in caps]
+            return "vision" in caps_l or "multimodal" in caps_l
+    except Exception:  # noqa: BLE001 - unreadable metadata says nothing
+        return None
+    return None
+
+
+def api_published_vision(base_url: str, model: Optional[str]) -> Optional[bool]:
+    """Whether *model* at *base_url* published image input (None = unknown)."""
+    if not base_url or not model:
+        return None
+    return (_API_VISION.get(base_url.rstrip("/")) or {}).get(model)
 
 
 def api_context_window(base_url: str, model: Optional[str]) -> Optional[int]:
@@ -349,14 +382,23 @@ def _fetch_api_windows(provider_id: str, base_url: str, api_key: str) -> None:
                         provider_id, base_url, r.status_code)
             return
         windows: Dict[str, int] = {}
+        vision: Dict[str, bool] = {}
         for m in r.json().get("data") or []:
+            if not isinstance(m, dict):
+                continue
             top = m.get("top_provider") if isinstance(m.get("top_provider"), dict) else {}
             n = top.get("context_length") or m.get("context_length")
             if isinstance(m.get("id"), str) and isinstance(n, int) and n > 0:
                 windows[m["id"]] = n
+            sees = published_image_input(m)
+            if isinstance(m.get("id"), str) and sees is not None:
+                vision[m["id"]] = sees
         _API_WINDOWS[base_url] = windows
-        log.info("[ctx_window] provider=%s published windows for %d model(s) in %.1fs",
-                 provider_id, len(windows), time.monotonic() - t0)
+        _API_VISION[base_url] = vision
+        log.info("[ctx_window] provider=%s published windows for %d model(s), "
+                 "input modalities for %d (%d take images) in %.1fs",
+                 provider_id, len(windows), len(vision), sum(vision.values()),
+                 time.monotonic() - t0)
     except Exception as exc:  # noqa: BLE001 - a lookup aid; the table/default still apply
         log.warning("[ctx_window] provider=%s %s/models failed: %s", provider_id, base_url, exc)
     finally:
