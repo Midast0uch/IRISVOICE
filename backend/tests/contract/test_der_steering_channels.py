@@ -238,3 +238,53 @@ def test_pause_is_a_distinct_channel_that_does_not_revise(monkeypatch):
     # No revision — only the AC5 "considered" ack for the consumed pause.
     assert not [e for e in bus.events if e[0] is IRISStreamEvent.TASK_START]
     assert [i.step_id for i in q.items] == ["step-1"]  # unchanged
+
+
+# ── T9 brake at EVERY boundary (owner 2026-10-01, HANDOFF 7 C1) ───────────
+
+
+def _stuck_queue():
+    """Two settled steps that repeat step 1 (a stuck tail) + one pending."""
+    from backend.agent.tool_envelope import ToolResultEnvelope
+
+    q = _make_queue("search A", "search A again", "search A once more", "next")
+    q.items[0].envelope = ToolResultEnvelope(
+        status="success", summary="s", match="matched", novelty="new",
+        stuck_shape="none", step_id="step-1",
+    )
+    for it in q.items[1:3]:
+        it.envelope = ToolResultEnvelope(
+            status="success", summary="s", match="matched",
+            novelty="repeat_of_step-1", stuck_shape="circling",
+            step_id=it.step_id,
+        )
+    q.completed_ids.extend(["step-1", "step-2", "step-3"])
+    return q
+
+
+def test_stuck_streak_brakes_without_any_steering(monkeypatch):
+    """The gate used to run only when a steering record was queued, so a
+    stuck run nobody steered never braked (c06: 36 pushes)."""
+    k = _make_kernel()
+    q = _stuck_queue()
+    bus = _CapturingBus()
+    monkeypatch.setattr("backend.agent.event_bus.get_event_bus", lambda: bus)
+
+    result = k._der_check_steering("sess", plan=k._canned_plan, queue=q)
+
+    assert result is not None and result["revised"] is True
+    assert result["steer"] is None and result["stop"] is False
+    assert len([e for e in bus.events if e[0] is IRISStreamEvent.TASK_START]) == 1
+
+
+def test_brake_does_not_refire_until_a_new_step_settles(monkeypatch):
+    """Right after a replan the loop re-enters the boundary with the same
+    settled tail: one replan, not one per boundary."""
+    k = _make_kernel()
+    q = _stuck_queue()
+    bus = _CapturingBus()
+    monkeypatch.setattr("backend.agent.event_bus.get_event_bus", lambda: bus)
+
+    assert k._der_check_steering("sess", plan=k._canned_plan, queue=q)["revised"]
+    assert k._der_check_steering("sess", plan=k._canned_plan, queue=q) is None
+    assert len([e for e in bus.events if e[0] is IRISStreamEvent.TASK_START]) == 1

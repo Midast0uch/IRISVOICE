@@ -7,6 +7,10 @@ archived there); CLAUDE.md/AGENTS.md now carry "BUILD + VERIFY IRIS — THE MEAS
 "READING THIS CODEBASE — PHASE MODEL, PHYSICS, LANES"; validate every change with the
 `app-testing` skill, Mode A (`.opencode/skills/app-testing/SKILL.md`) — MCM `pin_6c81e87956b8`.
 
+**Latest (2026-10-01 evening, session e5b83fff): log "2026-10-01 (session e5b83fff)" below** -
+HANDOFF 7 C1 (brake at every boundary, idle arm shadow, S18) and C9 (dead failure-warning path
+removed) DONE, coding 15/15, reply sum 278 s. Continue HANDOFF 7 F from C5.
+
 **NEXT AGENT: read MCM `pin_e62617d22e5a` (HANDOFF 7) FIRST.** The Oracle work is done and
 PAUSED (owner); go back to the audit items - HANDOFF 7 sections C (everything carried over from
 HANDOFF 6/5, with status), D (new open items) and F (suggested order).
@@ -114,7 +118,7 @@ MCM `pin_22b078571d73` (topology halt; 7.5 min index build).
    (c) planning is one Brain call of 13-19 s per turn (model time).
 8. Smaller open items: native `calculate_eml` still hits 1-6 s outliers (2 MB page cache per
    native connection); `[AgentKernel] _get_failure_warnings failed (AttributeError)` every turn
-   (ResolutionEncoder path, pre-existing).
+   (ResolutionEncoder path, pre-existing) - DONE 2026-10-01: dead path removed (owner, C9).
 
 **Standards (measured; do not regress).** Each row is guarded by something that FAILS, proven
 to fail on the old state. Change a number only with a new measurement and the reason.
@@ -135,6 +139,7 @@ to fail on the old state. Change a number only with a new measurement and the re
 | S15 | Oracle input bounded by its JOB (<= 128 ids) | worst decision 2.3 s -> 0.42 s (`benchmarks/oracle_jobs_bench.py`); live `done` p50 2331 -> 774 ms | `ORACLE_JOBS` + `job_input()` in `decide`; backend cuts text at the budget | `contract/test_oracle_jobs_contract.py` + the bench |
 | S16 | the goal-contract push is bounded per fact; a prohibition is not a deliverable | c06 reply 366 s (36 pushes) -> 58 s / 27 s | `GOAL_COVER_PUSH_MAX = 2` then BLOCKED no_progress; `_PROHIBITION_RE` | `contract/test_goal_contract_cover_bound.py` |
 | S17 | every transport HTTP client reuses the process TLS context | 14 dumps (~56 s) of one turn in `ssl.create_default_context` -> 0 | `verify=get_ssl_context()` on the Ollama client; sidecar probe pooled + adoption remembered | `contract/test_transport_shared_ssl.py` |
+| S18 | the stuck-streak brake decides at EVERY step boundary (not only when the user steers), once per newly settled step; its idle arm is shadow-only | brake reached only with a queued steering record (never in practice) -> every boundary; idle arm live: coding 14/15 (5/15 false fires, c15 replan dropped the fix step, `20261001-194110`) -> idle shadow: 15/15, reply sum 278 s, 6 shadow fires all on passing runs (`20261001-202503`) | gate moved in front of the steering early return; `DirectorQueue.streak_gate_settled`; idle = "fraction unmoved", which reads and a first red test run always are | `contract/test_der_steering_channels.py::test_stuck_streak_brakes_without_any_steering`, `::test_brake_does_not_refire_until_a_new_step_settles` (both fail on the old code); `behavioral/test_envelope_loop_behavior.py::test_bt2_idling_streak_is_shadow_only` |
 | S6 | eval pass flags and `reply_s` per task | c10 reply 63-226 s -> 16.9 s | all of the above | `evals/standards.json` + `run_evals.py` STANDARDS check (exit 5 on regression; tolerance x1.5 + 10 s for cloud-model variance). Record with `--record-standard` after a clean full run (pending: after the TTS fix) |
 
 **How to run the evals safely (learned the hard way).**
@@ -154,6 +159,10 @@ to fail on the old state. Change a number only with a new measurement and the re
 - Read `reply_s` (time until the reply text), not `seconds`: the harness keeps the socket open
   while the reply is SPOKEN, so `seconds` includes speech.
 - Use `127.0.0.1`, never `localhost`, for local llama-server ports (+2 s per request here).
+- The backend `/health` is on **:8090** (`http://127.0.0.1:8090/health`). A wait loop must also
+  stop when the start process exits: `start-backend.py` can kill the stale backend and then
+  fail with "port 8090 is still occupied" because it checks before the port is released (a
+  second start a few seconds later works).
 - NEVER sample the backend from outside (py-spy / `python -m asyncio ps`): it killed the backend
   and Claude Code. For timing, set `IRIS_STACK_DUMP_S=4` before starting the backend and read
   `logs/stackdump.log` (first line `start_epoch`; dump k is at start + 4k s). EXPLAIN QUERY PLAN
@@ -177,6 +186,42 @@ to fail on the old state. Change a number only with a new measurement and the re
 
 Running log of work after the Phase 1 commit (`a21b641c`). Each entry is also recorded in
 MCM (`record_edit` / `record_test` / `pin_add`).
+
+## 2026-10-01 (session e5b83fff) — HANDOFF 7 C1 (brake every boundary) + C9 (dead path removed)
+
+- **C1, owner: the brake runs at every step boundary.** `_der_check_steering` returned before
+  `_der_streak_gate` when no steering record was queued, so the T9 brake never ran on a run
+  nobody steered. Now the gate runs at every boundary; it decides again only after a new step
+  settles (`DirectorQueue.streak_gate_settled`) - otherwise the loop re-enters the boundary right
+  after a replan with the same tail and replans once per boundary.
+- **Live gate run 1 (`20261001-194110`): 14/15.** Only `idle_streak:2` fired: 5/15 runs, always
+  s2+s3 (success, new, matched, verified fraction unmoved). Reads and a first red test run verify
+  nothing yet, so normal coding looks "idle". c15's replan produced 2 steps with 0 tool calls and
+  dropped the fix -> FAIL. The stuck arm (repeat/empty/mismatch) never fired.
+- **Owner: idle arm -> shadow.** The gate logs `SHADOW would fire (idle_streak:N)` and counts
+  `idle_shadow`; the stuck, coverage and topology arms stay live. **Run 2 (`20261001-202503`):
+  15/15, no regression, reply sum 278 s** (HANDOFF 7: 340 s), 6 shadow fires all on passing runs,
+  0 physics fold-back waits >= 0.5 s. Standard S18. Test change (stated): `test_bt2_idling_streak_fires`
+  -> `test_bt2_idling_streak_is_shadow_only` (the requirement changed by owner decision).
+- **C9, owner: remove.** `_get_failure_warnings` read `_mycelium.conn` (the attribute is `_conn`),
+  so it raised every turn. The one-line fix would have been worse: it encodes the CURRENT task as
+  the failed "tool" and returns `[outcome:miss | tool:<task text> ...]` for every task and every
+  step, after a `LIKE '%<task>%'` scan of `episodes` per step. Removed with both call sites
+  (planning prompt keeps `FAILURE WARNINGS: None`, as before). Tests changed (stated): deleted
+  `unit/test_failure_warnings.py`; `test_failure_evidence_contract.py` AC24.2 class ->
+  `TestFailureWarningsRemoved`; A1 assertion in both copies of `test_der_a1_a2_a3_memory_bridge.py`
+  inverted. A real failure lookup could use `episodic.retrieve_failures` (exists) - open item.
+- Pre-existing failures found (fail on the committed code too, not in HANDOFF 7 E):
+  `contract/test_der_integration_smoke.py::test_integration_full_cycle` and
+  `behavioral/test_websearch_without_encoder.py::...test_websearch_full_task_without_encoder`
+  (resolver returns tool None), `tests/contract/test_der_trace_contract.py::test_steering_signal_recorded`
+  (stub lacks `budget_deadline`), the a1 bridge test (`_Step` lacks `expected_output`).
+- C5 mapped (not built): the four turn-end calls run BEFORE synthesis (`agent_kernel` ~10929-11071);
+  `_store_task_episode` + `_maybe_trigger_skill_creation` take only immutable args;
+  `_save_card_footprint` reads `self._active_card_id` (capture it if moved). The store's lane
+  writer is `lane("memory_events")` (`record_task_end` is already submitted there just before the
+  episode). A fold-back is needed: the next turn reads episodes in `_build_context` / `_plan_task`.
+  Measure which call costs the ~1.2 s before moving any.
 
 ## 2026-10-01 (session f2fd8db3) — measured answer path, physics revert, Oracle jobs + phase
 

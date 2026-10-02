@@ -305,6 +305,9 @@ class DirectorQueue:
     cycle_count: int = 0
     max_cycles: int = DER_MAX_CYCLES
     max_veto_per_item: int = DER_MAX_VETO_PER_ITEM
+    # Settled-step count at the stuck-streak gate's last evaluation: the gate
+    # decides again only after a new step settles (a replan adds none).
+    streak_gate_settled: int = -1
 
     # ── Mode management (Phase 3) ──────────────────────────────────────
 

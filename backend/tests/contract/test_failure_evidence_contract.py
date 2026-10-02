@@ -18,38 +18,15 @@ from backend.agent.tool_decision import (
 )
 
 
-class TestSingleSettledReturnType:
-    def test_single_settled_return_type(self):
-        """AC24.2 / CT-DEI-14: _get_failure_warnings has ONE settled return
-        type (str) — the six test stubs agree, and the annotation says str."""
+class TestFailureWarningsRemoved:
+    def test_failure_warnings_path_is_gone(self):
+        """AC24.2 superseded (owner 2026-10-01, HANDOFF 7 C9): the
+        _get_failure_warnings path never worked (always AttributeError) and its
+        one-line fix would label every task and step as a past failure, with a
+        LIKE scan per step. It was removed; it must not come back unrebuilt."""
         src = Path("backend/agent/agent_kernel.py").read_text(encoding="utf-8")
-        tree = ast.parse(src)
-        found = None
-        for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef) and node.name == "_get_failure_warnings":
-                found = node
-                break
-        assert found is not None, "_get_failure_warnings not found"
-        ret = found.returns
-        assert ret is not None and getattr(ret, "id", None) == "str", (
-            "the return annotation must be str (AC24.2)"
-        )
-        # The aligned stubs: every stub returns the settled "None" string.
-        stub_files = [
-            "backend/tests/test_der_phase1.py",
-            "backend/tests/contract/test_der_integration_smoke.py",
-            "backend/tests/behavioral/test_websearch_without_encoder.py",
-            "backend/tests/behavioral/test_narration_beats_behavior.py",
-        ]
-        for rel in stub_files:
-            p = Path(rel)
-            if not p.is_file():
-                continue
-            s = p.read_text(encoding="utf-8")
-            if "_get_failure_warnings = lambda" in s:
-                assert 'lambda text: "None"' in s or 'lambda _: "None"' in s, (
-                    f"{rel} stubs a non-settled return type"
-                )
+        assert "_get_failure_warnings" not in src
+        assert "PAST FAILURE WARNING" not in src
 
 
 class TestRowRecordsEvidenceSupplied:

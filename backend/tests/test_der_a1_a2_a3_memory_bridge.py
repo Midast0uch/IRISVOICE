@@ -1,6 +1,6 @@
 """Phase 2 — Memory-as-Execution-Substrate (A1 + A2 + A3).
 
-A1: per-step execution injects PAST FAILURE WARNING from Mycelium.
+A1: REMOVED 2026-10-01 (owner) - the per-step PAST FAILURE WARNING was dead.
 A2: per-step hint includes the PROVEN APPROACH tool_sequence, not just summary.
 A3: failed step outputs are fragmented into episodic memory for later recall.
 
@@ -55,11 +55,6 @@ def test_mid_loop_injects_failure_warning_and_proven_approach():
         mem.episodic.retrieve_failures.return_value = []
         kernel._memory_interface = mem
         kernel.clear_turn_trust_flag = MagicMock()
-        # A1: a known-bad approach for this sub-task
-        kernel._get_failure_warnings.return_value = (
-            "Avoid editing binary configs in-place: previous attempt "
-            "corrupted the file (seen 3x)"
-        )
 
         captured = {}
 
@@ -81,7 +76,10 @@ def test_mid_loop_injects_failure_warning_and_proven_approach():
         )(plan=_Plan(), context_package=None, session_id="sess", turn_id="t1")
 
     sig = captured["item"].coordinate_signal
-    assert "PAST FAILURE WARNING:" in sig, sig
+    # A1 removed (owner 2026-10-01, HANDOFF 7 C9): the per-step failure warning
+    # never worked (always AttributeError) and its fix would label every step
+    # as a past failure. No PAST FAILURE WARNING is injected.
+    assert "PAST FAILURE WARNING:" not in sig, sig
     assert "PROVEN APPROACH: read_file → run_command → write_file" in sig, sig
     assert "SUB-TASK HINT:" in sig, sig
 

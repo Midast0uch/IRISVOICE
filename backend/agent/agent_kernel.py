@@ -6912,46 +6912,6 @@ class AgentKernel:
             # Never block the grade on a display frame.
             pass
 
-    def _get_failure_warnings(self, task: str) -> str:
-        """
-        Fetch high-signal failure warnings from Mycelium via ResolutionEncoder.
-
-        REQ-24 (T34): builds the failure dict from recorded session state and
-        passes a DICT to ``encode_with_resolution`` — the signature is
-        ``(failure: Dict, conn=None)`` and the encoder's episode lookup uses
-        ``tool_name`` as the LIKE pattern against episode task summaries. The
-        old code passed the task STRING on the CLASS, the ``.get()`` raised,
-        and the ``except`` swallowed it, so this ALWAYS returned "None".
-        Returns the encoded header string, or the documented empty value
-        "None" on miss — never raises, never blocks.
-        """
-        try:
-            from backend.memory.mycelium.interpreter import ResolutionEncoder
-
-            if (
-                self._memory_interface is not None
-                and hasattr(self._memory_interface, "_mycelium")
-                and self._memory_interface._mycelium is not None
-            ):
-                conn = self._memory_interface._mycelium.conn
-                failure = {
-                    "task_summary": str(task or "")[:200],
-                    "tool_name": str(task or "")[:80],
-                    "session_id": getattr(self, "session_id", "") or "default",
-                }
-                encoded = ResolutionEncoder().encode_with_resolution(
-                    failure, conn
-                )
-                return encoded or "None"
-        except Exception as _e:
-            # REQ-24 AC24.5: log the non-recoverable error WITH its exception
-            # type instead of silently returning "None".
-            logger.error(
-                "[AgentKernel] _get_failure_warnings failed (%s) — returning empty",
-                type(_e).__name__,
-            )
-        return "None"
-
     def _der_recall_neighborhood(self, item, session_id: str = "") -> list:
         """REQ-20 AC3 (T21): filtered ontology-neighborhood chain recall.
 
@@ -7359,8 +7319,6 @@ class AgentKernel:
             except Exception:
                 pass
 
-        failures = self._get_failure_warnings(text)
-
         # Build the CAPABILITIES block.
         #
         # SIZED DOWN 2026-08-26 (session 260), measured: the previous block
@@ -7419,7 +7377,6 @@ class AgentKernel:
             task=text,
             tier1_directives=tier1,
             behavior_preds=preds,
-            failure_warnings=failures,
             task_class=task_class,
             strategy_hint=strategy_hint,
             context=context,
@@ -10255,20 +10212,6 @@ Respond with a JSON object:
                             item.coordinate_signal = (
                                 _prior + f"\nSUB-TASK HINT: {_hints}"
                             ).strip()
-                    # A1 FIX: inject failure awareness per-step (not just at plan
-                    # time). _get_failure_warnings reads Mycelium high-signal
-                    # failure warnings for this sub-task so the Explorer avoids a
-                    # known-bad approach. Returns "None" on miss; never raises.
-                    try:
-                        _fw = self._get_failure_warnings(item.description)
-                        if _fw and _fw != "None" and len(_fw) > 10:
-                            _prior = getattr(item, "coordinate_signal", "") or ""
-                            item.coordinate_signal = (
-                                _prior + f"\nPAST FAILURE WARNING: {_fw[:300]}"
-                            ).strip()
-                    except Exception as _fw_exc:
-                        loud_error(_fw_exc, "failure_warning_mid_loop")
-
                     # ── REQ-20 AC3 (T21): the filtered ontology neighborhood
                     # is a first-class step input. Query the DER chain with
                     # THIS node's type + both domain axes and surface the
@@ -11711,16 +11654,24 @@ Respond with a JSON object:
         AC5 (acknowledgement): every consumed record emits ``steering:ack``
         status="considered".
 
-        Returns ``None`` when nothing was queued, else a dict
-        ``{"stop", "pause", "resume": bool, "steer": str|None,
+        The stuck-streak gate runs at EVERY boundary, steering or not (owner,
+        2026-10-01: c06 pushed 36 times with no brake).
+
+        Returns ``None`` when nothing was queued and the gate did not fire,
+        else a dict ``{"stop", "pause", "resume": bool, "steer": str|None,
         "revised": bool}``.
         """
         try:
             from backend.agent.steering import get_steering_inbox
         except Exception:
-            return None
-        records = get_steering_inbox().drain(_session)
+            get_steering_inbox = None
+        records = get_steering_inbox().drain(_session) if get_steering_inbox else []
         if not records:
+            if not getattr(self, "_der_stop_requested", False) and self._der_streak_gate(
+                plan, queue, _session, budget_deadline=budget_deadline
+            ):
+                return {"stop": False, "pause": False, "resume": False,
+                        "steer": None, "revised": True}
             return None
 
         stop = False
@@ -12196,6 +12147,12 @@ Respond with a JSON object:
 
             # Settled envelopes for THIS run: completed (+vetoed) queue items.
             _done_ids = set(queue.completed_ids) | set(queue.vetoed_ids)
+            # Decide again only after a new step settles: right after a
+            # replan the same tail would fire again, a replan per boundary.
+            _settled = len(_done_ids | set(queue.failed_ids))
+            if _settled == queue.streak_gate_settled:
+                return False
+            queue.streak_gate_settled = _settled
             _envs = [
                 getattr(_it, "envelope", None)
                 for _it in getattr(queue, "items", [])
@@ -12245,6 +12202,17 @@ Respond with a JSON object:
                 coverage_rho=_gcov_rho,
                 stall_rate=_gcov_stall,
             )
+            if fire and str(reason).startswith("idle_streak"):
+                # Shadow only (owner 2026-10-01): the idle arm fired on 5 of 15
+                # healthy coding runs (reads and a first red test run verify
+                # nothing yet) and its replan dropped c15's fix step. Logged and
+                # counted until a measured true positive exists.
+                _counters["idle_shadow"] = _counters.get("idle_shadow", 0) + 1
+                logger.info(
+                    "[DER:streak-gate] SHADOW would fire (%s) - idle arm is "
+                    "shadow-only, plan continues", reason,
+                )
+                return False
             if not fire:
                 _counters["gate_blocked"] += 1
                 # AC3.3/AC7.2: a stop-suggestion the loop does NOT act on is

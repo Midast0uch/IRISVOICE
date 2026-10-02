@@ -260,13 +260,17 @@ def test_bt2_mismatch_streak_fires():
     assert k._der_streak_gate(plan, queue, "sess")
 
 
-def test_bt2_idling_streak_fires():
+def test_bt2_idling_streak_is_shadow_only():
+    """Owner 2026-10-01: the idle arm fired on 5/15 healthy coding runs and
+    its replan broke c15 - it logs and counts, it never replans."""
     k = _Kernel()
     plan, queue = _queue_with_envelopes([
         ("new", "matched", "idling"),
         ("new", "matched", "idling"),
     ])
-    assert k._der_streak_gate(plan, queue, "sess")
+    assert not k._der_streak_gate(plan, queue, "sess")
+    assert k.steering_calls == []
+    assert k._envelope_counters["idle_shadow"] == 1
 
 
 def test_bt2_topo_violation_forces_fire_regardless_of_streaks(monkeypatch):
