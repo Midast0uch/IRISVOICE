@@ -229,6 +229,19 @@ function getFieldCategory(field: any, sectionId: string): 'config' | 'visualizer
   return 'config';
 }
 
+// Sections to persist on close: changed by the user, populated, and not the
+// self-managed model sections - ModelInferenceSection live-sends those, and
+// re-saving cached values reverts the user's provider (see handleApplySettings).
+function unsavedSections(
+  dirty: Set<string>,
+  values: Record<string, Record<string, any>>,
+): [string, Record<string, any>][] {
+  return Array.from(dirty)
+    .filter((id) => id !== 'model_inference' && id !== 'model_selection')
+    .map((id) => [id, values[id]] as [string, Record<string, any>])
+    .filter(([, v]) => !!v && typeof v === 'object' && Object.keys(v).length > 0);
+}
+
 const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, sectionId, updateField, fieldErrors, clearFieldError, sendMessage, audioInputDevices, audioOutputDevices, wakeWords, visionModelOptions, apiKeySaved }: { field: any; glowColor: string; fieldValues?: Record<string, Record<string, string | number | boolean>>; sectionId?: string; updateField?: (sectionId: string, fieldId: string, value: any) => void; fieldErrors?: Record<string, string>; clearFieldError?: (sectionId: string, fieldId: string) => void; sendMessage?: (type: string, payload?: any) => boolean; audioInputDevices?: string[]; audioOutputDevices?: string[]; wakeWords?: string[]; visionModelOptions?: { label: string; value: string }[]; apiKeySaved?: boolean }) {
   const [localValue, setLocalValue] = useState(field.defaultValue ?? '');
   const value = fieldValues && sectionId ? (fieldValues[sectionId]?.[field.id] ?? field.defaultValue ?? '') : localValue;
@@ -887,6 +900,14 @@ export function DarkGlassDashboard({
     }
   );
 
+  // Sections the USER changed (localUpdateField) since the last APPLY. The
+  // close/unmount save writes only these. It used to treat "never applied" as
+  // dirty and POST every populated section on every unmount - and React's dev
+  // double-mount unmounts once at load: ~36 /api/config/save on every page
+  // load (2026-10-02), including model_selection from cached values, which
+  // rewrote cfg.inference.provider behind the live role binding.
+  const dirtySectionsRef = useRef<Set<string>>(new Set());
+
   // Persist localFieldValues to localStorage on every change.
   useEffect(() => {
     try {
@@ -984,6 +1005,7 @@ export function DarkGlassDashboard({
       }).catch(() => {});
       return;
     }
+    dirtySectionsRef.current.add(sectionId);
     // Live-update the backend via WebSocket (optimistic — does not block UI)
     if (wsUpdateField) wsUpdateField(sectionId, fieldId, value);
     // Also propagate to external store if provided via props
@@ -1326,12 +1348,6 @@ export function DarkGlassDashboard({
 
   const applyCooldownRef = useRef(false);
 
-  // Snapshot of localFieldValues captured each time handleApplySettings runs to
-  // completion.  Used by handleCloseWithSave to detect unsaved changes and
-  // auto-save them before navigating away.  Without this, closing the dashboard
-  // via X / Escape / backdrop without clicking APPLY silently dropped every
-  // setting change (voice, model, theme, etc.).
-  const lastAppliedRef = useRef<Record<string, Record<string, any>> | null>(null);
 
   const handleApplySettings = useCallback(async () => {
     // Guard: prevent rapid re-clicks (2s cooldown on top of state guard)
@@ -1396,7 +1412,7 @@ export function DarkGlassDashboard({
       // pretending to work for 2 seconds after the work is done.
       // Record what we just persisted so handleCloseWithSave can detect whether
       // there are further unsaved edits before the next close.
-      lastAppliedRef.current = JSON.parse(JSON.stringify(localFieldValues));
+      dirtySectionsRef.current.clear();
     } catch (error) {
       console.error("[DarkGlassDashboard] Apply failed:", error);
     } finally {
@@ -1423,23 +1439,14 @@ export function DarkGlassDashboard({
       // duration on every close — the symptom being that closing the panel
       // "seems to trigger apply and takes a considerable long time".
       //
-      // Closing now returns immediately; the cleanup persists. Dirty-checking
-      // still works because lastAppliedRef is untouched on this path, so the
-      // cleanup sees isDirty === true and saves.
-      const current = JSON.stringify(localFieldValues);
-      const last = lastAppliedRef.current ? JSON.stringify(lastAppliedRef.current) : null;
-      if (current !== last && sendMessage) {
+      // Closing now returns immediately; the cleanup persists the same dirty
+      // sections (dirtySectionsRef is untouched on this path).
+      if (sendMessage) {
         // WebSocket is instant and fire-and-forget; the HTTP keepalive POSTs in
-        // the unmount cleanup are the reliable half of the pair.
-        Object.entries(localFieldValues).forEach(([sectionId, values]) => {
-          if (
-            sectionId !== 'model_inference' &&
-            sectionId !== 'model_selection' &&
-            values && typeof values === 'object' &&
-            Object.keys(values).length > 0
-          ) {
-            sendMessage('confirm_card', { section_id: sectionId, values });
-          }
+        // the unmount cleanup are the reliable half of the pair. Only the
+        // sections the user changed (dirtySectionsRef).
+        unsavedSections(dirtySectionsRef.current, localFieldValues).forEach(([sectionId, values]) => {
+          sendMessage('confirm_card', { section_id: sectionId, values });
         });
       }
     } catch (e) {
@@ -1471,23 +1478,21 @@ export function DarkGlassDashboard({
   useEffect(() => {
     return () => {
       if (savedOnCloseRef.current) return;  // guard against double-invoke
-      const current = localFieldValuesRef.current;
-      const last = lastAppliedRef.current;
-      const isDirty = !last || JSON.stringify(current) !== JSON.stringify(last);
-      if (!isDirty) return;
+      // Only the sections the user changed - nothing at all on a plain
+      // open/close or React's dev double-mount.
+      const unsaved = unsavedSections(dirtySectionsRef.current, localFieldValuesRef.current);
+      if (unsaved.length === 0) return;
       savedOnCloseRef.current = true;
-      // Fire HTTP saves for every populated section (same shape as
-      // handleApplySettings).  keepalive:true lets the request outlive unmount.
+      dirtySectionsRef.current.clear();
+      // Same shape as handleApplySettings. keepalive:true lets the request outlive unmount.
       try {
-        Object.entries(current).forEach(([sectionId, sectionValues]) => {
-          if (sectionValues && typeof sectionValues === 'object' && Object.keys(sectionValues).length > 0) {
-            fetch('/api/config/save', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ section_id: sectionId, card_id: sectionId, values: sectionValues }),
-              keepalive: true,
-            }).catch(() => { /* best-effort on close */ });
-          }
+        unsaved.forEach(([sectionId, sectionValues]) => {
+          fetch('/api/config/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ section_id: sectionId, card_id: sectionId, values: sectionValues }),
+            keepalive: true,
+          }).catch(() => { /* best-effort on close */ });
         });
       } catch (e) {
         console.warn('[DarkGlassDashboard] unmount save failed:', e);

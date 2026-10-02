@@ -30,6 +30,8 @@ logger = logging.getLogger("irisvoice")
 # prevent race conditions when multiple async handlers write config.
 # ---------------------------------------------------------------------------
 _config_lock = threading.Lock()
+# Serializes the file write + rename itself (save_config).
+_save_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Env-var helpers — read from os.environ at call time, always win.
@@ -908,16 +910,26 @@ def load_config() -> IRISConfig:
 
 def save_config(cfg: IRISConfig) -> None:
     """Atomically write config to data/iris_config.json."""
+    # Writers take turns (_save_lock): a shared ".json.tmp" let two concurrent
+    # saves (HTTP + the WS confirm_card thread) write one temp file, and on
+    # Windows two renames onto the same target fail with "Access is denied"
+    # (8 threads x 20 saves: 52 failed writes + leftover temp files, 2026-10-02).
+    # Not _config_lock: with_modify_config already holds it around this call.
+    tmp = _IRIS_CONFIG_PATH.with_suffix(f".json.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
         _ensure_data_dir()
-        tmp = _IRIS_CONFIG_PATH.with_suffix(".json.tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(cfg.to_dict(), f, indent=2)
-        # Atomic rename on Windows (os.replace works cross-platform)
-        os.replace(tmp, _IRIS_CONFIG_PATH)
+        with _save_lock:
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(cfg.to_dict(), f, indent=2)
+            # Atomic rename on Windows (os.replace works cross-platform)
+            os.replace(tmp, _IRIS_CONFIG_PATH)
         logger.info(f"[Config] Saved config to {_IRIS_CONFIG_PATH}")
     except Exception as exc:
         logger.warning(f"[Config] Failed to save config: {exc}")
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 # ── Field values persistence (wheel-view form state) ──────────────────────
