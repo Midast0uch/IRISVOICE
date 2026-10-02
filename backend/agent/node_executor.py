@@ -44,6 +44,9 @@ DEV_NODE_TOOLS = (
     "read_file", "edit_file", "write_file", "grep_files", "glob_files",
     "list_directory", "create_directory", "run_command", "git_status", "git_diff",
     "read_command_output", "stop_command",
+    # Live browser control (owner 2026-10-02: developer mode too). The base
+    # tool list holds these only while the web toggle is ON - the one gate.
+    "browser_open", "browser_observe", "browser_act", "browser_explore",
 )
 
 _SYSTEM = (

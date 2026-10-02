@@ -4657,15 +4657,14 @@ class AgentKernel:
         # Even when the web toggle is ON, exclude search/crawler tools
         # unless the user's text explicitly asks for a web search.
         # The model otherwise calls web_search unnecessarily for simple
-        # conversational prompts.
+        # conversational prompts. The browser tools are NOT filtered here
+        # (owner 2026-10-02: nothing gates browser use besides the web
+        # toggle; "open my bank and pay the bill" asks for no web search).
         if text and not self._is_web_search_request(text):
             openai_tools = [
                 t
                 for t in openai_tools
-                if t.get("function", {}).get("name") not in (
-                    "search", "crawler_query",
-                    "browser_open", "browser_observe", "browser_act", "browser_explore",
-                )
+                if t.get("function", {}).get("name") not in ("search", "crawler_query")
             ]
         return openai_tools
 

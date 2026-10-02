@@ -930,7 +930,7 @@ class AgentToolBridge:
             try:
                 from backend.agent.tool_registry import resolve_tool
 
-                for _bname in ("browser_open", "browser_observe", "browser_act"):
+                for _bname in ("browser_open", "browser_observe", "browser_act", "browser_explore"):
                     _bspec = resolve_tool(_bname)
                     if _bspec is not None:
                         tools.append({
