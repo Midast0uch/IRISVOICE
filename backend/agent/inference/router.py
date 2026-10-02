@@ -453,12 +453,25 @@ class InferenceRouter:
         dropped = 0
         while len(kept) > 2:
             # Keep a leading system/developer message; otherwise drop from the
-            # front. Stop before the last message, which is never dropped.
+            # front. The newest turn is never dropped: the last message, and
+            # when it is a tool result, the assistant call it answers.
             index = 1 if kept[0].get("role") in ("system", "developer") else 0
-            if index >= len(kept) - 1:
+            tail = len(kept) - 1
+            while tail > index and kept[tail].get("role") == "tool":
+                tail -= 1
+            if index >= tail:
                 break
+            # Drop a whole unit: an assistant tool call goes WITH its tool
+            # results, and a tool result never stays behind alone. A lone
+            # result is rejected by the provider ("Message has tool role, but
+            # there was no previous assistant message with a tool call" -
+            # live browser task, 2026-10-02).
             kept.pop(index)
             dropped += 1
+            while index < tail - 1 and kept[index].get("role") == "tool":
+                kept.pop(index)
+                dropped += 1
+                tail -= 1
             if cls._estimate_prompt_tokens(kept, tools) <= budget:
                 break
         logger.warning(

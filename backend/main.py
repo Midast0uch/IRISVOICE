@@ -694,11 +694,14 @@ async def lifespan(app: FastAPI):
                         preserve_bindings=_preserve,
                     )
                     if _flat_newer:
+                        # One message per call: this StructuredLogger takes no
+                        # %-args - a %-style call raised TypeError and aborted the
+                        # whole restore block (session_iris kernel left unconfigured,
+                        # API windows never prefetched; found 2026-10-02).
                         logger.info(
-                            "[Authority] source=restore winner=flat provider=%r "
-                            "prev=bindings reason=flat-newer "
-                            "(flat=%.3f bindings=%.3f)",
-                            _provider, _flat_stamp, _bindings_stamp,
+                            f"[Authority] source=restore winner=flat provider={_provider!r} "
+                            f"prev=bindings reason=flat-newer "
+                            f"(flat={_flat_stamp:.3f} bindings={_bindings_stamp:.3f})"
                         )
                     elif _already_bound:
                         if _flat_stamp == 0.0 and _bindings_stamp == 0.0:
@@ -709,17 +712,16 @@ async def lifespan(app: FastAPI):
                             )
                         else:
                             logger.info(
-                                "[Authority] source=restore winner=bindings "
-                                "reason=bindings-newer-or-equal "
-                                "(flat=%.3f bindings=%.3f)",
-                                _flat_stamp, _bindings_stamp,
+                                f"[Authority] source=restore winner=bindings "
+                                f"reason=bindings-newer-or-equal "
+                                f"(flat={_flat_stamp:.3f} bindings={_bindings_stamp:.3f})"
                             )
                     if _already_bound and not _flat_newer:
                         logger.info(
-                            "    [Model] Roles already seeded from "
-                            "inference.role_bindings — registered provider "
-                            "%r without rebinding (legacy flat fields are a "
-                            "stale copy, not the authority)", _provider,
+                            f"    [Model] Roles already seeded from "
+                            f"inference.role_bindings — registered provider "
+                            f"{_provider!r} without rebinding (legacy flat fields are a "
+                            f"stale copy, not the authority)"
                         )
 
                 try:
