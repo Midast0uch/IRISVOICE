@@ -528,6 +528,14 @@ class FileManagerServer(BuiltinServer):
                 start, end = _line_arg(arguments, "start_line"), _line_arg(arguments, "end_line")
                 if start or end:
                     lines = content.splitlines(keepends=True)
+                    if start and start > len(lines):
+                        # 2026-10-02: a small model asked for start_line 51 of a
+                        # 6-line file 224 times - an EMPTY success reads as "try
+                        # again". Past the end is an error that says so.
+                        return {"success": False, "path": path, "total_lines": len(lines),
+                                "error": (f"start_line {start} is past the end: the file has "
+                                          f"{len(lines)} lines, and lines 1-{len(lines)} are all "
+                                          "of it. You already have the whole file.")}
                     first = max(1, start or 1)
                     last = min(len(lines), end or len(lines))
                     result["content"] = "".join(lines[first - 1:last])

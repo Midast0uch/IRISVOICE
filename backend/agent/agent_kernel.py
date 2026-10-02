@@ -14425,6 +14425,9 @@ Respond with a JSON object:
                 # retry wearing a new node id.
                 description=f"{_child_anchor} (sub {i + 1})",
                 objective_anchor=_child_anchor,
+                # the parent's plain text, for the spoken "part done" line
+                # (the child's own description is a machine anchor)
+                parent_description=item.description or "",
                 depth_layer=item.depth_layer + 1,
                 expected_output=item.expected_output,
                 is_subloop=True,  # collapses back to parent as one COMPRESS
@@ -18131,6 +18134,10 @@ Respond with a JSON object:
             "from_voice": bool(from_voice),
             "n_children": int(n_children),
             "is_subloop": bool(getattr(item, "is_subloop", False)),
+            # spoken split lines name the step in plain words
+            "step_description": item.description or "",
+            "parent_description": getattr(item, "parent_description", "") or "",
+            "parent_step_id": getattr(getattr(item, "node_record", None), "parent_step_id", "") or "",
             "execution_domain": getattr(item, "execution_domain", None)
             or ("voice" if from_voice else "der"),
             "topic_domain": getattr(item, "topic_domain", None) or "general",
@@ -18426,7 +18433,23 @@ Respond with a JSON object:
             _u_mag = abs(float(_u)) if _u is not None else 0.0
             _narrate = detect_physics_narration(
                 self._der_last_u_mag, _u_mag, _n_children, _is_subloop,
+                step_description=vals.get("step_description", ""),
+                parent_description=vals.get("parent_description", ""),
             )
+            # "One part done" is spoken once per split, not once per child (a
+            # 3-way split spoke the same line three times). A new split of the
+            # step allows it again. This job runs on the ordered physics lane.
+            _narrated = getattr(self, "_der_part_done_spoken", None)
+            if _narrated is None or len(_narrated) > 500:
+                _narrated = self._der_part_done_spoken = set()
+            if _n_children:
+                _narrated.discard((vals.get("session"), vals.get("step_id", "")))
+            elif _is_subloop and _narrate:
+                _pkey = (vals.get("session"), vals.get("parent_step_id", ""))
+                if _pkey in _narrated:
+                    _narrate = None
+                else:
+                    _narrated.add(_pkey)
             _tts_played = False
             if _narrate:
                 from backend.agent.tools.speak_tool import get_speak_tool

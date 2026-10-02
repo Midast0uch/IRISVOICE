@@ -461,11 +461,27 @@ def debit_work_units(current: int, measured_tokens: int) -> int:
     return max(0, current - _cost)
 
 
+def _spoken_step(text: str) -> str:
+    """A step description as speech: the planner's plain text, lower-cased at
+    the start, no trailing period, short. Machine text (a split child's
+    "RESOLVE: ..." anchor) is never spoken - it returns ""."""
+    import re as _re
+
+    t = _re.sub(r"\s+", " ", (text or "")).strip().rstrip(".")
+    t = _re.sub(r"\s*\(sub \d+\)$", "", t)
+    if not t or _re.match(r"^(RESOLVE|RECOVER|REPLAN|Replan required)\b", t):
+        return ""
+    t = t[0].lower() + t[1:]
+    return t if len(t) <= 90 else t[:87].rstrip() + "..."
+
+
 def detect_physics_narration(
     prev_u_mag: Optional[float],
     u_mag: float,
     n_children: int,
     is_subloop: bool,
+    step_description: str = "",
+    parent_description: str = "",
 ) -> Optional[str]:
     """REQ-7: agent-driven PHYSICS-EVENT narration trigger.
 
@@ -496,13 +512,19 @@ def detect_physics_narration(
     Returns:
         str | None — the line to speak, or None to stay silent.
     """
-    # Structural events take precedence.
+    # Structural events take precedence. Owner 2026-10-02: say what the part is
+    # about - "Sub-task done; folding back into the main thread" was internal
+    # jargon, and small models split often enough that it dominated the voice.
     if n_children and n_children > 0:
-        return (
-            f"Now moving into a sub-task — splitting into {n_children} parts."
-        )
+        _d = _spoken_step(step_description)
+        if _d:
+            return f"I need a closer look at this step — {_d}. I'll take it in {n_children} parts."
+        return f"This step needs a closer look — I'll take it in {n_children} parts."
     if is_subloop and not n_children:
-        return "Sub-task done; folding back into the main thread."
+        _d = _spoken_step(parent_description)
+        if _d:
+            return f"One part of that is done — still working on: {_d}."
+        return "One part of that is done."
     if prev_u_mag is None:
         return None
     # Bands: converged = |u| >= U_CONVERGED; oscillating = U_SPLIT < |u|

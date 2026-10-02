@@ -90,7 +90,8 @@ class TestStepNarrationIsEventTriggered:
     def test_split_step_speaks(self, kernel):
         _finalize(kernel, _FakeItem(1), "fail", u=0.6, children=[1, 2])
         assert len(kernel._speak_spy.calls) == 1
-        assert "sub-task" in kernel._speak_spy.calls[0][0]
+        # owner 2026-10-02: plain words, no "sub-task" jargon
+        assert "2 parts" in kernel._speak_spy.calls[0][0]
 
     def test_convergence_transition_speaks(self, kernel):
         _finalize(kernel, _FakeItem(1), "ok", u=0.6)  # oscillating

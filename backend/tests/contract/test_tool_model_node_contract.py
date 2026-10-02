@@ -195,6 +195,35 @@ def test_three_repeats_in_a_row_end_the_step():
     assert r.success is False and r.error.startswith("stuck repeating read_file")
 
 
+def test_jittered_arguments_with_the_same_result_still_count_as_stuck():
+    """TwIL asked read_file for start_line 51 of a 6-line file 224 times with
+    slightly different arguments: identical-args alone never matched."""
+    n = iter(range(100))
+
+    def gen(role, messages, **kw):
+        return "", "", [_call("read_file", {"path": "m.py", "start_line": 51, "end_line": 60 + next(n)})]
+
+    ctx = NodeContext(generate=gen, execute=lambda n_, p: {"success": True, "content": ""},
+                      format_result=lambda n_, r: json.dumps(r), tools=TOOLS, budget_s=8)
+    r = run_node("read m.py", ctx)
+    assert r.success is False and r.error.startswith("stuck repeating read_file")
+
+
+def test_reading_past_the_end_of_a_file_says_so():
+    import asyncio
+    import tempfile
+    from pathlib import Path
+
+    from backend.mcp.builtin_servers import FileManagerServer
+
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "m.py"
+        p.write_text("".join(f"line {i}\n" for i in range(6)), encoding="utf-8")
+        srv = FileManagerServer.__new__(FileManagerServer)
+        out = asyncio.run(srv.execute_tool("read_file", {"path": str(p), "start_line": 51}))
+    assert out["success"] is False and "6 lines" in out["error"]
+
+
 def test_a_reread_after_an_edit_still_runs():
     executed = []
     replies = iter([("", [_call("read_file", {"path": "m.py"})]),

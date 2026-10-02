@@ -162,6 +162,12 @@ _REPEAT_HINT = (
     "(for example edit or write the file), or finish the step."
 )
 
+_UNCHANGED_HINT = (
+    "UNCHANGED RESULT: this call returned exactly what your previous call "
+    "returned (above). Repeating it changes nothing - take the NEXT action of "
+    "the step, or finish the step."
+)
+
 _MAX_MALFORMED = 2
 _MALFORMED_HINT = (
     "Your last tool call was rejected: its arguments were not valid JSON. Inside "
@@ -233,6 +239,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
     # such repeats in a row end the step. A different call in between (an
     # edit, a test run) breaks the run, so re-reading after a change is fine.
     last_key: Optional[str] = None
+    last_res_key: Optional[str] = None
     repeats = 0
     calls: List[Dict[str, Any]] = []
     last_command_failed: Optional[bool] = None
@@ -300,7 +307,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                     messages.append({"role": "tool", "tool_call_id": tc.get("id") or name,
                                      "name": name, "content": _REPEAT_HINT})
                     continue
-                last_key, repeats = key, 0
+                last_key = key
                 if params is None:
                     raw: Any = {"success": False, "error": "arguments were not valid JSON; send a JSON object"}
                 elif name not in allowed:
@@ -328,6 +335,21 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                             _target(params or {}), "FAILED" if failed else "ok")
                 content = _clip(_relative(ctx.format_result(name, raw) or "", ctx.workdir),
                                 ctx.result_chars)
+                # No progress also shows as the SAME result for the same tool and
+                # target right after itself, even when the arguments jitter
+                # (2026-10-02: read_file start_line 51 of a 6-line file, 224x).
+                res_key = json.dumps([name, _target(params or {}), content])
+                if res_key == last_res_key:
+                    repeats += 1
+                    logger.info("[run_node] conv=%s unchanged result %s %s (%d in a row)",
+                                ctx.conv_id, name, _target(params or {}), repeats)
+                    if repeats >= _MAX_REPEATS:
+                        return NodeResult(False, text or "", calls,
+                                          f"stuck repeating {name} {_target(params or {})}".strip(),
+                                          last_command_failed=bool(last_command_failed))
+                    content = _UNCHANGED_HINT
+                else:
+                    last_res_key, repeats = res_key, 0
                 batch_results.append(f"[{name} {_target(params or {})}]\n{content}")
                 messages.append({
                     "role": "tool", "tool_call_id": tc.get("id") or name, "name": name,

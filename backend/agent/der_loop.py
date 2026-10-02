@@ -267,6 +267,9 @@ class QueueItem:
     # (monotonic) feeds elapsed_s and the stall warning at finalize.
     timed_out: bool = False
     dispatch_started_at: float = 0.0
+    # A split child's parent step text (plain planner words), for the spoken
+    # "one part done" line; the child's own description is a machine anchor.
+    parent_description: str = ""
 
     @property
     def footprint(self) -> Optional[NodeRecord]:

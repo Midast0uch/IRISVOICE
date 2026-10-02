@@ -27,21 +27,46 @@ class TestPhysicsNarrationTrigger:
         # prev_u_mag is None on the first step -> no transition line.
         assert detect_physics_narration(None, 0.9, False, False) is None
 
+    # Owner 2026-10-02: the split lines say what the part is about, in plain
+    # words ("Sub-task done; folding back into the main thread" was jargon).
+
     def test_split_speaks(self):
         line = detect_physics_narration(0.6, 0.6, 3, False)
         assert line is not None
-        assert "sub-task" in line
-        assert "3" in line
+        assert "3 parts" in line
 
     def test_split_takes_precedence_over_transition(self):
         # Even if |u| also transitions, a split wins.
         line = detect_physics_narration(0.6, 0.95, 2, False)
-        assert "sub-task" in line
+        assert "2 parts" in line
 
     def test_subloop_collapse_speaks(self):
         line = detect_physics_narration(0.6, 0.6, 0, True)
         assert line is not None
-        assert "folding back" in line
+        assert "done" in line
+
+    def test_split_names_the_step(self):
+        line = detect_physics_narration(
+            0.6, 0.6, 2, False,
+            step_description="Read the textutils.py file to see its current content.")
+        assert "read the textutils.py file to see its current content" in line
+
+    def test_part_done_names_the_parent_step_not_the_machine_anchor(self):
+        line = detect_physics_narration(
+            0.6, 0.6, 0, True,
+            step_description="RESOLVE: result did not satisfy expected output: x (sub 1)",
+            parent_description="Fix the import error in shapes/__init__.py.")
+        assert "fix the import error in shapes/__init__.py" in line
+        assert "RESOLVE" not in line
+
+    def test_machine_text_is_never_spoken_and_no_jargon_remains(self):
+        for line in (
+            detect_physics_narration(0.6, 0.6, 2, False, step_description="RESOLVE: blocker x"),
+            detect_physics_narration(0.6, 0.6, 0, True, parent_description="Replan required: stuck"),
+        ):
+            assert "RESOLVE" not in line and "Replan" not in line
+            assert "sub-task" not in line and "folding back" not in line
+            assert "main thread" not in line
 
     def test_oscillating_to_converged_speaks(self):
         # prev oscillating (>U_SPLIT), now converged (>=U_CONVERGED).
