@@ -356,6 +356,23 @@ def _line_arg(arguments: Dict[str, Any], key: str) -> Optional[int]:
     return value if value > 0 else None
 
 
+def _py_syntax_error(path: str, text: str) -> Optional[str]:
+    """For a .py file: the syntax error in `text`, else None. In-process
+    compile() - no subprocess, no import, ~1 ms. A small tool model writes
+    unparsable Python and the edit reported success, so a step could close on
+    it (2026-10-02). Syntax only: a runtime error still needs a run."""
+    if not str(path).lower().endswith(".py"):
+        return None
+    try:
+        compile(text, str(path), "exec")
+    except SyntaxError as e:
+        src = (e.text or "").strip()[:120]
+        return f"SyntaxError at line {e.lineno}: {e.msg}" + (f": {src}" if src else "")
+    except (ValueError, TypeError):  # e.g. a NUL byte - not a syntax verdict
+        return None
+    return None
+
+
 def _first_str(arguments: Dict[str, Any], keys: tuple) -> Optional[str]:
     for key in keys:
         value = arguments.get(key)
@@ -583,6 +600,10 @@ class FileManagerServer(BuiltinServer):
                         "error": f"write_file wrote 0 bytes to {path} "
                                  f"(body had {len(content)} chars)",
                     }
+                _syntax = _py_syntax_error(path, content)
+                if _syntax:
+                    return {"success": False, "path": path, "written": True,
+                            "error": f"written, but {path} does not compile - {_syntax}. Fix it."}
                 return {
                     "success": True,
                     "message": f"Written to {path}",
@@ -675,6 +696,11 @@ class FileManagerServer(BuiltinServer):
         updated = text.replace(old, new, 1)
         _atomic_write(path, updated, newline="")
         line = text[: text.index(old)].count("\n") + 1
+        _syntax = _py_syntax_error(path, updated)
+        if _syntax:
+            return {"success": False, "path": path, "written": True, "line": line,
+                    "error": f"edit applied at line {line}, but {path} no longer compiles - "
+                             f"{_syntax}. Fix it."}
         return {"success": True, "path": path, "message": f"Edited {path} at line {line}",
                 "line": line, "bytes": len(updated.encode("utf-8"))}
 

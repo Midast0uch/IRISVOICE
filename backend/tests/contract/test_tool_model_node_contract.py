@@ -245,6 +245,33 @@ def test_reading_past_the_end_of_a_file_says_so():
     assert out["success"] is False and "6 lines" in out["error"]
 
 
+def test_an_edit_that_breaks_python_syntax_fails_with_the_line():
+    """A small tool model writes unparsable Python and the edit reported
+    success, so the step could close on it. (c12's `for (d, a, _), in ...` is
+    valid syntax - a runtime error compile() cannot see; this pins real
+    syntax errors only.)"""
+    import asyncio
+    import tempfile
+    from pathlib import Path
+
+    from backend.mcp.builtin_servers import FileManagerServer
+
+    srv = FileManagerServer.__new__(FileManagerServer)
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "ledger.py"
+        p.write_text("def balance():\n    return 0\n", encoding="utf-8")
+        bad = asyncio.run(srv.execute_tool("edit_file", {
+            "path": str(p), "old": "return 0",
+            "new": "return sum(a for a in )"}))
+        good = asyncio.run(srv.execute_tool("write_file", {
+            "path": str(p), "content": "def balance():\n    return 1\n"}))
+        notes = asyncio.run(srv.execute_tool("write_file", {
+            "path": str(Path(d) / "notes.txt"), "content": "sum(a for a in )"}))
+    assert bad["success"] is False and "line 2" in bad["error"] and bad["written"] is True
+    assert good["success"] is True
+    assert notes["success"] is True, "only .py files are compiled"
+
+
 def test_a_reread_after_an_edit_still_runs():
     executed = []
     replies = iter([("", [_call("read_file", {"path": "m.py"})]),
