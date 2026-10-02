@@ -95,12 +95,14 @@ def test_capture_workflow_end_to_end_registers():
         existing_skills=[],
         is_registered=lambda n: n in {"a", "b", "c"},
     )
-    assert key == "skill_a_workflow"
+    # Named by the whole shape (owner 2026-10-01): the first-tool name made
+    # different recipes share one key and overwrite each other.
+    assert key == "skill_a_b_c_workflow"
     raw = mem.semantic.store[("named_skills", key)]
     data = json.loads(raw)
     assert data["verified"] is True
     assert data["tool_sequence"] == _seq("a", "b", "c")
-    assert "named_skills.skill_a_workflow" in mem.semantic.displays
+    assert "named_skills.skill_a_b_c_workflow" in mem.semantic.displays
 
 
 def test_capture_workflow_skips_when_similar_exists():

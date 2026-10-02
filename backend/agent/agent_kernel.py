@@ -218,6 +218,43 @@ def _der_physics_settle(owner, session_id: str) -> None:
         )
 
 
+_STEP_ID_KEYS = ("path", "file_path", "command", "pattern", "query", "url")
+
+
+def _step_calls(item) -> list:
+    """What a settled step ACTUALLY did - the one source for every reader that
+    used ``item.tool`` as "what this step did". A node step (since 2026-09-29)
+    has no tool/params; its calls are ``node_call_log`` (set by _der_run_node).
+    A direct step is its one tool. Returns [{tool, target, ok, args}] ([] for
+    a step that made no call). Module level on purpose (stand-in kernels)."""
+    log = getattr(item, "node_call_log", None)
+    if isinstance(log, list):
+        return log
+    tool = getattr(item, "tool", None)
+    if not tool:
+        return []
+    params = getattr(item, "params", None)
+    args = {k: params[k] for k in _STEP_ID_KEYS if isinstance(params, dict) and params.get(k)}
+    return [{"tool": str(tool), "target": str(next(iter(args.values()), ""))[:80],
+             "ok": True, "args": args}]
+
+
+def _step_decisive_call(item) -> Optional[dict]:
+    """The call that decided the step: the last failed one, else the last."""
+    calls = _step_calls(item)
+    if not calls:
+        return None
+    failed = [c for c in calls if not c.get("ok", True)]
+    return (failed or calls)[-1]
+
+
+def _step_tool(item):
+    """One tool name for readers that keep a single field (ledger, triage,
+    card): the decisive call's tool; ``item.tool`` when no call ran yet."""
+    call = _step_decisive_call(item)
+    return call.get("tool") if call else getattr(item, "tool", None)
+
+
 def _step_digest(item) -> str:
     """Repeat-detection key of a settled step: a node step is the calls it
     made (``node_digest``, set by ``_der_run_node``); a direct tool step is
@@ -228,6 +265,57 @@ def _step_digest(item) -> str:
     from backend.agent.tool_envelope import params_digest
 
     return params_digest(getattr(item, "tool", None), getattr(item, "params", None))
+
+
+_TURN_END_FOLD_WAIT_S = 20.0
+
+
+def _turn_end_submit(owner, session_id: str, job) -> None:
+    """C5: run the turn-end bookkeeping (card footprint, plan stats, episode
+    + landmark crystallization, skill capture) on lane("memory_events"), the
+    store's ordered writer, instead of before the reply's synthesis (measured
+    2-8.5 s per task, 2026-10-01). The next turn of this kernel folds back on
+    ``owner._turn_end_pending`` before it reads memory. A dropped submit (lane
+    full) runs the job inline: an episode is never lost. Module level on
+    purpose (stand-in kernels)."""
+    import threading as _th
+
+    done = _th.Event()
+
+    def _run():
+        try:
+            job()
+        except Exception as exc:  # noqa: BLE001 - each part logs its own failure
+            logger.warning("[DER] turn-end bookkeeping failed session=%s: %r", session_id, exc)
+        finally:
+            done.set()
+
+    owner._turn_end_pending = done
+    from backend.utils.durability_queue import lane
+
+    if not lane("memory_events").submit("turn_end", _run):
+        logger.warning("[DER] turn-end lane full session=%s - bookkeeping inline", session_id)
+        _run()
+
+
+def _turn_end_settle(owner) -> None:
+    """Fold-back of _turn_end_submit: wait until this kernel's last turn-end
+    bookkeeping landed (the episode the planner may recall). Bounded: past
+    the wait the turn proceeds on what has landed; the job is never cancelled."""
+    done = getattr(owner, "_turn_end_pending", None)
+    if done is None or done.is_set():
+        return
+    from backend.utils.durability_queue import lane
+
+    if lane("memory_events").in_worker():
+        return
+    t0 = time.monotonic()
+    landed = done.wait(_TURN_END_FOLD_WAIT_S)
+    waited = time.monotonic() - t0
+    if not landed:
+        logger.warning("[DER] turn-end fold-back not landed after %.1fs - proceeding", waited)
+    elif waited >= 0.5:
+        logger.info("[DER] turn-end fold-back waited %.2fs", waited)
 
 
 def _memory_events_submit(owner, fn_name: str, **kwargs) -> None:
@@ -2827,11 +2915,33 @@ class AgentKernel:
             except Exception:
                 existing_skills = []
 
+            # Recurrence (owner 2026-10-01): a skill is a recipe that repeats.
+            # Count successful episodes of similar tasks with the SAME call
+            # shape (tools in first-use order); this run's own episode was
+            # stored just before, so it counts once. A rerun of the same task
+            # updates its episode instead of adding one, so reruns do not count.
+            from backend.agent.workflow_capture import distinct_tool_names
+
+            _shape = distinct_tool_names(successful)
+            _recurrences = 0
+            try:
+                for _ep in memory.episodic.retrieve_similar(task_summary, limit=10) or []:
+                    _seq = _ep.get("tool_sequence") or []
+                    if isinstance(_seq, str):
+                        _seq = json.loads(_seq)
+                    _ok = [s for s in _seq if isinstance(s, dict) and s.get("success", False)]
+                    if distinct_tool_names(_ok) == _shape:
+                        _recurrences += 1
+            except Exception as _rec_exc:  # noqa: BLE001 - no count, no capture
+                logger.debug("[AgentKernel] skill recurrence count failed: %r", _rec_exc)
+                _recurrences = 0
+
             key = capture_workflow(
                 tool_sequence=successful,
                 memory=memory,
                 existing_skills=existing_skills,
                 is_registered=lambda n: resolve_tool(n) is not None,
+                recurrences=_recurrences,
             )
             if key:
                 logger.info(
@@ -8119,6 +8229,9 @@ class AgentKernel:
         logger.debug(
             f"[Timing] memory.get_context: {(_t_memory - _t_start) * 1000:.1f} ms"
         )
+        # C5 fold-back: the previous turn's episode lands before planning
+        # recalls episodes.
+        _turn_end_settle(self)
 
         # ── Direct path (default): skip planning for non-tool messages ──────────
         # Route shadow (REQ-18, T30): record the fork for every turn, ahead
@@ -9443,7 +9556,8 @@ Respond with a JSON object:
             self._der_turn_active = False
 
     @restores_call_class
-    def _save_card_footprint(self, plan, completed_items, outcome: str) -> None:
+    def _save_card_footprint(self, plan, completed_items, outcome: str,
+                             card_id: Optional[str] = None) -> None:
         """GROUND TRUTH T6 (REQ-3): one footprint per terminal card.
 
         REQ-3 AC2 keeps the module's never-raise guarantee AND counts failures,
@@ -9454,7 +9568,9 @@ Respond with a JSON object:
             if not self._memory_interface:
                 _write_counters.bump("footprint.no_memory_interface")
                 return
-            _card_id = getattr(self, "_active_card_id", None)
+            # card_id is captured at turn end when this runs on the lane (the
+            # next turn may already have changed _active_card_id).
+            _card_id = card_id or getattr(self, "_active_card_id", None)
             if not _card_id:
                 _write_counters.bump("footprint.no_card_id")
                 return
@@ -9463,18 +9579,19 @@ Respond with a JSON object:
 
             _steps, _tools, _files = [], [], []
             for _ci in (completed_items or []):
-                _tool = str(getattr(_ci, "tool", "") or "")
+                _calls = _step_calls(_ci)  # what the step actually did
                 _steps.append({
                     "step_id": str(getattr(_ci, "step_id", "") or ""),
                     "description": str(getattr(_ci, "description", "") or "")[:200],
-                    "tool": _tool,
+                    "tool": str(_step_tool(_ci) or ""),
                 })
-                if _tool and _tool not in _tools:
-                    _tools.append(_tool)
-                _param = getattr(_ci, "params", None) or {}
-                if isinstance(_param, dict):
+                for _c in _calls:
+                    _tool = str(_c.get("tool") or "")
+                    if _tool and _tool not in _tools:
+                        _tools.append(_tool)
+                    _args = _c.get("args") or {}
                     for _k in ("path", "file_path", "file"):
-                        _v = _param.get(_k)
+                        _v = _args.get(_k)
                         if isinstance(_v, str) and _v and _v not in _files:
                             _files.append(_v)
 
@@ -9954,7 +10071,7 @@ Respond with a JSON object:
                     "status": "pending",
                     # Session 247: semantic order for the frontend row sort.
                     "stepNumber": it.step_number,
-                    "toolName": it.tool,
+                    "toolName": _step_tool(it),
                 }
                 for it in items
             ]
@@ -10881,7 +10998,9 @@ Respond with a JSON object:
         # by id across conversations. This is the call site it was waiting for,
         # and it unblocks specs/wormhole-aperture REQ-34, which reads footprints
         # as a chain-extraction source.
-        self._save_card_footprint(plan, completed_items, outcome)
+        # C5: written by the turn-end job on the memory lane (below); the card
+        # id is captured now because the next turn may change it.
+        _te_card_id = getattr(self, "_active_card_id", None)
 
         # ── EventBus: emit task:done / task:fail ────────────────────────
         # T11 (REQ-12): record the completed-step count on the kernel so the
@@ -10961,76 +11080,91 @@ Respond with a JSON object:
         except Exception as _exc:
             loud_error(_exc, "mycelium_clear_session")
 
-        try:
-            if self._memory_interface:
-                _der_duration_total = int(
-                    (time.perf_counter() - _der_start_time) * 1000
-                )
-                _avg_step_ms = (
-                    _der_duration_total / len(completed_items)
-                    if completed_items
-                    else 0.0
-                )
-                self._memory_interface.mycelium_record_plan_stats(
-                    session_id=_session,
-                    task_class=task_class,
-                    strategy=plan.strategy,
-                    total_steps=len(plan.steps),
-                    steps_completed=len(completed_items),
-                    tokens_used=_tokens_used,
-                    avg_step_duration_ms=_avg_step_ms,
-                    outcome=outcome,
-                    graph_mature=is_mature,
-                )
-        except Exception as _exc:
-            loud_error(_exc, "mycelium_record_plan_stats")
+        # ── C5: turn-end bookkeeping on the memory lane (2026-10-01) ──────────
+        # Card footprint, plan stats, the episode (+ Mycelium outcome and
+        # landmark crystallization) and skill capture ran HERE, before the
+        # reply's synthesis: 2-8.5 s per coding task (stack dumps: inside
+        # crystallize_landmark -> _auto_connect). The reply does not need any
+        # of it, so it runs as ONE ordered job on lane("memory_events") after
+        # record_task_end (same lane, same order as before). The next turn
+        # folds back on it before planning recalls episodes (_turn_end_settle).
+        # Everything the job reads is captured now: the next turn changes
+        # kernel state.
+        if self._memory_interface:
+            _der_duration_ms = int((time.perf_counter() - _der_start_time) * 1000)
+            _te_items = list(completed_items)
+            _avg_step_ms = _der_duration_ms / len(_te_items) if _te_items else 0.0
+            _te_stats = dict(
+                session_id=_session,
+                task_class=task_class,
+                strategy=plan.strategy,
+                total_steps=len(plan.steps),
+                steps_completed=len(_te_items),
+                tokens_used=_tokens_used,
+                avg_step_duration_ms=_avg_step_ms,
+                outcome=outcome,
+                graph_mature=is_mature,
+            )
+            # One entry per call the steps ACTUALLY made (_step_calls): a node
+            # step used to record {"tool": "none"}, so episodes held no tools
+            # and skill capture (needs successful calls) could never fire.
+            _tool_seq = [
+                {
+                    "tool": c.get("tool") or "none",
+                    "params": dict(c.get("args") or {}),
+                    "target": c.get("target", ""),
+                    "success": bool(c.get("ok", True)),
+                    "step": ci.step_number,
+                    "description": ci.description,
+                }
+                for ci in _te_items
+                for c in _step_calls(ci)
+            ]
+            _full_content = "\n".join(
+                f"[Step {i + 1}] {o}" for i, o in enumerate(step_outputs) if o
+            )
+            _te_task = plan.original_task
+            # Spec D9: task completion is outside evidence for this task's
+            # FIXes (-> VERIFIED_FIX + LESSON candidate); closes its cases.
+            _memory_events_submit(
+                self, "record_task_end",
+                thread_id=_session,
+                task_id=f"{_session}:{_turn_id or ''}",
+                success=(outcome == "success"),
+            )
 
-        # ── EPISODIC STORAGE: write completed task to episodic memory ──────────
-        # Closes the read/write loop. get_task_context() already calls
-        # assemble_episodic_context() which reads from this store — but only
-        # if episodes exist. This call creates them.
-        # Also triggers Mycelium outcome + crystallization internally.
-        try:
-            if self._memory_interface:
-                _der_duration_ms = int((time.perf_counter() - _der_start_time) * 1000)
-                _tool_seq = [
-                    {
-                        "tool": ci.tool or "none",
-                        "params": ci.params,
-                        "step": ci.step_number,
-                        "description": ci.description,
-                    }
-                    for ci in completed_items
-                ]
-                _full_content = "\n".join(
-                    f"[Step {i + 1}] {o}" for i, o in enumerate(step_outputs) if o
-                )
-                # Spec D9: task completion is outside evidence for this task's
-                # FIXes (-> VERIFIED_FIX + LESSON candidate); closes its cases.
-                _memory_events_submit(
-                    self, "record_task_end",
-                    thread_id=_session,
-                    task_id=f"{_session}:{_turn_id or ''}",
-                    success=(outcome == "success"),
-                )
-                self._store_task_episode(
-                    task_summary=plan.original_task,
-                    full_content=_full_content,
-                    outcome_type=outcome,
-                    tool_sequence=_tool_seq,
-                    session_id=_session,
-                    duration_ms=_der_duration_ms,
-                )
-                # Domain 4.5 — check if this tool sequence warrants a new skill
+            def _turn_end_job():
+                self._save_card_footprint(plan, _te_items, outcome, card_id=_te_card_id)
+                try:
+                    self._memory_interface.mycelium_record_plan_stats(**_te_stats)
+                except Exception as _exc:
+                    loud_error(_exc, "mycelium_record_plan_stats")
+                # EPISODIC STORAGE closes the read/write loop:
+                # assemble_episodic_context() reads these episodes.
+                try:
+                    self._store_task_episode(
+                        task_summary=_te_task,
+                        full_content=_full_content,
+                        outcome_type=outcome,
+                        tool_sequence=_tool_seq,
+                        session_id=_session,
+                        duration_ms=_der_duration_ms,
+                    )
+                except Exception as _exc:
+                    loud_error(_exc, "store_task_episode")
+                # Skill capture. It never fired while node steps recorded tool
+                # "none"; with real calls it saved one task's call list per run
+                # (5 in one eval). It now needs the call shape to RECUR in >= 3
+                # successful similar episodes (workflow_capture.MIN_RECURRENCES).
                 try:
                     self._maybe_trigger_skill_creation(
                         tool_sequence=_tool_seq,
-                        task_summary=plan.original_task,
+                        task_summary=_te_task,
                     )
                 except Exception as _exc:
                     loud_error(_exc, "skill_creation_trigger")
-        except Exception as _exc:
-            loud_error(_exc, "store_task_episode")
+
+            _turn_end_submit(self, _session, _turn_end_job)
 
         # ── EventBus: emit der:done ────────────────────────────────────
         try:
@@ -11473,7 +11607,7 @@ Respond with a JSON object:
                         else "vetoed" if it.step_id in queue.vetoed_ids
                         else "pending"
                     ),
-                    "toolName": it.tool,
+                    "toolName": _step_tool(it),
                     # Session 312 (conv-98 smoke): persist the distilled
                     # outcome so a revisited card shows what each step found,
                     # not just its status. Same envelope as live rows (C3/F9)
@@ -12412,7 +12546,7 @@ Respond with a JSON object:
                             "id": it.step_id,
                             "description": it.description,
                             "status": "pending",
-                            "toolName": it.tool,
+                            "toolName": _step_tool(it),
                         }
                         for it in _fresh
                     ],
@@ -12627,7 +12761,7 @@ Respond with a JSON object:
                                     if it.step_id in set(queue.failed_ids)
                                     else "pending"
                                 ),
-                                "toolName": it.tool,
+                                "toolName": _step_tool(it),
                             }
                             for it in list(queue.items)
                         ],
@@ -13139,7 +13273,7 @@ Respond with a JSON object:
         # Best-effort — an advisory triage must never block a recovery.
         try:
             _triage_box = self._get_tool_box()
-            _triage_tool = str(getattr(item, "tool", "") or "")
+            _triage_tool = str(_step_tool(item) or "")
             _triage_obj = (
                 getattr(item, "objective_anchor", "")
                 or getattr(item, "description", "")
@@ -13342,7 +13476,7 @@ Respond with a JSON object:
                             attempt_id=getattr(item, "attempt_id", "") or item.step_id,
                             failure_class=_fail_class,
                             input_summary=(item.description or "")[:200],
-                            tool=item.tool,
+                            tool=_step_tool(item),
                             error_type=getattr(item, "error_type", None),
                             error_summary=_res_text[:300],
                             recovered=False,
@@ -14255,7 +14389,8 @@ Respond with a JSON object:
                     from backend.memory.memory_events import case_trail
 
                     _trail = case_trail(
-                        _chain_conn, getattr(item, "tool", None),
+                        # the same decisive tool record_step writes the case under
+                        _chain_conn, _step_tool(item),
                         step_result or str(getattr(item, "result", "") or ""),
                     )
                     if _chain_ctx or _trail:
@@ -14602,10 +14737,17 @@ Respond with a JSON object:
             except Exception:
                 pass
 
+            # What the failed step actually ran (a node step has no item.tool;
+            # this line used to read "TOOL: None").
+            _calls_line = "; ".join(
+                f"{_c.get('tool') or '?'} {_c.get('target') or ''}".strip()
+                + (" -> ok" if _c.get("ok", True) else " -> FAILED")
+                for _c in _step_calls(failed_item)
+            ) or "none"
             prompt = (
                 f"OBJECTIVE: {objective}\n"
                 f"FAILED STEP: {failed_item.description}\n"
-                f"TOOL: {failed_item.tool}\n"
+                f"TOOL CALLS: {_calls_line}\n"
                 f"ERROR: {error_msg}\n\n"
             )
             if _failure_ctx:
@@ -16747,6 +16889,8 @@ Respond with a JSON object:
             ]
         except Exception:  # noqa: BLE001 - bookkeeping never fails a step
             item.node_calls = []
+        # Every "what did this step do" reader goes through _step_calls(item).
+        item.node_call_log = [dict(c) for c in (result.calls or [])]
         # A node's identity for repeat detection is the calls it made: its
         # item has no tool and no params (the planner emits goals only), so
         # params_digest(None, {}) was one key for EVERY node step and any node
@@ -17871,8 +18015,10 @@ Respond with a JSON object:
                     full_content=str(step_result)[:500],
                     outcome_type="miss",
                     tool_sequence=[
-                        {"tool": item.tool or "reasoning", "step": item.step_number}
-                    ],
+                        {"tool": c.get("tool"), "step": item.step_number,
+                         "success": bool(c.get("ok", True))}
+                        for c in _step_calls(item)
+                    ] or [{"tool": "reasoning", "step": item.step_number}],
                     session_id=session_id,
                 )
             except Exception as _ep_exc:
@@ -18635,8 +18781,12 @@ Respond with a JSON object:
             thread_id=_session,
             task_id=f"{_session}:{_turn_id or ''}",
             step_id=str(getattr(item, "step_id", "") or ""),
-            tool=getattr(item, "tool", None),
-            params=dict(item.params) if isinstance(getattr(item, "params", None), dict) else None,
+            # The decisive call (the last failed one, else the last): a node
+            # step has no item.tool, so record_step saw "none" and a coding
+            # node's test run never counted as a test command.
+            tool=(_step_decisive_call(item) or {}).get("tool") or getattr(item, "tool", None),
+            params=(dict((_step_decisive_call(item) or {}).get("args") or {})
+                    or (dict(item.params) if isinstance(getattr(item, "params", None), dict) else None)),
             success=bool(step_success),
             verified=str(_verified or ""),
             error_text=(str(step_result or "")[:2000] if not step_success else ""),
@@ -18737,7 +18887,7 @@ Respond with a JSON object:
                                 attempt_id=getattr(item, "attempt_id", "") or item.step_id,
                                 failure_class=_fail_class,
                                 input_summary=(item.description or "")[:200],
-                                tool=item.tool,
+                                tool=_step_tool(item),
                                 error_type=getattr(item, "error_type", None),
                                 error_summary=_res_text[:300],
                                 recovered=False,
@@ -18838,7 +18988,7 @@ Respond with a JSON object:
                                             "id": it.step_id,
                                             "description": it.description,
                                             "status": "pending",
-                                            "toolName": it.tool,
+                                            "toolName": _step_tool(it),
                                             **(
                                                 {"branchLabel": DER_SUBLOOP_BRANCH_LABEL}
                                                 if it.step_id in _branch_child_ids
@@ -18976,7 +19126,7 @@ Respond with a JSON object:
                 step_id=item.step_id,
                 parent_step_id=getattr(item, "parent_step_id", None),
                 action_key=(item.description or item.tool or "")[:80],
-                tool=item.tool,
+                tool=_step_tool(item),
             )
             _ledger.close_attempt(
                 _att,

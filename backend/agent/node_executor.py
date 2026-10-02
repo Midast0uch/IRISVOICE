@@ -142,6 +142,9 @@ def _clip(text: str, limit: int) -> str:
     return text[:head] + f"\n... [{len(text) - limit} chars cut] ...\n" + text[-(limit - head):]
 
 
+_ID_KEYS = ("path", "file_path", "command", "pattern", "query", "url")
+
+
 def _target(params: dict) -> str:
     for key in ("path", "file_path", "command", "pattern", "query"):
         if params.get(key):
@@ -239,7 +242,11 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                 batch_failed = batch_failed or failed
                 if name == "run_command":
                     last_command_failed = failed
-                calls.append({"tool": name, "target": _target(params or {}), "ok": not failed})
+                # args: the identifying keys only (never a file body) - what
+                # memory events and footprints read as "what this step touched".
+                calls.append({"tool": name, "target": _target(params or {}), "ok": not failed,
+                              "args": {k: params[k] for k in _ID_KEYS
+                                       if isinstance(params, dict) and params.get(k)}})
                 logger.info("[run_node] conv=%s %s %s -> %s", ctx.conv_id, name,
                             _target(params or {}), "FAILED" if failed else "ok")
                 content = _clip(ctx.format_result(name, raw) or "", ctx.result_chars)

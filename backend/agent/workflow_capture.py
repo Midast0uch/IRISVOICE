@@ -28,6 +28,11 @@ logger = logging.getLogger(__name__)
 
 MIN_DISTINCT_TOOLS = 3
 SIMILARITY_THRESHOLD = 0.85
+# A skill is a recipe that RECURS: the same call shape in this many successful
+# runs of similar tasks (this run included). Owner 2026-10-01: once node steps
+# recorded real calls, every coding run had >= 3 distinct tools and was
+# captured (5 one-task "skills" in one 15-task eval).
+MIN_RECURRENCES = 3
 
 
 def _step_tool(step: Any) -> Optional[str]:
@@ -64,12 +69,16 @@ def should_capture(
     existing_skills: Sequence[Dict[str, Any]],
     min_distinct: int = MIN_DISTINCT_TOOLS,
     threshold: float = SIMILARITY_THRESHOLD,
+    recurrences: Optional[int] = None,
 ) -> bool:
     """Deterministic trigger for skill capture.
 
     Returns True iff the run used >= ``min_distinct`` distinct tools AND no
-    existing skill is >= ``threshold`` similar to this sequence.
+    existing skill is >= ``threshold`` similar to this sequence AND, when the
+    caller counted them, the shape recurred in >= MIN_RECURRENCES runs.
     """
+    if recurrences is not None and recurrences < MIN_RECURRENCES:
+        return False
     distinct = distinct_tool_names(tool_sequence)
     if len(distinct) < min_distinct:
         return False
@@ -128,9 +137,11 @@ def build_skill_stub(
 
 
 def _default_name(tools: Sequence[str]) -> str:
+    """Named by the whole shape: a first-tool name made different recipes
+    share one key and overwrite each other (Glob Files Workflow v1 -> v3)."""
     if not tools:
         return "Automated Skill"
-    return f"{tools[0].replace('_', ' ').title()} Workflow"
+    return " ".join(t.replace("_", " ").title() for t in tools) + " Workflow"
 
 
 def register_verified_skill(
@@ -187,13 +198,14 @@ def capture_workflow(
     existing_skills: Sequence[Dict[str, Any]],
     is_registered: Callable[[str], bool],
     name: Optional[str] = None,
+    recurrences: Optional[int] = None,
 ) -> Optional[str]:
     """End-to-end: trigger -> self-test -> register.  Returns skill key or None.
 
     Returns None (and registers nothing) when the sequence should not be
     captured or fails the structural self-test.
     """
-    if not should_capture(tool_sequence, existing_skills):
+    if not should_capture(tool_sequence, existing_skills, recurrences=recurrences):
         return None
     if not self_test_skill(tool_sequence, is_registered):
         logger.info("[workflow_capture] self-test failed — not registering")
