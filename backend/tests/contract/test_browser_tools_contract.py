@@ -42,7 +42,12 @@ def test_registry_exposes_the_three_browser_tools_with_schemas(internet_on):
 
     assert fn["browser_open"]["parameters"]["properties"]["url"]["type"] == "string"
     assert fn["browser_open"]["parameters"]["required"] == ["url"]
-    assert fn["browser_observe"]["parameters"]["properties"] == {}
+    # V8 (2026-10-02, owner allows browser test changes): one OPTIONAL
+    # question for the vision model; observing still needs no argument.
+    obs = fn["browser_observe"]["parameters"]
+    assert list(obs["properties"]) == ["question"]
+    assert obs["properties"]["question"]["type"] == "string"
+    assert not obs.get("required")
     act = fn["browser_act"]["parameters"]
     assert act["properties"]["action"]["enum"] == ["click", "type", "select", "scroll", "back", "press"]
     assert act["properties"]["element_id"]["type"] == "integer"

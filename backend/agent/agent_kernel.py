@@ -16937,11 +16937,32 @@ Respond with a JSON object:
                 _helper = "reasoning"
         except Exception as _hr_exc:  # noqa: BLE001 - no helper, the node still runs
             logger.debug("[DER] node helper unresolved: %r", _hr_exc)
+        # V8: the browser's marked screenshot reaches a model. The node's own
+        # model takes it as an image when it can see; otherwise the resolved
+        # vision model (brain / tool / local fallback) reads it as text.
+        def _sees(role):
+            from backend.agent.inference.router import supports_vision
+
+            return supports_vision(self._router.resolve(role))
+
+        def _look(jpeg_b64, question):
+            import base64 as _b64
+
+            from backend.agent.inference.router import resolve_vision_client
+
+            _res, client = resolve_vision_client(self._router)
+            return client.analyze_screen(_b64.b64decode(jpeg_b64), (
+                "This is a screenshot of a web page. Each numbered box marks an "
+                "element; the number is its element_id. Answer in at most five "
+                f"short lines: {question}"
+            ))
+
         result = run_node(goal, NodeContext(
             generate=_generate, execute=_execute,
             format_result=lambda name, raw: self._format_tool_result_for_step(raw, name),
             tools=tools, prior_results=_prior_results, task=task, workdir=workdir,
             conv_id=self.conversation_id or "", on_call=_shadow, helper_role=_helper,
+            sees=_sees, look=_look,
             # the step's own criterion, its parent step, the reviewer's reason
             expected=str(getattr(item, "expected_output", "") or ""),
             parent_goal=str(getattr(item, "parent_description", "") or ""),

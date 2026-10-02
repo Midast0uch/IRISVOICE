@@ -1579,6 +1579,21 @@ def _to_ollama_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             m = {"role": m.get("role", "assistant"), "content": m.get("content") or "", "tool_calls": calls}
         elif m.get("role") == "tool":
             m = {"role": "tool", "content": m.get("content") or "", "tool_name": m.get("name", "")}
+        elif isinstance(m.get("content"), list):
+            # OpenAI content parts -> Ollama text + "images" (bare base64), e.g.
+            # the node's marked page screenshot (V8).
+            texts, images = [], []
+            for part in m["content"]:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "text":
+                    texts.append(str(part.get("text") or ""))
+                elif part.get("type") == "image_url":
+                    url = str((part.get("image_url") or {}).get("url") or "")
+                    images.append(url.split(",", 1)[1] if url.startswith("data:") and "," in url else url)
+            m = {"role": m.get("role", "user"), "content": "\n".join(texts)}
+            if images:
+                m["images"] = images
         out.append(m)
     return out
 

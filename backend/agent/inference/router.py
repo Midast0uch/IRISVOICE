@@ -367,6 +367,8 @@ class InferenceRouter:
                 for part in content:
                     if isinstance(part, dict) and isinstance(part.get("text"), str):
                         chars += len(part["text"])
+                    elif isinstance(part, dict) and part.get("type") == "image_url":
+                        chars += 3500  # ~1k tokens per image on common VLMs (V8)
             chars += 16  # role, name and JSON scaffolding per message
             if message.get("tool_calls"):
                 chars += len(str(message["tool_calls"]))

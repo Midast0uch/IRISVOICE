@@ -182,6 +182,11 @@ def _vision_live_sync() -> bool:
     resolution, client = resolve_vision_client()
     if resolution is not None and getattr(resolution, "tier", "") in ("brain", "tool"):
         return True  # an already-live provider
+    if resolution is not None and getattr(resolution, "requires_load", False) and client is not None:
+        # V5/V8: the chosen vision model loads into the empty slot now. This
+        # runs on the probe's own daemon thread (no event loop), so the load
+        # may block it; observes meanwhile go without a screenshot.
+        return bool(client.start())
     return bool(client is not None and client.health_check())
 
 

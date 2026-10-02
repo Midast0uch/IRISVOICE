@@ -81,6 +81,33 @@ _CLOSE_ARGS = {
 }
 
 
+# A page with this few marked elements is one the element list cannot carry
+# (canvas, images, charts): the vision model reads the screenshot instead.
+_POOR_DOM_MARKS = 3
+_SCREENSHOT_NOTE = (
+    "The marked screenshot of the page: each numbered box is the element_id "
+    "for browser_act."
+)
+_OLD_SCREENSHOT = "[an earlier page screenshot was here; only the newest is kept]"
+
+
+def _screenshot(raw: Any) -> str:
+    """The JPEG base64 of a browser_observe result's marked screenshot, or ""."""
+    if not isinstance(raw, dict):
+        return ""
+    shot = raw.get("marked_screenshot")
+    return str(shot.get("b64") or "") if isinstance(shot, dict) else ""
+
+
+def _drop_old_screenshots(messages: List[Dict[str, Any]]) -> None:
+    """Keep at most one image in the history: each costs ~1k tokens and an
+    old page state only misleads."""
+    for m in messages:
+        if isinstance(m.get("content"), list) and any(
+                isinstance(p, dict) and p.get("type") == "image_url" for p in m["content"]):
+            m["content"] = _OLD_SCREENSHOT
+
+
 def _with_close_args(tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     out = []
     for t in tools:
@@ -119,6 +146,14 @@ class NodeContext:
     # only when the helper is a different model than `role` (a model cannot
     # help itself); None = no helper. One handover per node at most.
     helper_role: Optional[str] = None
+    # V8 (audit addendum 2026-10-02): the marked page screenshot that
+    # browser_observe returns. `sees(role)` - the model on that role takes
+    # images: it gets the screenshot itself. Otherwise `look(jpeg_b64,
+    # question)` asks the resolved vision model (any tier) for a short text
+    # reading - only on a page the element list cannot carry, or when the
+    # model asks. None = no vision on this path.
+    sees: Optional[Callable[[str], bool]] = None
+    look: Optional[Callable[[str, str], str]] = None
     # What the STEP is graded on and where it comes from (2026-10-02 audit:
     # the verifier grades the node's result against expected_output, which
     # the node never saw; a split child got only a machine "RESOLVE: ..."
@@ -262,6 +297,28 @@ def _user_message(goal: str, task: str, prior: List[Dict[str, Any]], limit: int,
     return "\n\n".join(parts)
 
 
+def _safe_bool(fn: Callable[[str], bool], role: str) -> bool:
+    try:
+        return bool(fn(role))
+    except Exception as exc:  # noqa: BLE001 - unknown means the model does not see
+        logger.debug("[run_node] sees(%s) failed: %r", role, exc)
+        return False
+
+
+def _safe_look(ctx: NodeContext, shot: str, question: str) -> str:
+    t0 = time.monotonic()
+    try:
+        reading = str(ctx.look(shot, question) or "").strip()
+    except Exception as exc:  # noqa: BLE001 - no reading; the element list still stands
+        logger.info("[run_node] conv=%s vision look failed: %r", ctx.conv_id, exc)
+        return ""
+    logger.info("[run_node] conv=%s vision look %.1fs, %d chars",
+                ctx.conv_id, time.monotonic() - t0, len(reading))
+    if reading.startswith("Vision unavailable"):
+        return ""
+    return reading[:1500]
+
+
 def run_node(goal: str, ctx: NodeContext) -> NodeResult:
     """Run one node to completion. Never raises."""
     allowed = {t.get("function", {}).get("name") for t in ctx.tools}
@@ -348,6 +405,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
             batch_done = False
             batch_changed = False
             batch_summaries: List[str] = []
+            pending_shot = ""
             for tc in tool_calls:
                 fn = tc.get("function") or {}
                 name = fn.get("name", "")
@@ -427,11 +485,33 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                     content = _UNCHANGED_HINT
                 else:
                     last_res_key, repeats = res_key, 0
+                # An unchanged page needs no second look.
+                shot = _screenshot(raw) if not failed and content != _UNCHANGED_HINT else ""
+                if shot:
+                    if ctx.sees is not None and _safe_bool(ctx.sees, role):
+                        pending_shot = shot
+                    elif ctx.look is not None:
+                        question = str((params or {}).get("question") or "").strip()
+                        marks = raw.get("marks") if isinstance(raw.get("marks"), list) else []
+                        if question or len(marks) <= _POOR_DOM_MARKS:
+                            reading = _safe_look(ctx, shot, question or goal)
+                            if reading:
+                                content += ("\n\nWhat the vision model sees on the "
+                                            "screenshot:\n" + reading)
                 batch_results.append(f"[{name} {_target(params or {})}]\n{content}")
                 messages.append({
                     "role": "tool", "tool_call_id": tc.get("id") or name, "name": name,
                     "content": content,
                 })
+            if pending_shot:
+                # After the tool messages (a tool message carries text only on
+                # most APIs), as the user turn the model reads next.
+                _drop_old_screenshots(messages)
+                messages.append({"role": "user", "content": [
+                    {"type": "text", "text": _SCREENSHOT_NOTE},
+                    {"type": "image_url",
+                     "image_url": {"url": f"data:image/jpeg;base64,{pending_shot}"}},
+                ]})
             # Closed in the same answer (owner 2026-10-01): the step's last
             # call used to cost one more model call only to hear "done". The
             # summary was written before the results, so the results go with it

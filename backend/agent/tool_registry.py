@@ -1184,9 +1184,17 @@ def register_builtin_tools() -> None:
                 "browser: every visible link, button, input and select, numbered, with its "
                 "role and name, plus the page title, URL and a text digest. Call it after "
                 "'browser_open' and again after any action that changed the page; the "
-                "numbers (element_id) are only valid for the last observation."
+                "numbers (element_id) are only valid for the last observation. When the "
+                "list does not tell you enough (a picture, a chart, a canvas page), put "
+                "what you need to know in 'question': a vision model reads the page."
             ),
-            parameters={},
+            parameters={
+                "question": {
+                    "type": "string",
+                    "description": "Optional: what to look for on the page screenshot",
+                    "optional": True,
+                },
+            },
             category="web", executor="internal", requires_internet=True,
             permission_tier="read_only", parallel_safe=False, self_gated=True,
         ),
