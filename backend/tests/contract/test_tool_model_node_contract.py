@@ -326,6 +326,30 @@ def test_no_helper_when_it_is_the_same_model_and_at_most_one_handover():
     assert roles == ["tool_execution", "reasoning"] and r.success is False and r.error == "b"
 
 
+# ── 7. the node sees what its step is graded on (step/node audit) ────────
+
+
+def test_the_node_is_told_the_steps_criterion_parent_and_review_note():
+    """2026-10-02 audit: the verifier graded each node against the step's
+    expected_output, which the node never saw; a split child saw only its
+    machine anchor; a vetoed step's next attempt never heard why."""
+    seen = []
+
+    def gen(role, messages, **kw):
+        seen.append(messages)
+        return "Done.\nSTATUS: done", "", []
+
+    ctx = _ctx(gen)
+    ctx.expected = "balance_on(date) returns the sum of amounts dated on or before date"
+    ctx.parent_goal = "Add a balance_on method to Ledger in ledger.py."
+    ctx.review_note = "the plan edited the test file instead of ledger.py"
+    run_node("RESOLVE: result did not satisfy expected output (sub 1)", ctx)
+    first = seen[0][1]["content"]
+    assert "DONE WHEN" in first and "on or before date" in first
+    assert "THE STEP THIS PART BELONGS TO: Add a balance_on method" in first
+    assert "the plan edited the test file instead of ledger.py" in first
+
+
 # ── 4. node calls ask for no hidden reasoning ─────────────────────────────
 
 

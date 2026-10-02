@@ -10504,6 +10504,8 @@ Respond with a JSON object:
 
                 if verdict == ReviewVerdict.VETO:
                     item.veto_count += 1
+                    # the next attempt's node sees why (2026-10-02 audit)
+                    item.review_feedback = str(feedback or "")[:300]
                     logger.info(
                         f"[DER] Step {item.step_number} VETOED "
                         f"(count={item.veto_count}, reason={feedback})"
@@ -16892,6 +16894,10 @@ Respond with a JSON object:
             format_result=lambda name, raw: self._format_tool_result_for_step(raw, name),
             tools=tools, prior_results=_prior_results, task=task, workdir=workdir,
             conv_id=self.conversation_id or "", on_call=_shadow, helper_role=_helper,
+            # the step's own criterion, its parent step, the reviewer's reason
+            expected=str(getattr(item, "expected_output", "") or ""),
+            parent_goal=str(getattr(item, "parent_description", "") or ""),
+            review_note=str(getattr(item, "review_feedback", "") or ""),
         ))
         # What the node actually did, for the step's physics action (REQ-8 redo).
         try:

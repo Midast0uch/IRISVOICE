@@ -270,6 +270,9 @@ class QueueItem:
     # A split child's parent step text (plain planner words), for the spoken
     # "one part done" line; the child's own description is a machine anchor.
     parent_description: str = ""
+    # The reviewer's reason when it vetoed this step; the next attempt's node
+    # is told it instead of starting blind.
+    review_feedback: str = ""
 
     @property
     def footprint(self) -> Optional[NodeRecord]:

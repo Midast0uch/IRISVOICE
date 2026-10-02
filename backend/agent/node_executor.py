@@ -115,6 +115,13 @@ class NodeContext:
     # only when the helper is a different model than `role` (a model cannot
     # help itself); None = no helper. One handover per node at most.
     helper_role: Optional[str] = None
+    # What the STEP is graded on and where it comes from (2026-10-02 audit:
+    # the verifier grades the node's result against expected_output, which
+    # the node never saw; a split child got only a machine "RESOLVE: ..."
+    # anchor; a vetoed step lost the reviewer's reason).
+    expected: str = ""
+    parent_goal: str = ""
+    review_note: str = ""
 
 
 @dataclass
@@ -230,12 +237,19 @@ def _relative(text: str, workdir: str) -> str:
     return text
 
 
-def _user_message(goal: str, task: str, prior: List[Dict[str, Any]], limit: int) -> str:
+def _user_message(goal: str, task: str, prior: List[Dict[str, Any]], limit: int,
+                  expected: str = "", parent_goal: str = "", review_note: str = "") -> str:
     parts = []
     if task.strip() and task.strip() != goal.strip():
         parts.append("THE WHOLE TASK (the user's request, word for word — every rule in it "
                      "applies to this step's work):\n" + _clip(task.strip(), limit))
+    if parent_goal.strip():
+        parts.append(f"THE STEP THIS PART BELONGS TO: {parent_goal.strip()}")
     parts.append(f"STEP: {goal}")
+    if expected.strip() and expected.strip() != goal.strip():
+        parts.append(f"DONE WHEN (this step's result is checked against this): {expected.strip()}")
+    if review_note.strip():
+        parts.append(f"A REVIEWER STOPPED THIS STEP BEFORE, BECAUSE: {review_note.strip()}")
     if prior:
         done = "\n\n".join(
             f"[step {r.get('step')}] {r.get('description', '')}\n{r.get('result', '')}" for r in prior
@@ -250,7 +264,8 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
     messages: List[Dict[str, Any]] = [
         {"role": "system", "content": _SYSTEM},
         {"role": "user", "content": _relative(
-            _user_message(goal, ctx.task, ctx.prior_results, ctx.result_chars), ctx.workdir)},
+            _user_message(goal, ctx.task, ctx.prior_results, ctx.result_chars,
+                          ctx.expected, ctx.parent_goal, ctx.review_note), ctx.workdir)},
     ]
     tools = _with_close_args(ctx.tools)
     malformed = 0
