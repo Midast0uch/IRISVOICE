@@ -1169,8 +1169,9 @@ def register_builtin_tools() -> None:
                 "Open a URL in the live in-app browser so you can interact with the page "
                 "(log in, fill a form, click through, use a site's own search, a page that "
                 "only works in a real browser). The user watches it load. NOT for just "
-                "reading a page - use 'search' or 'crawler_query' for that. Next call "
-                "'browser_observe'."
+                "reading a page - use 'search' or 'crawler_query' for that. The result "
+                "already lists the page's numbered elements and text (as 'browser_observe' "
+                "does) - act on them directly."
             ),
             parameters={"url": {"type": "string", "description": "Full http(s) URL to open"}},
             required=["url"],
@@ -1206,8 +1207,9 @@ def register_builtin_tools() -> None:
                 "element_id; 'type' needs element_id and text (replaces what is in the "
                 "field); 'scroll' takes text 'down' (default), 'up', 'bottom' or pixels; "
                 "'press' takes text as a key name (default Enter; element_id optional); "
-                "'back' needs nothing. element_id comes from 'browser_observe'. An error "
-                "result says what is wrong - re-observe and retry."
+                "'back' needs nothing. element_id comes from the last element list. When "
+                "the page changes, the result lists the NEW elements - no extra observe. "
+                "An error result says what is wrong - re-observe and retry."
             ),
             parameters={
                 "action": {

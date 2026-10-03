@@ -51,3 +51,38 @@ def test_only_the_call_that_starts_a_vision_probe_waits_for_it(monkeypatch):
     assert first is False and second is False
     assert w1 >= 0.35  # the first call waited (bounded)
     assert w2 < 0.15   # the second did not wait again
+
+
+def test_open_and_a_page_changing_act_return_the_element_list(monkeypatch):
+    """Run A8: 51 tool calls for one lookup, 23 of them browser_observe right
+    after an open or an act. The result of a successful open / page-changing act
+    now carries the observation; a failed observe leaves the result as it was."""
+    async def _run(coro, timeout):
+        return await coro
+
+    async def _no_egress(url):
+        return ""
+
+    async def _vision():
+        return False
+
+    async def _open(conv, url, emit):
+        return {"success": True, "content": "Opened x. Call browser_observe to see what you can click or type into."}
+
+    async def _act(conv, action, eid, text, emit):
+        return {"success": True, "content": "click done. The page changed; call browser_observe again to renumber the elements.", "changed": True}
+
+    async def _observe(conv, want_image, emit):
+        return {"success": True, "content": "Elements:\n[1] link \"Kilimanjaro\"", "marks": [{"id": 1}], "marks_seq": 7}
+
+    monkeypatch.setattr(bt._RT, "run", _run)
+    monkeypatch.setattr(bt, "_egress_error", _no_egress)
+    monkeypatch.setattr(bt, "_vision_live", _vision)
+    monkeypatch.setattr(bt, "_do_open", _open)
+    monkeypatch.setattr(bt, "_do_act", _act)
+    monkeypatch.setattr(bt, "_do_observe", _observe)
+    opened = asyncio.run(bt.browser_open("c", "https://en.wikipedia.org"))
+    assert opened["marks"] == [{"id": 1}] and "[1] link" in opened["content"]
+    assert "call browser_observe" not in opened["content"]
+    acted = asyncio.run(bt.browser_act("c", "click", 1))
+    assert acted["marks_seq"] == 7 and "[1] link" in acted["content"]

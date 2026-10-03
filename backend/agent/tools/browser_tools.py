@@ -259,12 +259,43 @@ async def browser_open(conversation_id: str, url: str, emit: Optional[Emit] = No
     if refused:
         return _fail(refused)
     try:
-        return await _RT.run(_do_open(conversation_id, url, emit), _OPEN_TIMEOUT_S)
+        res = await _RT.run(_do_open(conversation_id, url, emit), _OPEN_TIMEOUT_S)
+        return await _with_observation(conversation_id, res, emit)
     except asyncio.TimeoutError:
         return _fail(f"browser unavailable: opening {url} timed out")
     except Exception as exc:  # noqa: BLE001
         logger.warning("[browser_tools] open failed conv=%s: %s", conversation_id, exc)
         return _fail(f"browser unavailable: {str(exc)[:200]}")
+
+
+async def _with_observation(conv: str, res: Dict[str, Any], emit: Optional[Emit]) -> Dict[str, Any]:
+    """Append the page's observation to a successful open / page-changing act.
+
+    Live 2026-10-02 run A8: 51 tool calls for one lookup - 23 were
+    browser_observe, almost each one right after an open or an act whose
+    result said only "call browser_observe". One call now returns both. A
+    failed observe leaves the result as it was (the model can still observe).
+    """
+    if not (isinstance(res, dict) and res.get("success")):
+        return res
+    try:
+        want_image = await _vision_live()
+        obs = await _RT.run(_do_observe(conv, want_image, emit), _OBSERVE_TIMEOUT_S)
+    except Exception as exc:  # noqa: BLE001 - the action stands without the list
+        logger.debug("[browser_tools] attached observe failed conv=%s: %s", conv, exc)
+        return res
+    if not (isinstance(obs, dict) and obs.get("success")):
+        return res
+    out = dict(res)
+    head = str(res.get("content") or "").replace(
+        " Call browser_observe to see what you can click or type into.", "").replace(
+        " The page changed; call browser_observe again to renumber the elements.",
+        " The page changed.")
+    out["content"] = "\n".join((head, str(obs.get("content") or "")))
+    for key in ("marks", "marks_seq", "marked_screenshot"):
+        if key in obs:
+            out[key] = obs[key]
+    return out
 
 
 async def browser_observe(conversation_id: str, emit: Optional[Emit] = None) -> Dict[str, Any]:
@@ -284,7 +315,10 @@ async def browser_act(
 ) -> Dict[str, Any]:
     """click | type | select | scroll | back | press on the live page."""
     try:
-        return await _RT.run(_do_act(conversation_id, action, element_id, text, emit), _ACT_TIMEOUT_S)
+        res = await _RT.run(_do_act(conversation_id, action, element_id, text, emit), _ACT_TIMEOUT_S)
+        if isinstance(res, dict) and res.get("changed"):
+            res = await _with_observation(conversation_id, res, emit)
+        return res
     except asyncio.TimeoutError:
         return _fail(f"browser_act {action} timed out")
     except Exception as exc:  # noqa: BLE001
