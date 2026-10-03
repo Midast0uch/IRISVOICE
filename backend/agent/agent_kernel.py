@@ -15239,8 +15239,14 @@ Respond with a JSON object:
                 # 40 chars per step. The old max(80, ...) contradicted the line
                 # above: it rejected a correct one-step one-liner (r02,
                 # 2026-09-30: a 46-char answer, twice) and served the raw close.
-                _syn_floor = 40 * max(1, len(completed_items))
-                if len(_syn_text) < _syn_floor:
+                # A stub is a NON-answer ("Let's attempt that.", 19 chars), so the
+                # floor is about the reply, never the plan: 40 x steps rejected a
+                # correct 101-char answer on a 4-step task, twice, and served the
+                # raw step dump (live 2026-10-02 run A4: "Mount Kilimanjaro has an
+                # elevation of 5,895 metres, and the first recorded ascent took
+                # place in 1889."). A short reply carrying a number is an answer.
+                _syn_floor = 40
+                if len(_syn_text) < _syn_floor and not re.search(r"\d", _syn_text):
                     # Spec A6 (AC3.5): a stub is often a one-off (measured: a
                     # 14-token turn on r02). Retry ONCE with the same inputs
                     # before giving up; only a stub that persists falls to the
@@ -15252,7 +15258,7 @@ Respond with a JSON object:
                     )
                     _retry = self._synthesize_response(_task, _step_results)
                     _retry_text = (_retry or "").strip()
-                    if len(_retry_text) >= _syn_floor:
+                    if len(_retry_text) >= _syn_floor or re.search(r"\d", _retry_text):
                         _syn_text = _retry_text
                     else:
                         logger.warning(

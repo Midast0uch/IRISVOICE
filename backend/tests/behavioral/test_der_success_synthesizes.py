@@ -355,3 +355,22 @@ def test_transient_empty_completion_retries_once_before_degrading():
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_a_short_factual_answer_is_an_answer_not_a_stub():
+    """Live 2026-10-02 (run A4): the synthesis wrote the right answer - 'Mount
+    Kilimanjaro has an elevation of 5,895 metres, and the first recorded ascent
+    took place in 1889.' - and a stub floor of 40 chars x 4 steps rejected it
+    twice, so the user got the raw step dump. A short reply that carries the
+    facts (here a number) is the answer; only a non-answer is a stub."""
+    kernel = _build_kernel()
+    calls = []
+
+    def _syn(task, results):
+        calls.append(1)
+        return "5,895 m; first ascent 1889."
+
+    kernel._synthesize_response = _syn
+    out = _run(kernel)
+    assert out.startswith("5,895 m; first ascent 1889."), out
+    assert len(calls) == 1  # no stub retry for an answer
