@@ -3,7 +3,7 @@ T0b (Wave 0) — characterization baseline for LocalModelManager._build_server_c
 
 PURPOSE: pins the argv for the compiled llama-server path so T8 (REQ-4),
 which added `--mmproj <path>` when the caller supplies a projector, and T4
-(REQ-6), which mirrors this function's `--fit off` fix in lfm_vl_provider.py,
+(REQ-6), which mirrors this function's `--fit off` fix in vision_provider.py,
 have a concrete "before" to diff against.
 
 BASELINE GAP (specs/unified-vision-routing/tasks.md, Wave 0): zero tests

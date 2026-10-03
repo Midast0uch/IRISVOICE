@@ -368,7 +368,7 @@ def _get_provider():
     """Resolve the vision serving client through the ONE resolver (REQ-1).
 
     Mirrors ``fetch_vision.py``'s pattern: before this, discovery constructed
-    the tier-3 ``LFMVLProvider`` directly via ``get_lfm_vl_provider()``, so a
+    the tier-3 ``LFMVLProvider`` directly via ``get_vision_provider()``, so a
     bound multimodal brain/tool was ignored and tier 3 was always used. The
     resolver preserves the ``read_text`` / ``analyze_screen`` method surface the
     fallback below relies on. Never raises (REQ-1 AC3) -- a missing/broken vision

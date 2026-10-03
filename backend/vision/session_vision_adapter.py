@@ -9,7 +9,7 @@ the ``VisionProvider`` surface (``screenshot_to_bytes`` / ``describe_live_frame`
 that surface: frames + scrolling belong to the BROWSER SESSION
 (backend/vision/browser_session.py — ``screenshot()``, and scrolling via
 ``act(VisionAction(kind="scroll"))``), while the VLM calls belong to the REAL
-provider (backend/tools/lfm_vl_provider.py — ``LFMVLProvider``), whose
+provider (backend/tools/vision_provider.py — ``LFMVLProvider``), whose
 methods all take ``img_bytes`` as an explicit first argument instead of
 implicitly holding "the current frame". This module is the missing binder.
 
@@ -70,7 +70,7 @@ class SessionVisionAdapter:
 
     REQ-9 AC2 is absolute: ``screenshot_to_bytes`` is ALWAYS the SESSION's
     browser-scoped screenshot. It never calls
-    ``backend.tools.lfm_vl_provider.screenshot_to_bytes()`` (module-level
+    ``backend.tools.vision_provider.screenshot_to_bytes()`` (module-level
     function) — that captures the DESKTOP and must never be reachable from
     any websearch path.
     """

@@ -18,7 +18,7 @@ from backend.agent.inference.provider import ProviderInstance, ProviderKind
 from backend.agent.inference.registry import ProviderRegistry
 from backend.agent.inference.roles import RoleBindingTable
 from backend.agent.inference.router import InferenceRouter
-from backend.tools import lfm_vl_provider as vl
+from backend.tools import vision_provider as vl
 
 
 def _router_with(*instances):
@@ -54,7 +54,7 @@ class TestNoOwnedServerSurface:
         observable effect is the reuse selection clearing."""
         vl._reused_vision_base_url = "http://borrowed.example/v1"
         vl._reused_vision_model = "whatever"
-        vl.get_lfm_vl_provider().disable()
+        vl.get_vision_provider().disable()
         assert vl._reused_vision_base_url is None
 
 
@@ -97,7 +97,7 @@ class TestTakesLeaseFollowsLocalVsRemoteAtEveryTier:
         monkeypatch.setattr("backend.agent.inference.router._free_vram_gb", lambda: 4.0)
         router = _router_with()
         monkeypatch.setattr(
-            "backend.tools.lfm_vl_provider._discover_reusable_vision_server",
+            "backend.tools.vision_provider._discover_reusable_vision_server",
             lambda base_url="": "http://127.0.0.1:8082/v1",
         )
 

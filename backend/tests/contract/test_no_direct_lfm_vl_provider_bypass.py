@@ -18,7 +18,7 @@ test_search_provider_wiring.py's `_calls_in` for the same AST-over-grep
 technique in this repo).
 
 EXTENDED 2026-09-18 (this spec's T1, REQ-1): the scan now ALSO catches the
-`get_lfm_vl_provider()` SINGLETON-ACCESS shape, because the two browser
+`get_vision_provider()` SINGLETON-ACCESS shape, because the two browser
 consumers this spec fixed (`backend/vision/fetch_vision.py`,
 `backend/vision/search_discovery.py`) reached tier 3 through the singleton
 helper rather than a bare constructor. Scanning only `LFMVLProvider()` would
@@ -32,8 +32,8 @@ allowlisted at exactly the sites that legitimately own tier-3 lifecycle/health:
 
   - `backend/agent/inference/router.py` — the resolver itself; its tier-3
     branch is the ONE place allowed to fall back to a bare `LFMVLProvider()`.
-  - `backend/tools/lfm_vl_provider.py` — the module's own singleton
-    (`get_lfm_vl_provider()`).
+  - `backend/tools/vision_provider.py` — the module's own singleton
+    (`get_vision_provider()`).
   - `backend/iris_gateway.py` — T16 verified `self._vision_provider =
     LFMVLProvider()` (`:200`) is a DELIBERATE tier-3 fallback default, not a
     bypass: `_resolve_vision_availability` checks the full hierarchy first and
@@ -42,7 +42,7 @@ allowlisted at exactly the sites that legitimately own tier-3 lifecycle/health:
     probe) and the user toggle (`:10972-10976`, `set_vision_enabled` — MUST
     construct tier 3 directly to start/stop it).
   - `backend/inference_router.py` — `:318-319` is a HEALTH check
-    (`get_lfm_vl_provider().health_check()`), not serving.
+    (`get_vision_provider().health_check()`), not serving.
   - `backend/tools/vision_mcp_server.py` — the DESKTOP computer-use surface
     (`vision.*` MCP family). It captures the DESKTOP, not a browser page, and
     pairs with `NativeGUIOperator`; it is the desktop SIBLING of the browser
@@ -69,7 +69,7 @@ _REPO = Path(__file__).resolve().parents[3]
 _BACKEND = _REPO / "backend"
 
 _TARGET_NAME = "LFMVLProvider"
-_SINGLETON_HELPER = "get_lfm_vl_provider"
+_SINGLETON_HELPER = "get_vision_provider"
 
 # Sanctioned sites, relative to the repo root, with the reason each is
 # allowed. A sixth file appearing here without being added to this dict (or an
@@ -78,8 +78,8 @@ _SINGLETON_HELPER = "get_lfm_vl_provider"
 _SANCTIONED = {
     "backend/agent/inference/router.py":
         "the resolver itself — tier-3 branch of resolve_vision_client()",
-    "backend/tools/lfm_vl_provider.py":
-        "the module's own singleton (get_lfm_vl_provider())",
+    "backend/tools/vision_provider.py":
+        "the module's own singleton (get_vision_provider())",
     "backend/iris_gateway.py":
         "T16-verified deliberate tier-3 fallback default "
         "(self._vision_provider), checked only after the full hierarchy; "
@@ -94,7 +94,7 @@ _SANCTIONED = {
 }
 
 
-def _is_lfm_vl_provider_call(node: ast.Call) -> bool:
+def _is_vision_provider_call(node: ast.Call) -> bool:
     fn = node.func
     if isinstance(fn, ast.Name):
         return fn.id == _TARGET_NAME
@@ -104,7 +104,7 @@ def _is_lfm_vl_provider_call(node: ast.Call) -> bool:
 
 
 def _is_singleton_access(node: ast.Call) -> bool:
-    """True for a `get_lfm_vl_provider()` call (the singleton-access shape).
+    """True for a `get_vision_provider()` call (the singleton-access shape).
 
     This is the SECOND bypass shape: `backend/vision/fetch_vision.py` and
     `backend/vision/search_discovery.py` never wrote `LFMVLProvider()` — they
@@ -121,13 +121,13 @@ def _is_singleton_access(node: ast.Call) -> bool:
 
 
 def _is_bypass_call(node: ast.Call) -> bool:
-    return _is_lfm_vl_provider_call(node) or _is_singleton_access(node)
+    return _is_vision_provider_call(node) or _is_singleton_access(node)
 
 
 def _construction_sites() -> dict:
     """Map of {relative_path: [line numbers]} for every real tier-3 reach
     found under backend/, excluding any tests directory. A "reach" is a
-    `LFMVLProvider(...)` construction OR a `get_lfm_vl_provider()` singleton
+    `LFMVLProvider(...)` construction OR a `get_vision_provider()` singleton
     access. Skips files that fail to parse (none expected; if one does,
     that is a separate, louder failure elsewhere in the suite)."""
     sites: dict = {}
@@ -150,16 +150,16 @@ def _construction_sites() -> dict:
     return sites
 
 
-def test_no_unsanctioned_lfm_vl_provider_construction():
+def test_no_unsanctioned_vision_provider_construction():
     """The actual guard: every file that reaches tier 3 directly (constructs
-    `LFMVLProvider()` OR calls the `get_lfm_vl_provider()` singleton) must be
+    `LFMVLProvider()` OR calls the `get_vision_provider()` singleton) must be
     one of the sanctioned sites. Fails loudly, naming the file, if a sixth
     bypass is ever introduced."""
     sites = _construction_sites()
     unsanctioned = sorted(set(sites) - set(_SANCTIONED))
     assert not unsanctioned, (
         "Found production module(s) reaching tier-3 vision directly "
-        "(LFMVLProvider() or get_lfm_vl_provider()), bypassing "
+        "(LFMVLProvider() or get_vision_provider()), bypassing "
         "resolve_vision_client()/resolve_vision_provider(): "
         f"{unsanctioned}. Route through resolve_vision_client() "
         "(backend/agent/inference/router.py) instead, or add the file to "
@@ -201,18 +201,18 @@ def test_known_bypass_sites_are_now_clean():
 
 
 @pytest.mark.parametrize("bad_source", [
-    "from backend.tools.lfm_vl_provider import LFMVLProvider\n"
+    "from backend.tools.vision_provider import LFMVLProvider\n"
     "provider = LFMVLProvider()\n",
-    "from backend.tools import lfm_vl_provider as vl\n"
+    "from backend.tools import vision_provider as vl\n"
     "provider = vl.LFMVLProvider()\n",
-    "from backend.tools.lfm_vl_provider import get_lfm_vl_provider\n"
-    "provider = get_lfm_vl_provider()\n",
+    "from backend.tools.vision_provider import get_vision_provider\n"
+    "provider = get_vision_provider()\n",
 ])
 def test_the_scanner_actually_detects_a_bypass(tmp_path, bad_source, monkeypatch):
     """Proves the AST scan itself is not a no-op: a synthetic file placed
     under a temp 'backend/' tree with a direct construction (the bare
     `LFMVLProvider()`, the `module.LFMVLProvider()` attribute-call shape, and
-    the `get_lfm_vl_provider()` singleton shape) is found and would fail the
+    the `get_vision_provider()` singleton shape) is found and would fail the
     guard above if it were unsanctioned."""
     fake_backend = tmp_path / "backend"
     fake_backend.mkdir()

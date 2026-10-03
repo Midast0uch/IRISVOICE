@@ -349,8 +349,8 @@ def has_vision_capability() -> bool:
     Tier 1 simply isn't offered.
     """
     try:
-        from backend.tools.lfm_vl_provider import get_lfm_vl_provider
-        return bool(get_lfm_vl_provider().health_check())
+        from backend.tools.vision_provider import get_vision_provider
+        return bool(get_vision_provider().health_check())
     except Exception:
         return False
 

@@ -892,7 +892,7 @@ class InferenceRouter:
             1. ``reasoning`` binding ("brain")
             2. ``tool_execution`` binding ("tool")
             3. VL fallback (tier 3 — existing entry point in
-               ``backend.tools.lfm_vl_provider``; size-selection is T7, not
+               ``backend.tools.vision_provider``; size-selection is T7, not
                implemented here)
 
         Edge cases (REQ-2):
@@ -950,7 +950,7 @@ class InferenceRouter:
         # first made that autoload unreachable from the router (V5).
         free_vram = _free_vram_gb()
         try:
-            from backend.tools.lfm_vl_provider import (
+            from backend.tools.vision_provider import (
                 VisionModelUnavailable,
                 _discover_reusable_vision_server,
                 vision_autoload_possible,
@@ -1691,7 +1691,7 @@ def resolve_vision_client(router: Optional["InferenceRouter"] = None) -> Tuple[O
     established accessor for "the" kernel outside a per-request scope; see
     ``iris_gateway.py``, ``api/status_snapshot.py``, ``api/caducean_debug.py``).
     """
-    from backend.tools.lfm_vl_provider import LFMVLProvider
+    from backend.tools.vision_provider import LFMVLProvider
 
     if router is None:
         try:

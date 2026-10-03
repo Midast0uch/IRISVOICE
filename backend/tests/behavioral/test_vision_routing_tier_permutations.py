@@ -26,7 +26,7 @@ from backend.agent.inference.provider import ProviderInstance, ProviderKind
 from backend.agent.inference.registry import ProviderRegistry
 from backend.agent.inference.roles import RoleBindingTable
 from backend.agent.inference.router import InferenceRouter
-from backend.tools.lfm_vl_provider import VisionModelUnavailable
+from backend.tools.vision_provider import VisionModelUnavailable
 
 
 def _router_with(*instances: ProviderInstance) -> InferenceRouter:
@@ -58,7 +58,7 @@ def test_tier1_multimodal_brain_short_circuits_before_discovery(monkeypatch):
     _stub_vram(monkeypatch)
     discovery_calls: list = []
     monkeypatch.setattr(
-        "backend.tools.lfm_vl_provider._discover_reusable_vision_server",
+        "backend.tools.vision_provider._discover_reusable_vision_server",
         lambda base_url="": discovery_calls.append(base_url) or "http://should-not-be-used/v1",
     )
     brain = ProviderInstance(
@@ -84,7 +84,7 @@ def test_tier1_multimodal_brain_short_circuits_before_discovery(monkeypatch):
 def test_tier3_borrows_shared_server_without_load_or_lease(monkeypatch):
     _stub_vram(monkeypatch)
     monkeypatch.setattr(
-        "backend.tools.lfm_vl_provider._discover_reusable_vision_server",
+        "backend.tools.vision_provider._discover_reusable_vision_server",
         lambda base_url="": "http://127.0.0.1:8082/v1",
     )
     brain = ProviderInstance(
@@ -114,14 +114,14 @@ def test_tier3_borrows_shared_server_without_load_or_lease(monkeypatch):
 def test_tier3_nothing_borrowable_fails_loudly(monkeypatch):
     _stub_vram(monkeypatch)
     monkeypatch.setattr(
-        "backend.tools.lfm_vl_provider._discover_reusable_vision_server",
+        "backend.tools.vision_provider._discover_reusable_vision_server",
         lambda base_url="": None,
     )
     # V5 (2026-10-02): tier 3 also answers when the chosen vision model can be
     # autoloaded. "Nothing borrowable" here also means "nothing loadable" -
     # this machine has a real pin and an empty slot.
     monkeypatch.setattr(
-        "backend.tools.lfm_vl_provider.vision_autoload_possible", lambda: False,
+        "backend.tools.vision_provider.vision_autoload_possible", lambda: False,
     )
     router = _router_with()
 
@@ -142,7 +142,7 @@ def test_tier3_discovery_error_also_fails_loudly(monkeypatch):
         raise RuntimeError("config read exploded")
 
     monkeypatch.setattr(
-        "backend.tools.lfm_vl_provider._discover_reusable_vision_server", _boom
+        "backend.tools.vision_provider._discover_reusable_vision_server", _boom
     )
     router = _router_with()
 
@@ -159,7 +159,7 @@ def test_tier4_local_brain_with_projector_answers_directly(monkeypatch):
     _stub_vram(monkeypatch)
     discovery_calls: list = []
     monkeypatch.setattr(
-        "backend.tools.lfm_vl_provider._discover_reusable_vision_server",
+        "backend.tools.vision_provider._discover_reusable_vision_server",
         lambda base_url="": discovery_calls.append(base_url) or None,
     )
     brain = ProviderInstance(
@@ -186,7 +186,7 @@ def test_tier4_local_brain_with_projector_answers_directly(monkeypatch):
 def test_dangling_role_binding_raises_for_real_and_hierarchy_continues(monkeypatch):
     _stub_vram(monkeypatch)
     monkeypatch.setattr(
-        "backend.tools.lfm_vl_provider._discover_reusable_vision_server",
+        "backend.tools.vision_provider._discover_reusable_vision_server",
         lambda base_url="": "http://127.0.0.1:8082/v1",
     )
     tool = ProviderInstance(

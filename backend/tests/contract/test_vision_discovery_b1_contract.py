@@ -4,7 +4,7 @@ scan a paid catalog, and let the router reach the autoload of the user's chosen
 model (ladder first, then the vision card pin).
 
 Every test here FAILED on the code before the fix (proved by running this file
-against the committed lfm_vl_provider.py / router.py). No network, no model load.
+against the committed vision_provider.py / router.py). No network, no model load.
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-import backend.tools.lfm_vl_provider as vl
+import backend.tools.vision_provider as vl
 
 
 class _Resp:

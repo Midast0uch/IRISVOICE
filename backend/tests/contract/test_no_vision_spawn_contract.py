@@ -15,7 +15,7 @@ assignments) trips this guard.
 import ast
 from pathlib import Path
 
-_LFM = Path(__file__).resolve().parents[2] / "tools" / "lfm_vl_provider.py"
+_LFM = Path(__file__).resolve().parents[2] / "tools" / "vision_provider.py"
 
 # Symbols that existed ONLY to spawn/manage an IRIS-owned llama-server.
 _SPAWN_GLOBALS = (
@@ -119,7 +119,7 @@ def test_borrow_surface_intact():
         "LFMVLConfig",
         "VisionModelUnavailable",
         "_fail_vision_unavailable",
-        "get_lfm_vl_provider",
+        "get_vision_provider",
         "_find_llama_server_binary",  # shared with embedding_sidecar, generic
     }
     missing = required - defined

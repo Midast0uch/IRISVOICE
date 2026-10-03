@@ -21,7 +21,7 @@ import httpx
 import pytest
 
 import backend.iris_config as iris_config_mod
-import backend.tools.lfm_vl_provider as vl
+import backend.tools.vision_provider as vl
 
 
 def _seen_answer(payload) -> str:

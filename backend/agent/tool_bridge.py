@@ -149,7 +149,7 @@ from backend.agent import write_counters as _write_counters
 # Vision server auto-starts on first use (boots the llama-server vision model).
 # take_screenshot must ensure it is running before capturing the screen.
 try:
-    from backend.tools.lfm_vl_provider import _ensure_vision_server_running
+    from backend.tools.vision_provider import _ensure_vision_server_running
 except Exception:  # pragma: no cover - provider import is best-effort
     _ensure_vision_server_running = None
 

@@ -240,7 +240,7 @@ class FetchVisionCapability(FetchCapability):
         session_cls: type = BrowserSession,
         bounds: Optional[SessionBounds] = None,
     ):
-        self._provider = provider  # lazy get_lfm_vl_provider() when None
+        self._provider = provider  # lazy get_vision_provider() when None
         self._session_cls = session_cls
         self._bounds = bounds or SessionBounds()
         self._provider_singleton = None
@@ -629,7 +629,7 @@ class FetchVisionCapability(FetchCapability):
         """Resolve the vision serving client through the ONE resolver (REQ-1).
 
         Before this, the browser path constructed the tier-3 ``LFMVLProvider``
-        directly (via ``get_lfm_vl_provider``), so a bound multimodal brain/tool
+        directly (via ``get_vision_provider``), so a bound multimodal brain/tool
         was silently ignored and tier 3 was always used â€” the confirmed REQ-1
         defect. ``resolve_vision_client()`` is the same single source of vision
         serving every other consumer uses, and it preserves the method surface

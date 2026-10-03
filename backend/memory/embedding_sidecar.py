@@ -8,7 +8,7 @@ tensors on EVERY backend restart (~3.5 min CPU-bound; OS file cache does not
 help because the cost is dequantization, not disk reads). The model is
 spec-pinned to CPU (REQ-1 AC6), so GPU offload is not an option.
 
-This module mirrors the proven lfm_vl_provider pattern: spawn `llama-server
+This module mirrors the proven vision_provider pattern: spawn `llama-server
 --embedding` as a SEPARATE CPU subprocess that SURVIVES backend restarts,
 talk HTTP to it, and idle-stop after inactivity so RAM returns to zero.
 Load happens once per sidecar lifetime instead of once per backend lifetime.
@@ -55,7 +55,7 @@ _adopted_capable = False
 
 def _binary() -> Optional[str]:
     try:
-        from backend.tools.lfm_vl_provider import _find_llama_server_binary
+        from backend.tools.vision_provider import _find_llama_server_binary
         return _find_llama_server_binary()
     except Exception:
         return None

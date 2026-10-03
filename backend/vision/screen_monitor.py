@@ -91,7 +91,7 @@ class ScreenMonitor:
             return self._vision_provider
         try:
             from backend.agent.inference.router import resolve_vision_client
-            from backend.tools.lfm_vl_provider import VisionModelUnavailable
+            from backend.tools.vision_provider import VisionModelUnavailable
             try:
                 _resolution, client = resolve_vision_client()
             except VisionModelUnavailable as exc:

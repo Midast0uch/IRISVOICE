@@ -5,7 +5,7 @@ Routes incoming WebSocket messages to appropriate handlers based on message type
 
 from .iris_config import IRISConfig, load_config, save_config, InferenceConfig, save_field_values, load_field_values
 from .integrations import get_integration_handler
-from .tools.lfm_vl_provider import LFMVLProvider
+from .tools.vision_provider import LFMVLProvider
 from .tools.cleanup_analyzer import CleanupAnalyzer
 from .voice.wake_word_discovery import WakeWordDiscovery
 from .audio.pipeline import AudioPipeline
@@ -8853,7 +8853,7 @@ class IRISGateway:
         try:
             from .agent.agent_kernel import get_agent_kernel
             from .agent.inference.router import resolve_vision_client
-            from .tools.lfm_vl_provider import VisionModelUnavailable
+            from .tools.vision_provider import VisionModelUnavailable
 
             router = getattr(get_agent_kernel(session_id), "_router", None)
             resolution, _client = await loop.run_in_executor(
@@ -11257,9 +11257,9 @@ class IRISGateway:
         nothing listening. Best-effort, never raises."""
         state = "cold"
         try:
-            from backend.tools.lfm_vl_provider import get_lfm_vl_provider
+            from backend.tools.vision_provider import get_vision_provider
 
-            if get_lfm_vl_provider().health_check():
+            if get_vision_provider().health_check():
                 state = "warm"
         except Exception:
             pass
@@ -11328,9 +11328,9 @@ class IRISGateway:
         payload = message.get("payload", message)
         enabled = bool(payload.get("enabled", False))
         try:
-            from .tools.lfm_vl_provider import get_lfm_vl_provider
+            from .tools.vision_provider import get_vision_provider
 
-            vl = get_lfm_vl_provider()
+            vl = get_vision_provider()
             self._ensure_vision_loop()
             if enabled:
                 started = vl.start()  # borrow-only resolution

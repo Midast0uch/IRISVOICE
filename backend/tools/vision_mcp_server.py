@@ -46,8 +46,8 @@ class VisionMCPServer(BuiltinServer):
         """
         if self._provider is None:
             try:
-                from backend.tools.lfm_vl_provider import get_lfm_vl_provider
-                self._provider = get_lfm_vl_provider()
+                from backend.tools.vision_provider import get_vision_provider
+                self._provider = get_vision_provider()
             except Exception as e:
                 logger.error(f"[VisionMCPServer] Cannot load LFMVLProvider: {e}")
         return self._provider
@@ -132,7 +132,7 @@ class VisionMCPServer(BuiltinServer):
         """Capture screenshot in executor to avoid blocking."""
         try:
             loop = asyncio.get_event_loop()
-            from backend.tools.lfm_vl_provider import screenshot_to_bytes
+            from backend.tools.vision_provider import screenshot_to_bytes
             img_bytes = await loop.run_in_executor(None, screenshot_to_bytes, region)
             return img_bytes
         except Exception as e:

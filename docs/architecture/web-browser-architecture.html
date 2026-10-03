@@ -198,11 +198,11 @@ const NODES = [
   files:["backend/agent/inference/router.py resolve_vision_provider / supports_vision / resolve_vision_client","backend/agent/inference/provider_catalog.py api_published_vision"]},
  {id:"v_discover", lane:"vision", x:790, t:"Discovery", s:"local first · colour probe", status:"live",
   role:"Finds a server that can see: the local server on 8082 first (V2), published metadata first, then a red|blue probe image the model must name (V3). API providers: only their configured model (V4). Verdicts expire after 300 s.",
-  files:["backend/tools/lfm_vl_provider.py _candidate_vision_specs / _probe_vision_capability / _model_is_multimodal"],
+  files:["backend/tools/vision_provider.py _candidate_vision_specs / _probe_vision_capability / _model_is_multimodal"],
   numbers:["image probes per discovery: 81+ → 7","45 s when nothing local can see (two 15 s probe timeouts)"]},
  {id:"v_autoload", lane:"vision", x:1070, t:"Autoload", s:"ladder › pin · empty slot", status:"live",
   role:"Loads YOUR chosen vision model into the empty local slot: env hint, else the vision fallback ladder, else the vision card pin (V7). Matches by file name or real path through the D:/C: junction (V6). Never evicts a resident model.",
-  files:["backend/tools/lfm_vl_provider.py _autoload_hints / _find_autoload_vision_models / _maybe_autoprovision_vision_server"],
+  files:["backend/tools/vision_provider.py _autoload_hints / _find_autoload_vision_models / _maybe_autoprovision_vision_server"],
   numbers:["live A: LFM2.5-VL-3B loaded, free VRAM 6.5 → 3.8 GB"]},
  {id:"v_node", lane:"vision", x:1370, t:"Vision in the node", s:"image or reading", status:"live",
   role:"V8: the node's model can see → it gets the marked screenshot as an image (only the newest stays). It cannot → the resolved vision model reads the screenshot as text, only on a page with ≤ 3 marks or when the model asks.",
@@ -333,7 +333,7 @@ const LIMITS = [
  ["Actions / wall per session","150 / 900 s","browser_tools.py"],
  ["Crawl run ceiling / quorum","25 s / 3 pages + 2 s","IRIS_WEBSEARCH_MAX_WALL_MS"],
  ["Click safety judge / question","8 s / 45 s","click_safety.py"],
- ["Vision verdict cache","300 s (positive and negative)","lfm_vl_provider._CAPABILITY_TTL_S"],
+ ["Vision verdict cache","300 s (positive and negative)","vision_provider._CAPABILITY_TTL_S"],
  ["Vision autoload bound","150 s","IRIS_VISION_AUTOLOAD_TIMEOUT_S"],
  ["Node vision reading trigger","≤ 3 marks, or a question","node_executor._POOR_DOM_MARKS"],
 ];
@@ -344,7 +344,7 @@ const EVENTS = [
  ["crawler_vision_action {approach|done}","browser_session act","cursor glide on the surface"],
  ["permission:request","click safety","click question card"],
  ["browser_takeover_requested","ask_user_tool","surface unlock / takeover"],
- ["vision lifecycle cold → warm / error, VISION_UNAVAILABLE","lfm_vl_provider","VisionLifecycleChip, chat system message"],
+ ["vision lifecycle cold → warm / error, VISION_UNAVAILABLE","vision_provider","VisionLifecycleChip, chat system message"],
  ["text_response / chat_message","DER synthesis","chat answer (and TTS)"],
 ];
 

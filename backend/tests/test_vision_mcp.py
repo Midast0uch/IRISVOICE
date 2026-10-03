@@ -25,7 +25,7 @@ def _server_really_down(monkeypatch):
     pinned model (this machine has one; since V6 the pin matches, so the
     "down" tests loaded the real 3B VLM, 56 s) and no probes of the real
     configured API providers."""
-    import backend.tools.lfm_vl_provider as vl
+    import backend.tools.vision_provider as vl
 
     monkeypatch.setattr(vl, "_VISION_AUTOLOAD_ENABLED", False)
     monkeypatch.setattr(vl, "_load_candidate_endpoints_from_config", lambda: [])
@@ -34,8 +34,8 @@ def _server_really_down(monkeypatch):
 
 # â”€â”€ Import checks â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-def test_lfm_vl_provider_importable():
-    from backend.tools.lfm_vl_provider import LFMVLProvider, screenshot_to_bytes
+def test_vision_provider_importable():
+    from backend.tools.vision_provider import LFMVLProvider, screenshot_to_bytes
     assert LFMVLProvider
     assert callable(screenshot_to_bytes)
 
@@ -167,7 +167,7 @@ async def test_vision_get_context_returns_dict_without_hard_error():
 # â”€â”€ Provider config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 def test_lfm_vl_config_defaults():
-    from backend.tools.lfm_vl_provider import LFMVLConfig
+    from backend.tools.vision_provider import LFMVLConfig
     cfg = LFMVLConfig()
     assert cfg.base_url.endswith("/v1")
     assert cfg.temperature == pytest.approx(0.1)
@@ -175,19 +175,19 @@ def test_lfm_vl_config_defaults():
     assert cfg.repetition_penalty == pytest.approx(1.05)
 
 
-def test_lfm_vl_provider_health_check_false_when_server_down():
+def test_vision_provider_health_check_false_when_server_down():
     """health_check() must return False (not raise) when llama-server is not running."""
     from unittest.mock import patch
-    from backend.tools.lfm_vl_provider import LFMVLProvider
+    from backend.tools.vision_provider import LFMVLProvider
     provider = LFMVLProvider()
     with patch("httpx.get", side_effect=Exception("connection refused")):
         result = provider.health_check()
     assert result is False
 
 
-def test_lfm_vl_provider_analyze_returns_error_string_when_server_down():
+def test_vision_provider_analyze_returns_error_string_when_server_down():
     """analyze_screen() must return an error string (not raise) when server is down."""
-    from backend.tools.lfm_vl_provider import LFMVLProvider
+    from backend.tools.vision_provider import LFMVLProvider
     provider = LFMVLProvider()
     result = provider.analyze_screen(b"fake_image_bytes", "What is on screen?")
     assert isinstance(result, str)
@@ -196,10 +196,10 @@ def test_lfm_vl_provider_analyze_returns_error_string_when_server_down():
 
 # â”€â”€ Idle lifecycle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-def test_get_lfm_vl_provider_singleton():
-    from backend.tools.lfm_vl_provider import get_lfm_vl_provider
-    a = get_lfm_vl_provider()
-    b = get_lfm_vl_provider()
+def test_get_vision_provider_singleton():
+    from backend.tools.vision_provider import get_vision_provider
+    a = get_vision_provider()
+    b = get_vision_provider()
     assert a is b
 
 
@@ -209,7 +209,7 @@ def test_no_owned_server_surface():
     There is no idle watchdog, no owned PID, no stop/kill functions. A borrowed
     shared server must never be stopped by IRIS â€” the strongest form of the
     guard is that the symbols do not exist at all."""
-    import backend.tools.lfm_vl_provider as m
+    import backend.tools.vision_provider as m
 
     for sym in (
         "should_idle_stop",
@@ -225,8 +225,8 @@ def test_no_owned_server_surface():
 
 def test_disable_is_state_reset_only():
     """disable() never touches a process; it just clears the reuse selection."""
-    import backend.tools.lfm_vl_provider as m
+    import backend.tools.vision_provider as m
 
     m._reused_vision_base_url = "http://borrowed.test/v1"
-    m.get_lfm_vl_provider().disable()
+    m.get_vision_provider().disable()
     assert m._reused_vision_base_url is None

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-import backend.tools.lfm_vl_provider as vl
+import backend.tools.vision_provider as vl
 
 
 class _MgrEmpty:

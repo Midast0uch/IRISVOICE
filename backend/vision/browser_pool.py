@@ -1,7 +1,7 @@
 """Pooled Playwright browser lifecycle for the server-side vision browser (T-browser-pool).
 
 Mirrors the idle/lease shape already proven for the vision server in
-``backend/tools/lfm_vl_provider.py`` — read that file first, this is the same
+``backend/tools/vision_provider.py`` — read that file first, this is the same
 pattern applied to Chromium instead of llama-server:
 
   - ``_IDLE_TIMEOUT`` (env-configurable) + an idle watchdog that stops the
@@ -580,7 +580,7 @@ async def _stop_owned_browser() -> None:
     """Close the Chromium browser + Playwright driver IRIS itself started.
 
     Ownership-gated: a browser this module did not start (``_owned`` False)
-    is left alone — mirrors ``lfm_vl_provider._stop_owned_vision_server``'s
+    is left alone — mirrors ``vision_provider._stop_owned_vision_server``'s
     tracked-PID guard. Never raises.
     """
     global _pw, _browser, _owned

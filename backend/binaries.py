@@ -11,7 +11,7 @@ executable at runtime:
     macOS:    <app_root>/llama-server-<target-triple>
 
 This module centralises discovery so `LocalModelManager` and
-`lfm_vl_provider` can find the bundled `llama-server` without hard-coding
+`vision_provider` can find the bundled `llama-server` without hard-coding
 machine-specific paths. Resolution order:
 
     1. Explicit env override (IRIS_LLAMA_SERVER)

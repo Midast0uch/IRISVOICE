@@ -5,7 +5,7 @@ vision server. Asserts the adapter binds BrowserSession (frames + scrolling)
 and the real vision provider's img_bytes-first surface into exactly what
 ``frame_extraction.extract_page_frames`` expects, and — REQ-9 AC2, absolute —
 that every frame the adapter hands the provider comes from the SESSION, never
-``backend.tools.lfm_vl_provider.screenshot_to_bytes()`` (the desktop capture).
+``backend.tools.vision_provider.screenshot_to_bytes()`` (the desktop capture).
 """
 
 import asyncio
@@ -60,11 +60,11 @@ class _FakeProvider:
 # ── REQ-9 AC2: screenshot_to_bytes is ALWAYS session-scoped ────────────────
 
 def test_screenshot_to_bytes_comes_from_the_session_never_the_desktop(monkeypatch):
-    """The adapter must NEVER reach for lfm_vl_provider.screenshot_to_bytes
+    """The adapter must NEVER reach for vision_provider.screenshot_to_bytes
     (desktop capture). Patch the desktop function to explode — if the
     adapter ever called it, this test would fail loudly instead of silently
     leaking a desktop screenshot into a websearch path."""
-    import backend.tools.lfm_vl_provider as lfm_vl_provider
+    import backend.tools.vision_provider as vision_provider
 
     def _desktop_capture_must_never_be_called(*a, **k):
         raise AssertionError(
@@ -72,7 +72,7 @@ def test_screenshot_to_bytes_comes_from_the_session_never_the_desktop(monkeypatc
             "— REQ-9 AC2 violation: vision input must be browser-scoped only"
         )
 
-    monkeypatch.setattr(lfm_vl_provider, "screenshot_to_bytes", _desktop_capture_must_never_be_called)
+    monkeypatch.setattr(vision_provider, "screenshot_to_bytes", _desktop_capture_must_never_be_called)
 
     session = _FakeSession()
     provider = _FakeProvider()

@@ -87,7 +87,7 @@ class VisionBrain:
 
     def initialize(self):
         try:
-            from backend.tools.lfm_vl_provider import LFMVLProvider
+            from backend.tools.vision_provider import LFMVLProvider
             self._provider = LFMVLProvider()
             self._available = self._provider.health_check()
             status = "ACTIVE" if self._available else "offline (shortcut/PIL fallback)"
@@ -103,7 +103,7 @@ class VisionBrain:
         if not self._available:
             return "VL not available"
         try:
-            from backend.tools.lfm_vl_provider import LFMVLConfig
+            from backend.tools.vision_provider import LFMVLConfig
             self._provider.config = LFMVLConfig(image_max_tokens=max_tokens)
             return self._provider.analyze_screen(img_bytes, question)
         except Exception as e:

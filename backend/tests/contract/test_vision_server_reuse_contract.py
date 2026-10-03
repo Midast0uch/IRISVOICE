@@ -24,7 +24,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-import backend.tools.lfm_vl_provider as vl
+import backend.tools.vision_provider as vl
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +208,7 @@ class TestDisableNeverTouchesProcesses:
         assert vl._ensure_vision_server_running("") is True
         assert vl._reused_vision_base_url == "http://localhost:1234/v1"
 
-        vl.get_lfm_vl_provider().disable()
+        vl.get_vision_provider().disable()
         assert vl._reused_vision_base_url is None
 
     def test_no_process_control_surface_exists(self):
@@ -257,7 +257,7 @@ class TestBorrowedServerRouting:
     def test_call_routes_to_borrowed_endpoint(self, monkeypatch, isolated_vl):
         fake = _install_httpx(monkeypatch, "multimodal")
         vl.set_vision_candidate_endpoints(["http://localhost:1234/v1"])
-        provider = vl.get_lfm_vl_provider()
+        provider = vl.get_vision_provider()
         out = provider._call(b"fake-png-bytes", "describe the screen")
         assert out == "ok"
         # The vision request went to the borrowed server, never the default port.
@@ -272,7 +272,7 @@ class TestBorrowedServerRouting:
         fake = _install_httpx(monkeypatch, "multimodal")
         vl.set_vision_candidate_endpoints(["http://localhost:1234/v1"])
         monkeypatch.setattr(vl, "_fetch_provider_secret", lambda cred_ref: "test-key-123")
-        provider = vl.get_lfm_vl_provider()
+        provider = vl.get_vision_provider()
         out = provider._call(b"x", "go")
         assert out == "ok"
         # The Authorization header must have been attached to the request.

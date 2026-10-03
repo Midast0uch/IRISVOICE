@@ -76,7 +76,7 @@ from backend.agent.inference.registry import ProviderRegistry
 from backend.agent.inference.roles import RoleBindingTable
 from backend.agent.inference.router import InferenceRouter
 from backend.agent.local_model_manager import LocalModelManager
-from backend.tools import lfm_vl_provider as vl
+from backend.tools import vision_provider as vl
 
 
 class _Failures:
@@ -147,7 +147,7 @@ def _block_real_nvidia_smi(patch: _Patch) -> None:
 
 
 def _isolate_search_dirs(patch: _Patch, tmp_dir: Path):
-    """Private MODELS_DIR + home for lfm_vl_provider's discovery, so this
+    """Private MODELS_DIR + home for vision_provider's discovery, so this
     machine's real vision models (if any) never leak into a selection
     assertion — filesystem is FAKED, the discovery/arithmetic code is real."""
     models_dir = tmp_dir / "models_dir"
@@ -511,7 +511,7 @@ def validate_req3_fail_loudly_and_emits_full_payload(fail: _Failures) -> None:
     reset_event_bus_for_testing()
     patch = _Patch()
     tmp_dir = Path(tempfile.mkdtemp(prefix="vision_harness_nofit_"))
-    lfm_logger = logging.getLogger("backend.tools.lfm_vl_provider")
+    lfm_logger = logging.getLogger("backend.tools.vision_provider")
     records: list = []
 
     class _Capture(logging.Handler):

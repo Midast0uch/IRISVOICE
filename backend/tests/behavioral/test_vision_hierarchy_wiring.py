@@ -35,7 +35,7 @@ from backend.agent.inference.roles import RoleBindingTable
 from backend.agent.inference.router import InferenceRouter, resolve_vision_client
 from backend.agent.local_model_manager import LocalModelManager
 from backend.agent.vision_guided_operator import VisionGuidedOperator
-from backend.tools import lfm_vl_provider as vl
+from backend.tools import vision_provider as vl
 
 
 def _router_with(*instances: ProviderInstance) -> InferenceRouter:

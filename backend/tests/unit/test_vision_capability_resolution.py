@@ -252,7 +252,7 @@ class TestResolveVisionProviderHierarchy:
         # specs/vision-single-server: tier 3 borrows an already-running,
         # verified multimodal server; there is no spawn and no on-disk ladder.
         monkeypatch.setattr(
-            "backend.tools.lfm_vl_provider._discover_reusable_vision_server",
+            "backend.tools.vision_provider._discover_reusable_vision_server",
             lambda base_url="": "http://127.0.0.1:8082/v1",
         )
 
@@ -269,19 +269,19 @@ class TestResolveVisionProviderHierarchy:
         """specs/vision-single-server REQ-1 AC3: with no borrowed multimodal
         server, tier 3 fails LOUDLY (VisionModelUnavailable) — the spawn path
         that would have made this return a soft VisionResolution is deleted."""
-        from backend.tools.lfm_vl_provider import VisionModelUnavailable
+        from backend.tools.vision_provider import VisionModelUnavailable
 
         _no_op_free_vram(monkeypatch)
         router = _router_with()
         monkeypatch.setattr(
-            "backend.tools.lfm_vl_provider._discover_reusable_vision_server",
+            "backend.tools.vision_provider._discover_reusable_vision_server",
             lambda base_url="": None,
         )
         # V5 (2026-10-02): tier 3 also answers when the chosen vision model can be
         # autoloaded. "Nothing borrowable" here also means "nothing loadable" -
         # this machine has a real pin and an empty slot.
         monkeypatch.setattr(
-            "backend.tools.lfm_vl_provider.vision_autoload_possible", lambda: False,
+            "backend.tools.vision_provider.vision_autoload_possible", lambda: False,
         )
 
         with pytest.raises(VisionModelUnavailable):
@@ -310,7 +310,7 @@ class TestResolveVisionProviderHierarchy:
         _no_op_free_vram(monkeypatch)
         router = _router_with()  # empty registry, nothing bound, no default
         monkeypatch.setattr(
-            "backend.tools.lfm_vl_provider._discover_reusable_vision_server",
+            "backend.tools.vision_provider._discover_reusable_vision_server",
             lambda base_url="": "http://127.0.0.1:8082/v1",
         )
 
@@ -411,7 +411,7 @@ class TestResolveVisionProviderLease:
         _no_op_free_vram(monkeypatch)
         router = _router_with()
         monkeypatch.setattr(
-            "backend.tools.lfm_vl_provider._discover_reusable_vision_server",
+            "backend.tools.vision_provider._discover_reusable_vision_server",
             lambda base_url="": "http://127.0.0.1:8082/v1",
         )
 

@@ -42,7 +42,7 @@ class VisionGuidedOperator:
     # ── Screenshot ────────────────────────────────────────────────────────────
 
     async def screenshot(self) -> bytes:
-        from backend.tools.lfm_vl_provider import screenshot_to_bytes
+        from backend.tools.vision_provider import screenshot_to_bytes
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, screenshot_to_bytes)
 
@@ -58,7 +58,7 @@ class VisionGuidedOperator:
         if self._vision is None:
             return None
         from backend.agent.inference.router import resolve_vision_client
-        from backend.tools.lfm_vl_provider import VisionModelUnavailable
+        from backend.tools.vision_provider import VisionModelUnavailable
         try:
             _resolution, provider = resolve_vision_client()
         except VisionModelUnavailable as exc:

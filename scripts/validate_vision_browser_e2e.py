@@ -291,7 +291,7 @@ def _run_contract_steps(journal) -> list:
     """Assert the standing contract guards hold on every run (T13 ripple)."""
     results: list = []
     try:
-        from backend.tests.contract.test_no_direct_lfm_vl_provider_bypass import (
+        from backend.tests.contract.test_no_direct_vision_provider_bypass import (
             _construction_sites,
             _SANCTIONED,
         )

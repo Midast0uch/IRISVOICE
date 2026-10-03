@@ -755,15 +755,15 @@ def _notify_lifecycle(state: str, reason: str = "", trigger: str = "") -> None:
         logger.debug("[LFMVLProvider] lifecycle notify failed: %s", exc)
 
 
-_lfm_vl_provider_singleton = None
+_vision_provider_singleton = None
 
 
-def get_lfm_vl_provider():
+def get_vision_provider():
     """Module-level singleton used by both the gateway and VisionMCPServer."""
-    global _lfm_vl_provider_singleton
-    if _lfm_vl_provider_singleton is None:
-        _lfm_vl_provider_singleton = LFMVLProvider()
-    return _lfm_vl_provider_singleton
+    global _vision_provider_singleton
+    if _vision_provider_singleton is None:
+        _vision_provider_singleton = LFMVLProvider()
+    return _vision_provider_singleton
 
 
 @dataclass
