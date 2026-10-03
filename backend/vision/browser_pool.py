@@ -65,6 +65,15 @@ _IDLE_TIMEOUT: float = float(os.environ.get("IRIS_BROWSER_IDLE_TIMEOUT", "180"))
 # live lease — back-to-back runs stay warm, idle RAM frees on its own.
 # Set IRIS_BROWSER_HOLD_OPEN=1 to keep one Chromium for backend lifetime.
 _HOLD_OPEN: bool = os.environ.get("IRIS_BROWSER_HOLD_OPEN", "0") == "1"
+# The web toggle holds the browser warm (owner 2026-10-02, audit addendum H):
+# while web access is ON, Chromium starts at once and stays up, so the
+# agent's first browser_open opens a tab instead of paying a cold launch
+# (measured 90-180 s on this machine's C: disk; the agent call timed out).
+_web_hold: bool = False
+
+
+def _held_open() -> bool:
+    return _HOLD_OPEN or _web_hold
 
 # REQ-18 AC4 (T20): bound a cold Chromium launch so a wedged start fails open
 # instead of pinning the run (or the pool start lock). Env-overridable; the
@@ -108,6 +117,11 @@ _owned: bool = False  # True once THIS module started _browser (ownership tracki
 # Guards the lazy-start critical section so two concurrent acquire_browser()
 # calls race-free share one launch instead of racing two launches.
 _start_lock = asyncio.Lock()
+# The ONE Chromium launch in flight. A caller's wait is bounded, the launch is
+# not: a bound that cancels the launch made every cold attempt start again
+# from zero (live 2026-10-02: two 90 s timeouts, then 4.5 s). A later caller
+# joins the same launch.
+_launch_task: Optional[asyncio.Task] = None
 
 _last_browser_use: float = 0.0
 _idle_task: Optional[asyncio.Task] = None
@@ -176,8 +190,8 @@ def _touch_browser_use() -> None:
     """
     global _last_browser_use
     _last_browser_use = time.monotonic()
-    if _HOLD_OPEN:
-        return  # held open for the backend lifetime — no watchdog to schedule
+    if _held_open():
+        return  # held open (env or web toggle) — no watchdog to schedule
     if not _owned and _idle_task is None:
         return  # nothing to schedule and nothing to cancel
     # The watchdog task lives on the host loop (it stops the browser there). A
@@ -223,8 +237,8 @@ async def _idle_watch() -> None:
 
 def should_idle_stop_browser() -> bool:
     """Pure predicate: is the owned browser idle past the timeout?"""
-    if _HOLD_OPEN:
-        return False  # Session-326: held open — the watchdog never fires
+    if _held_open():
+        return False  # held open (env or web toggle) — the watchdog never fires
     if not _owned:
         return False
     if has_active_browser_lease():
@@ -354,7 +368,7 @@ def _prune_expired_browser_leases() -> None:
 
 
 async def _start_browser() -> None:
-    """Launch Playwright + Chromium once. Caller holds ``_start_lock``.
+    """Launch Playwright + Chromium once (as the shared ``_launch_task``).
 
     Heavy import is lazy, here only. ImportError propagates uncaught so
     ``acquire_browser`` callers can distinguish "capability missing" (no
@@ -439,8 +453,9 @@ async def _acquire_browser_on_host(max_lease_ms: float):
     unavailable, and the pool start lock is released by the ``async with`` on
     the way out (AC4).
     """
-    global _last_acquire_was_cold
+    global _last_acquire_was_cold, _launch_task
     _acquire_t0 = time.monotonic()
+    launch = None
     async with _start_lock:
         _was_cold = _browser is None
         if _browser is not None and not _browser.is_connected():
@@ -452,13 +467,23 @@ async def _acquire_browser_on_host(max_lease_ms: float):
             _was_cold = True
         if _browser is None:
             _was_cold = True
-            # REQ-18 AC4 (T20): bound the launch. A wedged Chromium start must
-            # never pin the run OR the pool start lock — fail open by raising
-            # within the timeout (the async-with releases the lock as the
-            # exception propagates).
+            if _launch_task is None or _launch_task.done():
+                _launch_task = asyncio.get_running_loop().create_task(_start_browser())
+            launch = _launch_task
+    if launch is not None:
+        # REQ-18 AC4 (T20): this CALLER's wait is bounded and fails open; the
+        # launch itself is shielded and keeps going for the next caller.
+        try:
             await asyncio.wait_for(
-                _start_browser(), timeout=max(1.0, _ACQUIRE_TIMEOUT_MS / 1000.0),
+                asyncio.shield(launch), timeout=max(1.0, _ACQUIRE_TIMEOUT_MS / 1000.0),
             )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[browser_pool] Chromium launch still running after %.0f s; this "
+                "call fails open, the launch continues for the next caller",
+                time.monotonic() - _acquire_t0,
+            )
+            raise
     _last_acquire_was_cold = _was_cold
     _acquire_ms = int((time.monotonic() - _acquire_t0) * 1000)
     # REQ-18 AC1/AC3 (T20): record the cold/warm split per acquire and announce
@@ -522,6 +547,36 @@ async def _stop_owned_browser() -> None:
     logger.info("[browser_pool] shared browser stopped")
 
 
+def set_web_hold(enabled: bool) -> None:
+    """The web toggle: ON starts Chromium now (background, never waited on)
+    and holds it warm; OFF returns it to the idle watchdog. Never raises."""
+    global _web_hold
+    _web_hold = bool(enabled)
+    try:
+        host = get_browser_host()
+        if enabled:
+            asyncio.run_coroutine_threadsafe(_prewarm_on_host(), host.loop())
+            # keyring's first import + backend discovery (9.5 s measured) is
+            # paid here, not inside the agent's first browser_open.
+            from backend.vision.browser_session import warm_keyring
+
+            threading.Thread(target=warm_keyring, name="iris-keyring-warm", daemon=True).start()
+        else:
+            _touch_browser_use()  # schedule the idle stop again
+    except Exception as exc:  # noqa: BLE001 — a toggle must never fail on warmth
+        logger.warning("[browser_pool] web hold %s failed: %s", enabled, exc)
+
+
+async def _prewarm_on_host() -> None:
+    t0 = time.monotonic()
+    try:
+        _browser_obj, lease = await _acquire_browser_on_host(10_000.0)
+        lease.release()
+        logger.info("[browser_pool] web toggle prewarm ready in %.1f s", time.monotonic() - t0)
+    except Exception as exc:  # noqa: BLE001 — the launch (if any) keeps going
+        logger.info("[browser_pool] web toggle prewarm: %s", exc or type(exc).__name__)
+
+
 async def shutdown_browser_pool() -> None:
     """Explicit teardown — 'killed by the brain when no longer needed'.
 
@@ -533,7 +588,14 @@ async def shutdown_browser_pool() -> None:
 
 async def _shutdown_on_host() -> None:
     """``shutdown_browser_pool`` body. Runs ON the host loop."""
-    global _idle_task
+    global _idle_task, _launch_task
+    launch, _launch_task = _launch_task, None
+    if launch is not None and not launch.done():
+        launch.cancel()
+        try:
+            await launch
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
     task = None
     with _idle_task_lock:
         if _idle_task is not None:

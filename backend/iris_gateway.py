@@ -851,6 +851,9 @@ class IRISGateway:
                 enabled = bool(message.get("payload", {}).get("enabled", False))
                 from .agent.agent_kernel import set_global_internet_access
                 set_global_internet_access(enabled)
+                # Web ON = the browser warms now and stays warm (addendum H).
+                from .vision.browser_pool import set_web_hold
+                set_web_hold(enabled)
                 self._logger.info(
                     f"[WebMode] session={session_id} web_mode={enabled} "
                     f"(global internet access {'ON' if enabled else 'OFF'})"

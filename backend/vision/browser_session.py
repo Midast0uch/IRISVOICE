@@ -503,6 +503,27 @@ def _draw_marks(png: bytes, marks: "list[dict]") -> Optional[bytes]:
         return None
 
 
+def _keyring_read(host: str) -> Optional[str]:
+    """Blocking keyring read (call through asyncio.to_thread). None when the
+    keyring lib or backend is missing."""
+    try:
+        import keyring as _keyring
+    except Exception:  # noqa: BLE001 — no keyring lib means anonymous
+        return None
+    return _keyring.get_password(_KEYRING_SERVICE, host)
+
+
+def warm_keyring() -> None:
+    """Pay keyring's import + backend discovery now, on the caller's thread
+    (the web toggle runs it on a daemon thread). Never raises."""
+    try:
+        import keyring as _keyring
+
+        _keyring.get_keyring()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 async def _inject_keyring_cookies(context: object, url: str, job_id: str) -> int:
     """Inject OS-keyring session cookies into a fresh context (REQ-12 AC12.1/12.2).
 
@@ -511,16 +532,17 @@ async def _inject_keyring_cookies(context: object, url: str, job_id: str) -> int
     unavailable, holds nothing for the domain, or the payload is malformed.
     Never raises: anonymous browsing is the safe fallback.
     """
-    try:
-        import keyring as _keyring
-        import json as _json
-    except Exception:  # noqa: BLE001 — no keyring lib means anonymous
-        return 0
+    import json as _json
+
     try:
         host = _host_of(url)
         if not host:
             return 0
-        raw = _keyring.get_password(_KEYRING_SERVICE, host)
+        # OFF the browser host loop: the first `import keyring` + backend
+        # discovery measured 9.5 s (4.0 + 5.6, 2026-10-02) and blocked EVERY
+        # browser operation on that loop - the first open of a backend
+        # process took 86 s with a warm Chromium.
+        raw = await asyncio.to_thread(_keyring_read, host)
         if not raw:
             return 0
         cookies = _json.loads(raw)
@@ -792,8 +814,11 @@ class BrowserSession:
             # REQ-12: private session cookies from the OS keyring, injected
             # before any navigation so authenticated pages settle signed-in.
             # Best-effort: no keyring entry (or no keyring lib) means anonymous.
+            _t_ctx = time.monotonic()
             await _inject_keyring_cookies(self._context, self.url, self._job_id)
+            _t_cookies = time.monotonic()
             self._page = await self._context.new_page()
+            _t_page = time.monotonic()
             # REQ-6: adopt popups/tabs opened by clicks (target="_blank").
             # Guarded getattr: older fakes/pool shims without .on keep working.
             _on_page = getattr(self._context, "on", None)
@@ -825,8 +850,13 @@ class BrowserSession:
                     "continuing with the rendered page",
                     self._job_id, self.url, str(_nav_exc)[:120],
                 )
+            _t_nav = time.monotonic()
+            # Where an open's time goes (2026-10-02: 86 s with a warm browser).
             logger.info(
-                "[browser_session] opened job=%s url=%s", self._job_id, self.url
+                "[browser_session] opened job=%s url=%s context_ms=%d cookies_ms=%d "
+                "page_ms=%d nav_ms=%d", self._job_id, self.url,
+                int((_t_ctx - self._started_at) * 1000), int((_t_cookies - _t_ctx) * 1000),
+                int((_t_page - _t_cookies) * 1000), int((_t_nav - _t_page) * 1000),
             )
             # REQ-11 AC1: publish the first settled frame (page 1).
             await self._publish_frame()
