@@ -117,7 +117,6 @@ class _FakeLocalModelManager:
             "endpoint": None,
             "pid": None,
             "inprocess": False,
-            "rotorquant": False,
         }
 
     def is_loaded(self) -> bool:
@@ -283,7 +282,7 @@ class TestLoadAndUnloadPersistTwoOfFourValues:
         mgr = _FakeLocalModelManager(
             status={"loaded": True, "model_path": "C:/models/x.gguf", "profile": "balanced",
                     "n_ctx": None, "purpose": None, "endpoint": None, "pid": None,
-                    "inprocess": False, "rotorquant": False}
+                    "inprocess": False}
         )
         captured: Dict[str, Any] = {}
         _patch_kernel_and_config(monkeypatch, mgr, captured)
@@ -313,7 +312,7 @@ class TestWSPayloadShapeDiffersBySite:
         status = {
             "loaded": True, "model_path": "C:/models/x.gguf", "profile": "balanced",
             "n_ctx": 8192, "purpose": "chat", "endpoint": None, "pid": None,
-            "inprocess": True, "rotorquant": False,
+            "inprocess": True,
         }
         mgr = _FakeLocalModelManager(status=status)
         monkeypatch.setattr(
@@ -403,7 +402,7 @@ class TestWSPayloadShapeDiffersBySite:
         mgr = _FakeLocalModelManager(
             status={"loaded": True, "model_path": "C:/models/x.gguf", "profile": "balanced",
                     "n_ctx": None, "purpose": None, "endpoint": None, "pid": None,
-                    "inprocess": False, "rotorquant": False}
+                    "inprocess": False}
         )
         captured: Dict[str, Any] = {}
         _patch_kernel_and_config(monkeypatch, mgr, captured)

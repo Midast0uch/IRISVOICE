@@ -210,25 +210,6 @@ PROFILES: Dict[str, Dict[str, Any]] = {
         "keep_model_in_memory": True,
         "use_mmap": True,
     },
-    # RotorQuant research profile — requires the scrya-com/rotorquant fork
-    # (johndpope/llama-cpp-turboquant, feature/planarquant-kv-cache branch).
-    # PlanarQuant / IsoQuant compress KV cache 5–10× vs q8_0, so a 131k ctx
-    # window fits where q4_0 at 100k currently does. If the fork is not
-    # installed, the profile selector falls back to `performance` with a
-    # warning (see _rotorquant_available detection in __init__).
-    "research_rotorquant": {
-        "n_gpu_layers": -1,
-        "n_ctx": 131072,  # 128k — unlocked by planar3 compression
-        "flash_attn": True,
-        "cache_type_k": "planar3",  # RotorQuant key: 5–10× KV compression
-        "cache_type_v": "planar3",
-        "n_batch": 2048,
-        "offload_kv_cache": True,
-        "unified_kv_cache": True,
-        "keep_model_in_memory": True,
-        "use_mmap": True,
-        "requires_fork": "llama-cpp-turboquant",
-    },
 }
 
 # ── Phase 3: Device policy constants ──────────────────────────────────────
@@ -643,9 +624,7 @@ _MMPROJ_PREFIX_RE = re.compile(r"^mmproj[-_.]", re.IGNORECASE)
 # ── GGML type string → llama_cpp integer constant ─────────────────────────
 # Kept module-scope so _load_inprocess and _build_server_cmd share one source
 # of truth. Values mirror llama_cpp.GGML_TYPE_* (verified against
-# llama-cpp-python ≥ 0.3). Strings that have no llama_cpp.Llama constructor
-# mapping (e.g. "planar3" / "iso3" from the RotorQuant fork) are intentionally
-# excluded — they are passed through verbatim when _rotorquant_available.
+# llama-cpp-python ≥ 0.3).
 _GGML_TYPE_INT: Dict[str, int] = {
     "f32": 0,
     "f16": 1,
@@ -669,11 +648,6 @@ _GGML_TYPE_INT: Dict[str, int] = {
     "q6_k": 14,
     "q8_k": 15,
 }
-
-# RotorQuant-only KV cache types (not understood by stock llama-cpp-python).
-# When present in a profile and the fork IS installed, they are forwarded to
-# Llama(cache_type_k=..., cache_type_v=...) as strings.
-_ROTORQUANT_KV_TYPES = frozenset({"planar3", "iso3", "planarquant", "isoquant"})
 
 # TOOL_CTX_CAP — context ceiling for a local model loaded for TOOL-ONLY duty
 # (an API/Ollama provider holds the reasoning role, the local model just turns a
@@ -803,24 +777,6 @@ class LocalModelManager:
         self._mtp_acceptance_window: list = []  # rolling acceptance rates
         self._mtp_draft_tokens_total: int = 0
         self._mtp_accepted_total: int = 0
-        # ── RotorQuant fork detection ───────────────────────────────────
-        # The scrya-com/rotorquant fork adds `cache_type_k` / `cache_type_v`
-        # string kwargs to Llama.__init__ that accept "planar3" / "iso3" etc.
-        # Stock llama-cpp-python uses `type_k` / `type_v` ints instead.
-        self._rotorquant_available: bool = False
-        try:
-            from llama_cpp import Llama as _Llama_probe
-
-            _sig = inspect.signature(_Llama_probe.__init__)
-            self._rotorquant_available = "cache_type_k" in _sig.parameters
-        except Exception:
-            # llama_cpp not importable yet — that's fine, just means no
-            # in-process path available. detection retries on load_model.
-            pass
-        logger.info(
-            f"[LocalModelManager] RotorQuant (planar3/iso3) available: "
-            f"{self._rotorquant_available}"
-        )
         # Progress heartbeat task — synthesises load_progress events during
         # in-process load since Llama() gives no native progress.
         self._progress_task: Optional[asyncio.Task] = None
@@ -1033,12 +989,8 @@ class LocalModelManager:
     def _build_llama_ctor_kwargs(
         self, model_path: str, params: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Map a PROFILES dict into ``Llama(**kwargs)`` form.
-
-        Handles the fork split:
-          * Stock llama-cpp-python → ``type_k`` / ``type_v`` = GGML int
-          * RotorQuant fork       → ``cache_type_k`` / ``cache_type_v`` = string
-        """
+        """Map a PROFILES dict into ``Llama(**kwargs)`` form (KV cache types
+        as llama-cpp-python's ``type_k`` / ``type_v`` GGML ints)."""
         ctor: Dict[str, Any] = {
             "model_path": str(model_path),
             "n_gpu_layers": int(params.get("n_gpu_layers", -1)),
@@ -1055,27 +1007,11 @@ class LocalModelManager:
         k_name = (params.get("cache_type_k") or "").lower()
         v_name = (params.get("cache_type_v") or "").lower()
 
-        if k_name in _ROTORQUANT_KV_TYPES or v_name in _ROTORQUANT_KV_TYPES:
-            # Profile requested a RotorQuant KV type — only honoured if fork
-            # is installed; otherwise leave KV cache at library default (f16).
-            if self._rotorquant_available:
-                if k_name:
-                    ctor["cache_type_k"] = k_name
-                if v_name:
-                    ctor["cache_type_v"] = v_name
-            else:
-                logger.warning(
-                    f"[LocalModelManager] Profile requested RotorQuant KV "
-                    f"'{k_name}/{v_name}' but llama-cpp-turboquant fork not "
-                    f"installed. Falling back to default f16 KV cache. "
-                    f"See docs/rotorquant_build.md."
-                )
-        else:
-            # Stock llama-cpp-python path — map string → GGML_TYPE integer.
-            if k_name and k_name in _GGML_TYPE_INT:
-                ctor["type_k"] = _GGML_TYPE_INT[k_name]
-            if v_name and v_name in _GGML_TYPE_INT:
-                ctor["type_v"] = _GGML_TYPE_INT[v_name]
+        # map string → GGML_TYPE integer.
+        if k_name and k_name in _GGML_TYPE_INT:
+            ctor["type_k"] = _GGML_TYPE_INT[k_name]
+        if v_name and v_name in _GGML_TYPE_INT:
+            ctor["type_v"] = _GGML_TYPE_INT[v_name]
 
         seed = params.get("seed")
         if seed is not None and int(seed) != -1:
@@ -1152,22 +1088,12 @@ class LocalModelManager:
                     pass
             return False
 
-        # Re-detect in case the env changed since __init__ (e.g. fork was just
-        # installed). Cheap — one inspect.signature call.
-        try:
-            self._rotorquant_available = (
-                "cache_type_k" in inspect.signature(Llama.__init__).parameters
-            )
-        except Exception:
-            pass
-
         ctor = self._build_llama_ctor_kwargs(model_path, params)
         logger.info(
             f"[LocalModelManager] Loading in-process: "
             f"model={Path(model_path).name} n_ctx={ctor.get('n_ctx')} "
             f"n_gpu_layers={ctor.get('n_gpu_layers')} "
-            f"flash_attn={ctor.get('flash_attn')} "
-            f"rotorquant={self._rotorquant_available}"
+            f"flash_attn={ctor.get('flash_attn')}"
         )
 
         await self._start_progress_heartbeat(progress_cb)
@@ -1705,8 +1631,7 @@ class LocalModelManager:
             is_mtp, is_moe
 
         Raw ``general.*`` / ``<arch>.*`` keys are returned alongside them
-        because :meth:`_detect_quantization` scans the raw map for RotorQuant
-        markers. Array values are collapsed to a short ``"<array:N>"`` marker
+        for callers that read raw keys. Array values are collapsed to a short ``"<array:N>"`` marker
         so a 150 k-entry tokenizer vocabulary never lands in memory.
 
         Reads one bounded slice of the file rather than many small reads — the
@@ -2202,8 +2127,7 @@ class LocalModelManager:
         trained context so a 4k model is never given a 100k profile.
 
         Model families that require particular kernels win outright: an MTP
-        model needs ``balanced_mtp`` (speculative decoding, subprocess only)
-        and a RotorQuant model needs ``research_rotorquant`` (planar3 KV).
+        model needs ``balanced_mtp`` (speculative decoding, subprocess only).
 
         GPU-ONLY: ``eco`` is never recommended. If nothing fits, the narrowest
         GPU profile is returned and pre-flight decides whether to reject —
@@ -2211,8 +2135,6 @@ class LocalModelManager:
         """
         if model_meta.get("is_mtp"):
             return "balanced_mtp"
-        if str(model_meta.get("quantization", "")).lower() in _ROTORQUANT_KV_TYPES:
-            return "research_rotorquant"
 
         hw = self.get_hardware_info()
         vram = hw.get("vram_free_gb", 0.0)
@@ -3053,7 +2975,6 @@ class LocalModelManager:
 
             # Resolve requested profile; may fall back if the fork isn't
             # installed and the profile demands it.
-            profile = self._resolve_profile_for_environment(profile)
             params = self.get_profile_params(profile, custom_params or {})
             # Track meta for ConfigCache corrections (REQ-5). Only used by
             # record_tps after a successful load; harmless if load fails.
@@ -3288,23 +3209,6 @@ class LocalModelManager:
                     f"routing to compiled llama-server subprocess for speculative decoding."
                 )
 
-            # RotorQuant / ternary GGUFs (e.g. Bonsai 27B dspark) require the
-            # llama-cpp-turboquant fork server — the in-process binding (stock
-            # llama_cpp_python) cannot load them. Force the server path.
-            # Reads the GGUF header from a multi-GB file — off-loop.
-            is_rotorquant = (
-                await asyncio.to_thread(self._detect_quantization, model_path)
-            ) == "rotorquant"
-            if is_rotorquant:
-                force_server = True
-                logger.info(
-                    f"[LocalModelManager] RotorQuant model detected "
-                    f"({Path(model_path).name}); routing to fork server."
-                )
-                # Override cache types for RotorQuant's planar3 KV cache.
-                params["cache_type_k"] = "planar3"
-                params["cache_type_v"] = "f16"
-
             # Bonsai-family low-bit models (Q1_0 / Q2_0 binary/ternary) use
             # non-standard quantization formats that the stock llama_cpp_python
             # binding cannot load. Detect them by architecture or naming and
@@ -3324,7 +3228,7 @@ class LocalModelManager:
                     f"({Path(model_path).name}); routing to PrismML server."
                 )
 
-            # ── In-process path (preferred, but NOT for MTP / RotorQuant ─)
+            # ── In-process path (preferred, but NOT for MTP / Bonsai low-bit) ─
             inproc_ok = False
             if self._inprocess_enabled() and not force_server:
                 self._current_profile = profile
@@ -3351,13 +3255,13 @@ class LocalModelManager:
                     return True
                 # In-process failed — fall back to server subprocess (the
                 # stock python binding may not support this model format, e.g.
-                # Bonsai Q1_0 binary tensors or RotorQuant ternary tensors).
+                # Bonsai Q1_0 binary / Q2_0 ternary tensors).
                 logger.warning(
                     f"[LocalModelManager] In-process load failed for "
                     f"{Path(model_path).name}; falling back to server."
                 )
 
-            # ── Subprocess path (MTP, RotorQuant, vision, or in-process fallback) ─
+            # ── Subprocess path (MTP, Bonsai low-bit, vision, or in-process fallback) ─
             # Probe-based command construction (nvidia-smi) — off-loop.
             cmd = await asyncio.to_thread(
                 self._build_server_cmd,
@@ -3599,13 +3503,6 @@ class LocalModelManager:
                     err_msg = _captured
                 else:
                     err_msg = "Timed out waiting for server to start"
-                    # If the server died quickly, try to get a more specific reason for dflash/dspark
-                    if not self.is_loaded():
-                        try:
-                            if "dflash" in str(model_path).lower() or "dspark" in str(model_path).lower():
-                                err_msg = f"Model architecture not supported by this server build: {Path(model_path).name} (requires DSpark/turboquant fork) — {err_msg}"
-                        except Exception:
-                            pass
                 logger.error(f"[LocalModelManager] {err_msg}")
                 # Also push a final error progress event so frontend doesn't stay at 15% if the earlier 15% error was missed
                 if progress_cb:
@@ -3703,39 +3600,6 @@ class LocalModelManager:
         )
 
         return degraded
-
-    def _resolve_profile_for_environment(self, profile: str) -> str:
-        """If the requested profile demands a fork we don't have, fall back
-        to a safe default and log a warning. No-op for profiles that don't
-        declare ``requires_fork``.
-
-        Note: the RotorQuant fork is delivered as a standalone llama-server
-        binary (llama.cpp-turboquant/build/bin/llama-server), NOT as the
-        in-process llama_cpp Python binding. So availability is checked via
-        the fork server binary, not ``_rotorquant_available`` (which probes
-        the Python binding).
-        """
-        cfg = PROFILES.get(profile)
-        if not cfg:
-            return profile
-        needed = cfg.get("requires_fork")
-        if not needed:
-            return profile
-        if needed == "llama-cpp-turboquant":
-            fork_bin = (
-                IRISVOICE_ROOT / "llama.cpp-turboquant" / "build" / "bin" / "llama-server.exe"
-                if sys.platform == "win32"
-                else IRISVOICE_ROOT / "llama.cpp-turboquant" / "build" / "bin" / "llama-server"
-            )
-            if not fork_bin.is_file():
-                logger.warning(
-                    f"[LocalModelManager] Profile '{profile}' requires the "
-                    f"llama-cpp-turboquant fork (RotorQuant); server binary not "
-                    f"found at {fork_bin}. Falling back to 'performance'. "
-                    f"See docs/rotorquant_build.md."
-                )
-                return "performance"
-        return profile
 
     async def unload_model(self) -> bool:
         # Kill any orphaned llama-server processes to free VRAM.
@@ -3839,7 +3703,6 @@ class LocalModelManager:
             if inprocess
             else (self._process.pid if loaded and self._process else None),
             "inprocess": inprocess,
-            "rotorquant": self._rotorquant_available,
             # REQ-4 AC4: truthful only when --mmproj was actually passed to
             # the running server for THIS load — never derived from a
             # sibling projector file merely existing on disk.
@@ -3887,13 +3750,6 @@ class LocalModelManager:
                 / "llama.cpp-prismml"
                 / "bin"
                 / "llama-server.exe",
-                # RotorQuant / ternary-quantized models (e.g. DSpark drafter)
-                # require the llama-cpp-turboquant fork.
-                IRISVOICE_ROOT
-                / "llama.cpp-turboquant"
-                / "build"
-                / "bin"
-                / "llama-server.exe",
                 Path.home() / "ik_llama.cpp" / "build" / "bin" / "llama-server.exe",
                 Path.home() / "llama.cpp" / "build" / "bin" / "llama-server.exe",
                 IRISVOICE_ROOT
@@ -3909,11 +3765,6 @@ class LocalModelManager:
         else:
             # Linux / macOS
             candidates = [
-                IRISVOICE_ROOT
-                / "llama.cpp-turboquant"
-                / "build"
-                / "bin"
-                / "llama-server",
                 Path.home() / "ik_llama.cpp" / "build" / "bin" / "llama-server",
                 Path.home() / "llama.cpp" / "build" / "bin" / "llama-server",
                 IRISVOICE_ROOT / "llama.cpp" / "build" / "bin" / "llama-server",
@@ -3926,52 +3777,12 @@ class LocalModelManager:
                 return str(c)
         return None
 
-    def _detect_quantization(self, model_path: str) -> str:
-        """
-        Inspect a GGUF's metadata to determine its quantization family.
-        Returns one of: 'rotorquant' (RotorQuant/ternary planar KV cache),
-        'standard' (normal k-quants / f16 / etc.), or 'unknown'.
-        """
-        try:
-            meta = self.parse_gguf_metadata(Path(model_path))
-            qv = str(meta.get("general.quantization_version", "")).lower()
-            # Some GGUFs store architecture under 'architecture' rather than
-            # 'general.architecture' — check both.
-            arch = str(meta.get("general.architecture") or meta.get("architecture") or "").lower()
-            # RotorQuant GGUFs use the 'dspark'/'dflash' architecture (ternary/RotorQuant)
-            # or advertise quantization_version 3 / planar KV-cache types.
-            if "rotor" in qv or "ternary" in qv or qv in ("3", "planar3"):
-                return "rotorquant"
-            if arch in ("dspark", "dspark_v1", "dspark_gguf", "dflash", "dflash_v1"):
-                return "rotorquant"
-            # Fallback: scan tensor type strings for planar/rotor markers.
-            for k, v in meta.items():
-                vs = str(v).lower()
-                if "planar" in vs or "rotor" in vs or "turbo" in vs:
-                    return "rotorquant"
-        except Exception:
-            pass
-        return "standard"
-
     def _select_server_binary(self, model_path: str) -> Optional[str]:
-        """
-        Model-aware server selector ("sensor"): pick the correct llama-server
-        build for the model being loaded. RotorQuant/ternary GGUFs require the
-        llama-cpp-turboquant fork; everything else uses the stock server.
-        Returns the binary path, or None if no server binary is available.
-        """
-        quant = self._detect_quantization(model_path)
-        if quant == "rotorquant":
-            # Prefer the in-tree fork build for RotorQuant models.
-            fork = (
-                IRISVOICE_ROOT / "llama.cpp-turboquant" / "build" / "bin" / "llama-server.exe"
-                if sys.platform == "win32"
-                else IRISVOICE_ROOT / "llama.cpp-turboquant" / "build" / "bin" / "llama-server"
-            )
-            if fork.is_file():
-                return str(fork)
-            # No fork available -> caller must fail loud (no CPU fallback).
-            return None
+        """The llama-server build for this model (one seam; tests stub it).
+        Every model on this machine runs on the PrismML build (Bonsai Q1_0 /
+        Q2_0 too) - the RotorQuant/turboquant routing was removed 2026-10-02
+        (owner): no model used it, and it sent DSpark draft files (arch
+        'dflash') to the wrong server."""
         return self._find_llama_server_binary()
 
     @staticmethod
@@ -4090,16 +3901,12 @@ class LocalModelManager:
         responsible for resolving whether a projector exists AND whether the
         caller opted in (default: yes).
         """
-        # Model-aware server selection: RotorQuant/ternary GGUFs require the
-        # llama-cpp-turboquant fork; everything else uses the stock server.
         llama_server = self._select_server_binary(str(model_path))
         if llama_server is None:
-            # No server binary can serve this model (e.g. RotorQuant model but
-            # the fork build is missing). Fail loud — never fall back to CPU.
+            # No server binary at all. Fail loud — never fall back to CPU.
             raise RuntimeError(
-                "No compatible llama-server binary available for this model. "
-                "RotorQuant/ternary models require the llama-cpp-turboquant "
-                "fork build (llama.cpp-turboquant/build/bin/llama-server)."
+                "No llama-server binary found (expected "
+                "llama.cpp-prismml/bin/llama-server)."
             )
 
         if llama_server:

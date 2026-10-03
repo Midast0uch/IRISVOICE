@@ -86,7 +86,7 @@ class _RecordingLocalModelManager:
         return {
             "loaded": True, "model_path": "C:/models/x.gguf", "profile": "balanced",
             "n_ctx": None, "purpose": None, "endpoint": None, "pid": None,
-            "inprocess": False, "rotorquant": False,
+            "inprocess": False,
         }
 
     async def load_model(self, *args, **kwargs) -> bool:

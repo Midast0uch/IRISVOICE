@@ -70,7 +70,6 @@ class _FakeLocalModelManager:
             "endpoint": None,
             "pid": None,
             "inprocess": self._llm is not None,
-            "rotorquant": False,
             "vision_loaded": False,
         }
 

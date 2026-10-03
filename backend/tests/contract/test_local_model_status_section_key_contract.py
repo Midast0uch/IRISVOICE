@@ -112,7 +112,6 @@ class _FakeLocalModelManager:
         self._status = status or {
             "loaded": False, "model_path": None, "profile": None, "n_ctx": None,
             "purpose": None, "endpoint": None, "pid": None, "inprocess": False,
-            "rotorquant": False,
         }
 
     def is_loaded(self) -> bool:
@@ -200,7 +199,7 @@ class TestPayloadShapeResolvesToCorrectStatus:
         mgr = _FakeLocalModelManager(
             status={"loaded": True, "model_path": "C:/models/x.gguf", "profile": "balanced",
                     "n_ctx": None, "purpose": None, "endpoint": None, "pid": None,
-                    "inprocess": False, "rotorquant": False}
+                    "inprocess": False}
         )
         _patch_kernel_and_config(monkeypatch, mgr)
 
@@ -214,7 +213,7 @@ class TestPayloadShapeResolvesToCorrectStatus:
         mgr = _FakeLocalModelManager(status={
             "loaded": True, "model_path": "C:/models/x.gguf", "profile": "balanced",
             "n_ctx": 8192, "purpose": "chat", "endpoint": None, "pid": None,
-            "inprocess": True, "rotorquant": False,
+            "inprocess": True,
         })
         monkeypatch.setattr(
             "backend.agent.local_model_manager.get_local_model_manager", lambda: mgr
@@ -233,7 +232,6 @@ class TestPayloadShapeResolvesToCorrectStatus:
         mgr = _FakeLocalModelManager(status={
             "loaded": False, "model_path": None, "profile": None, "n_ctx": None,
             "purpose": None, "endpoint": None, "pid": None, "inprocess": False,
-            "rotorquant": False,
         })
         monkeypatch.setattr(
             "backend.agent.local_model_manager.get_local_model_manager", lambda: mgr
