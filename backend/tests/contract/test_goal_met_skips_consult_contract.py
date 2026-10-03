@@ -39,4 +39,23 @@ def test_the_continuation_gate_reads_it():
 
     src = inspect.getsource(AgentKernel)
     gate = src[src.index("[DER] continuation gate: mode="):]
-    assert "_goal_contract_met()" in gate[: gate.index("_der_plan_next_step(")]
+    assert "_goal_contract_met(self)" in gate[: gate.index("_der_plan_next_step(")]
+
+
+def test_a_met_objective_never_fires_the_streak_gate_replan():
+    """Run A6: C=1.000 at 00:17:42; the streak gate fired at 00:18:00 and the
+    re-plan led to a crash. A met contract returns before any envelope math."""
+    import inspect
+
+    # Structural: the old gate also returned False on a broken call (its broad
+    # except), so the guard pins the ORDER - the met check before any streak math.
+    src = inspect.getsource(AgentKernel._der_streak_gate)
+    assert "_goal_contract_met(self)" in src
+    assert src.index("_goal_contract_met(self)") < src.index("import evaluate_streak")
+
+
+def test_the_outcome_grade_survives_a_none_loop_item():
+    import inspect
+
+    src = inspect.getsource(AgentKernel._execute_plan_der)
+    assert "_verified_fraction(item.expected_output" not in src

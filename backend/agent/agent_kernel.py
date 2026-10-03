@@ -10957,7 +10957,15 @@ Respond with a JSON object:
         # DER Phase 0 (D0.6): coarsen outcome from verified_fraction, not a binary
         # "[STEP ERROR" substring. hit (>=0.8) / partial (0.3-0.8) / miss (<0.3).
         _joined = "\n".join(step_outputs)
-        _frac = self._verified_fraction(item.expected_output, _joined) if step_outputs else 0.0
+        # The loop variable `item` is whatever the LAST pass set - after a
+        # re-plan it can be None (live 2026-10-02 run A6: the reply became
+        # "[IRIS error: 'NoneType' object has no attribute 'expected_output']").
+        # Grade against the last step that completed.
+        _last_item = completed_items[-1] if completed_items else item
+        _frac = (
+            self._verified_fraction(getattr(_last_item, "expected_output", "") or "", _joined)
+            if step_outputs else 0.0
+        )
         # Session-326: verdict from the FINAL ANSWER, not step colors. A
         # failed step used to force "failure" even when the answer carried
         # verified content (7-min stall: partial answer, red-X card).
@@ -12291,6 +12299,12 @@ Respond with a JSON object:
 
         Returns True when a replan revision was applied.
         """
+        # A met objective is not stuck: every required fact is covered, so a
+        # re-plan can only add work (live 2026-10-02 run A6: C=1.000 at
+        # 00:17:42, the gate fired at 00:18:00, the re-plan ran a step and the
+        # turn then crashed).
+        if AgentKernel._goal_contract_met(self):  # class call: stand-in kernels
+            return False
         try:
             from backend.agent.tool_envelope import evaluate_streak
             from backend.agent.der_constants import (
@@ -19791,7 +19805,7 @@ Respond with a JSON object:
             # 2026-10-02 run A5: C=1.000 at 23:56:37, then a consult + 2 added
             # steps + a bonus pass over "Opened Wikipedia homepage"-style facts,
             # 46 s before the same answer. No contract / open facts -> unchanged.
-            if _cont_run and self._goal_contract_met():
+            if _cont_run and AgentKernel._goal_contract_met(self):
                 _cont_run = False
                 logger.info(
                     "[DER] continuation consult skipped - the goal contract is met "
