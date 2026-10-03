@@ -1377,6 +1377,9 @@ class LocalModelManager:
         # own entries, then matched onto their base model in a second,
         # in-memory-only pass (no extra directory walk or stat storm).
         projectors: List[Tuple[Path, str, os.stat_result]] = []  # (path, stem, stat)
+        # DSpark drafters (general.architecture 'dflash'): never a loadable
+        # brain - each is attached to its base model below and loads with it.
+        drafters: List[Tuple[Path, Dict[str, Any], os.stat_result]] = []
 
         for gguf_path in self._iter_gguf_paths():
             filename = gguf_path.name
@@ -1434,6 +1437,10 @@ class LocalModelManager:
                     meta = {}
                 self._metadata_cache[cache_key] = meta
 
+            if meta.get("architecture") == "dflash":
+                drafters.append((gguf_path, meta, st))
+                continue
+
             size_gb = round(st.st_size / (1024**3), 2)
             quant = meta.get("quantization") or self._quant_from_filename(stem)
 
@@ -1481,6 +1488,9 @@ class LocalModelManager:
                 "has_vision": False,
                 "mmproj_path": None,
                 "mmproj_size_gb": 0.0,
+                # The DSpark drafter loaded with this model (pass below).
+                "draft_path": None,
+                "draft_size_gb": 0.0,
             }
             seen_bases[base_stem] = entry
             base_metas[base_stem] = meta
@@ -1552,10 +1562,81 @@ class LocalModelManager:
                     )
                     continue
 
+        for draft_path, draft_meta, draft_st in drafters:
+            self._attach_drafter(draft_path, draft_meta, draft_st, seen_bases, base_metas)
+
         models = list(seen_bases.values())
         # Pinned models float to top
         models.sort(key=lambda m: (not m["pinned"], m["display_name"].lower()))
         return models
+
+    # GPU memory a DSpark drafter costs beyond its file: its KV cache and
+    # compute buffers. Measured 2026-10-03 at --ctx-size 8192 (RTX 3070,
+    # nvidia-smi after one completion): LFM2.5-2.6B drafter (0.19 GB file)
+    # +800 MiB, LFM2.5-VL-3B drafter (0.53 GB file) +1128 MiB.
+    DRAFT_OVERHEAD_GB = 0.6
+
+    def _attach_drafter(self, draft_path: Path, draft_meta: Dict[str, Any],
+                        draft_st: os.stat_result, seen_bases: Dict[str, Dict[str, Any]],
+                        base_metas: Dict[str, Dict[str, Any]]) -> None:
+        """Pair a DSpark drafter with the base model it was trained for.
+
+        The drafter names its base in ``general.base_model.0.name`` ("LFM2.5
+        2.6B"); a base matches when its own name (``general.name``, else the
+        file stem) starts with that name, compared on letters and digits only
+        ("LFM2.5-2.6B-QAD-Q4_0" -> "lfm2526bqadq40"). An MoE base is skipped:
+        measured 2026-10-03, LFM2.5-8B-A1B ran 194 -> 182 tok/s with its
+        drafter (acceptance 0.50) - with ~1B active parameters the base step
+        already costs about what drafting saves. Dense bases gained: 2.6B
+        164 -> 259 tok/s (+58%), VL-3B 150 -> 181 (+20%).
+        """
+        def _key(name: Any) -> str:
+            return re.sub(r"[^a-z0-9]", "", str(name or "").lower())
+
+        want = _key(draft_meta.get("general.base_model.0.name"))
+        if not want:
+            logger.debug(f"[LocalModelManager] drafter {draft_path.name} names no base model - not used")
+            return
+        size_gb = round(draft_st.st_size / (1024 ** 3), 2)
+        for base_stem, entry in seen_bases.items():
+            meta = base_metas.get(base_stem, {})
+            if not _key(meta.get("general.name") or base_stem).startswith(want):
+                continue
+            if meta.get("is_moe"):
+                logger.debug(f"[LocalModelManager] drafter {draft_path.name} not paired with "
+                            f"MoE base {base_stem} (measured slower)")
+                continue
+            if entry.get("draft_path"):
+                continue
+            entry["draft_path"] = str(draft_path)
+            entry["draft_size_gb"] = size_gb
+            try:
+                replanned = self.plan_load(
+                    meta, entry["size_gb"],
+                    mmproj_size_gb=float(entry.get("mmproj_size_gb") or 0.0)
+                    + size_gb + self.DRAFT_OVERHEAD_GB,
+                )
+                entry["plan"] = replanned
+                entry["vram_estimate_gb"] = replanned["vram_gb"]
+            except Exception as exc:  # noqa: BLE001 - the card keeps its earlier plan
+                logger.debug(f"[LocalModelManager] draft re-plan failed for '{base_stem}': {exc}")
+
+    def _find_drafter_for_model(self, model_path: str) -> Tuple[Optional[str], float]:
+        """``(draft_path, draft_size_gb)`` paired with *model_path* by
+        scan_models, or ``(None, 0.0)``."""
+        try:
+            resolved = Path(model_path).resolve()
+        except OSError:
+            resolved = Path(model_path)
+        for entry in self.scan_models():
+            try:
+                if Path(entry["path"]).resolve() == resolved:
+                    if entry.get("draft_path"):
+                        return entry["draft_path"], float(entry.get("draft_size_gb") or 0.0)
+                    return None, 0.0
+            except OSError:
+                continue
+        return None, 0.0
 
     def _find_projector_for_model(
         self, model_path: str
@@ -2924,6 +3005,14 @@ class LocalModelManager:
             model_meta = await asyncio.to_thread(
                 self.parse_gguf_metadata, Path(model_path)
             )
+            if model_meta.get("architecture") == "dflash":
+                # A DSpark drafter only predicts tokens for its base model;
+                # alone it is no model (the server fails: unknown arch 'dflash').
+                logger.error(
+                    f"[LocalModelManager] {Path(model_path).name} is a DSpark drafter, "
+                    f"not a model - load its base model; the drafter loads with it."
+                )
+                return False
             if progress_cb:
                 try:
                     await progress_cb({"phase": "metadata", "pct": 5, "msg": f"Reading metadata: {Path(model_path).name}"})
@@ -2947,6 +3036,12 @@ class LocalModelManager:
                 self._find_projector_for_model, model_path
             )
             attach_projector = bool(with_projector) and bool(mmproj_path)
+            # DSpark drafter paired by scan_models (speculative decoding). An
+            # MTP model already drafts with its own heads (--spec-type draft-mtp).
+            draft_path, draft_size_gb = await asyncio.to_thread(
+                self._find_drafter_for_model, model_path
+            )
+            attach_draft = bool(draft_path) and "mtp" not in Path(model_path).name.lower()
             if mmproj_path and not with_projector:
                 logger.info(
                     f"[LocalModelManager] vision projector available for "
@@ -3145,10 +3240,25 @@ class LocalModelManager:
             # _preflight_with_ladder is a sync closure that runs the resource
             # check (nvidia-smi) and the degradation ladder (which re-probes
             # hardware). Off-loop: it can shell out several times in a row.
+            def _reserve_gb() -> float:
+                return ((mmproj_size_gb if attach_projector else 0.0)
+                        + ((draft_size_gb + self.DRAFT_OVERHEAD_GB) if attach_draft else 0.0))
+
             preflight_error, params = await asyncio.to_thread(
-                _preflight_with_ladder,
-                mmproj_size_gb if attach_projector else 0.0,
+                _preflight_with_ladder, _reserve_gb(),
             )
+
+            if preflight_error and attach_draft:
+                # The drafter only adds speed: it is the first thing dropped.
+                logger.warning(
+                    f"[LocalModelManager] DSpark drafter for "
+                    f"{Path(model_path).name} does not fit ({preflight_error}); "
+                    f"retrying without it."
+                )
+                attach_draft = False
+                preflight_error, params = await asyncio.to_thread(
+                    _preflight_with_ladder, _reserve_gb(),
+                )
 
             if preflight_error and attach_projector:
                 # Edge case (REQ-4): the projector doesn't fit — degrade to
@@ -3202,6 +3312,9 @@ class LocalModelManager:
                     f"[LocalModelManager] Vision projector will be attached for "
                     f"{Path(model_path).name}; routing to compiled llama-server."
                 )
+            # -md is a compiled-server flag too.
+            if attach_draft:
+                force_server = True
 
             if is_mtp and self._inprocess_enabled():
                 logger.info(
@@ -3268,6 +3381,7 @@ class LocalModelManager:
                 model_path, params, is_mtp=is_mtp,
                 mmproj_path=mmproj_path if attach_projector else None,
                 purpose=purpose,
+                draft_path=draft_path if attach_draft else None,
             )
             logger.info(f"[LocalModelManager] Starting llama-server: {' '.join(cmd)}")
 
@@ -3883,9 +3997,13 @@ class LocalModelManager:
         is_mtp: bool = False,
         mmproj_path: Optional[str] = None,
         purpose: str = "chat",
+        draft_path: Optional[str] = None,
     ) -> List[str]:
         """
         Build the inference server command.
+
+        draft_path: a DSpark drafter paired with this model (scan_models) ->
+        ``-md <draft> --spec-type draft-dspark``, fully on the GPU.
         Prefers ik_llama.cpp's llama-server binary when available.
         Falls back to python -m llama_cpp.server (llama-cpp-python).
 
@@ -4070,6 +4188,10 @@ class LocalModelManager:
                     f"[LocalModelManager] MTP enabled: --spec-type draft-mtp "
                     f"--spec-draft-n-max {mtp_n_max}"
                 )
+            elif draft_path:
+                cmd += ["-md", str(draft_path), "--spec-type", "draft-dspark",
+                        "--n-gpu-layers-draft", "-1"]
+                logger.info(f"[LocalModelManager] DSpark drafter attached: {Path(draft_path).name}")
         else:
             # ── llama-cpp-python fallback ──────────────────────────────────
             # Flag reference (llama_cpp.server v0.3+):

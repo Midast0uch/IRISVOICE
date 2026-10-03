@@ -56,6 +56,10 @@ EXPECTED_ENTRY_FIELDS = {
     "has_vision",
     "mmproj_path",
     "mmproj_size_gb",
+    # DSpark (2026-10-03): the drafter paired with this model, if any
+    # (tests/contract/test_dspark_pairing_contract.py).
+    "draft_path",
+    "draft_size_gb",
 }
 
 
