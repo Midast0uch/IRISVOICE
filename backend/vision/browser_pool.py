@@ -122,6 +122,13 @@ _start_lock = asyncio.Lock()
 # from zero (live 2026-10-02: two 90 s timeouts, then 4.5 s). A later caller
 # joins the same launch.
 _launch_task: Optional[asyncio.Task] = None
+# One SPARE context + blank page, built in the background while web is ON, so
+# an agent's browser_open adopts a page whose renderer already started. Run A4
+# (2026-10-02, warm Chromium, loop never blocked): new_context 3.0 s +
+# new_page 29.9 s inside the first open. Used once (fresh, never shared), then
+# replaced off the answer path. Lives and dies on the host loop.
+_spare = None  # (context, page) or None
+_spare_task: Optional[asyncio.Task] = None
 
 _last_browser_use: float = 0.0
 _idle_task: Optional[asyncio.Task] = None
@@ -520,6 +527,55 @@ def _record_acquire(duration_ms: int, cold: bool) -> None:
                 pass
 
 
+async def _make_spare() -> None:
+    """Build the spare context + blank page. Runs ON the host loop; never raises."""
+    global _spare
+    if _browser is None or _spare is not None or not _web_hold:
+        return
+    t0 = time.monotonic()
+    try:
+        from backend.vision.browser_session import _new_context  # lazy: cycle
+
+        ctx = await _new_context(_browser)
+        page = await ctx.new_page()
+        if _spare is None and _browser is not None:
+            _spare = (ctx, page)
+            logger.info("[browser_pool] spare page ready in %.1f s", time.monotonic() - t0)
+        else:
+            await ctx.close()
+    except Exception as exc:  # noqa: BLE001 — a spare is a bonus; open() builds its own
+        logger.info("[browser_pool] spare page not built: %s", exc)
+
+
+def _schedule_spare() -> None:
+    """(Re)build the spare in the background. Call ON the host loop."""
+    global _spare_task
+    if _web_hold and _browser is not None and _spare is None and (
+            _spare_task is None or _spare_task.done()):
+        _spare_task = asyncio.get_running_loop().create_task(_make_spare())
+
+
+async def take_spare_page():
+    """The spare (context, page) for ONE session, or None. Runs ON the host
+    loop; a replacement is scheduled at once."""
+    global _spare
+    sp, _spare = _spare, None
+    if sp is not None and (_browser is None or not _browser.is_connected()):
+        sp = None  # a spare of a dead browser is no page at all
+    _schedule_spare()
+    return sp
+
+
+async def _drop_spare() -> None:
+    global _spare
+    sp, _spare = _spare, None
+    if sp is not None:
+        try:
+            await sp[0].close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 async def _stop_owned_browser() -> None:
     """Close the Chromium browser + Playwright driver IRIS itself started.
 
@@ -530,6 +586,7 @@ async def _stop_owned_browser() -> None:
     global _pw, _browser, _owned
     if not _owned or _browser is None:
         return
+    await _drop_spare()
     browser, pw = _browser, _pw
     _browser = None
     _pw = None
@@ -573,6 +630,7 @@ async def _prewarm_on_host() -> None:
         _browser_obj, lease = await _acquire_browser_on_host(10_000.0)
         lease.release()
         logger.info("[browser_pool] web toggle prewarm ready in %.1f s", time.monotonic() - t0)
+        _schedule_spare()
     except Exception as exc:  # noqa: BLE001 — the launch (if any) keeps going
         logger.info("[browser_pool] web toggle prewarm: %s", exc or type(exc).__name__)
 

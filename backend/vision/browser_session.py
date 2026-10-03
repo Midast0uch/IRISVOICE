@@ -767,8 +767,18 @@ class BrowserSession:
             # "'NoneType' object has no attribute 'send'". Detect that signature,
             # force-reset the pool, re-acquire, and retry ONCE. Any other failure
             # falls through to the existing close-and-raise path unchanged.
+            # A spare page from the pool (web ON): its renderer already started.
+            _spare = None
+            if self._acquire is None:
+                try:
+                    _spare = await browser_pool.take_spare_page()
+                except Exception:  # noqa: BLE001 — build our own below
+                    _spare = None
             try:
-                self._context = await _new_context(browser)
+                if _spare is not None:
+                    self._context = _spare[0]
+                else:
+                    self._context = await _new_context(browser)
             except Exception as _ctx_exc:  # noqa: BLE001
                 if "no attribute 'send'" not in str(_ctx_exc):
                     raise
@@ -817,7 +827,7 @@ class BrowserSession:
             _t_ctx = time.monotonic()
             await _inject_keyring_cookies(self._context, self.url, self._job_id)
             _t_cookies = time.monotonic()
-            self._page = await self._context.new_page()
+            self._page = _spare[1] if _spare is not None else await self._context.new_page()
             _t_page = time.monotonic()
             # REQ-6: adopt popups/tabs opened by clicks (target="_blank").
             # Guarded getattr: older fakes/pool shims without .on keep working.
@@ -854,9 +864,10 @@ class BrowserSession:
             # Where an open's time goes (2026-10-02: 86 s with a warm browser).
             logger.info(
                 "[browser_session] opened job=%s url=%s context_ms=%d cookies_ms=%d "
-                "page_ms=%d nav_ms=%d", self._job_id, self.url,
+                "page_ms=%d nav_ms=%d spare=%s", self._job_id, self.url,
                 int((_t_ctx - self._started_at) * 1000), int((_t_cookies - _t_ctx) * 1000),
                 int((_t_page - _t_cookies) * 1000), int((_t_nav - _t_page) * 1000),
+                _spare is not None,
             )
             # REQ-11 AC1: publish the first settled frame (page 1).
             await self._publish_frame()
@@ -1996,7 +2007,11 @@ class BrowserSession:
         self._page_number = _next
         _pub_t0 = time.monotonic()
         try:
-            get_capture_store().save(self._job_id, self._page_number, self.url, html)
+            # Off the browser host loop: a disk write + eviction scan measured up
+            # to 3.0 s (run A3) and stalls every browser call while it runs.
+            await asyncio.to_thread(
+                get_capture_store().save, self._job_id, self._page_number, self.url, html,
+            )
             self._last_published = html
             self._frames_published += 1
         except Exception as exc:  # noqa: BLE001 — publication is off the hot path

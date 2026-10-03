@@ -16,8 +16,22 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import logging
+import sys
 import threading
+import time
+import traceback
 from typing import Any, Coroutine, Optional
+
+logger = logging.getLogger(__name__)
+
+# Loop-lag watchdog (2026-10-02): the first page of a backend process took 45 s
+# to reach domcontentloaded while the same navigation outside the backend took
+# 0.3-2.8 s. A blocked host loop stalls the Playwright driver too, so EVERY
+# browser call waits. The watchdog pings the loop and, when it does not answer
+# in time, logs what the loop thread is running - the blocker, by name.
+_LAG_PING_S = 0.5
+_LAG_ALARM_S = 2.0
 
 
 class BrowserHost:
@@ -30,10 +44,14 @@ class BrowserHost:
         with self._start_lock:
             if self._loop is None:
                 loop = asyncio.new_event_loop()
-                threading.Thread(
+                t = threading.Thread(
                     target=loop.run_forever, name="iris-browser-loop", daemon=True,
-                ).start()
+                )
+                t.start()
                 self._loop = loop
+                threading.Thread(
+                    target=_watch_lag, args=(loop, t), name="iris-browser-lag", daemon=True,
+                ).start()
             return self._loop
 
     def on_loop(self) -> bool:
@@ -75,3 +93,23 @@ _HOST = BrowserHost()
 
 def get_browser_host() -> BrowserHost:
     return _HOST
+
+
+def _watch_lag(loop: asyncio.AbstractEventLoop, thread: threading.Thread) -> None:
+    """Ping the host loop; on a stall log the loop thread's stack once per stall
+    and the stall's length when it ends. Never raises; ends with the loop."""
+    while thread.is_alive() and not loop.is_closed():
+        answered = threading.Event()
+        sent = time.monotonic()
+        try:
+            loop.call_soon_threadsafe(answered.set)
+        except RuntimeError:  # loop closed
+            return
+        if not answered.wait(_LAG_ALARM_S):
+            frame = sys._current_frames().get(thread.ident)
+            stack = "".join(traceback.format_stack(frame)[-12:]) if frame else "(no frame)"
+            logger.warning("[browser_host] loop blocked > %.0f s; the loop thread is in: %s",
+                           _LAG_ALARM_S, stack.replace("\n", " | "))
+            answered.wait()
+            logger.warning("[browser_host] loop stall ended after %.1f s", time.monotonic() - sent)
+        time.sleep(_LAG_PING_S)

@@ -79,7 +79,9 @@ def test_web_toggle_on_warms_the_browser_and_holds_it(monkeypatch):
     pw = _FakePW(delay=0.1)
     with patch("playwright.async_api.async_playwright", return_value=_Ctx(pw)):
         browser_pool.set_web_hold(True)
-        deadline = time.monotonic() + 3
+        # 10 s: the claim is 'built with no caller', not a speed; a loaded box (a
+        # 27 s group run, 2026-10-02) missed a 3 s wait for the background thread.
+        deadline = time.monotonic() + 10
         while browser_pool._browser is None and time.monotonic() < deadline:
             time.sleep(0.05)
     assert browser_pool._browser is not None  # warmed with no acquire call
@@ -134,3 +136,62 @@ def test_the_dispatcher_never_cuts_a_browser_tool_before_its_own_ceiling():
                 "browser_observe": bt._OBSERVE_TIMEOUT_S, "browser_explore": bt._EXPLORE_TIMEOUT_S + 5.0}
     for tool, own in ceilings.items():
         assert AgentKernel._der_tool_deadline(SimpleNamespace(), tool) > own, tool
+
+
+class _SparePage:
+    pass
+
+
+class _SpareCtx:
+    def __init__(self, counter):
+        self.counter = counter
+
+    async def new_page(self):
+        self.counter["pages"] += 1
+        return _SparePage()
+
+    async def close(self):
+        pass
+
+
+class _BrowserWithContexts(_FakeBrowser):
+    def __init__(self, counter):
+        super().__init__()
+        self.counter = counter
+
+    async def new_context(self, **kw):
+        self.counter["contexts"] += 1
+        return _SpareCtx(self.counter)
+
+
+def test_web_on_keeps_one_spare_page_ready_and_replaces_it(monkeypatch):
+    """Run A4 (2026-10-02): with a warm Chromium and a free loop, the first open
+    still spent 3.0 s on new_context + 29.9 s on new_page. While web is ON the
+    pool keeps one fresh spare (context + page) ready; a session takes it once
+    and a new spare is built in the background."""
+    counter = {"contexts": 0, "pages": 0}
+    pw = _FakePW(delay=0.05)
+
+    async def _launch(**kwargs):
+        return _BrowserWithContexts(counter)
+
+    pw.chromium.launch = _launch
+    with patch("playwright.async_api.async_playwright", return_value=_Ctx(pw)):
+        browser_pool.set_web_hold(True)
+        # 10 s: the claim is 'built with no caller', not a speed; a loaded box (a
+        # 27 s group run, 2026-10-02) missed a 3 s wait for the background thread.
+        deadline = time.monotonic() + 10
+        while browser_pool._spare is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert browser_pool._spare is not None  # built with no session asking
+        first = asyncio.run(browser_pool.get_browser_host().run(browser_pool.take_spare_page()))
+        assert first is not None
+        again = asyncio.run(browser_pool.get_browser_host().run(browser_pool.take_spare_page()))
+        assert again is None or again is not first  # never handed out twice
+        # 10 s: the claim is 'built with no caller', not a speed; a loaded box (a
+        # 27 s group run, 2026-10-02) missed a 3 s wait for the background thread.
+        deadline = time.monotonic() + 10
+        while browser_pool._spare is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert browser_pool._spare is not None  # replaced in the background
+    assert counter["pages"] >= 2
