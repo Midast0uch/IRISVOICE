@@ -19785,6 +19785,18 @@ Respond with a JSON object:
                         "[DER] continuation consult skipped during COMPRESS "
                         "(rec=1) - the plan cannot expand"
                     )
+            # The objective is MET: every required fact of the goal contract is
+            # covered and none is blocked. The consult can only add steps that
+            # chase the agent's own action lines as "ceiling facts" - live
+            # 2026-10-02 run A5: C=1.000 at 23:56:37, then a consult + 2 added
+            # steps + a bonus pass over "Opened Wikipedia homepage"-style facts,
+            # 46 s before the same answer. No contract / open facts -> unchanged.
+            if _cont_run and self._goal_contract_met():
+                _cont_run = False
+                logger.info(
+                    "[DER] continuation consult skipped - the goal contract is met "
+                    "(all required facts covered)"
+                )
             if _cont_run:
                 _next_tool = self._der_plan_next_step(
                     plan.original_task,
@@ -20102,6 +20114,20 @@ Respond with a JSON object:
         except Exception as _bp_exc:  # noqa: BLE001 - a bound never breaks the loop
             logger.warning("[goal-contract] cover-push bound failed: %r", _bp_exc)
             return open_facts
+
+    def _goal_contract_met(self) -> bool:
+        """True when a goal contract exists, it has required facts, all are
+        covered and none is blocked. Advisory; False on any doubt."""
+        try:
+            _st = getattr(self, "_goal_contract_state", None)
+            _contract = _st.get("contract") if isinstance(_st, dict) else None
+            if _contract is None or not list(_contract.required or []):
+                return False
+            if _st.get("blocked"):
+                return False
+            return not self._goal_contract_open_facts()
+        except Exception:  # noqa: BLE001 — doubt means "not met": the consult runs
+            return False
 
     def _goal_contract_open_facts(self) -> List[str]:
         """Goal contract T6 (REQ-3 AC3.2/AC3.6): required facts neither covered
