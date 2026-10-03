@@ -308,7 +308,9 @@ Non-orb elements (chat wing, dashboard buttons) work fine with normal uid clicks
 - **UI/UX**: `docs/Screen-Wings.md`, `docs/Design/XurOrb-Design.md`,
   `docs/Design/ChatCard-Redesign-Design.md`, `docs/Design/Hex-Pattern-Wheel-View.md`
 - **Architecture**: `docs/architecture/agent-multi-step-architecture.md` (DER/PACMAN),
-  `web-toggle-crawl-flow.md`, `audio-pipeline.md`, `trust-routing-document-memory.md`
+  `web-browser-architecture.html` (web search + browser control, interactive map; serve the
+  folder over http so `archmap.js` loads), `oracle.html` + `oracle.md`, `audio-pipeline.md`,
+  `trust-routing-document-memory.md`
 - **Test strategy**: `docs/TESTING_STRATEGY.md`, `docs/LIVE_TESTING_CHECKLIST.md`,
   `backend/benchmarks/live_benchmark.py`
 

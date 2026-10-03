@@ -34,6 +34,22 @@
       "port": 8080,
       "autoPort": false,
       "cwd": "C:\\dev\\IRISVOICE\\iris-launcher"
+    },
+    {
+      "name": "arch-docs",
+      "runtimeExecutable": "C:/Python314/python.exe",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8765",
+        "--bind",
+        "127.0.0.1",
+        "--directory",
+        "docs/architecture"
+      ],
+      "cwd": "C:\\dev\\IRISVOICE",
+      "port": 8765,
+      "autoPort": false
     }
   ]
 }

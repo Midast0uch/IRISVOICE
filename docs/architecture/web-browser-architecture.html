@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IRIS Web &amp; Browser Map</title>
+<link rel="stylesheet" href="archmap.css">
+</head>
+<body>
+<header class="top">
+  <div>
+    <h1><span>IRIS · Web search &amp; browser control</span></h1>
+    <p>How one request becomes a search, a crawl or a live browser task — and where the gate, the deciders, vision,
+      memory and the live events join in. Nine layers, each its own plate. Play a flow to watch the path slide by slide;
+      the minimap keeps the whole building in view. Code as of <code>feat/agent-multi-step-tool-execution</code>, 2026-10-02.</p>
+  </div>
+  <div class="spacer"></div>
+  <button id="theme" title="Light / dark">◐ Theme</button>
+  <a href="oracle.html"><button>Oracle map →</button></a>
+</header>
+
+<section class="stage">
+  <div class="toolbar">
+    <select id="flowSel" aria-label="Flow"><option value="">▶ Choose a flow…</option></select>
+    <button id="prev" title="Previous step (←)">◀</button>
+    <button id="play">▶ Play</button>
+    <button id="next" title="Next step (→)">▶</button>
+    <span class="sep"></span>
+    <button id="overview" title="Whole map (Esc)">⤢ Overview</button>
+    <button id="viewToggle">Flat view</button>
+    <span class="sep"></span>
+    <div id="filters"></div>
+  </div>
+  <div class="body">
+    <div class="canvas">
+      <svg id="map" role="img" aria-label="Layered map of web search and browser control"></svg>
+      <div id="slide" aria-live="polite"></div>
+      <div class="minilabel">WHOLE MAP</div>
+      <svg id="mini" aria-label="Minimap"></svg>
+      <div class="hint">wheel = zoom · drag = pan · ← → steps · Esc = overview</div>
+    </div>
+    <aside id="side">
+      <div class="side-head" style="--lc:var(--c2)"><span class="side-lane">How to read it</span><h2>A building with nine floors</h2></div>
+      <p style="color:var(--ink2)">Each floor is <b>who acts</b>. Top: <b>you</b> and the <b>interface</b>. Then the <b>gate</b>
+        (the web toggle — the front door key), the <b>deciders</b> (the editor who plans the story), the <b>tools</b>
+        (three ways to get facts: read the headlines = search, read the articles = crawl, walk into the building and ask
+        at the desk = browser), the <b>runtime</b> that drives Chromium and the crawler, <b>vision</b> (the eyes when a
+        sign has no text), <b>memory</b> (the notebook) and the <b>events</b> that come back to your screen.</p>
+      <p style="color:var(--ink3);font-size:12.5px">Click a box for its role, code, numbers and open faults.
+        Dot colour: green live · amber shadow · grey planned · red open fault (pulsing).</p>
+    </aside>
+  </div>
+  <div class="legend">
+    <span><i style="background:var(--live)"></i>live</span><span><i style="background:var(--shadow)"></i>shadow (scores, does not decide)</span>
+    <span><i style="background:var(--planned)"></i>planned</span><span><i style="background:var(--fault)"></i>open fault</span>
+    <span>──▶ leads to</span><span>- - ▶ return, event or loop</span><span style="color:var(--hot)">● particle = data moving in the current step</span>
+  </div>
+</section>
+
+<div class="sections">
+  <details class="sec"><summary><span class="chev">›</span><span class="stripe" style="background:var(--fault)"></span><b>Faults from the browser + vision audit</b><span class="sum" id="sumFaults"></span></summary>
+    <div class="inner"><table id="faults"><thead><tr><th>#</th><th>What was wrong</th><th>Status</th></tr></thead><tbody></tbody></table></div></details>
+  <details class="sec"><summary><span class="chev">›</span><span class="stripe" style="background:var(--c4)"></span><b>Measured numbers</b><span class="sum" id="sumNumbers"></span></summary>
+    <div class="inner"><table id="numbers"><thead><tr><th>What</th><th>Value</th><th>Where measured</th></tr></thead><tbody></tbody></table></div></details>
+  <details class="sec"><summary><span class="chev">›</span><span class="stripe" style="background:var(--c3)"></span><b>Limits and timeouts</b><span class="sum" id="sumLimits"></span></summary>
+    <div class="inner"><table id="limits"><thead><tr><th>Limit</th><th>Value</th><th>Source</th></tr></thead><tbody></tbody></table></div></details>
+  <details class="sec"><summary><span class="chev">›</span><span class="stripe" style="background:var(--c9)"></span><b>Events the screen receives</b><span class="sum" id="sumEvents"></span></summary>
+    <div class="inner"><table id="events"><thead><tr><th>Event</th><th>Emitted by</th><th>Shown by</th></tr></thead><tbody></tbody></table></div></details>
+</div>
+<p class="note">Supersedes <code>web-toggle-crawl-flow.md</code> and <code>websearch-vision-browser-improvements.md</code> (removed 2026-10-02).
+Sources: the code named in each box; audit addendum MCM <code>pin_7125f6739038</code>; live runs A / A2 / A3 (2026-10-02,
+<code>logs/live_b1_A*_dev.log</code>). The Oracle has its own map: <a href="oracle.html">oracle.html</a> with <a href="oracle.md">oracle.md</a>.</p>
+
+<script>
+const LANES = [
+  {id:"you",    label:"YOU",            icon:"◉", color:"--c1"},
+  {id:"ui",     label:"INTERFACE",      icon:"▣", color:"--c2"},
+  {id:"gate",   label:"GATE",           icon:"⚿", color:"--c3"},
+  {id:"decide", label:"DECIDE · Brain · Oracle · DER", icon:"✦", color:"--c4"},
+  {id:"tools",  label:"TOOLS",          icon:"⚒", color:"--c5"},
+  {id:"run",    label:"RUNTIME",        icon:"⚙", color:"--c6"},
+  {id:"vision", label:"VISION",         icon:"◎", color:"--c7"},
+  {id:"mem",    label:"MEMORY",         icon:"❖", color:"--c8"},
+  {id:"ev",     label:"EVENTS → SCREEN",icon:"⇡", color:"--c9"},
+];
+const NODES = [
+ // YOU
+ {id:"u_toggle", lane:"you", x:230, t:"Turn web ON", s:"one switch, both modes", status:"live",
+  role:"The ONLY gate on internet tools and browser control, in personal and developer mode (owner rule, 35c315bd).",
+  files:["components (web toggle) → WS set_web_mode"], out:"set_web_mode {enabled}"},
+ {id:"u_ask", lane:"you", x:520, t:"Ask", s:"voice or text", status:"live",
+  role:"A request: a quick question, a research question, or a task in a web page.",
+  out:"text_message / voice transcript / dev_cli"},
+ {id:"u_watch", lane:"you", x:1090, t:"Watch / take over", s:"live page, cursor glide", status:"live",
+  role:"You see each action before it happens (cursor glide, approach → done). Take over gives you the wheel through a CDP screencast.",
+  faults:["Plan B2: make the live screencast the DEFAULT view; one Take over / Hand back on the surface; the agent hands over at logins, 2FA, CAPTCHAs, payments."]},
+ {id:"u_approve", lane:"you", x:1430, t:"Answer a click question", s:"only when unsure", status:"live",
+  role:"The click-safety gate asks you only when the rules and the Brain judge cannot clear an action (45 s window).",
+  numbers:["up to 8 s Brain judge + 45 s question per unsure click"]},
+ // UI
+ {id:"ui_toggle", lane:"ui", x:230, t:"Web toggle", s:"dashboard + chat", status:"fault",
+  role:"The switch you press.", faults:["V14: the Browser Surface still says 'Web access is turned off' while the agent browses — the UI state is not synced from the backend set_web_mode."]},
+ {id:"ui_answer", lane:"ui", x:520, t:"Chat answer", s:"with sources", status:"live",
+  role:"The synthesis reply. Research answers carry citations; the reply is spoken (TTS) and shown.",
+  numbers:["run A2: reply at 286 s (was 474 s in run A)"]},
+ {id:"ui_surface", lane:"ui", x:1090, t:"Browser Surface", s:"overlay · takeover · captures", status:"live",
+  role:"Shows the page the agent drives: saved captures, the navigation overlay with marks and the cursor glide, and the takeover screencast.",
+  files:["components/iris/browser/BrowserNavigationOverlay.tsx","components/iris/browser/TakeoverLiveSurface.tsx","components/iris/browser/VisionLifecycleChip.tsx","hooks/useBrowserNavOverlay.ts"],
+  faults:["Plan A: make the live CDP screencast the default view while the agent browses; captures become a history scrubber; outline the target mark before each act."]},
+ {id:"ui_perm", lane:"ui", x:1430, t:"Click question card", s:"permission:request", status:"live",
+  role:"The card that asks you about an unsure click. No answer within the window = refuse."},
+ // GATE
+ {id:"g_gateway", lane:"gate", x:230, t:"set_web_mode", s:"iris_gateway", status:"live",
+  role:"WS handler: flips the global internet flag and the browser web hold.",
+  files:["backend/iris_gateway.py (msg_type == 'set_web_mode')"], in:"set_web_mode {enabled}", out:"set_global_internet_access(enabled) · browser_pool.set_web_hold(enabled)"},
+ {id:"g_flag", lane:"gate", x:520, t:"Internet flag", s:"tool registry gating", status:"live",
+  role:"Tools with requires_internet=True (search, crawler_query, browser_*, screenshot_page) exist for the model only while the flag is ON. OFF = zero internet tools, a web ask runs no tool.",
+  files:["backend/agent/agent_kernel.py set_global_internet_access / get_global_internet_access","backend/agent/tool_registry.py _internet_provider"]},
+ {id:"g_hold", lane:"gate", x:810, t:"Web hold", s:"prewarm Chromium + keyring", status:"live",
+  role:"NEW (2026-10-02): web ON starts Chromium at once, keeps it warm while ON, and pays keyring's first import (9.5 s measured) on a side thread. OFF returns Chromium to the 180 s idle stop.",
+  files:["backend/vision/browser_pool.py set_web_hold / _prewarm_on_host","backend/vision/browser_session.py warm_keyring"],
+  numbers:["run A2: prewarm 0.0 s (browser already up); first acquire 0 ms warm"]},
+ // DECIDE
+ {id:"d_plan", lane:"decide", x:520, t:"Planner + goal contract", s:"Brain · _plan_task", status:"live",
+  role:"The Brain writes 3–7 goal steps (never tool names). The goal contract re-adds facts the planner dropped (here: 'height in metres', 'year of first ascent').",
+  files:["backend/agent/agent_kernel.py _plan_task"], numbers:["plan ≈ 5 s on mercury-2.5 (run A2: 4762 tokens)"]},
+ {id:"d_oracle", lane:"decide", x:810, t:"Oracle: web_intent", s:"one question, CPU, ~170 ms", status:"shadow",
+  role:"'Does this turn need the web?' Scored on every web-looking turn (live log 20:16:34: chosen=yes conf=0.896, 171 ms). Recorded as shadow rows; the bar decides when it may steer. Click safety, narration and others are Oracle consumers too — see the Oracle map.",
+  files:["backend/agent/decision_engine.py CONSUMERS / CONSUMER_JOBS","backend/agent/tool_decision.py"],
+  faults:["V15: browser_next (which mark to act on) and web_depth (snippets / crawl / interact) are registered jobs with ZERO callers.","web_intent is anti-calibrated in the measured rows (conf < 0.5 agrees 97 %, 0.5–0.6 agrees 4 %)."]},
+ {id:"d_der", lane:"decide", x:1090, t:"DER queue", s:"streak gate · replan", status:"live",
+  role:"Runs the plan as nodes; a stall fires the streak gate, which re-plans the remaining steps. FIXED V12: the re-plan now plans from YOUR request + the directive, and recall searches with your request only.",
+  files:["backend/agent/agent_kernel.py _der_apply_steering (V12, 72cfe109)"],
+  numbers:["live A: replan recall found 0 unrelated failures; new step 'Open the in-app browser to Wikipedia homepage'"]},
+ {id:"d_node", lane:"decide", x:1370, t:"run_node", s:"bounded tool loop per step", status:"live",
+  role:"One DER step = a loop of tool calls by the TOOL model (Brain helps once if it struggles). Sees each result; ends on a STATUS line or step_done. Repeat guard blocks only repeats of SUCCESSFUL unchanged calls — a failed call may be retried (229caf64).",
+  files:["backend/agent/node_executor.py run_node","DEV_NODE_TOOLS includes browser_open/observe/act/explore"],
+  numbers:["run A2: 2nd browser_open after a timeout → ok in 5.1 s"]},
+ {id:"d_personal", lane:"decide", x:1630, t:"Personal mode path", s:"one tool per step", status:"fault",
+  role:"Personal mode still resolves ONE tool call per plan step (ToolDecisionBox). A browser task needs observe → act loops.",
+  faults:["V10 (= H8 C4): one engine both modes — run_node in personal mode.","V11: the tool-decision menu cuts each tool description to 90 chars (goal to 200); browser usage rules are lost."]},
+ // TOOLS
+ {id:"t_search", lane:"tools", x:230, t:"search", s:"snippets · Exa provider", status:"live",
+  role:"Quick tier: a search provider returns URLs, titles and highlight snippets. No page is opened.",
+  files:["backend/crawler/search_providers/exa.py (EXA_API_KEY)","backend/crawler/search_providers/base.py"], numbers:["provider timeout 30 s"]},
+ {id:"t_crawl", lane:"tools", x:500, t:"crawler_query", s:"plan→fetch→rank→extract→cite", status:"live",
+  role:"Crawl tier: plan URLs, fetch pages, split into passages, score credibility, rerank, extract and cite. Returns as soon as a quorum of pages is in.",
+  files:["backend/crawler/orchestrator.py CrawlOrchestrator.research","backend/agent/tool_bridge.py _execute_crawler_query"],
+  numbers:["run ceiling 25 s (IRIS_WEBSEARCH_MAX_WALL_MS)","quorum 3 pages + 2 s grace","max 5 pages"]},
+ {id:"t_open", lane:"tools", x:780, t:"browser_open", s:"start / reuse the page", status:"fault",
+  role:"Opens the URL in this conversation's live browser (one BrowserContext per conversation, max 2 sessions, 300 s idle).",
+  files:["backend/agent/tools/browser_tools.py browser_open / _do_open"],
+  numbers:["own ceiling 120 s","run A2: first open 90 s FAILED (warm Chromium), retry 5.1 s"],
+  faults:["NEW: the dispatcher deadline for browser tools is the 90 s default, below the tool's own 120 s — the dispatcher cuts it first (der_constants DEADLINE_DEFAULT_S).","NEW: the first open of a backend process spent 86 s between 'acquired' and 'opened' with a warm Chromium; 9.5 s of it was a keyring import ON the browser loop (fixed: off-loop + warmed at web ON). Per-step timings now logged to find the rest."]},
+ {id:"t_observe", lane:"tools", x:1010, t:"browser_observe", s:"Set-of-Marks + digest", status:"live",
+  role:"Numbers every visible link, button, input and select (element_id), plus title, URL and a text digest. When a vision model is live it also returns the MARKED SCREENSHOT. Optional 'question' asks the vision model.",
+  files:["backend/agent/tools/browser_tools.py _do_observe","backend/vision/browser_session.py observe(marked_screenshot)"],
+  numbers:["own ceiling 30 s","screenshot ≤ 600 KB base64"]},
+ {id:"t_act", lane:"tools", x:1240, t:"browser_act", s:"click · type · select · scroll · press · back", status:"live",
+  role:"Real mouse and keyboard input; the cursor glides to the target first. Every act passes the click-safety gate.",
+  files:["backend/agent/tools/browser_tools.py _do_act / _gate_action"], numbers:["ceiling 60 s + 8 s judge + 45 s question = 113 s"]},
+ {id:"t_safety", lane:"tools", x:1470, t:"Click safety", s:"rules → Brain judge → you", status:"live",
+  role:"Rules clear most actions. Unsure: the Brain judges (8 s); still unsure: you are asked (45 s); no answer = refuse. Refused elements are not retried in the task. The Oracle scores click_safety in shadow.",
+  files:["backend/agent/tools/click_safety.py rule_verdict / _call_llm","click_safety_shadow (Oracle consumer)"],
+  faults:["Up to 53 s per unsure click, and a refusal when no user is present."]},
+ {id:"t_explore", lane:"tools", x:1680, t:"browser_explore", s:"read linked pages", status:"live",
+  role:"Read-only: reads up to 5 goal-relevant same-site pages linked from the live page, best passage per page.",
+  numbers:["30 s total, 8 s per page"]},
+ // RUNTIME
+ {id:"r_dispatch", lane:"run", x:230, t:"Tool dispatcher", s:"ToolDecisionBox · deadlines", status:"live",
+  role:"Every tool call: permission tier, repeat/idempotency guards keyed on the file-change epoch (S21), and a per-family deadline. One ledger row per outcome.",
+  files:["backend/agent/tool_decision.py dispatch","backend/agent/agent_kernel.py _der_tool_deadline"],
+  numbers:["gather (crawl) 240 s · read 60 s · default 90 s · run_command 630 s"]},
+ {id:"r_egress", lane:"run", x:470, t:"Egress guard", s:"every hop, every redirect", status:"live",
+  role:"Refuses private / loopback / reserved addresses and re-checks the address after each redirect (DNS-rebinding defence). The browser tools use the same gate.",
+  files:["backend/proxy/egress_guard.py acheck_url"], numbers:["max 8 MB response · max 5 redirects"]},
+ {id:"r_crawlsub", lane:"run", x:700, t:"Crawl worker", s:"Crawl4AI subprocess", status:"live",
+  role:"Fetches and extracts pages in an isolated subprocess so a crash cannot take the backend down.",
+  files:["backend/crawler/crawl_runner.py","backend/crawler/crawler_engine.py"], numbers:["25 s per subprocess"]},
+ {id:"r_host", lane:"run", x:930, t:"Browser host loop", s:"one thread owns Playwright", status:"live",
+  role:"Playwright objects belong to the loop that made them; DER runs each tool on its own loop. So ONE daemon loop owns all browser objects and every call is marshalled to it (context variables travel along).",
+  files:["backend/vision/browser_host.py BrowserHost.run"],
+  faults:["Anything blocking on this loop stalls EVERY browser operation (the keyring import did, 9.5 s)."]},
+ {id:"r_pool", lane:"run", x:1160, t:"Browser pool", s:"one Chromium · leases", status:"live",
+  role:"ONE headless Chromium per backend; each conversation gets its own context. Leases keep it up during a run. NEW: the launch is one shared task — a caller's 90 s wait may fail open, the launch keeps going and the next caller joins it.",
+  files:["backend/vision/browser_pool.py _acquire_browser_on_host / _launch_task / set_web_hold"],
+  numbers:["launch measured 0.7 s (warm cache) … 20.7 s (startup) … >90 s (cold, run A)","idle stop 180 s unless held"]},
+ {id:"r_session", lane:"run", x:1390, t:"Browser session", s:"context · cookies · page · goto", status:"live",
+  role:"Opens a fresh context, injects keyring cookies (now off-loop), a page, navigates (domcontentloaded), publishes frames; observe draws Set-of-Marks; act glides the cursor then inputs.",
+  files:["backend/vision/browser_session.py open / observe / act"],
+  numbers:["navigation timeout 45 s (run A: one goto hit it)","run A3 per-step log: context 7 ms · cookies 1 ms · page 802 ms · nav 45013 ms","the same goto in a standalone Playwright script: 0.3–5.6 s"]},
+ {id:"r_cdp", lane:"run", x:1620, t:"CDP screencast", s:"takeover", status:"live",
+  role:"Streams the live page to the Browser Surface during a user takeover; the grant ends after 180 s.",
+  files:["backend/vision/cdp_takeover.py"]},
+ // VISION
+ {id:"v_router", lane:"vision", x:500, t:"Vision resolver", s:"brain → tool → fallback", status:"live",
+  role:"Who can see? Tier 1 the Brain, tier 2 the tool model (API: published image input — V9; local: projector loaded), tier 3 the local VLM fallback. Tier 3 now answers requires_load=True when the chosen model can be loaded (V5).",
+  files:["backend/agent/inference/router.py resolve_vision_provider / supports_vision / resolve_vision_client","backend/agent/inference/provider_catalog.py api_published_vision"]},
+ {id:"v_discover", lane:"vision", x:790, t:"Discovery", s:"local first · colour probe", status:"live",
+  role:"Finds a server that can see: the local server on 8082 first (V2), published metadata first, then a red|blue probe image the model must name (V3). API providers: only their configured model (V4). Verdicts expire after 300 s.",
+  files:["backend/tools/lfm_vl_provider.py _candidate_vision_specs / _probe_vision_capability / _model_is_multimodal"],
+  numbers:["image probes per discovery: 81+ → 7","45 s when nothing local can see (two 15 s probe timeouts)"]},
+ {id:"v_autoload", lane:"vision", x:1070, t:"Autoload", s:"ladder › pin · empty slot", status:"live",
+  role:"Loads YOUR chosen vision model into the empty local slot: env hint, else the vision fallback ladder, else the vision card pin (V7). Matches by file name or real path through the D:/C: junction (V6). Never evicts a resident model.",
+  files:["backend/tools/lfm_vl_provider.py _autoload_hints / _find_autoload_vision_models / _maybe_autoprovision_vision_server"],
+  numbers:["live A: LFM2.5-VL-3B loaded, free VRAM 6.5 → 3.8 GB"]},
+ {id:"v_node", lane:"vision", x:1370, t:"Vision in the node", s:"image or reading", status:"live",
+  role:"V8: the node's model can see → it gets the marked screenshot as an image (only the newest stays). It cannot → the resolved vision model reads the screenshot as text, only on a page with ≤ 3 marks or when the model asks.",
+  files:["backend/agent/node_executor.py _screenshot / _safe_look","agent_kernel _der_run_node sees/look"],
+  numbers:["live A: 4 readings, 2.7–3.2 s each"]},
+ // MEMORY
+ {id:"m_research", lane:"mem", x:330, t:"Research memory", s:"record + prior lookup", status:"live",
+  role:"After every search/crawl (off the answer path): a document row, a chain REFERENCE row and a summary fragment. During the next web call: prior records are looked up (≤ 3 s) and cross-checked against the new evidence without a model call.",
+  files:["backend/agent/research_memory.py"], numbers:["prior lookup 3 s · ≤ 12 claims · section ≤ 1500 chars"]},
+ {id:"m_docs", lane:"mem", x:640, t:"Documents", s:"trust zones", status:"live",
+  role:"Fetched pages live as documents. Zones: reference (external web text, untrusted), trusted, tool. Recall tags reference text so the prompt knows it is untrusted; a direct read (get_rendered_documents) is a fetch, not a recall."},
+ {id:"m_episodic", lane:"mem", x:950, t:"Episodic recall", s:"relevance floor 0.5", status:"live",
+  role:"Past successes (floor 0.6) and failures (floor 0.5, V12) reach the planner. Measured on the live store: unrelated failures ≤ 0.27, related 0.4–0.55, the same task 0.87.",
+  files:["backend/memory/episodic.py retrieve_failures / assemble_episodic_context"]},
+ {id:"m_chain", lane:"mem", x:1260, t:"Immortus chain", s:"ordered references", status:"live",
+  role:"The time layer: ordered transitions and REFERENCES (never payloads). Enters context only when relevant."},
+ // EVENTS
+ {id:"e_tool", lane:"ev", x:330, t:"tool_result · open_tab", s:"per tool call", status:"live",
+  role:"Each tool result reaches the chat card rows; open_tab tells the surface which URL is live."},
+ {id:"e_crawl", lane:"ev", x:680, t:"crawler_started · page_fetched", s:"crawl progress", status:"live",
+  role:"Crawl and browser progress: started, each page fetched (url, title, length, page n/N), complete."},
+ {id:"e_vis", lane:"ev", x:1040, t:"crawler_vision_action", s:"approach → done", status:"live",
+  role:"Every browser act: 'approach' (cursor glide, target) then 'done' (ok). Run A: 26 of them for the Kilimanjaro task."},
+ {id:"e_life", lane:"ev", x:1380, t:"Vision lifecycle", s:"cold → warm · error", status:"live",
+  role:"Vision server state for the chip: cold, warm (borrowed / autoloaded), error. VISION_UNAVAILABLE when nothing can see."},
+];
+
+const EDGES = [
+ ["u_toggle","ui_toggle",""],["ui_toggle","g_gateway","set_web_mode"],["g_gateway","g_flag","flag"],["g_gateway","g_hold","web hold"],
+ ["g_hold","r_pool","prewarm",1],
+ ["u_ask","ui_answer",""],["ui_answer","d_plan","request"],
+ ["g_flag","d_plan","web tools on menu",1],
+ ["d_plan","d_oracle","web?"],["d_plan","d_der","steps"],["d_der","d_node","node"],["d_der","d_personal","personal mode"],
+ ["m_episodic","d_plan","past episodes",1],["d_der","d_plan","replan (V12)",1],
+ ["d_node","r_dispatch","tool call"],["d_personal","r_dispatch","1 call",1],
+ ["r_dispatch","t_search","search"],["r_dispatch","t_crawl","crawl"],["r_dispatch","t_open","open"],["r_dispatch","t_observe","observe"],["r_dispatch","t_act","act"],["r_dispatch","t_explore","explore"],
+ ["t_search","r_egress",""],["t_crawl","r_crawlsub","fetch"],["r_crawlsub","r_egress","",1],
+ ["t_open","r_host",""],["t_observe","r_host",""],["t_act","t_safety","gate"],["t_safety","r_host","cleared"],["t_explore","r_host",""],
+ ["t_safety","ui_perm","ask",1],["ui_perm","u_approve",""],["u_approve","t_safety","answer",1],
+ ["r_host","r_pool","acquire"],["r_pool","r_session","context"],["r_session","r_cdp","",1],["r_cdp","ui_surface","screencast",1],
+ ["t_observe","v_router","screenshot?",1],["v_router","v_discover","tier 3"],["v_discover","v_autoload","none up"],["v_autoload","v_discover","re-probe",1],
+ ["v_router","v_node","client"],["t_observe","v_node","marked shot"],["v_node","d_node","image / reading",1],
+ ["t_search","m_research","record",1],["t_crawl","m_research","record",1],["t_crawl","m_docs","pages",1],["m_research","m_chain","reference"],["m_research","t_crawl","prior (≤3 s)",1],
+ ["r_session","e_vis","approach/done",1],["t_crawl","e_crawl","progress",1],["t_open","e_tool","open_tab",1],["v_autoload","e_life","warm",1],
+ ["e_vis","ui_surface","",1],["e_crawl","ui_surface","",1],["e_tool","ui_answer","",1],["e_life","ui_surface","chip",1],
+ ["d_node","ui_answer","synthesis",1],["ui_surface","u_watch",""],["u_watch","r_cdp","take over",1],
+];
+
+const FLOWS = {
+ quick:{name:"Quick web question", steps:[
+  {n:["u_toggle","ui_toggle","g_gateway","g_flag","g_hold"], e:[["u_toggle","ui_toggle"],["ui_toggle","g_gateway"],["g_gateway","g_flag"],["g_gateway","g_hold"]], c:"<b>Web ON.</b> One switch opens the internet tools for both modes and, since 2026-10-02, warms Chromium and keyring in the background."},
+  {n:["u_ask","ui_answer","d_plan","d_oracle"], e:[["u_ask","ui_answer"],["ui_answer","d_plan"],["d_plan","d_oracle"]], c:"<b>You ask.</b> The planner (Brain) writes goal steps; the Oracle scores 'does this need the web?' in ~170 ms (shadow)."},
+  {n:["d_der","d_node","r_dispatch","t_search","r_egress"], e:[["d_plan","d_der"],["d_der","d_node"],["d_node","r_dispatch"],["r_dispatch","t_search"],["t_search","r_egress"]], c:"<b>Search.</b> The node calls <code>search</code>; the egress guard checks every address; the provider returns snippets."},
+  {n:["t_search","m_research","m_chain"], e:[["t_search","m_research"],["m_research","m_chain"]], c:"<b>Remember, off the answer path.</b> Research memory records a document row, a chain reference and a summary fragment."},
+  {n:["d_node","ui_answer"], e:[["d_node","ui_answer"]], c:"<b>Answer.</b> Synthesis writes the reply with sources; it is shown and spoken."},
+ ]},
+ crawl:{name:"Deep research crawl", steps:[
+  {n:["u_ask","ui_answer","d_plan","d_oracle","m_episodic"], e:[["u_ask","ui_answer"],["ui_answer","d_plan"],["d_plan","d_oracle"],["m_episodic","d_plan"]], c:"<b>Plan.</b> The planner sees relevant past episodes only (successes ≥ 0.6, failures ≥ 0.5)."},
+  {n:["d_der","d_node","r_dispatch","t_crawl"], e:[["d_plan","d_der"],["d_der","d_node"],["d_node","r_dispatch"],["r_dispatch","t_crawl"]], c:"<b>crawler_query.</b> The dispatcher gives the gather family 240 s; the crawl itself is bounded at 25 s."},
+  {n:["t_crawl","m_research"], e:[["m_research","t_crawl"]], c:"<b>Prior research, in parallel.</b> Earlier records are looked up (≤ 3 s) and cross-checked against the new evidence — no model call."},
+  {n:["t_crawl","r_crawlsub","r_egress","e_crawl","ui_surface"], e:[["t_crawl","r_crawlsub"],["r_crawlsub","r_egress"],["t_crawl","e_crawl"],["e_crawl","ui_surface"]], c:"<b>Fetch.</b> Pages are fetched in an isolated worker; progress events reach the surface page by page. A quorum of 3 pages + 2 s grace ends the wait."},
+  {n:["t_crawl","m_docs","m_research","m_chain"], e:[["t_crawl","m_docs"],["t_crawl","m_research"],["m_research","m_chain"]], c:"<b>Store.</b> Passages are ranked, cited and stored as reference-zone documents; the research record lands on its lane."},
+  {n:["d_node","ui_answer"], e:[["d_node","ui_answer"]], c:"<b>Answer</b> with citations."},
+ ]},
+ browser:{name:"Interactive browser task (run A2)", steps:[
+  {n:["u_toggle","g_gateway","g_hold","r_pool"], e:[["u_toggle","ui_toggle"],["ui_toggle","g_gateway"],["g_gateway","g_hold"],["g_hold","r_pool"]], c:"<b>Web ON → Chromium warm.</b> The launch is one shared task; nobody's timeout can cancel it."},
+  {n:["u_ask","d_plan","d_oracle","d_der","d_node"], e:[["u_ask","ui_answer"],["ui_answer","d_plan"],["d_plan","d_oracle"],["d_plan","d_der"],["d_der","d_node"]], c:"<b>Plan:</b> 'open Wikipedia → search Kilimanjaro → read height and first ascent'. Developer mode runs each step as a node loop."},
+  {n:["d_node","r_dispatch","t_open","r_host","r_pool","r_session","e_tool"], e:[["d_node","r_dispatch"],["r_dispatch","t_open"],["t_open","r_host"],["r_host","r_pool"],["r_pool","r_session"],["t_open","e_tool"]], c:"<b>browser_open.</b> Run A2: acquire 0 ms (warm), but the open took 86 s to 'opened' and the dispatcher cut it at 90 s. The retry (allowed since 229caf64) opened in 5.1 s."},
+  {n:["t_observe","r_host","v_router","v_node"], e:[["r_dispatch","t_observe"],["t_observe","r_host"],["t_observe","v_router"],["t_observe","v_node"]], c:"<b>browser_observe.</b> Numbered elements + digest; with vision live, the marked screenshot too."},
+  {n:["v_node","d_node"], e:[["v_router","v_node"],["v_node","d_node"]], c:"<b>Vision.</b> A seeing model gets the image; a blind one gets a short reading from the VLM on sparse pages or when it asks."},
+  {n:["t_act","t_safety","r_host","r_session","e_vis","ui_surface","u_watch"], e:[["r_dispatch","t_act"],["t_act","t_safety"],["t_safety","r_host"],["r_session","e_vis"],["e_vis","ui_surface"],["ui_surface","u_watch"]], c:"<b>browser_act.</b> Click safety clears it; the cursor glides (approach), then clicks (done). You watch every step."},
+  {n:["d_der","d_plan","m_episodic"], e:[["d_der","d_plan"],["m_episodic","d_plan"]], c:"<b>If it stalls:</b> the streak gate re-plans from your request (V12) — never from unrelated old failures."},
+  {n:["d_node","ui_answer"], e:[["d_node","ui_answer"]], c:"<b>Answer.</b> Run A2: 'Mount Kilimanjaro stands at 5,895 metres; first recorded ascent 1889' at 286 s."},
+ ]},
+ vision:{name:"Vision fallback load (run A)", steps:[
+  {n:["t_observe","v_router"], e:[["t_observe","v_router"]], c:"<b>Who can see?</b> mercury Brain and tool cannot; nothing is up locally → tier 3 answers <code>requires_load=True</code> (was: raise, V5)."},
+  {n:["v_router","v_discover"], e:[["v_router","v_discover"]], c:"<b>Discovery</b> first: local servers, published metadata, then the colour probe. Nothing can see."},
+  {n:["v_discover","v_autoload","e_life"], e:[["v_discover","v_autoload"],["v_autoload","e_life"]], c:"<b>Autoload.</b> The ladder is empty → the vision card pin. The D:\\ pin matches the C:\\ junction scan by file name (V6). LFM2.5-VL-3B loads into the empty slot."},
+  {n:["v_autoload","v_discover"], e:[["v_autoload","v_discover"]], c:"<b>Re-probe.</b> The fresh server names 'red, blue' → verified; vision calls route to 8082."},
+  {n:["v_node","d_node"], e:[["v_router","v_node"],["v_node","d_node"]], c:"<b>Use.</b> 4 readings in run A, 2.7–3.2 s each, on pages the element list could not carry."},
+ ]},
+};
+
+const FAULTS = [
+ ["V1","Startup restore block crashed (bad log calls) → kernel unconfigured, API windows skipped","fixed 289d2ce0"],
+ ["V2","Discovery excluded the local server on 8082 as 'IRIS-owned'","fixed 73690b69"],
+ ["V3","'Can see' = 1×1 PNG answered 200 (a text-only model passed); fast path trusted any 8082 server","fixed 73690b69"],
+ ["V4","Probed every model of every paid provider (NVIDIA 81), API before local, cached forever","fixed 73690b69"],
+ ["V5","Router tier 3 raised before the autoload could run","fixed 73690b69"],
+ ["V6","Pin path (D:) vs scan path (C: junction) never matched","fixed 73690b69"],
+ ["V7","Vision fallback ladder had no consumer","fixed 73690b69 (ladder › pin)"],
+ ["V8","Marked screenshot built, read by nobody","fixed bd48d513"],
+ ["V9","API vision only from a hand table","fixed f1191d85 (published input modalities)"],
+ ["V10","Personal mode = one tool per step (no observe→act loop)","open (= C4 one engine)"],
+ ["V11","Tool menu cuts descriptions to 90 chars","open"],
+ ["V12","Re-plan planned from the directive alone; recall injected unrelated failures","fixed 72cfe109"],
+ ["V13","Window cap could orphan a tool result (400 from the API)","fixed 289d2ce0"],
+ ["V14","Surface says web is off while the agent browses","open"],
+ ["V15","browser_next / web_depth Oracle jobs have no caller","open"],
+ ["H1","A caller's 90 s bound cancelled the Chromium launch; each retry launched from zero","fixed (pool launch task)"],
+ ["H2","No warm browser while web is ON (idle stop after 180 s)","fixed (web hold)"],
+ ["H3","keyring import (9.5 s) ran ON the browser loop inside the first open","fixed (off-loop + warmed)"],
+ ["H4","Dispatcher deadline 90 s < browser_open's own 120 s","open"],
+ ["H5","First navigation inside the backend: nav_ms 45013 (context 7 ms, cookies 1 ms, page 802 ms); the same goto standalone takes 0.3–5.6 s","open (cause not found yet)"],
+ ["N1","A failed call's retry was blocked as a repeat; the node closed 'done' with no page","fixed 229caf64"],
+];
+const NUMBERS = [
+ ["Oracle web_intent decision","171 ms (conf 0.896)","live A2, 20:16:34"],
+ ["Planner call (mercury-2.5)","≈ 5 s, 4762 tokens","live A2"],
+ ["Chromium launch","0.7 s … 20.7 s … > 90 s","A 19:54:31 · restart 20:13 · A first attempt"],
+ ["First browser_open of a process","86 s to 'opened' (warm Chromium)","A2 20:16:38 → 20:18:04"],
+ ["Open steps after the keyring fix","context 7 ms · cookies 1 ms · page 802 ms · nav 45 s","A3 20:36:18"],
+ ["Same navigation, standalone script","5.6 s first, then 0.3 s","nav_probe.py, 2026-10-02"],
+ ["browser_open retry","5.1 s","A2 20:18:14"],
+ ["keyring import + backend discovery","4.0 s + 5.6 s","fresh process, 2026-10-02"],
+ ["Vision discovery, nothing local","7 image probes, 45 s","real config, 8082 down"],
+ ["Vision reading (LFM2.5-VL-3B)","2.7–3.2 s","live A, 4 readings"],
+ ["Kilimanjaro task","474 s → 286 s, both correct","run A → run A2"],
+ ["Failure recall similarity","unrelated ≤ 0.27 · related 0.4–0.55 · same 0.87","live store, lfm25-emb-350m"],
+];
+const LIMITS = [
+ ["browser_open / observe / act","120 s / 30 s / 113 s","browser_tools.py"],
+ ["Dispatcher deadline: default / gather / read","90 s / 240 s / 60 s","der_constants.py"],
+ ["Pool launch wait (per caller)","90 s, launch continues","IRIS_BROWSER_ACQUIRE_TIMEOUT_MS"],
+ ["Browser idle stop","180 s (none while web ON)","IRIS_BROWSER_IDLE_TIMEOUT"],
+ ["Navigation (goto)","45 s, then continue","IRIS_VISION_NAV_TIMEOUT_MS"],
+ ["Sessions / idle TTL","2 / 300 s","IRIS_BROWSER_MAX_SESSIONS"],
+ ["Actions / wall per session","150 / 900 s","browser_tools.py"],
+ ["Crawl run ceiling / quorum","25 s / 3 pages + 2 s","IRIS_WEBSEARCH_MAX_WALL_MS"],
+ ["Click safety judge / question","8 s / 45 s","click_safety.py"],
+ ["Vision verdict cache","300 s (positive and negative)","lfm_vl_provider._CAPABILITY_TTL_S"],
+ ["Vision autoload bound","150 s","IRIS_VISION_AUTOLOAD_TIMEOUT_S"],
+ ["Node vision reading trigger","≤ 3 marks, or a question","node_executor._POOR_DOM_MARKS"],
+];
+const EVENTS = [
+ ["set_web_mode","web toggle (UI)","iris_gateway"],
+ ["tool_result / open_tab","tool_bridge","chat card rows, Browser Surface"],
+ ["crawler_started · crawler_page_fetched · crawler_complete","crawl + browser tools","Browser Surface, overlay"],
+ ["crawler_vision_action {approach|done}","browser_session act","cursor glide on the surface"],
+ ["permission:request","click safety","click question card"],
+ ["browser_takeover_requested","ask_user_tool","surface unlock / takeover"],
+ ["vision lifecycle cold → warm / error, VISION_UNAVAILABLE","lfm_vl_provider","VisionLifecycleChip, chat system message"],
+ ["text_response / chat_message","DER synthesis","chat answer (and TTS)"],
+];
+
+
+const BROWSER_SET = new Set(["g_hold","d_node","r_dispatch","t_open","t_observe","t_act","t_safety","t_explore","r_host","r_pool","r_session","r_cdp","ui_surface","u_watch","e_vis","e_tool"]);
+window.MAP = {
+  lanes: LANES, nodes: NODES, edges: EDGES, flows: FLOWS, width: 1600, xOffset: 100,
+  filters: [["all","All"],["live","Live",n=>n.status==="live"],["shadow","Shadow",n=>n.status==="shadow"],["fault","Open faults",n=>n.status==="fault"],
+            ["vision","Vision path",n=>n.lane==="vision"||n.id==="t_observe"||n.id==="d_node"],["browser","Browser path",n=>BROWSER_SET.has(n.id)]],
+};
+const esc2=s=>String(s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+const fill=(id,rows,fn)=>{const tb=document.querySelector(`#${id} tbody`);rows.forEach(r=>{const tr=document.createElement("tr");tr.innerHTML=fn(r);tb.appendChild(tr);});};
+fill("faults",FAULTS,([k,w,s])=>{const cls=s.startsWith("fixed")?"b-fixed":s.startsWith("open")?"b-fault":"b-shadow";return `<td class="num"><b>${k}</b></td><td>${esc2(w)}</td><td><span class="badge ${cls}">${esc2(s)}</span></td>`;});
+fill("numbers",NUMBERS,([a,b,c])=>`<td>${esc2(a)}</td><td class="num">${esc2(b)}</td><td style="color:var(--ink3)">${esc2(c)}</td>`);
+fill("limits",LIMITS,([a,b,c])=>`<td>${esc2(a)}</td><td class="num">${esc2(b)}</td><td><code>${esc2(c)}</code></td>`);
+fill("events",EVENTS,([a,b,c])=>`<td><code>${esc2(a)}</code></td><td>${esc2(b)}</td><td>${esc2(c)}</td>`);
+const fixedN=FAULTS.filter(f=>f[2].startsWith("fixed")).length, openN=FAULTS.filter(f=>f[2].startsWith("open")).length;
+document.getElementById("sumFaults").textContent=`${FAULTS.length} items · ${fixedN} fixed · ${openN} open`;
+document.getElementById("sumNumbers").textContent=`${NUMBERS.length} measurements · Kilimanjaro task 474 s → 286 s`;
+document.getElementById("sumLimits").textContent=`${LIMITS.length} limits · dispatcher 90 s < browser_open 120 s`;
+document.getElementById("sumEvents").textContent=`${EVENTS.length} event types`;
+document.getElementById("theme").onclick=()=>{const r=document.documentElement;const dark=r.dataset.theme?r.dataset.theme==="dark":!matchMedia("(prefers-color-scheme: light)").matches;r.dataset.theme=dark?"light":"dark";};
+</script>
+<script src="archmap.js"></script>
+</body>
+</html>
