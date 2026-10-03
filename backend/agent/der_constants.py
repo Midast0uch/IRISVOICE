@@ -332,6 +332,12 @@ DEADLINE_DEFAULT_S = 90
 # step deadline sits ABOVE that maximum so the tool's own limit always decides;
 # the old 90 s default fired before the tool's 120 s (execution audit B6).
 DEADLINE_COMMAND_S = 630
+# The browser tools carry their own ceilings (browser_tools: open 120 s, act
+# 60 + 8 judge + 45 question = 113 s, explore 35 s, observe 30 s). The 90 s
+# default cut browser_open first (live 2026-10-02: three "TimeoutError (no
+# message)" at 90 s) — the same fault as B6. Above the largest ceiling so the
+# tool's own, clearer timeout always decides.
+DEADLINE_BROWSER_S = 150
 # Heartbeat stall → warning log only; the deadline alone aborts (AC11.2).
 STALL_WARN_S = 30
 # VLM in-site recovery lane (REQ-9 AC9.5/AC9.7, session-319). The lane is

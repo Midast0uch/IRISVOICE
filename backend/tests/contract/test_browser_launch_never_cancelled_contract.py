@@ -120,3 +120,17 @@ def test_the_keyring_read_never_blocks_the_browser_loop(monkeypatch):
         return ticks
 
     assert asyncio.run(_main()) >= 5  # the loop ran during the 0.6 s read
+
+
+def test_the_dispatcher_never_cuts_a_browser_tool_before_its_own_ceiling():
+    """Live 2026-10-02: browser_open (own ceiling 120 s) died three times at the
+    dispatcher's 90 s default with 'TimeoutError (no message)'."""
+    from types import SimpleNamespace
+
+    from backend.agent.agent_kernel import AgentKernel
+    from backend.agent.tools import browser_tools as bt
+
+    ceilings = {"browser_open": bt._OPEN_TIMEOUT_S, "browser_act": bt._ACT_TIMEOUT_S,
+                "browser_observe": bt._OBSERVE_TIMEOUT_S, "browser_explore": bt._EXPLORE_TIMEOUT_S + 5.0}
+    for tool, own in ceilings.items():
+        assert AgentKernel._der_tool_deadline(SimpleNamespace(), tool) > own, tool

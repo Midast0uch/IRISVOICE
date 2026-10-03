@@ -6611,11 +6611,13 @@ class AgentKernel:
             from backend.agent.tool_envelope import tool_family as _tf
             from backend.agent.der_constants import (
                 DEADLINE_CRAWL_S, DEADLINE_READ_S, DEADLINE_DEFAULT_S,
-                DEADLINE_COMMAND_S,
+                DEADLINE_COMMAND_S, DEADLINE_BROWSER_S,
             )
             _fam = _tf(tool)
             if (tool or "").lower() == "run_command":
                 _base = max(float(DEADLINE_COMMAND_S), 1.0)
+            elif (tool or "").lower().startswith("browser_"):
+                _base = max(float(DEADLINE_BROWSER_S), 1.0)
             elif _fam == "gather":
                 _base = max(float(DEADLINE_CRAWL_S), 1.0)
             elif _fam == "read":
