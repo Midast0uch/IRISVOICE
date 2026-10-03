@@ -15,8 +15,9 @@ it is absent, exactly as on a machine with no Encoder-350M weights.
 
 The drive is REAL end-to-end through the production success path:
 
-  - ``_der_run_step_execution``   real resolver (ToolDecisionBox) -> real
-                                  dispatch -> real ``_capture_tool_result``
+  - ``_der_run_step_execution``   real node (run_node; every mode since
+                                  2026-10-03, V10) -> real box dispatch ->
+                                  real ``_capture_tool_result``
                                   provenance (sources/har_path persisted) ->
                                   real ``mark_external_tool`` reference zone
   - ``_verify_step_result``       real content-sufficiency for web tools
@@ -124,16 +125,25 @@ def _force_encoder_absent(monkeypatch) -> None:
     monkeypatch.setattr(AgentKernel, "_VERIFIER", None)
 
 
-def _proposing_router(proposal_json: str):
-    """Production router.generate returns (text, thinking, tool_calls)."""
-    return SimpleNamespace(generate=lambda *a, **kw: (proposal_json, "", None))
+# The node's final answer: its model summarizes what the crawl returned.
+NODE_SUMMARY = (
+    "Searched the web for recent Python 3.13 features. Python 3.13 (October "
+    "2024) adds an experimental JIT compiler, free-threading without the GIL "
+    "(PEP 703) and an improved interactive interpreter.\nSTATUS: done"
+)
 
 
-def _propose_crawl():
-    return json.dumps(
-        {"kind": "tool", "tool": "crawler_query",
-         "params": {"query": "recent Python 3.13 features"}}
-    )
+def _node_router():
+    """Production router.generate returns (text, thinking, tool_calls). The
+    tool-less web step runs as a node (owner 2026-10-03, V10: every mode):
+    its model calls crawler_query once, then answers from the result."""
+    def _generate(role, messages, **kw):
+        if any(m.get("role") == "tool" for m in messages):
+            return (NODE_SUMMARY, "", [])
+        return ("", "", [{"id": "c0", "type": "function", "function": {
+            "name": "crawler_query",
+            "arguments": json.dumps({"query": "recent Python 3.13 features"})}}])
+    return SimpleNamespace(generate=_generate)
 
 
 class _CapturingBus:
@@ -176,7 +186,7 @@ def _build_kernel(monkeypatch) -> AgentKernel:
     k._build_planning_prompt = lambda **kw: "PLAN PROMPT"
     k.resolve_context_window = lambda: 30000
     k.infer = lambda *a, **kw: "reason"  # type: ignore[method-assign]
-    k._router = _proposing_router(_propose_crawl())
+    k._router = _node_router()
 
     # Registry seams so the real ToolDecisionBox can validate the proposal.
     import backend.agent.tool_registry as tr
@@ -198,7 +208,13 @@ def _build_kernel(monkeypatch) -> AgentKernel:
         assert tool_name == "crawler_query", f"unexpected tool {tool_name!r}"
         return dict(CRAWL_RESULT)
 
-    k._tool_bridge = SimpleNamespace(execute_tool=_execute_tool)
+    # The node's menu comes from the bridge's tool list (production shape).
+    def _available():
+        return [{"name": "crawler_query", "description": "crawl the web",
+                 "parameters": {"query": {"type": "string"}}}]
+
+    k._tool_bridge = SimpleNamespace(
+        execute_tool=_execute_tool, get_available_tools=_available)
     return k
 
 
@@ -256,14 +272,18 @@ class TestWebsearchCompletesWithoutEncoder:
         plan, item, queue = _single_websearch_plan_and_queue(k)
         ctx = SimpleNamespace()
 
-        # ── 1. EXECUTE: real resolver picks the web tool, real dispatch ──
+        # ── 1. EXECUTE: the node calls the web tool, real dispatch ──
         step_result, step_success = k._der_run_step_execution(
             item, ctx, k.session_id, "turn-1", plan
         )
-        # Evidence gathered: the resolver chose the gather tool and it ran.
-        assert item.tool == "crawler_query", (
-            "resolver must route the websearch step to a gather tool"
+        # Evidence gathered: the node called the gather tool and it ran.
+        # (Was `item.tool == "crawler_query"` - the retired one-tool path.)
+        from backend.agent.agent_kernel import _step_tool
+
+        assert [c["tool"] for c in item.node_call_log] == ["crawler_query"], (
+            "the websearch node must call a gather tool"
         )
+        assert _step_tool(item) == "crawler_query"
         assert step_success is True
         assert "Python 3.13" in step_result
         # Exactly ONE crawl committed to this task so far (no re-gather).
@@ -288,7 +308,7 @@ class TestWebsearchCompletesWithoutEncoder:
         # encoder is never consulted for the gather step.
         verified = k._verify_step_result(
             item.description, item.expected_output, step_result,
-            tool=item.tool, success=step_success,
+            tool=_step_tool(item), success=step_success,
         )
         assert verified == "VERIFIED"
         # And the verifier itself is on the foundation path (tag "fallback").

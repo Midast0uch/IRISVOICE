@@ -134,7 +134,7 @@ const NODES = [
   numbers:["live A: replan recall found 0 unrelated failures; new step 'Open the in-app browser to Wikipedia homepage'"]},
  {id:"d_node", lane:"decide", x:1370, t:"run_node", s:"bounded tool loop per step", status:"live",
   role:"One DER step = a loop of tool calls by the TOOL model (Brain helps once if it struggles). Sees each result; ends on a STATUS line or step_done. Repeat guard blocks only repeats of SUCCESSFUL unchanged calls — a failed call may be retried (229caf64).",
-  files:["backend/agent/node_executor.py run_node","DEV_NODE_TOOLS includes browser_open/observe/act/explore"],
+  files:["backend/agent/node_executor.py run_node","NODE_TOOLS (one menu, both modes) includes browser_open/observe/act/explore"],
   numbers:["run A2: 2nd browser_open after a timeout → ok in 5.1 s"]},
  {id:"d_personal", lane:"decide", x:1630, t:"Personal mode path", s:"one tool per step", status:"fault",
   role:"Personal mode still resolves ONE tool call per plan step (ToolDecisionBox). A browser task needs observe → act loops.",

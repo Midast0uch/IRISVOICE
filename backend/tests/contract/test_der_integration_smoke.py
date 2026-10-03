@@ -4,7 +4,8 @@ Composes the real Phase 0-4 methods end-to-end with lightweight stubs (no live
 model / FFI / DB required) to prove the pieces wire together:
 
   planner (_plan_task)  -> goal-only steps (Phase 1)
-  resolver (explorer.propose, via _der_run_step_execution) -> picks a real tool (Phase 1)
+  node (run_node, via _der_run_step_execution) -> calls a real tool (Phase 1;
+                        every mode since 2026-10-03, V10)
   execution             -> tool runs via _tool_bridge (Phase 1)
   verify (FAILED)       -> _split_step appends Sub-Loop children, NO commit (Phase 2 + G5)
   verify (VERIFIED)     -> record_commit writes a ledger row (G5)
@@ -72,6 +73,15 @@ def _build_kernel():
     # failed, and fell through to FAIL ("resolver must choose a real tool").
     # Content-aware: tool JSON for the propose prompt, plan otherwise.
     def _router_generate(role_or_model, messages, tools=None, **kw):
+        # A tool-less step runs as a node (run_node) in every mode (owner
+        # 2026-10-03, V10): the node's model calls run_command, then answers
+        # once it has the result.
+        _sys = (messages or [{}])[0].get("content", "") or ""
+        if _sys.startswith("You are doing ONE step"):
+            if any(m.get("role") == "tool" for m in messages):
+                return ("Ran the build.\nSTATUS: done", "", [])
+            return ("", "", [{"id": "c0", "type": "function", "function": {
+                "name": "run_command", "arguments": '{"command": "pytest"}'}}])
         _user = "\n".join(
             (m.get("content", "") or "") for m in (messages or [])
             if m.get("role") == "user"
@@ -101,7 +111,13 @@ def _build_kernel():
     async def _execute_tool(tool_name=None, params=None, **kw):
         return {"success": True, "output": f"ran {tool_name} ok", "tool_name": tool_name}
 
-    k._tool_bridge = types.SimpleNamespace(execute_tool=_execute_tool)
+    # The node's menu comes from the bridge's tool list (production shape).
+    def _available():
+        return [{"name": n, "description": n, "parameters": {"command": {"type": "string"}}}
+                for n in ("run_command", "write_file")]
+
+    k._tool_bridge = types.SimpleNamespace(
+        execute_tool=_execute_tool, get_available_tools=_available)
     return k
 
 
@@ -166,10 +182,14 @@ def test_integration_full_cycle():
     step_result, step_success = k._der_run_step_execution(
         items[0], ctx, k.session_id, "turn-1", plan_ns
     )
-    # Resolver must have set the tool (Phase 1 single authority)
-    assert items[0].tool == "run_command", "resolver must choose a real tool"
-    assert step_success is True, "tool execution succeeded"
-    assert "ran run_command" in step_result
+    # The node must have called a real tool, and it ran (Phase 1). Was
+    # `items[0].tool == "run_command"` (the retired one-tool decision path).
+    assert [c["tool"] for c in items[0].node_call_log] == ["run_command"], (
+        "the node must call a real tool"
+    )
+    assert items[0].node_call_log[0]["ok"] is True, "tool execution succeeded"
+    assert step_success is True
+    assert "Ran the build." in step_result and "run_command" in step_result
 
     # ── Phase 2 + G5: a FAILED step triggers _split_step, NO commit ──
     # Observe the commit ledger by patching get_trajectory_recorder — REQ-20

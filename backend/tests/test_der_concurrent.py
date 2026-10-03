@@ -99,13 +99,18 @@ def test_der_run_step_execution_serial_tool():
     assert step_success is True
 
 
-def test_der_run_step_execution_direct_fallback():
+def test_der_run_step_execution_toolless_step_answers_through_node():
+    """A step with no tool runs as a node in EVERY mode (owner 2026-10-03,
+    V10). Its model answers without a tool call, so the step succeeds with
+    that answer. (Was test_der_run_step_execution_direct_fallback: it pinned
+    the retired one-tool decision path - REASON -> _run_step_direct - and
+    passed only while data/iris_config.json said "personal".)"""
     fake = _FakeKernel()
     item = QueueItem(step_id="s1", step_number=1, description="a")  # no tool
     step_result, step_success = AgentKernel._der_run_step_execution(
         fake, item, None, "sess", "t", None
     )
-    assert step_result == "direct:1"
+    assert step_result == "no tool needed"
     assert step_success is True
 
 

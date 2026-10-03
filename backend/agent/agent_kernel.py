@@ -16914,10 +16914,80 @@ Respond with a JSON object:
             )
             return None
 
+    def _der_before_call(self, tool: str, _session: str) -> None:
+        """Per-call bookkeeping BEFORE one DER tool dispatch - one place for the
+        direct step and every node call (a node web call skipped all of it
+        until 2026-10-03: no external mark, no browser warm)."""
+        # Trust-routing W2: mark external for web/crawler tools
+        self.mark_external_tool(tool)
+        # pin_42ddd255162d: render tools need the conversation registry on the
+        # bridge; DER paths never received it.
+        try:
+            self._tool_bridge._active_conversation_id[_session] = self.conversation_id or ""
+        except Exception:
+            pass
+        # AC9.6 (session-319): warm the pooled vision browser the moment a WEB
+        # tool is dispatched, so its cold start overlaps the crawl instead of
+        # blocking recovery later. Fire-and-forget - the crawl never waits.
+        if tool in self._WEB_CONTENT_TOOLS:
+            self._der_warm_vision_browser(tool)
+
+    def _der_after_call(self, item, tool: str, params, dr, _session: str, _turn_id: Optional[str]) -> None:
+        """Per-call bookkeeping AFTER one DER tool dispatch (direct step or node
+        call): crawl budget, ToolCallTree row, quick tier, result capture
+        (sources / har_path for the reply). Never raises."""
+        if not dr:
+            return
+        # pin_42ddd255162d: dispatch-time gather sanction - the dispatch runs
+        # for EVERY crawl (real or dedupe-hit), so record the query hash here:
+        # guaranteed bookkeeping for the per-task crawl budget/veto. A deadline
+        # expiry did not crawl.
+        if (tool in self._WEB_CONTENT_TOOLS and self.conversation_id
+                and getattr(dr, "error_type", None) != "timeout"):
+            try:
+                from backend.agent.der_execution_ledger import make_action_key
+
+                _cs = dict(getattr(self, "_der_crawl_attempts", {}))
+                # D2: same stable action key as the gather gate.
+                _gq = make_action_key(item.description or tool)
+                _cs[self.conversation_id] = _cs.get(self.conversation_id, set()) | {_gq}
+                self._der_crawl_attempts = _cs
+            except Exception:
+                pass
+        # ── Record tool call for ToolCallTree (REQ-13) ──
+        try:
+            _result_str = str(getattr(dr, "result", ""))[:200] or str(getattr(dr, "error", ""))[:200]
+            self._get_tool_box().record_tool_call(
+                step_id=str(getattr(item, "step_id", "")) or "",
+                tool=tool,
+                args_hash=hashlib.md5(str(params).encode()).hexdigest()[:12],
+                result_summary=_result_str,
+                error_type=getattr(dr, "error_type", None),
+                source="tool",
+                split_depth=int(getattr(item, "depth_layer", 0)) or 0,
+                parent_step_id=str(getattr(item, "parent_step_id", "")) or None,
+            )
+        except Exception as _rc_err:
+            logger.warning("[DER] record_tool_call failed: %s", _rc_err)
+        self._der_note_quick_tier(tool, getattr(dr, "result", None))
+        # W9 (O3): capture structured tool results
+        if getattr(dr, "result", None) is not None:
+            try:
+                _doc = self._capture_tool_result(
+                    tool, dr.result, self.conversation_id, _turn_id, _session,
+                )
+                if _doc:
+                    item.captured_doc_id = _doc
+            except Exception as _cap_err:
+                logger.warning("[DER] tool-result capture failed: %s", _cap_err)
+
     def _der_run_node(self, item, _session: str, _turn_id: Optional[str], _prior_results: list, task: str = "") -> tuple:
         """Adapter for node_executor.run_node: this kernel's router, the box's
         dispatch (ledger rows, deadlines, permissions) and the developer tools."""
-        from backend.agent.node_executor import DEV_NODE_TOOLS, NodeContext, run_node
+        from backend.agent.node_executor import (
+            NODE_SCREEN_TOOLS, NODE_TOOLS, NodeContext, run_node,
+        )
+        from backend.agent.tool_decision import _vision_relevant
 
         box = self._get_tool_box()
 
@@ -16949,20 +17019,23 @@ Respond with a JSON object:
         def _execute(name, params):
             if not _turn_live():
                 return {"success": False, "error": _ended, "error_type": "aborted"}
+            self._der_before_call(name, _session)
             dr = box.dispatch(
                 Decision(kind=DecisionKind.TOOL, tool=name, params=params, source="run_node"),
                 session_id=_session, conversation_id=self.conversation_id,
                 turn_id=_turn_id, timeout_s=self._der_tool_deadline(name),
             )
+            self._der_after_call(item, name, params, dr, _session, _turn_id)
             raw = getattr(dr, "result", None)
             return raw if raw is not None else {"success": False, "error": getattr(dr, "error", "") or "no result"}
 
-        tools = [t for t in self._get_openai_tools() if t.get("function", {}).get("name") in DEV_NODE_TOOLS]
+        goal = item.description or item.objective_anchor or ""
+        _menu = set(NODE_TOOLS) | (set(NODE_SCREEN_TOOLS) if _vision_relevant(goal) else set())
+        tools = [t for t in self._get_openai_tools() if t.get("function", {}).get("name") in _menu]
         # The shadow scores the menu the node's model was OFFERED, not the
         # registry's first names (which are vision tools).
         _offered = [t["function"]["name"] for t in tools]
         workdir =(getattr(self._tool_bridge, "_session_workdirs", None) or {}).get(_session, "")
-        goal = item.description or item.objective_anchor or ""
 
         def _shadow(name, params):
             # Same single ledger writer as the direct loop; async_=True runs it
@@ -17088,238 +17161,13 @@ Respond with a JSON object:
                 except Exception as _prio_err:
                     logger.debug("[DER] prior-result gather failed: %s", _prio_err)
 
-            # Execution audit Phase 2: in developer mode a tool-less step runs
-            # as a bounded Brain work loop (backend/agent/node_executor.py)
-            # instead of one tool picked by the small tool model.
-            if not item.tool and self._effective_launcher_mode() == "developer":
+            # Execution audit Phase 2: a tool-less step runs as a bounded work
+            # loop (backend/agent/node_executor.py) instead of one tool picked
+            # once. Both modes (owner 2026-10-03, V10: personal mode ran one
+            # tool per step - no retry of a failed call, no page screenshot).
+            if not item.tool:
                 return self._der_run_node(item, _session, _turn_id, _prior_results,
                                           task=getattr(plan, "original_task", "") or "")
-
-            # ── Phase 1 (D1.6): resolve via ToolDecisionBox ─────────────
-            # Session-345 correction (2026-09-28): _decision is assigned
-            # ONLY on this no-tool path. A step that arrives with its tool
-            # already chosen (planner / graft) skips this block, so the
-            # provenance preservation at the dispatch below referenced an
-            # UNASSIGNED local and every such dispatch died with
-            #   NameError: cannot access local variable '_decision'
-            # before the tool call was even sent (caught by the explorer
-            # except, surfaced as "[STEP ERROR: ...]" - 3 DER concurrent
-            # tests red). Initialize to None and guard the preservation.
-            _decision = None
-            if not item.tool:
-                try:
-                    _box = self._get_tool_box()
-                    _evidence = {
-                        "session_id": _session,
-                        "turn_id": _turn_id,
-                        "task_class": getattr(self, "_der_task_class", "full"),
-                    }
-                    if _prior_results:
-                        _evidence["prior_step_results"] = _prior_results
-                    _decision = _box.resolve(
-                        step={
-                            "description": item.description or item.objective_anchor or "",
-                            "step_number": item.step_number,
-                            # REQ-11 AC11.1/AC11.2: the veto KEY. Without it,
-                            # resolve() falls back to the per-step description,
-                            # so a veto seeded by the parent's failure would be
-                            # unreachable for the graft child — which inherits
-                            # `objective_anchor` (the never-changing task goal,
-                            # der_loop.py:230) but carries a NEW description.
-                            "objective_anchor": getattr(
-                                item, "objective_anchor", None),
-                        },
-                        evidence=_evidence,
-                        session_id=_session,
-                        conversation_id=self.conversation_id,
-                    )
-                    # D1: ToolDecisionBox.resolve() calls self._router.generate()
-                    # directly (it shares this kernel's router instance), so its
-                    # cost must be credited here — it is the DOMINANT call site
-                    # for a real multi-step DER turn and was previously invisible
-                    # to the pill entirely.
-                    self._accrue_tokens(
-                        getattr(_decision, "rationale", "") or "",
-                        getattr(self._router, "last_usage", None),
-                        source="_der_run_step_execution:box.resolve",
-                    )
-                except Exception as _box_err:
-                    logger.warning(
-                        "[DER] box.resolve crashed for step %d: %s",
-                        item.step_number, _box_err,
-                    )
-                    step_success = False
-                    step_result = f"[STEP ERROR: tool resolution crashed — {_box_err}]"
-                    return step_result, step_success
-
-                if _decision.kind == DecisionKind.FAIL:
-                    # FAIL → route to DER recovery (graft / escalate REQ-10)
-                    step_success = False
-                    step_result = f"[STEP ERROR: tool resolution failed — {_decision.error}]"
-                    return step_result, step_success
-
-                if _decision.kind == DecisionKind.TOOL:
-                    item.tool = _decision.tool
-                    item.params = _decision.params
-                    logger.info(
-                        "[DER] box resolved tool=%r for step %d (source=%s)",
-                        item.tool, item.step_number, _decision.source,
-                    )
-                    # Split roles (execution audit 2026-09-29): the tool model
-                    # chose a file write; the Brain writes the body with the
-                    # file in view (backend/agent/brain_author.py).
-                    from backend.agent.brain_author import AUTHORED_TOOLS, author_step
-                    if item.tool in AUTHORED_TOOLS:
-                        _a_tool, _a_params, _a_err = author_step(
-                            self._tool_bridge, self._router.generate, _session,
-                            item.tool, item.params or {},
-                            item.description or item.objective_anchor or "",
-                            _prior_results, self.conversation_id or "",
-                        )
-                        self._accrue_tokens(
-                            "", getattr(self._router, "last_usage", None),
-                            source="_der_run_step_execution:brain_author",
-                        )
-                        if _a_tool is None:
-                            return f"[STEP ERROR: file change not written — {_a_err}]", False
-                        item.tool, item.params = _a_tool, _a_params
-                    # ── T6B (specs/tool-result-envelope): pre-dispatch
-                    # HARD-RULE guard — a walled tool is never retried and a
-                    # repeat is never re-executed (rerouted to read). Runs
-                    # AFTER resolution (params known), BEFORE the call is
-                    # paid for (KD-10: prevention decides, envelope
-                    # testifies). Advisory: a broken guard never changes
-                    # loop semantics.
-                    _guard = self._der_pre_dispatch_guard(item)
-                    if _guard is not None:
-                        if _guard.get("reroute_tool"):
-                            logger.info(
-                                "[DER] step %d rerouted by guard: %s -> %s",
-                                item.step_number, _guard.get("reason"),
-                                _guard["reroute_tool"],
-                            )
-                            item.tool = _guard["reroute_tool"]
-                            item.params = dict(
-                                _guard.get("reroute_params") or {}
-                            )
-                        else:
-                            step_success = False
-                            step_result = (
-                                "[STEP BLOCKED: "
-                                + str(_guard.get("reason", "hard rule"))
-                                + " — the tool will not be retried in-run]"
-                            )
-                            return step_result, step_success
-                    # Session-322: dispatch-time intent record. Finalize writes
-                    # the digest->step_id map, but a transport crash skips
-                    # finalize entirely — the next same query then starts
-                    # clean and re-pays. Record here (guard passed, about to
-                    # pay) so the repeat guard fires even when this dispatch
-                    # never returns. setdefault keeps the FIRST step_id.
-                    # Seeds join turn memory too: a marker-less crash still
-                    # teaches the refusal set what was attempted.
-                    try:
-                        from backend.agent.tool_envelope import (
-                            params_digest as _pd322,
-                            normalize_url as _norm322,
-                        )
-                        _conv322 = self.conversation_id or ""
-                        if _conv322:
-                            _sd322 = dict(getattr(self, "_der_seen_dispatches", {}))
-                            _sdb322 = dict(_sd322.get(_conv322, {}))
-                            _pd322_self = _pd322(getattr(item, "tool", None), getattr(item, "params", None))
-                            if _pd322_self:
-                                _sdb322.setdefault(_pd322_self, item.step_id)
-                                _sd322[_conv322] = _sdb322
-                                self._der_seen_dispatches = _sd322
-                            _seeds322 = []
-                            try:
-                                _pp322 = getattr(item, "params", None) or {}
-                                _seeds322 = list(_pp322.get("known_urls") or [])
-                                if _pp322.get("url"):
-                                    _seeds322.append(_pp322["url"])
-                                _rec322 = list(getattr(item, "recovery_seeds", None) or [])
-                                _seeds322.extend(_rec322)
-                            except Exception:
-                                _seeds322 = []
-                            if _seeds322:
-                                _cu322 = dict(getattr(self, "_der_crawled_urls", {}))
-                                _cur322 = set(_cu322.get(_conv322, set()))
-                                for _s322 in _seeds322:
-                                    try:
-                                        _n322 = _norm322(str(_s322))
-                                    except Exception:
-                                        _n322 = ""
-                                    if _n322:
-                                        _cur322.add(_n322)
-                                _cu322[_conv322] = _cur322
-                                self._der_crawled_urls = _cu322
-                    except Exception:
-                        pass
-                    # Session-318 T16 (REQ-9 AC9.5): recovery seed enrichment.
-                    # The resolver keeps full tool authority (F6); when it
-                    # independently chooses a crawl for a recovery step, the
-                    # exact unvisited seeds resolved at trigger time ride along
-                    # (deterministic — never LLM-invented). Any other tool:
-                    # seeds stay parked, opportunity logged as declined.
-                    try:
-                        _rec_of = getattr(item, "recovery_of", "") or ""
-                        _rec_seeds = list(getattr(item, "recovery_seeds", []) or [])
-                    except Exception:
-                        _rec_of, _rec_seeds = "", []
-                    if _rec_of and _rec_seeds and (item.tool == "crawler_query") and isinstance(item.params, dict):
-                        try:
-                            from backend.agent.der_constants import RECOVERY_PAGE_BUDGET
-                            _rec_budget = max(int(RECOVERY_PAGE_BUDGET), 1)
-                        except Exception:
-                            _rec_budget = 5
-                        item.params = dict(item.params)
-                        item.params["seed_urls"] = _rec_seeds[:_rec_budget]
-                        item.params["max_pages"] = _rec_budget
-                        item.params["recovery_of"] = _rec_of
-                        logger.info(
-                            "[DER:recovery] step %d enriched: %d seeds (parent %s)",
-                            item.step_number, len(item.params["seed_urls"]), _rec_of,
-                        )
-                    elif _rec_of and _rec_seeds:
-                        logger.info(
-                            "[DER:recovery] step %d declined: resolver chose %r (parent %s)",
-                            item.step_number, item.tool, _rec_of,
-                        )
-                    # pin_517dfcbda150: re-emit TOOL_CALL with the RESOLVED
-                    # tool name. The loop's earlier emit (before execution)
-                    # carries the planner's guess or "direct"; the frontend's
-                    # useTaskProgress takes the LAST tool:call per step, so
-                    # the card now shows "WebCrawl" instead of "Tool".
-                    try:
-                        from backend.agent.event_bus import (
-                            get_event_bus,
-                            IRISStreamEvent,
-                        )
-
-                        _lifecycle_task_id = _turn_id or item.step_id
-                        get_event_bus().emit(
-                            IRISStreamEvent.TOOL_CALL,
-                            data={
-                                "task_id": _lifecycle_task_id,
-                                "tool_name": item.tool or "direct",
-                                "description": (
-                                    item.description
-                                    or item.objective_anchor
-                                    or ""
-                                )[:200],
-                                "params": item.params or {},
-                                "step_number": item.step_number,
-                                # REQ-3 AC6 (T2): card_id stays stable across
-                                # every event of a card's lifetime.
-                                **self._card_envelope(_lifecycle_task_id),
-                            },
-                            turn_id=_turn_id,
-                            conversation_id=self.conversation_id,
-                        )
-                    except Exception:
-                        pass  # never block execution on an emit failure
-                # REASON: item.tool stays None → falls to _run_step_direct below
 
             # ── Phase 2: dispatch (TOOL) or direct (REASON) ──────────────
             # Set the phase gate call class so the gate knows whether to wait
@@ -17332,16 +17180,7 @@ Respond with a JSON object:
                 set_call_class(CallClass.REASON)
 
             if item.tool and self._tool_bridge is not None:
-                # Trust-routing W2: mark external for web/crawler tools
-                self.mark_external_tool(item.tool)
-                # pin_42ddd255162d: render tools need the conversation registry
-                # on the bridge; DER paths never received it.
-                try:
-                    self._tool_bridge._active_conversation_id[_session] = (
-                        self.conversation_id or ""
-                    )
-                except Exception:
-                    pass
+                self._der_before_call(item.tool, _session)
                 # Session-318 T18 (REQ-11 AC11.1): per-family deadline for
                 # the dispatch below, plus the monotonic start stamp that
                 # feeds elapsed_s and the stall warning at finalize.
@@ -17354,30 +17193,12 @@ Respond with a JSON object:
                     item.dispatch_started_at = _time_dispatch.monotonic()
                 except Exception:
                     pass
-                # AC9.6 (session-319): warm the pooled vision browser the moment
-                # a WEB tool is dispatched, so its cold start overlaps the crawl
-                # instead of blocking recovery later. Measured: the pool stops
-                # the browser after 180s idle (browser_pool.py:55) and the live
-                # log shows "browser acquired in 32918ms (cold pool)"; boot-time
-                # warming (main.py:777) only covers the FIRST search after a
-                # restart, so every later search went cold again. Fire-and-forget
-                # — the crawl never waits on Chromium.
-                if item.tool in self._WEB_CONTENT_TOOLS:
-                    self._der_warm_vision_browser(item.tool)
                 try:
-                    # Session-345 (live finding, ledger gap): the box resolved
-                    # `_decision` carries the engine's provenance in .meta;
-                    # re-wrapping here must PRESERVE it or the tool event row
-                    # loses the decision block (0/40 live dispatch rows carried
-                    # it before this fix — REQ-5 was silently dead in prod).
                     _dispatch_decision = Decision(
                         kind=DecisionKind.TOOL,
                         tool=item.tool,
                         params=item.params,
                     )
-                    if _decision is not None:
-                        _dispatch_decision.meta = getattr(_decision, "meta", None)
-                        _dispatch_decision.source = getattr(_decision, "source", "")
                     _dr = self._get_tool_box().dispatch(
                         _dispatch_decision,
                         session_id=_session,
@@ -17385,25 +17206,6 @@ Respond with a JSON object:
                         turn_id=_turn_id,
                         timeout_s=_dispatch_deadline,
                     )
-                    # pin_42ddd255162d: dispatch-time gather sanction — the
-                    # resolution-time record (in _mem_lookup) was unreliable
-                    # (attempted=0 on every gate read), so the per-task crawl
-                    # budget never engaged. The dispatch runs for EVERY crawl
-                    # (real or dedupe-hit), so record the query hash here:
-                    # guaranteed bookkeeping for the budget/veto.
-                    if item.tool in self._WEB_CONTENT_TOOLS and self.conversation_id:
-                        try:
-                            from backend.agent.der_execution_ledger import make_action_key
-
-                            _cs = dict(getattr(self, "_der_crawl_attempts", {}))
-                            # D2: same stable action key as the gather gate.
-                            _gq = make_action_key(item.description or item.tool)
-                            _cs[self.conversation_id] = _cs.get(
-                                self.conversation_id, set()
-                            ) | {_gq}
-                            self._der_crawl_attempts = _cs
-                        except Exception:
-                            pass
                 except Exception as _maybe_timeout:
                     # Session-318 T18 (REQ-11 AC11.3): deadline expiry settles
                     # honestly — synthetic failed DispatchResult so the normal
@@ -17471,28 +17273,7 @@ Respond with a JSON object:
                             success=isinstance(_raw_dr, dict) and _raw_dr.get("success") is not False,
                             result=_raw_dr,
                         )
-                # ── Record tool call for ToolCallTree (REQ-13) ──────────
-                if _dr:
-                    try:
-                        _step_id = str(getattr(item, "step_id", "")) or ""
-                        _parent_id = str(getattr(item, "parent_step_id", "")) or None
-                        _depth = int(getattr(item, "depth_layer", 0)) or 0
-                        _hash = hashlib.md5(
-                            str(item.params).encode()
-                        ).hexdigest()[:12]
-                        _result_str = str(getattr(_dr, "result", ""))[:200] or str(getattr(_dr, "error", ""))[:200]
-                        self._get_tool_box().record_tool_call(
-                            step_id=_step_id,
-                            tool=item.tool,
-                            args_hash=_hash,
-                            result_summary=_result_str,
-                            error_type=getattr(_dr, "error_type", None),
-                            source="tool",
-                            split_depth=_depth,
-                            parent_step_id=_parent_id,
-                        )
-                    except Exception as _rc_err:
-                        logger.warning("[DER] record_tool_call failed: %s", _rc_err)
+                self._der_after_call(item, item.tool, item.params, _dr, _session, _turn_id)
                 step_result = self._format_tool_result_for_step(
                     getattr(_dr, "result", None), item.tool,
                 ) if _dr else ""
@@ -17513,19 +17294,6 @@ Respond with a JSON object:
                         _dr_err = getattr(_dr, "error", None)
                         if _dr_err:
                             step_result = f"[STEP ERROR: {_dr_err}]"
-                if item.tool and _dr:
-                    self._der_note_quick_tier(item.tool, getattr(_dr, "result", None))
-                # W9 (O3): capture structured tool results
-                if item.tool and _dr and _dr.result is not None:
-                    try:
-                        item.captured_doc_id = self._capture_tool_result(
-                            item.tool, _dr.result,
-                            self.conversation_id, _turn_id, _session,
-                        )
-                    except Exception as _cap_err:
-                        logger.warning(
-                            "[DER] tool-result capture failed: %s", _cap_err,
-                        )
             else:
                 # REASON (no tool) or no tool_bridge — direct reasoning
                 step_result = self._run_step_direct(item, context_package, _session)
@@ -18897,10 +18665,11 @@ Respond with a JSON object:
         # is FAILED -> step_success forced False so it cannot be marked complete as a
         # success (no silent success edge). This is the honest-signal fix.
         # pin_517dfcbda150: pass the resolved tool so web/crawl steps verify by
-        # content sufficiency instead of assertion matching.
+        # content sufficiency instead of assertion matching. A node step has
+        # no item.tool; its decisive call is the tool (_step_calls chokepoint).
         _verified = self._verify_step_result(
             item.description, item.expected_output, step_result,
-            tool=getattr(item, "tool", None),
+            tool=_step_tool(item),
             success=step_success,
         )
         if _verified == "FAILED":

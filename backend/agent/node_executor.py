@@ -39,18 +39,32 @@ from backend.agent.inference.errors import EmptyModelResponseError, MalformedToo
 
 logger = logging.getLogger(__name__)
 
-# The developer tool family offered inside a node (developer mode first).
-DEV_NODE_TOOLS = (
+# The tool menu inside a node - ONE menu in both modes (owner 2026-10-01:
+# developer mode differs only by self-modification; 2026-10-03: nodes are
+# universal). The mode's capability filter (CapabilitySet.blocked_tools, in
+# the tool bridge's list) still takes run_command and git out in personal
+# mode; the web toggle alone adds or removes search and the browser.
+NODE_TOOLS = (
     "read_file", "edit_file", "write_file", "grep_files", "glob_files",
     "list_directory", "create_directory", "run_command", "git_status", "git_diff",
     "read_command_output", "stop_command",
     # Live browser control (owner 2026-10-02: developer mode too). The base
     # tool list holds these only while the web toggle is ON - the one gate.
     "browser_open", "browser_observe", "browser_act", "browser_explore",
+    # Web research (also web-toggle gated) and the user's own desktop.
+    "search", "crawler_query",
+    "open_url", "launch_app", "open_file", "get_system_info", "recall_memory",
+)
+
+# The screen family joins the menu only when the step's goal is about the
+# screen (tool_decision._vision_relevant - the rule the decision box used),
+# so a coding node is not offered clicks at screen coordinates.
+NODE_SCREEN_TOOLS = (
+    "take_screenshot", "vision_analyze_screen", "gui_click", "gui_type", "gui_press_key",
 )
 
 _SYSTEM = (
-    "You are doing ONE step of a larger coding task, in the project folder "
+    "You are doing ONE step of a larger task. Files are in the project folder "
     "(written `.`). Use the tools to do the step, then answer with a short plain "
     "summary of what you did and what the result was — with no tool call.\n"
     "Rules:\n"
