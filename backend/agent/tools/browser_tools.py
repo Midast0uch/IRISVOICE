@@ -215,6 +215,7 @@ async def _vision_live() -> bool:
     """Cached vision liveness. Waits at most _VISION_WAIT_S for a fresh probe,
     then answers False (degrades the marked screenshot, never cancels the probe)."""
     deadline = time.monotonic() + _VISION_WAIT_S
+    started_here = False
     while True:
         with _vision_lock:
             fresh = time.monotonic() - _vision_state["at"] < _VISION_TTL_S
@@ -222,9 +223,15 @@ async def _vision_live() -> bool:
                 return bool(_vision_state["value"])
             if not _vision_state["probing"]:
                 _vision_state["probing"] = True
+                started_here = True
                 threading.Thread(
                     target=_vision_probe_thread, daemon=True, name="iris-vision-probe",
                 ).start()
+            elif not started_here:
+                # An EARLIER call started this probe and already waited for it
+                # (e.g. a 2-min vision model autoload): answer the last value
+                # now. Live run A5: every observe paid the full 3 s.
+                return bool(_vision_state["value"])
         if time.monotonic() >= deadline:
             return False
         await asyncio.sleep(0.1)

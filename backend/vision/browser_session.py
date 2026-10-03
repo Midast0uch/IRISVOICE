@@ -657,8 +657,48 @@ class BrowserSession:
     # ── availability / observability ───────────────────────────────────────
 
     def available(self) -> bool:
-        """True when a live page is attached and Playwright was importable."""
-        return not self._unavailable and self._page is not None
+        """True when a live page is attached and Playwright was importable.
+
+        A page that was CLOSED or CRASHED is not available (live 2026-10-02,
+        run A5: the page closed mid-task, browser_open then answered "ok" on
+        the dead page in 12-36 ms and every observe failed, so the agent fell
+        back to curl). Unavailable -> browser_open starts a fresh session.
+        """
+        if self._unavailable or self._page is None:
+            return False
+        try:
+            if self._page.is_closed():
+                return False
+        except Exception:  # noqa: BLE001 — a stand-in page without is_closed
+            pass
+        return True
+
+    def _watch_page(self, page) -> None:
+        """Log why a page goes away (close / crash) and the browser's
+        disconnect, so the next stall names its cause. Never raises."""
+        on = getattr(page, "on", None)
+        if not callable(on):
+            return
+        job = self._job_id
+
+        def _closed(_p=None):
+            logger.warning("[browser_session] page CLOSED job=%s url=%s", job, self.url)
+
+        def _crashed(_p=None):
+            logger.warning("[browser_session] page CRASHED (renderer died) job=%s url=%s", job, self.url)
+            self._unavailable = True
+
+        try:
+            on("close", _closed)
+            on("crash", _crashed)
+            ctx = getattr(page, "context", None)
+            browser = getattr(ctx, "browser", None) if ctx is not None else None
+            b_on = getattr(browser, "on", None)
+            if callable(b_on):
+                b_on("disconnected", lambda _b=None: logger.warning(
+                    "[browser_session] browser DISCONNECTED job=%s", job))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[browser_session] page watch not installed job=%s: %s", job, exc)
 
     @property
     def actions_taken(self) -> int:
@@ -828,6 +868,7 @@ class BrowserSession:
             await _inject_keyring_cookies(self._context, self.url, self._job_id)
             _t_cookies = time.monotonic()
             self._page = _spare[1] if _spare is not None else await self._context.new_page()
+            self._watch_page(self._page)
             _t_page = time.monotonic()
             # REQ-6: adopt popups/tabs opened by clicks (target="_blank").
             # Guarded getattr: older fakes/pool shims without .on keep working.
