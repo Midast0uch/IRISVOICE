@@ -450,6 +450,13 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                     except Exception as exc:  # noqa: BLE001 — typed result, the model reacts
                         raw = {"success": False, "error": f"{type(exc).__name__}: {exc}", "error_type": "exception"}
                 failed = _failed(raw)
+                if failed:
+                    # A FAILED call may be retried as is (live 2026-10-02: a
+                    # cold-start browser_open timed out at 90 s, the retry was
+                    # blocked as a repeat, and the node closed "done" with no
+                    # page open). Identical failures in a row are still caught
+                    # by the unchanged-result check below.
+                    last_key = None
                 batch_failed = batch_failed or failed
                 batch_changed = batch_changed or (name in _CHANGE_TOOLS and not failed)
                 if failed and name == "edit_file":

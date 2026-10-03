@@ -108,3 +108,30 @@ def test_the_window_estimate_counts_an_image():
     with_img = [{"role": "user", "content": [
         {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,QUJD"}}]}]
     assert InferenceRouter._estimate_prompt_tokens(with_img, None) >= 1000
+
+
+def test_a_failed_call_may_be_retried_once():
+    """Live 2026-10-02: browser_open timed out on a cold Chromium (90 s); the
+    model's retry was blocked as a 'repeated call' and the node closed done
+    with no page open. A failed call runs again; a succeeding retry counts."""
+    script = [("", [_call("browser_open", {"url": "https://en.wikipedia.org"}, 0)]),
+              ("", [_call("browser_open", {"url": "https://en.wikipedia.org"}, 1)]),
+              ("Opened.\nSTATUS: done", [])]
+    seen, replies = [], list(script)
+    runs = []
+
+    def gen(role, messages, **k):
+        seen.append(messages)
+        text, calls = replies.pop(0)
+        return text, "", calls
+
+    def execute(name, params):
+        runs.append(name)
+        return ({"success": False, "error": "browser unavailable: timed out"} if len(runs) == 1
+                else {"success": True, "content": "Opened"})
+
+    tools = [{"type": "function", "function": {"name": "browser_open", "parameters": {}}}]
+    r = run_node("Open Wikipedia", NodeContext(generate=gen, execute=execute,
+                                               format_result=lambda n, raw: str(raw), tools=tools))
+    assert runs == ["browser_open", "browser_open"]
+    assert r.success and [c["ok"] for c in r.calls] == [False, True]
