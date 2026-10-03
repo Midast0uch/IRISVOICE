@@ -59,3 +59,16 @@ def test_the_outcome_grade_survives_a_none_loop_item():
 
     src = inspect.getsource(AgentKernel._execute_plan_der)
     assert "_verified_fraction(item.expected_output" not in src
+
+
+def test_a_met_objective_answers_on_the_success_path_despite_a_failed_step():
+    """Run A7: run grade pass, C=1.000, one failed intermediate search step ->
+    the failure template went out with the answer in hand. The failure path is
+    taken only when the objective is NOT met."""
+    import inspect
+
+    src = inspect.getsource(AgentKernel._execute_plan_der)
+    i = src.index("Phase 1.5: if any step failed")
+    branch = src[i: i + 900]
+    assert "queue.failed_ids and not" in branch
+    assert "_goal_contract_met(self)" in branch

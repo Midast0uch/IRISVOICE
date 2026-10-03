@@ -11245,7 +11245,12 @@ Respond with a JSON object:
 
         # Phase 1.5: if any step failed, synthesize a user-facing summary
         # that explains what worked, what failed, and what to do next.
-        if queue.failed_ids:
+        # Unless the OBJECTIVE is met: a failed intermediate attempt whose facts
+        # a later step found is not a failed task (live 2026-10-02 run A7: run
+        # grade pass, C=1.000, one failed search step -> "I couldn't complete
+        # that task. 3/5 steps finished" with the answer in hand). An open or
+        # blocked fact keeps this failure path.
+        if queue.failed_ids and not (step_outputs and AgentKernel._goal_contract_met(self)):
             # REQ-16 AC2 (T32): a task with failed steps did NOT exit naturally.
             self._der_stamp_session_exit(False)
             _synthesis = self._der_synthesize_outcome(
