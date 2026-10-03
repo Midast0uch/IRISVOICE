@@ -151,7 +151,7 @@ const NODES = [
   role:"Opens the URL in this conversation's live browser (one BrowserContext per conversation, max 2 sessions, 300 s idle).",
   files:["backend/agent/tools/browser_tools.py browser_open / _do_open"],
   numbers:["own ceiling 120 s","run A2: first open 90 s FAILED (warm Chromium), retry 5.1 s"],
-  faults:["NEW: the dispatcher deadline for browser tools is the 90 s default, below the tool's own 120 s — the dispatcher cuts it first (der_constants DEADLINE_DEFAULT_S).","NEW: the first open of a backend process spent 86 s between 'acquired' and 'opened' with a warm Chromium; 9.5 s of it was a keyring import ON the browser loop (fixed: off-loop + warmed at web ON). Per-step timings now logged to find the rest."]},
+  faults:["FIXED 3da07934: the dispatcher used the 90 s default, below the tool's own 120 s; the browser family now gets 150 s (DEADLINE_BROWSER_S).","NEW: the first open of a backend process spent 86 s between 'acquired' and 'opened' with a warm Chromium; 9.5 s of it was a keyring import ON the browser loop (fixed: off-loop + warmed at web ON). Per-step timings now logged to find the rest."]},
  {id:"t_observe", lane:"tools", x:1010, t:"browser_observe", s:"Set-of-Marks + digest", status:"live",
   role:"Numbers every visible link, button, input and select (element_id), plus title, URL and a text digest. When a vision model is live it also returns the MARKED SCREENSHOT. Optional 'question' asks the vision model.",
   files:["backend/agent/tools/browser_tools.py _do_observe","backend/vision/browser_session.py observe(marked_screenshot)"],
@@ -305,7 +305,7 @@ const FAULTS = [
  ["H1","A caller's 90 s bound cancelled the Chromium launch; each retry launched from zero","fixed (pool launch task)"],
  ["H2","No warm browser while web is ON (idle stop after 180 s)","fixed (web hold)"],
  ["H3","keyring import (9.5 s) ran ON the browser loop inside the first open","fixed (off-loop + warmed)"],
- ["H4","Dispatcher deadline 90 s < browser_open's own 120 s","open"],
+ ["H4","Dispatcher deadline 90 s < browser_open's own 120 s","fixed 3da07934 (browser family 150 s)"],
  ["H5","First navigation inside the backend: nav_ms 45013 (context 7 ms, cookies 1 ms, page 802 ms); the same goto standalone takes 0.3–5.6 s","open (cause not found yet)"],
  ["N1","A failed call's retry was blocked as a repeat; the node closed 'done' with no page","fixed 229caf64"],
 ];
@@ -325,7 +325,7 @@ const NUMBERS = [
 ];
 const LIMITS = [
  ["browser_open / observe / act","120 s / 30 s / 113 s","browser_tools.py"],
- ["Dispatcher deadline: default / gather / read","90 s / 240 s / 60 s","der_constants.py"],
+ ["Dispatcher deadline: default / gather / read / browser","90 s / 240 s / 60 s / 150 s","der_constants.py"],
  ["Pool launch wait (per caller)","90 s, launch continues","IRIS_BROWSER_ACQUIRE_TIMEOUT_MS"],
  ["Browser idle stop","180 s (none while web ON)","IRIS_BROWSER_IDLE_TIMEOUT"],
  ["Navigation (goto)","45 s, then continue","IRIS_VISION_NAV_TIMEOUT_MS"],
@@ -364,7 +364,7 @@ fill("events",EVENTS,([a,b,c])=>`<td><code>${esc2(a)}</code></td><td>${esc2(b)}<
 const fixedN=FAULTS.filter(f=>f[2].startsWith("fixed")).length, openN=FAULTS.filter(f=>f[2].startsWith("open")).length;
 document.getElementById("sumFaults").textContent=`${FAULTS.length} items · ${fixedN} fixed · ${openN} open`;
 document.getElementById("sumNumbers").textContent=`${NUMBERS.length} measurements · Kilimanjaro task 474 s → 286 s`;
-document.getElementById("sumLimits").textContent=`${LIMITS.length} limits · dispatcher 90 s < browser_open 120 s`;
+document.getElementById("sumLimits").textContent=`${LIMITS.length} limits · browser family 150 s > every tool ceiling`;
 document.getElementById("sumEvents").textContent=`${EVENTS.length} event types`;
 document.getElementById("theme").onclick=()=>{const r=document.documentElement;const dark=r.dataset.theme?r.dataset.theme==="dark":!matchMedia("(prefers-color-scheme: light)").matches;r.dataset.theme=dark?"light":"dark";};
 </script>
