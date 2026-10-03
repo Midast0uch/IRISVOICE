@@ -488,6 +488,39 @@ def _extract_ollama_usage(payload: Dict[str, Any]) -> Optional[Dict[str, int]]:
 _REASONING_HEADROOM_MAX = 16384
 
 
+# C6 stall bound (2026-10-02): a hosted model call far past its normal time is
+# a provider stall, not work. Live run A3: mercury-2 node calls took 1-3 s, one
+# took 121 s (the read timeout was the node's 300 s). The FIRST attempt waits
+# at most max(_STALL_MIN_S, _STALL_FACTOR x p90 of the model's recent calls);
+# then the existing retry runs once with the full timeout. Needs >= 5 samples.
+# Keyed by (base url, model), bounded per key; read and written under a lock.
+_STALL_MIN_S = 30.0
+_STALL_FACTOR = 4.0
+_STALL_SAMPLES = 30
+_CALL_TIMES: Dict[Tuple[str, str], List[float]] = {}
+_CALL_TIMES_LOCK = __import__("threading").Lock()
+
+
+def _record_call_time(base: str, model: str, seconds: float) -> None:
+    with _CALL_TIMES_LOCK:
+        times = _CALL_TIMES.setdefault((base, model), [])
+        times.append(seconds)
+        del times[:-_STALL_SAMPLES]
+
+
+def stall_bound(base: str, model: str, timeout_s: Optional[float]) -> Optional[float]:
+    """The first-attempt read limit for this model, or None (no profile yet,
+    or the bound would not be shorter than the caller's own timeout)."""
+    with _CALL_TIMES_LOCK:
+        times = sorted(_CALL_TIMES.get((base, model), ()))
+    if len(times) < 5:
+        return None
+    p90 = times[min(len(times) - 1, int(len(times) * 0.9))]
+    bound = max(_STALL_MIN_S, _STALL_FACTOR * p90)
+    full = timeout_s or 60.0
+    return bound if bound < full else None
+
+
 class ApiHttpxTransport:
     """Remote API provider via direct httpx streaming.
 
@@ -860,13 +893,16 @@ class ApiHttpxTransport:
         result = None
         _rate_limited = False
         _grown = False
+        _stall = stall_bound(self._api_base_url, model, timeout_s)
         for attempt in range(3):
             _record_attempt(self)
             if budget_check is not None:
                 budget_check()  # wedge fix: raises if the turn budget expired
+            _ta = _perf_t.perf_counter()
+            _read = _stall if (attempt == 0 and _stall) else (timeout_s or 60.0)
             try:
                 with _httpx.Client(
-                    timeout=_httpx.Timeout(timeout_s or 60.0), verify=get_ssl_context()
+                    timeout=_httpx.Timeout(timeout_s or 60.0, read=_read), verify=get_ssl_context()
                 ) as _client:
                     _resp = _client.post(url, headers=headers, json=body)
                     if _resp.status_code == 429:
@@ -940,10 +976,18 @@ class ApiHttpxTransport:
                             attempt + 1,
                         )
                         continue
+                    _record_call_time(self._api_base_url, model, _perf_t.perf_counter() - _ta)
                     break
             except RuntimeError:
                 raise
             except Exception as _e:
+                if attempt == 0 and _stall and isinstance(_e, _httpx.ReadTimeout):
+                    logger.warning(
+                        "[ApiHttpx] stall: model=%s gave no answer in %.0f s "
+                        "(its normal p90 x %.0f) -- retrying once with the full timeout",
+                        model, _stall, _STALL_FACTOR,
+                    )
+                    continue
                 logger.warning(
                     "[ApiHttpx] request error (attempt %d/3): %s",
                     attempt + 1,
