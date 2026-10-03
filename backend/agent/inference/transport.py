@@ -499,19 +499,70 @@ _STALL_FACTOR = 4.0
 _STALL_SAMPLES = 30
 _CALL_TIMES: Dict[Tuple[str, str], List[float]] = {}
 _CALL_TIMES_LOCK = __import__("threading").Lock()
+# The profile survives a restart (live run A6: a fresh backend had 1-2 samples,
+# no bound, and Inception held one call 120 s before a 504). Loaded on first
+# use; saved through ONE ordered writer lane, at most every 30 s.
+_PROFILE_PATH = __import__("pathlib").Path(
+    __import__("os").environ.get("IRIS_MODEL_CALL_PROFILE")
+    or __import__("pathlib").Path(__file__).resolve().parents[3] / "data" / "model_call_times.json"
+)
+_PROFILE_SAVE_EVERY_S = 30.0
+_profile_state = {"loaded": False, "saved_at": 0.0}
+
+
+def _load_profile() -> None:
+    """Fill _CALL_TIMES from disk once. Caller holds _CALL_TIMES_LOCK. Never raises."""
+    if _profile_state["loaded"]:
+        return
+    _profile_state["loaded"] = True
+    try:
+        raw = _json.loads(_PROFILE_PATH.read_text(encoding="utf-8"))
+        for key, times in (raw or {}).items():
+            base, _, model = str(key).rpartition("|")
+            if base and model and isinstance(times, list):
+                vals = [float(t) for t in times if isinstance(t, (int, float)) and t > 0]
+                if vals:
+                    _CALL_TIMES.setdefault((base, model), vals[-_STALL_SAMPLES:])
+    except FileNotFoundError:
+        pass
+    except Exception as exc:  # noqa: BLE001 — a bad file is a missing profile
+        logger.info("[ApiHttpx] call-time profile not loaded: %s", exc)
+
+
+def _save_profile(snapshot: Dict[str, List[float]]) -> None:
+    """Runs on lane('model_call_times'). Never raises."""
+    try:
+        tmp = _PROFILE_PATH.with_suffix(".tmp")
+        tmp.write_text(_json.dumps(snapshot), encoding="utf-8")
+        tmp.replace(_PROFILE_PATH)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("[ApiHttpx] call-time profile not saved: %s", exc)
 
 
 def _record_call_time(base: str, model: str, seconds: float) -> None:
     with _CALL_TIMES_LOCK:
+        _load_profile()
         times = _CALL_TIMES.setdefault((base, model), [])
         times.append(seconds)
         del times[:-_STALL_SAMPLES]
+        now = _perf_t.monotonic()
+        if now - _profile_state["saved_at"] < _PROFILE_SAVE_EVERY_S:
+            return
+        _profile_state["saved_at"] = now
+        snapshot = {f"{b}|{m}": list(t) for (b, m), t in _CALL_TIMES.items()}
+    try:
+        from backend.utils.durability_queue import lane
+
+        lane("model_call_times").submit("save_profile", _save_profile, snapshot)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[ApiHttpx] profile save not queued: %s", exc)
 
 
 def stall_bound(base: str, model: str, timeout_s: Optional[float]) -> Optional[float]:
     """The first-attempt read limit for this model, or None (no profile yet,
     or the bound would not be shorter than the caller's own timeout)."""
     with _CALL_TIMES_LOCK:
+        _load_profile()
         times = sorted(_CALL_TIMES.get((base, model), ()))
     if len(times) < 5:
         return None

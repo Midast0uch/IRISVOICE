@@ -20,8 +20,11 @@ _OK = {"choices": [{"message": {"role": "assistant", "content": "done"}, "finish
 
 
 @pytest.fixture(autouse=True)
-def _clean(monkeypatch):
+def _clean(monkeypatch, tmp_path):
     monkeypatch.setattr(tmod, "_CALL_TIMES", {})
+    # Hermetic: the profile file is per test, never the app's data/ file.
+    monkeypatch.setattr(tmod, "_PROFILE_PATH", tmp_path / "model_call_times.json")
+    monkeypatch.setattr(tmod, "_profile_state", {"loaded": False, "saved_at": 1e18})
     monkeypatch.setattr(tmod, "_record_attempt", lambda *a, **kw: None, raising=False)
     monkeypatch.setattr(tmod._perf_t, "sleep", lambda s: None)
 
@@ -63,3 +66,14 @@ def test_a_stalled_first_attempt_is_cut_at_the_bound_and_retried(monkeypatch):
         "m", [{"role": "user", "content": "x"}], max_tokens=64, timeout_s=300)[0]
     assert text == "done"
     assert reads == [pytest.approx(30.0), pytest.approx(300.0)]
+
+
+def test_the_profile_survives_a_restart(monkeypatch, tmp_path):
+    """Run A6: a fresh backend had no profile, so Inception's 120 s hold before a
+    504 was not bounded. The profile is saved (one lane writer) and reloaded."""
+    for s_ in (1.0, 2.0, 1.5, 2.5, 3.0):
+        tmod._record_call_time(BASE, "m", s_)
+    tmod._save_profile({f"{b}|{m}": t for (b, m), t in tmod._CALL_TIMES.items()})
+    monkeypatch.setattr(tmod, "_CALL_TIMES", {})  # a new process
+    monkeypatch.setattr(tmod, "_profile_state", {"loaded": False, "saved_at": 1e18})
+    assert stall_bound(BASE, "m", 300) == pytest.approx(30.0)
