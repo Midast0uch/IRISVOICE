@@ -899,7 +899,9 @@ class BrowserSession:
                 logger.info(
                     "[browser_session] nav did not settle job=%s url=%s (%s) — "
                     "continuing with the rendered page",
-                    self._job_id, self.url, str(_nav_exc)[:120],
+                    # 600: the Playwright call log says how far it got (committed?
+                    # waiting on sub-resources?) - the first-nav stall is open.
+                    self._job_id, self.url, " | ".join(str(_nav_exc)[:600].splitlines()),
                 )
             _t_nav = time.monotonic()
             # Where an open's time goes (2026-10-02: 86 s with a warm browser).
@@ -1547,7 +1549,7 @@ class BrowserSession:
                     self.last_error = f"navigate failed: {exc}"
                     return {"ok": False, "error": f"could not load {url}: {str(exc)[:160]}"}
                 logger.info("[browser_session] nav did not settle job=%s url=%s (%s)",
-                            self._job_id, url, str(exc)[:120])
+                            self._job_id, url, " | ".join(str(exc)[:600].splitlines()))
             self.last_error = None
             self.last_marks = []  # the old numbering belongs to the old page
             await self._announce_page(emit)
