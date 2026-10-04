@@ -512,3 +512,67 @@ extern "C" IRIS_API char* immortus_chain_query_by_coordinate(
 extern "C" IRIS_API void free_cstring(char* s) {
     if (s) std::free(s);
 }
+
+// ---------------------------------------------------------------------------
+// ONE WRITER: generic parameterized write on the native writer thread.
+// The SQL and every value are copied before return; the caller never waits.
+// ---------------------------------------------------------------------------
+namespace {
+struct Param {
+    int type = 0;
+    long long i = 0;
+    double d = 0.0;
+    std::string b;
+};
+}  // namespace
+
+extern "C" IRIS_API int db_submit_write(const char* sql, int n_params, const int* types,
+                                        const long long* ints, const double* doubles,
+                                        const char* const* bufs, const int* lens) {
+    if (!sql || n_params < 0 || (n_params > 0 && !types)) return -1;
+    std::vector<Param> params(static_cast<size_t>(n_params));
+    for (int k = 0; k < n_params; ++k) {
+        Param& p = params[static_cast<size_t>(k)];
+        p.type = types[k];
+        if (p.type == 1) p.i = ints ? ints[k] : 0;
+        else if (p.type == 2) p.d = doubles ? doubles[k] : 0.0;
+        else if (p.type == 3 || p.type == 4) {
+            if (!bufs || !lens || (lens[k] > 0 && !bufs[k])) return -1;
+            p.b.assign(bufs[k] ? bufs[k] : "", static_cast<size_t>(lens[k] > 0 ? lens[k] : 0));
+        } else if (p.type != 0) return -1;
+    }
+    std::string sql_s(sql);
+    bool queued = DBManager::get_instance().submit_write(
+        [sql_s = std::move(sql_s), params = std::move(params)](sqlite3* conn) -> int {
+            sqlite3_stmt* stmt = DBManager::get_instance().cached_statement(conn, sql_s);
+            if (!stmt) return SQLITE_ERROR;
+            for (size_t k = 0; k < params.size(); ++k) {
+                const Param& p = params[k];
+                int idx = static_cast<int>(k) + 1;
+                switch (p.type) {
+                    case 1: sqlite3_bind_int64(stmt, idx, p.i); break;
+                    case 2: sqlite3_bind_double(stmt, idx, p.d); break;
+                    case 3: sqlite3_bind_text(stmt, idx, p.b.data(), static_cast<int>(p.b.size()), SQLITE_STATIC); break;
+                    case 4: sqlite3_bind_blob(stmt, idx, p.b.data(), static_cast<int>(p.b.size()), SQLITE_STATIC); break;
+                    default: sqlite3_bind_null(stmt, idx); break;
+                }
+            }
+            int rc = sqlite3_step(stmt);
+            sqlite3_reset(stmt);
+            if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
+                std::cerr << "[DB] write failed: " << sqlite3_errmsg(conn)
+                          << " sql=" << sql_s.substr(0, 120) << std::endl;
+                return rc;
+            }
+            return SQLITE_OK;
+        });
+    return queued ? 0 : -2;
+}
+
+extern "C" IRIS_API int db_flush(int timeout_ms) {
+    return DBManager::get_instance().flush(timeout_ms) ? 0 : 1;
+}
+
+extern "C" IRIS_API void db_write_stats(long long* out4) {
+    DBManager::get_instance().write_stats(out4);
+}

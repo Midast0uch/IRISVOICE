@@ -1,6 +1,8 @@
 #include "db_manager.h"
 #include <iostream>
 #include <cstring>
+#include <chrono>
+#include <vector>
 
 // ============================================================================
 // DBManager Implementation — Async Single-Writer + Pre-Keyed Read Pool
@@ -128,6 +130,9 @@ void DBManager::shutdown() {
         writer_thread_.join();
     }
 
+    for (auto& kv : stmt_cache_) sqlite3_finalize(kv.second);
+    stmt_cache_.clear();
+
     if (writer_db_) {
         sqlite3_close(writer_db_);
         writer_db_ = nullptr;
@@ -140,8 +145,9 @@ void DBManager::shutdown() {
         std::lock_guard<std::mutex> lock(queue_mutex_);
         while (!write_queue_.empty()) {
             auto& task = write_queue_.front();
+            n_dropped_.fetch_add(1);
             try {
-                task.second.set_exception(
+                task.promise.set_exception(
                     std::make_exception_ptr(std::runtime_error("DBManager shutdown"))
                 );
             } catch (...) {}
@@ -164,9 +170,13 @@ bool DBManager::is_healthy() {
 
 // --- Writer Thread ---
 
+// Group commit: every task queued while the last batch ran is written in ONE
+// transaction (one WAL append + one lock acquisition instead of one per row).
+// Each task's own result is kept: a failed statement is undone by SQLite
+// (statement-level rollback) while the rest of the batch commits.
 void DBManager::run_writer_loop() {
     while (true) {
-        std::pair<std::function<int(sqlite3*)>, std::promise<int>> task;
+        std::vector<WriteTask> batch;
         {
             std::unique_lock<std::mutex> lock(queue_mutex_);
             queue_cv_.wait(lock, [this]() {
@@ -175,36 +185,127 @@ void DBManager::run_writer_loop() {
 
             if (!writer_running_.load() && write_queue_.empty()) break;
 
-            task = std::move(write_queue_.front());
-            write_queue_.pop();
+            while (!write_queue_.empty() && batch.size() < MAX_BATCH) {
+                batch.push_back(std::move(write_queue_.front()));
+                write_queue_.pop();
+            }
+            in_flight_ = batch.size();
         }
 
-        // Execute with exception safety — any throw propagates through the future
-        try {
-            int res = task.first(writer_db_);
-            task.second.set_value(res);
-        } catch (...) {
-            task.second.set_exception(std::current_exception());
+        bool in_tx = batch.size() > 1 &&
+            sqlite3_exec(writer_db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) == SQLITE_OK;
+
+        std::vector<int> results(batch.size(), SQLITE_ERROR);
+        std::vector<std::exception_ptr> errors(batch.size());
+        for (size_t i = 0; i < batch.size(); ++i) {
+            try {
+                results[i] = batch[i].fn(writer_db_);
+            } catch (...) {
+                errors[i] = std::current_exception();
+            }
         }
+
+        bool committed = true;
+        if (in_tx) {
+            int rc = sqlite3_exec(writer_db_, "COMMIT;", nullptr, nullptr, nullptr);
+            if (rc != SQLITE_OK) {
+                std::cerr << "[DB] group commit failed (" << batch.size() << " tasks): "
+                          << sqlite3_errmsg(writer_db_) << std::endl;
+                sqlite3_exec(writer_db_, "ROLLBACK;", nullptr, nullptr, nullptr);
+                committed = false;
+            }
+        }
+
+        for (size_t i = 0; i < batch.size(); ++i) {
+            bool ok = committed && !errors[i] && results[i] == SQLITE_OK;
+            (ok ? n_written_ : n_failed_).fetch_add(1);
+            if (!batch[i].waited) continue;
+            try {
+                if (errors[i]) batch[i].promise.set_exception(errors[i]);
+                else batch[i].promise.set_value(committed ? results[i] : SQLITE_ERROR);
+            } catch (...) {}
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(queue_mutex_);
+            in_flight_ = 0;
+        }
+        idle_cv_.notify_all();
     }
 }
 
 std::future<int> DBManager::execute_async_write(std::function<int(sqlite3*)> write_task) {
-    std::promise<int> promise;
-    std::future<int> future = promise.get_future();
+    WriteTask task;
+    task.fn = std::move(write_task);
+    task.waited = true;
+    std::future<int> future = task.promise.get_future();
 
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
         if (!writer_running_.load()) {
-            promise.set_exception(
+            task.promise.set_exception(
                 std::make_exception_ptr(std::runtime_error("Writer thread not running"))
             );
             return future;
         }
-        write_queue_.emplace(std::move(write_task), std::move(promise));
+        write_queue_.push(std::move(task));
+        n_queued_.fetch_add(1);
     }
     queue_cv_.notify_one();
     return future;
+}
+
+bool DBManager::submit_write(std::function<int(sqlite3*)> write_task) {
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        if (!writer_running_.load()) return false;
+        if (write_queue_.size() >= MAX_PENDING) {
+            n_dropped_.fetch_add(1);
+            return false;
+        }
+        WriteTask task;
+        task.fn = std::move(write_task);
+        write_queue_.push(std::move(task));
+        n_queued_.fetch_add(1);
+    }
+    queue_cv_.notify_one();
+    return true;
+}
+
+bool DBManager::flush(int timeout_ms) {
+    std::unique_lock<std::mutex> lock(queue_mutex_);
+    return idle_cv_.wait_for(lock, std::chrono::milliseconds(timeout_ms), [this]() {
+        return write_queue_.empty() && in_flight_ == 0;
+    });
+}
+
+void DBManager::write_stats(long long* out4) {
+    if (!out4) return;
+    out4[0] = n_queued_.load();
+    out4[1] = n_written_.load();
+    out4[2] = n_failed_.load();
+    out4[3] = n_dropped_.load();
+}
+
+sqlite3_stmt* DBManager::cached_statement(sqlite3* conn, const std::string& sql) {
+    auto it = stmt_cache_.find(sql);
+    if (it != stmt_cache_.end()) {
+        sqlite3_reset(it->second);
+        sqlite3_clear_bindings(it->second);
+        return it->second;
+    }
+    if (stmt_cache_.size() >= 256) {  // bounded: drop the cache, keep going
+        for (auto& kv : stmt_cache_) sqlite3_finalize(kv.second);
+        stmt_cache_.clear();
+    }
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v3(conn, sql.c_str(), -1, SQLITE_PREPARE_PERSISTENT, &stmt, nullptr) != SQLITE_OK) {
+        std::cerr << "[DB] prepare failed: " << sqlite3_errmsg(conn) << " sql="
+                  << sql.substr(0, 120) << std::endl;
+        return nullptr;
+    }
+    stmt_cache_[sql] = stmt;
+    return stmt;
 }
 
 // --- Read Connection Pool ---

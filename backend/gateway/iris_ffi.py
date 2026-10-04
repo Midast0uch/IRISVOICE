@@ -248,6 +248,22 @@ class _IrisFFI:
         self._lib.immortus_chain_keep_latest.argtypes = [ctypes.c_char_p, ctypes.c_int]
         self._lib.immortus_chain_keep_latest.restype = ctypes.c_int
 
+        # --- One writer (2026-10-04): every app-store write queued on the
+        # native writer thread. Optional: a DLL built before it has no export.
+        self.has_writer = hasattr(self._lib, "db_submit_write")
+        if self.has_writer:
+            self._lib.db_submit_write.argtypes = [
+                ctypes.c_char_p, ctypes.c_int,
+                ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ctypes.c_longlong),
+                ctypes.POINTER(ctypes.c_double), ctypes.POINTER(ctypes.c_char_p),
+                ctypes.POINTER(ctypes.c_int),
+            ]
+            self._lib.db_submit_write.restype = ctypes.c_int
+            self._lib.db_flush.argtypes = [ctypes.c_int]
+            self._lib.db_flush.restype = ctypes.c_int
+            self._lib.db_write_stats.argtypes = [ctypes.POINTER(ctypes.c_longlong)]
+            self._lib.db_write_stats.restype = None
+
         # W7/O1: trajectory-conditioned query (C++ core). Guarded so an older
         # DLL that lacks the symbol still loads — the engine then falls back to
         # the Python implementation.
@@ -278,6 +294,40 @@ class _IrisFFI:
         return self._lib.init_core_engine(
             db_path.encode("utf-8"), key_hex.encode("utf-8")
         )
+
+    def db_submit_write(self, sql: str, params) -> int:
+        """Queue one statement on the native writer (never waits).
+        0 queued, -1 bad arguments, -2 dropped (writer down or queue full)."""
+        n = len(params)
+        types = (ctypes.c_int * n)()
+        ints = (ctypes.c_longlong * n)()
+        dbls = (ctypes.c_double * n)()
+        bufs = (ctypes.c_char_p * n)()
+        lens = (ctypes.c_int * n)()
+        for i, v in enumerate(params):
+            if v is None:
+                types[i] = 0
+            elif isinstance(v, int):  # bool is an int: sqlite3 binds it as 0/1 too
+                types[i], ints[i] = 1, int(v)
+            elif isinstance(v, float):
+                types[i], dbls[i] = 2, v
+            elif isinstance(v, (bytes, bytearray, memoryview)):
+                b = bytes(v)
+                types[i], bufs[i], lens[i] = 4, b, len(b)
+            elif isinstance(v, str):
+                b = v.encode("utf-8")
+                types[i], bufs[i], lens[i] = 3, b, len(b)
+            else:
+                return -1  # sqlite3 would refuse it too: the caller writes it itself
+        return self._lib.db_submit_write(sql.encode("utf-8"), n, types, ints, dbls, bufs, lens)
+
+    def db_flush(self, timeout_ms: int) -> int:
+        return self._lib.db_flush(int(timeout_ms))
+
+    def db_write_stats(self) -> dict:
+        out = (ctypes.c_longlong * 4)()
+        self._lib.db_write_stats(out)
+        return {"queued": out[0], "written": out[1], "failed": out[2], "dropped": out[3]}
 
     def shutdown_core_engine(self) -> int:
         return self._lib.shutdown_core_engine()
@@ -1122,6 +1172,8 @@ class IrisCoreEngine:
                 self._ffi = _IrisFFI(dll_path)
                 rc = self._ffi.init_core_engine(db_path, key_hex)
                 if rc == 0:
+                    # One writer: the file the native writer thread owns.
+                    self._native_db_path = _norm_store_path(db_path)
                     logger.info(f"[iris_ffi] C++ core loaded from {dll_path}")
                     # D4b/D4c: the native core creates/owns memory_chain via a
                     # fixed C struct that predates node_type/topic_domain/
@@ -1590,6 +1642,65 @@ class IrisCoreEngine:
 # ---------------------------------------------------------------------------
 
 _engine: Optional[IrisCoreEngine] = None
+
+
+def _norm_store_path(path: str) -> str:
+    try:
+        return os.path.normcase(os.path.abspath(str(path)))
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+_native_write_refused = 0
+
+
+def ffi_native_write(store_path: str, sql: str, params=()) -> bool:
+    """ONE WRITER (2026-10-04): queue a write to ``store_path`` on the native
+    core's writer thread. True = queued (the caller never waits). False = the
+    native writer does not own that file (or refused the row): the caller
+    writes it itself, as before. Never raises."""
+    global _native_write_refused
+    try:
+        eng = _engine
+        ffi = getattr(eng, "_ffi", None) if eng is not None else None
+        if ffi is None or not getattr(ffi, "has_writer", False):
+            return False
+        if not store_path or getattr(eng, "_native_db_path", None) != store_path:
+            return False
+        rc = ffi.db_submit_write(sql, tuple(params or ()))
+        if rc == 0:
+            return True
+        _native_write_refused += 1
+        if _native_write_refused == 1 or _native_write_refused % 100 == 0:
+            logger.warning("[iris_ffi] native write refused rc=%s (%d so far) sql=%s",
+                           rc, _native_write_refused, sql[:80])
+        return False
+    except Exception as exc:  # noqa: BLE001 - the caller falls back to its own write
+        logger.warning("[iris_ffi] native write failed: %s sql=%s", exc, sql[:80])
+        return False
+
+
+def ffi_native_flush(timeout_s: float = 5.0) -> bool:
+    """Wait until every native write queued so far is on disk (tests, and the
+    rare reader of a row it just wrote). True = drained or no native writer."""
+    try:
+        ffi = getattr(_engine, "_ffi", None) if _engine is not None else None
+        if ffi is None or not getattr(ffi, "has_writer", False):
+            return True
+        return ffi.db_flush(int(timeout_s * 1000)) == 0
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def ffi_native_write_stats() -> dict:
+    """{queued, written, failed, dropped} of the native writer ({} = none)."""
+    try:
+        ffi = getattr(_engine, "_ffi", None) if _engine is not None else None
+        if ffi is None or not getattr(ffi, "has_writer", False):
+            return {}
+        return ffi.db_write_stats()
+    except Exception:  # noqa: BLE001
+        return {}
 
 # Session 365: the module-level helpers below ALSO refuse rows silently when
 # `_engine` is None (ffi_init_engine never called). Same rule as

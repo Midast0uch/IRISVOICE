@@ -11,6 +11,7 @@
 #include <future>
 #include <functional>
 #include <atomic>
+#include <unordered_map>
 
 // ============================================================================
 // DBManager — Async Single-Writer + Pre-Keyed Read Connection Pool
@@ -50,6 +51,20 @@ public:
 
     // Async write queue — serialized on dedicated writer thread
     std::future<int> execute_async_write(std::function<int(sqlite3*)> write_task);
+
+    // Fire-and-forget write: the caller never waits. The writer drains every
+    // queued task into ONE transaction (group commit, up to MAX_BATCH tasks),
+    // so a burst costs one commit, not one per row. Bounded: past MAX_PENDING
+    // the task is dropped and counted. Returns false when dropped/not running.
+    static constexpr size_t MAX_PENDING = 100000;
+    static constexpr size_t MAX_BATCH = 512;
+    bool submit_write(std::function<int(sqlite3*)> write_task);
+    // Wait until every task queued so far is written. True = drained.
+    bool flush(int timeout_ms);
+    // queued, written, failed, dropped (since start)
+    void write_stats(long long* out4);
+    // A cached prepared statement on the writer connection (writer thread only).
+    sqlite3_stmt* cached_statement(sqlite3* conn, const std::string& sql);
 
     // Read connection pool — pre-keyed, no repeated PBKDF2 on acquire
     sqlite3* acquire_read_connection();
@@ -97,9 +112,19 @@ private:
     std::thread writer_thread_;
     std::atomic<bool> writer_running_{false};
 
-    std::queue<std::pair<std::function<int(sqlite3*)>, std::promise<int>>> write_queue_;
+    struct WriteTask {
+        std::function<int(sqlite3*)> fn;
+        std::promise<int> promise;
+        bool waited = false;  // execute_async_write: a caller holds the future
+    };
+    std::queue<WriteTask> write_queue_;
     std::mutex queue_mutex_;
     std::condition_variable queue_cv_;
+    std::condition_variable idle_cv_;
+    size_t in_flight_ = 0;
+    std::atomic<long long> n_queued_{0}, n_written_{0}, n_failed_{0}, n_dropped_{0};
+    // Writer thread only: prepared statements by SQL text (bounded).
+    std::unordered_map<std::string, sqlite3_stmt*> stmt_cache_;
 
     // Read pool
     std::vector<sqlite3*> read_pool_;

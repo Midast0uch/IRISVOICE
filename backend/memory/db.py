@@ -96,6 +96,52 @@ def locked_retry(fn, *, label: str = "db-write"):
 _REQUIRE_ENCRYPTION = os.environ.get("IRIS_MEMORY_ENCRYPTION", "0") == "1"
 
 
+class AppStoreConnection(sqlite3.Connection):
+    """A plaintext store connection that knows its file, so app_write can
+    route its writes to the store's one writer without a database call."""
+
+    store_path: str = ""
+
+
+def _plain_store_connection(db_path) -> "AppStoreConnection":
+    conn = sqlite3.connect(str(db_path), check_same_thread=False,
+                           factory=AppStoreConnection)
+    try:
+        conn.store_path = os.path.normcase(os.path.abspath(str(db_path)))
+    except Exception:  # noqa: BLE001 - no path = writes stay on this connection
+        conn.store_path = ""
+    return conn
+
+
+def app_write(conn, sql: str, params=()) -> None:
+    """ONE WRITER (2026-10-04): the one way to write the app store.
+
+    data/memory.db is WAL: one writer at a time. Several Python connections
+    and the native core each wrote it, so each write waited on the others'
+    lock (busy_timeout 5 s) and failed (live 2026-10-04: a 22 s gap in a 42 s
+    reply; 8 lost rows in 5 tasks). Here a write to the file the native core
+    owns is queued on its writer thread (group commit, the caller never
+    waits). Any other connection (tests, other files, an encrypted store the
+    native core cannot open) writes as before. A reader of a row it has just
+    written calls app_flush() first. Raises like conn.execute on the
+    fallback path; never on the queued path."""
+    path = getattr(conn, "store_path", "")
+    if path:
+        from backend.gateway.iris_ffi import ffi_native_write
+
+        if ffi_native_write(path, sql, params):
+            return
+    conn.execute(sql, params)
+    conn.commit()
+
+
+def app_flush(timeout_s: float = 5.0) -> bool:
+    """Wait until every queued app-store write is on disk. True = drained."""
+    from backend.gateway.iris_ffi import ffi_native_flush
+
+    return ffi_native_flush(timeout_s)
+
+
 def open_encrypted_memory(db_path: str, biometric_key: bytes):
     """
     Opens the memory database, preferring SQLCipher AES-256 encryption.
@@ -153,7 +199,7 @@ def open_encrypted_memory(db_path: str, biometric_key: bytes):
             "[db] %s is an UNENCRYPTED SQLite file (plaintext header) — "
             "opening with sqlite3 rather than SQLCipher", db_path,
         )
-        conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        conn = _plain_store_connection(db_path)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA synchronous=NORMAL;")
@@ -205,7 +251,7 @@ def open_encrypted_memory(db_path: str, biometric_key: bytes):
                 "To suppress: install sqlcipher3. "
                 "To require encryption: set IRIS_MEMORY_ENCRYPTION=1."
             )
-        conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        conn = _plain_store_connection(db_path)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.execute("PRAGMA synchronous=NORMAL;")

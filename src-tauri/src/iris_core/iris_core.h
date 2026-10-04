@@ -229,6 +229,25 @@ IRIS_API char* immortus_chain_query_by_coordinate(
  */
 IRIS_API void free_cstring(char* s);
 
+/**
+ * ONE WRITER for the store: queue one parameterized statement on the native
+ * writer thread and return at once (the caller never waits). The writer
+ * group-commits everything queued into one transaction.
+ *   types[i]: 0=NULL, 1=INT64 (ints[i]), 2=DOUBLE (doubles[i]),
+ *             3=TEXT (bufs[i], lens[i] bytes), 4=BLOB (bufs[i], lens[i] bytes)
+ * Returns 0 queued, -1 bad arguments, -2 writer not running or queue full
+ * (dropped, counted).
+ */
+IRIS_API int db_submit_write(const char* sql, int n_params, const int* types,
+                             const long long* ints, const double* doubles,
+                             const char* const* bufs, const int* lens);
+
+/** Wait until every write queued so far is on disk. 0 = drained, 1 = timeout. */
+IRIS_API int db_flush(int timeout_ms);
+
+/** out4 = {queued, written, failed, dropped} since start. */
+IRIS_API void db_write_stats(long long* out4);
+
 #ifdef __cplusplus
 }
 #endif
