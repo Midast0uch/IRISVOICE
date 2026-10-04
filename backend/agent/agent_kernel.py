@@ -7704,6 +7704,13 @@ class AgentKernel:
                                 ),
                             )
                         )
+                    # Parallel nodes (HANDOFF 11 C): the edges the planner
+                    # DECLARED. Only the step count was logged, so whether plans
+                    # carry real dependencies was unmeasurable.
+                    logger.info(
+                        "[AgentKernel._plan_task] plan edges steps=%d declared=%s",
+                        len(steps), [(s.step_id, s.depends_on) for s in steps],
+                    )
                     # NARRATION consumer (2026-09-27): the duration gate above
                     # decides what gets spoken; this scores the same question in
                     # shadow so content-aware narration can be judged later.
@@ -15048,13 +15055,15 @@ Respond with a JSON object:
             # read delivers the SAME gathered bytes through the document
             # store, and compressing them to a node-record summary re-starves
             # the synthesis the wide gather window was built to feed.
-            _tool323 = (getattr(item, "tool", None) or "").lower()
-            if _tool323 in AgentKernel._DER_GATHER_TOOLS or _tool323 in AgentKernel._DER_READ_TOOLS:
+            # What the step DID, not item.tool: a node step (tool=None) that
+            # searched got the 300-char record summary, so the synthesis never
+            # saw the search results (evals 2026-10-04: r01/r06/r07 0/3,
+            # "the results did not return the figures"; 8/8 on 2026-10-01).
+            _wide = AgentKernel._DER_GATHER_TOOLS | AgentKernel._DER_READ_TOOLS
+            if any(str(c.get("tool") or "").lower() in _wide for c in _step_calls(item)):
                 _raw_gather = getattr(item, "result", "") or ""
                 if _raw_gather:
-                    return AgentKernel._smart_excerpt(
-                        _raw_gather, AgentKernel._der_evidence_cap(item.tool)
-                    )
+                    return AgentKernel._smart_excerpt(_raw_gather, _step_evidence_cap(item))
             _rec = getattr(item, "node_record", None) or getattr(
                 item, "footprint", None
             )

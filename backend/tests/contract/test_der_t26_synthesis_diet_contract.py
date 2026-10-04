@@ -105,6 +105,22 @@ def test_ac1_edge_no_node_record_falls_back_to_bounded_raw():
     assert "r" in ev
 
 
+def test_ac1_node_step_that_gathered_keeps_its_results():
+    """A node step (tool=None) that searched is a GATHER step: the synthesis
+    reads its results, not the 300-char record summary. Old code keyed on
+    item.tool, so r01/r06/r07 replied 'the results did not return the
+    figures' with the figures in the step result (evals 2026-10-04)."""
+    item = _Item(
+        result="Searched.\n\nTool results:\n" + "filler " * 80 + "Tokyo 14,195,730",
+        record=_record(),
+    )
+    item.tool = None
+    item.node_call_log = [{"tool": "search", "target": "Tokyo population", "ok": True}]
+    ev = agent_kernel.AgentKernel._der_node_record_evidence(item)
+
+    assert "Tokyo 14,195,730" in ev
+
+
 def test_ac1_edge_null_item_is_safe():
     """A record-less, result-less item yields '' (callers already guard with
     their own '(no result)' fallbacks)."""
