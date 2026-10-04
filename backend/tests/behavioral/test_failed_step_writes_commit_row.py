@@ -98,6 +98,10 @@ class TestFailedStepWritesCommitRow:
             verdict=None,
         )
 
+        # D1 (2026-10-04): the commit row is written on lane("memory_events"),
+        # off the answer path - wait for the lane before reading the spy.
+        from backend.utils.durability_queue import lane
+        assert lane("memory_events").flush(10.0)
         assert len(_CapturingRecorder.calls) == 1, (
             "a FAILED step must still write exactly one commit row — the old "
             "contract silently dropped it (audit finding B)"

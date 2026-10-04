@@ -13447,7 +13447,11 @@ Respond with a JSON object:
                     _gc_links = getattr(self, "_der_links", None)
                     _gc_rec = getattr(item, "node_record", None)
                     if _gc_links is not None and _gc_rec is not None:
-                        _gc_links.write_node_links(
+                        # D1: on the memory lane, never the answer path.
+                        from backend.utils.durability_queue import lane as _durability_lane
+
+                        _durability_lane("memory_events").submit(
+                            "der_node_links", _gc_links.write_node_links,
                             item,
                             _gc_rec,
                             step_success=False,
@@ -19009,15 +19013,20 @@ Respond with a JSON object:
         # signal the outer loop and the AVOID/edge-miss path consume; gating it on
         # VERIFIED starves failure learning. Store write — never injected into a
         # prompt.
+        # D1 (HANDOFF 11): the write runs on lane("memory_events"), never on
+        # the answer path - inline it waited on "database is locked" (live
+        # 2026-10-04 r06: a 22 s gap in a 42 s reply). No reader decides on
+        # der_commits in the same turn (the outer loop reads it between
+        # sessions). The state is read NOW; only the row lands later.
         try:
             from backend.agent.caducean_trajectory import (
                 get_trajectory_recorder,
             )
+            from backend.utils.durability_queue import lane as _durability_lane
 
             _cad = self._der_live_cad_state(_session)
-            # REQ-20: DER commits land in the APPLICATION store (memory_interface
-            # episodic db), not the BUILD-memory .mcm/coordinates.db.
-            get_trajectory_recorder(self._memory_interface).record_commit(
+            _commit_step = getattr(item, "step_id", "?")
+            _commit_kw = dict(
                 session_id=_session,
                 step_id=item.step_id,
                 commit_hash="",
@@ -19026,17 +19035,30 @@ Respond with a JSON object:
                 xi=_cad.get("xi"),
                 verified_label=_verified,
             )
-            # GROUND TRUTH T5 (REQ-2 AC1/AC4): count commits BY LABEL at the
-            # write. The live store holds 194 VERIFIED against 2 UNVERIFIED
-            # and 2 FAILED, while the episode layer holds 55 failures - so
-            # either failures never reach this path or the write is failing
-            # quietly. These two counters tell those apart without a repro.
-            _write_counters.bump("commit.written")
-            _write_counters.bump("commit.label.%s" % str(_verified or "UNKNOWN").lower())
+            _commit_mi = self._memory_interface
+
+            def _commit_job():
+                try:
+                    # REQ-20: DER commits land in the APPLICATION store
+                    # (memory_interface episodic db), not .mcm/coordinates.db.
+                    get_trajectory_recorder(_commit_mi).record_commit(**_commit_kw)
+                    # GROUND TRUTH T5 (REQ-2 AC1/AC4): count commits BY LABEL
+                    # at the write, so a failing write and a missing one differ.
+                    _write_counters.bump("commit.written")
+                    _write_counters.bump(
+                        "commit.label.%s" % str(_verified or "UNKNOWN").lower())
+                except Exception as _commit_exc:
+                    # GROUND TRUTH T5/T10: a swallowed commit write must stay
+                    # visible as a number and a warning.
+                    _write_counters.bump("commit.write_failed")
+                    logger.warning(
+                        "[DER] record_commit FAILED (session=%s step=%s label=%s): %s",
+                        _session, _commit_step, _verified, _commit_exc,
+                    )
+
+            if not _durability_lane("memory_events").submit("der_commit", _commit_job):
+                _write_counters.bump("commit.write_failed")
         except Exception as _commit_exc:
-            # GROUND TRUTH T5/T10: promoted from logger.debug. A swallowed
-            # commit write is indistinguishable from a commit that never
-            # happened, and that ambiguity IS the measurement problem.
             _write_counters.bump("commit.write_failed")
             logger.warning(
                 "[DER] record_commit FAILED (session=%s step=%s label=%s): %s",
@@ -19371,9 +19393,14 @@ Respond with a JSON object:
                     # not affinity), failed_like (same failure class, so AVOID
                     # recall is a graph walk). Off the critical path; the
                     # writer itself never raises.
+                    # D1: on lane("memory_events") - inline, pin_store.link
+                    # waited on "database is locked" in the answer path.
                     try:
                         if self._der_links is not None:
-                            self._der_links.write_node_links(
+                            from backend.utils.durability_queue import lane as _durability_lane
+
+                            _durability_lane("memory_events").submit(
+                                "der_node_links", self._der_links.write_node_links,
                                 item,
                                 _rec,
                                 step_success=step_success,

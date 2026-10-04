@@ -254,6 +254,10 @@ def test_integration_full_cycle():
     assert any(c.is_subloop for c in queue2.items), "children are Sub-Loops"
     # REQ-1 (fixes audit B): a FAILED step DOES write a commit — with the
     # honest FAILED label, not silence. The ledger records every outcome.
+    # D1 (2026-10-04): the commit row is written on lane("memory_events"),
+    # off the answer path - wait for the lane before reading the spy.
+    from backend.utils.durability_queue import lane as _d1_lane
+    assert _d1_lane("memory_events").flush(10.0)
     assert len(_commit_calls) == 1, "FAILED step writes a commit (REQ-1)"
     assert _commit_calls[0][4] == "FAILED", "commit label is FAILED"
 
@@ -283,6 +287,7 @@ def test_integration_full_cycle():
         None,
     )
     # REQ-1: VERIFIED step writes a commit (now the 2nd call), labeled VERIFIED.
+    assert _d1_lane("memory_events").flush(10.0)
     assert len(_commit_calls) == 2, "VERIFIED step writes a commit (REQ-1)"
     assert _commit_calls[1][4] == "VERIFIED", "commit label is VERIFIED"
 
