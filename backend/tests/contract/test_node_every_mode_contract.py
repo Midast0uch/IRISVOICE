@@ -53,6 +53,22 @@ def test_a_toolless_step_runs_as_a_node_in_every_mode(monkeypatch, mode):
     assert item.node_call_log == []
 
 
+def test_the_brain_helps_a_tool_model_on_the_same_provider(monkeypatch):
+    """Brain mercury-2.5 + tool mercury-2 share provider id "inceptionlabs";
+    the helper compared ids only and never engaged (live 2026-10-03)."""
+    import backend.agent.node_executor as ne
+
+    seen = {}
+    monkeypatch.setattr(ne, "run_node", lambda goal, ctx: (
+        seen.__setitem__("helper", ctx.helper_role), ne.NodeResult(True, "ok"))[1])
+    k = _kernel([])
+    models = {"tool_execution": "mercury-2", "reasoning": "mercury-2.5"}
+    k._router.resolve = lambda role: SimpleNamespace(id="inceptionlabs", model=models[role])
+    AgentKernel._der_run_step_execution(
+        k, QueueItem(step_id="s", step_number=1, description="open the article"), None, "sess", "t", None)
+    assert seen["helper"] == "reasoning"
+
+
 def test_the_node_menu_is_one_rule_and_screen_tools_need_a_screen_goal():
     menus = []
     k = _kernel(menus)

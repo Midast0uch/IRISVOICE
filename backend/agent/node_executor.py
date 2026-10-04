@@ -74,7 +74,8 @@ _SYSTEM = (
     "the file and match once. Use write_file only for a new file or a full rewrite.\n"
     "- When the step is about behaviour, run the tests with run_command and read "
     "the result. A non-zero exit code means it failed.\n"
-    "- Do only this step. Do not ask the user questions.\n"
+    "- Do only this step: later steps do the rest of the task. Stop as soon as "
+    "this step's goal is met. Do not ask the user questions.\n"
     "End your final answer with one line: `STATUS: done` when the step's goal is "
     "met (a step that only has to OBSERVE failing tests is met once you saw "
     "them), or `STATUS: failed: <reason>` when it is not.\n"
@@ -146,6 +147,13 @@ class NodeContext:
     task: str = ""
     workdir: str = ""
     budget_s: float = 300.0
+    # A node is ONE step now (owner 2026-10-03), not the old composite of
+    # steps the 300 s budget was sized for. Measured 2026-10-03 over 1,334
+    # successful nodes in logs/iris.log: 93% made <= 5 tool calls, 99% <= 12.
+    # Live the same day a browser node clicked through linked articles for
+    # its whole 300 s (~22 calls). At this many calls the node closes and
+    # reports whether its step is met; the DER decides what comes next.
+    max_calls: int = 12
     max_tokens: int = 8192
     result_chars: int = 8000
     conv_id: str = ""
@@ -326,8 +334,10 @@ def _safe_look(ctx: NodeContext, shot: str, question: str) -> str:
     except Exception as exc:  # noqa: BLE001 - no reading; the element list still stands
         logger.info("[run_node] conv=%s vision look failed: %r", ctx.conv_id, exc)
         return ""
-    logger.info("[run_node] conv=%s vision look %.1fs, %d chars",
-                ctx.conv_id, time.monotonic() - t0, len(reading))
+    # The reading itself (head): a wrong fact that reached an answer must be
+    # traceable to its source (live 2026-10-04: "5,510 metres", unprovable).
+    logger.info("[run_node] conv=%s vision look %.1fs, %d chars: %r",
+                ctx.conv_id, time.monotonic() - t0, len(reading), reading[:200])
     if reading.startswith("Vision unavailable"):
         return ""
     return reading[:1500]
@@ -486,7 +496,9 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                               "args": {k: params[k] for k in _ID_KEYS
                                        if isinstance(params, dict) and params.get(k)}})
                 logger.info("[run_node] conv=%s %s %s -> %s", ctx.conv_id, name,
-                            _target(params or {}), "FAILED" if failed else "ok")
+                            _target(params or {}),
+                            ("FAILED: " + str(raw.get("error") if isinstance(raw, dict) else raw)[:160])
+                            if failed else "ok")
                 content = _clip(_relative(ctx.format_result(name, raw) or "", ctx.workdir),
                                 ctx.result_chars)
                 # No progress also shows as the SAME result for the same tool and
@@ -555,12 +567,26 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                                              + "\n\n".join(batch_results)).strip(),
                                       calls, last_command_failed=bool(last_command_failed),
                                       helped=helped)
-        # Budget spent with work still requested: ask for an honest status.
+            if len(calls) >= ctx.max_calls:
+                break
+        # Calls or time spent with work still requested: the node closes and
+        # says honestly whether its step is met - only an explicit
+        # `STATUS: done` counts; the DER verifies and decides what is next.
+        why = (f"step call limit reached ({len(calls)} calls)" if len(calls) >= ctx.max_calls
+               else "node time budget used up")
         messages.append({"role": "user", "content": (
-            "The time budget for this step is used up. Say what you did and what is unfinished.")})
+            f"Stop here: {why}. Say in a few lines what you did and what you found. End "
+            "with `STATUS: done` if this step's goal is met, or `STATUS: failed: <what is "
+            "missing>`.")})
         text, _think, _ = ctx.generate(role, messages, tools=None, max_tokens=1024,
                                        temperature=0.2, timeout_s=120.0)
-        return NodeResult(False, text or "", calls, "node time budget used up", helped=helped)
+        ok, reason, summary = _status(text or "")
+        ok = ok and bool(_STATUS.search(text or ""))
+        logger.info("[run_node] conv=%s closed (%s): %d call(s), success=%s",
+                    ctx.conv_id, why, len(calls), ok)
+        return NodeResult(ok, summary if ok else (text or ""), calls,
+                          "" if ok else (reason or why),
+                          last_command_failed=bool(last_command_failed), helped=helped)
     except Exception as exc:  # noqa: BLE001 — a broken node is a failed step, not a crashed turn
         logger.warning("[run_node] conv=%s failed: %s", ctx.conv_id, exc)
         return NodeResult(False, text or "", calls, f"{type(exc).__name__}: {exc}", helped=helped)

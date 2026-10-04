@@ -16932,7 +16932,8 @@ Respond with a JSON object:
         if tool in self._WEB_CONTENT_TOOLS:
             self._der_warm_vision_browser(tool)
 
-    def _der_after_call(self, item, tool: str, params, dr, _session: str, _turn_id: Optional[str]) -> None:
+    def _der_after_call(self, item, tool: str, params, dr, _session: str, _turn_id: Optional[str],
+                        capture: bool = True) -> None:
         """Per-call bookkeeping AFTER one DER tool dispatch (direct step or node
         call): crawl budget, ToolCallTree row, quick tier, result capture
         (sources / har_path for the reply). Never raises."""
@@ -16971,7 +16972,7 @@ Respond with a JSON object:
             logger.warning("[DER] record_tool_call failed: %s", _rc_err)
         self._der_note_quick_tier(tool, getattr(dr, "result", None))
         # W9 (O3): capture structured tool results
-        if getattr(dr, "result", None) is not None:
+        if capture and getattr(dr, "result", None) is not None:
             try:
                 _doc = self._capture_tool_result(
                     tool, dr.result, self.conversation_id, _turn_id, _session,
@@ -17025,7 +17026,11 @@ Respond with a JSON object:
                 session_id=_session, conversation_id=self.conversation_id,
                 turn_id=_turn_id, timeout_s=self._der_tool_deadline(name),
             )
-            self._der_after_call(item, name, params, dr, _session, _turn_id)
+            # A node stores only web search/crawl results (sources for the
+            # reply): every page list from a click became a 34k-char document
+            # + ~39 memory chunks (live 2026-10-03), DB writers for nothing.
+            self._der_after_call(item, name, params, dr, _session, _turn_id,
+                                 capture=name in self._WEB_CONTENT_TOOLS)
             raw = getattr(dr, "result", None)
             return raw if raw is not None else {"success": False, "error": getattr(dr, "error", "") or "no result"}
 
@@ -17051,7 +17056,13 @@ Respond with a JSON object:
         # only when they are different models (a model cannot help itself).
         _helper = None
         try:
-            if self._router.resolve("tool_execution").id != self._router.resolve("reasoning").id:
+            # Provider AND model: Brain mercury-2.5 and tool mercury-2 share the
+            # provider id "inceptionlabs", so comparing ids alone never engaged
+            # the helper - a stuck node failed its step instead (live
+            # 2026-10-03: 3x unchanged browser_observe -> split + recovery).
+            _t = self._router.resolve("tool_execution")
+            _r = self._router.resolve("reasoning")
+            if (_t.id, getattr(_t, "model", None)) != (_r.id, getattr(_r, "model", None)):
                 _helper = "reasoning"
         except Exception as _hr_exc:  # noqa: BLE001 - no helper, the node still runs
             logger.debug("[DER] node helper unresolved: %r", _hr_exc)
