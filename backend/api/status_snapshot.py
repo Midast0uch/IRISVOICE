@@ -143,6 +143,20 @@ async def build_snapshot() -> dict[str, Any]:
     # pending_writes — hardcoded to 0 for now (no actual tracking yet)
     snap["pending_writes"] = 0
 
+    # local_model — the manager's truth about the one local slot, so every
+    # open panel learns of a load it did not start (the vision autoload,
+    # another window, a crash) within one status tick (live 2026-10-03: the
+    # VL-3B autoload was invisible to the UI until a manual rescan).
+    try:
+        from backend.agent.local_model_manager import get_local_model_manager
+
+        _lm = get_local_model_manager().get_status()
+        snap["local_model"] = {k: _lm.get(k) for k in (
+            "loaded", "model_path", "n_ctx", "vision_loaded", "draft_loaded")}
+    except Exception as e:
+        logger.warning(f"[snapshot] local model state error: {e}")
+        snap["local_model"] = {"error": str(e)}
+
     # inference — provider registry + role bindings (single source of truth
     # for the frontend's provider/role selection UI).
     try:

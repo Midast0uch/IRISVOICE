@@ -17,6 +17,8 @@ interface LoadPlan {
    *  Optional — an older backend payload simply omits it, and the card
    *  must render as text-only rather than crash. */
   mmproj_gb?: number;
+  /** DSpark drafter reserve already folded into vram_gb (file + buffers). */
+  draft_gb?: number;
 }
 
 interface ModelEntry {
@@ -38,6 +40,8 @@ interface ModelEntry {
   has_vision?: boolean;
   mmproj_path?: string | null;
   mmproj_size_gb?: number;
+  /** DSpark drafter paired by scan_models; it loads with the model. */
+  draft_path?: string | null;
 }
 
 interface ModelBrowserPanelProps {
@@ -133,6 +137,23 @@ export function ModelBrowserPanel({ glowColor, fontColor, sendMessage }: ModelBr
 
   useEffect(() => {
     fetchModels();
+  }, []);
+
+  // The backend's status tick carries the local slot's truth (local_model).
+  // A load this panel did not start - the vision autoload, another window, a
+  // crash - changes it; rescan then, so "loaded" never shows a stale model
+  // (live 2026-10-03: the VL-3B autoload was invisible until a manual rescan).
+  const slotRef = useRef<string | null>(null);
+  useEffect(() => {
+    const onStatus = (e: Event) => {
+      const lm = (e as CustomEvent).detail?.local_model;
+      if (!lm || lm.error) return;
+      const key = lm.loaded ? `${lm.model_path}|${lm.vision_loaded}|${lm.draft_loaded}` : '';
+      if (slotRef.current !== null && slotRef.current !== key) fetchModels();
+      slotRef.current = key;
+    };
+    window.addEventListener('iris:system_status', onStatus as EventListener);
+    return () => window.removeEventListener('iris:system_status', onStatus as EventListener);
   }, []);
 
   // ── WS progress listener ─────────────────────────────────────────────
@@ -627,6 +648,14 @@ export function ModelBrowserPanel({ glowColor, fontColor, sendMessage }: ModelBr
                             title={`Vision projector adds ${(m.plan.mmproj_gb ?? 0).toFixed(1)}GB VRAM (already counted above). Attaching a projector measurably slows generation — gemma-4-E4B: 64.5 → 42.1 tok/s (~-35%). Use "Text only" to load without it.`}
                           >
                             +{(m.plan.mmproj_gb ?? 0).toFixed(1)}GB vision (~-35% gen)
+                          </span>
+                        )}
+                        {m.draft_path && (m.plan.draft_gb ?? 0) > 0 && (
+                          <span
+                            style={{ color: '#22c55e' }}
+                            title={`A DSpark drafter loads with this model (${m.draft_path.split(/[\\/]/).pop()}) and adds ${(m.plan.draft_gb ?? 0).toFixed(1)}GB VRAM (already counted above). Measured 2026-10-03: LFM2.5-2.6B 164 → 259 tok/s, LFM2.5-VL-3B 150 → 181 tok/s. It is left out when it does not fit at the full context.`}
+                          >
+                            +{(m.plan.draft_gb ?? 0).toFixed(1)}GB DSpark draft (faster gen)
                           </span>
                         )}
                       </>

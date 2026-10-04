@@ -620,6 +620,9 @@ _SPLIT_SUFFIX_PART = "-of-"
 # this filename prefix and must never be offered as loadable brains — they
 # are attached as metadata to their base model instead.
 _MMPROJ_PREFIX_RE = re.compile(r"^mmproj[-_.]", re.IGNORECASE)
+# An `mmproj` token anywhere in the stem: prismml ships
+# "Ternary-Bonsai-2-27B-mmproj-BF16.gguf" (suffix style). Stripped for matching.
+_MMPROJ_TOKEN_RE = re.compile(r"(^mmproj[-_.]|[-_.]mmproj(?=[-_.]|$))", re.IGNORECASE)
 
 # ── GGML type string → llama_cpp integer constant ─────────────────────────
 # Kept module-scope so _load_inprocess and _build_server_cmd share one source
@@ -676,6 +679,23 @@ _KV_QUALITY: Dict[str, int] = {
 # honestly: f16 is 2 bytes, and budgeting f16 for a q8_0 cache halves the
 # context the deriver will hand the loader.
 _ONE_BYTE_KV_TYPES = frozenset({"q8_0", "q8_1", "q4_0", "q4_1", "q5_0", "q5_1"})
+
+
+def _rising_progress(cb):
+    """One load reports one rising %. The server's own log stage starts again
+    low (CUDA init 5 %) after the pre-spawn steps reached 18 % - live
+    2026-10-03 the UI bar went 18 -> 5 -> 12. Errors always pass."""
+    best = {"pct": -1}
+
+    async def _cb(event):
+        if event.get("phase") != "error" and event.get("status") != "error":
+            pct = int(event.get("pct") or 0)
+            if pct < best["pct"]:
+                return
+            best["pct"] = pct
+        await cb(event)
+
+    return _cb
 
 
 class LocalModelManager:
@@ -748,6 +768,7 @@ class LocalModelManager:
         # mmproj-*.gguf merely existing on disk. Read by get_status() and by
         # iris_gateway.py to set ProviderInstance.vision_loaded truthfully.
         self._current_vision_loaded: bool = False
+        self._current_draft_loaded: bool = False  # DSpark -md on the running server
         self._lock = threading.RLock()
         # [10.6] Async lock — prevents concurrent load_model() calls racing
         self._load_lock: Optional[asyncio.Lock] = None
@@ -1440,6 +1461,12 @@ class LocalModelManager:
             if meta.get("architecture") == "dflash":
                 drafters.append((gguf_path, meta, st))
                 continue
+            # A vision projector (arch 'clip') whose name the filename rule
+            # missed (suffix style) is still never a loadable brain - it was
+            # listed with a Load button (live UI 2026-10-03).
+            if meta.get("architecture") == "clip":
+                projectors.append((gguf_path, stem, st))
+                continue
 
             size_gb = round(st.st_size / (1024**3), 2)
             quant = meta.get("quantization") or self._quant_from_filename(stem)
@@ -1509,9 +1536,19 @@ class LocalModelManager:
             for proj_path, proj_stem, proj_st in projectors:
                 try:
                     proj_size_gb = round(proj_st.st_size / (1024**3), 2)
-                    base_name = _MMPROJ_PREFIX_RE.sub("", proj_stem, count=1)
+                    base_name = _MMPROJ_TOKEN_RE.sub("", proj_stem, count=1)
                     match_key = self._normalize_stem_for_vision_match(base_name)
                     matched_bases = stem_index.get(match_key, [])
+                    if not matched_bases:
+                        # Same folder, base name extends the projector's:
+                        # "Ternary-Bonsai-2-27B-mmproj-BF16" serves
+                        # "Ternary-Bonsai-2-27B-PTQ1_0" and its Abliterated
+                        # variant (their quant token is not in QUANT_BPW).
+                        matched_bases = [
+                            b for b, e in seen_bases.items()
+                            if Path(e["path"]).parent == proj_path.parent
+                            and self._normalize_stem_for_vision_match(b).startswith(match_key + "-")
+                        ]
                     if not matched_bases:
                         logger.debug(
                             f"[LocalModelManager] Orphan vision projector "
@@ -1571,10 +1608,18 @@ class LocalModelManager:
         return models
 
     # GPU memory a DSpark drafter costs beyond its file: its KV cache and
-    # compute buffers. Measured 2026-10-03 at --ctx-size 8192 (RTX 3070,
-    # nvidia-smi after one completion): LFM2.5-2.6B drafter (0.19 GB file)
-    # +800 MiB, LFM2.5-VL-3B drafter (0.53 GB file) +1128 MiB.
-    DRAFT_OVERHEAD_GB = 0.6
+    # compute buffers, growing with the context. Measured 2026-10-03 (RTX
+    # 3070, nvidia-smi after one completion, base alone vs base + drafter):
+    # LFM2.5-2.6B drafter (0.19 GB file) +800 MiB at 8k ctx, +1040 MiB at 32k;
+    # LFM2.5-VL-3B drafter (0.53 GB file) +1128 MiB at 8k.
+    DRAFT_OVERHEAD_BASE_GB = 0.5
+    DRAFT_OVERHEAD_PER_1K_CTX_GB = 0.01
+
+    @classmethod
+    def draft_reserve_gb(cls, draft_size_gb: float, n_ctx: Optional[int]) -> float:
+        """What a drafter needs on the card at *n_ctx*: file + buffers + KV."""
+        return (float(draft_size_gb or 0.0) + cls.DRAFT_OVERHEAD_BASE_GB
+                + cls.DRAFT_OVERHEAD_PER_1K_CTX_GB * int(n_ctx or 8192) / 1024.0)
 
     def _attach_drafter(self, draft_path: Path, draft_meta: Dict[str, Any],
                         draft_st: os.stat_result, seen_bases: Dict[str, Dict[str, Any]],
@@ -1611,11 +1656,17 @@ class LocalModelManager:
             entry["draft_path"] = str(draft_path)
             entry["draft_size_gb"] = size_gb
             try:
+                _prev = entry.get("plan") or {}
+                _draft_gb = self.draft_reserve_gb(size_gb, _prev.get("n_ctx"))
                 replanned = self.plan_load(
                     meta, entry["size_gb"],
-                    mmproj_size_gb=float(entry.get("mmproj_size_gb") or 0.0)
-                    + size_gb + self.DRAFT_OVERHEAD_GB,
+                    mmproj_size_gb=float(entry.get("mmproj_size_gb") or 0.0) + _draft_gb,
                 )
+                # The card names each cost: the vision figure stays the
+                # projector's (it read "+1.9GB vision" for a 0.8 GB projector
+                # once the drafter was folded in), the drafter gets its own.
+                replanned["mmproj_gb"] = _prev.get("mmproj_gb", 0.0)
+                replanned["draft_gb"] = round(_draft_gb, 2)
                 entry["plan"] = replanned
                 entry["vram_estimate_gb"] = replanned["vram_gb"]
             except Exception as exc:  # noqa: BLE001 - the card keeps its earlier plan
@@ -2137,6 +2188,16 @@ class LocalModelManager:
             logger.debug(f"[LocalModelManager] get_hardware_info() failed in plan_load: {exc}")
             hw = {"cuda_available": False, "vram_free_gb": 0.0}
         free = float(hw.get("vram_free_gb", 0.0) or 0.0)
+        # A load first unloads the model in the one local slot, so its memory
+        # is free for the next one. Without this every card read "won't fit"
+        # while any model was loaded (live UI 2026-10-04: VL-3B "4096 ctx,
+        # does not fit" with the 2.6B resident).
+        try:
+            _resident = self._current_model_path if self.is_loaded() else None
+            if _resident:
+                free += float(self._vram_ledger.get(str(_resident), 0.0))
+        except Exception:  # noqa: BLE001 - a plan never fails on bookkeeping
+            pass
         native = int(
             model_meta.get("context_length") or model_meta.get("n_ctx") or 0
         )
@@ -2167,13 +2228,23 @@ class LocalModelManager:
                 kv_cache_type=params.get("cache_type_k", "q8_0"),
                 max_ctx=ceiling,
             )
-            n_ctx = min(ceiling, derived["n_ctx"])
-            vram = self.estimate_vram_gb(
-                model_meta, n_ctx=n_ctx, file_size_gb=file_size_gb,
-                kv_bytes=1 if str(params.get("cache_type_k", "f16")).lower()
-                in _ONE_BYTE_KV_TYPES else 2,
-                mmproj_size_gb=mmproj_size_gb,
-            )
+            _kv_bytes = 1 if str(params.get("cache_type_k", "f16")).lower() in _ONE_BYTE_KV_TYPES else 2
+
+            def _vram_at(ctx: int) -> float:
+                return self.estimate_vram_gb(
+                    model_meta, n_ctx=ctx, file_size_gb=file_size_gb,
+                    kv_bytes=_kv_bytes, mmproj_size_gb=mmproj_size_gb,
+                )
+
+            # The same rule as load_model: the profile's n_ctx is authoritative
+            # and is cut only when it does not fit (the GPU-only ladder). The
+            # card used the deriver's conservative cap and read "8k ctx" for a
+            # model the UI then loaded at 32768 (live 2026-10-04).
+            n_ctx = ceiling
+            vram = _vram_at(n_ctx)
+            if vram > free * 0.92:
+                n_ctx = min(ceiling, derived["n_ctx"])
+                vram = _vram_at(n_ctx)
             plan.update(
                 profile=profile,
                 n_ctx=n_ctx,
@@ -2969,6 +3040,8 @@ class LocalModelManager:
         [10.5] Pre-flight resource check before spawning subprocess.
         [10.7] Starts watchdog task after successful load.
         """
+        if progress_cb is not None:
+            progress_cb = _rising_progress(progress_cb)
         # ── Kill any orphaned llama-server processes before starting ──
         # Off the event loop: taskkill/tasklist are blocking subprocess calls
         # and must not stall WS heartbeats (frontend freeze, session 279).
@@ -3179,7 +3252,7 @@ class LocalModelManager:
                         )
                         if progress_cb:
                             try:
-                                await progress_cb({"phase": "derived", "pct": 10, "msg": f"Derived config: {params['n_ctx']} ctx, {derived['vram_est_gb']:.1f}GB VRAM"})
+                                await progress_cb({"phase": "derived", "pct": 10, "msg": "Sizing the load for this card"})
                             except Exception:
                                 pass
                     except Exception as exc:
@@ -3242,23 +3315,29 @@ class LocalModelManager:
             # hardware). Off-loop: it can shell out several times in a row.
             def _reserve_gb() -> float:
                 return ((mmproj_size_gb if attach_projector else 0.0)
-                        + ((draft_size_gb + self.DRAFT_OVERHEAD_GB) if attach_draft else 0.0))
+                        + (self.draft_reserve_gb(draft_size_gb, params.get("n_ctx"))
+                           if attach_draft else 0.0))
+
+            # The drafter only adds speed: it loads only when it fits at the
+            # FULL config. Live 2026-10-03 (UI load of LFM2.5-2.6B): its
+            # reserve sent the ladder from n_ctx 32768 to 8192 - a speed-up
+            # must never cost the context. It is dropped before any cut.
+            if attach_draft:
+                _draft_err = await asyncio.to_thread(
+                    self._preflight_resource_check, model_path, dict(params), model_meta,
+                    purpose=purpose, mmproj_size_gb=_reserve_gb(),
+                )
+                if _draft_err:
+                    logger.warning(
+                        f"[LocalModelManager] DSpark drafter for {Path(model_path).name} "
+                        f"does not fit at n_ctx={params.get('n_ctx')} ({_draft_err}); "
+                        f"loading without it."
+                    )
+                    attach_draft = False
 
             preflight_error, params = await asyncio.to_thread(
                 _preflight_with_ladder, _reserve_gb(),
             )
-
-            if preflight_error and attach_draft:
-                # The drafter only adds speed: it is the first thing dropped.
-                logger.warning(
-                    f"[LocalModelManager] DSpark drafter for "
-                    f"{Path(model_path).name} does not fit ({preflight_error}); "
-                    f"retrying without it."
-                )
-                attach_draft = False
-                preflight_error, params = await asyncio.to_thread(
-                    _preflight_with_ladder, _reserve_gb(),
-                )
 
             if preflight_error and attach_projector:
                 # Edge case (REQ-4): the projector doesn't fit — degrade to
@@ -3289,7 +3368,11 @@ class LocalModelManager:
                 return False
             if progress_cb:
                 try:
-                    await progress_cb({"phase": "preflight", "pct": 18, "msg": "VRAM check passed — spawning server…"})
+                    await progress_cb({"phase": "preflight", "pct": 18, "msg": (
+                        f"VRAM check passed - {params.get('n_ctx')} ctx"
+                        + (" + vision" if attach_projector else "")
+                        + (" + DSpark draft" if attach_draft else "")
+                        + " - starting server")})
                 except Exception:
                     pass
 
@@ -3580,6 +3663,7 @@ class LocalModelManager:
                 # REQ-4 AC4: truthful only here — the server that just came up
                 # actually got --mmproj on its argv (or didn't).
                 self._current_vision_loaded = attach_projector
+                self._current_draft_loaded = attach_draft
                 # REQ-13 AC1: register brain footprint. SINGLE-RESIDENT: release
                 # the previous brain's ledger claim BEFORE registering the new one,
                 # so a model switch swaps (1.2 vision + old) -> (1.2 vision + new)
@@ -3737,6 +3821,7 @@ class LocalModelManager:
                 self._current_model_path = None
                 self._current_params = {}
                 self._current_vision_loaded = False
+                self._current_draft_loaded = False
             # REQ-13 AC4: release ledger entry
             if _prev_path:
                 self._vram_ledger_release(str(_prev_path))
@@ -3757,6 +3842,7 @@ class LocalModelManager:
             self._current_model_path = None
             self._current_params = {}  # [10.9] reset param tracking
             self._current_vision_loaded = False
+            self._current_draft_loaded = False
 
         def _terminate_server() -> None:
             try:
@@ -3821,6 +3907,7 @@ class LocalModelManager:
             # the running server for THIS load — never derived from a
             # sibling projector file merely existing on disk.
             "vision_loaded": self._current_vision_loaded if loaded else False,
+            "draft_loaded": self._current_draft_loaded if loaded else False,
         }
 
     # ─────────────────────────────────────────────────────────────────────────

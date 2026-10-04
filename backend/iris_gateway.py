@@ -9549,7 +9549,7 @@ class IRISGateway:
                             "to_model": model_path,
                             "profile": profile,
                             "pct": 0,
-                            "msg": "Switching model Ã¢â‚¬â€ finishing current requests...",
+                            "msg": "Switching model - finishing current requests...",
                         },
                     },
                 )

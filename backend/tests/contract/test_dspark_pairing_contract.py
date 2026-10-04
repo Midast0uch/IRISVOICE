@@ -49,7 +49,7 @@ def test_a_drafter_pairs_with_the_dense_base_it_names_only():
     assert paired == ["LFM2.5-VL-3B-Q4_K_M"]
     # the card's VRAM figure includes the drafter and its buffers
     e = bases["LFM2.5-VL-3B-Q4_K_M"]
-    assert e["vram_estimate_gb"] >= 1.5 + LocalModelManager.DRAFT_OVERHEAD_GB
+    assert e["vram_estimate_gb"] >= 1.5 + LocalModelManager.draft_reserve_gb(0.0, 8192)
 
 
 def test_an_moe_base_is_not_paired():
