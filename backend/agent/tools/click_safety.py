@@ -73,6 +73,12 @@ _NAV_LABEL = re.compile(
     r"expand|collapse|menu|open|show|hide|toggle|view|details|cancel|skip|[<>«»‹›]+)$",
     re.I,
 )
+# Section disclosure controls, by their leading verb: Wikipedia labels them
+# "Toggle Human history subsection". The whole-label rule above missed them,
+# the Brain judge timed out, and a section toggle waited 53 s for the user
+# (live 2026-10-04). The commit checks run first, so a "toggle ... delete"
+# label is still refused.
+_DISCLOSE_LABEL = re.compile(r"^(expand|collapse|toggle)\b", re.I)
 _MAX_TEXT = 160
 
 
@@ -151,7 +157,7 @@ def rule_verdict(
         if _AGREE.search(label):
             return UNSURE, f'"{label}" may record consent'
         return SAFE, "it changes a filter or option"
-    if (action == "click" and _NAV_LABEL.match(label)) or (
+    if (action == "click" and (_NAV_LABEL.match(label) or _DISCLOSE_LABEL.match(label))) or (
         action == "press" and role == "searchbox"
     ):
         return SAFE, "it pages, sorts, filters or searches"

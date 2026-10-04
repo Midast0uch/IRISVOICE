@@ -324,6 +324,13 @@ async def lifespan(app: FastAPI):
                 _t.sleep(90)
                 while not _git().is_idle(threshold_s=20.0):
                     _t.sleep(5)
+                # 2026-10-04: the cold import itself (~7.5 min on HDD after a
+                # sleep) still landed inside turns - the idle check runs once,
+                # before it. Read the files in a low-priority child first; the
+                # in-process import below is then seconds.
+                _handler.prewarm_files()
+                while not _git().is_idle(threshold_s=20.0):
+                    _t.sleep(5)
                 _handler.warm_up()
             except Exception as _w_exc:
                 logger.warning(

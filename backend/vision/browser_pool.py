@@ -129,6 +129,8 @@ _launch_task: Optional[asyncio.Task] = None
 # replaced off the answer path. Lives and dies on the host loop.
 _spare = None  # (context, page) or None
 _spare_task: Optional[asyncio.Task] = None
+# How long an open waits for an in-flight spare before building its own page.
+_SPARE_WAIT_S = 60.0
 
 _last_browser_use: float = 0.0
 _idle_task: Optional[asyncio.Task] = None
@@ -559,6 +561,17 @@ async def take_spare_page():
     """The spare (context, page) for ONE session, or None. Runs ON the host
     loop; a replacement is scheduled at once."""
     global _spare
+    task = _spare_task
+    if _spare is None and task is not None and not task.done():
+        # A spare is being built: wait for it rather than build a second page
+        # beside it. Cold run 2026-10-03: the spare took 42 s while the open
+        # built its own page in parallel (29.6 s) - two page builds on a cold
+        # Chromium slow each other. Shielded: the wait may give up (the caller
+        # then builds its own page), the build is never cancelled.
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=_SPARE_WAIT_S)
+        except Exception:  # noqa: BLE001 - timeout or a failed build: own page
+            pass
     sp, _spare = _spare, None
     if sp is not None and (_browser is None or not _browser.is_connected()):
         sp = None  # a spare of a dead browser is no page at all

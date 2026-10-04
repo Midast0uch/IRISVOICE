@@ -1683,7 +1683,7 @@ class BrowserSession:
             box = await locator.bounding_box(timeout=_ACTION_POINT_TIMEOUT_MS)
             if not box or box["width"] <= 0 or box["height"] <= 0:
                 return None, None, f"element {element_id} is not visible; call browser_observe"
-            if not await locator.evaluate(_HIT_TEST_JS):
+            if not await locator.evaluate(_HIT_TEST_JS, timeout=_ACTION_POINT_TIMEOUT_MS):
                 return None, None, (
                     f"element {element_id} is covered by another element (a dialog or "
                     f"overlay); close it first, then call browser_observe"
@@ -1706,7 +1706,14 @@ class BrowserSession:
             await page.mouse.click(cx, cy)
         if action == "type":
             # Replace, not append: select what is there, then type over it.
-            await locator.evaluate("el => { if (typeof el.select === 'function') el.select(); }")
+            # A click can rebuild the field (Wikipedia's search box, live
+            # 2026-10-03): the mark is gone and evaluate() waited Playwright's
+            # default 30 s. The click focused the field, so select there.
+            try:
+                await locator.evaluate("el => { if (typeof el.select === 'function') el.select(); }",
+                                       timeout=_ACTION_POINT_TIMEOUT_MS)
+            except Exception:  # noqa: BLE001 - the field was replaced on focus
+                await page.keyboard.press("Control+A")
             for i, ch in enumerate(text):
                 if i:
                     await asyncio.sleep(random.uniform(_KEY_DELAY_MIN_S, _KEY_DELAY_MAX_S))

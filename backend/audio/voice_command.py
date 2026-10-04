@@ -19,8 +19,10 @@ import io
 import json
 import logging
 import queue
+import sys
 import threading
 import time
+import types
 import wave
 import os
 
@@ -32,6 +34,10 @@ from .engine import AudioEngine
 from .cadence_detector import CadenceDetector
 
 logger = logging.getLogger(__name__)
+
+# ctranslate2 submodules used only for model CONVERSION (they import torch and
+# transformers); never needed to run Whisper. See VoiceCommandHandler._get_whisper.
+_CT2_CONVERSION_MODULES = ("ctranslate2.converters", "ctranslate2.specs")
 
 _PROJECT_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -930,6 +936,17 @@ class VoiceCommandHandler:
         # Load WITHOUT holding the lock — the import can take ~126s cold and
         # must not block a live transcription thread.
         try:
+            # ctranslate2/__init__ imports its converters and specs, which try
+            # `import torch` and `import transformers` - for model CONVERSION,
+            # never used to run a converted model. Cold on this HDD that chain
+            # ran ~19 min inside the backend (stack dumps 2026-10-03 11:04 ->
+            # 11:23) and overlapped two live turns. Inference uses only the
+            # compiled ctranslate2._ext, so empty submodules are registered
+            # first (nothing else in IRIS imports ctranslate2). Measured in a
+            # fresh process: torch False, transformers False, transcribe ok.
+            if "ctranslate2" not in sys.modules:
+                for _stub in _CT2_CONVERSION_MODULES:
+                    sys.modules.setdefault(_stub, types.ModuleType(_stub))
             from faster_whisper import WhisperModel
 
             logger.info(
@@ -948,6 +965,45 @@ class VoiceCommandHandler:
         finally:
             self._whisper_loading = False
         return self._whisper
+
+    @staticmethod
+    def prewarm_files(timeout_s: float = 1800.0) -> bool:
+        """Read the Whisper import into the OS file cache in a CHILD process at
+        idle CPU and very low I/O priority, so the backend's own import (in
+        warm_up) is seconds, not minutes. Live 2026-10-04 after a sleep: the
+        cold in-process import ran ~7.5 min on this HDD, overlapped two live
+        turns and held Oracle decisions 34-38 s; a child holds none of the
+        backend's locks and yields the disk. True when the child finished."""
+        import subprocess
+
+        code = ("import sys, types\n"
+                f"for n in {_CT2_CONVERSION_MODULES!r}: sys.modules.setdefault(n, types.ModuleType(n))\n"
+                "import faster_whisper\n")
+        flags = (0x08000000 | 0x00000040) if os.name == "nt" else 0  # no window, IDLE class
+        t0 = time.monotonic()
+        try:
+            proc = subprocess.Popen([sys.executable, "-c", code], stdin=subprocess.DEVNULL,
+                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                    creationflags=flags)
+        except Exception as exc:  # noqa: BLE001 - the in-process import still works
+            logger.info("[VoiceCommand] whisper file prewarm not started: %r", exc)
+            return False
+        try:
+            import psutil
+
+            psutil.Process(proc.pid).ionice(getattr(psutil, "IOPRIO_VERYLOW", 0))
+        except Exception as exc:  # noqa: BLE001 - priority is a courtesy
+            logger.debug("[VoiceCommand] prewarm ionice skipped: %r", exc)
+        try:
+            rc = proc.wait(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            logger.info("[VoiceCommand] whisper file prewarm still running after %.0fs - stopped",
+                        timeout_s)
+            return False
+        logger.info("[VoiceCommand] whisper files prewarmed in %.1fs (rc=%s)",
+                    time.monotonic() - t0, rc)
+        return rc == 0
 
     def warm_up(self) -> None:
         """
