@@ -27,7 +27,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from backend.memory.db import Connection
+from backend.memory.db import Connection, app_write, owns_store
 
 logger = logging.getLogger(__name__)
 
@@ -306,12 +306,16 @@ class PinStore:
             )
             return 0
         now = time.time()
-        cur = self._conn.execute(
-            "INSERT INTO mycelium_pin_links "
-            "(source_type, source_id, target_type, target_id, relationship, weight, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (source_type, source_id, target_type, target_id, relationship, weight, now),
-        )
+        _sql = ("INSERT INTO mycelium_pin_links "
+                "(source_type, source_id, target_type, target_id, relationship, weight, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)")
+        _params = (source_type, source_id, target_type, target_id, relationship, weight, now)
+        if owns_store(self._conn):
+            # One writer: queued; the row id is assigned on the writer thread.
+            # Callers count links by truthiness, so a queued link reports 1.
+            app_write(self._conn, _sql, _params)
+            return 1
+        cur = self._conn.execute(_sql, _params)
         self._conn.commit()
         return int(cur.lastrowid or 0)
 

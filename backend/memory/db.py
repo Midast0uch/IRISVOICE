@@ -135,6 +135,16 @@ def app_write(conn, sql: str, params=()) -> None:
     conn.commit()
 
 
+def owns_store(conn) -> bool:
+    """True when app_write on ``conn`` is queued on the native writer."""
+    path = getattr(conn, "store_path", "")
+    if not path:
+        return False
+    from backend.gateway.iris_ffi import ffi_native_owns
+
+    return ffi_native_owns(path)
+
+
 def app_flush(timeout_s: float = 5.0) -> bool:
     """Wait until every queued app-store write is on disk. True = drained."""
     from backend.gateway.iris_ffi import ffi_native_flush

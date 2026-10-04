@@ -20,6 +20,8 @@ import sqlite3
 import time
 from typing import Any, Dict, Optional
 
+from backend.memory.db import app_write
+
 from backend.agent.artifact_policy import (
     card_title_from_content,
     is_tool_result_envelope,
@@ -636,22 +638,26 @@ class DocumentDataStore:
             cur = self._conn.execute("SELECT COUNT(*) FROM document_data")
             count = cur.fetchone()[0]
             if count > _MAX_DOCUMENTS:
-                excess = count - _MAX_DOCUMENTS
-                self._conn.execute(
+                # One writer: the excess is computed INSIDE the delete, on the
+                # writer thread - a second queued evict then deletes nothing
+                # extra (a count read here would be stale once queued).
+                app_write(
+                    self._conn,
                     "DELETE FROM document_data WHERE document_id IN ("
-                    "SELECT document_id FROM document_data ORDER BY created_at ASC LIMIT ?)",
-                    (excess,),
+                    "SELECT document_id FROM document_data ORDER BY created_at ASC "
+                    "LIMIT max(0, (SELECT COUNT(*) FROM document_data) - ?))",
+                    (_MAX_DOCUMENTS,),
                 )
                 # Cascade to binary bodies. SQLite does not enforce foreign keys
                 # unless PRAGMA foreign_keys is on (it is not, per-connection),
                 # so the cascade is explicit. Without it the blobs would be the
                 # ONLY thing in this store that grows without bound — and being
                 # images, they are the rows where that actually costs something.
-                self._conn.execute(
+                app_write(
+                    self._conn,
                     "DELETE FROM document_blobs WHERE document_id NOT IN ("
-                    "SELECT document_id FROM document_data)"
+                    "SELECT document_id FROM document_data)",
                 )
-                self._conn.commit()
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("[DocumentDataStore] evict failed: %s", exc)
 

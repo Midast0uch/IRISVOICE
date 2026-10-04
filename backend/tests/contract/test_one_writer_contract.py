@@ -34,6 +34,16 @@ def store(tmp_path_factory):
     seed = sqlite3.connect(path)
     seed.execute("PRAGMA journal_mode=WAL")
     seed.execute("CREATE TABLE ow_rows (k INTEGER, v TEXT, b BLOB, f REAL, n TEXT)")
+    # The production memory_chain shape (legacy PK thread_id + sequence).
+    seed.execute("""CREATE TABLE memory_chain (
+        entry_id TEXT DEFAULT NULL, thread_id TEXT NOT NULL, session_id TEXT DEFAULT NULL,
+        sequence INTEGER NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL,
+        metadata TEXT DEFAULT '{}', session_ts REAL DEFAULT NULL, result TEXT DEFAULT NULL,
+        distilled INTEGER DEFAULT 0, created_at REAL NOT NULL, chain_id TEXT,
+        coords_from TEXT, coords_to TEXT, nbl_outcome TEXT, insight TEXT, file_path TEXT,
+        landmark_id TEXT, stale INTEGER DEFAULT 0, mediator TEXT, mediator_source TEXT,
+        node_type TEXT, topic_domain TEXT, execution_domain TEXT,
+        PRIMARY KEY (thread_id, sequence))""")
     seed.commit()
     seed.close()
     prev = iris_ffi._engine
@@ -101,3 +111,26 @@ def test_a_connection_the_native_core_does_not_own_writes_itself(tmp_path):
     memdb.app_write(other, "INSERT INTO t (x) VALUES (?)", (5,))
     assert other.execute("SELECT x FROM t").fetchall() == [(5,)]
     other.close()
+
+
+def test_queued_chain_appends_take_distinct_sequences(store):
+    """The chain's next sequence is computed by the writer, in queue order.
+    The old code read MAX(sequence) on its own connection before the earlier
+    queued rows landed, so appends for one thread took the same number and
+    all but one failed the (thread_id, sequence) key (live 2026-10-04)."""
+    path, _conn = store
+    eng = iris_ffi._PythonFallbackEngine(str(path), "00" * 32)
+    blocker = sqlite3.connect(path, timeout=0.1)
+    blocker.execute("BEGIN IMMEDIATE")  # every append below stays queued
+    try:
+        for k in range(20):
+            eng.immortus_chain_append("ow-thread", f"result {k}")
+    finally:
+        blocker.rollback()
+        blocker.close()
+    assert memdb.app_flush(10.0)
+    c = sqlite3.connect(path)
+    seqs = [r[0] for r in c.execute(
+        "SELECT sequence FROM memory_chain WHERE thread_id = 'ow-thread' ORDER BY sequence")]
+    c.close()
+    assert seqs == list(range(1, 21)), seqs

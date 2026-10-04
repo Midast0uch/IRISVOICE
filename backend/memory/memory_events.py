@@ -26,6 +26,8 @@ import time
 import uuid
 from typing import Any, Dict, Iterable, List, Optional
 
+from backend.memory.db import app_flush, app_write
+
 logger = logging.getLogger(__name__)
 
 # Problem-family words. Coding steps use the coding words (BUG/FIX/VERIFIED_FIX);
@@ -302,7 +304,10 @@ def emit_event(
         if spec is None:
             logger.info("[memory_events] unclassified label=%s family_hint=%s (Layer 3)", label, family_hint)
         event_id = "ev-" + uuid.uuid4().hex[:16]
-        conn.execute(
+        # One writer: queued on the native writer (app_write commits itself
+        # when this connection is not the native-owned store).
+        app_write(
+            conn,
             "INSERT INTO memory_events (event_id, ts, schema_version, episode_id, step_index, "
             "thread_id, family, label, valence, actor, evidence, cause_key, outcome_key, trigger, "
             "exec_domain, topic_domain, label_source, label_confidence, sigma_from, sigma_to, "
@@ -314,8 +319,6 @@ def emit_event(
              ea.hash_signature(sigma_to or sigma_from, exec_domain, topic_domain), ea.HASH_SCHEME,
              action_signature, _bounded_json(cost), _bounded_json(links), _bounded_json(payload)),
         )
-        if commit:
-            conn.commit()
         if chain and thread_id:
             ref = {"event_id": event_id, **(payload or {})}
             case_id = str((links or {}).get("case") or "")
@@ -402,11 +405,14 @@ def _mark_stale_dependents(conn, path: str, task_id: str, pending: Optional[List
     if not path:
         return 0
     like = "%" + json.dumps(path)[1:-1] + "%"
-    cases = conn.execute(
-        "UPDATE memory_cases SET status = 'stale' WHERE status = 'verified' "
-        "AND depends_on LIKE ? AND (open_task IS NULL OR open_task != ?)",
-        (like, task_id),
-    ).rowcount
+    _where = ("WHERE status = 'verified' AND depends_on LIKE ? "
+              "AND (open_task IS NULL OR open_task != ?)")
+    # One writer: the UPDATE is queued, so count the rows it will change first
+    # (this lane is the only writer of memory_cases; flush makes the count exact).
+    app_flush(5.0)
+    cases = conn.execute(f"SELECT COUNT(*) FROM memory_cases {_where}", (like, task_id)).fetchone()[0]
+    if cases:
+        app_write(conn, f"UPDATE memory_cases SET status = 'stale' {_where}", (like, task_id))
     landmarks = 0
     try:
         from backend.memory.mycelium.landmark import mark_landmarks_stale_by_dependency
@@ -487,6 +493,7 @@ def record_step(
     """
     try:
         ensure_schema(conn)
+        app_flush(5.0)  # the cases earlier jobs wrote are on disk before we read them
         now = time.time()
         tool = tool or "none"
         deps = dependencies(tool, params)
@@ -501,7 +508,8 @@ def record_step(
             if case is not None:
                 dead = json.loads(case["dead_ends"] or "[]")
                 repeat = act in dead
-                conn.execute(
+                app_write(
+                    conn,
                     "UPDATE memory_cases SET attempts = attempts + 1, dead_ends = ?, "
                     "dead_end_repeats = dead_end_repeats + ?, last_seen = ? WHERE case_id = ?",
                     (_merge_list(case["dead_ends"], [act], _DEAD_END_KEEP), 1 if repeat else 0,
@@ -521,7 +529,8 @@ def record_step(
                 payload = {"signature": sig, "tool": tool, "step": step_id, "task": task_id}
                 if prior is not None and prior["status"] in ("verified", "fixed", "stale"):
                     # The same failure after a fix: the fix did not hold.
-                    conn.execute(
+                    app_write(
+                        conn,
                         "UPDATE memory_cases SET status = 'demoted', contradictions = contradictions + 1, "
                         "open_task = ?, thread_id = ?, last_seen = ? WHERE case_id = ?",
                         (task_id, thread_id, now, prior["case_id"]),
@@ -536,7 +545,8 @@ def record_step(
                     case_id = prior["case_id"]
                     payload["contradicts"] = True
                 elif prior is not None:
-                    conn.execute(
+                    app_write(
+                        conn,
                         "UPDATE memory_cases SET status = 'open', open_task = ?, thread_id = ?, "
                         "last_seen = ? WHERE case_id = ?",
                         (task_id, thread_id, now, prior["case_id"]),
@@ -544,7 +554,8 @@ def record_step(
                     case_id = prior["case_id"]
                 else:
                     case_id = "case-" + uuid.uuid4().hex[:12]
-                    conn.execute(
+                    app_write(
+                        conn,
                         "INSERT INTO memory_cases (case_id, signature, tool, symptom, status, "
                         "open_task, thread_id, depends_on, first_seen, last_seen) "
                         "VALUES (?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)",
@@ -558,7 +569,8 @@ def record_step(
         else:
             if case is not None:
                 if verified == "VERIFIED":
-                    conn.execute(
+                    app_write(
+                        conn,
                         "UPDATE memory_cases SET status = 'fixed', fix_step = ?, fix_desc = ?, "
                         "depends_on = ?, falsify_if = ?, last_seen = ? WHERE case_id = ?",
                         (step_id, (description or "")[:300],
@@ -573,7 +585,8 @@ def record_step(
                                                  "depends_on": deps}))
                     written.append(words["RESOLUTION"])
                 else:
-                    conn.execute(
+                    app_write(
+                        conn,
                         "UPDATE memory_cases SET attempts = attempts + 1, last_seen = ? WHERE case_id = ?",
                         (now, case["case_id"]),
                     )
@@ -619,6 +632,7 @@ def record_task_end(
     """Task completion is outside evidence for this task's FIXes. Closes its cases."""
     try:
         ensure_schema(conn)
+        app_flush(5.0)  # this task's cases, written by earlier jobs, are on disk
         written: List[str] = []
         pending: List[dict] = []
         if success:
@@ -626,7 +640,7 @@ def record_task_end(
             if user_confirmed:
                 written += _verify_fixed(conn, task_id, "user_confirm", pending,
                                          statuses=("verified",))
-        conn.execute("UPDATE memory_cases SET open_task = NULL WHERE open_task = ?", (task_id,))
+        app_write(conn, "UPDATE memory_cases SET open_task = NULL WHERE open_task = ?", (task_id,))
         _flush(conn, thread_id, pending, coords)
         return written
     except Exception as exc:  # noqa: BLE001
@@ -639,6 +653,7 @@ def _verify_fixed(conn, task_id: str, evidence: str, pending: List[tuple],
     """Outside evidence turns this task's FIXes into VERIFIED_FIX (+ a LESSON candidate)."""
     written: List[str] = []
     marks = ",".join("?" * len(statuses))
+    app_flush(5.0)  # a FIX written earlier in this same job must be visible
     rows = conn.execute(
         f"SELECT case_id, signature, fix_step, fix_desc, depends_on, status, tool FROM memory_cases "
         f"WHERE open_task = ? AND status IN ({marks})",
@@ -646,7 +661,8 @@ def _verify_fixed(conn, task_id: str, evidence: str, pending: List[tuple],
     ).fetchall()
     now = time.time()
     for case_id, sig, fix_step, fix_desc, deps, status, tool in rows:
-        conn.execute(
+        app_write(
+            conn,
             "UPDATE memory_cases SET status = 'verified', verified_count = verified_count + 1, "
             "last_verified = ?, strength = strength + 1, last_seen = ? WHERE case_id = ?",
             (now, now, case_id),

@@ -843,7 +843,11 @@ class _PythonFallbackEngine:
         import uuid
 
         event_id = str(uuid.uuid4())
-        self._conn.execute(
+        from backend.memory.db import app_write
+
+        # One writer: queued on the native writer when it owns this file.
+        app_write(
+            self._conn,
             "INSERT INTO system_events (event_id, session_id, event_domain, "
             "event_type, actor, outcome, sanitization_state, summary, "
             "interaction_payload, screenshot) VALUES (?,?,?,?,?,?,?,?,?,?)",
@@ -860,7 +864,6 @@ class _PythonFallbackEngine:
                 screenshot_blob,
             ),
         )
-        self._conn.commit()
         return 0
 
     def calculate_eml(self, session_id: str) -> Tuple[float, float, float]:
@@ -954,16 +957,7 @@ class _PythonFallbackEngine:
         if "entry_id" in cols:
             insert_cols.append("entry_id")
             vals.append(str(uuid.uuid4()))
-        if "sequence" in cols:
-            # Legacy PK is (thread_id, sequence): next sequence per thread.
-            cur = self._conn.cursor()
-            cur.execute(
-                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM memory_chain "
-                "WHERE thread_id = ?",
-                (thread_id,),
-            )
-            insert_cols.append("sequence")
-            vals.append(cur.fetchone()[0])
+        _seq = "sequence" in cols
         if "role" in cols:
             insert_cols.append("role")
             vals.append(kwargs.get("role") or "agent")
@@ -972,13 +966,28 @@ class _PythonFallbackEngine:
             # same text here stored each row twice (S12).
             insert_cols.append("content")
             vals.append("")
-        self._conn.execute(
+        from backend.memory.db import app_write
+
+        # One writer: queued on the native writer when it owns this file (the
+        # chain row keeps the columns the native C struct cannot carry).
+        _marks = ["?" for _ in vals]
+        if _seq:
+            # Legacy PK is (thread_id, sequence): the next sequence per thread
+            # is computed INSIDE the insert, on the writer thread, in queue
+            # order. Read here first, two queued appends for one thread took
+            # the same number and the second failed the UNIQUE key (live
+            # 2026-10-04, first one-writer run).
+            insert_cols.append("sequence")
+            _marks.append("(SELECT COALESCE(MAX(sequence), 0) + 1 FROM memory_chain "
+                          "WHERE thread_id = ?)")
+            vals.append(thread_id)
+        app_write(
+            self._conn,
             "INSERT INTO memory_chain ({}) VALUES ({})".format(
-                ", ".join(insert_cols), ", ".join("?" for _ in vals)
+                ", ".join(insert_cols), ", ".join(_marks)
             ),
             vals,
         )
-        self._conn.commit()
         return 0
 
     def immortus_chain_query_mediators(
@@ -1174,6 +1183,10 @@ class IrisCoreEngine:
                 if rc == 0:
                     # One writer: the file the native writer thread owns.
                     self._native_db_path = _norm_store_path(db_path)
+                    logger.info(
+                        "[iris_ffi] one writer: native core owns %s (queued writes: %s)",
+                        self._native_db_path, bool(getattr(self._ffi, "has_writer", False)),
+                    )
                     logger.info(f"[iris_ffi] C++ core loaded from {dll_path}")
                     # D4b/D4c: the native core creates/owns memory_chain via a
                     # fixed C struct that predates node_type/topic_domain/
@@ -1677,6 +1690,17 @@ def ffi_native_write(store_path: str, sql: str, params=()) -> bool:
         return False
     except Exception as exc:  # noqa: BLE001 - the caller falls back to its own write
         logger.warning("[iris_ffi] native write failed: %s sql=%s", exc, sql[:80])
+        return False
+
+
+def ffi_native_owns(store_path: str) -> bool:
+    """True when the native writer owns ``store_path`` (writes there are queued)."""
+    try:
+        eng = _engine
+        ffi = getattr(eng, "_ffi", None) if eng is not None else None
+        return bool(ffi is not None and getattr(ffi, "has_writer", False) and store_path
+                    and getattr(eng, "_native_db_path", None) == store_path)
+    except Exception:  # noqa: BLE001
         return False
 
 

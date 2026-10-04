@@ -11,6 +11,7 @@ Usage:
                     action=0, outcome="success", eml_after=1.2)
 """
 
+from backend.memory.db import app_flush, app_write
 import logging
 import sqlite3
 import threading
@@ -272,7 +273,7 @@ class CaduceanTrajectoryRecorder:
             _exec_domain = execution_domain if execution_domain is not None else domain
             _topic_domain = topic_domain if topic_domain is not None else domain
             with self._write_lock:
-                self._conn.execute(
+                app_write(self._conn,
                     "INSERT INTO caducean_trajectories "
                     "(ts, session_id, step_num, x, y, xi, u, action, outcome, eml_after, recommendation, domain, execution_domain, topic_domain) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -293,7 +294,6 @@ class CaduceanTrajectoryRecorder:
                         _topic_domain,
                     ),
                 )
-                self._conn.commit()
             CaduceanTrajectoryRecorder._eml_cache = float(eml_after)
             CaduceanTrajectoryRecorder._eml_cache_per_session[session_id] = (
                 float(eml_after), float(x), float(y),
@@ -323,13 +323,12 @@ class CaduceanTrajectoryRecorder:
         to prune/drop. Preserves the fan shape without bloating the prompt. Cheap, WAL-safe."""
         try:
             with self._write_lock:
-                self._conn.execute(
+                app_write(self._conn,
                     "INSERT INTO der_fan_traces "
                     "(ts, session_id, step_id, tool, args_hash, outcome, u, xi) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (time.time(), session_id, step_id, tool, args_hash, outcome, u, xi),
                 )
-                self._conn.commit()
         except Exception as exc:
             logger.warning("[CaduceanTrajectory] record_fan_trace failed: %s", exc)
 
@@ -520,7 +519,7 @@ class CaduceanTrajectoryRecorder:
         """
         try:
             with self._write_lock:
-                self._conn.execute(
+                app_write(self._conn,
                     """
                     INSERT INTO der_commits
                         (ts, session_id, step_id, commit_hash, message, u, xi, verified_label)
@@ -530,7 +529,6 @@ class CaduceanTrajectoryRecorder:
                      u if u is not None else 0.0, xi if xi is not None else 0.0,
                      verified_label),
                 )
-                self._conn.commit()
         except Exception as exc:
             logger.warning("[CaduceanTrajectory] record_commit failed: %s", exc)
 
@@ -570,6 +568,9 @@ class CaduceanTrajectoryRecorder:
             # REQ-2: derive verified_count / executed_steps from the honest commit
             # ledger so the outer loop's verified_fraction / tokens_per_verified_step
             # metrics are computed from the same source of truth as the ledger write.
+            # One writer: this session's commit rows may still be queued.
+            if verified_count <= 0 or executed_steps <= 0:
+                app_flush(5.0)
             if verified_count <= 0:
                 try:
                     _vc = self._conn.execute(
@@ -605,7 +606,7 @@ class CaduceanTrajectoryRecorder:
                 except Exception:
                     _tc = "unexpected"
             with self._write_lock:
-                self._conn.execute(
+                app_write(self._conn,
                     """
                     INSERT INTO caducean_session_exits
                         (ts, session_id, domain, natural_exit, route_score, drift,
@@ -619,7 +620,6 @@ class CaduceanTrajectoryRecorder:
                      float(tokens_total), int(verified_count), int(executed_steps),
                      _tc, _bc, _bm, _cc, _bd, conversation_id),
                 )
-                self._conn.commit()
         except Exception as exc:
             logger.warning("[CaduceanTrajectory] record_session_exit failed: %s", exc)
 

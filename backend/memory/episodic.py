@@ -14,7 +14,7 @@ import struct
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 
-from backend.memory.db import open_encrypted_memory, Connection, locked_retry
+from backend.memory.db import open_encrypted_memory, Connection, locked_retry, app_write, owns_store
 from backend.memory.embedding import (
     EmbeddingService,
     compare_embeddings,
@@ -431,7 +431,7 @@ class EpisodicStore:
             # DOWN, not just up) and update outcome_type to the latest value (so the
             # memory can UNLEARN a previously-successful pattern). This is the
             # anti-forgetting-with-provenance fix.
-            self.db.execute("""
+            app_write(self.db, """
                 UPDATE episodes SET
                     task_summary = ?,
                     full_content = full_content || ?,
@@ -452,14 +452,13 @@ class EpisodicStore:
                 embedding_backend,
                 episode_id
             ))
-            self.db.commit()
             logger.debug(f"[EpisodicStore] Updated duplicate episode {episode_id[:8]}... (similarity: {similarity:.3f})")
             return episode_id
 
         # No duplicate found - insert new episode
         episode_id = str(uuid.uuid4())
 
-        self.db.execute("""
+        app_write(self.db, """
             INSERT INTO episodes
             (id, session_id, task_summary, full_content, tool_sequence,
              outcome_score, outcome_type, failure_reason, user_corrected,
@@ -486,7 +485,6 @@ class EpisodicStore:
             embedding_blob,
             embedding_backend
         ))
-        self.db.commit()
 
         # Mycelium: index this episode against the current coordinate state (Req 13.6)
         if self._mycelium is not None:
@@ -860,7 +858,17 @@ class EpisodicStore:
         # Session-326: locked-DB retry — a burst of concurrent DER writers
         # outlasts busy_timeout, so the batch and each fallback row retry
         # a locked DB instead of dropping chunks on the first clash.
-        if batch_rows:
+        if batch_rows and owns_store(self.db):
+            # One writer: the native writer commits the batch in one transaction.
+            for row in batch_rows:
+                app_write(
+                    self.db,
+                    """INSERT INTO context_chunks
+                       (id, session_id, chunk_type, zone, content, embedding, embedding_backend, tool_name)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    row,
+                )
+        elif batch_rows:
             def _batch326() -> None:
                 with self.db:
                     self.db.executemany(
