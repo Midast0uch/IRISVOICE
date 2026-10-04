@@ -2,10 +2,10 @@
 
 CT-DE-1  DecisionScore shape + Decision.meta channel shape.
 CT-DE-2  Kernel seam invariance: every engine routing outcome resolves to
-         DecisionKind âˆˆ {TOOL, REASON, FAIL} â€” no fourth kind ever crosses.
+         DecisionKind ∈ {TOOL, REASON, FAIL} — no fourth kind ever crosses.
 CT-DE-3  Single-writer ledger: one row per execution carrying the decision
          block; route-only rows exist exactly once; no row when legacy.
-CT-DE-4  Engine unavailable â†’ legacy path serves the decision, silently.
+CT-DE-4  Engine unavailable → legacy path serves the decision, silently.
 CT-DE-5  Engine module holds zero memory / event-store / ffi references
          (AST scan, same style as test_no_direct_lfm_vl_provider_bypass.py).
 """
@@ -83,8 +83,8 @@ class FakeEngine:
 
 
 class FakeRouter:
-    """Bindings report the SAME model on both roles â€” otherwise the box runs
-    its Brainâ†”Tool handshake against the canned reply and short-circuits our
+    """Bindings report the SAME model on both roles — otherwise the box runs
+    its Brain↔Tool handshake against the canned reply and short-circuits our
     assertions."""
 
     def __init__(self, result):
@@ -133,7 +133,7 @@ def make_box(engine=None, router_result=("", "", []), bridge=None):
 
 
 # ---------------------------------------------------------------------------
-# CT-DE-1 â€” shapes
+# CT-DE-1 — shapes
 # ---------------------------------------------------------------------------
 
 
@@ -186,7 +186,7 @@ class TestCtDe1Shapes:
 
 
 # ---------------------------------------------------------------------------
-# CT-DE-2 â€” kernel seam: only TOOL/REASON/FAIL ever escapes
+# CT-DE-2 — kernel seam: only TOOL/REASON/FAIL ever escapes
 # ---------------------------------------------------------------------------
 
 
@@ -236,7 +236,7 @@ class TestCtDe2KernelSeam:
 
 
 # ---------------------------------------------------------------------------
-# CT-DE-3 â€” single-writer ledger
+# CT-DE-3 — single-writer ledger
 # ---------------------------------------------------------------------------
 
 
@@ -247,7 +247,7 @@ class TestCtDe3Ledger:
         d = box.resolve(step={"description": "find price"})
         assert d.kind == DecisionKind.TOOL
         for attempt in range(2):
-            pass  # noqa â€” placeholder kept intentionally simple
+            pass  # noqa — placeholder kept intentionally simple
         dr = box.dispatch(d, session_id="s1")
         assert dr.success
         assert len(bridge.execute_calls) == 1          # exactly one execution
@@ -290,7 +290,7 @@ class TestCtDe3Ledger:
 
 
 # ---------------------------------------------------------------------------
-# CT-DE-4 â€” engine unavailable â†’ legacy silently
+# CT-DE-4 — engine unavailable → legacy silently
 # ---------------------------------------------------------------------------
 
 
@@ -304,7 +304,7 @@ class TestCtDe4Degrade:
         assert d.kind == DecisionKind.TOOL
         assert d.tool == "read_file"
         assert router.calls >= 1
-        # engine declined before answering â†’ no escalation meta stamped
+        # engine declined before answering → no escalation meta stamped
         assert d.meta is None
 
     def test_disabled_flag_short_circuits(self):
@@ -316,7 +316,7 @@ class TestCtDe4Degrade:
 
 
 # ---------------------------------------------------------------------------
-# CT-DE-5 â€” the engine writes to nothing (AST scan)
+# CT-DE-5 — the engine writes to nothing (AST scan)
 # ---------------------------------------------------------------------------
 
 

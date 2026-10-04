@@ -2102,7 +2102,7 @@ async def api_list_models():
         models = await _asyncio.to_thread(mgr.scan_models)
         # REQ-10 AC2/AC3: surface the user's persisted vision fallback ladder
         # alongside the candidates it was built from, so ModelBrowserPanel can
-        # seed its selection/order from the SAME fetch it already makes â€”
+        # seed its selection/order from the SAME fetch it already makes —
         # no extra round trip. Reading config never raises on a missing/empty
         # field (dataclass default is []), so this cannot break model listing.
         try:

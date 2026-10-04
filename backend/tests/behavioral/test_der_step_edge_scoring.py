@@ -1,4 +1,4 @@
-﻿"""Behavioral: REQ-1 AC2/AC3/AC4 â€” the per-step edge-score consequence of a
+﻿"""Behavioral: REQ-1 AC2/AC3/AC4 — the per-step edge-score consequence of a
 step's ``verified_label``, driven through the REAL
 ``AgentKernel._der_finalize_step`` (same harness pattern as
 test_failed_step_writes_commit_row.py).
@@ -7,14 +7,14 @@ Spec: specs/phase-6-der-integrity/requirements.md REQ-1 AC2, AC3, AC4.
 
 The gap this file closes: the commit ledger (REQ-1 AC1) already wrote a row
 for every VERIFIED/UNVERIFIED/FAILED step, but nothing fed that label into
-the pre-existing, generic scoring mechanisms â€” ``EdgeScorer`` (scorer.py,
+the pre-existing, generic scoring mechanisms — ``EdgeScorer`` (scorer.py,
 the hit/partial/miss delta table) and the episodes-table AVOID section
 (evidence.py's ``_avoid_list`` / ``assemble_evidence``). Both of those
-mechanisms are exercised here UNCHANGED â€” only the missing per-step call
+mechanisms are exercised here UNCHANGED — only the missing per-step call
 (``AgentKernel._der_score_step_outcome``) is new.
 
 Every assertion is on the EFFECT (a real edge score in a real
-CoordinateStore, a real line in a real ``assemble_evidence`` block) â€”
+CoordinateStore, a real line in a real ``assemble_evidence`` block) —
 never on whether a function was called.
 """
 
@@ -40,7 +40,7 @@ from backend.memory.mycelium.store import CoordinateStore
 
 # ---------------------------------------------------------------------------
 # Minimal in-memory Mycelium schema (mirrors backend/memory/tests/
-# test_mycelium_scorer.py's helpers) â€” only the two tables
+# test_mycelium_scorer.py's helpers) — only the two tables
 # CoordinateStore/SessionRegistry actually touch.
 # ---------------------------------------------------------------------------
 
@@ -104,7 +104,7 @@ def _edge_score(conn: sqlite3.Connection, edge_id: str) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Duck-typed stand-ins â€” only the surface _der_score_step_outcome and
+# Duck-typed stand-ins — only the surface _der_score_step_outcome and
 # evidence.py's AVOID/prediction helpers actually touch (._store, ._registry,
 # plus the episode write path AC4 depends on). Real CoordinateStore /
 # SessionRegistry underneath, so score deltas and AVOID rows are real.
@@ -122,7 +122,7 @@ class _FakeMemoryInterface:
     without raising, plus the episode-store write AC4's AVOID path depends
     on. ``store_episode`` writes directly into an `episodes` table on the
     SAME connection real evidence.py._avoid_list reads, mirroring the shape
-    EpisodicStore.store() persists (id/session/task/tool_sequence/type) â€”
+    EpisodicStore.store() persists (id/session/task/tool_sequence/type) —
     without pulling the encrypted, embedding-backed store into this test.
     """
 
@@ -163,7 +163,7 @@ class _FakeMemoryInterface:
 
 
 class _NoOpRecorder:
-    """Stub CaduceanTrajectoryRecorder â€” the commit ledger itself is
+    """Stub CaduceanTrajectoryRecorder — the commit ledger itself is
     REQ-1 AC1, already covered elsewhere; not re-tested here."""
 
     def __init__(self, *a, **kw):
@@ -219,7 +219,7 @@ def _finalize(kernel, item, result: str = "step output text long enough", succes
 @pytest.fixture(autouse=True)
 def _patch_ledger(monkeypatch):
     # The commit-ledger write (REQ-1 AC1) is orthogonal to this file's
-    # concern (the per-step scoring consequence) â€” stub it out exactly like
+    # concern (the per-step scoring consequence) — stub it out exactly like
     # test_failed_step_writes_commit_row.py does, so a real sqlite3 backing
     # isn't needed for der_commits here.
     monkeypatch.setattr(_ct_module, "CaduceanTrajectoryRecorder", _NoOpRecorder)

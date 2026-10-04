@@ -7,14 +7,14 @@ the user for the same step (Phase 2)."
 Drives the REAL `AgentKernel._der_finalize_step` (not a re-implementation of
 its logic) for one step and captures BOTH sinks it writes to:
   1. the commit ledger (`CaduceanTrajectoryRecorder.record_commit`,
-     `verified_label=...`) â€” the AUDIT record.
-  2. the `task:learning` event (`verified_label` field) â€” the signal the
+     `verified_label=...`) — the AUDIT record.
+  2. the `task:learning` event (`verified_label` field) — the signal the
      frontend uses to render the step's displayed status (Phase 2).
 
 Asserts they carry the IDENTICAL value for the same step, for each of the
 three labels. A scorer that inflated the displayed VERIFIED rate while the
 ledger disagreed would be reward-hacking by accident (design.md's Ripple-
-Effect Map, "Phase 2 displayed labels" row) â€” this pins that they cannot
+Effect Map, "Phase 2 displayed labels" row) — this pins that they cannot
 diverge.
 """
 
@@ -32,7 +32,7 @@ from backend.agent.der_loop import DirectorQueue, ExecutionMode, QueueItem
 
 class _CapturingRecorder:
     """Spy standing in for the recorder returned by get_trajectory_recorder()
-    inside the finalize step â€” captures record_commit(...) calls without
+    inside the finalize step — captures record_commit(...) calls without
     touching any real DB.
 
     REQ-20 seam change: the kernel no longer constructs
@@ -85,7 +85,7 @@ def test_ledger_label_matches_task_learning_event_label(monkeypatch, forced_labe
     monkeypatch.setattr(_eb_module, "get_event_bus", lambda: bus)
 
     kernel = _make_stub_kernel(f"conv-ct-d2-{forced_label}")
-    # Isolate the write-coherence contract from verification correctness â€”
+    # Isolate the write-coherence contract from verification correctness —
     # CT-D2 is about whether both sinks agree on WHATEVER label was computed,
     # not about how that label was computed (that is CT-D1's job).
     kernel._verify_step_result = lambda goal, expected, result, tool=None, success=False: forced_label
@@ -131,5 +131,5 @@ def test_ledger_label_matches_task_learning_event_label(monkeypatch, forced_labe
     assert display_label == forced_label
     assert ledger_label == display_label, (
         f"ledger wrote {ledger_label!r} but the displayed-status event "
-        f"carried {display_label!r} for the SAME step â€” CT-D2 violated"
+        f"carried {display_label!r} for the SAME step — CT-D2 violated"
     )

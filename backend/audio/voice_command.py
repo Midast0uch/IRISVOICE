@@ -1,18 +1,18 @@
 ﻿"""
-Voice Command Handler â€” faster-whisper direct STT pipeline for IRIS.
+Voice Command Handler — faster-whisper direct STT pipeline for IRIS.
 
 Uses faster-whisper (tiny/int8, ~40 MB) directly instead of RealtimeSTT.
 RealtimeSTT.AudioToTextRecorder.__init__ hangs indefinitely on this system
 (blocks on audio device enumeration even with use_microphone=False).
 
 Flow:
-  1. iris_gateway calls start_recording(auto_stop=True)   â† wake word path
-     or start_recording(auto_stop=False)                  â† double-click path
+  1. iris_gateway calls start_recording(auto_stop=True)   ← wake word path
+     or start_recording(auto_stop=False)                  ← double-click path
   2. AudioEngine frame listener (_capture_frame) accumulates float32 PCM frames
   3a. auto_stop=True:  energy-based VAD loop detects end-of-speech silently
   3b. auto_stop=False: stop_recording() is called by user or gateway
   4. Accumulated audio is passed to faster-whisper.transcribe()
-  5. _on_command_result callback â†’ iris_gateway._on_voice_result â†’ agent pipeline
+  5. _on_command_result callback → iris_gateway._on_voice_result → agent pipeline
 """
 
 import io
@@ -512,14 +512,14 @@ class VoiceCommandHandler:
     """
     Records user speech after wake word detection and transcribes with faster-whisper.
 
-    Uses WhisperModel('tiny', compute_type='int8') â€” ~40 MB, loads in ~1s on CPU,
+    Uses WhisperModel('tiny', compute_type='int8') — ~40 MB, loads in ~1s on CPU,
     transcribes a 3s utterance in < 1s.  Simple energy-based VAD handles
     auto-stop (wake-word path) without external VAD dependencies.
     """
 
-    # VAD tuning â€” adjustable per environment
+    # VAD tuning — adjustable per environment
     VAD_ENERGY_THRESHOLD: float = 0.006  # RMS level that counts as speech
-    VAD_MIN_SPEECH_SEC: float = 0.3  # ignore blips shorter than this (plan Â§1.3.4)
+    VAD_MIN_SPEECH_SEC: float = 0.3  # ignore blips shorter than this (plan §1.3.4)
     VAD_SILENCE_SEC: float = 0.8  # 0.5 cut mid-sentence pauses (live 2026-09-04); 0.8 covers breaths
     VAD_SILENCE_SEC_MAX: float = 1.2  # hard cap on adaptive silence (long utterances)
     VAD_MAX_DURATION_SEC: float = 30.0  # hard cap on recording length
@@ -574,7 +574,7 @@ class VoiceCommandHandler:
         # Callbacks
         self._on_state_change: Optional[Callable[[VoiceState, str], None]] = None
         self._on_command_result: Optional[Callable[[Dict[str, Any]], None]] = None
-        # Called with smoothed RMS level (0.0â€“1.0) every ~100 ms during recording.
+        # Called with smoothed RMS level (0.0–1.0) every ~100 ms during recording.
         # Used by the gateway to broadcast audio_level WS events for orb animation.
         self._on_audio_level: Optional[Callable[[float], None]] = None
         # Called with (rms, cadence, phase) every ~100 ms during recording.
@@ -582,7 +582,7 @@ class VoiceCommandHandler:
         # phase is "listening" during STT, "speaking" during TTS, "idle" otherwise.
         self._on_audio_envelope: Optional[Callable[[float, float, str], None]] = None
 
-        # Cadence detector â€” spectral flux for speech rhythm tracking
+        # Cadence detector — spectral flux for speech rhythm tracking
         self.cadence_detector = CadenceDetector(sample_rate=self.sample_rate)
 
         # Internal
@@ -616,7 +616,7 @@ class VoiceCommandHandler:
         self._on_command_result = callback
 
     def set_audio_level_callback(self, callback: Callable[[float], None]) -> None:
-        """Register callback fired with smoothed RMS (0.0â€“1.0) every ~100 ms during recording."""
+        """Register callback fired with smoothed RMS (0.0–1.0) every ~100 ms during recording."""
         self._on_audio_level = callback
 
     def set_audio_envelope_callback(
@@ -651,20 +651,20 @@ class VoiceCommandHandler:
         Begin recording user speech.
 
         Args:
-            auto_stop: True â†’ energy-based VAD ends recording automatically (wake word path).
-                       False â†’ recording continues until stop_recording() is called (double-click).
+            auto_stop: True → energy-based VAD ends recording automatically (wake word path).
+                       False → recording continues until stop_recording() is called (double-click).
             pre_speech_timeout_sec: In auto_stop mode, give up if speech doesn't start within
                                     this many seconds (0 = use VAD_MAX_DURATION_SEC).
                                     Used for conversation mode relisten passes.
-            play_beep: True â†’ play activation beep (default for fresh wake-word activations).
-                       False â†’ skip beep (barge-in re-recordings, auto-relisten).
+            play_beep: True → play activation beep (default for fresh wake-word activations).
+                       False → skip beep (barge-in re-recordings, auto-relisten).
 
         Returns:
             True if recording started successfully.
         """
         if not self._start_lock.acquire(blocking=False):
             logger.warning(
-                "[VoiceCommand] start_recording() already in progress â€” ignoring duplicate call"
+                "[VoiceCommand] start_recording() already in progress — ignoring duplicate call"
             )
             return False
 
@@ -676,34 +676,34 @@ class VoiceCommandHandler:
     def _start_recording_locked(
         self, auto_stop: bool, pre_speech_timeout_sec: float, play_beep: bool = True, flush_ms: int = 0,
     ) -> bool:
-        """Inner implementation of start_recording â€” called only when _start_lock is held."""
+        """Inner implementation of start_recording — called only when _start_lock is held."""
         self._auto_stop_mode = auto_stop
         self._pre_speech_timeout_sec = pre_speech_timeout_sec
         if self.is_recording:
             elapsed = time.monotonic() - self._recording_started_at
-            # Duplicate within 2s â€” the previous start just landed, ignore.
+            # Duplicate within 2s — the previous start just landed, ignore.
             if elapsed < 2.0:
                 logger.debug(
-                    f"[VoiceCommand] Duplicate start within 2s â€” ignoring "
+                    f"[VoiceCommand] Duplicate start within 2s — ignoring "
                     f"({elapsed:.1f}s into current recording)"
                 )
                 return True
-            # Stale recording beyond 30s â€” force-reset and start fresh.
-            # Don't cancel (loses audio) â€” just reset the flag and let the
+            # Stale recording beyond 30s — force-reset and start fresh.
+            # Don't cancel (loses audio) — just reset the flag and let the
             # old thread finish naturally while a new one starts.
             if elapsed > 30.0:
                 logger.warning(
-                    f"[VoiceCommand] Stale recording detected ({elapsed:.1f}s) â€” "
+                    f"[VoiceCommand] Stale recording detected ({elapsed:.1f}s) — "
                     f"force-resetting is_recording"
                 )
                 self.is_recording = False
             else:
-                # Recording between 2-30s â€” it's active and valid.
+                # Recording between 2-30s — it's active and valid.
                 # Return True so the caller doesn't reset the orb to idle,
                 # but a new thread won't start (the existing VAD handles it).
                 logger.debug(
                     f"[VoiceCommand] Active recording in progress "
-                    f"({elapsed:.1f}s) â€” ignoring duplicate"
+                    f"({elapsed:.1f}s) — ignoring duplicate"
                 )
                 return True
 
@@ -737,11 +737,11 @@ class VoiceCommandHandler:
             # IMPORTANT: do NOT return early here.  The previous code returned True
             # immediately after first-time registration, which meant the FIRST voice
             # trigger registered the listener but never started the _run_transcription
-            # thread â€” so no VAD/Whisper ever ran on the first activation, the orb
+            # thread — so no VAD/Whisper ever ran on the first activation, the orb
             # hung in RECORDING, and the next trigger raced against the dangling
             # recording ("opens and closes right after").  Now we register (if
             # needed) and fall through to start the transcription thread unconditionally.
-            # Always re-register the frame listener â€” not guarded by the flag.
+            # Always re-register the frame listener — not guarded by the flag.
             # If the AudioEngine stream was cleaned up (e.g. after TTS playback),
             # _frame_listeners was cleared and our old reference is gone.
             # add_frame_listener is idempotent, so this is safe to call every time.
@@ -762,7 +762,7 @@ class VoiceCommandHandler:
             #
             # Skip the beep during barge-in re-recordings (play_beep=False)
             # to avoid briefly blocking the audio output device while the
-            # previous TTS is still winding down â€” this prevents the VAD from
+            # previous TTS is still winding down — this prevents the VAD from
             # stalling at 15/23 silence frames.
             if play_beep:
                 threading.Thread(
@@ -798,7 +798,7 @@ class VoiceCommandHandler:
 
     def cancel_recording(self) -> None:
         """
-        Cancel recording WITHOUT transcribing â€” used when the user explicitly
+        Cancel recording WITHOUT transcribing — used when the user explicitly
         clicks the orb to abort a wake-word recording or to restart.
 
         Sets _cancelled so _run_transcription skips Whisper entirely and
@@ -808,13 +808,13 @@ class VoiceCommandHandler:
         if not self.is_recording:
             return
         logger.info(
-            "[VoiceCommand] Recording cancelled by user â€” skipping transcription"
+            "[VoiceCommand] Recording cancelled by user — skipping transcription"
         )
         self._cancel_event.set()
         self._stop_event.set()
 
     # -------------------------------------------------------------------------
-    # Internal â€” whisper
+    # Internal — whisper
     # -------------------------------------------------------------------------
 
     def _transcribe_with_fallback(self, audio_np) -> str:
@@ -823,8 +823,8 @@ class VoiceCommandHandler:
         model fails to load or is unavailable.
 
         Fallback chain (in order):
-          1. faster_whisper â€” WhisperModel tiny/int8, ~40 MB, GPU optional
-          2. speech_recognition â€” Google Web Speech API (requires internet)
+          1. faster_whisper — WhisperModel tiny/int8, ~40 MB, GPU optional
+          2. speech_recognition — Google Web Speech API (requires internet)
 
         REQ-2 AC2.2: NO RAM gate. The old 4.0 GB free-RAM barrier aborted the
         faster-whisper CPU fallback during resource contention, forcing a
@@ -862,7 +862,7 @@ class VoiceCommandHandler:
                 f"[VoiceCommand] faster_whisper fallback failed: {_fw_exc}"
             )
 
-        # Attempt 2: speech_recognition (Google Web Speech API â€” last resort)
+        # Attempt 2: speech_recognition (Google Web Speech API — last resort)
         try:
             import speech_recognition as sr
             import io
@@ -870,7 +870,7 @@ class VoiceCommandHandler:
 
             recognizer = sr.Recognizer()
             # Convert float32 to PCM int16 bytes for speech_recognition
-            # (np is imported at module level; do not re-import locally â€”
+            # (np is imported at module level; do not re-import locally —
             #  doing so would shadow np at function scope and trigger
             #  UnboundLocalError for the earlier use at line ~390.)
             pcm_int16 = (audio_np * 32767).clip(-32768, 32767).astype(np.int16)
@@ -953,7 +953,7 @@ class VoiceCommandHandler:
                 "[VoiceCommand] Loading faster-whisper tiny/int8 on CPU..."
             )
             # Always use CPU for STT.  tiny/int8 transcribes a 3 s clip
-            # in ~80 ms on any modern CPU â€” no reason to occupy CUDA.
+            # in ~80 ms on any modern CPU — no reason to occupy CUDA.
             self._whisper = WhisperModel(
                 "tiny",
                 device="cpu",
@@ -1011,7 +1011,7 @@ class VoiceCommandHandler:
         thread so the FIRST real transcription has zero model-load latency.
 
         Call this once during backend startup (after AudioEngine initialises).
-        Safe to call multiple times â€” subsequent calls are no-ops.
+        Safe to call multiple times — subsequent calls are no-ops.
         """
         if self._whisper is not None:
             return  # already loaded
@@ -1024,7 +1024,7 @@ class VoiceCommandHandler:
                 silence = np.zeros(int(self.sample_rate * 0.5), dtype=np.float32)
                 list(model.transcribe(silence, language="en", beam_size=1)[0])
                 logger.info(
-                    "[VoiceCommand] Whisper warm-up complete â€” first transcription will be instant"
+                    "[VoiceCommand] Whisper warm-up complete — first transcription will be instant"
                 )
             except Exception as exc:
                 logger.warning(
@@ -1128,7 +1128,7 @@ class VoiceCommandHandler:
         }
         if text:
             logger.info(
-                f"[STT] parakeet GPU â€” '{text[:80]}' "
+                f"[STT] parakeet GPU — '{text[:80]}' "
                 f"(latency: {self._last_stt_timing['stt_latency_ms']:.0f}ms)"
             )
         else:
@@ -1139,18 +1139,18 @@ class VoiceCommandHandler:
             # people looking for a bug that does not exist.
             if getattr(self._parakeet, "_loading", False):
                 logger.info(
-                    "[STT] parakeet still loading (warm-up in progress) â€” "
+                    "[STT] parakeet still loading (warm-up in progress) — "
                     "using whisper for this utterance"
                 )
                 self._last_stt_timing["stt_backend"] = "parakeet_loading"
             elif getattr(self._parakeet, "_load_error", None) is not None:
                 logger.warning(
-                    "[STT] parakeet unavailable (%s) â€” falling back to whisper",
+                    "[STT] parakeet unavailable (%s) — falling back to whisper",
                     self._parakeet._load_error,
                 )
                 self._last_stt_timing["stt_backend"] = "parakeet_failed"
             else:
-                logger.warning("[STT] parakeet returned empty â€” falling back to whisper")
+                logger.warning("[STT] parakeet returned empty — falling back to whisper")
                 self._last_stt_timing["stt_backend"] = "parakeet_empty"
         return text
 
@@ -1167,7 +1167,7 @@ class VoiceCommandHandler:
             if not _watchdog_fired.is_set():
                 _watchdog_fired.set()
                 logger.error(
-                    "[VoiceCommand] WATCHDOG: transcription thread hung for 60s â€” "
+                    "[VoiceCommand] WATCHDOG: transcription thread hung for 60s — "
                     "force-resetting is_recording"
                 )
                 self.is_recording = False
@@ -1198,24 +1198,24 @@ class VoiceCommandHandler:
             if self._cancel_event.is_set():
                 self._cancel_event.clear()
                 logger.info(
-                    "[VoiceCommand] Recording cancelled â€” skipping transcription"
+                    "[VoiceCommand] Recording cancelled — skipping transcription"
                 )
                 self._raw_frames = []
                 self.audio_buffer = []
                 self._on_transcription_complete("")
                 return
 
-            # â”€â”€ Guard: skip transcription when VAD found no speech â”€â”€â”€â”€â”€â”€
+            # ── Guard: skip transcription when VAD found no speech ──────
             # After barge-in or auto-relisten, the VAD may timeout without
             # ever detecting speech onset.  The buffer still contains
             # near-silence frames.  Sending this to Parakeet causes it to
             # hallucinate short filler words ("yeah", "okay", "hello") which
-            # the agent treats as real user input â€” creating phantom
+            # the agent treats as real user input — creating phantom
             # conversational turns.  Skip transcription entirely when no
             # speech was detected.
             if not _speech_detected:
                 logger.info(
-                    "[VoiceCommand] VAD detected no speech â€” "
+                    "[VoiceCommand] VAD detected no speech — "
                     "discarding buffer (avoid Parakeet hallucination)"
                 )
                 self._raw_frames = []
@@ -1224,7 +1224,7 @@ class VoiceCommandHandler:
                 return
 
             if not self._raw_frames:
-                logger.info("[VoiceCommand] No audio captured â€” ignoring")
+                logger.info("[VoiceCommand] No audio captured — ignoring")
                 self._on_transcription_complete("")
                 return
 
@@ -1252,7 +1252,7 @@ class VoiceCommandHandler:
             )
             if rms < 1e-4:
                 logger.warning(
-                    "[VoiceCommand] Audio RMS near zero â€” likely silence. "
+                    "[VoiceCommand] Audio RMS near zero — likely silence. "
                     "Skipping transcription to avoid Parakeet hallucination."
                 )
                 self._raw_frames = []
@@ -1262,7 +1262,7 @@ class VoiceCommandHandler:
 
             self._set_state(VoiceState.PROCESSING, "Transcribing...")
 
-            # â”€â”€ Processing-phase orb breathing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── Processing-phase orb breathing ─────────────────────────
             # During transcription, is_recording=False so _capture_frame returns
             # early and the orb gets zero audio_envelope messages. Without this,
             # the orb appears dead during the 0.5-30s processing window (latency
@@ -1282,12 +1282,12 @@ class VoiceCommandHandler:
             )
             _proc_pulse_thread.start()
 
-            # â”€â”€ Primary path: Parakeet GPU ASR (in-process) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── Primary path: Parakeet GPU ASR (in-process) ─────────────
             transcript = self._transcribe_via_parakeet(audio_np)
 
             _proc_pulse_stop.set()  # stop the processing pulse
 
-            # â”€â”€ Fallback path: faster-whisper (CPU, tiny int8) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+            # ── Fallback path: faster-whisper (CPU, tiny int8) ─────────────
             if not transcript:
                 logger.info("[STT] Attempting faster-whisper CPU fallback...")
                 import time as _stt_time_w
@@ -1309,13 +1309,13 @@ class VoiceCommandHandler:
                     beam_size=1,  # 3x faster; negligible quality loss for conversational STT
                     best_of=1,  # deterministic, fastest path
                     condition_on_previous_text=False,  # prevents hallucination drift
-                    vad_filter=False,  # energy VAD already handled end-of-speech â€” whisper VAD strips too aggressively
+                    vad_filter=False,  # energy VAD already handled end-of-speech — whisper VAD strips too aggressively
                 )
                 transcript = " ".join(s.text.strip() for s in segments).strip()
                 # Whisper VAD (if enabled) can strip already-trimmed audio to zero
                 # segments for short utterances. Retry once with VAD explicitly off.
                 if not transcript:
-                    logger.warning("[STT] whisper returned empty â€” retrying without VAD filter")
+                    logger.warning("[STT] whisper returned empty — retrying without VAD filter")
                     segments, _ = whisper.transcribe(
                         audio_np,
                         language="en",
@@ -1336,11 +1336,11 @@ class VoiceCommandHandler:
                 }
                 if transcript:
                     logger.info(
-                        f"[STT] whisper CPU â€” '{transcript[:80]}' "
+                        f"[STT] whisper CPU — '{transcript[:80]}' "
                         f"(latency: {self._last_stt_timing['stt_latency_ms']:.0f}ms)"
                     )
                 if transcript:
-                    logger.info("[STT] whisper CPU â€” '%s'", transcript[:80])
+                    logger.info("[STT] whisper CPU — '%s'", transcript[:80])
                 else:
                     logger.warning(
                         "[STT] whisper CPU returned empty text. "
@@ -1351,7 +1351,7 @@ class VoiceCommandHandler:
 
             self._on_transcription_complete(transcript)
 
-            # Explicit buffer release â€” free memory immediately after transcription
+            # Explicit buffer release — free memory immediately after transcription
             self._raw_frames = []
             if hasattr(self, "audio_buffer"):
                 self.audio_buffer = []
@@ -1389,20 +1389,20 @@ class VoiceCommandHandler:
             # even if the thread is killed or a non-Exception is raised
             if self.is_recording:
                 logger.warning(
-                    "[VoiceCommand] finally: is_recording was still True â€” "
+                    "[VoiceCommand] finally: is_recording was still True — "
                     "resetting (thread may have been killed)"
                 )
                 self.is_recording = False
 
     def _vad_wait_for_speech_then_silence(self) -> bool:
         """
-        Energy-based VAD with adaptive noise-floor calibration (plan Â§1.3).
+        Energy-based VAD with adaptive noise-floor calibration (plan §1.3).
 
         State machine:
-          CALIBRATE  â†’ sample ~0.5s ambient audio, compute noise floor, set thresholds
-          PRE_SPEECH  â†’ wait for audio above speech_threshold (noise_floor * 3.0)
-          IN_SPEECH   â†’ wait for sustained silence (adaptive frames) below silence_threshold
-          DONE        â†’ return True (triggers transcription)
+          CALIBRATE  → sample ~0.5s ambient audio, compute noise floor, set thresholds
+          PRE_SPEECH  → wait for audio above speech_threshold (noise_floor * 3.0)
+          IN_SPEECH   → wait for sustained silence (adaptive frames) below silence_threshold
+          DONE        → return True (triggers transcription)
 
         The fixed threshold (VAD_ENERGY_THRESHOLD) was the root cause of the
         intermittent "STT never starts" bug: too high in a quiet room (speech
@@ -1412,7 +1412,7 @@ class VoiceCommandHandler:
         prevents flicker at the boundary.
 
         If _pre_speech_timeout_sec > 0, gives up if speech onset doesn't arrive
-        within that window â€” used by conversation-mode relisten passes.
+        within that window — used by conversation-mode relisten passes.
 
         Returns:
             True if speech was actually detected and ended naturally.
@@ -1420,7 +1420,7 @@ class VoiceCommandHandler:
             Callers should skip transcription when False to avoid
             Parakeet hallucinating text from silence.
         """
-        frame_sec = 512 / self.sample_rate  # â‰ˆ 0.032 s per frame at 16 kHz
+        frame_sec = 512 / self.sample_rate  # ≈ 0.032 s per frame at 16 kHz
         silence_needed = int(self.VAD_SILENCE_SEC / frame_sec)
         speech_needed = int(self.VAD_MIN_SPEECH_SEC / frame_sec)
         max_frames = int(self.VAD_MAX_DURATION_SEC / frame_sec)
@@ -1430,7 +1430,7 @@ class VoiceCommandHandler:
             else max_frames
         )
 
-        # â”€â”€ Adaptive noise-floor calibration (plan Â§1.3.1) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── Adaptive noise-floor calibration (plan §1.3.1) ──────────────
         # Sample ~0.5s of ambient audio to set thresholds relative to the
         # actual room noise. Recalibrate once if speech hasn't started by 10s.
         calibration_frames = max(1, int(0.5 / frame_sec))
@@ -1441,7 +1441,7 @@ class VoiceCommandHandler:
         def _calibrate() -> tuple:
             """Return (speech_threshold, silence_threshold) from current noise floor."""
             floor = noise_floor if noise_floor > 0 else self.VAD_ENERGY_THRESHOLD
-            # Hysteresis: speech onset needs 3Ã— floor, offset needs only 1.5Ã— floor.
+            # Hysteresis: speech onset needs 3× floor, offset needs only 1.5× floor.
             speech_th = max(floor * 3.0, self.VAD_ENERGY_THRESHOLD * 0.5)
             silence_th = max(floor * 1.5, self.VAD_ENERGY_THRESHOLD * 0.25)
             return speech_th, silence_th
@@ -1451,7 +1451,7 @@ class VoiceCommandHandler:
         silence_count = 0
         speech_count = 0
         speech_started = False
-        speech_frames_total = 0  # total speech frames â†’ drives adaptive silence
+        speech_frames_total = 0  # total speech frames → drives adaptive silence
         last_processed = 0
         total_frames = 0
         pre_speech_frames = 0  # frames elapsed before first speech onset
@@ -1473,7 +1473,7 @@ class VoiceCommandHandler:
             current_len = len(self._raw_frames)
             if current_len == last_processed:
                 # Block until the stop event fires OR the poll interval expires.
-                # More CPU-efficient than time.sleep() â€” wakes immediately on cancel.
+                # More CPU-efficient than time.sleep() — wakes immediately on cancel.
                 self._stop_event.wait(timeout=self.VAD_POLL_INTERVAL_SEC)
                 continue
 
@@ -1484,7 +1484,7 @@ class VoiceCommandHandler:
                 total_frames += 1
                 rms = float(np.sqrt(np.mean(np.square(frame))))
 
-                # â”€â”€ Calibration phase: collect ambient RMS, no VAD yet â”€â”€
+                # ── Calibration phase: collect ambient RMS, no VAD yet ──
                 if not speech_started and total_frames <= calibration_frames:
                     # Exclude beep/echo energy from the noise floor. The 880 Hz
                     # activation beep (and its room echo) can leak into the mic
@@ -1512,7 +1512,7 @@ class VoiceCommandHandler:
                 _level_accum += rms
                 _level_frame_count += 1
                 if _level_frame_count >= _LEVEL_EMIT_EVERY:
-                    # Normalise: divide by 2Ã— speech threshold so speech â‰ˆ 0.5
+                    # Normalise: divide by 2× speech threshold so speech ≈ 0.5
                     level = min(
                         1.0,
                         _level_accum / _level_frame_count / (speech_threshold * 2),
@@ -1540,7 +1540,7 @@ class VoiceCommandHandler:
                     _level_accum = 0.0
                     _level_frame_count = 0
 
-                # â”€â”€ Recalibrate once if speech hasn't started after 10s â”€â”€
+                # ── Recalibrate once if speech hasn't started after 10s ──
                 if (
                     not speech_started
                     and not _recalibrated
@@ -1557,7 +1557,7 @@ class VoiceCommandHandler:
                         )
                     _recalibrated = True
 
-                # â”€â”€ VAD state machine â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+                # ── VAD state machine ───────────────────────────────────
                 if rms >= speech_threshold:
                     speech_count += 1
                     silence_count = 0
@@ -1571,7 +1571,7 @@ class VoiceCommandHandler:
                 else:
                     if speech_started:
                         silence_count += 1
-                        # Adaptive silence frames (plan Â§1.3.2): shorter for short
+                        # Adaptive silence frames (plan §1.3.2): shorter for short
                         # utterances (snappier), longer for long ones (natural pauses).
                         adaptive_silence = silence_needed
                         speech_sec = speech_frames_total * frame_sec
@@ -1595,18 +1595,18 @@ class VoiceCommandHandler:
                                 f"[VAD] end-of-speech detected "
                                 f"(RMS={rms:.4f}, silence_frames={silence_count})"
                             )
-                            return True  # silence after real speech â†’ done
+                            return True  # silence after real speech → done
                     else:
-                        # Background noise before speech â€” decay counter slowly
+                        # Background noise before speech — decay counter slowly
                         speech_count = max(0, speech_count - 1)
                         pre_speech_frames += 1
                         if pre_speech_frames >= pre_speech_max_frames:
                             logger.info(
                                 f"[VAD] pre-speech timeout "
-                                f"({self._pre_speech_timeout_sec}s) â€” no speech detected, "
+                                f"({self._pre_speech_timeout_sec}s) — no speech detected, "
                                 f"skipping transcription to avoid hallucination"
                             )
-                            return False  # no speech onset â†’ skip transcription
+                            return False  # no speech onset → skip transcription
 
         logger.debug(
             f"[VAD] loop ended (frames={total_frames}, speech_started={speech_started})"
@@ -1614,12 +1614,12 @@ class VoiceCommandHandler:
         return speech_started
 
     # -------------------------------------------------------------------------
-    # Internal â€” audio capture
+    # Internal — audio capture
     # -------------------------------------------------------------------------
 
     def _capture_frame(self, audio_frame: np.ndarray) -> None:
         """
-        AudioEngine frame listener â€” accumulates float32 PCM while recording.
+        AudioEngine frame listener — accumulates float32 PCM while recording.
         Called from the sounddevice callback thread; must never raise.
         """
         # NOTE: a throttled [DIAG][capture_frame] RMS log used to live here.
@@ -1647,7 +1647,7 @@ class VoiceCommandHandler:
         self.audio_buffer.append(None)
         self._raw_frames.append(audio_frame.copy())
 
-        # â”€â”€ Broadcast audio_envelope for orb breathing during STT â”€â”€â”€â”€â”€â”€
+        # ── Broadcast audio_envelope for orb breathing during STT ──────
         # The VAD loop in _run_transcription also sends audio_envelope (every
         # 3 frames, ~96ms), but it's gated on the VAD loop iteration speed.
         # If the VAD loop is delayed (backend-specific processing overhead),
@@ -1668,7 +1668,7 @@ class VoiceCommandHandler:
                 pass
 
     # -------------------------------------------------------------------------
-    # Internal â€” helpers
+    # Internal — helpers
     # -------------------------------------------------------------------------
 
     def _on_transcription_complete(self, transcript: str) -> None:
@@ -1677,7 +1677,7 @@ class VoiceCommandHandler:
 
         if not transcript:
             logger.warning(
-                "[VoiceCommand] Empty transcript dispatched to gateway â€” "
+                "[VoiceCommand] Empty transcript dispatched to gateway — "
                 "agent will NOT be called (gateway skips empty transcripts). "
                 f"Buffer had {len(self._raw_frames)} frames. "
                 f"Check: (1) mic input level (VAD_ENERGY_THRESHOLD={self.VAD_ENERGY_THRESHOLD}), "
@@ -1724,9 +1724,9 @@ class VoiceCommandHandler:
 
         Three modes (resolved once at call time):
 
-          1. ``activation_sound`` set to a WAV file path  â†’ play that file
-          2. ``activation_sound`` set to "off" / "none"    â†’ skip playback
-          3. default                                         â†’ 880 Hz sine tone
+          1. ``activation_sound`` set to a WAV file path  → play that file
+          2. ``activation_sound`` set to "off" / "none"    → skip playback
+          3. default                                         → 880 Hz sine tone
 
         Wraps playback in ``set_tts_active(True/False)`` so the half-duplex
         gate in ``AudioPipeline._input_callback`` drops the frames captured
@@ -1741,7 +1741,7 @@ class VoiceCommandHandler:
             mode = (cfg.get("activation_sound") or "default").lower()
 
             if mode in ("off", "none", "false", "disable", "disabled"):
-                # No activation sound at all â€” user explicitly disabled
+                # No activation sound at all — user explicitly disabled
                 return
 
             if mode not in ("default", "beep"):
@@ -1756,7 +1756,7 @@ class VoiceCommandHandler:
                     import soundfile as sf
                     sound, sr = sf.read(path, dtype="float32")
                     if sound.ndim > 1:
-                        sound = sound.mean(axis=1)  # stereo â†’ mono
+                        sound = sound.mean(axis=1)  # stereo → mono
                     logger.info(f"[VoiceCommand] Playing activation sound: {path}")
                 else:
                     logger.warning(
@@ -1884,7 +1884,7 @@ class VoiceCommandHandler:
     def _set_state(self, new_state: VoiceState, message: str = "") -> None:
         """Update internal state and fire the state-change callback."""
         if self.state != new_state:
-            logger.info(f"[VoiceCommand] State: {self.state} â†’ {new_state}")
+            logger.info(f"[VoiceCommand] State: {self.state} → {new_state}")
             self.state = new_state
             if self._on_state_change:
                 try:
@@ -1896,7 +1896,7 @@ class VoiceCommandHandler:
         """Timer callback: transition to IDLE only if no recording is active.
 
         Prevents an orphaned timer from a previous SUCCESS from forcing
-        RECORDING â†’ IDLE when the user has already barge-in-started a new
+        RECORDING → IDLE when the user has already barge-in-started a new
         recording.
         """
         if not self.is_recording:

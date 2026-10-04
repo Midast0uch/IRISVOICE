@@ -5,7 +5,7 @@ Spec: specs/phase-6-der-integrity/requirements.md REQ-1 AC4.
 
 Drives the REAL `AgentKernel._der_finalize_step` (same harness pattern as
 CT-D2) for a step whose verification is forced to FAILED, and asserts:
-  - a commit-ledger row IS written (not silently dropped â€” the exact bug
+  - a commit-ledger row IS written (not silently dropped — the exact bug
     this phase's REQ-1 exists to close: the old contract gated the write on
     VERIFIED, starving the failure-learning channel).
   - the row's label is FAILED, not coerced to something else.
@@ -81,7 +81,7 @@ class TestFailedStepWritesCommitRow:
         kernel._der_finalize_step(
             item=item,
             step_result="it did not work",
-            step_success=True,  # deliberately True on input â€” must be
+            step_success=True,  # deliberately True on input — must be
                                  # overridden by the FAILED verification
             step_outputs=[],
             completed_items=[],
@@ -99,7 +99,7 @@ class TestFailedStepWritesCommitRow:
         )
 
         assert len(_CapturingRecorder.calls) == 1, (
-            "a FAILED step must still write exactly one commit row â€” the old "
+            "a FAILED step must still write exactly one commit row — the old "
             "contract silently dropped it (audit finding B)"
         )
         assert _CapturingRecorder.calls[0]["verified_label"] == "FAILED"

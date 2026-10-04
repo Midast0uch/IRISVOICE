@@ -35,7 +35,7 @@ from backend.agent import narration as narration_mod
 
 
 class _GateEngine:
-    """Engine stand-in for gate() â€” answer fixed; errors on demand."""
+    """Engine stand-in for gate() — answer fixed; errors on demand."""
 
     def __init__(self, chosen="speak", confidence=0.95, dead=False):
         self._c = chosen
@@ -77,7 +77,7 @@ def install_engine(monkeypatch):
             de_mod, "enforced_consumers",
             lambda: frozenset(enforced),
         )
-        # narration.py imports symbols lazily â€” it will see these.
+        # narration.py imports symbols lazily — it will see these.
         return engine
 
     yield _install
@@ -91,7 +91,7 @@ def narration_timer_reset(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# CT-DE-6 â€” frontend event shapes pinned
+# CT-DE-6 — frontend event shapes pinned
 # ---------------------------------------------------------------------------
 
 
@@ -149,7 +149,7 @@ class TestCtDe6EventShapes:
 
 
 # ---------------------------------------------------------------------------
-# CT-DE-7 â€” consumer registry
+# CT-DE-7 — consumer registry
 # ---------------------------------------------------------------------------
 
 
@@ -187,7 +187,7 @@ class TestCtDe7Registry:
 
 
 # ---------------------------------------------------------------------------
-# CT-DE-8 â€” narration AND-composition
+# CT-DE-8 — narration AND-composition
 # ---------------------------------------------------------------------------
 
 
@@ -198,7 +198,7 @@ class TestCtDe8NarrationComposition:
                        enforced=("narration",))
         assert narration_mod.may_narrate() is False
         # engine silence must NOT consume the 18 s slot: a later non-engine
-        # decision would still fireâ€¦ swap to permissive and confirm.
+        # decision would still fire… swap to permissive and confirm.
         install_engine(_GateEngine(chosen="speak", confidence=0.99),
                        enforced=("narration",))
         assert narration_mod.may_narrate() is True
@@ -211,7 +211,7 @@ class TestCtDe8NarrationComposition:
 
     def test_shadow_mode_is_timer_only(
             self, install_engine, narration_timer_reset):
-        # engine says silent but consumer is NOT enforced â†’ shadow â†’ timer path
+        # engine says silent but consumer is NOT enforced → shadow → timer path
         install_engine(_GateEngine(chosen="silent", confidence=0.99),
                        enforced=())
         assert narration_mod.may_narrate() is True
@@ -225,7 +225,7 @@ class TestCtDe8NarrationComposition:
 
 
 # ---------------------------------------------------------------------------
-# BT-DE-5/6/7 â€” behavioral, binding real methods onto minimal selves
+# BT-DE-5/6/7 — behavioral, binding real methods onto minimal selves
 # ---------------------------------------------------------------------------
 
 

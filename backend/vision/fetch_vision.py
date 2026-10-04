@@ -630,7 +630,7 @@ class FetchVisionCapability(FetchCapability):
 
         Before this, the browser path constructed the tier-3 ``LFMVLProvider``
         directly (via ``get_vision_provider``), so a bound multimodal brain/tool
-        was silently ignored and tier 3 was always used â€” the confirmed REQ-1
+        was silently ignored and tier 3 was always used — the confirmed REQ-1
         defect. ``resolve_vision_client()`` is the same single source of vision
         serving every other consumer uses, and it preserves the method surface
         (``analyze_screen`` / ``read_text`` / ``suggest_action`` /
@@ -651,7 +651,7 @@ class FetchVisionCapability(FetchCapability):
 
                 _resolution, client = resolve_vision_client()
                 self._provider_singleton = client
-            except Exception as exc:  # noqa: BLE001 â€” degrade, never raise (REQ-1 AC3)
+            except Exception as exc:  # noqa: BLE001 — degrade, never raise (REQ-1 AC3)
                 logger.info("[fetch.vision] provider init failed: %s", exc)
                 self._provider_singleton = None
         return self._provider_singleton

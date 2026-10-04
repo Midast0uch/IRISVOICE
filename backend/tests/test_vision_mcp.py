@@ -1,5 +1,5 @@
 ﻿"""
-Vision MCP integration tests â€” LFM2.5-VL via MCP tools in AgentToolBridge.
+Vision MCP integration tests — LFM2.5-VL via MCP tools in AgentToolBridge.
 
 Requirements tested:
   - VisionMCPServer registers 5 vision.* tools with correct schemas
@@ -32,7 +32,7 @@ def _server_really_down(monkeypatch):
     monkeypatch.setattr(vl, "_reused_vision_base_url", None)
 
 
-# â”€â”€ Import checks â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Import checks ─────────────────────────────────────────────────────────────
 
 def test_vision_provider_importable():
     from backend.tools.vision_provider import LFMVLProvider, screenshot_to_bytes
@@ -51,7 +51,7 @@ def test_vision_mcp_server_is_builtin_server():
     assert issubclass(VisionMCPServer, BuiltinServer)
 
 
-# â”€â”€ Tool schema validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Tool schema validation ────────────────────────────────────────────────────
 
 def test_vision_mcp_server_has_5_tools():
     from backend.tools.vision_mcp_server import VisionMCPServer
@@ -88,11 +88,11 @@ def test_vision_tools_have_input_schema():
         assert tool.input_schema.get("type") == "object"
 
 
-# â”€â”€ Graceful error on server-down â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Graceful error on server-down ─────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_analyze_screen_returns_string_when_server_down():
-    """No llama-server running â€” must return error string, never raise."""
+    """No llama-server running — must return error string, never raise."""
     from backend.tools.vision_mcp_server import VisionMCPServer
     server = VisionMCPServer()
     result = await server.execute_tool("vision.analyze_screen", {"question": "What is on screen?"})
@@ -135,7 +135,7 @@ async def test_unknown_tool_returns_error_string():
     assert "Unknown" in text or "nonexistent" in text.lower() or "error" in text.lower()
 
 
-# â”€â”€ AgentToolBridge integration â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── AgentToolBridge integration ───────────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_agent_tool_bridge_has_vision_server():
@@ -157,14 +157,14 @@ async def test_vision_get_context_returns_dict_without_hard_error():
     await bridge.initialize()
     result = await bridge.execute_vision_tool("vision_get_context", {})
     assert isinstance(result, dict), (
-        f"vision_get_context returned {type(result)} â€” expected dict. "
+        f"vision_get_context returned {type(result)} — expected dict. "
         f"Got: {repr(result)}"
     )
-    # Must have either 'success' or 'error' key â€” never raises
+    # Must have either 'success' or 'error' key — never raises
     assert "success" in result or "error" in result
 
 
-# â”€â”€ Provider config â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Provider config ───────────────────────────────────────────────────────────
 
 def test_lfm_vl_config_defaults():
     from backend.tools.vision_provider import LFMVLConfig
@@ -194,7 +194,7 @@ def test_vision_provider_analyze_returns_error_string_when_server_down():
     assert len(result) > 0
 
 
-# â”€â”€ Idle lifecycle â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Idle lifecycle ────────────────────────────────────────────────────────────
 
 def test_get_vision_provider_singleton():
     from backend.tools.vision_provider import get_vision_provider
@@ -207,7 +207,7 @@ def test_no_owned_server_surface():
     """specs/vision-single-server: the owned-server lifecycle is deleted.
 
     There is no idle watchdog, no owned PID, no stop/kill functions. A borrowed
-    shared server must never be stopped by IRIS â€” the strongest form of the
+    shared server must never be stopped by IRIS — the strongest form of the
     guard is that the symbols do not exist at all."""
     import backend.tools.vision_provider as m
 
