@@ -2007,6 +2007,13 @@ class ToolDecisionBox:
                 if not self._tool_bridge:
                     raise RuntimeError("ToolDecisionBox has no tool_bridge injected")
 
+                # A loop lives inside ONE turn. The memory was per conversation,
+                # so the next request that opened the same page was refused as
+                # a "loop" (live 2026-10-04: browser_open of wikipedia.org
+                # refused in 4 of 6 consecutive turns).
+                if turn_id and turn_id != getattr(self, "_last_call_turn", None):
+                    self._last_call.clear()
+                    self._last_call_turn = turn_id
                 # ── Duplicate-call detection (REQ-12 AC2) — before execute ──
                 # "@epoch": the same args on changed files are a new call.
                 _raw_hash = hashlib.md5(
@@ -2033,8 +2040,13 @@ class ToolDecisionBox:
                 # read_command_output: polling a running command with the same
                 # handle is how the agent watches it; its output changes, and
                 # the node's own "unchanged result" detector catches a real loop.
+                # Browser tools: the same args act on a page that changes
+                # (open the start page again after a wrong turn, observe after
+                # a click), and run_node's own detector stops a real loop
+                # (repeated call / unchanged result).
                 _IDEMPOTENT_READ_TOOLS = frozenset(
-                    {"get_rendered_documents", "recall_memory", "read_file", "read_command_output"}
+                    {"get_rendered_documents", "recall_memory", "read_file", "read_command_output",
+                     "browser_open", "browser_observe", "browser_act", "browser_explore"}
                 )
                 if (
                     decision.tool

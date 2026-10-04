@@ -1276,12 +1276,25 @@ class InferenceRouter:
             except (TypeError, ValueError):
                 pass
 
-        result = transport.generate(
-            effective_model,
-            messages,
-            normalized_tools,
-            **_gen_kwargs,
-        )
+        # One timing line per model call, failed calls included, logged when it
+        # ends: the turn split (model wait vs IRIS's own time) is measured from
+        # these. "real usage" alone cannot pair: a stalled or failed call never
+        # logs it (live comparison 2026-10-04 read negative IRIS time).
+        import time as _time
+
+        _t0 = _time.monotonic()
+        _ok = False
+        try:
+            result = transport.generate(
+                effective_model,
+                messages,
+                normalized_tools,
+                **_gen_kwargs,
+            )
+            _ok = True
+        finally:
+            logger.info("[InferenceRouter] call done role=%s model=%s %.2fs ok=%s",
+                        role, effective_model, _time.monotonic() - _t0, _ok)
 
         # Remap sanitized tool names back to the originals (see above) so
         # dispatchers match against the registry exactly as before.
@@ -1578,7 +1591,7 @@ class _DirectVisionClient:
 
         Mirrors ``LFMVLProvider.read_text`` exactly (same prompt, same token
         budget) so a browser consumer that resolved to tier 1/2 gets IDENTICAL
-        call-site semantics to the tier-3 path it used before â€” the whole point
+        call-site semantics to the tier-3 path it used before — the whole point
         of routing through the resolver is that only the endpoint changes, never
         the caller's contract.
         """

@@ -9,6 +9,9 @@ from pathlib import Path
 import websockets
 
 MODE = sys.argv[1] if len(sys.argv) > 1 else "personal"
+# Entry path, separate from the mode so the two can be compared alone:
+# "cli" = the developer /run path (dev_cli), "chat" = text_message.
+ENTRY = sys.argv[2] if len(sys.argv) > 2 else ("cli" if MODE == "developer" else "chat")
 HTTP = "http://127.0.0.1:8090"
 PROMPT = ("Use the in-app browser: open https://en.wikipedia.org, type 'Mount Kilimanjaro' into the "
           "Wikipedia search box, and open the article. Then tell me its height in metres and the year "
@@ -40,7 +43,7 @@ async def main():
                                       max_size=2**24, ping_interval=None) as ws:
             await ws.send(json.dumps({"type": "set_web_mode", "payload": {"enabled": True}}))
             await asyncio.sleep(1)
-            if MODE == "developer":
+            if ENTRY == "cli":
                 await ws.send(json.dumps({"type": "dev_cli", "payload": {"query": PROMPT, "workdir": str(work)}}))
                 finals = {"text_response"}
             else:

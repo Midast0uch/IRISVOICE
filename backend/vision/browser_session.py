@@ -218,7 +218,13 @@ _OBSERVE_JS = r"""
     if (form) mark.form = form;
     return mark;
   });
-  const digest = clean(document.body ? document.body.innerText : '').slice(0, 600);
+  // The page's MAIN content, not the whole body: the first 600 body chars of a
+  // Wikipedia article are its header and menus, so a blind node model never
+  // read the article and asked the screenshot reader, which misread facts
+  // (live 2026-10-04: "The infobox height is 250.", 12-14 readings a turn).
+  const main = document.querySelector(
+    'main, [role=main], article, #mw-content-text, #content') || document.body;
+  const digest = clean(main ? main.innerText : '').slice(0, 1500);
   return { marks, digest, vw, vh, title: document.title || '' };
 }
 """

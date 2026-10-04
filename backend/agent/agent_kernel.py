@@ -239,6 +239,19 @@ def _step_calls(item) -> list:
              "ok": True, "args": args}]
 
 
+def _step_evidence_cap(item) -> int:
+    """How much of a settled step's result later steps, the window and the
+    synthesis see. A node step has no item.tool, so the by-tool rule gave it the
+    400-char default: its ~275-char summary filled it and the "Tool results"
+    with the facts were cut (live 2026-10-04: the page held "5,895 m" and
+    "1889"; the reply said they were missing). A node's result is its own
+    summary + what it read, so it gets the read/gather window. Module level on
+    purpose (stand-in kernels)."""
+    if isinstance(getattr(item, "node_call_log", None), list):
+        return 8000
+    return AgentKernel._der_evidence_cap(getattr(item, "tool", None))
+
+
 def _step_decisive_call(item) -> Optional[dict]:
     """The call that decided the step: the last failed one, else the last."""
     calls = _step_calls(item)
@@ -17165,7 +17178,7 @@ Respond with a JSON object:
                                 "description": (getattr(_pit, "description", "") or "")[:120],
                                 "result": self._smart_excerpt(
                                     _pr,
-                                    self._der_evidence_cap(getattr(_pit, "tool", None)),
+                                    _step_evidence_cap(_pit),
                                 ),
                             }
                         )
@@ -18450,7 +18463,7 @@ Respond with a JSON object:
         # (session-366 track C): keep it in a local so the token meter below
         # charges the excerpt, not the raw result.
         _window_evidence = self._smart_excerpt(
-            step_result, self._der_evidence_cap(item.tool)
+            step_result, _step_evidence_cap(item)
         )
         step_outputs.append(_window_evidence)
         # Session 312 / Session-318 / Session-319: turn URL memory is harvested
@@ -19458,7 +19471,7 @@ Respond with a JSON object:
                 elif step_result:
                     _wm_note = (
                         f"[Step {item.step_number}: {item.description[:80]}]"
-                        f" {self._smart_excerpt(step_result, self._der_evidence_cap(item.tool))}"
+                        f" {self._smart_excerpt(step_result, _step_evidence_cap(item))}"
                     )
                 else:
                     _wm_note = ""

@@ -108,6 +108,10 @@ class ProviderWindow:
     ceiling_trajectory: Deque[tuple] = field(
         default_factory=lambda: collections.deque(maxlen=128)
     )
+    # True once the ceiling rests on evidence: a 429 seen, or a ceiling
+    # persisted from an earlier 429. Until then the ceiling is a GUESS
+    # (CEILING_INIT_RPM) and slow start raises it (record_request).
+    learned: bool = False
 
 
 def quota_key(inst: ProviderInstance) -> str:
@@ -212,6 +216,22 @@ class ProviderRateMeter:
             _w.samples.append(Sample(_now, int(tokens), bool(estimated), int(priority)))
             if label and label not in _w.label_ids:
                 _w.label_ids.append(label)
+            # Slow start. The additive increase above runs only AFTER a 429,
+            # so a provider that never rejected us stayed at the 30 rpm guess
+            # forever: a node loop of fast calls went over it and the gate
+            # held every later call 2 s (live 2026-10-04, mercury: 31 of 42
+            # calls held, 55 s of a 166 s turn; no 429 in any run). Until the
+            # first 429 (or a published limit), reaching the ceiling without
+            # a rejection doubles it; the hard rail still caps it.
+            if (not _w.learned and _w.advertised_rpm is None
+                    and len(_w.samples) >= _w.ceiling_rpm):
+                _cap = min(CEILING_MAX_RPM, _w.configured_max_rpm or CEILING_MAX_RPM)
+                _before = _w.ceiling_rpm
+                _w.ceiling_rpm = min(_w.ceiling_rpm * 2.0, _cap)
+                if _w.ceiling_rpm != _before:
+                    _w.ceiling_trajectory.append((_now, _w.ceiling_rpm))
+                    logger.info("[rate_meter] slow start quota=%s ceiling %.0f -> %.0f rpm "
+                                "(no 429 seen)", quota_id, _before, _w.ceiling_rpm)
 
     def gap_stats(self, quota_id: str) -> Dict[str, float]:
         """REQ-20 AC6 / REQ-22 AC6: inter-request gap statistics for a quota.
@@ -365,6 +385,7 @@ class ProviderRateMeter:
             if not _w.metered:
                 return
             _w.ceiling_rpm = max(CEILING_MIN_RPM, _w.ceiling_rpm * CEILING_MD)
+            _w.learned = True  # evidence: slow start ends, AIMD takes over
             _w.last_429_at = _perf_t.time()
             _w.count_429_in_window += 1
             # REQ-9 AC3 (T27): timestamp + trajectory change point for the
@@ -498,6 +519,7 @@ class ProviderRateMeter:
                         _w = self._new_window(_qid)
                         _w.ceiling_rpm = float(_v.get("ceiling_rpm", CEILING_INIT_RPM))
                         _w.ceiling_tpm = float(_v.get("ceiling_tpm", CEILING_INIT_TPM))
+                        _w.learned = True  # persisted only after a 429
                         self._windows[_qid] = _w
         except Exception as _e:  # pragma: no cover — corrupt file tolerated
             logger.debug("[rate_meter] ceilings load failed: %s", _e)
