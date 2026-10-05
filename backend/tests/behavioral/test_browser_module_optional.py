@@ -23,8 +23,13 @@ def test_der_step_loop_dispatches_generically():
     if-ladder. This is the seam REQ-17 pins and REQ-6 AC2 protects."""
     from backend.agent import agent_kernel
 
-    src = inspect.getsource(agent_kernel.AgentKernel._der_run_step_execution_async)
-    assert "execute_tool(" in src, "step execution must go through the generic bridge call"
+    # RETARGETED 2026-10-05: the async twin this read
+    # (_der_run_step_execution_async) had no production caller and was
+    # deleted with the dead semaphore executor (DER_DAG.md seam 3). The live
+    # step function dispatches through the one generic chokepoint,
+    # ToolDecisionBox.dispatch; the per-tool checks below are unchanged.
+    src = inspect.getsource(agent_kernel.AgentKernel._der_run_step_execution)
+    assert ".dispatch(" in src, "step execution must go through the generic dispatch call"
     # The dispatch itself must not select an executor by tool name.
     for forbidden in (
         'if item.tool == "crawler_query"',

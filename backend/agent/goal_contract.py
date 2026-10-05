@@ -256,13 +256,15 @@ def _step_text(step: object) -> str:
         return ""
     if isinstance(step, str):
         return step
+    # "description" last: the planner emits goals only (no expected_output),
+    # so without it no fact ever mapped to a step (r09: "3 omitted" every run).
     if isinstance(step, dict):
-        for _k in ("expected_output", "expected", "text", "summary"):
+        for _k in ("expected_output", "expected", "text", "summary", "description"):
             _v = step.get(_k)
             if _v:
                 return str(_v)
         return ""
-    for _k in ("expected_output", "expected", "text", "summary"):
+    for _k in ("expected_output", "expected", "text", "summary", "description"):
         _v = getattr(step, _k, None)
         if _v:
             return str(_v)

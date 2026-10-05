@@ -243,14 +243,27 @@ node mediator (S54), per-call evidence (S53), 5xx retry, reasoning-resend floor.
 Live 2026-10-05: r09 three-fact task 10/10 on the final DAG code; 15/15 coding + research
 tasks across gates 3-6.
 
-**Seams still open (known, not yet fixed):**
-1. Planner `expected_output` is never parsed → `map_to_steps` is inert, and a node step is
-   VERIFIED when a tool ran successfully (no expectation to compare).
-2. Node steps skip `_der_route_step_failure` and `_der_graft_missing_artifacts` (both read
-   `item.tool`), so the node router and missing-artifact grafts never act on node work.
-3. Dead code: `DirectorQueue.all_ready_items`, `_der_exec_steps_concurrent`
-   (`DER_MAX_CONCURRENT_STEPS`); `PHASE_DOMAINS.md` still names the old semaphore.
-4. The rec names in `der_loop.py` comments (CONTRACT/MAINTAIN) differ from the native names
-   (COMPRESS/CONTINUE).
-5. The reply model sometimes calls a found fact "missing" (2 of 25 r09 runs).
-6. `agent_kernel.py` is 22k lines; most of DER lives there (execution audit Phase 5).
+**Seams fixed 2026-10-05** (guard: `backend/tests/contract/test_der_dag_seams_contract.py`):
+1. *No expectation on planner steps.* The planner emits goals only (no `expected_output`,
+   a measured choice: fewer malformed plans). Node verification is therefore by outside
+   evidence: the node's own status, exit codes, and `_node_failed_after_change` (a node
+   that changed files and whose last run after that change failed is UNVERIFIED; a step
+   that only observes failing tests is not). Facts map to the planner step whose goal
+   names them (`map_to_steps` reads the description).
+2. *Node failures skipped two paths.* `_der_route_step_failure` routes on the node's failed
+   decisive call; `_der_graft_missing_artifacts` reads `_step_calls`, resolves file names in
+   the session's project folder, and skips files a queued step still names.
+3. *Dead code.* The semaphore executor (`_der_exec_steps_concurrent`,
+   `_der_run_step_execution_async`, `DER_MAX_CONCURRENT_STEPS`) is deleted;
+   `all_ready_items` is a read-only frontier view with the same COMPRESS fallback as
+   `next_ready`; `PHASE_DOMAINS.md` names the live phase domain.
+4. *Names.* `der_loop.py` uses the native rec names (EXPAND 0, COMPRESS 1, CONTINUE 2,
+   TOPO_VIOLATION 3).
+5. *Misread evidence.* When every required fact is covered (C = 1.0) but the reply says a
+   part is missing, the reply is written once more, told that every part has evidence
+   (`_claims_missing`).
+
+**Still open:**
+1. `agent_kernel.py` is ~22k lines; most of DER lives there (execution audit Phase 5).
+2. Facts without a name use own words or a passing run as evidence - weaker than names.
+3. True reply streaming waits for the turn protocol (execution audit Phase 3).

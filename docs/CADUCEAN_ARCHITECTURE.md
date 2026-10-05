@@ -419,7 +419,7 @@ deleted** for having been under-scheduled rather than for being bad.
 | Component | Lines | Status | Evidence |
 |---|---|---|---|
 | Rate-limit hardening (429 backoff, `Retry-After`, `RateLimitedError`, single retry authority) | — | **PROVEN** | `test_backoff_actually_sleeps`, `test_rate_limit_honesty` |
-| Bounded concurrent fan-out (`DER_MAX_CONCURRENT_STEPS = 3`) | — | **PROVEN** | `test_bounded_fanout`, CT-2 |
+| Bounded concurrent fan-out | — | **REPLACED** 2026-10-05 | the semaphore executor had no caller and was deleted; node starts run through the `execution.der_nodes` phase domain (S47, `contract/test_parallel_nodes_contract.py`) |
 | `param_homeostasis` | 376 | **PROVEN** | `validate_caducean_kernels` assertion 3 |
 | EML → retrieval breadth | — | **PROVEN** | anchor-reproduction tests |
 | `u` → decay modulation | — | **PROVEN** | wired via `run_maintenance` |

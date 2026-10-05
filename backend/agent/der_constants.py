@@ -202,7 +202,6 @@ def resolve_der_token_budget(context_window: int, task_class: Optional[str]) -> 
 DER_EMERGENCY_STOP    = 200   # cycle count emergency brake (last resort only)
 DER_MAX_VETO_PER_ITEM = 2     # max times Reviewer can veto one item before skip
 DER_MAX_GRAFTS        = 3     # max LLM recovery-plan grafts after critical failures
-DER_MAX_CONCURRENT_STEPS = 3  # max in-flight LLM calls per DER fan-out (semaphore)
 DER_MAX_CYCLES        = 40    # hard cycle cap (secondary to token budget)
 DER_WRITE_LOCK_TIMEOUT = 5.0  # seconds — Mycelium write lock timeout
 

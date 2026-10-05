@@ -202,7 +202,7 @@ trusting any table, including this one.
 | Priority lane / `call_context`     | **OFF**           | no enabling flag set in `.env` or `.env.local`                                                            |
 | `coupled_registry` (multi-session) | **OFF**           | `IRIS_COUPLING_ENABLED` defaults `"0"`, unset                                                             |
 | `batch_dispatch`                   | **OFF / untuned** | only tuning parameters, none set                                                                          |
-| `DER_MAX_CONCURRENT_STEPS = 3`     | **PROVEN**        | `test_bounded_fanout`, CT-2 — this one is **classical** (a semaphore), and it is the bound in force today |
+| `DER_MAX_CONCURRENT_STEPS = 3`     | **REMOVED** 2026-10-05 | the classical semaphore executor had no caller; DER node starts now run through the `execution.der_nodes` phase domain (S47) |
 
 Note the last row. The system currently runs **both**: a phase gate on the model path, and a  
 classical semaphore on the DER fan-out. They are not competitors. The semaphore bounds *how many  

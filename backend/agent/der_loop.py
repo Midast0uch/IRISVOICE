@@ -605,7 +605,7 @@ class DirectorQueue:
                    exclude=None) -> Optional[QueueItem]:
         """
         Next item whose dependencies are all completed.
-        Caducean-modulated: if Caducean signals CONTRACT, reduce queue depth.
+        Caducean-modulated: if Caducean signals COMPRESS, reduce queue depth.
         None if none ready. ``exclude``: step ids already running (parallel
         nodes) - ready, but not to be started twice.
         """
@@ -628,13 +628,13 @@ class DirectorQueue:
         if not ready_items:
             return None
 
-        # Caducean modulation: EXPAND=0, CONTRACT=1, MAINTAIN=2, TOPO_VIOLATION=3
+        # Caducean modulation: EXPAND=0, COMPRESS=1, CONTINUE=2, TOPO_VIOLATION=3
         try:
             from backend.gateway.iris_ffi import ffi_caducean_recommend
 
             rec = ffi_caducean_recommend(session_id)
         except Exception:
-            rec = 2  # MAINTAIN on error
+            rec = 2  # CONTINUE on error
 
         if rec == 3:  # TOPO_VIOLATION — stop the line
             from .exceptions import TopologyViolationException
@@ -644,22 +644,26 @@ class DirectorQueue:
                 direction_signal=None,
             )
 
-        if rec == 1:  # CONTRACT — return only critical items
+        if rec == 1:  # COMPRESS — return only critical items
             critical = [i for i in ready_items if i.critical]
             return critical[0] if critical else ready_items[0]
 
-        # EXPAND or MAINTAIN — return first ready
+        # EXPAND or CONTINUE — return first ready
         return ready_items[0]
 
     def all_ready_items(self, session_id: str = "default") -> List["QueueItem"]:
         """
-        Phase 4: return ALL items whose dependencies are satisfied and which
-        are not completed/vetoed. Drives concurrent execution of independent
-        (parallel_safe) steps in a single loop cycle.
+        Every item whose dependencies are satisfied and which is not
+        completed / vetoed / failed / split-pending: a read-only view of the
+        DAG's ready frontier. The scheduler does NOT call this - it starts
+        nodes one by one through ``next_ready(exclude=inflight)`` and the
+        ``execution.der_nodes`` phase domain (S47). Tests read the frontier
+        through it.
 
         Caducean modulation (same semantics as next_ready):
           - rec == 3 (TOPO_VIOLATION) → raise TopologyViolationException
-          - rec == 1 (CONTRACT) → return only critical items
+          - rec == 1 (COMPRESS) → only critical items; with none critical, the
+            first ready item (the item next_ready would return)
         """
         completed = set(self.completed_ids)
         ready_items: List["QueueItem"] = []
@@ -678,13 +682,13 @@ class DirectorQueue:
         if not ready_items:
             return []
 
-        # Caducean modulation: EXPAND=0, CONTRACT=1, MAINTAIN=2, TOPO_VIOLATION=3
+        # Caducean modulation: EXPAND=0, COMPRESS=1, CONTINUE=2, TOPO_VIOLATION=3
         try:
             from backend.gateway.iris_ffi import ffi_caducean_recommend
 
             rec = ffi_caducean_recommend(session_id)
         except Exception:
-            rec = 2  # MAINTAIN on error
+            rec = 2  # CONTINUE on error
 
         if rec == 3:  # TOPO_VIOLATION — stop the line
             from .exceptions import TopologyViolationException
@@ -694,9 +698,9 @@ class DirectorQueue:
                 direction_signal=None,
             )
 
-        if rec == 1:  # CONTRACT — only critical items are ready
+        if rec == 1:  # COMPRESS — only critical items are ready
             critical = [i for i in ready_items if i.critical]
-            return critical
+            return critical or ready_items[:1]
 
         return ready_items
 

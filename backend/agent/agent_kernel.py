@@ -337,6 +337,41 @@ def _step_decisive_call(item) -> Optional[dict]:
     return (failed or calls)[-1]
 
 
+_CLAIMS_MISSING_RE = re.compile(
+    r"\b(?:did\s+not|didn't|does\s+not|doesn't|do\s+not|could\s+not|couldn't|"
+    r"unable\s+to|failed\s+to|not\s+able\s+to)\b[^.\n]{0,60}?\b(?:include|return|"
+    r"contain|find|found|provide|verify|confirm|retrieve|give)\b"
+    r"|\bmissing\s+information\b|\bnot\s+(?:returned|found|included|available)\b",
+    re.IGNORECASE,
+)
+
+
+def _claims_missing(reply: str) -> bool:
+    """The reply says part of the answer is missing ("the tool results did not
+    include the height...", "failed to verify the year"). Module level
+    (stand-in kernels)."""
+    return bool(_CLAIMS_MISSING_RE.search(reply or ""))
+
+
+def _node_failed_after_change(item) -> bool:
+    """True when a node step changed files and the LAST command it ran after
+    its last change failed. A planner step carries no expected_output (the
+    planner emits goals only), so a node step was VERIFIED whenever its tool
+    calls ran - also when the tests it ran on its own edit failed. A step that
+    only OBSERVES failing tests (no change, eval c14) is not affected. Outside
+    evidence only: the call log, not text. Module level (stand-in kernels)."""
+    from backend.agent.node_executor import _CHANGE_TOOLS
+
+    log = getattr(item, "node_call_log", None)
+    if not isinstance(log, list):
+        return False
+    changes = [i for i, c in enumerate(log) if c.get("tool") in _CHANGE_TOOLS and c.get("ok", True)]
+    if not changes:
+        return False
+    runs = [c for c in log[changes[-1] + 1:] if c.get("tool") == "run_command"]
+    return bool(runs) and not runs[-1].get("ok", True)
+
+
 def _step_tool(item):
     """One tool name for readers that keep a single field (ledger, triage,
     card): the decisive call's tool; ``item.tool`` when no call ran yet."""
@@ -556,7 +591,6 @@ try:
         DER_MAX_CYCLES,
         DER_MAX_VETO_PER_ITEM,
         DER_MAX_GRAFTS,
-        DER_MAX_CONCURRENT_STEPS,
         DER_MAX_UNVERIFIED_REPROPOSE,
         DER_FOLD_BACK_MAX,
         DER_EMERGENCY_STOP,
@@ -13361,6 +13395,12 @@ Respond with a JSON object:
                 return None  # kill switch — today's path (REQ-7 AC4/AC5)
             tool = getattr(item, "tool", None)
             if not tool:
+                # A node step has no item.tool: route on the call that failed
+                # it (its decisive call, only when that call did fail). Before,
+                # every node failure skipped the node router (DER_DAG.md seam 2).
+                _dc = _step_decisive_call(item)
+                tool = _dc.get("tool") if _dc and not _dc.get("ok", True) else None
+            if not tool:
                 return None  # reasoning steps have no tool to route on
             spec = resolve_tool(tool)
             if spec is None:
@@ -15494,6 +15534,30 @@ Respond with a JSON object:
                     "[DER] success synthesis ran (REQ-12 AC1) — steps=%d",
                     len(completed_items),
                 )
+                # The goal contract proved every asked fact has evidence (each
+                # fact's own name in a VERIFIED result), yet the reply says a
+                # part is missing: the reply model misread its evidence (r09
+                # conv-834 / conv-884: "330 metres", "May 28, 1937" were in the
+                # new results). One more write, told that every part is there.
+                _gc_st = getattr(self, "_goal_contract_state", None)
+                if (isinstance(_gc_st, dict) and float(_gc_st.get("C", 0.0)) >= 1.0
+                        and _claims_missing(_syn_text)):
+                    _facts = list(getattr(_gc_st.get("contract"), "required", ()) or ())
+                    logger.warning(
+                        "[DER] reply claims a part is missing but all %d required facts "
+                        "have evidence — writing once more: %r",
+                        len(_facts), _syn_text[:140],
+                    )
+                    _task.user_message = (
+                        f"{plan.original_task}\n\n(CHECK: the tool results contain "
+                        "evidence for EVERY asked part: "
+                        + "; ".join(str(_f)[:120] for _f in _facts)
+                        + ". Find each one in the results - PRIOR RESEARCH lines "
+                        "count - and answer every part.)"
+                    )
+                    _again = (self._synthesize_response(_task, _step_results) or "").strip()
+                    if _again:
+                        _syn_text = _again
                 # Shield 4 (live 2026-09-25): the success summary must be an
                 # answer, not the model narrating its own tools. A report card
                 # opened with "The tool only returned a partial draft; it omitted
@@ -15541,12 +15605,16 @@ Respond with a JSON object:
         return out[:8]
 
     @staticmethod
-    def _artifact_missing(name: str) -> bool:
-        """True when the named artifact is absent, or present but empty."""
+    def _artifact_missing(name: str, base: str = "") -> bool:
+        """True when the named artifact is absent, or present but empty. A
+        relative name is resolved against ``base`` (the session's project
+        folder, where node steps write) when one is given."""
         try:
             from pathlib import Path
 
             p = Path(name)
+            if base and not p.is_absolute():
+                p = Path(base) / p
             return not (p.exists() and p.stat().st_size > 0)
         except OSError:
             return True
@@ -15569,10 +15637,23 @@ Respond with a JSON object:
         raises — a missed graft must not break the turn.
         """
         try:
-            _tool = str(getattr(item, "tool", "") or "").lower()
-            if _tool not in ("write_file", "create_directory", "edit_file", "append_file"):
+            # What the step DID (_step_calls), not item.tool: a node step has no
+            # tool, so this graft never ran on node work (DER_DAG.md seam 2).
+            if not any(
+                str(c.get("tool") or "").lower()
+                in ("write_file", "create_directory", "edit_file", "append_file")
+                and c.get("ok", True)
+                for c in _step_calls(item)
+            ):
                 return
             from backend.agent.der_constants import DER_MAX_GRAFTS
+
+            # Node steps write in the session's project folder, not the
+            # backend's working directory.
+            _base_dir = str(
+                (getattr(getattr(self, "_tool_bridge", None), "_session_workdirs", None) or {})
+                .get(_session, "") or ""
+            )
 
             _attempted = getattr(self, "_artifact_graft_attempted", None)
             if _attempted is None:
@@ -15582,9 +15663,19 @@ Respond with a JSON object:
                 return
             _task_text = str(getattr(plan, "original_task", "") or "")
             _text = " ".join([_task_text, str(getattr(item, "description", "") or "")])
+            _done = set(getattr(queue, "completed_ids", ()) or ()) | set(
+                getattr(queue, "failed_ids", ()) or ())
+            _queued_text = " ".join(
+                str(getattr(_it, "description", "") or "")
+                for _it in (getattr(queue, "items", []) or [])
+                if getattr(_it, "step_id", None) not in _done
+                and getattr(_it, "step_id", None) != getattr(item, "step_id", None)
+            )
             _missing = [
                 n for n in self._declared_file_names(_text)
-                if n not in _attempted and self._artifact_missing(n)
+                if n not in _attempted and self._artifact_missing(n, _base_dir)
+                # a step still in the queue names it: that step will write it
+                and n not in _queued_text
             ][: max(DER_MAX_GRAFTS - len(_attempted), 0)]
             if not _missing:
                 return
@@ -15592,11 +15683,11 @@ Respond with a JSON object:
             # ("each with one bullet about tea") and guarantees a body is written.
             _template = ""
             for _n in self._declared_file_names(_text):
-                if not self._artifact_missing(_n):
+                if not self._artifact_missing(_n, _base_dir):
                     try:
                         from pathlib import Path
 
-                        _template = Path(_n).read_text(
+                        _template = (Path(_base_dir) / _n if _base_dir else Path(_n)).read_text(
                             encoding="utf-8", errors="replace"
                         )[:200]
                     except OSError:
@@ -17518,11 +17609,9 @@ Respond with a JSON object:
                     # exception was caught one level deeper, so `result` is
                     # None, `_format_tool_result_for_step` yields "", and the
                     # step reported an EMPTY failure - the message never
-                    # reached the DER synthesis. The async twin
-                    # (_der_run_step_execution_async) calls the bridge directly
-                    # and DOES surface "[STEP ERROR: ...]", and the timeout
-                    # path above avoids this by putting its message in
-                    # `result`. Do the same here, using this function's own
+                    # reached the DER synthesis. The timeout path above avoids
+                    # this by putting its message in `result`. Do the same
+                    # here, using this function's own
                     # "[STEP ERROR: ...]" convention (see the outer except).
                     if not step_result:
                         _dr_err = getattr(_dr, "error", None)
@@ -17544,158 +17633,6 @@ Respond with a JSON object:
                 f"[DER] Step {item.step_number} explorer error: {_ex_err}"
             )
         return step_result, step_success
-
-    async def _der_run_step_execution_async(
-        self,
-        item: "QueueItem",
-        context_package,
-        _session: str,
-        _turn_id: Optional[str],
-        plan,
-    ) -> tuple:
-        """
-        Phase 4: async variant of _der_run_step_execution for concurrent gather.
-        Awaits execute_tool directly (no nested asyncio.run). Returns
-        (step_id, step_result, step_success).
-        """
-        step_result = ""
-        step_success = True
-        try:
-            if item.tool and self._tool_bridge is not None:
-                # pin_42ddd255162d: render tools need the conversation
-                # registry on the bridge; DER paths never received it.
-                try:
-                    self._tool_bridge._active_conversation_id[_session] = (
-                        self.conversation_id or ""
-                    )
-                except Exception:
-                    pass
-                self.mark_external_tool(item.tool)
-                # Session-318 T18 (REQ-11 AC11.1/AC11.3): real enforcement —
-                # wait_for CANCELS the coroutine on expiry (no orphan).
-                try:
-                    _deadline_a = self._der_tool_deadline(item.tool)
-                except Exception:
-                    _deadline_a = 90.0
-                try:
-                    item.dispatch_started_at = __import__("time").monotonic()
-                except Exception:
-                    pass
-                try:
-                    import asyncio as _aio_async_dl
-                    raw = await _aio_async_dl.wait_for(
-                        self._tool_bridge.execute_tool(
-                            tool_name=item.tool,
-                            params=item.params,
-                            session_id=_session,
-                            plan_title=plan.plan_title if plan else "",
-                        ),
-                        timeout=_deadline_a,
-                    )
-                except _aio_async_dl.TimeoutError:
-                    _timeout_text_a = (
-                        f"[STEP TIMEOUT after {_deadline_a:g}s "
-                        f"(deadline {_deadline_a:g}s) — tool "
-                        f"{item.tool} did not settle; continuing without it.]"
-                    )
-                    logger.warning(
-                        "[DER] async step %d tool %r timed out (deadline %.0fs)",
-                        item.step_number, item.tool, _deadline_a,
-                    )
-                    try:
-                        item.timed_out = True
-                    except Exception:
-                        pass
-                    try:
-                        from backend.agent.write_counters import bump as _bump_adlh
-                        _bump_adlh("envelope.deadline_hits")
-                    except Exception:
-                        pass
-                    raw = {"success": False, "error": _timeout_text_a,
-                           "error_type": "timeout"}
-                step_result = self._format_tool_result_for_step(raw, item.tool) if raw is not None else ""
-                if isinstance(raw, dict) and raw.get("success") is False:
-                    step_success = False
-                # REQ-18 AC5 (T31): correlate every browser navigation with its
-                # target surface (in-app for the T27-routed tools) + job_id/HAR.
-                if item.tool in ("open_url", "search", "web_search"):
-                    try:
-                        from backend.agent.der_trace import get_der_trace
-
-                        _nav = raw if isinstance(raw, dict) else {}
-                        # T13 (REQ-18 AC5): discriminator — a job_id means the
-                        # page was crawled and is served from the CAPTURE
-                        # REPLAY endpoint; without one the panel must fall back
-                        # to the live PROXY. Both paths surface=in-app; the
-                        # discriminator is what separates replay evidence from
-                        # live fetch.
-                        _via = "replay" if _nav.get("job_id") else "proxy"
-                        get_der_trace(self._der_trace_task_id()).record(
-                            "navigation",
-                            tool=item.tool,
-                            surface="in-app",
-                            via=_via,
-                            url=(
-                                _nav.get("url") or _nav.get("query")
-                                or (item.params or {}).get("url", "")
-                            ),
-                            job_id=_nav.get("job_id"),
-                            har_path=_nav.get("har_path"),
-                        )
-                    except Exception:
-                        pass
-                if item.tool:
-                    self._der_note_quick_tier(item.tool, raw)
-                if item.tool and raw is not None:
-                    try:
-                        item.captured_doc_id = self._capture_tool_result(
-                            item.tool, raw, self.conversation_id, _turn_id, _session
-                        )
-                    except Exception as _cap_err:
-                        logger.warning(
-                            "[DER] tool-result capture failed: %s", _cap_err
-                        )
-            else:
-                loop = asyncio.get_event_loop()
-                step_result = await loop.run_in_executor(
-                    None, self._run_step_direct, item, context_package, _session
-                )
-        except Exception as _ex_err:
-            step_success = False
-            step_result = f"[STEP ERROR: {_ex_err}]"
-            logger.warning(
-                f"[DER] Step {item.step_number} explorer error: {_ex_err}"
-            )
-        return item.step_id, step_result, step_success
-
-    async def _der_exec_steps_concurrent(
-        self,
-        items: list,
-        context_package,
-        _session: str,
-        _turn_id: Optional[str],
-        plan,
-    ) -> dict:
-        """
-        Phase 4: run multiple parallel_safe steps concurrently.
-        Returns {step_id: (step_result, step_success)}.
-
-        Concurrency is bounded by a semaphore (DER_MAX_CONCURRENT_STEPS) so a
-        wide split cannot open unbounded parallel LLM calls (REQ-6). The
-        semaphore is created per-call (not shared across turns) to avoid
-        cross-session state and to respect the per-fan-out bound.
-        """
-        _sem = asyncio.Semaphore(DER_MAX_CONCURRENT_STEPS)
-
-        async def _bounded(it):
-            async with _sem:
-                return await self._der_run_step_execution_async(
-                    it, context_package, _session, _turn_id, plan
-                )
-
-        tasks = [_bounded(it) for it in items]
-        _completed = await asyncio.gather(*tasks)
-        return {_sid: (_res, _succ) for _sid, _res, _succ in _completed}
 
     # ── DER Phase 0: verification (stub-kill + coarsened outcome) ──────────────
     # SemanticVerifier instance — lazy-init so import at module level is safe.
@@ -18917,6 +18854,12 @@ Respond with a JSON object:
             tool=_step_tool(item),
             success=step_success,
         )
+        if _verified == "VERIFIED" and _node_failed_after_change(item):
+            _verified = "UNVERIFIED"
+            logger.info(
+                "[DER] step %s UNVERIFIED: it changed files and its last run after "
+                "the change failed", getattr(item, "step_id", "?"),
+            )
         if _verified == "FAILED":
             step_success = False
 

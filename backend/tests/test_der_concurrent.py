@@ -52,32 +52,6 @@ class _FakeKernel(AgentKernel):
         return f"direct:{item.step_number}"
 
 
-def test_der_exec_steps_concurrent_runs_all():
-    fake = _FakeKernel()
-
-    async def _fake_exec(tool_name=None, params=None, session_id=None, plan_title=None,
-                         decision_meta=None, _skip_resilience=False):
-        await asyncio.sleep(0.02)
-        return f"result-for-{tool_name}"
-
-    fake._bridge.execute_tool = _fake_exec
-
-    items = [
-        QueueItem(step_id="s1", step_number=1, description="a", tool="search",
-                  parallel_safe=True),
-        QueueItem(step_id="s2", step_number=2, description="b", tool="read_file",
-                  parallel_safe=True),
-    ]
-    result = fake._der_exec_steps_concurrent(items, None, "sess", "t", None)
-    # _der_exec_steps_concurrent is a coroutine — drive it
-    result = asyncio.run(result)
-    assert set(result.keys()) == {"s1", "s2"}
-    assert result["s1"][0] == "result-for-search"
-    assert result["s2"][0] == "result-for-read_file"
-    assert result["s1"][1] is True
-    assert result["s2"][1] is True
-
-
 def test_der_run_step_execution_serial_tool():
     fake = _FakeKernel()
 
