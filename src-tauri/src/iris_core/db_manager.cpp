@@ -174,16 +174,46 @@ bool DBManager::is_healthy() {
 // transaction (one WAL append + one lock acquisition instead of one per row).
 // Each task's own result is kept: a failed statement is undone by SQLite
 // (statement-level rollback) while the rest of the batch commits.
+// Checkpoint OFF the commit path: an auto-checkpoint inside a commit copied
+// WAL pages to the database file and put 0.8-1.4 s on a group commit on this
+// hard disk (live 2026-10-04). The writer checkpoints (PASSIVE) when idle, or
+// after a batch once CKPT_FORCE_S passed, so the WAL stays bounded.
+static void writer_checkpoint(sqlite3* db) {
+    auto t0 = std::chrono::steady_clock::now();
+    int log_frames = 0, ckpt_frames = 0;
+    sqlite3_wal_checkpoint_v2(db, nullptr, SQLITE_CHECKPOINT_PASSIVE, &log_frames, &ckpt_frames);
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - t0).count();
+    if (ms >= 500) {
+        std::cerr << "[DB] checkpoint " << ms << " ms (" << ckpt_frames << "/"
+                  << log_frames << " frames)" << std::endl;
+    }
+}
+
 void DBManager::run_writer_loop() {
+    constexpr int CKPT_IDLE_S = 30, CKPT_FORCE_S = 120;
+    sqlite3_exec(writer_db_, "PRAGMA wal_autocheckpoint = 0;", nullptr, nullptr, nullptr);
+    auto last_ckpt = std::chrono::steady_clock::now();
+    bool dirty = false;
     while (true) {
         std::vector<WriteTask> batch;
         {
             std::unique_lock<std::mutex> lock(queue_mutex_);
-            queue_cv_.wait(lock, [this]() {
+            queue_cv_.wait_for(lock, std::chrono::seconds(5), [this]() {
                 return !writer_running_.load() || !write_queue_.empty();
             });
 
             if (!writer_running_.load() && write_queue_.empty()) break;
+            if (write_queue_.empty()) {  // idle: the time to checkpoint
+                lock.unlock();
+                auto idle = std::chrono::steady_clock::now() - last_ckpt;
+                if (dirty && idle >= std::chrono::seconds(CKPT_IDLE_S)) {
+                    writer_checkpoint(writer_db_);
+                    last_ckpt = std::chrono::steady_clock::now();
+                    dirty = false;
+                }
+                continue;
+            }
 
             while (!write_queue_.empty() && batch.size() < MAX_BATCH) {
                 batch.push_back(std::move(write_queue_.front()));
@@ -192,8 +222,15 @@ void DBManager::run_writer_loop() {
             in_flight_ = batch.size();
         }
 
+        auto tb = std::chrono::steady_clock::now();
         bool in_tx = batch.size() > 1 &&
             sqlite3_exec(writer_db_, "BEGIN IMMEDIATE;", nullptr, nullptr, nullptr) == SQLITE_OK;
+        auto bms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - tb).count();
+        if (bms >= 200) {  // another connection held the write lock
+            std::cerr << "[DB] slow begin " << bms << " ms (" << batch.size()
+                      << " tasks waiting)" << std::endl;
+        }
 
         std::vector<int> results(batch.size(), SQLITE_ERROR);
         std::vector<std::exception_ptr> errors(batch.size());
@@ -207,7 +244,14 @@ void DBManager::run_writer_loop() {
 
         bool committed = true;
         if (in_tx) {
+            auto tc = std::chrono::steady_clock::now();
             int rc = sqlite3_exec(writer_db_, "COMMIT;", nullptr, nullptr, nullptr);
+            auto cms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - tc).count();
+            if (cms >= 500) {
+                std::cerr << "[DB] slow group commit " << cms << " ms ("
+                          << batch.size() << " tasks)" << std::endl;
+            }
             if (rc != SQLITE_OK) {
                 std::cerr << "[DB] group commit failed (" << batch.size() << " tasks): "
                           << sqlite3_errmsg(writer_db_) << std::endl;
@@ -231,6 +275,12 @@ void DBManager::run_writer_loop() {
             in_flight_ = 0;
         }
         idle_cv_.notify_all();
+        dirty = true;
+        if (std::chrono::steady_clock::now() - last_ckpt >= std::chrono::seconds(CKPT_FORCE_S)) {
+            writer_checkpoint(writer_db_);  // a queue that is never idle
+            last_ckpt = std::chrono::steady_clock::now();
+            dirty = false;
+        }
     }
 }
 

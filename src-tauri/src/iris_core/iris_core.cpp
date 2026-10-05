@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <algorithm>
+#include <chrono>
 #include <string>
 #include <vector>
 #include <sqlite3.h>
@@ -557,8 +558,15 @@ extern "C" IRIS_API int db_submit_write(const char* sql, int n_params, const int
                     default: sqlite3_bind_null(stmt, idx); break;
                 }
             }
+            auto t0 = std::chrono::steady_clock::now();
             int rc = sqlite3_step(stmt);
             sqlite3_reset(stmt);
+            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - t0).count();
+            if (ms >= 200) {  // a slow statement holds every queued write behind it
+                std::cerr << "[DB] slow write " << ms << " ms sql="
+                          << sql_s.substr(0, 140) << std::endl;
+            }
             if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
                 std::cerr << "[DB] write failed: " << sqlite3_errmsg(conn)
                           << " sql=" << sql_s.substr(0, 120) << std::endl;
