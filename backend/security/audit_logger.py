@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import asyncio
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -115,8 +116,13 @@ class SecurityAuditLogger:
             "violations_count": 0
         }
         
-        # Async lock for thread safety
-        self._lock = asyncio.Lock()
+        # A THREAD lock: the tool bridge's one logger is used from many event
+        # loops (each DER node thread runs its tool calls under asyncio.run).
+        # An asyncio.Lock binds to the first loop that waits on it, so two
+        # parallel nodes crashed every tool call ("bound to a different event
+        # loop") or hung it to its 60 s timeout (live 2026-10-04, c03). The
+        # sections it guards never await, so a thread lock is exact.
+        self._lock = threading.Lock()
     
     def _setup_loggers(self):
         """Set up structured loggers"""
@@ -287,7 +293,7 @@ class SecurityAuditLogger:
     
     async def _log_event(self, event: AuditEvent):
         """Internal method to log an event"""
-        async with self._lock:
+        with self._lock:
             # Add to buffer
             self._event_buffer.append(event)
             
@@ -298,8 +304,8 @@ class SecurityAuditLogger:
             # Update statistics
             self._update_stats(event)
             
-            # Write to appropriate log file
-            await self._write_event_to_log(event)
+        # Write to appropriate log file (outside the lock: no await under it)
+        await self._write_event_to_log(event)
     
     async def _write_event_to_log(self, event: AuditEvent):
         """Write event to appropriate log file"""
@@ -360,7 +366,7 @@ class SecurityAuditLogger:
     ) -> List[AuditEvent]:
         """Retrieve audit trail with filtering options"""
         
-        async with self._lock:
+        with self._lock:
             events = self._event_buffer.copy()
         
         # Apply filters
@@ -396,7 +402,7 @@ class SecurityAuditLogger:
     
     async def get_security_analytics(self) -> Dict[str, Any]:
         """Get security analytics and statistics"""
-        async with self._lock:
+        with self._lock:
             total_events = self._stats["events_total"]
             
             if total_events == 0:
@@ -424,7 +430,7 @@ class SecurityAuditLogger:
     
     async def detect_anomalies(self) -> List[Dict[str, Any]]:
         """Detect security anomalies in recent events"""
-        async with self._lock:
+        with self._lock:
             recent_events = self._event_buffer[-100:]  # Last 100 events
         
         anomalies = []
