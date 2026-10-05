@@ -966,45 +966,6 @@ class VoiceCommandHandler:
             self._whisper_loading = False
         return self._whisper
 
-    @staticmethod
-    def prewarm_files(timeout_s: float = 1800.0) -> bool:
-        """Read the Whisper import into the OS file cache in a CHILD process at
-        idle CPU and very low I/O priority, so the backend's own import (in
-        warm_up) is seconds, not minutes. Live 2026-10-04 after a sleep: the
-        cold in-process import ran ~7.5 min on this HDD, overlapped two live
-        turns and held Oracle decisions 34-38 s; a child holds none of the
-        backend's locks and yields the disk. True when the child finished."""
-        import subprocess
-
-        code = ("import sys, types\n"
-                f"for n in {_CT2_CONVERSION_MODULES!r}: sys.modules.setdefault(n, types.ModuleType(n))\n"
-                "import faster_whisper\n")
-        flags = (0x08000000 | 0x00000040) if os.name == "nt" else 0  # no window, IDLE class
-        t0 = time.monotonic()
-        try:
-            proc = subprocess.Popen([sys.executable, "-c", code], stdin=subprocess.DEVNULL,
-                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                    creationflags=flags)
-        except Exception as exc:  # noqa: BLE001 - the in-process import still works
-            logger.info("[VoiceCommand] whisper file prewarm not started: %r", exc)
-            return False
-        try:
-            import psutil
-
-            psutil.Process(proc.pid).ionice(getattr(psutil, "IOPRIO_VERYLOW", 0))
-        except Exception as exc:  # noqa: BLE001 - priority is a courtesy
-            logger.debug("[VoiceCommand] prewarm ionice skipped: %r", exc)
-        try:
-            rc = proc.wait(timeout=timeout_s)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            logger.info("[VoiceCommand] whisper file prewarm still running after %.0fs - stopped",
-                        timeout_s)
-            return False
-        logger.info("[VoiceCommand] whisper files prewarmed in %.1fs (rc=%s)",
-                    time.monotonic() - t0, rc)
-        return rc == 0
-
     def warm_up(self) -> None:
         """
         Pre-load the Whisper model and run one silent inference in a daemon

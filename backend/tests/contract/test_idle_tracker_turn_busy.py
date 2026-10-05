@@ -76,11 +76,15 @@ def test_every_turn_entry_is_busy():
     assert t._in_flight == 0, "busy() must release when the turn raises"
 
 
-def test_whisper_warm_up_waits_for_idle():
+def test_boot_prewarm_waits_for_idle():
+    # RETARGETED 2026-10-05 (owner decision: Whisper is the fallback only and
+    # gets no warm-up). The boot job that replaced it - the Parakeet file
+    # pre-read - must keep the same rule: no disk work while a turn runs.
     src = (_BACKEND / "main.py").read_text(encoding="utf-8", errors="replace")
+    assert "_delayed_whisper_warm_up" not in src
     fn = next(
         n for n in ast.walk(ast.parse(src))
-        if isinstance(n, ast.FunctionDef) and n.name == "_delayed_whisper_warm_up"
+        if isinstance(n, ast.FunctionDef) and n.name == "_delayed_parakeet_prewarm"
     )
     body = ast.unparse(fn)
     assert "is_idle(" in body, "the warm-up must wait for no turn in flight"

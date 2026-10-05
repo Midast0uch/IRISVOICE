@@ -296,54 +296,42 @@ async def lifespan(app: FastAPI):
             logger.error(f"    [x] [VOICE HANDLER] Failed to create: {e}")
             raise
 
-        # REQ-1 AC1.2: NO Parakeet pre-load at boot. Previously this scheduled
-        # _preload_parakeet(), which called voice_handler._parakeet._ensure_loaded()
-        # and paid the CUDA warm-up inference at startup — adding ~4.2 GB to the
-        # boot-time idle footprint. Parakeet now builds LAZILY on the first voice
-        # command: faster-whisper serves utterance 1 while the recognizer builds
-        # in the background, then Parakeet takes over on GPU.
-        # The recognizer also idle-releases after 20 min of no requests.
-
-        # 2026-09-03 FIX (watchdog ERROR on cold first speech): warm
-        # faster-whisper in the BACKGROUND after boot, not on first use.
-        # Measured on this box: `import ctranslate2` alone costs ~126 s cold
-        # on HDD and runs ON the transcription thread — the 60 s watchdog
-        # fires, the orb shows ERROR, and the utterance is lost (the old
-        # "loads in ~1-2 s" assumption only holds warm). Delayed 90 s so boot
-        # + Next.js compilation finish first (the original OOM-race concern);
-        # daemon thread, never blocks startup; warm_up() no-ops if loaded.
-        # 2026-10-01: a fixed +90 s landed INSIDE the first turn (eval c01):
-        # the HDD import held that turn's first pytest for 220 s. Now: at
-        # least 90 s after boot AND 20 s with no turn in flight (IdleTracker
-        # .busy() covers the whole turn, not only the arriving message).
-        def _delayed_whisper_warm_up(_handler=voice_handler):
+        # REQ-1 AC1.2: NO Parakeet model load at boot (it added ~4.2 GB to the
+        # idle footprint). Parakeet builds LAZILY at the first wake word; the
+        # recognizer idle-releases after 20 min of no requests.
+        # History: 2026-09-03..10-04 a background faster-whisper warm-up covered
+        # the first utterance (cold `import ctranslate2` ~126 s on this HDD hit
+        # the 60 s watchdog); it waited for 90 s + 20 s idle (eval c01 lost
+        # 220 s to it once) and pre-read its files in a low-priority child.
+        # 2026-10-05 (owner): Whisper is the FALLBACK only - no warm-up. The
+        # first voice command already starts Parakeet at the wake word and
+        # waits up to 25 s for it; Whisper loads only if Parakeet fails. The
+        # Whisper warm-up once took 22 min under disk load (its child yields
+        # the disk) and the eval gate waited on it. What the first command
+        # needs is Parakeet's files warm: read them at idle in a low-priority
+        # child (no model built, nothing held in IRIS memory).
+        def _delayed_parakeet_prewarm():
             try:
                 import time as _t
+                from backend.audio import parakeet_sherpa as _ps
                 from backend.core.idle_tracker import get_idle_tracker as _git
 
                 _t.sleep(90)
                 while not _git().is_idle(threshold_s=20.0):
                     _t.sleep(5)
-                # 2026-10-04: the cold import itself (~7.5 min on HDD after a
-                # sleep) still landed inside turns - the idle check runs once,
-                # before it. Read the files in a low-priority child first; the
-                # in-process import below is then seconds.
-                _handler.prewarm_files()
-                while not _git().is_idle(threshold_s=20.0):
-                    _t.sleep(5)
-                _handler.warm_up()
+                _ps.prewarm_files()
             except Exception as _w_exc:
                 logger.warning(
-                    f"    [x] [VOICE HANDLER] background whisper warm-up failed: {_w_exc}"
+                    f"    [x] [VOICE HANDLER] Parakeet file pre-read failed: {_w_exc}"
                 )
 
         import threading as _threading
-        _whisper_warm_thread = _threading.Thread(
-            target=_delayed_whisper_warm_up, daemon=True, name="iris-whisper-warmup"
-        )
-        _whisper_warm_thread.start()
+        _threading.Thread(
+            target=_delayed_parakeet_prewarm, daemon=True, name="iris-parakeet-prewarm"
+        ).start()
         logger.info(
-            "    [+] [VOICE HANDLER] faster-whisper background warm-up scheduled (+90 s, then 20 s idle)"
+            "    [+] [VOICE HANDLER] Parakeet file pre-read scheduled (+90 s, then 20 s idle); "
+            "faster-whisper loads only if Parakeet fails"
         )
 
         # ==========================================================================
@@ -522,8 +510,8 @@ async def lifespan(app: FastAPI):
             f"  - [AUDIO DIAG] Wake word: {'READY' if audio_engine._wake_detector_initialized else 'DISABLED'} | "
             f"Pipeline: {'RUNNING' if audio_engine._is_running else 'STOPPED'} | "
             f"Voice handler: {'WIRED' if voice_handler.is_recording is False else 'RECORDING'} | "
-            f"Whisper: {'READY' if voice_handler._whisper is not None else 'PRE-WARMING'} | "
-            f"Parakeet: {'READY' if voice_handler._parakeet._loaded else 'PRE-WARMING'}"
+            f"Parakeet: {'READY' if voice_handler._parakeet._loaded else 'LOADS AT FIRST WAKE WORD'} | "
+            f"Whisper: {'READY' if voice_handler._whisper is not None else 'FALLBACK (not loaded)'}"
         )
         logger.debug(
             "  - Audio subsystem ready for wake word detection and voice processing"

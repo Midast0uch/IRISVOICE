@@ -109,6 +109,71 @@ def torch_lib_dir() -> Optional[str]:
     return _torch_lib_dir()
 
 
+# Read Parakeet's cold-start files (the sherpa import, the int8 model, the
+# cuDNN/cuBLAS DLLs the CUDA provider loads) into the OS file cache. No model
+# is built and nothing stays in IRIS memory; the cache is the OS's to drop.
+_PREWARM_CODE = (
+    "import os\n"
+    "from backend.audio import parakeet_sherpa as p\n"
+    "p.ensure_dll_path()\n"
+    "import sherpa_onnx\n"
+    "paths = [p.ENCODER, p.DECODER, p.JOINER, p.TOKENS]\n"
+    "d = p.torch_lib_dir()\n"
+    "if d:\n"
+    "    paths += [os.path.join(d, f) for f in os.listdir(d)\n"
+    "              if f.lower().startswith(('cudnn', 'cublas')) and f.lower().endswith('.dll')]\n"
+    "for x in paths:\n"
+    "    try:\n"
+    "        with open(x, 'rb') as fh:\n"
+    "            while fh.read(1 << 22):\n"
+    "                pass\n"
+    "    except OSError:\n"
+    "        pass\n"
+)
+
+
+def prewarm_files(timeout_s: float = 1800.0) -> bool:
+    """Pre-read Parakeet's files in a CHILD process at idle CPU and very low
+    I/O priority, so the first voice command's recognizer build (lazy, on the
+    first wake word; 17-22 s warm) is not a cold-disk read on this HDD.
+
+    Replaces the boot-time Whisper warm-up (owner 2026-10-05: Whisper is the
+    FALLBACK only and gets no warm-up; once it took 22 min under disk load and
+    held the eval gate). Logs one "[ParakeetSherpa] file pre-read ..." line
+    whatever happens. True when the child finished."""
+    import subprocess
+    import sys
+    import time
+
+    t0 = time.monotonic()
+    if not model_files_present():
+        logger.info("[ParakeetSherpa] file pre-read skipped: model files not present")
+        return False
+    flags = (0x08000000 | 0x00000040) if os.name == "nt" else 0  # no window, IDLE class
+    try:
+        proc = subprocess.Popen([sys.executable, "-c", _PREWARM_CODE], cwd=str(_PROJECT_DIR),
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, creationflags=flags)
+    except Exception as exc:  # noqa: BLE001 - the lazy build still works, only colder
+        logger.info("[ParakeetSherpa] file pre-read not started: %r", exc)
+        return False
+    try:
+        import psutil
+
+        psutil.Process(proc.pid).ionice(getattr(psutil, "IOPRIO_VERYLOW", 0))
+    except Exception as exc:  # noqa: BLE001 - priority is a courtesy
+        logger.debug("[ParakeetSherpa] pre-read ionice skipped: %r", exc)
+    try:
+        rc = proc.wait(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        logger.info("[ParakeetSherpa] file pre-read stopped after %.0fs", timeout_s)
+        return False
+    logger.info("[ParakeetSherpa] file pre-read done in %.1fs (rc=%s)",
+                time.monotonic() - t0, rc)
+    return rc == 0
+
+
 def ensure_dll_path() -> None:
     """Put torch's bundled cuDNN on the Windows DLL search path (best-effort).
 

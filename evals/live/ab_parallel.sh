@@ -11,8 +11,14 @@ for ARM in "$@"; do
   for i in $(seq 1 150); do
     [ "$(curl -s -m 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:8090/health)" = "200" ] && break; sleep 5
   done
-  L=$(ls -t .iris-logs/backend-*.log | head -1)
-  until grep -aq "Whisper warm-up complete" "$L"; do sleep 5; done
+  # Keep the disk quiet during the runs: wait for the boot-time Parakeet file
+  # pre-read (Whisper is a fallback with no warm-up since 2026-10-05), at most
+  # 10 min - the old unbounded wait on Whisper held a gate 22 min.
+  L=$(ls -t .iris-logs/backend-*-pid*.log | head -1)
+  for i in $(seq 1 120); do
+    grep -aqE "file pre-read (done|skipped|stopped|not started)|Parakeet file pre-read failed" "$L" && break
+    sleep 5
+  done
   python evals/live/bind.py reasoning inceptionlabs mercury-2.5 >/dev/null
   python evals/live/bind.py tool_execution inceptionlabs mercury-2 >/dev/null
   python evals/live/web_on.py >/dev/null
