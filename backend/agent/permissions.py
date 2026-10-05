@@ -146,6 +146,10 @@ _READ_ONLY_TOOLS: set = {
     # killed the @taskcard follow-up run (conv-40). get_rendered_documents
     # stays gated: it returns thread CONTENT, not just an index.
     "list_conversations",
+    # create_artifact writes ONLY the app's own document store and puts a card
+    # in the chat (reply-surface audit, Phase A): nothing on the user's disk or
+    # machine changes, so it must never raise a permission card.
+    "create_artifact",
 }
 
 # Tools that modify local state — side effects but reversible
@@ -348,6 +352,9 @@ _DESTRUCTIVE_PARAM_PATTERNS: List[str] = [
 _CONTENT_PARAM_KEYS: frozenset = frozenset({
     "content", "contents", "text", "body", "data", "code", "markdown", "html",
     "new", "old", "new_string", "old_string", "message", "summary", "description",
+    # A card title is a label for written data, like a summary: "Format of the
+    # report" must not read as the destructive pattern "format ".
+    "title",
 })
 
 # Goal contract T18 (REQ-9 AC9.6): deletion/removal COMMAND forms. These are

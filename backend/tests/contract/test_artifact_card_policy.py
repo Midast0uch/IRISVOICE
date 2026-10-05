@@ -23,7 +23,6 @@ from backend.agent.artifact_policy import (
     card_warranted,
     clear_card_gate_for_testing,
     is_artifact_ask,
-    is_artifact_document,
     suppress_card_for_turn,
     tool_step_count,
 )
@@ -99,7 +98,6 @@ def test_the_live_turn_that_prompted_the_bound_earns_no_card():
     steps = [_Step("write_file"), _Step("read_file")]
     assert not card_warranted(steps, task)
     assert not is_artifact_ask(task)
-    assert not is_artifact_document("- one\n- two\n- three")
 
 
 # ── the artifact bound: markdown documents and reports only ────────────────
@@ -118,22 +116,6 @@ def test_report_and_document_asks_are_artifact_asks():
     # A document ask NEVER earns a card, however many tools it takes.
     many = [_Step("web_search"), _Step("write_file"), _Step("read_file"), _Step("edit_file")]
     assert not card_warranted(many, "write a detailed report on the top 5 AI chip startups")
-
-
-def test_artifact_document_needs_a_document_shape():
-    assert is_artifact_document("# Sleep hygiene\n\nBody paragraph.")
-    assert is_artifact_document("| a | b |\n| - | - |\n| 1 | 2 |")
-    assert is_artifact_document("```python\nprint('hi')\n```")
-    # Notes and lists are conversation, not artifacts (owner bound).
-    assert not is_artifact_document("- Sleep helps memory.\n- Keep a schedule.")
-    assert not is_artifact_document("1. one\n2. two")
-    # ANY heading level counts as a document shape: a report uses H2s. The TITLE
-    # rule is separate and still prefers an H1 (card_title_from_content).
-    assert is_artifact_document("## A section heading\n\nprose.")
-    assert not is_artifact_document("no heading here, just prose\nand more prose")
-    assert not is_artifact_document("Just a sentence.")
-    assert not is_artifact_document("")
-
 
 
 # ── the turn-scoped gate ───────────────────────────────────────────────────
@@ -320,78 +302,6 @@ def test_a_leading_narration_paragraph_is_dropped_when_an_answer_follows():
     assert strip_leading_narration(single) == single
     lead_only = "Need to call read_file for the three files."
     assert strip_leading_narration(lead_only) == lead_only
-
-
-def test_a_report_without_a_heading_is_still_an_artifact():
-    """Live 2026-09-25: a 250-word report with bold lead-ins and bullets, NO
-    heading, stayed a scrolling bubble. The ask was a report and the body is a
-    report, so it must become a card — the rule is about TYPE, not shape."""
-    from backend.agent.artifact_policy import is_substantial_markdown
-
-    body = (
-        "**Overview** The water cycle moves water between land, sea and sky.\n\n"
-        "- Evaporation lifts water as vapour.\n- Condensation forms clouds.\n"
-        "- Precipitation returns it to the surface.\n\n" + "More prose here. " * 40
-    )
-    assert is_substantial_markdown(body)
-    # A short answer to the same ask is not a report.
-    assert not is_substantial_markdown("Here you go!")
-    # A long CHAT answer with no markdown structure is not a report either.
-    assert not is_substantial_markdown("word " * 200)
-
-
-def test_card_title_prefers_heading_then_ask_then_first_line():
-    """Owner 2026-09-25: labels must be unique to the artifact."""
-    from backend.agent.artifact_policy import card_title_for
-
-    assert card_title_for("# Real Title\nbody", "write a report on X") == "Real Title"
-    assert card_title_for(
-        "**Overview** The water cycle...",
-        "write a markdown report about the water cycle, around 250 words",
-    ) == "Markdown Report About The Water Cycle"
-    assert card_title_for("The water cycle is a process.", "") == \
-        "The water cycle is a process."
-
-
-def test_title_from_ask_names_the_card_when_the_body_has_no_heading():
-    """A report body with no H1 still gets a real label (owner: title labels)."""
-    from backend.agent.artifact_policy import title_from_ask
-
-    assert title_from_ask("write a markdown report about the water cycle, around 250 words") == \
-        "Markdown Report About The Water Cycle"
-    assert title_from_ask("draft a detailed report on the top 5 AI chip startups").startswith(
-        "Detailed Report"
-    )
-    assert title_from_ask("") == "Document"
-
-
-def test_a_report_without_a_heading_is_still_a_document():
-    """The water-cycle report: bold lead-ins and bullets, no heading.
-
-    It stayed a scrolling bubble because the shape test wanted a heading. The
-    owner's line is about TYPE: a report is an artifact.
-    """
-    from backend.agent.artifact_policy import is_substantial_markdown
-
-    report = ("**Evaporation** moves water from lakes and oceans into the air, where it "
-              "condenses into clouds.\n\n"
-              "- Precipitation returns water to the surface.\n"
-              "- Collection gathers it in rivers and aquifers.\n\n"
-              "Understanding the cycle matters for managing water resources.")
-    assert not is_substantial_markdown(report)  # ~300 chars: under the report floor
-    assert is_substantial_markdown(report * 3)  # report length, structured
-    # A short conversational answer is never a document, however it is spaced.
-    assert not is_substantial_markdown("Sure! Here you go.\n\nEnjoy.")
-
-
-def test_card_title_prefers_a_heading_then_the_ask():
-    from backend.agent.artifact_policy import card_title_for
-
-    ask = "write a markdown report about the water cycle, around 250 words"
-    assert card_title_for("# Water cycle\nbody", ask) == "Water cycle"
-    assert card_title_for("no heading, just prose", ask) == (
-        "Markdown Report About The Water Cycle"
-    )
 
 
 def test_a_conversation_scoped_frame_is_withheld_too():

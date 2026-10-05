@@ -3182,66 +3182,36 @@ class AgentKernel:
 
         base += f"\n\nToday's date: {_dt.date.today().strftime('%A, %d %B %Y')}."
 
-        # Issue C.1 — structured speak/show response contract.
-        # `show` means STORE THIS AS A DOCUMENT, not "this answer is long".
-        # The old rule here was length-based ("longer than about 3 sentences ->
-        # respond with JSON"), which made ordinary conversation arrive at
-        # _process_structured_response wearing a `show` payload. The kernel then
-        # had to guess whether it was really an artifact, and that guess is what
-        # kept discarding answers. Length is a FORMATTING question, answered by
-        # _READABLE_FORMAT_RULES; `show` is a STORAGE question, answered here.
+        # [RESPONSE FORMAT] — ONE TRIGGER (reply-surface audit, Phase A).
+        # A card appears only when the model calls create_artifact. The five
+        # earlier rules (a length rule, a `show` storage rule, a markdown
+        # demotion, a keyword fallback mint, a web-format question) each guessed
+        # at the same thing from a different angle and disagreed with each other
+        # in live turns; the model now learns ONE rule and the code does exactly
+        # that. Length is a FORMATTING question, answered by
+        # _READABLE_FORMAT_RULES. The older `show` JSON still parses and
+        # converts to the same call, so a prompt that still teaches it works.
         base += (
             "\n\n[RESPONSE FORMAT]\n"
-            "Two different things, decided separately:\n"
-            "\n"
-            "1. LENGTH is not a reason to use JSON. A long answer is still an "
-            "answer — write it as plain text and format it readably (headings, "
-            "bullets, tables, code fences). It is shown in full in the chat "
-            "thread. NEVER shorten an answer because it is long.\n"
-            "\n"
-            "2. Use the JSON `show` payload ONLY when the content is a DOCUMENT "
-            "— something STORED in the document store so the user can reopen, "
-            "reformat or refer back to it later:\n"
-            "  - web-search / web-crawl results and the evidence behind them\n"
-            "  - a file or document you generated (a report, a plan, a spec)\n"
-            "  - code you produced as a deliverable\n"
-            "  - a data table, dataset or diagram meant to be kept\n"
-            "  - a revision of a document you already stored (pass its "
-            "`document_id`)\n"
-            "If the user is simply asking you something and you are answering "
-            "them — however long the answer — that is CONVERSATION. Use plain "
-            "text. A document card is not a way to present a reply.\n"
-            "The kernel NEVER infers a card from length or structure. A table, "
-            "code block, or list you want KEPT must go in the JSON `show` "
-            "payload yourself — plain text containing a table stays plain text "
-            "and is NOT promoted to a card.\n"
-            "\n"
-            "When it IS a document, respond with JSON:\n"
-            '{"speak": "<2-3 sentence conversational summary of what you say>", '
-            '"show": {"format": "markdown|html|table|diagram|text", '
-            '"content": "<the full document>", '
-            '"document_id": "<only when revising a document you already stored>", '
-            '"alternatives": ["<other formats you could render>"], '
-            '"variants": {"<format>": "<full content rendered in that format>", ...} '
-            '// optional but encouraged: also include the SAME content rendered in '
-            'other formats (e.g. {"markdown": "...", "html": "..."}) so the user can '
-            'switch formats instantly without re-generating}}\n'
-            "The `speak` field is what the user HEARS via TTS — keep it brief "
-            "and natural (1-3 sentences). The `show` field is the document that "
-            "is stored and rendered as a card; the chat thread keeps your spoken "
-            "line so the document is not duplicated inline.\n"
-            "\n"
-            "[WEB SEARCH RESULTS]\n"
-            "When you present web-search / web-crawl results, you MUST render them "
-            "via a `show` payload and CHOOSE the best format yourself:\n"
-            "  - prose / articles / summaries -> 'markdown'\n"
-            "  - data, comparisons, stats -> 'table'\n"
-            "  - flows, architectures, relationships -> 'diagram'\n"
-            "  - raw web page content -> 'html' (untrusted, sanitized)\n"
-            "If you are unsure which format fits best, DO NOT guess — call "
-            "`ask_user_question` with the format options (markdown/table/html/"
-            "diagram/text) so the user chooses. Never return a bare .md file "
-            "without a `show` format choice."
+            "ANSWER: plain text is the reply. It can be long, with headings, "
+            "lists, tables and short code blocks. It is shown in full and is "
+            "never turned into a card. NEVER shorten an answer because it is "
+            "long.\n"
+            "ARTIFACT: call the `create_artifact` tool when you made something to "
+            "keep, reuse or open on its own: a report, a code file, a dataset, a "
+            "diagram or an interactive page. Always give a title and a one-line "
+            "summary. Pick the kind: document, code, data, diagram, page or "
+            "image. For code give the language; for data give csv or json. To "
+            "publish a new version of an artifact you already made, pass its "
+            "`artifact_id`.\n"
+            "BOTH: when you make an artifact, your reply says in 1-3 sentences "
+            "what you made and what matters about it. Never repeat the artifact's "
+            "content in the reply.\n"
+            "SIGNS that mean an artifact: the user asked for a file, report, "
+            "page, chart or document; the content stands alone and is longer than "
+            "about 40 lines; the user will save, share or reopen it; or the "
+            "content is visual. A snippet under about 15 lines stays in the "
+            "answer."
         )
 
         return base
@@ -5314,40 +5284,6 @@ class AgentKernel:
         return display or ""
 
     @staticmethod
-    def _is_empty_websearch_synthesis(content: str, sources: Optional[list] = None) -> bool:
-        """True when a markdown synthesis is a 'no usable results' answer that
-        should stay as plain text, not a prism card.
-
-        The agent wraps a websearch that yielded no usable pages as markdown
-        with sections like "I wasn't able to pull any direct image URLs..." /
-        "Image URLs retrieved 0" and an empty source list (observed live
-        2026-08-27). Those belong in the bubble stream, not as a glass
-        artifact — they are conversation, not a stored document. The caller
-        is responsible for the source check; this helper only classifies the
-        TEXT when sources are already known to be empty.
-        """
-        lc = (content or "").lower()
-        head = lc[:250]  # failure verdicts are LEADING claims; a late
-        # "B&H wasn't reachable" inside an answered response keeps its card.
-        # Session-345 (live, conv-133): blocked pages still produce a sources
-        # list, so the failure shape must be judged BEFORE the sources escape.
-        if (
-            ("what was attempted" in lc and "what failed" in lc)
-            or "wasn't able to pull" in head
-            or "wasn't able to retrieve" in head
-            or "no usable direct image" in lc
-            or "no usable content" in lc
-            or "no candidate urls" in lc
-            or "retry produced no usable content" in lc
-            or ("image urls retrieved" in lc and " 0" in lc)
-            or ("what failed" in lc and "no usable" in lc)
-        ):
-            return True
-        if sources is not None and len(sources) > 0:
-            return False
-        return False
-
-    @staticmethod
     def _unwrap_tool_envelope(response: str) -> Tuple[str, Optional[str]]:
         """Return ``(display_text, spoken_line)`` for a tool-result envelope.
 
@@ -5411,8 +5347,9 @@ class AgentKernel:
         ==============================  ==========================  ===========
 
         The distinction that drives it is decided by the AGENT, not inferred
-        here: ``show`` means "this is a DOCUMENT — store it", so it renders a
-        card and the thread keeps the spoken line. Everything else is
+        here: ``show`` is the older spelling of ``create_artifact`` ("this is
+        something to keep — store it"), so it converts to the same call, renders
+        a card and the thread keeps the spoken line. Everything else is
         conversation and goes to the thread as text, in full, however long. The
         [RESPONSE FORMAT] prompt in :meth:`_build_system_prompt` is the other
         half of this contract; the two must be read together.
@@ -5424,8 +5361,9 @@ class AgentKernel:
         if not response:
             return response or ""
 
-        # Reset the per-response render flag; set True below if a DOCUMENT_RENDER
-        # is emitted (agent's format choice). Used by _maybe_escalate_web_format.
+        # Reset the per-response render flag; create_artifact sets it True when a
+        # DOCUMENT_RENDER is emitted. It decides the bubble below (speak when a
+        # card carries the content, the full text when it did not).
         self._last_render_emitted = False
         # Reset the per-response spoken line. Set at every exit by
         # _finalize_response, so a stale value from a previous turn can never
@@ -5467,60 +5405,17 @@ class AgentKernel:
 
         if show is None:
             # ── Plain-text response ─────────────────────────────────────────
-            # `show`-PRESENCE IS THE SOLE CARD TRIGGER (specs/reply-surface-
-            # contract REQ-2 / REQ-14 AC2). No length heuristic, no zone check,
-            # no structural inference: the text goes to the thread unchanged
-            # and no DOCUMENT_RENDER is emitted on this path — ever. The
-            # 2026-07-31 length/zone auto-render fabricated prism cards for
-            # long answers AND excerpted the bubble, which threw the full
-            # answer away; it was deleted 2026-09-21. A card appears only
-            # when the AGENT produced a `show` payload (the branch below).
-            #
-            # Structural signal = CALIBRATION ONLY (REQ-14 AC3): when the text
-            # looks like an artifact (fenced code / table / list) but carries
-            # no `show`, log `show_omitted_on_artifact` so prompt drift is
-            # measurable. The detector must NEVER trigger a render.
-            #
-            # Owner bound 2026-09-25: an artifact is a markdown DOCUMENT or a
-            # report. Notes and lists are conversation, so a list answered in
-            # the bubble is compliance, not drift — the signal uses the SAME
-            # predicate the render path uses, so the two cannot disagree.
-            from backend.agent.artifact_policy import is_artifact_document
-
-            if is_artifact_document(response):
-                logger.info(
-                    "[AgentKernel] show_omitted_on_artifact turn=%s len=%d",
-                    turn_id or "unknown",
-                    len(response),
-                )
-
-            # ── Artifact ask answered without `show` (owner bound, 2026-09-25) ─
-            # A report or a markdown document IS an artifact, and the owner's
-            # rule is that artifacts render as cards. When the ASK was for one
-            # and the model answered with a document-shaped body but forgot the
-            # `show` payload, the card is minted from the response itself — the
-            # calibration signal above turned into action instead of a log line.
-            # Scoped to a document ASK plus a document SHAPE: no length
-            # heuristic, which is what the deleted 2026-07-31 auto-render (and
-            # the bubble with "Show more" a report landed in) got wrong.
-            from backend.agent.artifact_policy import is_artifact_ask, is_substantial_markdown
-
-            if (
-                is_artifact_ask(getattr(self, "_current_task_text", "") or "")
-                and (
-                    is_artifact_document(response)
-                    or is_substantial_markdown(response)
-                )
-                and self._mint_artifact_card(response, turn_id, conversation_id)
-            ):
-                _lead = (response.strip().split("\n\n", 1)[0] or response.strip())[:240]
-                self._log_surface(
-                    turn_id=turn_id,
-                    lane="card",
-                    had_show=True,
-                    bubble_source="artifact_fallback",
-                )
-                return self._finalize_response(_lead, speak)
+            # A PLAIN REPLY IS THE ANSWER (reply-surface audit, Phase A). No
+            # DOCUMENT_RENDER is emitted on this path - ever: not for length, not
+            # for structure, not for a document-shaped body, and not because the
+            # ask used a build verb. The 2026-07-31 length/zone auto-render
+            # fabricated cards for long answers AND excerpted the bubble (deleted
+            # 2026-09-21); the 2026-09-25 fallback mint (an artifact ask + a
+            # document-shaped body -> a card made after the fact) and its
+            # `show_omitted_on_artifact` calibration log are deleted with this
+            # change: a card now appears only when the model CALLS
+            # create_artifact (or sends the older `show` payload, which
+            # converts to the same call). The text goes to the thread unchanged.
             # REQ-15: the `presentation` decision-engine consumer runs as an
             # ASYNC OBSERVER off the reply path — its verdict is recorded for
             # calibration, never consulted for the live surface ("plain").
@@ -5537,188 +5432,66 @@ class AgentKernel:
             # fallback (:4036) covers the common plain case.
             return self._finalize_response(response, speak)
 
-        # ── Structured response — emit DOCUMENT_RENDER ────────────────────
-        # Trust-routing W3: 'untrusted' when this turn touched external/web
-        # sources, else 'trusted'. The frontend sanitizes html/mermaid when
-        # A CARD IS FOR AN ARTIFACT, NOT FOR CONVERSATION (2026-08-16, user rule).
+        # ── `show` is the older spelling of create_artifact ─────────────────
+        # A `show` payload converts to the SAME call the tool makes, so a card
+        # has one door: create_artifact stores on the real DocumentDataStore and
+        # emits DOCUMENT_RENDER with title, kind, summary, language, format,
+        # content, document_id, turn_id, card_id, conversation_id and trust.
+        # `show` is a card by definition (the model chose to keep it): there is
+        # no body-shape demotion any more, and a `show` with no title or summary
+        # gets them derived below rather than rendering a label-less card.
         #
-        # Document renders exist for content that is STORED to be opened again
-        # later: web-search results, generated markdown, plans, code. An ordinary
-        # spoken-and-shown answer — "here is your system info" — is conversation,
-        # and belongs in the thread as text the agent formatted readably.
-        #
-        # This matters because the card branch returns the short `speak` line to
-        # avoid duplicating the artifact inline. When the agent renders a card
-        # for a CONVERSATIONAL answer, that same branch throws the real answer
-        # away: observed live with der_response_len=1787 persisted as 201 chars.
-        #
-        # `show` IS THE STORAGE SIGNAL (2026-08-17). No gate here.
-        #
-        # A previous kernel-side gate tried to infer, per turn, whether the
-        # content "was really an artifact" — first from the web/reference zone,
-        # then from the payload's content. Both are guesses, and the guess is
-        # not decidable: `{"format": "markdown", "content": "plain doc"}` with no
-        # provenance is required to render by
-        # test_document_rehydration_wave2::test_ct_doc_2_render_absent_sources_for_plain
-        # and required NOT to render by
-        # test_display_text_never_truncated::test_conversational_turn_...
-        # Nothing structural separates those two inputs, because the intent
-        # lives with the AGENT, not with the shape of the payload.
-        #
-        # So the two paths are split at the source instead: the [RESPONSE FORMAT]
-        # prompt now defines `show` as "a document to be STORED and reopened",
-        # not "a long answer" (the old length rule is what made ordinary
-        # conversation arrive here wearing a `show` payload). A `show` payload
-        # therefore means store it and render it — and the answer can no longer
-        # be lost, because the card and the document store both hold it, while
-        # every path WITHOUT a `show` returns the full text to the thread.
-        #
-        # trust != 'trusted'.
-        trust = (
-            "untrusted"
-            if self._pacman_zone_for_turn() == "reference"
-            else "trusted"
+        # An empty body, a tool-result envelope, or a failed emit leaves
+        # `_last_render_emitted` False, so the full show content falls back into
+        # the thread (it is the only copy then) - the answer is never lost.
+        from backend.agent.artifact_policy import (
+            ARTIFACT_KINDS,
+            card_title_from_content,
+            first_sentence,
+            kind_for_show_format,
         )
-        # W4: stable document_id so the canonical data (not the render) can
-        # be stored and later retrieved/reformatted by id.
-        import uuid
 
-        # Phase 4 (chat-card-redesign): if the agent includes an existing
-        # document_id in its `show` payload, revise that document in place
-        # (bumped revision + updated:True) instead of rendering a new card.
-        existing_id = show.get("document_id")
-        if existing_id and self.update_document(
-            existing_id,
-            content=show.get("content", ""),
-            fmt=show.get("format"),
-            trust=trust,
+        _show_content = show.get("content", "") or ""
+        _show_title = str(show.get("title") or "").strip()
+        if not _show_title:
+            _show_title = card_title_from_content(_show_content)
+            if _show_title == "Document":
+                # Nothing in the body names it; the ask does, in short form.
+                _show_title = (
+                    first_sentence(getattr(self, "_current_task_text", "") or "", 60)
+                    or _show_title
+                )
+        _show_kind = str(show.get("kind") or "").strip().lower()
+        if _show_kind not in ARTIFACT_KINDS:
+            _show_kind = kind_for_show_format(show.get("format"))
+        _show_summary = (
+            str(show.get("summary") or "").strip()
+            or first_sentence(speak or "", 140)
+            or _show_title
+        )
+        _show_extra = {
+            k: v
+            for k, v in show.items()
+            if k not in ("title", "kind", "summary", "content", "document_id", "language")
+        }
+        _made = self.create_artifact(
+            title=_show_title,
+            kind=_show_kind,
+            summary=_show_summary,
+            content=_show_content,
+            language=show.get("language"),
+            # Phase 4 (chat-card-redesign): a `show` carrying an existing
+            # document_id revises that document in place (bumped revision +
+            # updated:True) instead of rendering a new card.
+            artifact_id=show.get("document_id"),
             turn_id=turn_id,
             conversation_id=conversation_id,
-            alternatives=show.get("alternatives", []) or [],
-        ):
-            # The card was revised in place — it owns the content. The agent's
+            extra=_show_extra,
+        )
+        if _made.get("revised"):
+            # The card was revised in place - it owns the content. The agent's
             # spoken line still reaches TTS.
             return self._finalize_response("", speak)
-        document_id = str(uuid.uuid4())
-        # REQ-10 AC1/AC2 (reply-surface-contract T20): every prism card carries
-        # a stable lifecycle id alongside the document store key, minted once
-        # here and reused by update/reformat (`_prism_card_id_for`).
-        card_id = self._prism_card_id_for(document_id)
-        # W4: persist the canonical DATA (underlying structured content),
-        # keyed by document_id, BEFORE the render so provenance (sources /
-        # har_path, possibly inherited from a linked raw row in T2) is
-        # available to surface on the render payload (REQ-6 / D2: provenance
-        # is surfaced, never orphaned). Fire-and-forget so a storage failure
-        # never blocks the document render.
-        self._store_document_data(
-            document_id=document_id,
-            show=show,
-            trust=trust,
-            turn_id=turn_id,
-            conversation_id=conversation_id,
-        )
-        # Surface provenance on the render. Prefer what the agent supplied in
-        # `show`; fall back to the stored row (which may have inherited
-        # sources/har_path from a linked raw crawler row). Tolerant of store
-        # failure -> empty sources, render still succeeds.
-        _render_sources = show.get("sources")
-        _render_har = show.get("har_path")
-        if _render_sources is None or _render_har is None:
-            try:
-                _store = self._get_document_store()
-                _row = _store.get(document_id) if _store is not None else None
-                if _row is not None:
-                    if _render_sources is None:
-                        _render_sources = _row.get("sources") or []
-                    if _render_har is None:
-                        _render_har = _row.get("har_path")
-            except Exception:
-                pass
-        # Empty-result websearch — downgrade to plain text. The agent wrapped
-        # a "no usable results" synthesis as markdown with no sources; that
-        # belongs in the bubble, not as a glass artifact.
-        if self._is_empty_websearch_synthesis(
-            show.get("content", "") or "", _render_sources
-        ):
-            # Return the show content as plain text (or speak if present).
-            # No DOCUMENT_RENDER, so the message renders via MarkdownMessage
-            # and scrolls inline per the chat-view fix.
-            _plain = (show.get("content", "") or "").strip() or (speak or "")
-            self._log_surface(
-                turn_id=turn_id,
-                lane="plain",
-                had_show=True,
-                bubble_source="full_text",
-                card_suppressed_reason="empty_websearch_synthesis",
-            )
-            return self._finalize_response(_plain, speak)
-
-        # ── Artifact policy (owner bound, 2026-09-25) ─────────────────────
-        # A prism card is for a markdown DOCUMENT or a report. A note or a list
-        # is not "a lot of content" and belongs in the reply bubble, so a
-        # `show` payload carrying one is answered as text instead of minting a
-        # card. Only markdown/text bodies are judged this way: an explicit
-        # non-markdown artifact (html, table, diagram, json, image) is exactly
-        # what the model asked to render, so it passes through untouched.
-        _show_fmt = str(show.get("format") or "markdown").strip().lower()
-        from backend.agent.artifact_policy import is_artifact_document
-
-        if _show_fmt in ("markdown", "text", "") and not is_artifact_document(
-            show.get("content", "") or ""
-        ):
-            _plain = (show.get("content", "") or "").strip() or (speak or "")
-            if _plain:
-                self._log_surface(
-                    turn_id=turn_id,
-                    lane="plain",
-                    had_show=True,
-                    bubble_source="full_text",
-                    card_suppressed_reason="not_an_artifact_document",
-                )
-                return self._finalize_response(_plain, speak)
-
-        try:
-            from backend.agent.event_bus import get_event_bus, IRISStreamEvent
-
-            get_event_bus().emit(
-                IRISStreamEvent.DOCUMENT_RENDER,
-                data={
-                    "format": show.get("format", "markdown"),
-                    "content": show.get("content", ""),
-                    "alternatives": show.get("alternatives", []),
-                    "trust": trust,
-                    "document_id": document_id,
-                    "turn_id": turn_id,
-                    "conversation_id": conversation_id,
-                    "card_id": card_id,  # REQ-10 AC2: stable lifecycle id
-                    "sources": _render_sources or [],
-                    "har_path": _render_har,
-                    # REQ-13 AC5 / T18b (reply-surface-contract): the partial
-                    # channel discriminator. False here = the FINAL whole-body
-                    # emit (providers do not stream a partial card in this path).
-                    # A future partial emit MUST carry the same stable
-                    # document_id on its FIRST partial so the frontend updates
-                    # the card in place and never shows the "Updated" badge
-                    # while streaming.
-                    "partial": False,
-                },
-                turn_id=turn_id,
-                conversation_id=conversation_id,
-            )
-            # Mark that the agent rendered a document this turn (its CHOICE of
-            # format). Used by _maybe_escalate_web_format to detect when the
-            # agent returned a web result without choosing a format.
-            self._last_render_emitted = True
-            # REQ-13 AC4: time-to-card on this turn's [LAYERS] line.
-            _metrics = getattr(self, "_active_turn_metrics", None)
-            _mark = getattr(_metrics, "mark_card", None)
-            if callable(_mark):
-                try:
-                    _mark()
-                except Exception:  # noqa: BLE001 — telemetry never blocks
-                    pass
-        except Exception as exc:
-            logger.warning("[AgentKernel] DOCUMENT_RENDER emit failed: %s", exc)
 
         if speak is not None:
             # Issue C.2: also deliver the spoken summary to external channels
@@ -5866,6 +5639,7 @@ class AgentKernel:
         trust: str,
         turn_id: Optional[str],
         conversation_id: str,
+        card_id: Optional[str] = None,
     ) -> None:
         """Persist a document's canonical DATA (not its render) keyed by document_id.
 
@@ -6008,6 +5782,14 @@ class AgentKernel:
                     # that produced it, which is why the answer text and its card
                     # both rendered, neither aware of the other.
                     turn_id=turn_id,
+                    # create_artifact (Phase A): the stored row carries the
+                    # card's lifecycle id and its title/kind/summary, so a reload
+                    # shows the same card instead of re-deriving the label.
+                    card_id=card_id,
+                    title=show.get("title"),
+                    kind=show.get("kind"),
+                    summary=show.get("summary"),
+                    language=show.get("language"),
                 )
                 _doc_stored = True
         except Exception as exc:
@@ -6193,7 +5975,251 @@ class AgentKernel:
         except Exception:  # noqa: BLE001 — ids must never block a render
             return f"card_doc_{document_id}"
 
-    def update_document(self, document_id, content, fmt=None, trust=None, turn_id=None, conversation_id=None, alternatives=None):
+    def create_artifact(
+        self,
+        title: str,
+        kind: str,
+        summary: str,
+        content: str,
+        language: Optional[str] = None,
+        artifact_id: Optional[str] = None,
+        *,
+        turn_id: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        extra: Optional[dict] = None,
+    ) -> dict:
+        """THE ONLY DOOR TO A CARD (reply-surface audit, Phase A).
+
+        The model calls this (tool ``create_artifact``) when it made something
+        to keep, reuse or open on its own; the older `{speak, show}` payload
+        converts to the same call in :meth:`_process_structured_response`. It
+        stores the artifact on the REAL DocumentDataStore (title, kind, summary,
+        language and the card_id ride the row, so a reload shows the same card)
+        and emits DOCUMENT_RENDER with title, kind, summary, language, format,
+        content, document_id, turn_id, card_id, conversation_id and trust.
+
+        ``artifact_id`` publishes a new version of an existing artifact through
+        :meth:`update_document` (same card_id, ``updated`` and ``revision`` on
+        the event); an unknown id is a fresh artifact. ``extra`` carries the
+        `show` payload's other keys (alternatives, variants, sources, har_path,
+        source_tool, content_origin, source_document_id; ``format`` overrides
+        the format the kind implies, so a `show` keeps its own). Never raises:
+        returns ``{"success": True, "artifact_id", "version", "card_id"}`` or
+        ``{"success": False, "error"}``.
+        """
+        from backend.agent.artifact_policy import (
+            ARTIFACT_KINDS,
+            ARTIFACT_TITLE_MAX,
+            artifact_format_and_body,
+            is_tool_result_envelope,
+        )
+
+        def _refuse(reason: str) -> dict:
+            logger.info(
+                "[AgentKernel] create_artifact refused turn=%s: %s",
+                turn_id or "unknown", reason,
+            )
+            return {"success": False, "error": reason}
+
+        try:
+            title = title.strip() if isinstance(title, str) else ""
+            summary = " ".join(summary.split()) if isinstance(summary, str) else ""
+            _missing = [
+                name
+                for name, val in (
+                    ("title", title),
+                    ("summary", summary),
+                    ("content", content),
+                )
+                if not (isinstance(val, str) and val.strip())
+            ]
+            if _missing:
+                return _refuse(
+                    "create_artifact needs " + ", ".join(_missing)
+                    + " - an artifact always has a title, a one-line summary "
+                    "and a body"
+                )
+            kind = str(kind or "").strip().lower()
+            if kind not in ARTIFACT_KINDS:
+                return _refuse(
+                    f"create_artifact kind must be one of {', '.join(ARTIFACT_KINDS)}"
+                )
+            # A tool result is not an artifact: it must not become a card, or
+            # the thread fills with JSON receipts (live 2026-09-25).
+            if is_tool_result_envelope(content):
+                return _refuse(
+                    "create_artifact content is a tool-call result envelope, not "
+                    "an artifact - keep it in your reply text"
+                )
+            if len(title) > ARTIFACT_TITLE_MAX:
+                logger.info(
+                    "[AgentKernel] create_artifact title cut %d -> %d chars turn=%s",
+                    len(title), ARTIFACT_TITLE_MAX, turn_id or "unknown",
+                )
+                title = title[:ARTIFACT_TITLE_MAX].rstrip()
+            language = (str(language).strip() or None) if language else None
+
+            extra = dict(extra or {})
+            fmt, body = artifact_format_and_body(kind, content, language)
+            if extra.get("format"):
+                # A `show` names its own format; that choice wins over the one
+                # the kind implies, and its body is stored as sent.
+                fmt, body = str(extra["format"]), content
+            conversation_id = (
+                conversation_id or getattr(self, "conversation_id", None) or "default"
+            )
+            turn_id = turn_id or getattr(self, "_current_turn_id", None)
+            # Trust-routing W3: 'untrusted' when this turn touched external/web
+            # sources, else 'trusted'. The frontend sanitizes html/mermaid when
+            # trust != 'trusted'.
+            trust = extra.get("trust") or (
+                "untrusted" if self._pacman_zone_for_turn() == "reference" else "trusted"
+            )
+
+            if artifact_id and self.update_document(
+                artifact_id,
+                content=body,
+                fmt=fmt,
+                trust=trust,
+                turn_id=turn_id,
+                conversation_id=conversation_id,
+                alternatives=extra.get("alternatives") or [],
+                title=title,
+                kind=kind,
+                summary=summary,
+                language=language,
+            ):
+                _row = None
+                _store = self._get_document_store()
+                if _store is not None:
+                    _row = _store.get(artifact_id)
+                self._note_artifact_emitted(body, turn_id)
+                return {
+                    "success": True,
+                    "artifact_id": artifact_id,
+                    "version": ((_row or {}).get("revision") or 0) + 1,
+                    "card_id": self._prism_card_id_for(artifact_id),
+                    "revised": True,
+                }
+
+            import uuid
+
+            document_id = str(uuid.uuid4())
+            # REQ-10 AC1/AC2 (reply-surface-contract T20): every prism card
+            # carries a stable lifecycle id alongside the document store key,
+            # minted once here and reused by update/reformat.
+            card_id = self._prism_card_id_for(document_id)
+            show = {
+                **extra,
+                "format": fmt,
+                "content": body,
+                "title": title,
+                "kind": kind,
+                "summary": summary,
+                "language": language,
+            }
+            # W4: persist the canonical DATA keyed by document_id BEFORE the
+            # render so provenance (sources / har_path, possibly inherited from
+            # a linked raw crawler row) can ride the render payload (REQ-6 / D2).
+            self._store_document_data(
+                document_id=document_id,
+                show=show,
+                trust=trust,
+                turn_id=turn_id,
+                conversation_id=conversation_id,
+                card_id=card_id,
+            )
+            _render_sources = show.get("sources")
+            _render_har = show.get("har_path")
+            if _render_sources is None or _render_har is None:
+                try:
+                    _store = self._get_document_store()
+                    _row = _store.get(document_id) if _store is not None else None
+                    if _row is not None:
+                        if _render_sources is None:
+                            _render_sources = _row.get("sources") or []
+                        if _render_har is None:
+                            _render_har = _row.get("har_path")
+                except Exception:  # noqa: BLE001 - provenance never blocks a card
+                    pass
+
+            from backend.agent.event_bus import get_event_bus, IRISStreamEvent
+
+            try:
+                get_event_bus().emit(
+                    IRISStreamEvent.DOCUMENT_RENDER,
+                    data={
+                        "title": title,
+                        "kind": kind,
+                        "summary": summary,
+                        "language": language,
+                        "format": fmt,
+                        "content": body,
+                        "alternatives": show.get("alternatives", []),
+                        "trust": trust,
+                        "document_id": document_id,
+                        "turn_id": turn_id,
+                        "conversation_id": conversation_id,
+                        "card_id": card_id,  # REQ-10 AC2: stable lifecycle id
+                        "sources": _render_sources or [],
+                        "har_path": _render_har,
+                        # REQ-13 AC5 / T18b (reply-surface-contract): the partial
+                        # channel discriminator. False = the FINAL whole-body
+                        # emit. A future partial emit MUST carry the same stable
+                        # document_id on its FIRST partial so the frontend
+                        # updates the card in place.
+                        "partial": False,
+                    },
+                    turn_id=turn_id,
+                    conversation_id=conversation_id,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[AgentKernel] DOCUMENT_RENDER emit failed: %s", exc)
+                return {
+                    "success": False,
+                    "error": "the artifact was stored but could not be shown",
+                    "artifact_id": document_id,
+                }
+            self._note_artifact_emitted(body, turn_id)
+            logger.info(
+                "[AgentKernel] create_artifact conv=%s doc=%s card=%s kind=%s title=%r",
+                conversation_id, document_id, card_id, kind, title,
+            )
+            return {
+                "success": True,
+                "artifact_id": document_id,
+                "version": 1,
+                "card_id": card_id,
+            }
+        except Exception as exc:  # noqa: BLE001 - a card is never worth a failed reply
+            logger.warning("[AgentKernel] create_artifact failed: %s", exc)
+            return {"success": False, "error": str(exc)}
+
+    def _note_artifact_emitted(self, body: str, turn_id: Optional[str]) -> None:
+        """Bookkeeping after create_artifact put a card on the wire.
+
+        Marks that a card rendered this turn (it decides the bubble in
+        :meth:`_process_structured_response` and the observer frame), stamps
+        time-to-card on the turn's [LAYERS] line, and feeds the Oracle's
+        `presentation` shadow observer with the live surface ``"card"`` - so
+        its "should this have been an artifact?" score is compared on BOTH exits
+        (plain and card), never consulted for the live surface. Never raises.
+        """
+        self._last_render_emitted = True
+        # REQ-13 AC4: time-to-card on this turn's [LAYERS] line.
+        _metrics = getattr(self, "_active_turn_metrics", None)
+        _mark = getattr(_metrics, "mark_card", None)
+        if callable(_mark):
+            try:
+                _mark()
+            except Exception:  # noqa: BLE001 - telemetry never blocks
+                pass
+        try:
+            self._observe_surface_async(body, turn_id, live_surface="card")
+        except Exception:  # noqa: BLE001 - instrumentation never blocks
+            pass
+
+    def update_document(self, document_id, content, fmt=None, trust=None, turn_id=None, conversation_id=None, alternatives=None, title=None, kind=None, summary=None, language=None):
         """Phase 4 (chat-card-redesign): revise an already-rendered document.
 
         Updates the canonical data in DocumentDataStore (keyed by document_id;
@@ -6201,10 +6227,18 @@ class AgentKernel:
         frontend reflects the edit in place (with an 'Updated' indicator) instead
         of appending a new card.  Returns the document_id, or None if the id is
         unknown (caller should then do a fresh render).
+
+        ``title``/``kind``/``summary``/``language`` (create_artifact, Phase A)
+        replace the artifact's identity only when given; otherwise the version
+        keeps the ones it was made with.
         """
         try:
             from backend.agent.document_store import DocumentDataStore
-            store = DocumentDataStore.get_for(self._memory)
+            # `self._memory` never existed on the real kernel (only test
+            # stand-ins set it), so every revision raised AttributeError, was
+            # swallowed below and returned None - a revising `show` always
+            # minted a SECOND card. The store hangs off the memory interface.
+            store = DocumentDataStore.get_for(getattr(self, "_memory_interface", None))
             if store is None:
                 return None
             existing = store.get(document_id)
@@ -6219,6 +6253,7 @@ class AgentKernel:
                 fmt=new_fmt,
                 variants=variants,
                 trust=trust or existing.get("trust") or "trusted",
+                title=title, kind=kind, summary=summary, language=language,
             )
             revision = (existing.get("revision") or 0) + 1
             payload = {
@@ -6236,6 +6271,10 @@ class AgentKernel:
                 "revision": revision,
                 "sources": existing.get("sources") or [],
                 "har_path": existing.get("har_path"),
+                "title": title or existing.get("title"),
+                "kind": kind or existing.get("kind"),
+                "summary": summary or existing.get("summary"),
+                "language": language or existing.get("language"),
             }
             try:
                 from backend.agent.event_bus import get_event_bus, IRISStreamEvent
@@ -6334,15 +6373,12 @@ class AgentKernel:
         block the tool result from reaching the agent.
         """
         # ── ChatCard redesign (pin_9e97e21340e7): external/web tool results are
-        # captured into the document store (reformat-able) so the agent can
-        # render them as a Prism Glass document card via its own `show` choice.
-        # The RENDER itself is the agent's decision — it must emit a `show`
-        # payload choosing the format (markdown/table/html/diagram/text). If the
-        # agent does NOT choose a format (returns plain text), we escalate to a
-        # QuestionCard (ask_user_question) offering the format options, rather
-        # than silently dumping a raw .md file. We only track the pending web
-        # doc_id here; the escalation check runs after the agent's response is
-        # processed in _process_structured_response (see _maybe_escalate_web_format).
+        # captured into the document store (reformat-able). Capture is NOT a
+        # render: a card appears only when the agent calls create_artifact (or
+        # sends the older `show` payload, which converts to the same call).
+        # The "how would you like these presented?" question that used to fire
+        # after a web turn without a `show` was deleted (reply-surface audit,
+        # Phase A): a plain answer is the answer.
         is_external = is_external_tool(tool_name)
 
         if not self._is_capture_worthy(tool_name, result):
@@ -6379,71 +6415,10 @@ class AgentKernel:
         except Exception as exc:
             logger.warning("[AgentKernel] tool-result capture failed: %s", exc)
             return None
-        # Track external/web results for the post-response escalation check.
-        # If the agent's final response does not render this document (no `show`
-        # payload), _maybe_escalate_web_format() asks the user which format they
-        # want via a QuestionCard (pin_9e97e21340e7). Since 2026-09-21
-        # (specs/reply-surface-contract REQ-2) the kernel no longer auto-renders
-        # substantial markdown — `show`-presence is the sole card trigger — so a
-        # plain-text synthesis reliably lands here and escalates.
         # pin: the capture-time deterministic DOCUMENT_RENDER (old pin
         # 517dfcbda150) was REMOVED by user decision — it popped a card on EVERY
         # web-tool commit (every crawl mid-research), not just the final answer.
-        if is_external and tool_name in self._WEB_CONTENT_TOOLS:
-            self._pending_web_doc_id = document_id
         return document_id
-
-    def _maybe_escalate_web_format(self, turn_id: str, conversation_id: str, response_text: str = "") -> None:
-        """Escalate a web result's format choice to the user via a QuestionCard.
-
-        Called after the agent's response is processed. If a web/crawler result
-        was captured this turn (``_pending_web_doc_id`` set) but the agent did
-        NOT render it as a document (``_last_render_emitted`` is False — i.e. it
-        returned plain text without a ``show`` format choice), we ask the user
-        which format they want. This honors the ChatCard redesign: the rendered
-        document is the agent's choice, and when the agent is unsure it escalates
-        to a multiple-choice QuestionCard (pin_9e97e21340e7).
-
-        Non-blocking: we emit the question and let the frontend collect the
-        answer asynchronously (the agent's response continues).
-        """
-        pending = getattr(self, "_pending_web_doc_id", None)
-        # Clear the flag regardless — each web result gets at most one escalation.
-        self._pending_web_doc_id = None
-        if not pending:
-            return
-        if getattr(self, "_last_render_emitted", False):
-            # Agent already chose a format and rendered the document. No escalation.
-            return
-        # Session 247: this escalation is LEGITIMATE — but it never worked as
-        # a question. Two upstream bugs conspired: (a) ask() TypeErrored on
-        # the conversation_id kwarg, and (b) the QuestionCard never rendered
-        # (iris:question:ask vs iris:question_ask name mismatch), so what the
-        # user actually saw was the get_rendered_documents PERMISSION card
-        # (Allow/Deny) timing out three times. With both fixed, the question
-        # renders properly with its format options.
-        try:
-            from backend.agent.tools.ask_user_tool import get_ask_user_tool
-
-            tool = get_ask_user_tool()
-            # Session-345 (live finding, conv-131): the reformat must operate
-            # on the ANSWER the user already read, not the crawl aggregate. The
-            # old wiring reformatted the ~36KB crawl dump — 55s of LLM work and
-            # a table of crawl metadata instead of a table of the answer.
-            _ctx = {"document_id": pending, "source": "web_format_escalation"}
-            if response_text:
-                _ctx["answer_text"] = response_text[:2000]
-            tool.ask(
-                text="I found web results. How would you like me to present them?",
-                options=["Markdown", "Table", "HTML", "Diagram", "Plain text"],
-                allow_other=False,
-                turn_id=turn_id,
-                conversation_id=conversation_id,
-                context=_ctx,
-                purpose="decide",
-            )
-        except Exception as exc:
-            logger.warning("[AgentKernel] web format escalation failed: %s", exc)
 
     def reformat_document(
         self,
@@ -6503,6 +6478,11 @@ class AgentKernel:
                     "card_id": self._prism_card_id_for(document_id),
                     "sources": doc.get("sources") or [],
                     "har_path": doc.get("har_path"),
+                    # Phase A: a reformat is the SAME card, so it keeps the
+                    # title/kind/summary it was made with.
+                    "title": doc.get("title"),
+                    "kind": doc.get("kind"),
+                    "summary": doc.get("summary"),
                 }
                 try:
                     from backend.agent.event_bus import get_event_bus, IRISStreamEvent
@@ -6558,6 +6538,9 @@ class AgentKernel:
             payload["document_id"] = document_id
             # REQ-10 AC4 (T20): the reformat rides the same prism card_id.
             payload["card_id"] = self._prism_card_id_for(document_id)
+            # Phase A: ...and the title/kind/summary the artifact was made with.
+            for _k in ("title", "kind", "summary"):
+                payload[_k] = (doc or {}).get(_k)
         try:
             from backend.agent.event_bus import get_event_bus, IRISStreamEvent
 
@@ -8518,7 +8501,7 @@ class AgentKernel:
 
         task_id = turn_id or str(uuid.uuid4())
         # The frontend's turn id for everything this turn emits outside the DER
-        # parameters (render_document cards, tool-bridge rows, card snapshots).
+        # parameters (create_artifact cards, tool-bridge rows, card snapshots).
         # 13 sites read it; nothing assigned it, so all of them got None and a
         # rendered card never joined its live turn (HANDOFF 6 finding).
         self._current_turn_id = turn_id
@@ -8711,11 +8694,6 @@ class AgentKernel:
             response = self._process_structured_response(
                 response, turn_id=task_id, conversation_id=_conv_id
             )
-            # Escalate web-format choice to the user if the agent returned a web
-            # result without rendering it as a document (pin_9e97e21340e7).
-            # Session-345: pass the response text so the chosen format applies
-            # to the ANSWER, not the crawl dump.
-            self._maybe_escalate_web_format(task_id, _conv_id, response)
             # Never store error or empty responses in conversation memory.
             # They break role alternation and accumulate into garbage context
             # on subsequent turns, causing Cohere/OpenAI 400 errors.
@@ -9358,10 +9336,6 @@ class AgentKernel:
                 _der_response = self._process_structured_response(
                     _der_response, turn_id=task_id, conversation_id=_conv_id
                 )
-                # Escalate web-format choice to the user if the agent returned a
-                # web result without rendering it as a document (pin_9e97e21340e7).
-                # Session-345: pass the response text (see direct-path twin).
-                self._maybe_escalate_web_format(task_id, _conv_id, _der_response)
                 return _der_response
 
         # If DER produced empty/failed response, return error instead of
@@ -11888,63 +11862,6 @@ Respond with a JSON object:
             ]
         except Exception:
             return []
-
-    def _mint_artifact_card(self, content: str, turn_id, conversation_id) -> bool:
-        """Store a markdown document and emit its prism card. True on success.
-
-        Used when a document ASK was answered with a document-shaped body but no
-        ``show`` payload (owner bound 2026-09-25: a report or a markdown document
-        IS an artifact, so it renders as a card rather than as a scrolling
-        bubble). Mirrors the `show` path's store + emit pair; never raises.
-        """
-        try:
-            import uuid as _uuid
-
-            from backend.agent.artifact_policy import card_title_from_content
-            from backend.agent.event_bus import get_event_bus, IRISStreamEvent
-
-            _conv = conversation_id or self.conversation_id
-            document_id = str(_uuid.uuid4())
-            card_id = self._prism_card_id_for(document_id)
-            _store = self._get_document_store()
-            if _store is not None:
-                _store.store(
-                    document_id, _conv, "markdown", content, {}, [], "trusted",
-                    turn_id=turn_id, card_id=card_id,
-                )
-            from backend.agent.artifact_policy import card_title_for
-
-            _title = card_title_for(
-                content, getattr(self, "_current_task_text", "") or ""
-            )
-            get_event_bus().emit(
-                IRISStreamEvent.DOCUMENT_RENDER,
-                data={
-                    "format": "markdown",
-                    "content": content,
-                    "alternatives": [],
-                    "trust": "trusted",
-                    "document_id": document_id,
-                    "turn_id": turn_id,
-                    "conversation_id": _conv,
-                    "card_id": card_id,
-                    "title": _title,
-                    "sources": [],
-                    "har_path": None,
-                    "partial": False,
-                },
-                turn_id=turn_id,
-                conversation_id=_conv,
-            )
-            logger.info(
-                "[AgentKernel] artifact card minted from the response: turn=%s "
-                "doc=%s title=%r (document ask answered without `show`)",
-                turn_id, document_id, _title[:60],
-            )
-            return True
-        except Exception as exc:  # a card is never worth a failed reply
-            logger.warning("[AgentKernel] artifact card mint failed: %s", exc)
-            return False
 
     def _persist_card_snapshot(
         self,

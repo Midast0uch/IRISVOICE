@@ -7,8 +7,9 @@ real kernel, asserting emergent reply-surface behavior:
 - BT-2:  a ``show`` artifact -> card + the supportive speak line, TTS = speak.
 - BT-3:  TTS = ``speak`` on every lane that defines one; plain turns leave
          the spoken lane empty for the gateway's prepare_spoken_text fallback.
-- BT-4:  an empty-result websearch wrapped as ``show`` markdown is downgraded
-         to plain text — no glass artifact for "nothing found".
+- BT-4:  (retired, reply-surface audit Phase A) the backend phrase test that
+         demoted an "I found nothing" `show` to plain text is deleted: a `show`
+         is a card, and the model decides what to keep.
 - BT-5:  a non-empty websearch synthesis WITHOUT ``show`` still renders no
          card (old auto-render deleted) — the plain answer is the surface.
 - BT-9:  the reply completes unchanged with the decision engine stopped.
@@ -45,7 +46,6 @@ def turn(monkeypatch):
         k = AgentKernel.__new__(AgentKernel)
         k._last_render_emitted = False
         k._last_spoken_text = ""
-        k._pending_web_doc_id = None
         monkeypatch.setattr(k, "_pacman_zone_for_turn", lambda: zone,
                             raising=False)
         monkeypatch.setattr(k, "_store_document_data", lambda **kw: None,
@@ -110,28 +110,10 @@ def test_bt3_tts_gets_the_speak_line_on_every_lane_that_has_one(turn):
     assert k_env._last_spoken_text == "Done — reports saved."
 
 
-def test_bt4_empty_websearch_synthesis_is_plain_text_not_a_card(turn):
-    """An 'I found nothing' synthesis must not become a glass artifact."""
-    out, k, bus = turn(json.dumps({
-        "speak": "I couldn't get any usable sources for that.",
-        "show": {
-            "format": "markdown",
-            "content": (
-                "I wasn't able to pull any usable pages for this query.\n\n"
-                "What was attempted: crawl of the requested site.\n"
-                "What failed: the site returned no usable content."
-            ),
-        },
-    }))
-    assert bus.renders == [], "empty-result synthesis must not render a card"
-    assert "wasn't able to pull" in out, "the synthesis text was discarded"
-    assert k._last_spoken_text == "I couldn't get any usable sources for that."
-
-
 def test_bt5_web_synthesis_without_show_still_renders_no_card(turn):
     """The pre-spec length/zone auto-render is gone: a substantial plain
-    synthesis after web capture is plain text — escalation to a format
-    question is `_maybe_escalate_web_format`'s job, not the seam's."""
+    synthesis after web capture is plain text, the answer in full (the format
+    question that used to follow it is deleted too)."""
     synthesis = (
         "## Findings\n\nThe crawl found three relevant pages. "
         "(Based on captured web evidence.) " * 6

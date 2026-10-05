@@ -172,6 +172,14 @@ class DocumentDataStore:
                 # prism card lifecycle id so it survives a reload instead of a
                 # fresh in-memory mint replacing it while the document survives.
                 "card_id",
+                # Reply-surface audit Phase A: an artifact carries its own
+                # title, kind, summary and language (create_artifact). Stored so
+                # a reload shows the SAME card the live turn showed, instead of a
+                # title re-derived from the first 400 chars of the body.
+                "title",
+                "kind",
+                "summary",
+                "language",
             ):
                 try:
                     self._conn.execute(
@@ -199,6 +207,10 @@ class DocumentDataStore:
         har_path: Optional[str] = None,
         turn_id: Optional[str] = None,
         card_id: Optional[str] = None,
+        title: Optional[str] = None,
+        kind: Optional[str] = None,
+        summary: Optional[str] = None,
+        language: Optional[str] = None,
     ) -> None:
         """Upsert a document's canonical data + variants (idempotent by id)."""
         try:
@@ -209,8 +221,9 @@ class DocumentDataStore:
                     self._conn,
                     "INSERT INTO document_data "
                 "(document_id, conversation_id, fmt, content, variants, alternatives, trust, revision, "
-                " source_document_id, sources, har_path, turn_id, card_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                " source_document_id, sources, har_path, turn_id, card_id, "
+                " title, kind, summary, language) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(document_id) DO UPDATE SET "
                 "conversation_id=excluded.conversation_id, fmt=excluded.fmt, "
                 "content=excluded.content, variants=excluded.variants, "
@@ -224,7 +237,13 @@ class DocumentDataStore:
                 "turn_id=COALESCE(excluded.turn_id, document_data.turn_id), "
                 # Same rule for the lifecycle id: an existing card_id is a
                 # contract with any client that already saw it (REQ-10 AC1/AC4).
-                "card_id=COALESCE(excluded.card_id, document_data.card_id)",
+                "card_id=COALESCE(excluded.card_id, document_data.card_id), "
+                # The artifact's identity fields follow the same rule: a refresh
+                # that does not carry them must not blank what the card showed.
+                "title=COALESCE(excluded.title, document_data.title), "
+                "kind=COALESCE(excluded.kind, document_data.kind), "
+                "summary=COALESCE(excluded.summary, document_data.summary), "
+                "language=COALESCE(excluded.language, document_data.language)",
                 (
                     document_id,
                     conversation_id,
@@ -239,6 +258,10 @@ class DocumentDataStore:
                     har_path,
                     turn_id,
                     card_id,
+                    title,
+                    kind,
+                    summary,
+                    language,
                 ),
             )
 
@@ -248,7 +271,18 @@ class DocumentDataStore:
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("[DocumentDataStore] store failed: %s", exc)
 
-    def update(self, document_id: str, content: str, fmt: str, variants: Dict[str, str], trust: str) -> bool:
+    def update(
+        self,
+        document_id: str,
+        content: str,
+        fmt: str,
+        variants: Dict[str, str],
+        trust: str,
+        title: Optional[str] = None,
+        kind: Optional[str] = None,
+        summary: Optional[str] = None,
+        language: Optional[str] = None,
+    ) -> bool:
         """Phase 4 (chat-card-redesign): revise an existing document's content.
 
         Bumps ``revision`` so the frontend can show an 'Updated' indicator and
@@ -267,9 +301,14 @@ class DocumentDataStore:
             def _write326() -> None:
                 app_write(
                     self._conn,
-                    "UPDATE document_data SET content=?, fmt=?, variants=?, trust=?, revision=revision+1 "
+                    "UPDATE document_data SET content=?, fmt=?, variants=?, trust=?, revision=revision+1, "
+                    # A new version keeps the artifact's identity unless the
+                    # caller names a new one.
+                    "title=COALESCE(?, title), kind=COALESCE(?, kind), "
+                    "summary=COALESCE(?, summary), language=COALESCE(?, language) "
                     "WHERE document_id=?",
-                    (content, fmt, json.dumps(variants or {}, ensure_ascii=False), trust, document_id),
+                    (content, fmt, json.dumps(variants or {}, ensure_ascii=False), trust,
+                     title, kind, summary, language, document_id),
                 )
 
             _locked_retry326(_write326, label="document_data.update")
@@ -455,7 +494,7 @@ class DocumentDataStore:
             row = self._conn.execute(
                 "SELECT document_id, conversation_id, fmt, content, variants, "
                 "alternatives, trust, revision, source_document_id, sources, har_path, "
-                "turn_id, card_id "
+                "turn_id, card_id, title, kind, summary, language "
                 "FROM document_data WHERE document_id = ?",
                 (document_id,),
             ).fetchone()
@@ -475,6 +514,10 @@ class DocumentDataStore:
                 "har_path": row[10],
                 "turn_id": row[11],
                 "card_id": row[12],
+                "title": row[13],
+                "kind": row[14],
+                "summary": row[15],
+                "language": row[16],
             }
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("[DocumentDataStore] get failed: %s", exc)
@@ -494,7 +537,8 @@ class DocumentDataStore:
             if metadata_only:
                 rows = self._conn.execute(
                     "SELECT document_id, fmt, conversation_id, sources, har_path, created_at, "
-                    "turn_id, card_id, substr(content, 1, ?) "
+                    "turn_id, card_id, substr(content, 1, ?), "
+                    "title, kind, summary, language "
                     # A research record (fmt 'research') is memory, not a card:
                     # it is never offered for rehydration.
                     "FROM document_data WHERE conversation_id = ? AND fmt IS NOT 'research' "
@@ -516,7 +560,12 @@ class DocumentDataStore:
                         # REQ-22 (owner report 2026-09-25): the title label rides
                         # metadata too — derived from a bounded preview, never
                         # the body itself.
-                        "title": card_title_from_content(r[8]),
+                        # Phase A: the title the artifact was MADE with wins
+                        # over the derived one, so a reload shows the same label.
+                        "title": r[9] or card_title_from_content(r[8]),
+                        "kind": r[10],
+                        "summary": r[11],
+                        "language": r[12],
                     }
                     for r in rows
                     # Owner bound 2026-09-25: a tool RESULT is not an artifact,
@@ -538,7 +587,7 @@ class DocumentDataStore:
             rows = self._conn.execute(
                 "SELECT document_id, conversation_id, fmt, content, variants, "
                 "alternatives, trust, revision, source_document_id, sources, har_path, "
-                "turn_id, card_id "
+                "turn_id, card_id, title, kind, summary, language "
                 "FROM document_data WHERE conversation_id = ? AND fmt IS NOT 'research' "
                 "ORDER BY created_at ASC",
                 (conversation_id,),
@@ -558,6 +607,10 @@ class DocumentDataStore:
                     "har_path": r[10],
                     "turn_id": r[11],
                     "card_id": r[12],
+                    "title": r[13],
+                    "kind": r[14],
+                    "summary": r[15],
+                    "language": r[16],
                 }
                 for r in rows
             ]

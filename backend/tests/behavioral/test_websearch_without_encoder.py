@@ -33,8 +33,8 @@ NOTE (2026-09-21, reply-surface-contract T1): this drive used to END on an
 auto-rendered prism card (length/zone heuristic, plain synthesis >= 300 chars
 -> fabricated card with inherited sources). That behavior is DELETED — REQ-2
 makes `show`-presence the sole card trigger; step 5 below now pins NO card
-plus the full synthesis in the bubble, and format escalation (QuestionCard)
-is the downstream affordance via ``_maybe_escalate_web_format``.
+plus the full synthesis in the bubble. (The format question that used to
+follow, ``_maybe_escalate_web_format``, is deleted: reply-surface audit Phase A.)
 
 Only the I/O boundary the test cannot reach is stubbed: the router
 (planner/proposer text), the tool bridge (crawl content), and the event
@@ -288,11 +288,19 @@ class TestWebsearchCompletesWithoutEncoder:
         assert "Python 3.13" in step_result
         # Exactly ONE crawl committed to this task so far (no re-gather).
         assert len(k._der_crawl_attempts.get(k.conversation_id, set())) == 1
-        # Real provenance path ran: the crawl doc row + pending pointer exist.
-        assert k._pending_web_doc_id is not None
+        # Real provenance path ran: the crawl doc row exists. (It used to be
+        # found through `_pending_web_doc_id`, the pointer the deleted web-format
+        # question read; the row is now found in the store by its sources.)
         _store = k._get_document_store()
-        _row = _store.get(k._pending_web_doc_id) if _store is not None else None
-        assert _row is not None and _row.get("sources") == CRAWL_SOURCES
+        _rows = [
+            r for r in (
+                _store.list_for_conversation(k.conversation_id, metadata_only=False)
+                if _store is not None else []
+            )
+            if r.get("sources") == CRAWL_SOURCES
+        ]
+        assert len(_rows) == 1, "the crawl must leave exactly one stored document"
+        _row = _rows[0]
         assert _row.get("har_path") == CRAWL_HAR
         # The turn is flagged reference (web sources touched) — REAL method.
         assert k._pacman_zone_for_turn() == "reference"

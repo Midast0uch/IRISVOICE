@@ -119,7 +119,6 @@ def _make_direct_kernel():
         "Hello! Plain answer, no tools."
     )
     k._process_structured_response = lambda response, turn_id=None, conversation_id=None: response
-    k._maybe_escalate_web_format = lambda task_id, conv_id, response_text="": None
     k.clear_turn_trust_flag = lambda: None
     return k
 

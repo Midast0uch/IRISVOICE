@@ -1082,38 +1082,48 @@ def register_builtin_tools() -> None:
             category="memory", executor="internal", requires_internet=False,
             permission_tier="read_only", parallel_safe=False,
         ),
-        # REQ-16 (specs/reply-surface-contract T25): render-as-tool. The
-        # tool_choice consumer can now SELECT rendering; the `show` envelope
-        # stays the wire transport (CT-1 unchanged). When this layer is absent
-        # the envelope remains the sole card trigger (AC5).
+        # Reply-surface audit, Phase A: the ONE way a card appears. It replaces
+        # render_document (and the markdown/keyword rules that guessed a card).
+        # The older `show` JSON converts to the same call in the kernel.
         ToolSpec(
-            name="render_document",
+            name="create_artifact",
             description=(
-                "Render content as a document card (prism glass) in the chat. "
-                "Use for artifacts the user wants KEPT — a report, a plan, a "
-                "table, code, a dataset — never for ordinary conversational "
-                "answers. The document is stored (reformattable, rehydratable) "
-                "and the chat carries the conversational line."
+                "Make an artifact: something to keep, reuse or open on its own - a "
+                "report, a code file, a dataset, a diagram or an interactive page. "
+                "It appears as a card with your title and summary. NOT for an "
+                "ordinary answer (plain text is the answer). In your reply, say in "
+                "1-3 sentences what you made; never repeat its content."
             ),
             parameters={
-                "format": {
+                "title": {
                     "type": "string",
-                    "enum": ["markdown", "html", "table", "diagram", "text", "json"],
-                    "description": "Render format for the card",
+                    "description": "Card title, at most 60 characters",
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": ["document", "code", "data", "diagram", "page", "image"],
+                    "description": (
+                        "document = markdown report; code = a file with syntax "
+                        "highlighting; data = csv or json; diagram = mermaid or "
+                        "svg; page = a complete HTML page; image"
+                    ),
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "One line shown under the title",
                 },
                 "content": {
                     "type": "string",
-                    "description": "The full document body",
+                    "description": "The full body of the artifact",
                 },
-                "document_id": {
+                "language": {
                     "type": "string",
-                    "description": "Optional: revise an existing document in place (same card)",
+                    "description": "kind=code: python, ts, rust, ...  kind=data: csv or json",
                     "optional": True,
                 },
-                "alternatives": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Other formats available for instant switch",
+                "artifact_id": {
+                    "type": "string",
+                    "description": "Optional: publish a new version of an artifact you already made",
                     "optional": True,
                 },
             },
@@ -1150,8 +1160,9 @@ def register_builtin_tools() -> None:
                 "URLs from the query, crawls them with Crawl4AI, and returns a structured summary "
                 "PLUS the full extracted page content (field 'content') with source links. Emits live "
                 "progress events to the UI (crawler_started, page_fetched, open_tab, crawler_complete) "
-                "so the user sees the search happening. Put 'content' in your 'show' field and "
-                "'summary' in 'speak'. NOT for a quick factual lookup — use 'search' for that. "
+                "so the user sees the search happening. Answer in plain text; call "
+                "'create_artifact' only if the findings are worth keeping as a report. "
+                "NOT for a quick factual lookup — use 'search' for that. "
                 "Requires internet access."
             ),
             parameters={"query": {"type": "string", "description": "The research topic or question to investigate"}},

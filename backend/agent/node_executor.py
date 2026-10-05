@@ -54,6 +54,9 @@ NODE_TOOLS = (
     # Web research (also web-toggle gated) and the user's own desktop.
     "search", "crawler_query",
     "open_url", "launch_app", "open_file", "get_system_info", "recall_memory",
+    # The one way a card appears (reply-surface audit, Phase A): a node that
+    # made a report, a file or a page to keep hands it over with a title.
+    "create_artifact",
 )
 
 # The screen family joins the menu only when the step's goal is about the

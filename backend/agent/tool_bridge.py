@@ -848,6 +848,35 @@ class AgentToolBridge:
                 },
                 "category": "system",
             },
+            {
+                # The ONE way a card appears (reply-surface audit, Phase A).
+                # Same schema as the registry ToolSpec: this list feeds
+                # _get_openai_tools -> _respond_direct, the registry feeds DER.
+                "name": "create_artifact",
+                "description": (
+                    "Make an artifact: something to keep, reuse or open on its own - a report, a "
+                    "code file, a dataset, a diagram or an interactive page. It appears as a card "
+                    "with your title and summary. NOT for an ordinary answer (plain text is the "
+                    "answer). In your reply, say in 1-3 sentences what you made; never repeat "
+                    "its content."
+                ),
+                "parameters": {
+                    "title": {"type": "string", "description": "Card title, at most 60 characters"},
+                    "kind": {
+                        "type": "string",
+                        "enum": ["document", "code", "data", "diagram", "page", "image"],
+                        "description": (
+                            "document = markdown report; code = a file with syntax highlighting; "
+                            "data = csv or json; diagram = mermaid or svg; page = a complete HTML page; image"
+                        ),
+                    },
+                    "summary": {"type": "string", "description": "One line shown under the title"},
+                    "content": {"type": "string", "description": "The full body of the artifact"},
+                    "language": {"type": "string", "optional": True, "description": "kind=code: python, ts, rust, ...  kind=data: csv or json"},
+                    "artifact_id": {"type": "string", "optional": True, "description": "Optional: publish a new version of an artifact you already made"},
+                },
+                "category": "system",
+            },
         ])
 
         # [13.3] Filter developer-only tools in personal mode
@@ -898,8 +927,9 @@ class AgentToolBridge:
                     "description": (
                         "Deep web research crawl for a topic. Plans source URLs from the query, "
                         "crawls them with Crawl4AI, and returns a structured summary PLUS the full "
-                        "extracted page content (field 'content') with source links. Put 'content' "
-                        "in your 'show' field and 'summary' in 'speak'. Use for 'research', "
+                        "extracted page content (field 'content') with source links. Answer in plain "
+                        "text; call 'create_artifact' only if the findings are worth keeping as a "
+                        "report. Use for 'research', "
                         "'everything about', or 'deep dive' requests — NOT for a quick factual "
                         "lookup (use 'search' for that)."
                     ),
@@ -1996,10 +2026,10 @@ class AgentToolBridge:
             if tool_name == "combine_documents":
                 return await self._execute_combine_documents(params, session_id)
 
-            # REQ-16 (reply-surface-contract T25): render as a tool decision;
-            # emits the same DOCUMENT_RENDER the `show` envelope produces.
-            if tool_name == "render_document":
-                return await self._execute_render_document(params, session_id)
+            # Reply-surface audit, Phase A: the ONE way a card appears. Emits
+            # the same DOCUMENT_RENDER the older `show` envelope converts to.
+            if tool_name == "create_artifact":
+                return await self._execute_create_artifact(params, session_id)
 
             if tool_name in vision_tools:
                     result = await self.execute_vision_tool(tool_name, params, session_id)
@@ -4039,126 +4069,55 @@ class AgentToolBridge:
             logger.warning("[ToolBridge] combine_documents failed: %s", exc)
             return {"success": False, "error": str(exc)}
 
-    async def _execute_render_document(self, params: Dict, session_id: str) -> Dict:
-        """REQ-16 (reply-surface-contract T25): tool-decision render surface.
+    async def _execute_create_artifact(self, params: Dict, session_id: str) -> Dict:
+        """Reply-surface audit, Phase A: THE one way a card appears.
 
-        Emits the SAME DOCUMENT_RENDER event the `show` envelope produces, with
-        the same store + stable card_id — a tool render and a show render are
-        indistinguishable downstream (AC2: the envelope stays the wire
-        transport; CT-1 unchanged). Never steals the bubble/speak lanes (the
-        tool result only reports "rendered"; the agent's own reply text carries
-        the conversation). Never raises into the caller.
+        A thin door onto :meth:`AgentKernel.create_artifact`, which validates
+        (title, summary and body are required; a tool-result envelope is
+        refused), stores on the real DocumentDataStore and emits the
+        DOCUMENT_RENDER the older `show` envelope also converts to - so a tool
+        card and a `show` card are indistinguishable downstream. Never steals
+        the bubble/speak lanes: the result only reports the artifact id, the
+        agent's own reply text carries the conversation. Never raises.
         """
         params = params or {}
-        content = params.get("content")
-        if not (isinstance(content, str) and content.strip()):
-            return {"success": False, "error": "render_document requires content"}
-        fmt = params.get("format") or "markdown"
-        # A tool result is not an artifact (see _is_tool_result_envelope): it
-        # must not become a prism card, or the thread fills with JSON bodies.
-        if _is_tool_result_envelope(content):
-            logger.info(
-                "[ToolBridge] render_document refused: content is a tool-result "
-                "envelope, not an artifact (len=%d)", len(content),
-            )
-            return {
-                "success": False,
-                "error": (
-                    "render_document content is a tool-call result envelope, not "
-                    "an artifact — keep it in your reply text"
-                ),
-            }
         conversation_id = (
             params.get("conversation_id")
             or self._active_conversation_id.get(session_id)
             or "default"
         )
         try:
-            import uuid as _uuid
+            import asyncio
+
             from backend.agent.agent_kernel import get_agent_kernel
-            from backend.agent.event_bus import get_event_bus, IRISStreamEvent
 
             kernel = get_agent_kernel(conversation_id, session_id)
             if kernel is None:
                 return {"success": False, "error": "kernel unavailable"}
             # Audit 2026-09-22 (F1): the tool layer does not receive the turn id
-            # from the model — resolve it from the kernel that owns the turn,
-            # so the card joins the live turn in the UI.
-            turn_id = params.get("turn_id") or getattr(
-                kernel, "_current_turn_id", None
-            )
-            # AC11.4 (audit 2026-09-22, F3): one card per turn. A second render
-            # intent for the SAME turn revises the existing card in place
-            # instead of minting a second card with a second card_id.
-            if not params.get("document_id") and turn_id:
-                _prior = (getattr(kernel, "_render_doc_for_turn", None) or {}).get(
-                    turn_id
-                )
-                if _prior:
-                    _upd = getattr(kernel, "update_document", None)
-                    if callable(_upd):
-                        _revised = _upd(
-                            _prior,
-                            content=content,
-                            fmt=fmt,
-                            trust=params.get("trust") or "trusted",
-                            turn_id=turn_id,
-                            conversation_id=conversation_id,
-                            alternatives=params.get("alternatives") or [],
-                        )
-                        if _revised:
-                            logger.info(
-                                "[ToolBridge] render_document revised the turn's "
-                                "card in place (AC11.4): turn=%s doc=%s",
-                                turn_id, _prior,
-                            )
-                            return {
-                                "success": True,
-                                "document_id": _prior,
-                                "revised": True,
-                            }
-            document_id = params.get("document_id") or str(_uuid.uuid4())
-            # _prism_card_id_for records the card id itself; the store call
-            # takes the same arguments as the `show` path. Passing card_id=
-            # raised TypeError on EVERY call (the tests stubbed the store with
-            # **kwargs, so it never showed) - execution audit R1, 2026-09-29.
-            card_id = kernel._prism_card_id_for(document_id)
-            kernel._store_document_data(
-                document_id=document_id,
-                show={"format": fmt, "content": content},
-                trust=params.get("trust") or "trusted",
-                turn_id=turn_id,
+            # from the model - the kernel that owns the turn resolves it
+            # (create_artifact reads `_current_turn_id`), so the card joins the
+            # live turn in the UI.
+            # Off the event loop: the store write, the trajectory lookup and the
+            # provenance read are blocking calls.
+            result = await asyncio.to_thread(
+                kernel.create_artifact,
+                params.get("title"),
+                params.get("kind"),
+                params.get("summary"),
+                params.get("content"),
+                params.get("language"),
+                params.get("artifact_id"),
+                turn_id=params.get("turn_id"),
                 conversation_id=conversation_id,
             )
-            get_event_bus().emit(
-                IRISStreamEvent.DOCUMENT_RENDER,
-                data={
-                    "format": fmt,
-                    "content": content,
-                    "alternatives": params.get("alternatives") or [],
-                    "trust": params.get("trust") or "trusted",
-                    "document_id": document_id,
-                    "turn_id": turn_id,
-                    "conversation_id": conversation_id,
-                    "card_id": card_id,
-                    "sources": params.get("sources") or [],
-                    "har_path": params.get("har_path"),
-                    # REQ-13 AC5: tool renders are final whole-body emits.
-                    "partial": False,
-                },
-                turn_id=turn_id,
-                conversation_id=conversation_id,
-            )
-            _record = getattr(kernel, "_record_turn_render", None)
-            if callable(_record):
-                _record(turn_id, document_id)
             logger.info(
-                "[ToolBridge] render_document conv=%s doc=%s card=%s",
-                conversation_id, document_id, card_id,
+                "[ToolBridge] create_artifact conv=%s ok=%s artifact=%s",
+                conversation_id, result.get("success"), result.get("artifact_id"),
             )
-            return {"success": True, "document_id": document_id, "card_id": card_id}
+            return result
         except Exception as exc:
-            logger.warning("[ToolBridge] render_document failed: %s", exc)
+            logger.warning("[ToolBridge] create_artifact failed: %s", exc)
             return {"success": False, "error": str(exc)}
 
     async def _execute_web_search(self, params: Dict, session_id: str) -> Dict:

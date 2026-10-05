@@ -8,10 +8,12 @@ Two lines decide the reply surface, and the owner moved BOTH on 2026-09-25:
     skipped. "there shouldnt be a task card for the agent to create three bullet
     points ... only appear for 3 more steps with tools".
 
-  * An ARTIFACT (prism card) is for a markdown document or a report. Notes and
-    lists are conversation and belong in the reply bubble. "artifacts are really
-    only for mds and reports, notes and lists dont need to be an artifact thats
-    not a lot of content".
+  * An ARTIFACT (prism card) appears for ONE reason: the model called
+    ``create_artifact`` (reply-surface audit, Phase A). The earlier rules that
+    inferred a card from the body - a heading test, a "substantial markdown"
+    test, a keyword ask that minted a card after the fact - are gone: a reply
+    in plain text is shown in full and never becomes a card. What stays here is
+    the vocabulary of the one trigger (kinds, formats, titles).
 
 Everything here is pure and dependency-free, so the kernel, the WS bridge and
 the tests share ONE definition of each rule (REQ-22 / REQ-23). The only state is
@@ -69,7 +71,9 @@ def is_artifact_ask(text: str) -> bool:
 
     Narrow on purpose (owner bound): "create a file with three bullets about
     sleep" is not an artifact ask, so it earns no card even when the agent uses
-    write_file + read_file to do it.
+    write_file + read_file to do it. Only the TASK-card gate reads this now
+    (``card_warranted``): the artifact is the visible result, so no task card
+    is drawn beside it. It no longer mints an artifact.
     """
     t = (text or "").lower()
     if not t:
@@ -199,104 +203,73 @@ def _first_heading(content: Optional[str]) -> str:
     return ""
 
 
-def card_title_for(content: str, ask: str = "") -> str:
-    """The card label for a freshly minted artifact: heading, else the ask, else
-    the first substantive line.
+# ── The one trigger: create_artifact (reply-surface audit, Phase A) ──────────
+# Kinds the model may name. The wire format (RichDocument format) is derived
+# from the kind, so the model never picks a render format by hand again.
+ARTIFACT_KINDS = ("document", "code", "data", "diagram", "page", "image")
 
-    A heading is the artifact's own name. Without one, the ASK names it far
-    better than an excerpt ("Markdown Report About The Water Cycle" beats "The
-    water cycle is a continuous process"). Owner, 2026-09-25: "All titles and
-    labels should be unique to the artifact created".
+# The card title is a label, not a sentence. Longer titles are cut (and logged
+# by the caller) instead of refused: a long title is a style slip, not a reason
+# to lose the artifact.
+ARTIFACT_TITLE_MAX = 60
+
+# The old `show` payload names a render FORMAT; create_artifact names a KIND.
+_KIND_FOR_FORMAT = {
+    "markdown": "document", "text": "document", "": "document",
+    "html": "page",
+    "diagram": "diagram", "mermaid": "diagram", "svg": "diagram",
+    "json": "data", "table": "data", "csv": "data",
+    "image": "image",
+}
+
+
+def kind_for_show_format(fmt: Optional[str]) -> str:
+    """The artifact kind for a `show` payload's format (unknown -> document)."""
+    return _KIND_FOR_FORMAT.get(str(fmt or "").strip().lower(), "document")
+
+
+def artifact_format_and_body(
+    kind: str, content: str, language: Optional[str] = None
+) -> "tuple[str, str]":
+    """``(render format, stored body)`` for a create_artifact call.
+
+    document -> markdown as given; code -> markdown holding ONE fenced block
+    tagged with the language (a body that is already a single fence is kept, so
+    it is not wrapped twice); data -> json when the language is json, else the
+    text as given (CSV, a markdown table); diagram -> diagram; page -> html;
+    image -> image. The fence is made longer than any backtick run inside the
+    code, so code that itself contains a fence cannot close the block early.
     """
-    heading = _first_heading(content)
-    if heading:
-        return heading
-    from_ask = title_from_ask(ask)
-    if from_ask and from_ask != "Document":
-        return from_ask
-    return card_title_from_content(content)
+    lang = (language or "").strip().lower()
+    if kind == "code":
+        body = content.strip("\n")
+        if body.lstrip().startswith("```") and body.rstrip().endswith("```"):
+            return "markdown", body
+        fence = "```"
+        while fence in body:
+            fence += "`"
+        return "markdown", f"{fence}{lang}\n{body}\n{fence}"
+    if kind == "data":
+        return ("json" if lang == "json" else "markdown"), content
+    if kind == "diagram":
+        return "diagram", content
+    if kind == "page":
+        return "html", content
+    if kind == "image":
+        return "image", content
+    return "markdown", content
 
 
-def title_from_ask(text: str) -> str:
-    """A card title derived from the user's ask, for a body with no heading.
-
-    Live 2026-09-25: a 250-word report ask produced a card titled "Document"
-    (the fallback label) because the model's body had no H1. The ask itself says
-    what the document is, so it supplies the label: "write a markdown report
-    about the water cycle" -> "Markdown Report About The Water Cycle".
-    """
-    t = (text or "").strip()
-    lowered = t.lower()
-    for lead in (
-        "write me ", "write a ", "write an ", "write ", "create a ", "create an ",
-        "create ", "make a ", "make an ", "make ", "draft a ", "draft an ",
-        "draft ", "generate a ", "generate ", "produce a ", "produce ",
-        "compose a ", "compose ", "prepare a ", "prepare ", "build a ", "build ",
-        "author a ", "author ", "give me a ", "give me ",
-    ):
-        if lowered.startswith(lead):
-            t = t[len(lead):]
+def first_sentence(text: Optional[str], limit: int = 140) -> str:
+    """The first sentence of ``text`` on one line, at most ``limit`` chars."""
+    flat = " ".join((text or "").split())
+    if not flat:
+        return ""
+    for i, ch in enumerate(flat):
+        if ch in ".!?" and (i + 1 == len(flat) or flat[i + 1] == " "):
+            flat = flat[: i + 1]
             break
-    # The trailing size request is not part of the name; the SUBJECT is kept
-    # ("a report about the water cycle, around 250 words" -> the water cycle).
-    t = t.split(",")[0].strip()
-    if " around " in t.lower():
-        t = t[: t.lower().index(" around ")].strip()
-    t = t.strip(" .")
-    return (t[:60].strip().title() or "Document")
-
-
-def is_substantial_markdown(content: str, *, min_chars: int = 400) -> bool:
-    """A report-length body with markdown structure (bullets, bold, paragraphs).
-
-    Owner bound 2026-09-25: "artifacts are really only for mds and reports" —
-    the line is about TYPE, not about a heading. Live proof: "write a markdown
-    report about the water cycle, around 250 words" produced a proper 250-word
-    report with bold lead-ins and bullets, NO heading, and it stayed a scrolling
-    bubble because the shape test wanted a heading.
-
-    Consulted only when the ASK was already an artifact ask, so it cannot turn a
-    long chat answer into a card — the deleted 2026-07-31 length heuristic had no
-    such gate, which is exactly why it painted cards over long answers.
-    """
-    text = content or ""
-    if len(text) < min_chars:
-        return False
-    markers = 0
-    if "\n- " in text or "\n* " in text or text.startswith(("- ", "* ")):
-        markers += 1
-    if "**" in text or "__" in text:
-        markers += 1
-    if "\n\n" in text.strip():
-        markers += 1
-    return markers >= 2
-
-
-def is_artifact_document(content: str) -> bool:
-    """True when a body reads as a document worth keeping (markdown/report).
-
-    A structural test, not a length heuristic: a markdown heading of ANY level
-    (a report uses H2s), a markdown table with at least two columns, or a fenced
-    block. A plain note or a bullet list with no heading returns False — that is
-    the owner's line, and the same test is used by the render path and by the
-    `show_omitted_on_artifact` calibration log, so the two cannot drift.
-    """
-    text = content or ""
-    if not text.strip():
-        return False
-    if "```" in text:
-        return True
-    for line in text.splitlines():
-        s = line.strip()
-        if s.startswith("#"):
-            # Any heading level: '# Report' and '## Section' both mean document.
-            rest = s.lstrip("#")
-            if rest[:1].isspace() and rest.strip():
-                return True
-        # A table row with two or more cells = tabular content.
-        if s.startswith("|") and s.count("|") >= 3:
-            return True
-    return False
+    return flat[:limit].rstrip()
 
 
 def is_tool_result_envelope(content: str) -> bool:

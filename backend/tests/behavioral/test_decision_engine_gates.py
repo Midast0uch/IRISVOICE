@@ -144,6 +144,12 @@ class TestCtDe6EventShapes:
         # joins the same way (card_title_for emit at agent_kernel.py:10360) —
         # the third documented additive-key extension.
         pinned |= {"card_id", "partial", "title"}
+        # 2026-10-05 (reply-surface audit, Phase A — owner-approved): create_artifact
+        # is the one door to a card and its event ALWAYS carries `kind`, `summary`
+        # and `language` beside `title`, so a reload and the panel can show the
+        # same card. The fourth documented additive-key extension; pinned by
+        # test_create_artifact_contract.py (EVENT_KEYS). Any OTHER key still fails.
+        pinned |= {"kind", "summary", "language"}
         for ks in keys_seen:
             assert ks <= pinned, f"event shape drifted: {ks - pinned}"
 

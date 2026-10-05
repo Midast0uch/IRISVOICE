@@ -10475,6 +10475,11 @@ class IRISGateway:
                             # title labels on rehydrate").
                             "card_id": r.get("card_id"),
                             "title": r.get("title"),
+                            # Phase A: the rest of the artifact's identity, so a
+                            # reload shows the same card the live turn showed.
+                            "kind": r.get("kind"),
+                            "summary": r.get("summary"),
+                            "language": r.get("language"),
                         }
                         for r in rows
                     ]

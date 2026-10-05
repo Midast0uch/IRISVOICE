@@ -28,7 +28,7 @@ COMPRESS = 1
 # A call that changed the world consolidates the work.
 CONSOLIDATING = frozenset({
     "write_file", "edit_file", "create_directory", "run_command", "git_commit",
-    "git_push", "render_document", "create_artifact", "save_memory",
+    "git_push", "create_artifact", "save_memory",
 })
 # A call that only looked gathers.
 GATHER = frozenset({

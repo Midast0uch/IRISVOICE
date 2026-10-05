@@ -270,14 +270,12 @@ def test_ct_doc_2_render_carries_sources_when_provenance():
 def test_ct_doc_2_render_absent_sources_for_plain():
     """T4/REQ-6: a document render with no provenance has empty sources.
 
-    INPUT CHANGED 2026-09-25, called out on purpose: this test used to pass the
-    stand-in body "plain doc", which has no document shape — a heading, a table
-    or a fence. The owner's bound of 2026-09-25 makes a body like that a reply
-    bubble rather than a card, so the stand-in no longer renders at all. The
-    property under test (REQ-6: no provenance -> empty sources, no har_path) is
-    unchanged; only the body now has the shape a rendered document must have.
-    The new bound itself is pinned by
-    ``test_plain_body_is_answered_as_text_not_a_card`` below.
+    INPUT CHANGED 2026-09-25 (stand-in body "plain doc" -> a body with a
+    heading); since the reply-surface audit, Phase A, ANY `show` body is a card
+    (no body-shape demotion), so the input would work either way. The property
+    under test (REQ-6: no provenance -> empty sources, no har_path) is
+    unchanged. That a plain reply never becomes a card is pinned by
+    test_create_artifact_contract.py.
     """
     k, _ = _make_kernel_with_store()
     resp = json.dumps(
@@ -296,48 +294,6 @@ def test_ct_doc_2_render_absent_sources_for_plain():
     data = renders[0]
     assert data["sources"] == []
     assert data["har_path"] is None
-
-
-def test_plain_body_is_answered_as_text_not_a_card():
-    """Owner bound 2026-09-25: a note or a list is not an artifact.
-
-    A `show` payload whose markdown body has no document shape (here a bullet
-    list, the exact content of the "three bullets about sleep" turn) must be
-    answered in the reply bubble: no document:render, so no prism card.
-    """
-    k, _ = _make_kernel_with_store()
-    k._log_surface = lambda **kw: None  # surface logging is not under test here
-    list_body = json.dumps(
-        {
-            "speak": "here are the bullets",
-            "show": {
-                "format": "markdown",
-                "content": "- Sleep helps memory.\n- Keep a schedule.",
-            },
-        }
-    )
-
-    def run_list():
-        k._process_structured_response(list_body, turn_id="t2", conversation_id="c1")
-
-    bus_list = _patch_emit(run_list)
-    assert [d for (ev, d) in bus_list.emits if ev.value == "document:render"] == [], (
-        "a bullet list must not mint a prism card"
-    )
-
-    doc_body = json.dumps(
-        {"speak": "here is the report", "show": {"format": "markdown",
-                                                 "content": "# Report\n\nBody."}}
-    )
-
-    def run_doc():
-        k._process_structured_response(doc_body, turn_id="t3", conversation_id="c1")
-
-    bus_doc = _patch_emit(run_doc)
-    assert [d for (ev, d) in bus_doc.emits if ev.value == "document:render"], (
-        "a markdown document must still render as a prism card"
-    )
-
 
 
 def _make_bridge_with_store():

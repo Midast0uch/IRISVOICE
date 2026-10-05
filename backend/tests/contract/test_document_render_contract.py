@@ -7,10 +7,9 @@ Verifies the ChatCard-redesign contract (pin_9e97e21340e7):
 2. The RENDER is the AGENT'S CHOICE — it must come from the agent's ``show``
    payload (format chosen by the agent), NOT a hardcoded auto-emit. So
    _capture_tool_result must NOT emit DOCUMENT_RENDER on its own.
-3. ESCALATION — if the agent returns a web result WITHOUT a ``show`` (didn't
-   choose a format), _maybe_escalate_web_format asks the user via a
-   QuestionCard (ask_user_question with format options). The frontend renders
-   that as a multiple-choice QuestionCard (components/chat/QuestionCard.tsx).
+3. (Retired, reply-surface audit Phase A) The format question that used to
+   follow a web result with no ``show`` is deleted: a plain answer is the
+   answer, and a card appears only through create_artifact.
 
 Frontend contract (components/chat-view.tsx handleDocumentRender) requires:
   content (required), format (optional, default markdown), alternatives,
@@ -50,7 +49,6 @@ def _make_kernel() -> AgentKernel:
     kernel._conversation_id = "conv-1"
     kernel._turn_id = "turn-1"
     kernel._store_document_data = MagicMock(return_value=None)
-    kernel._pending_web_doc_id = None
     kernel._last_render_emitted = False
     return kernel
 
@@ -76,12 +74,10 @@ class TestWebResultCaptureContract:
         )
         # Captured into the store (reformat-able) -> doc_id returned.
         assert doc_id is not None
-        # Pending web doc tracked for escalation check.
-        assert kernel._pending_web_doc_id == doc_id
         # NOT auto-rendered with a hardcoded format — agent must choose.
         assert len(renders) == 0
 
-    def test_trusted_tool_does_not_trigger_web_escalation(self):
+    def test_trusted_tool_result_is_captured(self):
         kernel = _make_kernel()
         doc_id = AgentKernel._capture_tool_result(
             kernel,
@@ -91,60 +87,6 @@ class TestWebResultCaptureContract:
             turn_id="turn-1",
         )
         assert doc_id is not None
-        assert kernel._pending_web_doc_id is None  # trusted tools don't escalate
-
-
-class TestWebFormatEscalationContract:
-    def test_escalates_when_agent_did_not_render(self):
-        """If the agent returned a web result without a `show` (no render),
-        escalate to a QuestionCard with format options."""
-        kernel = _make_kernel()
-        kernel._pending_web_doc_id = "doc-xyz"
-        kernel._last_render_emitted = False
-        questions = _collect(IRISStreamEvent.QUESTION_ASK)
-        with patch(
-            "backend.agent.tools.ask_user_tool.get_ask_user_tool"
-        ) as mock_get:
-            # Mock tool whose ask() emits the real question:ask event, mirroring
-            # the production AskUserTool.ask behavior.
-            mock_tool = MagicMock()
-
-            def _fake_ask(**kwargs):
-                get_event_bus().emit(
-                    IRISStreamEvent.QUESTION_ASK,
-                    data={
-                        "text": kwargs.get("text", ""),
-                        "options": kwargs.get("options", []),
-                        "allow_other": kwargs.get("allow_other", False),
-                        "turn_id": kwargs.get("turn_id"),
-                        "conversation_id": kwargs.get("conversation_id"),
-                        "context": kwargs.get("context", {}),
-                    },
-                    turn_id=kwargs.get("turn_id"),
-                    conversation_id=kwargs.get("conversation_id"),
-                )
-
-            mock_tool.ask.side_effect = _fake_ask
-            mock_get.return_value = mock_tool
-            kernel._maybe_escalate_web_format("turn-1", "conv-1")
-        # QuestionCard event emitted with format options (flat string list,
-        # matching the frontend QuestionCard `options?: string[]` contract).
-        assert len(questions) == 1
-        payload = questions[0].data
-        assert "format" in payload["text"].lower() or "present" in payload["text"].lower()
-        opts = set(payload["options"])
-        assert {"Markdown", "Table", "HTML", "Diagram", "Plain text"}.issubset(opts)
-        # Flag cleared after escalation.
-        assert kernel._pending_web_doc_id is None
-
-    def test_no_escalation_when_agent_rendered(self):
-        """If the agent already rendered (chose a format), no escalation."""
-        kernel = _make_kernel()
-        kernel._pending_web_doc_id = "doc-xyz"
-        kernel._last_render_emitted = True
-        questions = _collect(IRISStreamEvent.QUESTION_ASK)
-        kernel._maybe_escalate_web_format("turn-1", "conv-1")
-        assert len(questions) == 0
 
 
 class TestPrismCardIdentity:
@@ -233,4 +175,3 @@ class TestPrismCardIdentity:
         env = kernel._card_envelope(document_id="no-such-document")
         assert env["card_id"] is None
         assert "conversation_id" in env
-        assert kernel._pending_web_doc_id is None
