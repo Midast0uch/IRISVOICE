@@ -245,6 +245,16 @@ def _node_claim_of(tool: str) -> Optional[str]:
     return None
 
 
+def _node_call_parallel_ok(name: str, params: dict) -> bool:
+    """A node call may run side by side with its siblings: no side effect (the
+    permission tier, the one authority on that) and no exclusive resource
+    (browser page / screen - two calls of one node would wait on its own claim)."""
+    from backend.agent.permissions import PermissionTier, classify_tool
+
+    return (_node_claim_of(name) is None
+            and classify_tool(name, params) == PermissionTier.READ_ONLY)
+
+
 def _der_node_load() -> float:
     """Load of the node domain: the share of the node provider's learned rate
     ceiling in use (the router's own rate meter). Never live Sigma (CT-3/4)."""
@@ -17287,6 +17297,7 @@ Respond with a JSON object:
             expected=str(getattr(item, "expected_output", "") or ""),
             parent_goal=str(getattr(item, "parent_description", "") or ""),
             review_note=str(getattr(item, "review_feedback", "") or ""),
+            parallel_ok=_node_call_parallel_ok if _DER_PARALLEL else None,  # one off switch
         ))
         finally:
             for _c in _held:

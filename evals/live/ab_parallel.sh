@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # A/B of the parallel DAG scheduler (IRIS_DER_PARALLEL=1 vs 0), interleaved so
 # provider speed drift hits both arms. Usage: bash evals/live/ab_parallel.sh <task> <runs-per-arm> <arms...>
-# e.g. bash evals/live/ab_parallel.sh r09_three_facts 2 1 0 1 0
+# e.g. bash evals/live/ab_parallel.sh r09_three_facts,r06_tokyo_osaka 2 1 0 1 0 (comma = several tasks)
 cd "$(dirname "$0")/../.." || exit 1
 TASK=$1; RUNS=$2; shift 2
 for ARM in "$@"; do
@@ -17,8 +17,10 @@ for ARM in "$@"; do
   python evals/live/bind.py tool_execution inceptionlabs mercury-2 >/dev/null
   python evals/live/web_on.py >/dev/null
   for r in $(seq 1 "$RUNS"); do
-    python evals/run_evals.py --task "$TASK" --no-model-check > "logs/ab_${TASK}_${ARM}_$r.log" 2>&1
-    echo "ARM parallel=$ARM run $r: $(grep -E '^(PASS|FAIL)' "logs/ab_${TASK}_${ARM}_$r.log")"
+    TASKARGS=""; for t in ${TASK//,/ }; do TASKARGS="$TASKARGS --task $t"; done
+    LOG="logs/ab_$(echo "$TASK" | tr ',' '+' | cut -c1-60)_${ARM}_$r.log"
+    python evals/run_evals.py $TASKARGS --no-model-check > "$LOG" 2>&1
+    grep -E '^(PASS|FAIL)' "$LOG" | sed "s/^/ARM parallel=$ARM run $r: /"
   done
 done
 echo ABDONE

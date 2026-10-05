@@ -183,6 +183,11 @@ class NodeContext:
     expected: str = ""
     parent_goal: str = ""
     review_note: str = ""
+    # Natural split (owner 2026-10-04): the calls ONE model answer asks for
+    # are sibling nodes of the DAG. (name, params) -> True when that call may
+    # run side by side with its siblings (no side effect, no exclusive
+    # resource). None = every batch runs in order.
+    parallel_ok: Optional[Callable[[str, dict], bool]] = None
 
 
 @dataclass
@@ -217,6 +222,61 @@ def _status(text: str) -> tuple:
     m = matches[-1]
     clean = (text[:m.start()] + text[m.end():]).strip()
     return m.group(1).lower() == "done", m.group(2).strip(), clean
+
+
+def _call_key(name: str, params: Optional[dict]) -> Optional[str]:
+    """The identity of one call after the close args are removed - the same
+    key the batch loop uses for its repeat check."""
+    if params is None:
+        return None
+    return json.dumps([name, params], sort_keys=True, default=str)
+
+
+def _prefetch_siblings(ctx: "NodeContext", tool_calls: List[Dict[str, Any]],
+                       allowed: set) -> Dict[str, Any]:
+    """Natural split (owner 2026-10-04): when EVERY call of one model answer
+    may run side by side (ctx.parallel_ok: no side effect, no exclusive
+    resource), run them at once and return {call key: raw result}; the batch
+    loop then settles them in the model's order exactly as before. Live r09
+    (three facts): one node's three searches ran 2.5 + 3.6 + 3.3 s in a row.
+    Any other batch -> {} (runs in order)."""
+    if ctx.parallel_ok is None or len(tool_calls) < 2:
+        return {}
+    jobs: Dict[str, tuple] = {}
+    for tc in tool_calls:
+        fn = tc.get("function") or {}
+        name = fn.get("name", "")
+        raw_args = fn.get("arguments") or "{}"
+        try:
+            params = json.loads(raw_args) if isinstance(raw_args, str) else dict(raw_args)
+        except (ValueError, TypeError):
+            return {}
+        if not isinstance(params, dict) or name not in allowed:
+            return {}
+        params = {k: v for k, v in params.items() if k not in ("step_done", "step_summary")}
+        try:
+            if not ctx.parallel_ok(name, params):
+                return {}
+        except Exception:  # noqa: BLE001 - unsure = in order
+            return {}
+        jobs.setdefault(_call_key(name, params), (name, params))
+    if len(jobs) < 2:
+        return {}
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _run(name: str, params: dict) -> Any:
+        try:
+            return ctx.execute(name, params)
+        except Exception as exc:  # noqa: BLE001 - typed result, as in the loop
+            return {"success": False, "error": f"{type(exc).__name__}: {exc}", "error_type": "exception"}
+
+    t0 = time.monotonic()
+    with ThreadPoolExecutor(max_workers=len(jobs), thread_name_prefix="node-sibling") as pool:
+        futs = {k: pool.submit(_run, n, p) for k, (n, p) in jobs.items()}
+        out = {k: f.result() for k, f in futs.items()}
+    logger.info("[run_node] conv=%s %d sibling calls ran side by side in %.1fs",
+                ctx.conv_id, len(jobs), time.monotonic() - t0)
+    return out
 
 
 def _clip(text: str, limit: int) -> str:
@@ -430,6 +490,7 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
             batch_changed = False
             batch_summaries: List[str] = []
             pending_shot = ""
+            prefetched = _prefetch_siblings(ctx, tool_calls, allowed)
             for tc in tool_calls:
                 fn = tc.get("function") or {}
                 name = fn.get("name", "")
@@ -469,10 +530,13 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                             ctx.on_call(name, params)
                         except Exception as exc:  # noqa: BLE001 — advisory only
                             logger.debug("[run_node] shadow hook failed: %r", exc)
-                    try:
-                        raw = ctx.execute(name, params)
-                    except Exception as exc:  # noqa: BLE001 — typed result, the model reacts
-                        raw = {"success": False, "error": f"{type(exc).__name__}: {exc}", "error_type": "exception"}
+                    if key in prefetched:  # a sibling that already ran side by side
+                        raw = prefetched[key]
+                    else:
+                        try:
+                            raw = ctx.execute(name, params)
+                        except Exception as exc:  # noqa: BLE001 — typed result, the model reacts
+                            raw = {"success": False, "error": f"{type(exc).__name__}: {exc}", "error_type": "exception"}
                 failed = _failed(raw)
                 if failed:
                     # A FAILED call may be retried as is (live 2026-10-02: a
