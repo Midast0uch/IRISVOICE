@@ -583,12 +583,17 @@ def stall_bound(base: str, model: str, timeout_s: Optional[float]) -> Optional[f
 # then the SAME request answered in ~3 s (live: 12 of 148 mercury-2.5 calls
 # took >= 30 s, p50 3.2 s, p90 4.6 s). Waiting out the stall bound cost 30 s a
 # stall. When the first request has no answer after max(_HEDGE_MIN_S,
-# _HEDGE_FACTOR x p90), the same request is sent again on the same client and
+# _HEDGE_FACTOR x p75), the same request is sent again on the same client and
 # the FIRST answer wins - nothing is cancelled to make room, the stall bound
 # and its retry still stand behind it. A legitimately long call only costs a
 # duplicate request.
+# p75, not p90 (owner-approved 2026-10-05): the stalls themselves feed the
+# profile, so p90 rose with them - the hedge fired at 34.6 s and 39.0 s on 37-53 s
+# stalls. mercury-2.5 over 326 calls: median 3.85 s, normal calls end by ~10 s,
+# 33 stalled 12-131 s; p75 ~5 s is not moved by the stall tail.
 _HEDGE_MIN_S = 3.0
 _HEDGE_FACTOR = 2.0
+_HEDGE_QUANTILE = 0.75
 
 
 def hedge_delay(base: str, model: str, read_s: Optional[float]) -> Optional[float]:
@@ -599,8 +604,8 @@ def hedge_delay(base: str, model: str, read_s: Optional[float]) -> Optional[floa
         times = sorted(_CALL_TIMES.get((base, model), ()))
     if len(times) < 5:
         return None
-    p90 = times[min(len(times) - 1, int(len(times) * 0.9))]
-    delay = max(_HEDGE_MIN_S, _HEDGE_FACTOR * p90)
+    q = times[min(len(times) - 1, int(len(times) * _HEDGE_QUANTILE))]
+    delay = max(_HEDGE_MIN_S, _HEDGE_FACTOR * q)
     return delay if (read_s is None or delay < read_s) else None
 
 
@@ -1028,7 +1033,7 @@ class ApiHttpxTransport:
                         def _on_hedge(_h=_hedge):
                             _record_attempt(self)  # the hedge is a request too
                             logger.warning(
-                                "[ApiHttpx] hedge: model=%s no answer in %.1f s (2 x p90) "
+                                "[ApiHttpx] hedge: model=%s no answer in %.1f s (2 x p75) "
                                 "-- sending the same request again, first answer wins",
                                 model, _h,
                             )

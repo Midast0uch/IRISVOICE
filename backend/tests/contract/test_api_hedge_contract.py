@@ -4,7 +4,7 @@ Live 2026-10-04: mercury-2.5 calls p50 3.2 s, p90 4.6 s; 12 of 148 took >= 30 s
 because the provider gave no answer for 30 s (the stall bound) and the SAME
 request then answered in ~3 s. r06 lost 60 s of an 88 s turn this way.
 
-Contract: with no answer after max(_HEDGE_MIN_S, 2 x p90) the transport sends
+Contract: with no answer after max(_HEDGE_MIN_S, 2 x p75) the transport sends
 the same request again and returns the FIRST answer; with no profile there is
 no hedge; the stall bound and its retry still stand behind it (see
 test_api_stall_bound_contract.py).
@@ -37,7 +37,9 @@ def test_the_hedge_delay_comes_from_the_models_own_times():
     assert hedge_delay(BASE, "m", 30.0) is None  # never guess before 5 samples
     for s in (1.0, 2.0, 1.5, 2.5, 4.0, 1.2):
         tmod._record_call_time(BASE, "m", s)
-    assert hedge_delay(BASE, "m", 30.0) == pytest.approx(8.0)  # 2 x p90 4.0
+    # CHANGED 2026-10-05 (owner-approved): the delay is 2 x p75, not 2 x p90 -
+    # the stalls fed p90 and pushed the hedge to 35-39 s. Same samples: p75 2.5.
+    assert hedge_delay(BASE, "m", 30.0) == pytest.approx(5.0)  # 2 x p75 2.5
     assert hedge_delay(BASE, "m", 5.0) is None  # never past the read limit
     for _ in range(10):
         tmod._record_call_time(BASE, "fast", 0.5)
@@ -47,7 +49,7 @@ def test_the_hedge_delay_comes_from_the_models_own_times():
 def test_a_stalled_request_is_hedged_and_the_first_answer_wins(monkeypatch):
     for s in (0.1, 0.1, 0.1, 0.1, 0.1):
         tmod._record_call_time(BASE, "m", s)
-    # The delay is a parameter of the rule (max(min, 2 x p90)); a short floor
+    # The delay is a parameter of the rule (max(min, 2 x p75)); a short floor
     # keeps the test fast without changing what it measures.
     monkeypatch.setattr(tmod, "_HEDGE_MIN_S", 0.3)
     release = threading.Event()
