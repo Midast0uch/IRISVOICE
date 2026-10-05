@@ -12,6 +12,7 @@ from typing import Optional
 
 from backend.memory.interface import MemoryInterface
 from backend.memory.config import get_config
+from backend.memory.db import app_flush, app_write
 
 logger = logging.getLogger(__name__)
 
@@ -116,22 +117,22 @@ class RetentionManager:
             if preserve_confirmed:
                 confirmed_condition = "AND user_confirmed = 0"
             
-            query = f"""
-                DELETE FROM episodes
+            where = f"""
                 WHERE timestamp < ?
                 AND outcome_score < ?
                 {confirmed_condition}
-                RETURNING id, task_summary, outcome_score, timestamp
             """
-            
-            # Execute deletion
-            cursor = self.memory.episodic.db.execute(
-                query,
-                (cutoff_str, min_score)
-            )
-            
-            deleted = cursor.fetchall()
-            self.memory.episodic.db.commit()
+
+            # One writer (2026-10-04): read the rows the delete will remove
+            # (for the log), then queue the delete on the store's one writer.
+            app_flush(5.0)
+            _db = self.memory.episodic.db
+            deleted = _db.execute(
+                f"SELECT id, task_summary, outcome_score, timestamp FROM episodes {where}",
+                (cutoff_str, min_score),
+            ).fetchall()
+            if deleted:
+                app_write(_db, f"DELETE FROM episodes {where}", (cutoff_str, min_score))
             
             if deleted:
                 logger.info(

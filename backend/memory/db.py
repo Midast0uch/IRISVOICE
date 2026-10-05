@@ -135,6 +135,33 @@ def app_write(conn, sql: str, params=()) -> None:
     conn.commit()
 
 
+_LANE_CONNS = __import__("threading").local()
+
+
+def lane_connection(conn):
+    """This thread's OWN connection to ``conn``'s store file (opened once per
+    thread, kept): a side lane's reads must not hold the connection the answer
+    path reads on. A connection serializes its statements, so a slow lane scan
+    on the SHARED mycelium connection held the answer path's recall read 4+ s
+    (live 2026-10-04); WAL readers on separate connections never wait on each
+    other. Writes still go through app_write (the native one writer). A
+    connection without a store path (tests, other files) is returned as is."""
+    path = getattr(conn, "store_path", "")
+    if not path:
+        return conn
+    conns = getattr(_LANE_CONNS, "by_path", None)
+    if conns is None:
+        conns = _LANE_CONNS.by_path = {}
+    own = conns.get(path)
+    if own is None:
+        try:
+            own = conns[path] = open_encrypted_memory(path, b"")
+        except Exception as exc:  # noqa: BLE001 - the shared one still works
+            logger.warning("[db] lane connection not opened (%s): %s", path, exc)
+            return conn
+    return own
+
+
 def owns_store(conn) -> bool:
     """True when app_write on ``conn`` is queued on the native writer."""
     path = getattr(conn, "store_path", "")
@@ -146,10 +173,21 @@ def owns_store(conn) -> bool:
 
 
 def app_flush(timeout_s: float = 5.0) -> bool:
-    """Wait until every queued app-store write is on disk. True = drained."""
+    """Wait until every queued app-store write is on disk. True = drained.
+    Only a reader that DECIDES on a row it (or an earlier job) just wrote
+    calls this; a steering read uses the last settled rows."""
     from backend.gateway.iris_ffi import ffi_native_flush
 
-    return ffi_native_flush(timeout_s)
+    t0 = time.perf_counter()
+    ok = ffi_native_flush(timeout_s)
+    waited = time.perf_counter() - t0
+    if waited > 0.3:  # a flush on a live path is a cost: make it visible
+        import sys as _sys
+
+        _f = _sys._getframe(1)
+        logger.info("[db] app_flush waited %.2fs caller=%s:%s", waited,
+                    _f.f_code.co_filename.rsplit("\\", 1)[-1], _f.f_code.co_name)
+    return ok
 
 
 def open_encrypted_memory(db_path: str, biometric_key: bytes):

@@ -440,6 +440,17 @@ _RESOURCE_LIMIT_RE = re.compile(
 _RECALL_TRACES_MAX = 6      # recalls credited per step (a step receives at most a few)
 
 
+# Has this recall trace an outcome event already? The family names the
+# (family, label) index; without it the LIKE scanned the whole table on the
+# memory lane and held the SHARED connection - the answer path's recall read
+# on that connection waited behind it (live 2026-10-04: 4+ s before a step,
+# cold pages on this disk). Family "memory" per the event alphabet.
+_RECALL_DONE_SQL = (
+    "SELECT 1 FROM memory_events WHERE family = 'memory' "
+    "AND label IN ('RECALL_HELPED', 'RECALL_MISLED') AND links LIKE ? LIMIT 1"
+)
+
+
 def new_recall_trace_id() -> str:
     """The id that follows one delivered recall to the outcome of the step it reached."""
     return "rt-" + uuid.uuid4().hex[:12]
@@ -454,10 +465,7 @@ def _attribute_recalls(conn, trace_ids: Optional[List[str]], failed: bool, verif
     # The verifier ruled on the step -> inside evidence; no ruling -> none.
     evidence = "verifier" if verified in ("VERIFIED", "FAILED") else "none"
     for trace in list(trace_ids or [])[:_RECALL_TRACES_MAX]:
-        done = conn.execute(
-            "SELECT 1 FROM memory_events WHERE label IN ('RECALL_HELPED', 'RECALL_MISLED') "
-            "AND links LIKE ? LIMIT 1", ("%" + str(trace) + "%",),
-        ).fetchone()
+        done = conn.execute(_RECALL_DONE_SQL, ("%" + str(trace) + "%",)).fetchone()
         if done:
             continue
         pending.append(dict(label=label, evidence=evidence, step=step_id, task=task_id,
@@ -774,7 +782,10 @@ def submit(mi, fn_name: str, **kwargs) -> bool:
                 coords = latest_coords_str(mi, kwargs.get("thread_id") or "")
             except Exception:  # noqa: BLE001
                 coords = None
-            globals()[fn_name](conn, coords=coords, **kwargs)
+            from backend.memory.db import lane_connection
+
+            # this lane's own connection: its scans never hold the shared one
+            globals()[fn_name](lane_connection(conn), coords=coords, **kwargs)
 
         return bool(lane("memory_events").submit(f"memory_events:{fn_name}", _job))
     except Exception as exc:  # noqa: BLE001

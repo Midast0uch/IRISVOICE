@@ -27,7 +27,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-from backend.memory.db import Connection, app_write, owns_store
+from backend.memory.db import Connection, app_flush, app_write, owns_store
 
 logger = logging.getLogger(__name__)
 
@@ -210,7 +210,8 @@ class PinStore:
         """Create a new pin. Returns pin_id."""
         pin_id = str(uuid.uuid4())
         now = time.time()
-        self._conn.execute(
+        app_write(
+            self._conn,
             f"INSERT INTO {_PIN_TABLE} ({_PIN_COLS}) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
@@ -222,7 +223,6 @@ class PinStore:
                 project_id, self._origin_id, now, now, 1 if is_permanent else 0,
             ),
         )
-        self._conn.commit()
         self._notify_write()
         logger.debug("[PinStore] add pin_id=%s title=%r type=%s", pin_id, title, pin_type)
         return pin_id
@@ -255,26 +255,39 @@ class PinStore:
         vals.append(time.time())
         vals.append(pin_id)
 
-        cur = self._conn.execute(
+        # One writer: rowcount is only truthiness here, so check the row first
+        # (flush: an add() queued just before must be visible).
+        app_flush()
+        found = self._conn.execute(
+            f"SELECT 1 FROM {_PIN_TABLE} WHERE pin_id = ?", (pin_id,)
+        ).fetchone() is not None
+        app_write(
+            self._conn,
             f"UPDATE {_PIN_TABLE} SET {', '.join(sets)} WHERE pin_id = ?", vals,
         )
-        self._conn.commit()
-        if cur.rowcount > 0:
+        if found:
             self._notify_write()
             return True
         return False
 
     def delete(self, pin_id: str) -> bool:
         """Delete a pin and all of its links. Returns True if a row was removed."""
-        cur = self._conn.execute(f"DELETE FROM {_PIN_TABLE} WHERE pin_id = ?", (pin_id,))
-        self._conn.execute(
+        # One writer: rowcount is only truthiness here, so check the row first
+        # (flush: an add() queued just before must be visible). The two
+        # deletes are independent and run in queue order.
+        app_flush()
+        found = self._conn.execute(
+            f"SELECT 1 FROM {_PIN_TABLE} WHERE pin_id = ?", (pin_id,)
+        ).fetchone() is not None
+        app_write(self._conn, f"DELETE FROM {_PIN_TABLE} WHERE pin_id = ?", (pin_id,))
+        app_write(
+            self._conn,
             "DELETE FROM mycelium_pin_links "
             "WHERE (source_type='pin' AND source_id=?) "
             "OR (target_type='pin' AND target_id=?)",
             (pin_id, pin_id),
         )
-        self._conn.commit()
-        if cur.rowcount > 0:
+        if found:
             self._notify_write()
             return True
         return False
@@ -362,6 +375,7 @@ class PinStore:
     # ------------------------------------------------------------------
 
     def get(self, pin_id: str) -> Optional[Pin]:
+        app_flush()  # one writer: every read below sees the queued writes
         row = self._conn.execute(
             f"SELECT {_PIN_COLS} FROM {_PIN_TABLE} WHERE pin_id = ?", (pin_id,),
         ).fetchone()
@@ -369,6 +383,7 @@ class PinStore:
 
     def get_by_title(self, title: str) -> Optional[Pin]:
         """Exact-title lookup — used by <recall pin='Title'/> form."""
+        app_flush()
         row = self._conn.execute(
             f"SELECT {_PIN_COLS} FROM {_PIN_TABLE} WHERE title = ? "
             "ORDER BY updated_at DESC LIMIT 1",
@@ -382,6 +397,7 @@ class PinStore:
         pin_type: Optional[str] = None,
         limit: int = 50,
     ) -> List[Pin]:
+        app_flush()
         clauses, vals = [], []
         if project_id is not None:
             clauses.append("project_id = ?")
@@ -400,6 +416,7 @@ class PinStore:
 
     def list_checkpoints_for_file(self, file_path: str, limit: int = 20) -> List[Pin]:
         """Return all checkpoint pins for a given file path in chronological order."""
+        app_flush()
         rows = self._conn.execute(
             f"SELECT {_PIN_COLS} FROM {_PIN_TABLE} "
             "WHERE pin_type = 'checkpoint' "
@@ -427,6 +444,7 @@ class PinStore:
         """
         if not query:
             return []
+        app_flush()
         q = query.lower().strip()
         active_weights = dict(self._weights)
         if weights:
@@ -480,6 +498,7 @@ class PinStore:
 
         depth=1 returns direct neighbours; higher values traverse transitively.
         """
+        app_flush()
         seen, frontier, results = {pin_id}, [pin_id], []
         for _ in range(max(1, depth)):
             if not frontier:

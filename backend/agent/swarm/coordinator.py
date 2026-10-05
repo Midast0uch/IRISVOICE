@@ -90,6 +90,8 @@ class SwarmCoordinator:
         if not conn:
             return []
         from backend.memory.swarm_db import get_open_tasks
+        from backend.memory.db import app_flush
+        app_flush()  # one writer: an open_compound just queued must be seen
         tasks = get_open_tasks(conn, self.session_id)
         joinable = []
         for t in tasks:
@@ -114,6 +116,8 @@ class SwarmCoordinator:
         if not conn:
             return {}
         from backend.memory.swarm_db import join_as_helper, get_collaboration
+        from backend.memory.db import app_flush
+        app_flush()  # one writer: the collab and its context pin may be queued
         collab = get_collaboration(conn, collab_id)
         if not collab:
             return {}
@@ -151,7 +155,10 @@ class SwarmCoordinator:
         pin_id = str(uuid.uuid4())
         now = time.time()
         try:
-            conn.execute(
+            from backend.memory.db import app_write
+
+            app_write(
+                conn,
                 """INSERT OR REPLACE INTO mycelium_pins
                    (pin_id, title, pin_type, content, tags,
                     file_refs, project_id, origin_id,
@@ -161,7 +168,6 @@ class SwarmCoordinator:
                  content, json.dumps(tags or ["swarm", "context"]),
                  "[]", "IRISVOICE", collab_id, now, now, 0),
             )
-            conn.commit()
             return pin_id
         except Exception as exc:
             logger.warning("[swarm] save_context_pin failed: %s", exc)

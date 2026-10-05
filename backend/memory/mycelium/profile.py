@@ -13,6 +13,8 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
+from backend.memory.db import app_flush, app_write
+
 from .landmark import Landmark, LandmarkIndex, _jaccard
 from .store import CoordNode, CoordinateStore
 from .spaces import (
@@ -62,6 +64,8 @@ class LandmarkMerger:
         Returns:
             The surviving Landmark after merge, or None if no merge occurred.
         """
+        # One writer: the landmark just saved (and its edges) may still be queued.
+        app_flush()
         all_landmarks = self._index.get_all_active()
         ids_new = {d.get("node_id") for d in new_landmark.coordinate_cluster}
 
@@ -188,8 +192,12 @@ class LandmarkMerger:
         conn = self._index._conn
         now = time.time()
 
+        # One writer: each statement is queued in order on the native writer.
+        # Order keeps every intermediate state safe: survivor first, then the
+        # absorbed flag, then edges, so a reader never sees a landmark vanish.
         # Update survivor
-        conn.execute(
+        app_write(
+            conn,
             """
             UPDATE mycelium_landmarks
             SET coordinate_cluster = ?, cumulative_score = ?
@@ -199,7 +207,8 @@ class LandmarkMerger:
         )
 
         # Mark absorbed
-        conn.execute(
+        app_write(
+            conn,
             "UPDATE mycelium_landmarks SET absorbed = 1 WHERE landmark_id = ?",
             (absorbed.landmark_id,),
         )
@@ -218,7 +227,8 @@ class LandmarkMerger:
         # instead of raising; the row is left pointing at the now-absorbed
         # landmark and is swept up by the cleanup DELETE below rather than
         # lost.
-        conn.execute(
+        app_write(
+            conn,
             """
             UPDATE OR IGNORE mycelium_landmark_edges
             SET from_landmark_id = ?
@@ -226,7 +236,8 @@ class LandmarkMerger:
             """,
             (survivor.landmark_id, absorbed.landmark_id, survivor.landmark_id),
         )
-        conn.execute(
+        app_write(
+            conn,
             """
             UPDATE OR IGNORE mycelium_landmark_edges
             SET to_landmark_id = ?
@@ -235,14 +246,16 @@ class LandmarkMerger:
             (survivor.landmark_id, absorbed.landmark_id, survivor.landmark_id),
         )
         # Remove self-loops created by re-point
-        conn.execute(
+        app_write(
+            conn,
             "DELETE FROM mycelium_landmark_edges WHERE from_landmark_id = to_landmark_id"
         )
         # D4f cleanup: any edge still touching the now-absorbed landmark is a
         # duplicate the OR IGNORE above declined to re-point (survivor already
         # carries that relationship) — drop it rather than leave a dangling
         # reference to a landmark that absorbed=1 just retired.
-        conn.execute(
+        app_write(
+            conn,
             "DELETE FROM mycelium_landmark_edges "
             "WHERE from_landmark_id = ? OR to_landmark_id = ?",
             (absorbed.landmark_id, absorbed.landmark_id),
@@ -250,7 +263,8 @@ class LandmarkMerger:
 
         # Log merge
         merge_id = f"mrg_{now:.0f}"
-        conn.execute(
+        app_write(
+            conn,
             """
             INSERT INTO mycelium_landmark_merges
                 (merge_id, survivor_id, absorbed_id, overlap_score,
@@ -273,12 +287,12 @@ class LandmarkMerger:
         affected_spaces = {d.get("space_id") for d in merged_cluster}
         for space_id in affected_spaces:
             if space_id:
-                conn.execute(
+                app_write(
+                    conn,
                     "UPDATE mycelium_profile SET dirty = 1 WHERE space_id = ?",
                     (space_id,),
                 )
 
-        conn.commit()
         logger.debug(
             "[profile] merged landmark %s into %s (overlap=%.2f)",
             absorbed.landmark_id,
@@ -320,6 +334,8 @@ class ProfileRenderer:
         """
         rendered = 0
 
+        # One writer: dirty marks from a merge or a quorum pass may still be queued.
+        app_flush()
         # Collect spaces to render: dirty rows + spaces with nodes but no row
         dirty_cursor = self._conn.execute(
             "SELECT space_id FROM mycelium_profile WHERE dirty = 1"
@@ -343,6 +359,9 @@ class ProfileRenderer:
                 self._upsert_section(space_id, prose, nodes)
                 rendered += 1
 
+        if rendered:
+            # Readers of the profile (get_readable_profile) follow this call.
+            app_flush()
         return rendered
 
     def get_profile_section(self, space_id: str) -> Optional[str]:
@@ -609,30 +628,28 @@ class ProfileRenderer:
         word_count = len(prose.split())
         now = time.time()
 
-        existing = self._conn.execute(
-            "SELECT section_id FROM mycelium_profile WHERE space_id = ?", (space_id,)
-        ).fetchone()
-
-        if existing:
-            self._conn.execute(
-                """
-                UPDATE mycelium_profile
-                SET prose = ?, source_node_ids = ?, dirty = 0,
-                    last_rendered = ?, word_count = ?
-                WHERE space_id = ?
-                """,
-                (prose, source_node_ids, now, word_count, space_id),
-            )
-        else:
-            section_id = f"prof_{space_id}"
-            self._conn.execute(
-                """
-                INSERT INTO mycelium_profile
-                    (section_id, space_id, render_order, prose, source_node_ids,
-                     source_lm_ids, dirty, last_rendered, word_count)
-                VALUES (?, ?, ?, ?, ?, NULL, 0, ?, ?)
-                """,
-                (section_id, space_id, render_order, prose, source_node_ids, now, word_count),
-            )
-
-        self._conn.commit()
+        # One writer: the upsert runs on the writer thread as UPDATE then
+        # INSERT-if-absent (no SELECT-then-write in Python), in queue order.
+        app_write(
+            self._conn,
+            """
+            UPDATE mycelium_profile
+            SET prose = ?, source_node_ids = ?, dirty = 0,
+                last_rendered = ?, word_count = ?
+            WHERE space_id = ?
+            """,
+            (prose, source_node_ids, now, word_count, space_id),
+        )
+        section_id = f"prof_{space_id}"
+        app_write(
+            self._conn,
+            """
+            INSERT INTO mycelium_profile
+                (section_id, space_id, render_order, prose, source_node_ids,
+                 source_lm_ids, dirty, last_rendered, word_count)
+            SELECT ?, ?, ?, ?, ?, NULL, 0, ?, ?
+            WHERE NOT EXISTS (SELECT 1 FROM mycelium_profile WHERE space_id = ?)
+            """,
+            (section_id, space_id, render_order, prose, source_node_ids, now, word_count,
+             space_id),
+        )

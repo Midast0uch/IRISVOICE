@@ -14,7 +14,7 @@ import struct
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 
-from backend.memory.db import open_encrypted_memory, Connection, locked_retry, app_write, owns_store
+from backend.memory.db import open_encrypted_memory, Connection, locked_retry, app_write, app_flush, owns_store
 from backend.memory.embedding import (
     EmbeddingService,
     compare_embeddings,
@@ -1048,24 +1048,28 @@ class EpisodicStore:
         if retrieved_ids:
             try:
                 placeholders = ",".join("?" * len(retrieved_ids))
-                self.db.execute(
+                app_write(
+                    self.db,
                     f"UPDATE context_chunks SET retrieval_count = retrieval_count + 1 "
                     f"WHERE id IN ({placeholders})",
                     retrieved_ids,
                 )
-                self.db.commit()
 
                 # Crystallization pathway: log chunks that have hit the threshold
                 # so Mycelium can promote them in the next distillation pass.
                 # (Full Mycelium integration is Phase 2 — this provides the signal.)
                 if self._mycelium is not None:
                     try:
+                        # One writer: the increment above is queued, so read
+                        # the settled counts and add it here - no wait on the
+                        # writer queue on this retrieval path (live 2026-10-04).
+                        _counts = dict(self.db.execute(
+                            f"SELECT id, retrieval_count FROM context_chunks "
+                            f"WHERE id IN ({placeholders})",
+                            retrieved_ids,
+                        ).fetchall())
                         for _, content, chunk_id in top:
-                            row_count = self.db.execute(
-                                "SELECT retrieval_count FROM context_chunks WHERE id = ?",
-                                (chunk_id,),
-                            ).fetchone()
-                            if row_count and row_count[0] >= self._CRYSTALLIZE_THRESHOLD:
+                            if (_counts.get(chunk_id) or 0) + 1 >= self._CRYSTALLIZE_THRESHOLD:
                                 self._mycelium.episode_indexer.index_episode(
                                     episode_id=chunk_id,
                                     session_id=session_id or "",
@@ -1116,12 +1120,15 @@ class EpisodicStore:
             params.append(session_id)
 
         try:
-            cursor = self.db.execute(
-                f"DELETE FROM context_chunks WHERE {' AND '.join(where_clauses)}",
-                params,
-            )
-            self.db.commit()
-            deleted = cursor.rowcount
+            # One writer: the deleted count is returned, so count the rows
+            # first (flush: queued chunk writes must be counted), then queue
+            # the delete.
+            app_flush()
+            _where = ' AND '.join(where_clauses)
+            deleted = self.db.execute(
+                f"SELECT COUNT(*) FROM context_chunks WHERE {_where}", params
+            ).fetchone()[0]
+            app_write(self.db, f"DELETE FROM context_chunks WHERE {_where}", params)
             if deleted:
                 logger.info(
                     f"[EpisodicStore] Pacman decay: pruned {deleted} stale chunks "

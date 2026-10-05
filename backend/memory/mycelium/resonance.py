@@ -15,6 +15,7 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
+from backend.memory.db import app_write
 from .store import CoordinateStore
 from .spaces import (
     LANDMARK_MATCH_BONUS,
@@ -87,7 +88,8 @@ class EpisodeIndexer:
                 raw = ",".join(sorted(node_ids or []))
                 coordinate_hash = hashlib.md5(raw.encode()).hexdigest()[:24]
 
-            self._conn.execute(
+            app_write(
+                self._conn,
                 """
                 INSERT OR IGNORE INTO mycelium_episode_index
                     (idx_id, episode_id, session_id, node_ids, space_ids,
@@ -106,7 +108,6 @@ class EpisodeIndexer:
                     time.time(),
                 ),
             )
-            self._conn.commit()
 
         except Exception as exc:  # noqa: BLE001
             logger.debug("[resonance] index_episode failed (non-fatal): %s", exc)
@@ -119,7 +120,10 @@ class EpisodeIndexer:
         a landmark reference retroactively.
         """
         try:
-            self._conn.execute(
+            # One writer: the index rows this UPDATE targets are queued ahead of it
+            # on the same writer thread, so the order is kept without a flush.
+            app_write(
+                self._conn,
                 """
                 UPDATE mycelium_episode_index
                 SET landmark_id = ?
@@ -127,7 +131,6 @@ class EpisodeIndexer:
                 """,
                 (landmark_id, session_id),
             )
-            self._conn.commit()
         except Exception as exc:  # noqa: BLE001
             logger.debug("[resonance] backfill_landmark failed (non-fatal): %s", exc)
 
@@ -304,6 +307,9 @@ class ResonanceScorer:
         then fetches their coordinates from mycelium_nodes.
         """
         # Get node_ids from the latest episode_index entry for this session
+        # A steering read (recall): the last settled rows, no wait on the
+        # writer queue - the answer path paid that wait (live 2026-10-04:
+        # 1.6 s before a step).
         cursor = self._conn.execute(
             """
             SELECT node_ids FROM mycelium_episode_index

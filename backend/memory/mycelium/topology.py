@@ -27,6 +27,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
 
+from backend.memory.db import app_flush, app_write
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -488,11 +490,11 @@ class AnchorLifecycle:
         Does NOT modify the mycelium_landmarks row.
         """
         try:
-            self._conn.execute(
+            app_write(
+                self._conn,
                 "UPDATE mycelium_charts SET stale = 1 WHERE landmark_id = ?",
                 (landmark_id,),
             )
-            self._conn.commit()
             logger.debug("[AnchorLifecycle] marked stale: %s", landmark_id[:12])
         except Exception as exc:  # noqa: BLE001
             logger.debug("[AnchorLifecycle] mark_stale failed: %s", exc)
@@ -537,6 +539,9 @@ class TopologyLayer:
         Returns [] when no crystallized anchors exist.
         Does NOT touch any v1.5 tables.
         """
+        # One writer: the landmark just crystallized, the earlier chart rows
+        # (compute_z) and the trajectory rows (_update_trajectory) are read below.
+        app_flush()
         origins = self._chart_registry.get_nearest_origins(session_id, active_nodes)
         if not origins:
             return []
@@ -569,7 +574,8 @@ class TopologyLayer:
                 )
 
                 # Persist to mycelium_charts
-                self._conn.execute(
+                app_write(
+                    self._conn,
                     """
                     INSERT INTO mycelium_charts
                         (position_id, landmark_id, session_id, x, y, z,
@@ -594,9 +600,6 @@ class TopologyLayer:
                     lm_id[:12], exc,
                 )
 
-        if positions:
-            self._conn.commit()
-
         return positions
 
     def get_topology_context(
@@ -607,6 +610,8 @@ class TopologyLayer:
 
         Returns None when no crystallized anchors exist (fresh install / pre-maturity).
         """
+        # A steering read (prompt context): the last settled chart rows, no
+        # wait on the writer queue (it would sit on the answer path).
         origins = self._chart_registry.get_nearest_origins(session_id, active_nodes)
         if not origins:
             return None
@@ -708,11 +713,14 @@ class TopologyLayer:
         """
         try:
             cutoff = time.time() - (_CHART_PRUNE_DAYS * 86400)
-            cursor = self._conn.execute(
-                "DELETE FROM mycelium_charts WHERE created_at < ?", (cutoff,)
-            )
-            pruned = cursor.rowcount
-            self._conn.commit()
+            # One writer: the DELETE is queued, so count the rows it will remove
+            # first (the count only feeds the log line; flush makes it exact, and
+            # the staleness pass below reads the flushed trajectories).
+            app_flush()
+            pruned = self._conn.execute(
+                "SELECT COUNT(*) FROM mycelium_charts WHERE created_at < ?", (cutoff,)
+            ).fetchone()[0]
+            app_write(self._conn, "DELETE FROM mycelium_charts WHERE created_at < ?", (cutoff,))
             logger.debug("[TopologyLayer] pruned %d stale chart positions", pruned)
         except Exception as exc:  # noqa: BLE001
             logger.warning("[TopologyLayer] chart prune failed: %s", exc)
@@ -751,7 +759,8 @@ class TopologyLayer:
                 z_list = [z]
                 prim_hist = [primitive.value]
                 staleness = 1 if z < 0 else 0
-                self._conn.execute(
+                app_write(
+                    self._conn,
                     """
                     INSERT INTO mycelium_trajectories
                         (trajectory_id, landmark_id, z_values, z_trend,
@@ -783,7 +792,8 @@ class TopologyLayer:
                 # Staleness counter: reset on positive Z, increment on negative
                 staleness = staleness + 1 if z < 0 else 0
 
-                self._conn.execute(
+                app_write(
+                    self._conn,
                     """
                     UPDATE mycelium_trajectories
                     SET z_values = ?, z_trend = ?, primitive_history = ?,

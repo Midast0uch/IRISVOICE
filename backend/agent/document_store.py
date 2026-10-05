@@ -20,7 +20,7 @@ import sqlite3
 import time
 from typing import Any, Dict, Optional
 
-from backend.memory.db import app_write
+from backend.memory.db import app_flush, app_write
 
 from backend.agent.artifact_policy import (
     card_title_from_content,
@@ -158,7 +158,8 @@ class DocumentDataStore:
             from backend.memory.db import locked_retry as _locked_retry326
 
             def _write326() -> None:
-                self._conn.execute(
+                app_write(
+                    self._conn,
                     "INSERT INTO document_data "
                 "(document_id, conversation_id, fmt, content, variants, alternatives, trust, revision, "
                 " source_document_id, sources, har_path, turn_id, card_id) "
@@ -193,7 +194,6 @@ class DocumentDataStore:
                     card_id,
                 ),
             )
-                self._conn.commit()
 
             _locked_retry326(_write326, label="document_data.store")
             self._evict_if_needed()
@@ -209,17 +209,23 @@ class DocumentDataStore:
         try:
             from backend.memory.db import locked_retry as _locked_retry326
 
-            def _write326():
-                cur326 = self._conn.execute(
+            # One writer: rowcount is only truthiness here, so count the row
+            # first (flush: a store() queued just before must be visible).
+            app_flush()
+            exists = self._conn.execute(
+                "SELECT 1 FROM document_data WHERE document_id=?", (document_id,)
+            ).fetchone() is not None
+
+            def _write326() -> None:
+                app_write(
+                    self._conn,
                     "UPDATE document_data SET content=?, fmt=?, variants=?, trust=?, revision=revision+1 "
                     "WHERE document_id=?",
                     (content, fmt, json.dumps(variants or {}, ensure_ascii=False), trust, document_id),
                 )
-                self._conn.commit()
-                return cur326
 
-            cur = _locked_retry326(_write326, label="document_data.update")
-            return cur.rowcount > 0
+            _locked_retry326(_write326, label="document_data.update")
+            return exists
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("[DocumentDataStore] update failed: %s", exc)
             return False
@@ -241,12 +247,12 @@ class DocumentDataStore:
         if not document_id or not data:
             return False
         try:
-            self._conn.execute(
+            app_write(
+                self._conn,
                 "INSERT OR REPLACE INTO document_blobs "
                 "(document_id, mime, data, byte_len) VALUES (?, ?, ?, ?)",
-                (document_id, mime, sqlite3.Binary(data), len(data)),
+                (document_id, mime, bytes(data), len(data)),
             )
-            self._conn.commit()
             return True
         except Exception as exc:  # noqa: BLE001 — storage never breaks a turn
             logger.warning(
@@ -264,6 +270,7 @@ class DocumentDataStore:
         if not document_id:
             return None
         try:
+            app_flush()  # one writer: a store_blob just queued must be readable
             row = self._conn.execute(
                 "SELECT mime, data, byte_len FROM document_blobs WHERE document_id = ?",
                 (document_id,),
@@ -295,6 +302,7 @@ class DocumentDataStore:
         new payload, and record the revision transition. Never silently fail —
         a failed upsert here is a contract break.
         """
+        # get() flushes the writer, so a prior queued write is read here.
         existing = self.get(document_id)
         next_revision = (existing["revision"] + 1) if existing else 1
         # AC14.2 boundary: a delta only exists against a REAL prior snapshot.
@@ -321,7 +329,8 @@ class DocumentDataStore:
         else:
             _v = dict(variants or {})
         try:
-            self._conn.execute(
+            app_write(
+                self._conn,
                 "INSERT INTO document_data "
                 "(document_id, conversation_id, fmt, content, variants, alternatives, trust, revision, "
                 " source_document_id, sources, har_path, turn_id) "
@@ -332,8 +341,10 @@ class DocumentDataStore:
                 "alternatives=excluded.alternatives, trust=excluded.trust, "
                 # atomic path writes revision explicitly — the plain store()
                 # unexpectedly keeps the original so this path is the only
-                # reentrant way a re-crawl can show "Updated".
-                "revision=excluded.revision, "
+                # reentrant way a re-crawl can show "Updated". One writer: the
+                # bump is computed on the writer thread, not from the read above
+                # (two queued writes would both carry the same stale number).
+                "revision=document_data.revision + 1, "
                 "source_document_id=excluded.source_document_id, "
                 "sources=excluded.sources, har_path=excluded.har_path, "
                 "turn_id=COALESCE(excluded.turn_id, document_data.turn_id)",
@@ -352,7 +363,6 @@ class DocumentDataStore:
                     turn_id,
                 ),
             )
-            self._conn.commit()
         except Exception as exc:
             logger.warning(
                 "[DocumentDataStore] store_json_atomic failed id=%s: %s",
@@ -390,6 +400,7 @@ class DocumentDataStore:
     def get(self, document_id: str) -> Optional[Dict[str, Any]]:
         """Return the full document record, or None if not found."""
         try:
+            app_flush()  # one writer: a store() just queued must be readable
             row = self._conn.execute(
                 "SELECT document_id, conversation_id, fmt, content, variants, "
                 "alternatives, trust, revision, source_document_id, sources, har_path, "
@@ -428,6 +439,7 @@ class DocumentDataStore:
         ``conversation_id`` (REQ-12). Never raises.
         """
         try:
+            app_flush()  # one writer: a store() just queued must be listed
             if metadata_only:
                 rows = self._conn.execute(
                     "SELECT document_id, fmt, conversation_id, sources, har_path, created_at, "
@@ -511,6 +523,7 @@ class DocumentDataStore:
         dict, so a listing never pays for the record bodies. Never raises.
         """
         try:
+            app_flush()  # one writer: a store() just queued must be listed
             sql = (
                 "SELECT document_id, conversation_id, variants, created_at "
                 "FROM document_data WHERE fmt = ?"
@@ -544,6 +557,7 @@ class DocumentDataStore:
         ``[{conversation_id, doc_count, latest_created_at}]``. Never raises.
         """
         try:
+            app_flush()  # one writer: a store() just queued must be counted
             rows = self._conn.execute(
                 "SELECT conversation_id, COUNT(*) AS doc_count, MAX(created_at) AS latest "
                 "FROM document_data WHERE fmt IS NOT 'research' "
@@ -576,11 +590,11 @@ class DocumentDataStore:
         variants = dict(doc.get("variants") or {})
         variants[target_format] = content
         try:
-            self._conn.execute(
+            app_write(
+                self._conn,
                 "UPDATE document_data SET variants = ? WHERE document_id = ?",
                 (json.dumps(variants, ensure_ascii=False), document_id),
             )
-            self._conn.commit()
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("[DocumentDataStore] add_variant failed: %s", exc)
 
@@ -593,7 +607,8 @@ class DocumentDataStore:
         offering reformats. Never raises.
         """
         try:
-            self._conn.execute(
+            app_write(
+                self._conn,
                 "INSERT INTO reformat_edges (from_format, to_format, weight, updated_at) "
                 "VALUES (?, ?, ?, ?) "
                 "ON CONFLICT(from_format, to_format) DO UPDATE SET "
@@ -601,13 +616,13 @@ class DocumentDataStore:
                 "updated_at = excluded.updated_at",
                 (from_format, to_format, float(amount), time.time()),
             )
-            self._conn.commit()
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("[DocumentDataStore] record_reformat failed: %s", exc)
 
     def get_reformat_edges(self, from_format: Optional[str] = None) -> list:
         """Return reformat edges (from_format, to_format, weight), highest weight first."""
         try:
+            app_flush()  # one writer: a record_reformat just queued must be counted
             if from_format is not None:
                 rows = self._conn.execute(
                     "SELECT from_format, to_format, weight FROM reformat_edges "

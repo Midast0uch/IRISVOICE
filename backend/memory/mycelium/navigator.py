@@ -17,6 +17,7 @@ import time
 import uuid
 from typing import Dict, List, Optional, Set, Tuple
 
+from backend.memory.db import app_flush, app_write
 from .store import CoordNode, CoordEdge, CoordinateStore, MemoryPath, _short_uuid
 from .spaces import SPACES, CONDUCT_COLD_START_DEFAULT
 
@@ -278,18 +279,18 @@ class CoordinateNavigator:
                     self._store.update_edge_score(edge.edge_id, delta)
                     # Update hit/miss counters
                     if outcome == "hit":
-                        self._store._conn.execute(
+                        app_write(
+                            self._store._conn,
                             "UPDATE mycelium_edges SET hit_count = hit_count + 1 WHERE edge_id = ?",
                             (edge.edge_id,),
                         )
                     elif outcome == "miss":
-                        self._store._conn.execute(
+                        app_write(
+                            self._store._conn,
                             "UPDATE mycelium_edges SET miss_count = miss_count + 1 WHERE edge_id = ?",
                             (edge.edge_id,),
                         )
                     break
-
-        self._store._conn.commit()
 
         # Log traversal
         self._store.log_traversal(
@@ -334,6 +335,7 @@ class CoordinateNavigator:
         if from_node is None:
             from_node = self._store.upsert_node(from_space, from_coords, None, 0.4)
 
+        app_flush()  # one writer: the from-node just queued may be the nearest to-node
         to_node = self._store.nearest_node(to_space, to_coords)
         if to_node is None:
             to_node = self._store.upsert_node(to_space, to_coords, None, 0.4)
@@ -341,6 +343,7 @@ class CoordinateNavigator:
         edge_id = self._store.upsert_edge(
             from_node.node_id, to_node.node_id, edge_type, initial_score=0.4
         )
+        app_flush()  # one writer: read back the edge just queued
         edge = self._store.get_edge_by_id(edge_id)
         if edge is None:
             # Should not happen — upsert_edge always writes or finds

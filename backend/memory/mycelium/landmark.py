@@ -21,6 +21,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from backend.memory.db import app_flush, app_write
+
 from .store import CoordinateStore
 from .spaces import (
     LANDMARK_MIN_SCORE,
@@ -75,7 +77,10 @@ def ensure_landmark_policy_columns(conn) -> None:
         conn.execute(f"ALTER TABLE mycelium_landmarks ADD COLUMN {name} {decl}")
         added_tier = added_tier or name == "tier"
     if added_tier:
-        conn.execute(
+        # The ALTERs above are direct DDL (autocommitted); the backfill after
+        # them is a plain data write, so it goes through the one writer.
+        app_write(
+            conn,
             "UPDATE mycelium_landmarks SET tier = 'landmark', evidence = ? "
             "WHERE is_permanent = 1 AND task_class = 'bootstrap'",
             (json.dumps([{"kind": "test_pass", "ref": "bootstrap build graph",
@@ -145,6 +150,9 @@ def add_landmark_evidence(conn, landmark_id: str, kind: str, ref: str = "",
                     kind, landmark_id)
         return None
     ensure_landmark_policy_columns(conn)
+    # One writer: evidence is appended in Python (the tier derives from the list),
+    # so earlier queued evidence writes must be on disk before this read.
+    app_flush()
     row = conn.execute(
         "SELECT tier, evidence FROM mycelium_landmarks WHERE landmark_id = ?", (landmark_id,)
     ).fetchone()
@@ -161,7 +169,8 @@ def add_landmark_evidence(conn, landmark_id: str, kind: str, ref: str = "",
         new_tier = "landmark"
     elif tier == "candidate" and _independent(evidence) >= PROMOTE_MIN_EVIDENCE:
         new_tier = "landmark"
-    conn.execute(
+    app_write(
+        conn,
         "UPDATE mycelium_landmarks SET evidence = ?, tier = ?, last_verified = ? WHERE landmark_id = ?",
         (json.dumps(evidence[-50:]), new_tier, time.time(), landmark_id),
     )
@@ -170,7 +179,6 @@ def add_landmark_evidence(conn, landmark_id: str, kind: str, ref: str = "",
         _emit_landmark_event(conn, "LANDMARK_PROMOTED", [landmark_id], evidence_kind=kind,
                              thread_id=session or None,
                              payload={"from": tier, "to": new_tier, "kind": kind})
-    conn.commit()
     return new_tier
 
 
@@ -178,15 +186,20 @@ def mark_landmarks_stale_by_dependency(conn, path: str) -> int:
     """A changed dependency: a 'landmark' becomes 'stale' (flagged, re-checked)."""
     ensure_landmark_policy_columns(conn)
     like = "%" + json.dumps(path)[1:-1] + "%"
+    # One writer: the UPDATE is queued, so count the rows it will change first
+    # (the memory_events lane is the only writer of these rows; flush makes the count exact).
+    app_flush()
     ids = [r[0] for r in conn.execute(
         "SELECT landmark_id FROM mycelium_landmarks WHERE tier = 'landmark' AND depends_on LIKE ?",
         (like,),
     ).fetchall()]
-    n = conn.execute(
-        "UPDATE mycelium_landmarks SET tier = 'stale' WHERE tier = 'landmark' AND depends_on LIKE ?",
-        (like,),
-    ).rowcount
+    n = len(ids)
     if n:
+        app_write(
+            conn,
+            "UPDATE mycelium_landmarks SET tier = 'stale' WHERE tier = 'landmark' AND depends_on LIKE ?",
+            (like,),
+        )
         _emit_landmark_event(conn, "LANDMARK_STALE", ids, payload={"path": path[:200]})
     return n
 
@@ -196,17 +209,22 @@ def demote_landmarks_for_thread(conn, thread_id: Optional[str], reason: str) -> 
     if not thread_id:
         return 0
     ensure_landmark_policy_columns(conn)
+    # One writer: count first (the UPDATE is queued); the memory_events lane is
+    # the only writer of these rows and the flush makes the count exact.
+    app_flush()
     ids = [r[0] for r in conn.execute(
         "SELECT landmark_id FROM mycelium_landmarks WHERE conversation_ref = ? "
         "AND tier IN ('candidate', 'landmark', 'stale')", (thread_id,),
     ).fetchall()]
-    n = conn.execute(
-        "UPDATE mycelium_landmarks SET tier = 'demoted', contradictions = contradictions + 1, "
-        "falsify_if = COALESCE(falsify_if, '') || ? WHERE conversation_ref = ? "
-        "AND tier IN ('candidate', 'landmark', 'stale')",
-        (f" | contradicted: {reason[:120]}", thread_id),
-    ).rowcount
+    n = len(ids)
     if n:
+        app_write(
+            conn,
+            "UPDATE mycelium_landmarks SET tier = 'demoted', contradictions = contradictions + 1, "
+            "falsify_if = COALESCE(falsify_if, '') || ? WHERE conversation_ref = ? "
+            "AND tier IN ('candidate', 'landmark', 'stale')",
+            (f" | contradicted: {reason[:120]}", thread_id),
+        )
         logger.info("[landmark] counter demoted n=%d thread=%s reason=%s", n, thread_id, reason[:80])
         # A contradicting failure is the system's own observation: evidence verifier.
         _emit_landmark_event(conn, "LANDMARK_DEMOTED", ids, evidence="verifier",
@@ -221,14 +239,14 @@ def set_landmark_falsification(conn, landmark_id: str, depends_on: List[str],
     ensure_landmark_policy_columns(conn)
     falsify = ("a dependency changes (" + ", ".join(d[:60] for d in depends_on[:5]) + ")"
                if depends_on else None)
-    conn.execute(
+    app_write(
+        conn,
         "UPDATE mycelium_landmarks SET depends_on = ?, falsify_if = COALESCE(?, falsify_if), "
         "traversal_sequence = CASE WHEN ? != '[]' THEN ? ELSE traversal_sequence END "
         "WHERE landmark_id = ?",
         (json.dumps(depends_on[:50]), falsify, json.dumps(verified_steps[:50]),
          json.dumps(verified_steps[:50]), landmark_id),
     )
-    conn.commit()
 
 
 # Source priority for conflict resolution: higher index = higher authority
@@ -526,7 +544,8 @@ class LandmarkIndex:
         coordinate cluster overlaps ≥ 30% with this one (Req 9.2).
         Landmark edges are written at initial score 0.4.
         """
-        self._conn.execute(
+        app_write(
+            self._conn,
             """
             INSERT OR IGNORE INTO mycelium_landmarks
                 (landmark_id, label, task_class, coordinate_cluster, traversal_sequence,
@@ -549,13 +568,14 @@ class LandmarkIndex:
                 landmark.created_at,
             ),
         )
-        self._conn.commit()
 
         # Auto-connect to similar existing landmarks
         self._auto_connect(landmark)
 
     def _auto_connect(self, landmark: Landmark) -> None:
         """Write landmark edges to all existing non-absorbed landmarks with overlap ≥ 0.30."""
+        # One writer: landmarks saved just before this one are still queued.
+        app_flush()
         cursor = self._conn.execute(
             """
             SELECT landmark_id, coordinate_cluster
@@ -591,7 +611,8 @@ class LandmarkIndex:
         """Insert a landmark edge, ignoring duplicate pairs."""
         edge_id = _short_uuid()
         now = time.time()
-        self._conn.execute(
+        app_write(
+            self._conn,
             """
             INSERT OR IGNORE INTO mycelium_landmark_edges
                 (edge_id, from_landmark_id, to_landmark_id, score, edge_type,
@@ -600,7 +621,6 @@ class LandmarkIndex:
             """,
             (edge_id, from_id, to_id, initial_score, edge_type, now),
         )
-        self._conn.commit()
 
     # ------------------------------------------------------------------
     # Activation
@@ -615,6 +635,9 @@ class LandmarkIndex:
         """
         now = time.time()
 
+        # One writer: earlier queued activations must be on disk before this read
+        # (new_count decides the one-time node promotion below).
+        app_flush()
         # Fetch current state
         cursor = self._conn.execute(
             "SELECT activation_count, coordinate_cluster FROM mycelium_landmarks WHERE landmark_id = ?",
@@ -640,13 +663,19 @@ class LandmarkIndex:
             logger.info("[landmark] counter stale_used landmark=%s", landmark_id)
         is_permanent = 1 if (new_count >= PERMANENCE_THRESHOLD and _tier == "landmark") else 0
 
-        self._conn.execute(
+        # The count and the permanence flag are computed in SQL, on the writer
+        # thread, so queued activations never overwrite each other's count.
+        app_write(
+            self._conn,
             """
             UPDATE mycelium_landmarks
-            SET activation_count = ?, last_activated = ?, is_permanent = ?
+            SET activation_count = activation_count + 1, last_activated = ?,
+                is_permanent = CASE WHEN activation_count + 1 >= ?
+                                     AND COALESCE(tier, 'candidate') = 'landmark'
+                                    THEN 1 ELSE 0 END
             WHERE landmark_id = ?
             """,
-            (new_count, now, is_permanent, landmark_id),
+            (now, PERMANENCE_THRESHOLD, landmark_id),
         )
 
         # Promote constituent nodes to confidence=1.0 on permanence
@@ -656,14 +685,13 @@ class LandmarkIndex:
                 for node_entry in cluster:
                     node_id = node_entry.get("node_id")
                     if node_id:
-                        self._conn.execute(
+                        app_write(
+                            self._conn,
                             "UPDATE mycelium_nodes SET confidence = 1.0 WHERE node_id = ?",
                             (node_id,),
                         )
             except (json.JSONDecodeError, TypeError):
                 pass
-
-        self._conn.commit()
 
     # ------------------------------------------------------------------
     # Nullification
@@ -676,11 +704,11 @@ class LandmarkIndex:
         Does NOT delete landmarks — the coordinate structure is retained for future
         navigation even after the conversation context has expired.
         """
-        self._conn.execute(
+        app_write(
+            self._conn,
             "UPDATE mycelium_landmarks SET conversation_ref = NULL WHERE conversation_ref = ?",
             (session_id,),
         )
-        self._conn.commit()
 
     # ------------------------------------------------------------------
     # Conflict resolution
@@ -738,7 +766,8 @@ class LandmarkIndex:
 
         # Log to mycelium_conflicts
         conflict_id = _short_uuid()
-        self._conn.execute(
+        app_write(
+            self._conn,
             """
             INSERT INTO mycelium_conflicts
                 (conflict_id, space_id, axis, value_a, source_a, value_b, source_b,
@@ -748,7 +777,6 @@ class LandmarkIndex:
             (conflict_id, space_id, axis, value_a, source_a, value_b, source_b,
              resolved, basis, time.time()),
         )
-        self._conn.commit()
 
         return resolved
 
@@ -785,6 +813,8 @@ class LandmarkIndex:
         now = time.time()
         pruned = 0
 
+        # One writer: queued edge writes must be on disk before this read.
+        app_flush()
         # Fetch all landmark edges with their from_landmark is_permanent flag
         cursor = self._conn.execute(
             """
@@ -807,17 +837,19 @@ class LandmarkIndex:
             new_score = score - rate * days_idle
 
             if new_score < LANDMARK_PRUNE_THRESHOLD:
-                self._conn.execute(
+                app_write(
+                    self._conn,
                     "DELETE FROM mycelium_landmark_edges WHERE edge_id = ?", (edge_id,)
                 )
                 pruned += 1
             else:
-                self._conn.execute(
-                    "UPDATE mycelium_landmark_edges SET score = ? WHERE edge_id = ?",
-                    (max(0.0, new_score), edge_id),
+                # Relative decay in SQL: a queued score write ahead of this one is kept.
+                app_write(
+                    self._conn,
+                    "UPDATE mycelium_landmark_edges SET score = MAX(0.0, score - ?) WHERE edge_id = ?",
+                    (rate * days_idle, edge_id),
                 )
 
-        self._conn.commit()
         logger.debug("[landmark] apply_landmark_decay: pruned %d edges", pruned)
         return pruned
 
@@ -917,7 +949,8 @@ class LandmarkIndex:
         """
         bridge_id = _short_uuid()
         now = time.time()
-        self._conn.execute(
+        app_write(
+            self._conn,
             """
             INSERT OR IGNORE INTO mycelium_landmark_bridges
                 (bridge_id, local_landmark_id, remote_project_id, remote_instance_id,
@@ -929,7 +962,6 @@ class LandmarkIndex:
              remote_landmark_name, remote_landmark_id, confidence, bridge_type,
              notes, now),
         )
-        self._conn.commit()
         logger.debug(
             "[landmark] bridge registered: %s → %s (%s, conf=%.2f)",
             local_landmark_id, remote_landmark_name, bridge_type, confidence,

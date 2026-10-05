@@ -499,11 +499,13 @@ class RecallPhases:
             ep_id = getattr(self, "_last_episode_id", None)
             if not ep_id:
                 return
-            self._memory.episodic.db.execute(
+            from backend.memory.db import app_write
+
+            app_write(
+                self._memory.episodic.db,
                 "UPDATE episodes SET outcome_type=? WHERE id=?",
                 (outcome, ep_id),
             )
-            self._memory.episodic.db.commit()
             self._last_episode_id = None  # clear so stale ID is never reused
         except Exception as exc:
             logger.debug("[RecallPhases] outcome update failed: %s", exc)

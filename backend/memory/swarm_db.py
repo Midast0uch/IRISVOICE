@@ -11,6 +11,8 @@ import time
 import uuid
 from typing import Optional
 
+from backend.memory.db import app_flush, app_write
+
 logger = logging.getLogger(__name__)
 
 _COLLAB_COLS = [
@@ -30,7 +32,8 @@ def create_collaboration(conn, task_id: str, session_id: str,
                          max_helpers: int = 2) -> str:
     """INSERT a new working collaboration. Returns collab_id."""
     collab_id = str(uuid.uuid4())
-    conn.execute(
+    app_write(
+        conn,
         """INSERT INTO task_collaboration
            (collab_id, task_id, session_id, status, primary_agent,
             helper_agents, max_helpers, task_summary, created_at)
@@ -38,19 +41,18 @@ def create_collaboration(conn, task_id: str, session_id: str,
         (collab_id, task_id, session_id, "working", primary_agent,
          "[]", max_helpers, task_summary[:500], time.time()),
     )
-    conn.commit()
     return collab_id
 
 
 def open_compound(conn, collab_id: str, context_pin_id: str = None) -> None:
     """Set status='compound_open' and record opened_at timestamp."""
-    conn.execute(
+    app_write(
+        conn,
         """UPDATE task_collaboration
            SET status='compound_open', opened_at=?, context_pin_id=?
            WHERE collab_id=?""",
         (time.time(), context_pin_id, collab_id),
     )
-    conn.commit()
 
 
 def join_as_helper(conn, collab_id: str, agent_id: str) -> bool:
@@ -58,6 +60,7 @@ def join_as_helper(conn, collab_id: str, agent_id: str) -> bool:
     Append agent_id to helper_agents JSON array.
     Returns False if already joined or max_helpers reached.
     """
+    app_flush()  # one writer: the read must see every queued join
     row = conn.execute(
         "SELECT helper_agents, max_helpers FROM task_collaboration WHERE collab_id=?",
         (collab_id,),
@@ -68,23 +71,26 @@ def join_as_helper(conn, collab_id: str, agent_id: str) -> bool:
     if agent_id in helpers or len(helpers) >= row[1]:
         return False
     helpers.append(agent_id)
-    conn.execute(
-        "UPDATE task_collaboration SET helper_agents=? WHERE collab_id=?",
-        (json.dumps(helpers), collab_id),
+    # Compare-and-set on the value read: a join queued by another agent after
+    # the flush above cannot be overwritten (the stale write matches no row).
+    app_write(
+        conn,
+        "UPDATE task_collaboration SET helper_agents=? WHERE collab_id=? "
+        "AND helper_agents IS ?",
+        (json.dumps(helpers), collab_id, row[0]),
     )
-    conn.commit()
     return True
 
 
 def complete_collaboration(conn, collab_id: str) -> None:
     """Set status='completed' and record completed_at timestamp."""
-    conn.execute(
+    app_write(
+        conn,
         """UPDATE task_collaboration
            SET status='completed', completed_at=?
            WHERE collab_id=?""",
         (time.time(), collab_id),
     )
-    conn.commit()
 
 
 def get_open_tasks(conn, session_id: str = None) -> list[dict]:

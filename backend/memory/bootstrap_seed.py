@@ -98,7 +98,12 @@ def seed_mycelium_from_bootstrap(
             logger.debug("[BootstrapSeed] No permanent bootstrap landmarks found")
             return 0
 
-        with sqlite3.connect(memory_db_path or memory_path) as dst:
+        from backend.memory.db import _plain_store_connection, app_write
+
+        # One writer: a store-aware connection, so the INSERTs below are queued
+        # on the native writer when it owns this file (a plain connection would
+        # write the file itself and wait on the writer's lock).
+        with _plain_store_connection(memory_db_path or memory_path) as dst:
             dst.row_factory = sqlite3.Row
 
             # Check if already seeded — skip if any bootstrap landmarks present
@@ -128,7 +133,8 @@ def seed_mycelium_from_bootstrap(
                         "session": lm["session_number"],
                     })
 
-                    dst.execute(
+                    app_write(
+                        dst,
                         """
                         INSERT OR IGNORE INTO mycelium_landmarks (
                             landmark_id, label, task_class,
@@ -159,8 +165,6 @@ def seed_mycelium_from_bootstrap(
                     inserted += 1
                 except Exception as _row_err:
                     logger.debug(f"[BootstrapSeed] Row error for {lm['name']}: {_row_err}")
-
-            dst.commit()
 
         logger.info(f"[BootstrapSeed] Seeded {inserted} permanent bootstrap landmarks into Mycelium runtime DB")
         return inserted

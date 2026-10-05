@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from backend.memory.mycelium.interface import MyceliumInterface
 
-from backend.memory.db import open_encrypted_memory, Connection
+from backend.memory.db import open_encrypted_memory, Connection, app_flush, app_write, owns_store
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +134,7 @@ class SemanticStore:
         Returns:
             New version number
         """
-        cursor = self.db.execute("""
+        _sql = """
             INSERT INTO semantic_entries (category, key, value, version, confidence, source)
             VALUES (?, ?, ?, 1, ?, ?)
             ON CONFLICT(category, key) DO UPDATE SET
@@ -143,13 +143,18 @@ class SemanticStore:
                 confidence = excluded.confidence,
                 source = excluded.source,
                 updated = CURRENT_TIMESTAMP
-            RETURNING version
-        """, (category, key, value, confidence, source))
-        
-        row = cursor.fetchone()
-        self.db.commit()
-
-        new_version = row[0] if row else 1
+        """
+        _params = (category, key, value, confidence, source)
+        if owns_store(self.db):
+            # One writer: queued, so RETURNING is not available. The version is
+            # assigned on the writer thread; no caller uses the returned value
+            # (logging only), so a queued write reports 1.
+            app_write(self.db, _sql, _params)
+            new_version = 1
+        else:
+            row = self.db.execute(_sql + " RETURNING version", _params).fetchone()
+            self.db.commit()
+            new_version = row[0] if row else 1
         logger.debug(f"[SemanticStore] Updated {category}.{key} -> v{new_version}")
 
         # Fire-and-forget: flow the updated fact into the coordinate graph (Task 8.4).
@@ -174,6 +179,7 @@ class SemanticStore:
         Returns:
             SemanticEntry or None if not found
         """
+        # Read at turn start: the last settled facts, no wait on the writer queue.
         row = self.db.execute("""
             SELECT category, key, value, version, confidence, source, updated
             FROM semantic_entries
@@ -204,13 +210,17 @@ class SemanticStore:
         Returns:
             True if deleted, False if not found
         """
-        cursor = self.db.execute("""
+        # One writer: rowcount is not known when the delete is queued, so
+        # check the row first (flush: a queued update must be visible).
+        app_flush()
+        deleted = self.db.execute(
+            "SELECT 1 FROM semantic_entries WHERE category = ? AND key = ?",
+            (category, key),
+        ).fetchone() is not None
+        app_write(self.db, """
             DELETE FROM semantic_entries
             WHERE category = ? AND key = ?
         """, (category, key))
-        
-        self.db.commit()
-        deleted = cursor.rowcount > 0
         
         if deleted:
             logger.debug(f"[SemanticStore] Deleted {category}.{key}")
@@ -227,6 +237,7 @@ class SemanticStore:
         Returns:
             List of SemanticEntry objects
         """
+        # Read at turn start: the last settled facts, no wait on the writer queue.
         rows = self.db.execute("""
             SELECT category, key, value, version, confidence, source, updated
             FROM semantic_entries
@@ -284,6 +295,7 @@ class SemanticStore:
         Returns:
             List of entry dictionaries ordered by version
         """
+        app_flush()  # one writer: a queued update() must be readable
         rows = self.db.execute("""
             SELECT category, key, value, version, confidence, source, updated
             FROM semantic_entries
@@ -311,6 +323,7 @@ class SemanticStore:
         Returns:
             Maximum version number (0 if no entries)
         """
+        app_flush()  # one writer: a queued update() must be readable
         row = self.db.execute("""
             SELECT COALESCE(MAX(version), 0) FROM semantic_entries
         """).fetchone()
@@ -335,7 +348,7 @@ class SemanticStore:
             source: Source of the entry (auto_learned, user_set)
             editable: Whether user can edit this entry
         """
-        self.db.execute("""
+        app_write(self.db, """
             INSERT INTO user_display_memory (display_key, display_name, internal_ref, source, editable)
             VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(display_key) DO UPDATE SET
@@ -343,8 +356,6 @@ class SemanticStore:
                 source = excluded.source,
                 editable = excluded.editable
         """, (key, display_name, key, source, int(editable)))
-        
-        self.db.commit()
         logger.debug(f"[SemanticStore] Updated display entry: {key}")
     
     def get_display_entries(self) -> List[Dict[str, Any]]:
@@ -354,6 +365,7 @@ class SemanticStore:
         Returns:
             List of display entry dictionaries
         """
+        # Read at turn start: the last settled facts, no wait on the writer queue.
         rows = self.db.execute("""
             SELECT display_key, display_name, internal_ref, source, confidence, editable, created
             FROM user_display_memory
@@ -385,13 +397,16 @@ class SemanticStore:
         Returns:
             True if deleted, False if not found
         """
-        cursor = self.db.execute("""
+        # One writer: rowcount is not known when the delete is queued, so
+        # check the row first (flush: a queued update must be visible).
+        app_flush()
+        deleted = self.db.execute(
+            "SELECT 1 FROM user_display_memory WHERE display_key = ?", (key,)
+        ).fetchone() is not None
+        app_write(self.db, """
             DELETE FROM user_display_memory
             WHERE display_key = ?
         """, (key,))
-        
-        self.db.commit()
-        deleted = cursor.rowcount > 0
         
         if deleted:
             logger.debug(f"[SemanticStore] Deleted display entry: {key}")
@@ -405,6 +420,7 @@ class SemanticStore:
         Returns:
             Dictionary with statistics
         """
+        # Statistics: the last settled rows, no wait on the writer queue.
         # Count by category
         cat_rows = self.db.execute("""
             SELECT category, COUNT(*) FROM semantic_entries

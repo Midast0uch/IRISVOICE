@@ -14,6 +14,7 @@ import struct
 import time
 from typing import List, Optional
 
+from backend.memory.db import app_flush, app_write
 from .store import CoordEdge, CoordNode, CoordinateStore
 from .spaces import (
     CONDENSE_THRESHOLD,
@@ -247,6 +248,9 @@ class EdgeScorer:
                 logger.debug("[scorer] caducean modulation unavailable: %s", exc)
                 caducean_multiplier = 1.0  # safe default
 
+        # One writer: the edge scores and rows queued so far are on disk before
+        # the pass reads them and decides what to prune.
+        app_flush()
         # Fetch all edges joined to their from_node space_id in one round-trip
         cursor = self._store._conn.execute(
             """
@@ -275,13 +279,15 @@ class EdgeScorer:
                 self._store.delete_edge(edge_id)
                 pruned += 1
             else:
-                # Direct UPDATE: bypass traversal_count bump (Req 7.3)
-                self._store._conn.execute(
-                    "UPDATE mycelium_edges SET score = ? WHERE edge_id = ?",
-                    (max(0.0, new_score), edge_id),
+                # Direct UPDATE: bypass traversal_count bump (Req 7.3).
+                # One writer: the decay is subtracted on the writer thread, so an
+                # observation queued between the read and this write is kept.
+                app_write(
+                    self._store._conn,
+                    "UPDATE mycelium_edges SET score = MAX(0.0, score - ?) WHERE edge_id = ?",
+                    (effective_rate * caducean_multiplier * days_idle, edge_id),
                 )
 
-        self._store._conn.commit()
         logger.debug("[scorer] apply_decay: pruned %d edges", pruned)
         return pruned
 
@@ -356,6 +362,7 @@ class MapManager:
         Returns:
             Number of nodes removed in this space.
         """
+        app_flush()  # one writer: queued node/edge writes are on disk before the scan
         nodes = self._store.get_nodes_by_space(space_id)
         merged: set = set()
         merge_count = 0
@@ -393,7 +400,8 @@ class MapManager:
 
                 # Update survivor coordinates directly (not via upsert — avoids
                 # triggering another dedup check that could merge with a third node)
-                self._store._conn.execute(
+                app_write(
+                    self._store._conn,
                     """
                     UPDATE mycelium_nodes
                     SET coordinates = ?, updated_at = ?
@@ -409,9 +417,6 @@ class MapManager:
                 merged.add(victim.node_id)
                 merge_count += 1
                 break  # node_a fully processed; advance outer loop
-
-        if merge_count:
-            self._store._conn.commit()
 
         logger.debug("[scorer] condense(%s): merged %d nodes", space_id, merge_count)
         return merge_count
@@ -450,6 +455,7 @@ class MapManager:
         Returns:
             Number of nodes split in this space.
         """
+        app_flush()  # one writer: queued node/edge writes are on disk before the scan
         nodes = self._store.get_nodes_by_space(space_id)
         split_count = 0
 
@@ -515,25 +521,29 @@ class MapManager:
 
             # Re-point outbound edges: hit → node_a, miss → node_b
             for edge in hit_edges:
-                self._store._conn.execute(
+                app_write(
+                    self._store._conn,
                     "UPDATE mycelium_edges SET from_node_id = ? WHERE edge_id = ?",
                     (node_a.node_id, edge.edge_id),
                 )
             for edge in miss_edges:
-                self._store._conn.execute(
+                app_write(
+                    self._store._conn,
                     "UPDATE mycelium_edges SET from_node_id = ? WHERE edge_id = ?",
                     (node_b.node_id, edge.edge_id),
                 )
 
             # Re-point inbound edges to original → node_a
-            self._store._conn.execute(
+            app_write(
+                self._store._conn,
                 "UPDATE mycelium_edges SET to_node_id = ? WHERE to_node_id = ?",
                 (node_a.node_id, node.node_id),
             )
 
             # Delete original node
             self._store.delete_node(node.node_id)
-            self._store._conn.commit()
+            # One writer: the next node reads the edges this split re-pointed.
+            app_flush()
             split_count += 1
 
         logger.debug("[scorer] expand(%s): split %d nodes", space_id, split_count)

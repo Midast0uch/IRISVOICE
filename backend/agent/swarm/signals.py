@@ -11,6 +11,8 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
+from backend.memory.db import app_flush, app_write
+
 logger = logging.getLogger(__name__)
 
 
@@ -29,14 +31,14 @@ def post_signal(conn, collab_id: str, agent_id: str,
     """Insert a join signal. Returns signal_id. Never raises."""
     try:
         signal_id = str(uuid.uuid4())
-        conn.execute(
+        app_write(
+            conn,
             """INSERT INTO swarm_join_signals
                (signal_id, collab_id, agent_id, signal_type, payload, created_at, read_by)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (signal_id, collab_id, agent_id, signal_type,
              json.dumps(payload or {}), time.time(), "[]"),
         )
-        conn.commit()
         return signal_id
     except Exception as exc:
         logger.warning("[swarm.signals] post_signal failed: %s", exc)
@@ -47,6 +49,7 @@ def read_signals(conn, collab_id: str,
                  since_ts: float = None) -> list[JoinSignal]:
     """Return signals for a collab, optionally filtered by timestamp."""
     try:
+        app_flush()  # one writer: a post_signal just queued must be read
         q = (
             "SELECT signal_id, collab_id, agent_id, signal_type, payload, created_at"
             " FROM swarm_join_signals WHERE collab_id = ?"
@@ -73,6 +76,7 @@ def read_signals(conn, collab_id: str,
 def mark_read(conn, signal_id: str, agent_id: str) -> None:
     """Mark signal as read by agent_id. Never raises."""
     try:
+        app_flush()  # one writer: read_by must include every queued mark_read
         row = conn.execute(
             "SELECT read_by FROM swarm_join_signals WHERE signal_id = ?",
             (signal_id,),
@@ -81,11 +85,11 @@ def mark_read(conn, signal_id: str, agent_id: str) -> None:
             readers = json.loads(row[0] or "[]")
             if agent_id not in readers:
                 readers.append(agent_id)
-                conn.execute(
+                app_write(
+                    conn,
                     "UPDATE swarm_join_signals SET read_by = ? WHERE signal_id = ?",
                     (json.dumps(readers), signal_id),
                 )
-                conn.commit()
     except Exception as exc:
         logger.warning("[swarm.signals] mark_read failed: %s", exc)
 
@@ -94,11 +98,16 @@ def expire_old_signals(conn, expiry_seconds: int = 300) -> int:
     """Delete signals older than expiry_seconds. Returns count deleted."""
     try:
         cutoff = time.time() - expiry_seconds
-        cur = conn.execute(
-            "DELETE FROM swarm_join_signals WHERE created_at < ?", (cutoff,)
+        # One writer: the count is returned to the caller, so count the rows
+        # first (flush: queued posts must be counted), then queue the delete.
+        app_flush()
+        n = conn.execute(
+            "SELECT COUNT(*) FROM swarm_join_signals WHERE created_at < ?", (cutoff,)
+        ).fetchone()[0]
+        app_write(
+            conn, "DELETE FROM swarm_join_signals WHERE created_at < ?", (cutoff,)
         )
-        conn.commit()
-        return cur.rowcount
+        return n
     except Exception as exc:
         logger.warning("[swarm.signals] expire_old_signals failed: %s", exc)
         return 0

@@ -44,7 +44,11 @@ def submit(owner, fn_name: str, **kwargs) -> None:
 
         def _job() -> None:
             from backend.memory import memory_events as _me
+            from backend.memory.db import lane_connection
 
+            # This lane's own connection: its scans never hold the shared one
+            # the answer path reads on.
+            conn_l = lane_connection(conn)
             try:
                 from backend.agent.caducean_trajectory import latest_coords_str
 
@@ -52,12 +56,12 @@ def submit(owner, fn_name: str, **kwargs) -> None:
             except Exception:  # noqa: BLE001
                 coords = None
             if fn_name == "emit_event":
-                _me.ensure_schema(conn)
+                _me.ensure_schema(conn_l)
                 kwargs.setdefault("sigma_from", coords)
                 kwargs.setdefault("sigma_to", coords)
-                _me.emit_event(conn, **kwargs)
+                _me.emit_event(conn_l, **kwargs)
             else:
-                getattr(_me, fn_name)(conn, coords=coords, **kwargs)
+                getattr(_me, fn_name)(conn_l, coords=coords, **kwargs)
 
         lane("memory_events").submit(f"memory_events:{fn_name}", _job)
     except Exception as exc:  # noqa: BLE001

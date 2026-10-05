@@ -18,6 +18,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from backend.memory.db import app_flush, app_write
+
 logger = logging.getLogger(__name__)
 
 # Deduplication threshold: nodes within this Euclidean distance in the same
@@ -169,6 +171,9 @@ class CoordinateStore:
             The upserted CoordNode (either updated existing or newly created).
         """
         now = time.time()
+        # One writer: a node queued by an earlier upsert must be on disk before
+        # the dedup scan, or the same coordinates would insert a second node.
+        app_flush()
         existing = self._find_dedup_candidate(space_id, coordinates)
 
         if existing is not None:
@@ -179,7 +184,8 @@ class CoordinateStore:
             new_confidence = max(existing.confidence, confidence)
             new_label = label if label is not None else existing.label
 
-            self._conn.execute(
+            app_write(
+                self._conn,
                 """
                 UPDATE mycelium_nodes
                 SET coordinates = ?, label = ?, confidence = ?, updated_at = ?
@@ -187,7 +193,6 @@ class CoordinateStore:
                 """,
                 (_pack_coords(new_coords), new_label, new_confidence, now, existing.node_id),
             )
-            self._conn.commit()
 
             return CoordNode(
                 node_id=existing.node_id,
@@ -203,7 +208,8 @@ class CoordinateStore:
 
         # No nearby node — insert new (Req 3.2: 12-char UUID prefix)
         node_id = _short_uuid()
-        self._conn.execute(
+        app_write(
+            self._conn,
             """
             INSERT INTO mycelium_nodes
                 (node_id, space_id, coordinates, label, confidence,
@@ -212,7 +218,6 @@ class CoordinateStore:
             """,
             (node_id, space_id, _pack_coords(coordinates), label, confidence, now, now),
         )
-        self._conn.commit()
 
         return CoordNode(
             node_id=node_id,
@@ -330,7 +335,8 @@ class CoordinateStore:
         """
         Increment access_count and set last_accessed to now (Req 3.5).
         """
-        self._conn.execute(
+        app_write(
+            self._conn,
             """
             UPDATE mycelium_nodes
             SET access_count = access_count + 1, last_accessed = ?
@@ -338,14 +344,10 @@ class CoordinateStore:
             """,
             (time.time(), node_id),
         )
-        self._conn.commit()
 
     def delete_node(self, node_id: str) -> None:
         """Delete a node by ID. Caller must handle orphaned edges first."""
-        self._conn.execute(
-            "DELETE FROM mycelium_nodes WHERE node_id = ?", (node_id,)
-        )
-        self._conn.commit()
+        app_write(self._conn, "DELETE FROM mycelium_nodes WHERE node_id = ?", (node_id,))
 
     # ------------------------------------------------------------------
     # Edge operations
@@ -397,24 +399,30 @@ class CoordinateStore:
         ``record_observation`` (below); this method remains for generic
         callers (e.g. navigator scoring) that express plain score movement.
         """
-        cursor = self._conn.execute(
-            "SELECT score FROM mycelium_edges WHERE edge_id = ?", (edge_id,)
-        )
-        row = cursor.fetchone()
-        if row is None:
+        if not self._edge_exists(edge_id):
             logger.warning("[store] update_edge_score: edge not found: %s", edge_id)
             return
 
-        new_score = max(0.0, min(1.0, row[0] + delta))
-        self._conn.execute(
+        # One writer: score + delta is computed on the writer thread, in order.
+        app_write(
+            self._conn,
             """
             UPDATE mycelium_edges
-            SET score = ?, traversal_count = traversal_count + 1, last_traversed = ?
+            SET score = MAX(0.0, MIN(1.0, score + ?)),
+                traversal_count = traversal_count + 1, last_traversed = ?
             WHERE edge_id = ?
             """,
-            (new_score, time.time(), edge_id),
+            (delta, time.time(), edge_id),
         )
-        self._conn.commit()
+
+    def _edge_exists(self, edge_id: str) -> bool:
+        """True when the edge is in the store. An edge queued a moment ago may not
+        be on disk yet, so a miss flushes the writer once and looks again."""
+        sql = "SELECT 1 FROM mycelium_edges WHERE edge_id = ?"
+        if self._conn.execute(sql, (edge_id,)).fetchone() is not None:
+            return True
+        app_flush()
+        return self._conn.execute(sql, (edge_id,)).fetchone() is not None
 
     def record_observation(self, edge_id: str, delta: float) -> None:
         """
@@ -429,25 +437,22 @@ class CoordinateStore:
         The caller is responsible for the evidence weighting; this method only
         applies the (already-weighted) delta and records the observation.
         """
-        cursor = self._conn.execute(
-            "SELECT score FROM mycelium_edges WHERE edge_id = ?", (edge_id,)
-        )
-        row = cursor.fetchone()
-        if row is None:
+        if not self._edge_exists(edge_id):
             logger.warning("[store] record_observation: edge not found: %s", edge_id)
             return
 
-        new_score = max(0.0, min(1.0, row[0] + delta))
-        self._conn.execute(
+        # One writer: score + delta is computed on the writer thread, in order.
+        app_write(
+            self._conn,
             """
             UPDATE mycelium_edges
-            SET score = ?, traversal_count = traversal_count + 1,
+            SET score = MAX(0.0, MIN(1.0, score + ?)),
+                traversal_count = traversal_count + 1,
                 observation_count = observation_count + 1, last_traversed = ?
             WHERE edge_id = ?
             """,
-            (new_score, time.time(), edge_id),
+            (delta, time.time(), edge_id),
         )
-        self._conn.commit()
 
     def upsert_edge(
         self,
@@ -474,9 +479,13 @@ class CoordinateStore:
         if row:
             return row[0]
 
-        edge_id = _short_uuid()
+        # One writer: the id comes from the pair, so two queued inserts of the
+        # same pair share one id (the second is ignored) and the id returned
+        # here is always the id of the row that lands.
+        edge_id = uuid.uuid5(uuid.NAMESPACE_OID, f"{from_node_id}|{to_node_id}").hex[:12]
         now = time.time()
-        self._conn.execute(
+        app_write(
+            self._conn,
             """
             INSERT OR IGNORE INTO mycelium_edges
                 (edge_id, from_node_id, to_node_id, score, edge_type,
@@ -486,15 +495,11 @@ class CoordinateStore:
             """,
             (edge_id, from_node_id, to_node_id, initial_score, edge_type, now),
         )
-        self._conn.commit()
         return edge_id
 
     def delete_edge(self, edge_id: str) -> None:
         """Delete an edge by ID (used by EdgeScorer prune and MapManager)."""
-        self._conn.execute(
-            "DELETE FROM mycelium_edges WHERE edge_id = ?", (edge_id,)
-        )
-        self._conn.commit()
+        app_write(self._conn, "DELETE FROM mycelium_edges WHERE edge_id = ?", (edge_id,))
 
     def get_all_edges(self) -> List[CoordEdge]:
         """Return all edges — used by EdgeScorer.apply_decay()."""
@@ -516,7 +521,9 @@ class CoordinateStore:
         Skips self-loops that would be created by the re-point.
         """
         # Re-point outbound edges (from_node_id)
-        self._conn.execute(
+        # One writer: the three statements queue in order on one writer thread.
+        app_write(
+            self._conn,
             """
             UPDATE mycelium_edges
             SET from_node_id = ?
@@ -525,7 +532,8 @@ class CoordinateStore:
             (new_node_id, old_node_id, new_node_id),
         )
         # Re-point inbound edges (to_node_id)
-        self._conn.execute(
+        app_write(
+            self._conn,
             """
             UPDATE mycelium_edges
             SET to_node_id = ?
@@ -534,10 +542,7 @@ class CoordinateStore:
             (new_node_id, old_node_id, new_node_id),
         )
         # Remove self-loops and duplicate edges that the re-point created
-        self._conn.execute(
-            "DELETE FROM mycelium_edges WHERE from_node_id = to_node_id"
-        )
-        self._conn.commit()
+        app_write(self._conn, "DELETE FROM mycelium_edges WHERE from_node_id = to_node_id")
 
     # ------------------------------------------------------------------
     # Traversal logging
@@ -569,7 +574,8 @@ class CoordinateStore:
             traversal_id of the written record.
         """
         traversal_id = _short_uuid()
-        self._conn.execute(
+        app_write(
+            self._conn,
             """
             INSERT INTO mycelium_traversals
                 (traversal_id, session_id, task_summary, path_node_ids,
@@ -588,7 +594,6 @@ class CoordinateStore:
                 time.time(),
             ),
         )
-        self._conn.commit()
         return traversal_id
 
     def get_traversals_for_session(self, session_id: str) -> List[dict]:

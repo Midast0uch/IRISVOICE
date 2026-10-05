@@ -1038,14 +1038,23 @@ class _PythonFallbackEngine:
     def immortus_chain_keep_latest(self, thread_id: str, keep_count: int) -> int:
         if not self._conn:
             return -1
-        cur = self._conn.cursor()
-        cur.execute(
+        from backend.memory.db import app_flush, app_write
+
+        # One writer: the deleted count is not known when the delete is
+        # queued, so report rows beyond keep_count (flush: queued appends
+        # must be counted). The only caller ignores the value.
+        app_flush()
+        total = self._conn.execute(
+            "SELECT COUNT(*) FROM memory_chain WHERE thread_id = ?", (thread_id,)
+        ).fetchone()[0]
+        app_write(
+            self._conn,
             "DELETE FROM memory_chain WHERE thread_id = ? AND chain_id NOT IN "
             "(SELECT chain_id FROM memory_chain WHERE thread_id = ? "
             "ORDER BY created_at DESC LIMIT ?)",
             (thread_id, thread_id, keep_count),
         )
-        return cur.rowcount
+        return max(0, total - keep_count)
 
     @staticmethod
     def _parse_coords(text: Optional[str]) -> Optional[tuple]:

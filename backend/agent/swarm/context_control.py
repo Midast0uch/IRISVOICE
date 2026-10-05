@@ -95,9 +95,12 @@ class ContextControlHandler:
             conn = self._get_conn()
             if not conn:
                 return
+            from backend.memory.db import app_write
+
             pin_id = str(uuid.uuid4())
             now = time.time()
-            conn.execute(
+            app_write(
+                conn,
                 """INSERT OR REPLACE INTO mycelium_pins
                    (pin_id, title, pin_type, content, tags,
                     file_refs, project_id, origin_id,
@@ -108,7 +111,6 @@ class ContextControlHandler:
                  "[]", "IRISVOICE", self.session_id,
                  now, now, 1),
             )
-            conn.commit()
             logger.debug("[ctrl:998] Pinned artifact pin_id=%s", pin_id)
         except Exception as exc:
             logger.debug("[ctrl:998] pin failed: %s", exc)

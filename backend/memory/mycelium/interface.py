@@ -20,6 +20,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from backend.memory.db import app_flush, app_write
 from .encoder import PathEncoder
 from .extractor import CoordinateExtractor
 from .landmark import Landmark, LandmarkCondenser, LandmarkIndex
@@ -250,7 +251,8 @@ class MyceliumInterface:
             import uuid
             import time as _time
 
-            self._conn.execute(
+            app_write(
+                self._conn,
                 "INSERT INTO mycelium_plan_stats VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     str(uuid.uuid4())[:12],
@@ -266,7 +268,6 @@ class MyceliumInterface:
                     _time.time(),
                 ),
             )
-            self._conn.commit()
         except Exception:
             pass
 
@@ -285,7 +286,8 @@ class MyceliumInterface:
             render_order = RENDER_ORDER.get(space_id, 0)
             axes_json = json.dumps(space.axes)
             value_range_json = json.dumps(list(space.value_range))
-            self._conn.execute(
+            app_write(
+                self._conn,
                 """
                 INSERT OR REPLACE INTO mycelium_spaces
                     (space_id, axes, dtype, value_range, description, active)
@@ -293,7 +295,6 @@ class MyceliumInterface:
                 """,
                 (space_id, axes_json, space.dtype, value_range_json, space.description),
             )
-        self._conn.commit()
 
     # ------------------------------------------------------------------
     # MCP registry
@@ -320,7 +321,8 @@ class MyceliumInterface:
         Atomic: both writes succeed or neither is committed.
         """
         now = time.time()
-        self._conn.execute(
+        app_write(
+            self._conn,
             """
             INSERT OR REPLACE INTO mycelium_mcp_registry
                 (server_id, url, content_hash, registered_at)
@@ -328,7 +330,6 @@ class MyceliumInterface:
             """,
             (server_id, url, content_hash, now),
         )
-        self._conn.commit()
         self._mcp_trust_registry[server_id] = {"url": url, "content_hash": content_hash}
 
     # ------------------------------------------------------------------
@@ -874,6 +875,8 @@ class MyceliumInterface:
             )
 
             conn = self._conn
+            # One writer: the landmark and merge rows just saved are read below.
+            app_flush()
             ev = session_evidence(conn, session_id)
             set_landmark_falsification(conn, surviving.landmark_id, ev["depends_on"],
                                        ev["verified_steps"])

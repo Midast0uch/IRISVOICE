@@ -13,6 +13,8 @@ Gate 1 Step 1.9
 import json
 from typing import Any, Dict, List, Optional
 
+from backend.memory.db import app_flush, app_write
+
 
 class ResolutionEncoder:
     """
@@ -182,7 +184,8 @@ class CoordinateInterpreter:
             try:
                 import uuid as _uuid
                 import time as _time
-                conn.execute(
+                app_write(
+                    conn,
                     "INSERT OR IGNORE INTO mycelium_conflicts "
                     "(conflict_id, space_id, axis, value_a, source_a, "
                     " value_b, source_b, resolved_value, resolution_basis, created_at) "
@@ -288,6 +291,9 @@ class BehavioralPredictor:
             # Legacy 'traversal' edges keep the pre-existing hit-ratio
             # ranking.
             placeholders = ",".join("?" for _ in current_node_ids)
+            # One writer: the posterior this decision reads is the edge update
+            # just queued by record_region_mediator_outcome.
+            app_flush()
             cursor = conn.execute(
                 f"SELECT e.to_node_id, e.score, e.hit_count, e.traversal_count, "
                 f"       n.label, n.confidence, e.edge_type "

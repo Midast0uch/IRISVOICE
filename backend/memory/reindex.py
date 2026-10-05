@@ -20,7 +20,7 @@ import os
 import threading
 from typing import Any, Dict, List, Optional, Tuple
 
-from backend.memory.db import open_encrypted_memory, Connection
+from backend.memory.db import open_encrypted_memory, Connection, app_flush, app_write
 from backend.memory.embedding import (
     EmbeddingService,
     compare_embeddings,
@@ -470,18 +470,21 @@ class ReindexManager:
                     continue
 
                 # CRASH-SAFE: write vector first
-                db.execute(
+                app_write(
+                    db,
                     "UPDATE episodes SET embedding = ? WHERE id = ?",
                     (_pack_embedding(new_vec), row_id),
                 )
-                db.commit()
 
-                # Then mark migrated
-                db.execute(
+                # Then mark migrated (queued after the vector, same writer)
+                app_write(
+                    db,
                     "UPDATE episodes SET embedding_backend = ? WHERE id = ?",
                     (to_backend, row_id),
                 )
-                db.commit()
+                # One writer: the state file must not run ahead of the rows it
+                # says are migrated, so both updates are on disk before it saves.
+                app_flush()
 
                 with self._lock:
                     self._last_row_id = row_id
@@ -541,18 +544,21 @@ class ReindexManager:
                     continue
 
                 # CRASH-SAFE: write vector first
-                db.execute(
+                app_write(
+                    db,
                     "UPDATE context_chunks SET embedding = ? WHERE id = ?",
                     (_pack_embedding(new_vec), row_id),
                 )
-                db.commit()
 
-                # Then mark migrated
-                db.execute(
+                # Then mark migrated (queued after the vector, same writer)
+                app_write(
+                    db,
                     "UPDATE context_chunks SET embedding_backend = ? WHERE id = ?",
                     (to_backend, row_id),
                 )
-                db.commit()
+                # One writer: the state file must not run ahead of the rows it
+                # says are migrated, so both updates are on disk before it saves.
+                app_flush()
 
                 with self._lock:
                     self._last_row_id = row_id

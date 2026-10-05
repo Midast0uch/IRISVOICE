@@ -31,6 +31,8 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from backend.memory.db import app_flush, app_write
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -391,10 +393,7 @@ class QuorumReorganization:
         try:
             conn = getattr(mycelium_interface, "_conn", None)
             if conn is not None:
-                conn.execute(
-                    "UPDATE mycelium_profile SET dirty = 1"
-                )
-                conn.commit()
+                app_write(conn, "UPDATE mycelium_profile SET dirty = 1")
         except Exception as _e:
             logger.error("[QuorumReorganization] step3 dirty-profile failed: %s", _e)
 
@@ -420,7 +419,8 @@ class QuorumReorganization:
             conn = getattr(mycelium_interface, "_conn", None)
             if conn is not None:
                 import datetime as _dt
-                conn.execute(
+                app_write(
+                    conn,
                     """INSERT OR IGNORE INTO mycelium_conflicts
                        (conflict_id, space_id, axis, value_a, source_a,
                         value_b, source_b, resolution, resolution_basis, resolved_at)
@@ -433,7 +433,6 @@ class QuorumReorganization:
                         _dt.datetime.now(_dt.timezone.utc).isoformat(),
                     ),
                 )
-                conn.commit()
         except Exception as _e:
             logger.error("[QuorumReorganization] step6 conflict log failed: %s", _e)
 
@@ -493,6 +492,8 @@ def _apply_accelerated_decay(conn: Any, multiplier: float) -> None:
     except ImportError:
         PRUNE_THRESHOLD = 0.08
 
+    # One writer: queued edge writes must be on disk before this read.
+    app_flush()
     # decay_rate is stored per-edge in the mycelium_edges table
     rows = conn.execute(
         "SELECT edge_id, score, decay_rate FROM mycelium_edges"
@@ -502,15 +503,16 @@ def _apply_accelerated_decay(conn: Any, multiplier: float) -> None:
         effective_rate = (decay_rate or 0.01) * multiplier
         new_score = score * (1.0 - effective_rate)
         if new_score < PRUNE_THRESHOLD:
-            conn.execute(
-                "DELETE FROM mycelium_edges WHERE edge_id = ?", (edge_id,)
+            app_write(
+                conn, "DELETE FROM mycelium_edges WHERE edge_id = ?", (edge_id,)
             )
         else:
-            conn.execute(
-                "UPDATE mycelium_edges SET score = ? WHERE edge_id = ?",
-                (round(new_score, 6), edge_id),
+            # Relative decay in SQL: a queued score write ahead of this one is kept.
+            app_write(
+                conn,
+                "UPDATE mycelium_edges SET score = ROUND(score * (1.0 - ?), 6) WHERE edge_id = ?",
+                (effective_rate, edge_id),
             )
-    conn.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -1104,6 +1106,8 @@ class DeltaEncoder:
         Compare *current_path* to the previous session's stored path and
         produce a PathDelta.
         """
+        # One writer: the previous session's delta may still be queued.
+        app_flush()
         # Look up previous baseline
         prev_row = conn.execute(
             """SELECT delta_data FROM mycelium_path_deltas
@@ -1182,6 +1186,8 @@ class DeltaEncoder:
         """
         import json as _json
 
+        # One writer: deltas persisted just before this call may still be queued.
+        app_flush()
         rows = conn.execute(
             """SELECT delta_data FROM mycelium_path_deltas
                WHERE session_id = ?
@@ -1241,7 +1247,8 @@ class DeltaEncoder:
                 "modified":         delta.modified,
                 "delta_compressed": delta.delta_compressed,
             }
-            conn.execute(
+            app_write(
+                conn,
                 """INSERT INTO mycelium_path_deltas (delta_id, session_id, delta_data, created_at)
                    VALUES (?, ?, ?, ?)""",
                 (
@@ -1253,7 +1260,6 @@ class DeltaEncoder:
                     _dt.datetime.now(_dt.timezone.utc).isoformat(),
                 ),
             )
-            conn.commit()
         except Exception as _e:
             logger.debug("[DeltaEncoder] persist failed: %s", _e)
 
