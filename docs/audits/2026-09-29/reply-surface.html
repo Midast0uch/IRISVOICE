@@ -125,7 +125,8 @@ pre.code{background:var(--panel);border:1px solid var(--line);border-radius:10px
   <ul>
     <li><b>Done:</b> R5 security part — every HTML artifact now renders in a sandboxed iframe (no same-origin; web HTML sanitized with no scripts; agent HTML scripts isolated; injected CSP blocks network, forms and navigation). Guard: <code>__tests__/components/html-artifact-sandbox.test.tsx</code>. R1 crash fixed earlier (<code>a21b641c</code>).</li>
     <li><b>Partial:</b> R3 (titles from the first heading, pre-audit), R7 (ask once per session, scoped to the thread; no in-turn receipt).</li>
-    <li><b>Open:</b> Phase A (<code>create_artifact</code>; the fallback mint <code>_mint_artifact_card</code>, the web-format question <code>_maybe_escalate_web_format</code> and the markdown demotion are still in the code), R4, R6, R8, R9, R10, Phase B, Phase C rest (theme tokens, auto height for web HTML, open in browser surface), Phase D.</li>
+    <li><b>Done (Phase A, <code>c2be0c5e</code>):</b> <code>create_artifact</code> is the one door to a card (title, kind, summary required; stored on the real document store; survives reload); <code>{speak, show}</code> converts to it; the markdown demotion, fallback mint, backend failed-search rule, web-format question (R6) and <code>render_document</code> (R1) are gone; the prompt states the 4-line rule (R2). Left: <code>screenshot_page_tool</code> emits its own image card; the frontend copy of the failed-search rule in <code>chat-view.tsx</code>.</li>
+    <li><b>Open:</b> R4, R8, R9, R10, Phase B (compact cards, receipts), Phase C rest (theme tokens, auto height for web HTML, open in browser surface), Phase D.</li>
   </ul>
 </div>
 
