@@ -1275,6 +1275,17 @@ class InferenceRouter:
                     _gen_kwargs["thinking"] = _thinking
             except (TypeError, ValueError):
                 pass
+        # Per-call hidden-reasoning budget (the planner: "low"). Same rule:
+        # only a transport that names the keyword gets it.
+        _effort = kwargs.pop("reasoning_effort", None)
+        if _effort is not None:
+            import inspect as _inspect
+
+            try:
+                if "reasoning_effort" in _inspect.signature(transport.generate).parameters:
+                    _gen_kwargs["reasoning_effort"] = _effort
+            except (TypeError, ValueError):
+                pass
 
         # One timing line per model call, failed calls included, logged when it
         # ends: the turn split (model wait vs IRIS's own time) is measured from

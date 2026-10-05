@@ -12,6 +12,52 @@ import { CardChassis } from "@/components/chat/CardChassis"
 // Lazy-load mermaid only when a ```mermaid block is present
 const MermaidDiagram = lazy(() => import("./MermaidDiagram"))
 
+// R5 (reply-surface audit 2026-09-29): an HTML artifact never enters the app's
+// own DOM. "Trusted" (agent-made) HTML was injected RAW via innerHTML, so an
+// inline handler such as onerror ran with the app's origin. Every HTML body now
+// renders in a sandboxed iframe with NO allow-same-origin: it cannot read IRIS,
+// its storage or its cookies, navigate the top window or submit forms. The CSP
+// below also blocks network access; scripts only from two CDNs.
+const FRAME_CSP =
+  "default-src 'none'; script-src 'unsafe-inline' https://cdnjs.cloudflare.com " +
+  "https://cdn.jsdelivr.net; style-src 'unsafe-inline' https://fonts.googleapis.com; " +
+  "font-src https://fonts.gstatic.com data:; img-src data:; connect-src 'none'; form-action 'none'"
+const FRAME_BASE =
+  `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${FRAME_CSP}">` +
+  "<style>html,body{margin:0;background:transparent;color:rgba(255,255,255,.75);" +
+  "font:12px/1.5 system-ui,sans-serif;overflow-wrap:anywhere}</style>"
+// Trusted pages report their height so the frame fits them. Untrusted (web)
+// HTML gets no script at all: it is sanitized and the frame allows nothing.
+const FRAME_HEIGHT_SCRIPT =
+  "<script>(function(){function h(){parent.postMessage({irisFrameHeight:" +
+  "document.documentElement.scrollHeight},'*')}addEventListener('load',h);" +
+  "if(window.ResizeObserver)new ResizeObserver(h).observe(document.documentElement)})()</script>"
+
+function SandboxedHtml({ html, trusted }: { html: string; trusted: boolean }) {
+  const frameRef = useRef<HTMLIFrameElement>(null)
+  const [height, setHeight] = useState<number | undefined>(undefined)
+  useEffect(() => {
+    if (!trusted) return
+    const onMessage = (e: MessageEvent) => {
+      if (e.source !== frameRef.current?.contentWindow) return
+      const h = Number((e.data as { irisFrameHeight?: unknown } | null)?.irisFrameHeight)
+      if (Number.isFinite(h) && h > 0) setHeight(Math.min(Math.ceil(h), 20000))
+    }
+    window.addEventListener("message", onMessage)
+    return () => window.removeEventListener("message", onMessage)
+  }, [trusted])
+  return (
+    <iframe
+      ref={frameRef}
+      title="HTML document"
+      sandbox={trusted ? "allow-scripts" : ""}
+      srcDoc={FRAME_BASE + html + (trusted ? FRAME_HEIGHT_SCRIPT : "")}
+      className="block w-full border-0"
+      style={{ height: height ?? 360, background: "transparent" }}
+    />
+  )
+}
+
 interface RichDocumentProps {
   content: string
   // "json" is what the crawler/tool-result cards actually carry. It was absent
@@ -46,8 +92,9 @@ interface RichDocumentProps {
   /** Controls the default collapsed state; the inline thread card collapses
    * (REQ-6), a DocumentPanel body does not. */
   defaultCollapsed?: boolean
-  // Trust-routing W3: "trusted" renders raw HTML; anything else is sanitized
-  // with DOMPurify before being injected (untrusted = web/crawler-sourced).
+  // Trust-routing W3: untrusted (web/crawler-sourced) HTML is sanitized with
+  // DOMPurify. Either way an HTML body renders in a sandboxed iframe (R5);
+  // only "trusted" HTML may run scripts there.
   trust?: string
   // Document-rehydration provenance (REQ-5): source URLs + HAR path so a
   // re-hydrated research doc shows its citations, never as bare [n].
@@ -134,8 +181,8 @@ export function RichDocument({
     content.length > 50000 ? content.slice(0, 50000) + "\n\n*[Document truncated at 50,000 characters]*" : content
 
   // Trust-routing W3: untrusted HTML (web/crawler-sourced) is sanitized with
-  // DOMPurify before injection. Trusted HTML is rendered raw. Guarded for SSR
-  // (no window) — falls back to raw content, which is only ever injected client-side.
+  // DOMPurify. Trusted HTML keeps its scripts, which run only inside the
+  // sandboxed iframe (R5). Guarded for SSR (no window).
   const sanitizedHtml = useMemo(() => {
     if (format !== "html" || trust === "trusted") return truncatedContent
     if (typeof window === "undefined") return truncatedContent
@@ -296,10 +343,7 @@ export function RichDocument({
             }}
           >
             {format === "html" ? (
-              <div
-                dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
-                style={{ color: "rgba(255,255,255,0.7)", fontSize: "11px" }}
-              />
+              <SandboxedHtml html={sanitizedHtml} trusted={trust === "trusted"} />
             ) : format === "text" ? (
               <p
                 className="text-[11px] leading-relaxed whitespace-pre-wrap"

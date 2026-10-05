@@ -78,6 +78,16 @@ def test_the_next_call_asks_for_answer_plus_reasoning(wire):
     assert sent == [1024, 1024 + 700]
 
 
+def test_a_tiny_call_cut_by_reasoning_gets_real_room(wire):
+    """2026-10-05: the Oracle's 16-token Brain reference was cut at 15
+    reasoning tokens, resent at 46, cut again - 19 of 19 labels lost."""
+    sent, replies = wire
+    replies += [_reply("", "length", reasoning=15), _reply("safe", "stop", reasoning=300)]
+    text, _think, _tools = _t().generate("mercury-2.5", [{"role": "user", "content": "q"}], max_tokens=16)
+    assert text == "safe"
+    assert len(sent) == 2 and sent[1] >= 16 + 1024
+
+
 def test_a_model_without_reasoning_is_sent_as_before(wire):
     sent, replies = wire
     t = _t()

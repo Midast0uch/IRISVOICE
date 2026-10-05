@@ -120,6 +120,15 @@ pre.code{background:var(--panel);border:1px solid var(--line);border-radius:10px
 </header>
 
 <div class="read">
+<div class="analogy" id="status-2026-10-05">
+  <h3>Status 2026-10-05 (from MCM pins, PROGRESS and commits)</h3>
+  <ul>
+    <li><b>Done:</b> R5 security part — every HTML artifact now renders in a sandboxed iframe (no same-origin; web HTML sanitized with no scripts; agent HTML scripts isolated; injected CSP blocks network, forms and navigation). Guard: <code>__tests__/components/html-artifact-sandbox.test.tsx</code>. R1 crash fixed earlier (<code>a21b641c</code>).</li>
+    <li><b>Partial:</b> R3 (titles from the first heading, pre-audit), R7 (ask once per session, scoped to the thread; no in-turn receipt).</li>
+    <li><b>Open:</b> Phase A (<code>create_artifact</code>; the fallback mint <code>_mint_artifact_card</code>, the web-format question <code>_maybe_escalate_web_format</code> and the markdown demotion are still in the code), R4, R6, R8, R9, R10, Phase B, Phase C rest (theme tokens, auto height for web HTML, open in browser surface), Phase D.</li>
+  </ul>
+</div>
+
 <p class="lede">You are right that the task card and the prism card could make a very clean experience together. Three things stop that today. The rule for "text or card" lives in five places that disagree. The card can show up with no name. And the permission and question cards live outside the conversation, with no record left after you answer.</p>
 
 <div class="analogy">

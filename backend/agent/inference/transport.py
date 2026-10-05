@@ -486,6 +486,13 @@ def _extract_ollama_usage(payload: Dict[str, Any]) -> Optional[Dict[str, int]]:
 
 # Upper bound on the hidden-reasoning room added to an API call's max_tokens.
 _REASONING_HEADROOM_MAX = 16384
+_REASONING_RESEND_FLOOR = 1024
+# Providers whose chat API takes `reasoning_effort` (instant|low|medium|high,
+# default medium; docs.inceptionlabs.ai/capabilities/reasoning-efforts). Other
+# providers never see the key: an unknown field can be a 400. Measured
+# 2026-10-05, mercury-2.5 planner prompt: low = ~250 hidden reasoning tokens
+# vs ~1,300-1,650 (default), 2.5-3.2 s vs ~4 s, 6/6 valid plans.
+_REASONING_EFFORT_PROVIDERS = frozenset({"inceptionlabs"})
 
 
 # C6 stall bound (2026-10-02): a hosted model call far past its normal time is
@@ -718,6 +725,7 @@ class ApiHttpxTransport:
         timeout_s: Optional[float] = None,
         num_ctx: Optional[int] = None,
         budget_check: Optional[Callable[[], None]] = None,
+        reasoning_effort: Optional[str] = None,
     ) -> Tuple[str, str, List[Dict[str, Any]]]:
         import httpx as _httpx
         from backend.utils.ssl_context import get_ssl_context
@@ -763,6 +771,8 @@ class ApiHttpxTransport:
         if tools:
             body["tools"] = tools
             body["tool_choice"] = "auto"
+        if reasoning_effort and getattr(self, "_provider_id", "") in _REASONING_EFFORT_PROVIDERS:
+            body["reasoning_effort"] = reasoning_effort
 
         # ── Telemetry ────────────────────────────────────────────────
         try:
@@ -1076,8 +1086,14 @@ class ApiHttpxTransport:
                     if (_rt and not _grown and attempt < 2
                             and result.get("choices", [{}])[0].get("finish_reason") == "length"):
                         _grown = True
+                        # The cut count is only a LOWER bound when the cap was
+                        # tiny: the Oracle's 16-token reference call was cut at
+                        # 15, resent at 46, cut again - 19 of 19 turns lost
+                        # their Brain label (2026-10-05). At least the room a
+                        # plan's reasoning takes (818-979 measured above).
                         body = {**body, "max_tokens": body["max_tokens"]
-                                + min(2 * _rt, _REASONING_HEADROOM_MAX)}
+                                + min(max(2 * _rt, _REASONING_RESEND_FLOOR),
+                                      _REASONING_HEADROOM_MAX)}
                         logger.warning(
                             "[ApiHttpx] answer cut by %d hidden reasoning tokens "
                             "(finish_reason=length) -- resending with max_tokens=%d",

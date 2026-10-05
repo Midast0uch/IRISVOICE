@@ -50,7 +50,9 @@ class _StubRouter:
         self.prompts: list = []
         self.last_usage = None
 
-    def generate(self, kind, messages, max_tokens=0, temperature=0.0):
+    # SETUP 2026-10-05: per-call keywords (the planner's reasoning_effort) are
+    # accepted like InferenceRouter.generate(**kwargs); no assertion changed.
+    def generate(self, kind, messages, max_tokens=0, temperature=0.0, **_kw):
         self.prompts.append(messages)
         text = self._payloads.pop(0) if self._payloads else ""
         return text, "", None

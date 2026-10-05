@@ -7958,6 +7958,12 @@ class AgentKernel:
                     [{"role": "user", "content": full_prompt}],
                     max_tokens=4096,
                     temperature=temperature,
+                    # A plan is 1-3 goal steps: the default hidden reasoning
+                    # (~1,300-1,650 tokens on mercury-2.5, ~4 s) bought nothing
+                    # a "low" budget (~250 tokens, 2.5-3.2 s) did not; measured
+                    # 2026-10-05, 6/6 valid plans. Providers without the
+                    # parameter are sent the call unchanged.
+                    reasoning_effort="low",
                 )
                 self._accrue_tokens(
                     _rt_text, getattr(self._router, "last_usage", None),

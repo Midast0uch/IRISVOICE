@@ -127,6 +127,17 @@ pre.mermaid{background:var(--panel);border:1px solid var(--line);border-radius:1
   <div class="meta">2026-09-29 · branch <code>feat/agent-multi-step-tool-execution</code> · read-only trace of routing, planning, tool calls, model calls, replies and the chat view</div>
 </header>
 
+<div class="analogy" id="status-2026-10-05">
+  <h3>Status 2026-10-05 (from MCM pins, PROGRESS Standards S1–S57 and commits; details in PROGRESS.md)</h3>
+  <ul>
+    <li><b>Done:</b> Phase 0 (eval harness, baseline, standards). Phase 1 blockers B1–B12, B14, B16, B17. Phase 2 node executor in <em>both</em> modes (coding 15/15; S5, S29, S31), plus a parallel DAG scheduler (S47, S50), one native store writer (S42–S49) and a goal contract that tells facts apart (S51–S56; three-fact research 10/10). Browser/vision V1–V10, V12, V13 and Phase B1 (Kilimanjaro 522 s → 95 s).</li>
+    <li><b>Partial:</b> B13 (continuation parse not re-checked), B15 (schemas keep enum/items; one registry not done). Phase 2 rest: no <code>plan_update</code> tool. Phase 5 dead-code removals only.</li>
+    <li><b>Open:</b> Phase 3 turn protocol + turn store + <code>chat-view.tsx</code> split (5,645 lines). Phase 4 live execution matrix. Phase 5 resume and kernel size (<code>agent_kernel.py</code> 22,271 lines vs &lt; 8k). V11 (descriptions still cut at 90 chars), V14, V15, Phase B2, browser eval group.</li>
+    <li><b>Speed (2026-10-05):</b> reply time is ~25% synthesis, ~24% planner, ~16% node calls, ~15% IRIS. Planner now asks for <code>reasoning_effort="low"</code>; a provider 5xx is retried to the third attempt; the Oracle reference probe gets real reasoning room.</li>
+    <li>Architecture map of the engine as built: <code>docs/architecture/DER_DAG.md</code>.</li>
+  </ul>
+</div>
+
 <p class="lede">You are right that the ingredients are there. Memory, a tool bridge, a typed error system, Oracle, the task card, a steering inbox: all of it exists and most of it works. The execution side fails because of the <em>shape</em> the parts are arranged in, plus about fifteen small defects that each block coding work on their own.</p>
 
 <div class="analogy">
