@@ -68,10 +68,12 @@ class TestVetoedStepWritesNoRow:
         start = src.index("if verdict == ReviewVerdict.VETO:")
         # The veto branch ends where the NEXT top-level review-verdict
         # handling begins (REFINE handling, or the step-execution call for
-        # a non-vetoed verdict) — bounded by the next occurrence of
-        # "step_result, step_success" (the execution call every non-vetoed
-        # path eventually reaches) after `start`.
-        end = src.index("step_result, step_success", start)
+        # a non-vetoed verdict) — bounded by the next occurrence of the
+        # node start every non-vetoed path eventually reaches after `start`.
+        # Parallel nodes (2026-10-04): that call is `_der_start_node(` - the
+        # old anchor "step_result, step_success" was the inline execution
+        # call, which moved into the settle helper; the assertions are unchanged.
+        end = src.index("_der_start_node(", start)
         veto_branch = src[start:end]
         assert "record_commit(" not in veto_branch, (
             "the veto branch must never call record_commit directly"

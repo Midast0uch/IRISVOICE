@@ -57,6 +57,9 @@
      "reply_patterns": ["\\b2007\\b", "apple"]},
     {"id": "r08_http_418", "group": "research", "mode": "personal", "path": "text_message", "timeout_s": 600,
      "prompt": "What does the HTTP status code 418 mean? Look it up.",
-     "reply_patterns": ["teapot"]}
+     "reply_patterns": ["teapot"]},
+    {"id": "r09_three_facts", "group": "research", "mode": "personal", "path": "text_message", "timeout_s": 600,
+     "prompt": "Look up three separate facts on the web and give each one: the height of the Eiffel Tower in metres, the year the Golden Gate Bridge opened, and the year the first Harry Potter book was published.",
+     "reply_patterns": ["\\b3[0-3]\\d\\b", "\\b1937\\b", "\\b1997\\b"]}
   ]
 }

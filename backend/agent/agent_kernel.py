@@ -220,6 +220,54 @@ def _der_physics_settle(owner, session_id: str) -> None:
 
 _STEP_ID_KEYS = ("path", "file_path", "command", "pattern", "query", "url")
 
+# ── Parallel nodes (owner 2026-10-04) ──────────────────────────────────────
+# A node CLAIMS a resource only one node may drive at a time when it first
+# uses it, and holds it until the node ends: one browser page per
+# conversation, one desktop screen. Everything else (search, files, reasoning)
+# runs side by side. This is the lane rule (one writer per resource), not the
+# phase model - two drivers on one page break the page.
+_NODE_CLAIMS = {
+    "browser": frozenset({"browser_open", "browser_observe", "browser_act", "browser_explore"}),
+    "screen": frozenset({"take_screenshot", "vision_analyze_screen", "gui_click", "gui_type",
+                         "gui_press_key", "launch_app", "open_file", "open_url"}),
+}
+_SCREEN_CLAIM = threading.Lock()  # one desktop, every conversation
+_CLAIM_LOCKS: Dict[tuple, "threading.Lock"] = {}  # (conversation, claim) -> lock
+_CLAIM_LOCKS_GUARD = threading.Lock()
+_DER_NODE_QUOTA: Dict[str, Optional[str]] = {"quota": None}
+_DER_PARALLEL = os.environ.get("IRIS_DER_PARALLEL", "1").strip().lower() not in ("0", "false", "off", "no")
+
+
+def _node_claim_of(tool: str) -> Optional[str]:
+    for _claim, _tools in _NODE_CLAIMS.items():
+        if tool in _tools:
+            return _claim
+    return None
+
+
+def _der_node_load() -> float:
+    """Load of the node domain: the share of the node provider's learned rate
+    ceiling in use (the router's own rate meter). Never live Sigma (CT-3/4)."""
+    _q = _DER_NODE_QUOTA.get("quota")
+    if not _q:
+        return 0.0
+    from backend.agent.phase_manager import get_registry
+
+    return get_registry()._load_fraction(_q)
+
+
+def _der_node_domain():
+    """The ONE phase domain for DER node starts ("execution.der_nodes"): the
+    same black box as the Oracle's. It decides WHEN a ready node starts; the
+    DAG decided that it is ready. Fail-open: an error starts the node."""
+    from backend.agent.phase_domain import get_phase_domain
+
+    return get_phase_domain(
+        "execution.der_nodes",
+        # A node runs seconds; its first model call is the burst to spread.
+        period_s=0.5, max_wait_s=0.5, k=0.6, load_fn=_der_node_load,
+    )
+
 
 def _step_calls(item) -> list:
     """What a settled step ACTUALLY did - the one source for every reader that
@@ -237,6 +285,18 @@ def _step_calls(item) -> list:
     args = {k: params[k] for k in _STEP_ID_KEYS if isinstance(params, dict) and params.get(k)}
     return [{"tool": str(tool), "target": str(next(iter(args.values()), ""))[:80],
              "ok": True, "args": args}]
+
+
+def _plan_step_deps(raw_step: dict, earlier: list) -> list:
+    """The edges of one planned step (parallel nodes, owner 2026-10-04):
+    ["start"] (or "none") = needs no earlier result; empty or missing = the
+    step before (a chain is the safe default); otherwise the named steps."""
+    deps = [str(d) for d in (raw_step.get("depends_on") or []) if str(d).strip()]
+    if any(d.strip().lower() in ("start", "none") for d in deps):
+        return [d for d in deps if d.strip().lower() not in ("start", "none")]
+    if deps:
+        return deps
+    return [earlier[-1].step_id] if earlier else []
 
 
 def _step_evidence_cap(item) -> int:
@@ -820,6 +880,267 @@ def _recovery_candidates(step_result, env_sources, visited):
         except Exception:
             continue
     return _dead, _hosts, _cands
+
+
+# ── Parallel-node scheduler helpers (module level on purpose: stand-in
+# kernels bind only some methods - a helper on the class would be auto-stubbed
+# and the loop would silently skip the real code). `self` is the kernel. ──
+
+
+def _der_start_node(self, item, run_step, inflight, finished, *, verdict, phase) -> None:
+    """Start one node on its own thread (parallel nodes, owner 2026-10-04).
+
+    The phase domain "execution.der_nodes" decides WHEN it starts (its
+    position on the dial; fail-open). A direct step whose tool drives an
+    exclusive resource (browser, screen) claims it for the whole step; a
+    node claims lazily at its first such call (_der_run_node). The thread
+    boxes (result, success) or the exception and posts the step id to
+    ``finished``; the loop settles it with _der_post_step."""
+    from backend.agent.resilience import retry_with_backoff_sync
+
+    try:
+        from backend.agent.inference.router import quota_key
+
+        _DER_NODE_QUOTA["quota"] = quota_key(self._router.resolve("tool_execution"))
+    except Exception:  # noqa: BLE001 - no quota = no load signal (0.0)
+        pass
+    box: dict = {}
+
+    def _work() -> None:
+        _dom = _der_node_domain()
+        _tok = None
+        _held: List[str] = []
+        try:
+            _tok = _dom.enter(f"node:{self.conversation_id or 'default'}")
+            _claim = _node_claim_of(item.tool or "") if item.tool else None
+            if _claim and _der_claim(self, _claim, item):
+                _held.append(_claim)
+            box["res"] = retry_with_backoff_sync(
+                run_step, max_retries=2, base=1.0, cap=4.0,
+                label=f"step_{item.step_number}:{item.tool}",
+            )
+        except BaseException as _step_exc:  # noqa: BLE001 - boxed, settled by the loop
+            box["exc"] = _step_exc
+        finally:
+            for _c in _held:
+                _der_release(self, _c)
+            if _tok is not None:
+                try:
+                    _dom.exit(_tok)
+                except Exception:  # noqa: BLE001
+                    pass
+            finished.put(item.step_id)
+
+    _t = threading.Thread(target=_work, daemon=True, name=f"der-node-{item.step_id}")
+    inflight[item.step_id] = {"item": item, "box": box, "verdict": verdict,
+                              "phase": phase, "t0": time.perf_counter()}
+    _t.start()
+    logger.info("[DER] node start step=%s in_flight=%d", item.step_id, len(inflight))
+
+def _der_take_finished(self, finished, inflight, block: bool = False,
+                       timeout: Optional[float] = None):
+    """The next finished node as (item, step_result, step_success, verdict,
+    phase), or None (nothing finished / the wait ran out)."""
+    import queue as _queue_mod
+
+    try:
+        _sid = finished.get(block=block, timeout=timeout if block else None)
+    except _queue_mod.Empty:
+        return None
+    rec = inflight.pop(_sid, None)
+    if rec is None:
+        return None
+    item, box = rec["item"], rec["box"]
+    logger.info("[DER] node done step=%s in %.1fs (in_flight=%d)", _sid,
+                time.perf_counter() - rec["t0"], len(inflight))
+    if "exc" in box:
+        _exc = box["exc"]
+        # RateLimitedError carries structured context (provider id, retry
+        # count) - preserve it verbatim for the ledger (REQ-3 AC4 / REQ-4
+        # AC2). Do NOT stringify into a generic message.
+        if isinstance(_exc, RateLimitedError):
+            logger.warning(
+                "[DER] Step %s rate-limited by provider %s after %d attempts "
+                "— recording FAILED (no DER-layer retry)",
+                item.step_number, _exc.provider_id, _exc.attempts,
+            )
+            return (item, f"RateLimitedError(provider={_exc.provider_id}, "
+                          f"attempts={_exc.attempts}, retry_after={_exc.retry_after})",
+                    False, rec["verdict"], rec["phase"])
+        return item, str(_exc), False, rec["verdict"], rec["phase"]
+    step_result, step_success = box.get("res", ("", False))
+    return item, step_result, step_success, rec["verdict"], rec["phase"]
+
+def _der_claim(self, claim: str, item) -> bool:
+    """Wait for an exclusive resource (browser page / screen) while the
+    node's turn is live. True = held (pair with _der_release)."""
+    lock = _SCREEN_CLAIM if claim == "screen" else _der_claim_lock(self, claim)
+    t0 = time.perf_counter()
+    while not lock.acquire(timeout=0.5):
+        if (getattr(self, "_der_stop_requested", False)
+                or getattr(item, "_node_cancelled", "")):
+            return False
+    _w = time.perf_counter() - t0
+    if _w >= 0.5:
+        logger.info("[DER] node %s waited %.1fs for the %s", item.step_id, _w, claim)
+    return True
+
+def _der_release(self, claim: str) -> None:
+    lock = _SCREEN_CLAIM if claim == "screen" else _der_claim_lock(self, claim)
+    try:
+        lock.release()
+    except RuntimeError:  # not held - never raise from a finally
+        pass
+
+def _der_claim_lock(self, claim: str):
+    """The lock of one exclusive resource of this conversation (its browser
+    page) - keyed by conversation id at module level, so a stand-in kernel
+    gets a real lock too."""
+    _key = (str(getattr(self, "conversation_id", "") or ""), claim)
+    with _CLAIM_LOCKS_GUARD:
+        return _CLAIM_LOCKS.setdefault(_key, threading.Lock())
+
+def _der_post_step(self, item, step_result, step_success, verdict, _phase, *,
+                   queue, plan, _session, _turn_id, context_package, completed_items,
+                   step_outputs, _tokens_used, _token_budget, is_mature, _live_ctx,
+                   from_voice, inflight) -> int:
+    """Settle ONE finished node on the loop thread: failure routing / split /
+    graft, finalize, missing-artifact grafts, and the split race. Moved out
+    of the loop unchanged (parallel nodes, 2026-10-04); returns the tokens
+    used so far."""
+    # A node that lost its split race, or whose plan or turn was dropped,
+    # did work nobody needs: it settles as not needed - no graft, no row.
+    _why = getattr(item, "_race_lost", "") or getattr(item, "_node_cancelled", "")
+    if _why:
+        item.result = f"[not needed: {_why}]"
+        queue.mark_complete(item.step_id)
+        logger.info("[DER] node %s settled as not needed (%s)", item.step_id, _why)
+        return _tokens_used
+    if not step_success:
+        # REQ-4 (specs/dag-node-execution-model): before the graft
+        # handler runs, consult the node router. A recovery node that
+        # advertises this failure's reason executes in place of the
+        # failing node; a recovered step finalizes normally below
+        # (no branch was written in the failing node's module).
+        _recovered = self._der_route_step_failure(
+            item, step_result, _session, _turn_id, plan, queue=queue,
+        )
+        if _recovered is not None:
+            step_result = _recovered
+            step_success = True
+        else:
+            # C1 FIX: preserve the real error so the graft recovery prompt
+            # receives it (item.result is otherwise only set on success).
+            item.result = step_result
+            # A3 FIX: fragment the failed output here (the shared
+            # _der_finalize_step helper is only reached for successful
+            # steps, so failures would otherwise never be stored).
+            try:
+                if self._memory_interface and step_result:
+                    _ep = self._memory_interface.episodic
+                    if hasattr(_ep, "fragment_and_store"):
+                        _ep.fragment_and_store(
+                            content=f"[DER FAIL Step {item.step_number}: "
+                                    f"{item.description[:80]}]\n{step_result[:500]}",
+                            session_id=_session,
+                            chunk_type="der_failure",
+                            zone="tool",
+                        )
+            except Exception:
+                pass
+            # Step failed after retry — mark, abort downstream, graft.
+            self._der_handle_step_failure(
+                item, queue, plan, _session, _turn_id, context_package,
+                step_result=step_result,
+            )
+            # AC5.6 (session-319 fix): the failure/abort path never
+            # reached the completion grade site — `_der_report_run_grade`
+            # is only called from finalize-complete (which needs
+            # queue.is_complete()) and continuation-done, so a run that
+            # died on a failed step reported NO grade at all (conv-102
+            # and the T21 probe both logged zero "run grade" lines).
+            # Grade here when no PENDING work remains: failed, aborted
+            # and vetoed steps all count as settled — that is the honest
+            # reading of "this run is over". Deduped by turn inside the
+            # helper, so the normal completion path cannot double-report.
+            try:
+                _pending_after_fail = [
+                    _pi for _pi in (getattr(queue, "items", []) or [])
+                    if _pi.step_id not in queue.completed_ids
+                    and _pi.step_id not in queue.failed_ids
+                    and _pi.step_id not in queue.vetoed_ids
+                ]
+                if (
+                    not _pending_after_fail
+                    and (getattr(queue, "items", []) or [])
+                ):
+                    self._der_report_run_grade(
+                        completed_items, _turn_id, "failure-settled"
+                    )
+            except Exception:
+                pass
+            return _tokens_used  # grafted steps are now in the queue
+
+    # ── Phase 4: finalize this step via the shared helper ──
+    _tokens_used = self._der_finalize_step(
+        item,
+        step_result,
+        step_success,
+        step_outputs,
+        completed_items,
+        _tokens_used,
+        _token_budget,
+        _session,
+        _turn_id,
+        _phase,
+        is_mature,
+        _live_ctx,
+        plan,
+        context_package,
+        queue,
+        verdict,
+        from_voice,
+    )
+
+    # ── Partial-artifact completion (live 2026-09-25) ────────────────
+    # A step is ONE tool call, so a step naming several files writes only
+    # one. Detect the remainder and graft a step per missing file BEFORE
+    # the loop settles, so the user gets the files that were asked for.
+    self._der_graft_missing_artifacts(
+        item, plan, queue, _session, _turn_id,
+        _token_budget=_token_budget, _tokens_used=_tokens_used,
+    )
+    _der_settle_split(self, item, queue, inflight)
+    return _tokens_used
+
+def _der_settle_split(self, item, queue, inflight) -> None:
+    """The split race (owner 2026-10-04): when a split child settles, the
+    first VERIFIED child completes its parent (the parent's dependents run
+    on) and its siblings stop; when every child failed the parent fails and
+    its dependents are aborted. Recurses up a nested split."""
+    _cur = item
+    while _cur is not None and queue.parent_of_split_child(_cur.step_id):
+        _parent_id = queue.parent_of_split_child(_cur.step_id)
+        _kids = list(queue.split_pending.get(_parent_id, []))
+        _rec = getattr(_cur, "node_record", None)
+        _verified = (_cur.step_id in queue.completed_ids
+                     and getattr(_rec, "outcome", "") == "VERIFIED")
+        _closed = queue.settle_split(_cur.step_id, _verified)
+        if _closed is None:
+            return
+        _pid, _outcome, _winner = _closed
+        logger.info("[DER] split %s resolved: %s (winner=%s)", _pid, _outcome, _winner)
+        for _k in _kids:
+            if _k == _winner or _k in queue.completed_ids or _k in queue.failed_ids:
+                continue
+            _sib = next((it for it in queue.items if it.step_id == _k), None)
+            if _sib is None:
+                continue
+            _sib._race_lost = f"sibling {_winner} resolved the blocker"
+            if _k not in inflight:  # not started: it never will
+                _sib.result = f"[not needed: {_sib._race_lost}]"
+                queue.mark_complete(_k)
+        _cur = next((it for it in queue.items if it.step_id == _pid), None)
 
 
 class AgentKernel:
@@ -7556,7 +7877,7 @@ class AgentKernel:
             '"plan_title":"short 2-3 word summary of what the plan does (e.g. \\"Search web for AI news\\")",'
             '"reasoning":"one sentence explaining the approach",'
             '"beats":["one-line direction statement","one-line time expectation"],'
-            '"steps":[{"step_id":"s1","step_number":1,"description":"Search the web for the user request","depends_on":[],"critical":true,"criticality":"load-bearing|supporting|cosmetic"}]}'
+            '"steps":[{"step_id":"s1","step_number":1,"description":"Search the web for the user request","depends_on":["start"],"critical":true,"criticality":"load-bearing|supporting|cosmetic"}]}'
             "\n\n"
         "RULES:\n"
         # T12 (REQ-10 AC10.1/AC10.2/AC10.10/AC10.12): planned-beat authoring.
@@ -7586,9 +7907,15 @@ class AgentKernel:
         # critical.
         '- Describe each step as a GOAL in "description". Do NOT name a tool; '
         'the runtime resolver picks it when the step executes.' + chr(10) +
-        "- In 'depends_on', provide a list of step_ids that this step depends on. "
-        "If there are no dependencies, provide an empty array []. A step will not "
-        "start until all steps it depends on have completed.\n"
+        # Parallel nodes (owner 2026-10-04): independent steps run side by
+        # side, so the planner names the RESULTS a step needs. Empty = the
+        # step before (the safe default); ["start"] = needs no earlier result.
+        "- In 'depends_on', list the step_ids whose RESULT this step needs. A step "
+        "will not start until those steps have completed. Steps that do not need "
+        "each other's results run at the same time, so do not chain them. Write "
+        "[\"start\"] for a step that needs no earlier result. An empty list means "
+        "\"the step before\". Example - compare A and B: s1 read A [\"start\"], "
+        "s2 read B [\"start\"], s3 compare them [\"s1\",\"s2\"].\n"
         # T5 (specs/tool-result-envelope, KD-9): planner declares per-step
         # criticality. One word per step — intent only, consumption confirms
         # it at finalize (option C). Defaults to "supporting" when omitted.
@@ -7693,7 +8020,7 @@ class AgentKernel:
                                 tool=None,
                                 params={},
                                 critical=bool(raw_step.get("critical", True)),
-                                depends_on=list(raw_step.get("depends_on", []) or []),
+                                depends_on=_plan_step_deps(raw_step, steps),
                                 # T5 (KD-9): planner-declared criticality,
                                 # validated to the locked vocabulary.
                                 criticality=(
@@ -10208,6 +10535,18 @@ Respond with a JSON object:
         except Exception as _st_exc:
             logger.debug("[AgentKernel] stale-steering sweep skipped: %s", _st_exc)
 
+        # ── Parallel nodes (owner 2026-10-04): ONE scheduler for every node -
+        # plan steps, split children, grafts, batch children. The DAG decides
+        # WHAT is ready (depends_on); the "execution.der_nodes" phase domain
+        # decides WHEN a ready node starts; the node's work runs on its own
+        # thread while the bookkeeping before and after it stays on this
+        # thread, in order. Independent nodes overlap; a dependent node is
+        # never ready before its dependencies complete.
+        import queue as _queue_mod
+
+        _inflight: Dict[str, dict] = {}
+        _finished = _queue_mod.Queue()
+
         while (
             not queue.is_complete()
             and not queue.hit_cycle_limit()
@@ -10232,8 +10571,6 @@ Respond with a JSON object:
                 )
                 break
 
-            queue.cycle_count += 1
-
             # ── DOMAIN 19: Caducean phase read ──
             import math as _math
 
@@ -10252,9 +10589,36 @@ Respond with a JSON object:
             elif _xi >= _math.pi / 2.0:
                 _phase = 1
 
-            item = queue.next_ready(_session)
-            if item is None:
-                break  # dependency deadlock guard
+            # ── Parallel nodes: settle a finished node first (in finish order,
+            # on this thread), else start the next ready one; with nothing to
+            # start, wait for a node in flight to finish. ──
+            _fin = _der_take_finished(self, _finished, _inflight, block=False)
+            if _fin is None:
+                # IRIS_DER_PARALLEL=0: one node at a time (the off switch and
+                # the A/B baseline); default on.
+                item = (None if (_inflight and not _DER_PARALLEL)
+                        else queue.next_ready(_session, exclude=_inflight))
+                if item is None:
+                    if not _inflight:
+                        break  # dependency deadlock guard
+                    # Wait in short slices: a stop, a disconnect or the turn
+                    # budget is seen at the loop top, not after a slow node.
+                    _fin = _der_take_finished(
+                        self, _finished, _inflight, block=True, timeout=0.5,
+                    )
+                    if _fin is None:
+                        continue
+            if _fin is not None:
+                _tokens_used = _der_post_step(self, 
+                    *_fin, queue=queue, plan=plan, _session=_session, _turn_id=_turn_id,
+                    context_package=context_package, completed_items=completed_items,
+                    step_outputs=step_outputs, _tokens_used=_tokens_used,
+                    _token_budget=_token_budget, is_mature=is_mature, _live_ctx=_live_ctx,
+                    from_voice=from_voice, inflight=_inflight,
+                )
+                continue
+            queue.cycle_count += 1
+            verdict = None
 
             # ── REQ-15 (T25/T26): consume mid-task steering at the NEXT step
             # boundary (AC1 — never mid-step). A steering revision replaces
@@ -10273,7 +10637,10 @@ Respond with a JSON object:
                     break
                 if _steer.get("revised"):
                     # The pulled item belongs to the dropped plan — re-pull
-                    # from the revised queue on the next iteration.
+                    # from the revised queue on the next iteration. Nodes of
+                    # the dropped plan still in flight stop at their next call.
+                    for _rec in _inflight.values():
+                        _rec["item"]._node_cancelled = "plan revised"
                     continue
                 if _steer.get("pause"):
                     _suspend = self._der_suspend_task(
@@ -10694,7 +11061,7 @@ Respond with a JSON object:
             # nesting asyncio.run would raise RuntimeError in the executor thread.
             from backend.agent.resilience import retry_with_backoff_sync
 
-            def _run_step():
+            def _run_step(item=item):
                 _res, _ok = self._der_run_step_execution(
                     item, context_package, _session, _turn_id, plan, queue=queue
                 )
@@ -10712,249 +11079,24 @@ Respond with a JSON object:
                     raise ConnectionError(_err)  # transient -> retry
                 raise ValueError(_err)  # permanent -> fail fast
 
-            # ──── BUDGET-BOUNDED STEP EXECUTION (session 269, pin_ced7b0dc3b8f) ──
-            # The turn budget is a while-CONDITION — it can only fire BETWEEN
-            # steps. A step that HANGS (dead browser pool, wedged provider)
-            # therefore blocked the loop forever with the card stuck at
-            # 'working' (conv-81: last log 21:44, card never resolved). The
-            # step now runs on a daemon thread bounded by the REMAINING
-            # budget; a timeout fails the step honestly (graft/recovery path)
-            # instead of freezing the turn. The abandoned thread is daemon —
-            # it can never block interpreter shutdown.
-            try:
-                _step_budget_s = (
-                    _der_start_time + _DER_TURN_BUDGET_S - time.perf_counter()
-                )
-                if _step_budget_s <= 0:
-                    step_success = False
-                    step_result = (
-                        "[STEP TIMEOUT: turn budget exhausted before step start]"
-                    )
-                else:
-                    _step_box: dict = {}
+            # ── Parallel nodes (owner 2026-10-04): the node's work runs on its
+            # own thread (it always did - a bounded daemon thread, session 269);
+            # the loop no longer joins it here but goes on to the next ready
+            # node. _der_post_step settles each node when it finishes. ──
+            _der_start_node(self, item, _run_step, _inflight, _finished,
+                                 verdict=verdict, phase=_phase)
+            continue
 
-                    def _run_step_bounded() -> None:
-                        try:
-                            _step_box["res"] = retry_with_backoff_sync(
-                                _run_step,
-                                max_retries=2,
-                                base=1.0,
-                                cap=4.0,
-                                label=f"step_{item.step_number}:{item.tool}",
-                            )
-                        except BaseException as _step_exc:  # noqa: BLE001 — boxed, re-raised below
-                            _step_box["exc"] = _step_exc
-
-                    import threading as _step_threading
-
-                    _step_t = _step_threading.Thread(
-                        target=_run_step_bounded, daemon=True,
-                        name=f"der-step-{item.step_number}",
-                    )
-                    _step_t.start()
-                    _step_t.join(timeout=_step_budget_s)
-                    if _step_t.is_alive():
-                        logger.warning(
-                            "[DER] Step %s (%s) exceeded the remaining turn "
-                            "budget (%.0fs) — failing the step and moving on",
-                            item.step_number, item.tool, _step_budget_s,
-                        )
-                        step_success = False
-                        step_result = (
-                            "[STEP TIMEOUT: step exceeded the remaining turn "
-                            "budget]"
-                        )
-                    elif "exc" in _step_box:
-                        raise _step_box["exc"]
-                    else:
-                        step_result, step_success = _step_box.get(
-                            "res", ("", False)
-                        )
-            except Exception as _retry_exc:
-                step_success = False
-                # RateLimitedError carries structured context (provider id,
-                # retry count) — preserve it verbatim for the ledger (REQ-3
-                # AC4 / REQ-4 AC2). Do NOT stringify into a generic message.
-                if isinstance(_retry_exc, RateLimitedError):
-                    step_result = (
-                        f"RateLimitedError(provider={_retry_exc.provider_id}, "
-                        f"attempts={_retry_exc.attempts}, "
-                        f"retry_after={_retry_exc.retry_after})"
-                    )
-                    logger.warning(
-                        "[DER] Step %s rate-limited by provider %s after %d "
-                        "attempts — recording FAILED (no DER-layer retry)",
-                        item.step_number, _retry_exc.provider_id,
-                        _retry_exc.attempts,
-                    )
-                else:
-                    step_result = str(_retry_exc)
-
-            if not step_success:
-                # REQ-4 (specs/dag-node-execution-model): before the graft
-                # handler runs, consult the node router. A recovery node that
-                # advertises this failure's reason executes in place of the
-                # failing node; a recovered step finalizes normally below
-                # (no branch was written in the failing node's module).
-                _recovered = self._der_route_step_failure(
-                    item, step_result, _session, _turn_id, plan, queue=queue,
-                )
-                if _recovered is not None:
-                    step_result = _recovered
-                    step_success = True
-                else:
-                    # C1 FIX: preserve the real error so the graft recovery prompt
-                    # receives it (item.result is otherwise only set on success).
-                    item.result = step_result
-                    # A3 FIX: fragment the failed output here (the shared
-                    # _der_finalize_step helper is only reached for successful
-                    # steps, so failures would otherwise never be stored).
-                    try:
-                        if self._memory_interface and step_result:
-                            _ep = self._memory_interface.episodic
-                            if hasattr(_ep, "fragment_and_store"):
-                                _ep.fragment_and_store(
-                                    content=f"[DER FAIL Step {item.step_number}: "
-                                            f"{item.description[:80]}]\n{step_result[:500]}",
-                                    session_id=_session,
-                                    chunk_type="der_failure",
-                                    zone="tool",
-                                )
-                    except Exception:
-                        pass
-                    # Step failed after retry — mark, abort downstream, graft.
-                    self._der_handle_step_failure(
-                        item, queue, plan, _session, _turn_id, context_package,
-                        step_result=step_result,
-                    )
-                    # AC5.6 (session-319 fix): the failure/abort path never
-                    # reached the completion grade site — `_der_report_run_grade`
-                    # is only called from finalize-complete (which needs
-                    # queue.is_complete()) and continuation-done, so a run that
-                    # died on a failed step reported NO grade at all (conv-102
-                    # and the T21 probe both logged zero "run grade" lines).
-                    # Grade here when no PENDING work remains: failed, aborted
-                    # and vetoed steps all count as settled — that is the honest
-                    # reading of "this run is over". Deduped by turn inside the
-                    # helper, so the normal completion path cannot double-report.
-                    try:
-                        _pending_after_fail = [
-                            _pi for _pi in (getattr(queue, "items", []) or [])
-                            if _pi.step_id not in queue.completed_ids
-                            and _pi.step_id not in queue.failed_ids
-                            and _pi.step_id not in queue.vetoed_ids
-                        ]
-                        if (
-                            not _pending_after_fail
-                            and (getattr(queue, "items", []) or [])
-                        ):
-                            self._der_report_run_grade(
-                                completed_items, _turn_id, "failure-settled"
-                            )
-                    except Exception:
-                        pass
-                    continue  # re-enter loop; grafted steps are now in the queue
-
-            # ── Phase 4: finalize this step via the shared helper ──
-            _tokens_used = self._der_finalize_step(
-                item,
-                step_result,
-                step_success,
-                step_outputs,
-                completed_items,
-                _tokens_used,
-                _token_budget,
-                _session,
-                _turn_id,
-                _phase,
-                is_mature,
-                _live_ctx,
-                plan,
-                context_package,
-                queue,
-                verdict,
-                from_voice,
-            )
-
-            # ── Partial-artifact completion (live 2026-09-25) ────────────────
-            # A step is ONE tool call, so a step naming several files writes only
-            # one. Detect the remainder and graft a step per missing file BEFORE
-            # the loop settles, so the user gets the files that were asked for.
-            self._der_graft_missing_artifacts(
-                item, plan, queue, _session, _turn_id,
-                _token_budget=_token_budget, _tokens_used=_tokens_used,
-            )
-
-            # ── Phase 4: concurrently execute any ADDITIONAL ready
-            # parallel_safe steps this cycle, then finalize them with the
-            # same helper. The primary `item` above is already finalized.
-            # parallel_safe is derived from the tool registry (is_parallel_safe),
-            # so this batch is ACTIVE for read-only/independent tools
-            # (vision analysis, search, read_file, github reads, git read-only). ──
-            # all_ready_items() may raise TOPO_VIOLATION — let it propagate
-            # exactly like next_ready() does (do NOT swallow it here).
-            _extra_ready = [
-                i for i in queue.all_ready_items(_session)
-                if i.step_id != item.step_id
-                and getattr(i, "parallel_safe", False)
-            ]
-            if _extra_ready:
-                try:
-                    _extra_results = asyncio.run(
-                        self._der_exec_steps_concurrent(
-                            _extra_ready, context_package, _session, _turn_id, plan
-                        )
-                    )
-                except Exception as _conc_exc:
-                    logger.warning(
-                        "[DER] Phase 4 concurrent exec failed: %s — "
-                        "falling back to serial",
-                        _conc_exc,
-                    )
-                    _extra_results = {
-                        i.step_id: self._der_run_step_execution(
-                            i, context_package, _session, _turn_id, plan, queue=queue
-                        )
-                        for i in _extra_ready
-                    }
-                for _ei in _extra_ready:
-                    _er, _es = _extra_results[_ei.step_id]
-                    if not _es:
-                        # Phase 1.4: single retry for the extra step — use the
-                        # SAME retry authority as the main step path
-                        # (retry_with_backoff_sync), NOT an ad-hoc
-                        # time.sleep(0.5) + silent retry (REQ-5). This keeps the
-                        # retry policy single and consistent, and respects
-                        # NO_RETRY_ERRORS (e.g. RateLimitedError is not retried).
-                        from backend.agent.resilience import retry_with_backoff_sync
-
-                        try:
-                            _er, _es = retry_with_backoff_sync(
-                                max_retries=1,
-                                label=f"der-extra-step-{_ei.step_number}",
-                            )(self._der_run_step_execution)(
-                                _ei, context_package, _session, _turn_id, plan
-                            )
-                        except Exception as _retry_exc:
-                            _er, _es = str(_retry_exc), False
-                    if not _es:
-                        # C1 FIX: preserve the real error for the graft prompt.
-                        _ei.result = _er
-                        # Failed after retry — handle (mark/abort/graft) and
-                        # skip finalizing this now-terminal step.
-                        self._der_handle_step_failure(
-                            _ei, queue, plan, _session, _turn_id, context_package
-                        )
-                        continue
-                    _tokens_used = self._der_finalize_step(
-                        _ei, _er, _es,
-                        step_outputs, completed_items,
-                        _tokens_used, _token_budget,
-                        _session, _turn_id, _phase, is_mature,
-                        _live_ctx, plan, context_package, queue,
-                        ReviewVerdict.PASS,
-                        from_voice,
-                    )
+        # Nodes still in flight when the loop ended (budget, stop, cancel,
+        # disconnect, cycle limit) stop at their next call; their late results
+        # are dropped and they are recorded as not finished (the old bounded
+        # join failed the step on the budget the same way).
+        for _sid, _rec in list(_inflight.items()):
+            _rec["item"]._node_cancelled = "turn ended"
+            _rec["item"].result = "[STEP TIMEOUT: the turn ended before this node finished]"
+            queue.mark_failed(_sid)
+            logger.warning("[DER] node %s still running at the turn end - stopped, not settled", _sid)
+        _inflight.clear()
 
         # Taxonomy CONTROL: a budget (tokens, turn time, steps) cut the loop short.
         _budget_kind = _der_budget_exit(
@@ -13732,6 +13874,14 @@ Respond with a JSON object:
                     self._der_route_subloop_children(
                         _children, queue, _session, _turn_id
                     )
+                    # Fold-back (parallel nodes, 2026-10-04): the failed step
+                    # waits for its children instead of failing, and the
+                    # dependents its failure aborted wait again - the first
+                    # VERIFIED child completes it (_der_settle_split).
+                    queue.hold_split_parent(
+                        item.step_id, [c.step_id for c in _children], aborted,
+                    )
+                    aborted = []
                     # REQ-3: debit measured tokens, not a flat child count.
                     _result_len = len(step_result) if step_result else 0
                     _measured = max(200, _result_len // 4)
@@ -16974,11 +17124,12 @@ Respond with a JSON object:
             try:
                 from backend.agent.der_execution_ledger import make_action_key
 
-                _cs = dict(getattr(self, "_der_crawl_attempts", {}))
                 # D2: same stable action key as the gather gate.
                 _gq = make_action_key(item.description or tool)
-                _cs[self.conversation_id] = _cs.get(self.conversation_id, set()) | {_gq}
-                self._der_crawl_attempts = _cs
+                with _der_claim_lock(self, "crawl_attempts"):  # parallel nodes
+                    _cs = dict(getattr(self, "_der_crawl_attempts", {}))
+                    _cs[self.conversation_id] = _cs.get(self.conversation_id, set()) | {_gq}
+                    self._der_crawl_attempts = _cs
             except Exception:
                 pass
         # ── Record tool call for ToolCallTree (REQ-13) ──
@@ -17028,6 +17179,10 @@ Respond with a JSON object:
         def _turn_live() -> bool:
             if getattr(self, "_der_stop_requested", False):
                 return False
+            # parallel nodes: the split race was won by a sibling, or the
+            # plan / turn this node belongs to was dropped
+            if getattr(item, "_race_lost", "") or getattr(item, "_node_cancelled", ""):
+                return False
             if getattr(self, "_der_turn_active", True) is False:
                 return False
             live_id = getattr(self, "_der_turn_id", None)
@@ -17043,9 +17198,18 @@ Respond with a JSON object:
             self._accrue_tokens("", getattr(self._router, "last_usage", None), source="run_node")
             return out
 
+        _held: List[str] = []
+
         def _execute(name, params):
             if not _turn_live():
                 return {"success": False, "error": _ended, "error_type": "aborted"}
+            # parallel nodes: the browser page / the screen has one driver - a
+            # node claims it at its first such call and keeps it to the end.
+            _claim = _node_claim_of(name)
+            if _claim and _claim not in _held:
+                if not _der_claim(self, _claim, item):
+                    return {"success": False, "error": _ended, "error_type": "aborted"}
+                _held.append(_claim)
             self._der_before_call(name, _session)
             dr = box.dispatch(
                 Decision(kind=DecisionKind.TOOL, tool=name, params=params, source="run_node"),
@@ -17112,7 +17276,8 @@ Respond with a JSON object:
                 f"short lines: {question}"
             ))
 
-        result = run_node(goal, NodeContext(
+        try:
+            result = run_node(goal, NodeContext(
             generate=_generate, execute=_execute,
             format_result=lambda name, raw: self._format_tool_result_for_step(raw, name),
             tools=tools, prior_results=_prior_results, task=task, workdir=workdir,
@@ -17123,6 +17288,9 @@ Respond with a JSON object:
             parent_goal=str(getattr(item, "parent_description", "") or ""),
             review_note=str(getattr(item, "review_feedback", "") or ""),
         ))
+        finally:
+            for _c in _held:
+                _der_release(self, _c)
         # What the node actually did, for the step's physics action (REQ-8 redo).
         try:
             item.node_calls = [
@@ -19078,7 +19246,13 @@ Respond with a JSON object:
                 getattr(item, "step_id", "?"), _score_exc,
             )
 
-        queue.mark_complete(item.step_id)
+        if _children and not getattr(item, "is_subloop", False):
+            # Fold-back (parallel nodes, 2026-10-04): the step's verification
+            # FAILED and it split - it waits for its children (the race)
+            # instead of completing, so its dependents wait for the resolution.
+            queue.hold_split_parent(item.step_id, [c.step_id for c in _children], [])
+        else:
+            queue.mark_complete(item.step_id)
 
         # ── T6/T8/T10 (specs/long-horizon-der-execution REQ-5/REQ-9) ──────
         # D8: persistence gates terminal state. Close the execution-attempt in

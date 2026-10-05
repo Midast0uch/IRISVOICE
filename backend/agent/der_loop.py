@@ -316,6 +316,11 @@ class DirectorQueue:
     streak_gate_settled: int = -1
     # Replans the gate forced in this run (capped by STREAK_GATE_MAX_FIRES).
     streak_gate_fires: int = 0
+    # Fold-back (parallel nodes, owner 2026-10-04): a failed step that SPLIT
+    # waits here (parent step_id -> its child step_ids) instead of failing.
+    # It is never ready itself; its dependents wait on it. The first VERIFIED
+    # child completes it (the race); it fails only when every child failed.
+    split_pending: Dict[str, List[str]] = field(default_factory=dict)
 
     # ── Mode management (Phase 3) ──────────────────────────────────────
 
@@ -596,20 +601,26 @@ class DirectorQueue:
 
     # ── Original queue methods (unchanged) ────────────────────────────
 
-    def next_ready(self, session_id: str = "default") -> Optional[QueueItem]:
+    def next_ready(self, session_id: str = "default",
+                   exclude=None) -> Optional[QueueItem]:
         """
         Next item whose dependencies are all completed.
         Caducean-modulated: if Caducean signals CONTRACT, reduce queue depth.
-        None if none ready.
+        None if none ready. ``exclude``: step ids already running (parallel
+        nodes) - ready, but not to be started twice.
         """
         completed = set(self.completed_ids)
         ready_items = []
         for item in self.items:
             if item.step_id in self.completed_ids:
                 continue
+            if exclude and item.step_id in exclude:
+                continue
             if item.step_id in self.vetoed_ids:
                 continue
             if item.step_id in self.failed_ids:
+                continue
+            if item.step_id in self.split_pending:
                 continue
             if all(dep in completed for dep in item.depends_on):
                 ready_items.append(item)
@@ -658,6 +669,8 @@ class DirectorQueue:
             if item.step_id in self.vetoed_ids:
                 continue
             if item.step_id in self.failed_ids:
+                continue
+            if item.step_id in self.split_pending:
                 continue
             if all(dep in completed for dep in item.depends_on):
                 ready_items.append(item)
@@ -735,6 +748,64 @@ class DirectorQueue:
 
     def add_item(self, item: QueueItem) -> None:
         self.items.append(item)
+
+    # ── Fold-back of split children (parallel nodes, 2026-10-04) ─────────
+
+    def hold_split_parent(self, parent_id: str, child_ids: List[str],
+                          aborted_ids: List[str], abort_reason: str = "[ABORTED: dependency failed]") -> None:
+        """A failed step split into ``child_ids``: it waits for them instead of
+        failing, and the dependents its failure aborted wait again."""
+        if parent_id in self.failed_ids:
+            self.failed_ids.remove(parent_id)
+        revived = set(aborted_ids or [])
+        for it in self.items:
+            if it.step_id in revived:
+                if it.step_id in self.failed_ids:
+                    self.failed_ids.remove(it.step_id)
+                if it.result == abort_reason:
+                    it.result = None
+        self.split_pending[parent_id] = list(self.split_pending.get(parent_id, [])) + list(child_ids)
+
+    def parent_of_split_child(self, child_id: str) -> Optional[str]:
+        for parent, kids in self.split_pending.items():
+            if child_id in kids:
+                return parent
+        return None
+
+    def settle_split(self, child_id: str, verified: bool) -> Optional[tuple]:
+        """A split child settled. Returns None while the race is open, or
+        (parent_id, outcome, winner_id) once it closes:
+          ("complete", child) - the first VERIFIED child (or, when every child
+              settled without one, the first completed child) resolves it;
+          ("failed", None)    - every child failed: the parent fails and its
+              dependents are aborted.
+        Settles the parent's state here; the caller stops losing siblings."""
+        parent = self.parent_of_split_child(child_id)
+        if parent is None:
+            return None
+        kids = self.split_pending[parent]
+        if verified and child_id in self.completed_ids:
+            winner = child_id
+        else:
+            settled = [k for k in kids if k in self.completed_ids or k in self.failed_ids
+                       or k in self.vetoed_ids]
+            if len(settled) < len(kids):
+                return None
+            done = [k for k in kids if k in self.completed_ids]
+            winner = done[0] if done else None
+        del self.split_pending[parent]
+        if winner is not None:
+            for it in self.items:
+                if it.step_id == parent:
+                    win = next((c for c in self.items if c.step_id == winner), None)
+                    if win is not None and win.result:
+                        it.result = win.result
+                    break
+            self.mark_complete(parent)
+            return (parent, "complete", winner)
+        self.mark_failed(parent)
+        self.abort_descendants(parent)
+        return (parent, "failed", None)
 
     def expand_batch_nodes(self) -> int:
         """REQ-24 AC24.1 (T37): materialize READY batch-carrying nodes into children.
@@ -830,7 +901,7 @@ class DirectorQueue:
             if i.step_id not in self.vetoed_ids
             and i.step_id not in self.failed_ids
         ]
-        return all(i.step_id in self.completed_ids for i in active)
+        return not self.split_pending and all(i.step_id in self.completed_ids for i in active)
 
     def hit_cycle_limit(self) -> bool:
         return self.cycle_count >= self.max_cycles
