@@ -572,6 +572,64 @@ def stall_bound(base: str, model: str, timeout_s: Optional[float]) -> Optional[f
     return bound if bound < full else None
 
 
+# Hedged request (2026-10-04): a provider stall answered nothing for 30 s and
+# then the SAME request answered in ~3 s (live: 12 of 148 mercury-2.5 calls
+# took >= 30 s, p50 3.2 s, p90 4.6 s). Waiting out the stall bound cost 30 s a
+# stall. When the first request has no answer after max(_HEDGE_MIN_S,
+# _HEDGE_FACTOR x p90), the same request is sent again on the same client and
+# the FIRST answer wins - nothing is cancelled to make room, the stall bound
+# and its retry still stand behind it. A legitimately long call only costs a
+# duplicate request.
+_HEDGE_MIN_S = 3.0
+_HEDGE_FACTOR = 2.0
+
+
+def hedge_delay(base: str, model: str, read_s: Optional[float]) -> Optional[float]:
+    """Seconds to wait for an answer before the second (hedge) request, or
+    None (no profile yet, or not shorter than the read limit)."""
+    with _CALL_TIMES_LOCK:
+        _load_profile()
+        times = sorted(_CALL_TIMES.get((base, model), ()))
+    if len(times) < 5:
+        return None
+    p90 = times[min(len(times) - 1, int(len(times) * 0.9))]
+    delay = max(_HEDGE_MIN_S, _HEDGE_FACTOR * p90)
+    return delay if (read_s is None or delay < read_s) else None
+
+
+def _post_hedged(client, url, headers, body, hedge_after: float, on_hedge) -> Any:
+    """POST; with no answer after ``hedge_after`` s send the same request again
+    and return the FIRST response. Raises the first error only when every
+    request failed. The losing request ends when the caller closes ``client``."""
+    import threading as _th
+
+    cond = _th.Condition()
+    results: List[Tuple[Any, Optional[BaseException]]] = []
+
+    def _one() -> None:
+        try:
+            out = (client.post(url, headers=headers, json=body), None)
+        except BaseException as exc:  # noqa: BLE001 - reported to the waiter
+            out = (None, exc)
+        with cond:
+            results.append(out)
+            cond.notify_all()
+
+    _th.Thread(target=_one, daemon=True, name="api-request").start()
+    with cond:
+        cond.wait_for(lambda: bool(results), timeout=hedge_after)
+        sent = 1
+        if not results:
+            on_hedge()
+            _th.Thread(target=_one, daemon=True, name="api-hedge").start()
+            sent = 2
+        cond.wait_for(lambda: any(r[0] is not None for r in results) or len(results) >= sent)
+        for resp, _exc in results:
+            if resp is not None:
+                return resp
+        raise results[0][1]
+
+
 class ApiHttpxTransport:
     """Remote API provider via direct httpx streaming.
 
@@ -951,11 +1009,23 @@ class ApiHttpxTransport:
                 budget_check()  # wedge fix: raises if the turn budget expired
             _ta = _perf_t.perf_counter()
             _read = _stall if (attempt == 0 and _stall) else (timeout_s or 60.0)
+            _hedge = hedge_delay(self._api_base_url, model, _read) if attempt == 0 else None
             try:
                 with _httpx.Client(
                     timeout=_httpx.Timeout(timeout_s or 60.0, read=_read), verify=get_ssl_context()
                 ) as _client:
-                    _resp = _client.post(url, headers=headers, json=body)
+                    if _hedge:
+                        def _on_hedge(_h=_hedge):
+                            _record_attempt(self)  # the hedge is a request too
+                            logger.warning(
+                                "[ApiHttpx] hedge: model=%s no answer in %.1f s (2 x p90) "
+                                "-- sending the same request again, first answer wins",
+                                model, _h,
+                            )
+
+                        _resp = _post_hedged(_client, url, headers, body, _hedge, _on_hedge)
+                    else:
+                        _resp = _client.post(url, headers=headers, json=body)
                     if _resp.status_code == 429:
                         _rate_limited = True
                         _retry_after = parse_retry_after(
