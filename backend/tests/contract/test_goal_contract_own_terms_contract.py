@@ -81,6 +81,45 @@ def test_code_names_and_quoted_examples_are_not_names():
     assert gc._names_in("the year the Golden Gate Bridge opened") == ["golden gate bridge"]
 
 
+def test_a_nameless_fact_needs_one_of_its_own_words():
+    """A word two facts share ("year") cannot cover either one."""
+    facts = ("the height of the tower in metres", "the year the bridge opened",
+             "the year the first book was published")
+    cov = gc.mark_coverage(gc.Contract(required=facts), ["VERIFIED"],
+                           ["the tower is 330 metres tall; built in the year 1889"])
+    assert cov.covered == ("the height of the tower in metres",)
+
+
+_SPEC = ("raises ValueError if there is not enough. count(name) returns the "
+         "stock, 0 for an unknown item")
+
+
+def _coding_result(*actions, failed_last=False):
+    lines = ["Created inventory.py.", "", "Actions:"] + [f"- {a}" for a in actions]
+    if failed_last:
+        lines.append("\nThe last command in this step exited non-zero.")
+    return "\n".join(lines)
+
+
+def test_a_passing_run_after_the_last_change_covers_a_spec_fact():
+    """Live c10 (2026-10-05): the node's result never repeats the spec words."""
+    c = gc.Contract(required=("Create inventory.py with a class Inventory", _SPEC))
+    ok = _coding_result("write_file inventory.py -> ok", "run_command python -m pytest -q -> ok")
+    assert _SPEC in gc.mark_coverage(c, ["VERIFIED"], [ok]).covered
+
+
+def test_no_run_a_failed_run_or_a_run_before_the_change_is_no_evidence():
+    c = gc.Contract(required=("Create inventory.py with a class Inventory", _SPEC))
+    for res in (
+        _coding_result("write_file inventory.py -> ok"),
+        _coding_result("write_file inventory.py -> ok", "run_command python -m pytest -q -> FAILED",
+                       failed_last=True),
+        _coding_result("run_command python -m pytest -q -> ok", "edit_file inventory.py -> ok"),
+        _coding_result("write_file inventory.py -> ok", "run_command git status -> ok"),
+    ):
+        assert _SPEC not in gc.mark_coverage(c, ["VERIFIED"], [res]).covered, res
+
+
 def test_all_three_found_cover_all_three():
     reply = (
         "The Eiffel Tower is 330 metres tall. The Golden Gate Bridge opened in "

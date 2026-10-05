@@ -19270,9 +19270,20 @@ Respond with a JSON object:
         # ── REQ-1 AC2/AC3/AC4: per-step edge-score consequence of verified_label.
         # VERIFIED hit-scores (+0.05), UNVERIFIED partial-credits (+0.02, capped —
         # AC3) and never crystallizes, FAILED miss-scores (-0.08) and feeds the
-        # AVOID header (AC4). Never raises — off the critical path.
+        # AVOID header (AC4). Never raises. INLINE on purpose: the next step of
+        # this turn decides on what it writes (explorer tool choice reads the
+        # tool_choice edges, the AVOID header and the recovery graft read the
+        # miss episode), so a lane would hand them a stale view. Node steps
+        # score here since S54; a slow run is logged so a cost shows up.
         try:
+            _score_t0 = time.monotonic()
             self._der_score_step_outcome(item, _verified, _session, step_result)
+            _score_s = time.monotonic() - _score_t0
+            if _score_s > 0.25:
+                logger.warning(
+                    "[DER] slow step scoring %.2fs (step=%s label=%s)",
+                    _score_s, getattr(item, "step_id", "?"), _verified,
+                )
         except Exception as _score_exc:
             _write_counters.bump("step_outcome.scoring_failed")
             logger.warning(
@@ -20960,6 +20971,7 @@ Based on the tool results above, provide a natural response to the user's reques
 If any tools failed, address those issues in your response.
 Cover every part of the user's request. If the results lack some asked part, say which part is missing in one line — never skip it in silence.
 If a CROSS-CHECK section is present, say which facts are confirmed since the earlier date and which changed.
+PRIOR RESEARCH lines are results of earlier searches: a fact found only there is NOT missing - give it with its date.
 
 {_READABLE_FORMAT_RULES}
 """

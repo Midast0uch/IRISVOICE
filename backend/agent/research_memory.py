@@ -472,6 +472,7 @@ def recall_prior_research(
         )
         out: List[dict] = []
         seen: set = set()
+        bodies: set = set()
         for chunk in chunks:
             m = _HEADER_RE.search(chunk)
             if not m or m.group(2) in seen:
@@ -480,6 +481,15 @@ def recall_prior_research(
             rec = load_record(m.group(2), mi=mi)
             if rec is None or (exclude_job_id and rec.get("job_id") == exclude_job_id):
                 continue
+            # Every quick search lands a new record (fresh id), so the same
+            # search run three times came back as three priors with the same
+            # text: the section printed one line 3x above the new results
+            # (eval r09 2026-10-05). One record per distinct body; the first
+            # (closest) wins.
+            body = " ".join(_record_body(rec).lower().split())
+            if body in bodies:
+                continue
+            bodies.add(body)
             out.append(rec)
             if len(out) >= limit:
                 break
@@ -614,6 +624,13 @@ def cross_check(
 _LABEL_ORDER = {"changed": 0, "confirmed": 1, "new": 2, "not_rechecked": 3}
 
 
+def _record_body(rec: dict) -> str:
+    """What a prior record says: its summary, else its first two claims."""
+    return rec.get("summary") or "; ".join(
+        str(c.get("text") or "") for c in (rec.get("claims") or [])[:2]
+    )
+
+
 def format_prior_section(
     records: List[dict], checks: List[dict], *, today: Optional[str] = None,
 ) -> str:
@@ -623,9 +640,7 @@ def format_prior_section(
     today = today or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     lines = [PRIOR_HEADING]
     for rec in records[:3]:
-        body = rec.get("summary") or "; ".join(
-            c["text"] for c in (rec.get("claims") or [])[:2]
-        )
+        body = _record_body(rec)
         lines.append(f"- {str(rec.get('created_at') or '')[:10]} \"{str(rec.get('query'))[:80]}\": {body[:220]}")
     if checks:
         lines.append(f"CROSS-CHECK against the new results (today {today}):")

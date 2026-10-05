@@ -121,6 +121,36 @@ def _names_in(text: str) -> List[str]:
     return _out
 
 
+# One "Actions:" line of a node result (node_executor.NodeResult.as_step_result):
+# "- run_command python -m pytest -q -> ok".
+_ACTION_RE = re.compile(r"^- (\S+) ?(.*?) -> (ok|FAILED)\s*$", re.MULTILINE)
+# A command that runs the code or its tests (not "ls", not "git status").
+_CHECK_CMD_RE = re.compile(
+    r"\b(?:pytest|unittest|python3?|py|node|npm|npx|jest|vitest|go|cargo|dotnet|mvn|gradle|make)\b",
+    re.IGNORECASE,
+)
+_LAST_CMD_FAILED = "last command in this step exited non-zero"
+
+
+def _checked_after_change(result: str) -> bool:
+    """True when the step RAN the code or its tests after its last file change
+    and that run passed. A passing run is outside evidence for a spec fact a
+    coding node's result does not repeat word for word ("raises ValueError if
+    there is not enough" vs "- run_command python -m pytest -q -> ok"; live
+    c10 2026-10-05: an own-word rule left that fact open, 2 pushes, reply
+    15 -> 47 s)."""
+    if not result or _LAST_CMD_FAILED in result:
+        return False
+    from backend.agent.node_executor import _CHANGE_TOOLS
+
+    acts = _ACTION_RE.findall(result)
+    last_change = max((i for i, a in enumerate(acts) if a[0] in _CHANGE_TOOLS), default=-1)
+    return any(
+        tool == "run_command" and ok == "ok" and _CHECK_CMD_RE.search(target)
+        for tool, target, ok in acts[last_change + 1:]
+    )
+
+
 @dataclass(frozen=True)
 class Contract:
     """The goal contract: floor (required) + ceiling (discovered) + version."""
@@ -294,8 +324,9 @@ def mark_coverage(
     A required fact is covered only if a VERIFIED child's result carries:
       - one of the fact's OWN names as whole words ("Golden Gate Bridge",
         "Harry Potter") - a name no other required fact holds; else
-      - any one of its distinctive terms (weak: kept for facts without a
-        name, see below).
+      - one of its OWN terms (a term no other required fact holds; all its
+        terms when it has fewer than two own), or a passing run of the code
+        or its tests after the step's last file change.
     In eval r09 (2026-10-04) a result about the Eiffel Tower covered "the
     year the first Harry Potter book was published" through "year", C read
     1.0 and the turn ended with 2 of 3 facts never searched. A fact's OWN
@@ -303,10 +334,10 @@ def mark_coverage(
     RESEARCH" block with "first", "published", "Gate" and "Bridge" (run
     conv-789), but not "Golden Gate Bridge" or "Harry Potter" - over 186
     stored single-topic searches the old rule covered more than one fact in
-    every one, the name rule in none. A fact without a name keeps the weak
-    rule: a coding node's result says "8 passed", not the words of the spec
-    ("raises ValueError if there is not enough"), and an own-term rule left
-    such a fact open in live c10 (2 pushes, blocked, reply 15 -> 47 s).
+    every one, the name rule in none. A coding node's result says "8
+    passed", not the words of the spec ("raises ValueError if there is not
+    enough"): own terms alone left such a fact open in live c10 (2 pushes,
+    blocked, reply 15 -> 47 s), hence the passing-run evidence.
     Facts with no distinctive terms are covered by VERIFIED status alone
     (weak check, logged).
     """
@@ -318,8 +349,13 @@ def mark_coverage(
     _covered: List[str] = []
     _seen: Dict[str, None] = {}
     _lows = [_norm(_f) for _f in _required]
+    _all_terms = [_distinctive_terms(_f) for _f in _required]
     for _i, _fact in enumerate(_required):
-        _terms = _distinctive_terms(_fact)
+        _terms = _all_terms[_i]
+        # A term another fact also holds ("year") cannot tell them apart.
+        _shared = {_t for _j, _ts in enumerate(_all_terms) if _j != _i for _t in _ts}
+        _own = [_t for _t in _terms if _t not in _shared]
+        _match_terms = _own if len(_own) >= 2 else _terms
         _names = [
             _n for _n in _names_in(_fact)
             if not any(_n in _lows[_j] for _j in range(len(_required)) if _j != _i)
@@ -346,7 +382,8 @@ def mark_coverage(
             if _names:
                 _found = _name_re.search(_low) is not None
             else:
-                _found = any(_t in _low for _t in _terms)
+                _found = (any(_t in _low for _t in _match_terms)
+                          or _checked_after_change(_res))
             if _found:
                 _hit = True
                 break
