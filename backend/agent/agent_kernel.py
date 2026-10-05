@@ -315,10 +315,16 @@ def _step_evidence_cap(item) -> int:
     400-char default: its ~275-char summary filled it and the "Tool results"
     with the facts were cut (live 2026-10-04: the page held "5,895 m" and
     "1889"; the reply said they were missing). A node's result is its own
-    summary + what it read, so it gets the read/gather window. Module level on
-    purpose (stand-in kernels)."""
-    if isinstance(getattr(item, "node_call_log", None), list):
-        return 8000
+    summary + what it read, so it gets the read/gather window - and one
+    NODE_BLOCK_HEAD per call beyond that, so a node that searched three facts
+    keeps all three heads (eval r09 conv-810: the middle search was cut out).
+    Module level on purpose (stand-in kernels)."""
+    _log = getattr(item, "node_call_log", None)
+    if isinstance(_log, list):
+        from backend.agent.node_executor import NODE_BLOCK_HEAD
+
+        # + the summary and the per-call headers / cut markers
+        return max(8000, NODE_BLOCK_HEAD * len(_log)) + 1500
     return AgentKernel._der_evidence_cap(getattr(item, "tool", None))
 
 
@@ -659,9 +665,14 @@ class TaskContext:
                     tool_name = result.get("tool", "unknown")
                     action = result.get("action", "")
                     result_text = result.get("result", result.get("response", ""))
+                    # DER evidence is bounded once, per step, by its own window
+                    # (_step_evidence_cap); a second 6,000 head+tail cut here
+                    # dropped the middle of a three-search node (eval r09
+                    # conv-820: "the tools did not return the other two facts").
+                    if not result.get("bounded"):
+                        result_text = self._bounded_excerpt(result_text)
                     summary_parts.append(
-                        f"Step {i}: {tool_name} ({action}): "
-                        f"{self._bounded_excerpt(result_text)}"
+                        f"Step {i}: {tool_name} ({action}): {result_text}"
                     )
 
         return "\n".join(summary_parts) if summary_parts else "No tool results."
@@ -15421,6 +15432,7 @@ Respond with a JSON object:
                     # the raw step output. The brain synthesis reads the bounded
                     # memory record, never the full raw history.
                     "result": self._der_node_record_evidence(ci) or "",
+                    "bounded": True,  # already cut to its evidence window
                     "success": True,
                 }
                 for ci in completed_items
@@ -17884,12 +17896,23 @@ Respond with a JSON object:
         / ``"fallback"`` sources are reserved for the T17 mediator-ranking
         wiring, which must record WHICH chooser picked the tool or the
         learning credits the wrong one (REQ-23 edge case).
+
+        A node step has no item.tool (HANDOFF 11 B2): its mediator is the call
+        that decided it (_step_decisive_call: the last failed call, else the
+        last), hashed on that call's identifying args. Reading item.tool gave
+        "none" for every node, so REQ-23/REQ-26 edges never learned from one.
         """
-        tool = getattr(item, "tool", None) or ""
+        if isinstance(getattr(item, "node_call_log", None), list):
+            _call = _step_decisive_call(item)
+            if not _call or not _call.get("tool"):
+                return "none", "none"
+            tool, _params = str(_call["tool"]), _call.get("args") or {}
+        else:
+            tool = getattr(item, "tool", None) or ""
+            _params = getattr(item, "params", None) or {}
         if not tool:
             return "none", "none"
         try:
-            _params = getattr(item, "params", None) or {}
             _blob = json.dumps(_params, sort_keys=True, default=str)
             _args_hash = hashlib.sha256(_blob.encode("utf-8")).hexdigest()[:12]
         except Exception:
@@ -19369,6 +19392,24 @@ Respond with a JSON object:
                 _rec = getattr(item, "node_record", None) or getattr(
                     item, "footprint", None
                 )
+                if _rec is None:
+                    # Every node carries its record (REQ-3 T8), and this is
+                    # where outcome, goal coverage and mediator land. Steps
+                    # added after planning (continuation, recovery, steering
+                    # and revise replans, recovery grafts) were built without
+                    # one, so their results never counted: a "cover the open
+                    # fact" step searched the fact, it stayed open, was pushed
+                    # again and blocked (eval r09 conv-836, 2026-10-05).
+                    from backend.agent.der_loop import NodeRecord
+
+                    _rec = NodeRecord(
+                        step_id=str(getattr(item, "step_id", "") or ""),
+                        parent_step_id="",
+                        objective_anchor=str(getattr(item, "objective_anchor", "") or ""),
+                        expected_output=str(getattr(item, "expected_output", "") or ""),
+                        remaining=str(getattr(item, "description", "") or ""),
+                    )
+                    item.node_record = _rec
                 if _rec is not None:
                     _rec.outcome = _verified
                     # REQ-18 (T19): stamp the two domain axes at the same
@@ -19792,6 +19833,7 @@ Respond with a JSON object:
                 ExecutionMode.AGENTIC, ExecutionMode.FULL,
             )
             _cont_run = _cont_mode_ok and _cont_complete
+            _cover_push = None
             logger.info(
                 "[DER] continuation gate: mode=%s complete=%s -> %s",
                 getattr(queue.mode, "value", queue.mode),
@@ -19818,6 +19860,14 @@ Respond with a JSON object:
                         "[DER] continuation consult skipped during COMPRESS "
                         "(rec=1) - the plan cannot expand"
                     )
+                    # COMPRESS condenses the work done; it cannot end a task
+                    # whose required fact nobody worked on. Eval r09
+                    # (2026-10-04, conv-733): one search of three facts, then
+                    # rec=1 skipped the consult and the reply missed two. The
+                    # push for an open fact is fixed text - no consult needed.
+                    _cover_push = AgentKernel._goal_contract_cover_step(self)
+                    if _cover_push is not None:
+                        _cont_run = True
             # The objective is MET: every required fact of the goal contract is
             # covered and none is blocked. The consult can only add steps that
             # chase the agent's own action lines as "ceiling facts" - live
@@ -19831,7 +19881,7 @@ Respond with a JSON object:
                     "(all required facts covered)"
                 )
             if _cont_run:
-                _next_tool = self._der_plan_next_step(
+                _next_tool = _cover_push or self._der_plan_next_step(
                     plan.original_task,
                     completed_items,
                     queue.mode,
@@ -20147,6 +20197,32 @@ Respond with a JSON object:
         except Exception as _bp_exc:  # noqa: BLE001 - a bound never breaks the loop
             logger.warning("[goal-contract] cover-push bound failed: %r", _bp_exc)
             return open_facts
+
+    def _goal_contract_cover_step(self) -> Optional[Dict]:
+        """The goal of the step that covers the first open required fact, or
+        None when no fact is open (or every open fact used its pushes).
+        Called as a class function: a stand-in kernel without a contract
+        dict gets None."""
+        try:
+            if not isinstance(getattr(self, "_goal_contract_state", None), dict):
+                return None
+            _open = AgentKernel._goal_contract_open_facts(self)
+            if _open:
+                _open = AgentKernel._goal_contract_bound_cover_push(self, _open)
+            if not _open:
+                return None
+            logger.info(
+                "[goal-contract] gap open (%d facts) — requesting "
+                "work instead of finalizing: %r",
+                len(_open), str(_open[0])[:160],
+            )
+            self._der_note_depth_route("cover_open_fact")
+            return {"description": (
+                f"Cover the open required fact: {str(_open[0])[:300]}"
+            )}
+        except Exception as _cs_exc:  # noqa: BLE001 - doubt means no push
+            logger.warning("[goal-contract] cover step failed: %r", _cs_exc)
+            return None
 
     def _goal_contract_met(self) -> bool:
         """True when a goal contract exists, it has required facts, all are
@@ -20696,23 +20772,9 @@ Respond with a JSON object:
                 # Goal contract T6 (REQ-3 AC3.6): the turn SHALL NOT end while
                 # a required fact is open and unblocked — request work on the
                 # first open fact instead of honoring the LLM's done.
-                try:
-                    _gc_open_now = self._goal_contract_open_facts()
-                except Exception:
-                    _gc_open_now = []
-                if _gc_open_now:
-                    _gc_open_now = self._goal_contract_bound_cover_push(_gc_open_now)
-                if _gc_open_now:
-                    logger.info(
-                        "[goal-contract] gap open (%d facts) — requesting "
-                        "work instead of finalizing: %r",
-                        len(_gc_open_now), str(_gc_open_now[0])[:160],
-                    )
-                    self._der_note_depth_route("cover_open_fact")
-                    return {"description": (
-                        f"Cover the open required fact: "
-                        f"{str(_gc_open_now[0])[:300]}"
-                    )}
+                _gc_push = AgentKernel._goal_contract_cover_step(self)
+                if _gc_push is not None:
+                    return _gc_push
                 # REQ-3 AC3.5: C reached 1.0 — permit ONE bounded bonus pass
                 # over ceiling facts, then terminate (helper owns the
                 # counter so every increment has exactly one writer).

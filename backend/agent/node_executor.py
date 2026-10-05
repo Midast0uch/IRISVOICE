@@ -96,6 +96,11 @@ _CLOSE_ARGS = {
 }
 
 
+# The least of each call's result a closing answer keeps (its head). The
+# step's evidence window downstream (agent_kernel._step_evidence_cap) holds
+# this much per call.
+NODE_BLOCK_HEAD = 2500
+
 # A page with this few marked elements is one the element list cannot carry
 # (canvas, images, charts): the vision model reads the screenshot instead.
 _POOR_DOM_MARKS = 3
@@ -627,8 +632,18 @@ def run_node(goal: str, ctx: NodeContext) -> NodeResult:
                     logger.info("[run_node] conv=%s done in the tool answer: %d call(s), "
                                 "last_cmd_failed=%s", ctx.conv_id, len(calls),
                                 bool(last_command_failed))
+                    # Each call keeps its own head: the answer sits near the
+                    # top of a result (186 stored searches: the fact at char
+                    # <= 2,144), and one head+tail window over three joined
+                    # 9k results dropped the middle one whole (eval r09
+                    # conv-810: three searches, the reply said two were missing).
+                    _share = max(ctx.result_chars // max(1, len(batch_results)),
+                                 NODE_BLOCK_HEAD)
+                    _blocks = [_b if len(_b) <= _share
+                               else _b[:_share] + "\n[...rest of this result cut...]"
+                               for _b in batch_results]
                     return NodeResult(True, (summary + "\n\nTool results:\n"
-                                             + "\n\n".join(batch_results)).strip(),
+                                             + "\n\n".join(_blocks)).strip(),
                                       calls, last_command_failed=bool(last_command_failed),
                                       helped=helped)
             if len(calls) >= ctx.max_calls:

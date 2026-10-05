@@ -32,6 +32,13 @@ _STOPWORDS = frozenset({
 _ENUM_PREFIX_RE = re.compile(r"^\s*(?:\d+[.)]\s+|\(\d+\)\s*|[-*•]\s+)")
 _SPLIT_RE = re.compile(r"\s*(?:\n+|;+|\s+\d+[.)]\s+|\s*\(\d+\)\s*)\s*")
 _WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9]{3,}")
+_AND_RE = re.compile(r"\s+and\s+", re.IGNORECASE)
+# The lead-in is one clause: no sentence end before the colon ("...main.py.
+# Example: f('a, b')" is not a list).
+_LIST_LEAD_RE = re.compile(r"^((?:(?![.!?]\s)[^:]){3,}):\s+(.+)$", re.DOTALL)
+_LIST_JOIN_RE = re.compile(r"^(?:and|or)\s+", re.IGNORECASE)
+# A list comma, not one inside a call or a quote: "add(name, qty)".
+_LIST_COMMA_RE = re.compile(r",(?![^()]*\))(?=(?:[^'\"]*['\"][^'\"]*['\"])*[^'\"]*$)")
 # A prohibition ("do not change app.py") is kept by NOT acting, so no step can
 # cover it; as a required fact it drew a push per boundary (eval c06,
 # 2026-10-01: 36 pushes, reply 366 s). Nodes still see it - every node gets
@@ -86,6 +93,34 @@ def _distinctive_terms(text: str) -> List[str]:
     return list(_seen.keys())
 
 
+_NAME_RUN_RE = re.compile(r"\b[A-Z][a-z]+\b(?: [A-Z][a-z]+\b)*")
+_QUOTED_RE = re.compile(
+    r"(?<![A-Za-z])'[^']*'|\"[^\"]*\"|`[^`]*`"
+    r"|\S*[\\/]\S*?(?=[.,;:!?]?(?:\s|$))"  # a path; its sentence end stays
+)
+
+
+def _names_in(text: str) -> List[str]:
+    """The names a fact holds, lowercased: runs of capitalized words
+    ("Golden Gate Bridge", "Harry Potter"). Not names: a capital that only
+    opens a sentence ("The", "Fix"), a code identifier ("ImportError",
+    "DEFAULTS" - a reply about the fix need not repeat it), quoted text
+    ("slugify('Hello, World!')" is an example, not a subject) and paths (the
+    eval work folder "C:\\Users\\...\\Local\\Temp" gave c02 the names "users",
+    "local", "temp": 2 pushes, reply 84 s)."""
+    _out: List[str] = []
+    text = _QUOTED_RE.sub(lambda _q: " " * len(_q.group(0)), text or "")
+    for _m in _NAME_RUN_RE.finditer(text):
+        _words = _m.group(0).split(" ")
+        _before = text[:_m.start()].rstrip()
+        if not _before or _before[-1] in ".!?:;":
+            _words = _words[1:]
+        _name = " ".join(_words).lower()
+        if len(_name) >= 3 and _name not in _out:
+            _out.append(_name)
+    return _out
+
+
 @dataclass(frozen=True)
 class Contract:
     """The goal contract: floor (required) + ceiling (discovered) + version."""
@@ -135,20 +170,30 @@ def extract_required(request: str) -> Tuple[str, ...]:
         _chunk = (_chunk or "").strip()
         if not _chunk:
             continue
-        # Split "A and B" only when both sides carry substance, so a single
-        # "research X and summarize" ask is not torn into fragments.
-        if re.search(r"\s+and\s+", _chunk, flags=re.IGNORECASE):
-            _sides = re.split(r"\s+and\s+", _chunk, flags=re.IGNORECASE)
-            _sides = [_s.strip() for _s in _sides if _s.strip()]
-            if len(_sides) > 1 and all(len(_s) >= 12 for _s in _sides):
-                _parts.extend(_sides)
-                continue
-        if "," in _chunk and _chunk.count(",") >= 2:
-            _subs = [_s.strip() for _s in _chunk.split(",") if _s.strip()]
+        # "Do X and give each one: A, B, and C" - the list after the colon is
+        # what is asked for; the lead-in only says how. As a fact of its own it
+        # can never be covered, and before the list was split it hid B inside
+        # A's fact (eval r09, 2026-10-04: "the year the Golden Gate Bridge
+        # opened" rode in the Eiffel Tower fact and was never searched).
+        _lead = _LIST_LEAD_RE.match(_chunk)
+        if _lead and ("," in _lead.group(2) or _AND_RE.search(_lead.group(2))):
+            _chunk = _lead.group(2).strip()
+        # A comma list first ("A, B, and C"), then "A and B" inside each item.
+        _items = [_chunk]
+        if len(_LIST_COMMA_RE.findall(_chunk)) >= 2:
+            _subs = [_LIST_JOIN_RE.sub("", _s.strip()) for _s in _LIST_COMMA_RE.split(_chunk)]
+            _subs = [_s for _s in _subs if _s]
             if len(_subs) > 1 and all(len(_s) >= 8 for _s in _subs):
-                _parts.extend(_subs)
-                continue
-        _parts.append(_chunk)
+                _items = _subs
+        for _item in _items:
+            # Split "A and B" only when both sides carry substance, so a single
+            # "research X and summarize" ask is not torn into fragments.
+            if _AND_RE.search(_item):
+                _sides = [_s.strip() for _s in _AND_RE.split(_item) if _s.strip()]
+                if len(_sides) > 1 and all(len(_s) >= 12 for _s in _sides):
+                    _parts.extend(_sides)
+                    continue
+            _parts.append(_item)
     _facts: List[str] = []
     _seen: Dict[str, None] = {}
     for _p in _parts:
@@ -246,9 +291,24 @@ def mark_coverage(
 ) -> Coverage:
     """Compute set-union coverage (REQ-2 AC2.1-AC2.5).
 
-    A required fact is covered only if a VERIFIED child's result carries the
-    fact's distinctive terms. Facts with no distinctive terms are covered by
-    VERIFIED status alone (weak check, logged).
+    A required fact is covered only if a VERIFIED child's result carries:
+      - one of the fact's OWN names as whole words ("Golden Gate Bridge",
+        "Harry Potter") - a name no other required fact holds; else
+      - any one of its distinctive terms (weak: kept for facts without a
+        name, see below).
+    In eval r09 (2026-10-04) a result about the Eiffel Tower covered "the
+    year the first Harry Potter book was published" through "year", C read
+    1.0 and the turn ended with 2 of 3 facts never searched. A fact's OWN
+    words were not enough either: that search result carries a "PRIOR
+    RESEARCH" block with "first", "published", "Gate" and "Bridge" (run
+    conv-789), but not "Golden Gate Bridge" or "Harry Potter" - over 186
+    stored single-topic searches the old rule covered more than one fact in
+    every one, the name rule in none. A fact without a name keeps the weak
+    rule: a coding node's result says "8 passed", not the words of the spec
+    ("raises ValueError if there is not enough"), and an own-term rule left
+    such a fact open in live c10 (2 pushes, blocked, reply 15 -> 47 s).
+    Facts with no distinctive terms are covered by VERIFIED status alone
+    (weak check, logged).
     """
     _required = list(contract.required) if contract else []
     _outcomes = list(node_outcomes or [])
@@ -257,13 +317,23 @@ def mark_coverage(
         _results.append("")
     _covered: List[str] = []
     _seen: Dict[str, None] = {}
-    for _fact in _required:
+    _lows = [_norm(_f) for _f in _required]
+    for _i, _fact in enumerate(_required):
         _terms = _distinctive_terms(_fact)
+        _names = [
+            _n for _n in _names_in(_fact)
+            if not any(_n in _lows[_j] for _j in range(len(_required)) if _j != _i)
+        ]
+        if _names:
+            # whole words: "bun" is not in "bundle"
+            _name_re = re.compile(
+                r"\b(?:" + "|".join(re.escape(_n) for _n in _names) + r")\b"
+            )
         _hit = False
         for _oc, _res in zip(_outcomes, _results):
             if not _outcome_verified(_oc):
                 continue
-            _low = _res.lower()
+            _low = _norm(_res)
             if not _terms:
                 if _res.strip():
                     logger.info(
@@ -273,7 +343,11 @@ def mark_coverage(
                     _hit = True
                     break
                 continue
-            if any(_t in _low for _t in _terms):
+            if _names:
+                _found = _name_re.search(_low) is not None
+            else:
+                _found = any(_t in _low for _t in _terms)
+            if _found:
                 _hit = True
                 break
         if _hit:
