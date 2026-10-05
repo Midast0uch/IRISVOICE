@@ -434,7 +434,10 @@ class EpisodicStore:
             app_write(self.db, """
                 UPDATE episodes SET
                     task_summary = ?,
-                    full_content = full_content || ?,
+                    -- bounded: the newest 20,000 chars (every duplicate appended
+                    -- its whole content - one row reached 321 KB and its
+                    -- rewrite took 1.9 s, live 2026-10-04)
+                    full_content = substr(full_content || ?, -20000),
                     outcome_score = (0.7 * outcome_score) + (0.3 * ?),
                     outcome_type = ?,
                     user_corrected = MAX(user_corrected, ?),

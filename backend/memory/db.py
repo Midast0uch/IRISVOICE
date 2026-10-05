@@ -96,11 +96,34 @@ def locked_retry(fn, *, label: str = "db-write"):
 _REQUIRE_ENCRYPTION = os.environ.get("IRIS_MEMORY_ENCRYPTION", "0") == "1"
 
 
+_READ_HEADS = ("SELECT", "WITH")
+
+
 class AppStoreConnection(sqlite3.Connection):
     """A plaintext store connection that knows its file, so app_write can
-    route its writes to the store's one writer without a database call."""
+    route its writes to the store's one writer without a database call.
+
+    Reads run on the CALLING THREAD's own connection when the native writer
+    owns the file. A connection runs one statement at a time, so a background
+    scan on a shared connection held the answer path's reads: 16 s in
+    _store_document_data behind recall_prior_research's 56k-chunk scan, 4+ s
+    behind the memory lane (live 2026-10-04). With the one writer nothing
+    writes on the shared connection (the scan test enforces it), so a read on
+    a per-thread connection sees the same committed rows - and WAL readers on
+    separate connections never wait on each other. Writes, and any store the
+    native writer does not own (tests, an encrypted store), stay here."""
 
     store_path: str = ""
+
+    def execute(self, sql, parameters=(), /):
+        if (self.store_path and isinstance(sql, str)
+                and not getattr(_LANE_CONNS, "opening", False)  # its own open
+                and sql.lstrip()[:6].upper().startswith(_READ_HEADS)
+                and owns_store(self)):
+            own = lane_connection(self)
+            if own is not self:
+                return own.execute(sql, parameters)
+        return super().execute(sql, parameters)
 
 
 def _plain_store_connection(db_path) -> "AppStoreConnection":
@@ -140,11 +163,11 @@ _LANE_CONNS = __import__("threading").local()
 
 def lane_connection(conn):
     """This thread's OWN connection to ``conn``'s store file (opened once per
-    thread, kept): a side lane's reads must not hold the connection the answer
-    path reads on. A connection serializes its statements, so a slow lane scan
-    on the SHARED mycelium connection held the answer path's recall read 4+ s
-    (live 2026-10-04); WAL readers on separate connections never wait on each
-    other. Writes still go through app_write (the native one writer). A
+    thread, kept; AppStoreConnection.execute sends every read here): a side
+    lane's reads must not hold the connection the answer path reads on. A
+    connection serializes its statements, so a slow lane scan on the SHARED
+    mycelium connection held the answer path's recall read 4+ s (live
+    2026-10-04); WAL readers on separate connections never wait on each other. Writes still go through app_write (the native one writer). A
     connection without a store path (tests, other files) is returned as is."""
     path = getattr(conn, "store_path", "")
     if not path:
@@ -154,11 +177,14 @@ def lane_connection(conn):
         conns = _LANE_CONNS.by_path = {}
     own = conns.get(path)
     if own is None:
+        _LANE_CONNS.opening = True  # the open's own probe reads stay on it
         try:
             own = conns[path] = open_encrypted_memory(path, b"")
         except Exception as exc:  # noqa: BLE001 - the shared one still works
             logger.warning("[db] lane connection not opened (%s): %s", path, exc)
             return conn
+        finally:
+            _LANE_CONNS.opening = False
     return own
 
 

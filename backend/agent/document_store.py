@@ -17,10 +17,11 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
 import time
 from typing import Any, Dict, Optional
 
-from backend.memory.db import app_flush, app_write
+from backend.memory.db import app_flush, app_write, owns_store
 
 from backend.agent.artifact_policy import (
     card_title_from_content,
@@ -92,13 +93,59 @@ class DocumentDataStore:
 
     def __init__(self, db_conn: sqlite3.Connection) -> None:
         self._conn = db_conn
+        # Read-your-writes, TARGETED: what this store queued on the one writer
+        # and a read may need (doc id / "conv:<id>" / "edges" -> queued at).
+        # A blanket flush on every read waited for the WHOLE queue - 34 reads,
+        # 149 s, up to 14.4 s each on the answer path (live A/B 2026-10-04).
+        self._pending: Dict[str, float] = {}
+        self._pending_lock = threading.Lock()
         self._ensure_table()
+
+    def _note_pending(self, *keys: Optional[str]) -> None:
+        if not owns_store(self._conn):
+            return
+        now = time.monotonic()
+        with self._pending_lock:
+            for k in keys:
+                if k:
+                    self._pending[k] = now
+
+    def _settle(self, *keys: Optional[str], any_doc: bool = False) -> None:
+        """Wait for the writer queue ONLY when this store queued a write the
+        read needs (a key below, or any write for an all-documents read)."""
+        with self._pending_lock:
+            if not self._pending:
+                return
+            now = time.monotonic()
+            for k, t in list(self._pending.items()):
+                if now - t > 30.0:  # long landed
+                    del self._pending[k]
+            hit = bool(self._pending) if any_doc else any(k in self._pending for k in keys if k)
+        if not hit:
+            return
+        started = time.monotonic()
+        if app_flush(5.0):
+            with self._pending_lock:
+                for k, t in list(self._pending.items()):
+                    if t <= started:
+                        del self._pending[k]
 
     def _ensure_table(self) -> None:
         try:
             self._conn.execute(_SQL_CREATE)
             self._conn.execute(_SQL_CREATE_BLOBS)
             self._conn.execute(_SQL_CREATE_EDGES)
+            # The evict picks the oldest rows; without this index it scanned
+            # and sorted the table on every store past the cap (2.6 s on the
+            # writer thread, live 2026-10-04).
+            # Through the one writer: a direct CREATE INDEX needs the write
+            # lock, and the slow evict it exists to fix held that lock past the
+            # 5 s busy timeout ("ensure_table failed: database is locked").
+            app_write(
+                self._conn,
+                "CREATE INDEX IF NOT EXISTS idx_document_data_created "
+                "ON document_data(created_at)",
+            )
             self._conn.commit()
             # Phase 4 (chat-card-redesign): revision column added after launch.
             try:
@@ -196,6 +243,7 @@ class DocumentDataStore:
             )
 
             _locked_retry326(_write326, label="document_data.store")
+            self._note_pending(document_id, f"conv:{conversation_id}")
             self._evict_if_needed()
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("[DocumentDataStore] store failed: %s", exc)
@@ -211,7 +259,7 @@ class DocumentDataStore:
 
             # One writer: rowcount is only truthiness here, so count the row
             # first (flush: a store() queued just before must be visible).
-            app_flush()
+            self._settle(document_id)
             exists = self._conn.execute(
                 "SELECT 1 FROM document_data WHERE document_id=?", (document_id,)
             ).fetchone() is not None
@@ -225,6 +273,7 @@ class DocumentDataStore:
                 )
 
             _locked_retry326(_write326, label="document_data.update")
+            self._note_pending(document_id)
             return exists
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("[DocumentDataStore] update failed: %s", exc)
@@ -253,6 +302,7 @@ class DocumentDataStore:
                 "(document_id, mime, data, byte_len) VALUES (?, ?, ?, ?)",
                 (document_id, mime, bytes(data), len(data)),
             )
+            self._note_pending(document_id)
             return True
         except Exception as exc:  # noqa: BLE001 — storage never breaks a turn
             logger.warning(
@@ -270,7 +320,7 @@ class DocumentDataStore:
         if not document_id:
             return None
         try:
-            app_flush()  # one writer: a store_blob just queued must be readable
+            self._settle(document_id)  # a store_blob this store queued
             row = self._conn.execute(
                 "SELECT mime, data, byte_len FROM document_blobs WHERE document_id = ?",
                 (document_id,),
@@ -363,6 +413,7 @@ class DocumentDataStore:
                     turn_id,
                 ),
             )
+            self._note_pending(document_id, f"conv:{conversation_id}" if conversation_id else None)
         except Exception as exc:
             logger.warning(
                 "[DocumentDataStore] store_json_atomic failed id=%s: %s",
@@ -400,7 +451,7 @@ class DocumentDataStore:
     def get(self, document_id: str) -> Optional[Dict[str, Any]]:
         """Return the full document record, or None if not found."""
         try:
-            app_flush()  # one writer: a store() just queued must be readable
+            self._settle(document_id)  # a store() this store queued
             row = self._conn.execute(
                 "SELECT document_id, conversation_id, fmt, content, variants, "
                 "alternatives, trust, revision, source_document_id, sources, har_path, "
@@ -439,7 +490,7 @@ class DocumentDataStore:
         ``conversation_id`` (REQ-12). Never raises.
         """
         try:
-            app_flush()  # one writer: a store() just queued must be listed
+            self._settle(f"conv:{conversation_id}")  # a store() for this conversation
             if metadata_only:
                 rows = self._conn.execute(
                     "SELECT document_id, fmt, conversation_id, sources, har_path, created_at, "
@@ -523,7 +574,7 @@ class DocumentDataStore:
         dict, so a listing never pays for the record bodies. Never raises.
         """
         try:
-            app_flush()  # one writer: a store() just queued must be listed
+            self._settle(any_doc=True)  # any store() this store queued
             sql = (
                 "SELECT document_id, conversation_id, variants, created_at "
                 "FROM document_data WHERE fmt = ?"
@@ -557,7 +608,7 @@ class DocumentDataStore:
         ``[{conversation_id, doc_count, latest_created_at}]``. Never raises.
         """
         try:
-            app_flush()  # one writer: a store() just queued must be counted
+            self._settle(any_doc=True)  # any store() this store queued
             rows = self._conn.execute(
                 "SELECT conversation_id, COUNT(*) AS doc_count, MAX(created_at) AS latest "
                 "FROM document_data WHERE fmt IS NOT 'research' "
@@ -595,6 +646,7 @@ class DocumentDataStore:
                 "UPDATE document_data SET variants = ? WHERE document_id = ?",
                 (json.dumps(variants, ensure_ascii=False), document_id),
             )
+            self._note_pending(document_id)
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("[DocumentDataStore] add_variant failed: %s", exc)
 
@@ -616,13 +668,14 @@ class DocumentDataStore:
                 "updated_at = excluded.updated_at",
                 (from_format, to_format, float(amount), time.time()),
             )
+            self._note_pending("edges")
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("[DocumentDataStore] record_reformat failed: %s", exc)
 
     def get_reformat_edges(self, from_format: Optional[str] = None) -> list:
         """Return reformat edges (from_format, to_format, weight), highest weight first."""
         try:
-            app_flush()  # one writer: a record_reformat just queued must be counted
+            self._settle("edges")  # a record_reformat this store queued
             if from_format is not None:
                 rows = self._conn.execute(
                     "SELECT from_format, to_format, weight FROM reformat_edges "
@@ -655,13 +708,15 @@ class DocumentDataStore:
             if count > _MAX_DOCUMENTS:
                 # One writer: the excess is computed INSIDE the delete, on the
                 # writer thread - a second queued evict then deletes nothing
-                # extra (a count read here would be stale once queued).
+                # extra (a count read here would be stale once queued). Trim
+                # to 90% of the cap: at the cap every store evicted again, a
+                # multi-second delete each time on this disk (live 2026-10-04).
                 app_write(
                     self._conn,
                     "DELETE FROM document_data WHERE document_id IN ("
                     "SELECT document_id FROM document_data ORDER BY created_at ASC "
                     "LIMIT max(0, (SELECT COUNT(*) FROM document_data) - ?))",
-                    (_MAX_DOCUMENTS,),
+                    (_MAX_DOCUMENTS * 9 // 10,),
                 )
                 # Cascade to binary bodies. SQLite does not enforce foreign keys
                 # unless PRAGMA foreign_keys is on (it is not, per-connection),

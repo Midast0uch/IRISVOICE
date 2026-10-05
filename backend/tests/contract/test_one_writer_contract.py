@@ -17,6 +17,7 @@ Runs against the real iris_core.dll on a temporary plaintext store.
 from __future__ import annotations
 
 import sqlite3
+import threading
 import time
 
 import pytest
@@ -134,3 +135,31 @@ def test_queued_chain_appends_take_distinct_sequences(store):
         "SELECT sequence FROM memory_chain WHERE thread_id = 'ow-thread' ORDER BY sequence")]
     c.close()
     assert seqs == list(range(1, 21)), seqs
+
+
+def test_a_read_never_waits_behind_another_threads_statement(store):
+    """Reads run on the calling thread's own connection: a slow statement of
+    another thread on the SHARED connection does not hold them (live
+    2026-10-04: a node's read waited 16 s behind a background 56k-chunk scan).
+    The old code ran every read on the shared connection, one at a time."""
+    _path, shared = store
+    busy = threading.Event()
+
+    def _slow_scan():
+        busy.set()
+        # sqlite3.Connection.execute: straight on the SHARED connection.
+        # 10M rows ~2.5 s here: long enough that a read queued behind it waits
+        # ~2 s (3M rows took 0.74 s and the old code's wait sat near the bound).
+        sqlite3.Connection.execute(
+            shared, "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c "
+                    "WHERE x < 10000000) SELECT count(*) FROM c").fetchone()
+
+    t = threading.Thread(target=_slow_scan)
+    t.start()
+    busy.wait(5)
+    time.sleep(0.2)  # the scan holds the shared connection now
+    t0 = time.perf_counter()
+    assert shared.execute("SELECT count(*) FROM ow_rows").fetchone()[0] >= 0
+    took = time.perf_counter() - t0
+    t.join(30)
+    assert took < 0.5, f"the read waited {took:.2f} s behind another thread's statement"
