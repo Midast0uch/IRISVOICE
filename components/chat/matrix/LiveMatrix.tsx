@@ -11,7 +11,8 @@
  * (components/chat/spine) draws the one agent Xur at the row marked data-state="running".
  * It fits any wing width (ellipsis, no sideways scroll) at a readable 12.5 px.
  *
- *   MatrixFrame   header (TASK, progress, time, fold), THK line, rail, rows, memory line
+ *   MatrixFrame   no frame: THK line, rows on the spine, memory line, status note
+ *                 (time · type to steer · ■ stops); settled = one fold line
  *   MatrixRow     orb · verb · target · result chip (+ chevron to its detail)
  *   SubLoopChamber  ↳ looked closer — the split children of a row
  *   RowDetail     the row's recent actions / output preview / page
@@ -246,7 +247,8 @@ export function MatrixFrame({
   // An ask that still waits keeps the matrix open: the question must not hide in a fold.
   const waitingAsk = !!asks?.some((a) => a.state === "waiting")
   const folded = foldWhenDone && !working && !unfolded && m.flat.length > 0 && !waitingAsk
-  const elapsed = formatElapsed(elapsedSec)
+  // NaN = unknown (a stored card without a duration): the fold line leaves the time out.
+  const elapsed = Number.isFinite(elapsedSec) ? formatElapsed(elapsedSec) : ""
   const mem = memoryLine(matrix)
   // MADE rows hang under the top-level row of the step that made them; any other goes last.
   const topRowIds = new Set(m.items.flatMap((it) => (it.kind === "row" ? [it.row.id] : [])))
@@ -257,52 +259,47 @@ export function MatrixFrame({
     else madeAtEnd.push(mk)
   }
 
+  // Concept 2 (iris-strands.html, devTurn): no frame, no TASK header. The rows sit
+  // on the timeline's spine (the spine is the rail); a settled run is ONE fold line.
+  const f = foldLine(m, stopped, elapsed)
+  const foldColor = f.word === "DONE" ? OK : f.word === "FAILED" ? BAD : "rgba(255,255,255,0.5)"
+  const foldButton = (isFolded: boolean) => (
+    <button
+      type="button"
+      onClick={() => setUnfolded(isFolded)}
+      className="flex w-full items-center gap-2 min-w-0 text-left text-[12px]"
+      aria-expanded={!isFolded}
+      aria-label={isFolded ? undefined : "Fold"}
+    >
+      <span className="flex-none font-bold" style={{ color: foldColor }}>{f.mark} {f.word}</span>
+      <span className="flex-1 min-w-0 truncate text-white/55">{f.rest}</span>
+      <span className="flex-none" style={{ color: glowColor }}>{isFolded ? "⌄" : "⌃"}</span>
+    </button>
+  )
+
   if (folded) {
-    const f = foldLine(m, stopped, elapsed)
-    const color = f.word === "DONE" ? OK : f.word === "FAILED" ? BAD : "rgba(255,255,255,0.5)"
     return (
-      <div
-        className="font-mono text-[12.5px] rounded-md px-2 py-1.5 min-w-0"
-        style={{ lineHeight: 1.55, border: `1px solid ${glowColor}38`, background: "rgba(7,8,20,0.9)" }}
-        data-matrix="folded"
-      >
-        <button type="button" onClick={() => setUnfolded(true)} className="flex w-full items-center gap-2 min-w-0 text-left" aria-expanded={false}>
-          <span className="flex-none font-bold" style={{ color }}>{f.mark} {f.word}</span>
-          <span className="flex-1 min-w-0 truncate text-white/55">{f.rest}</span>
-          <span className="flex-none" style={{ color: glowColor }}>⌄</span>
-        </button>
+      <div className="font-mono text-[12.5px] min-w-0" style={{ lineHeight: 1.55 }} data-matrix="folded">
+        {foldButton(true)}
       </div>
     )
   }
 
   return (
     <div
-      className="font-mono text-[12.5px] rounded-md px-2 py-1.5 min-w-0 overflow-hidden"
-      style={{ lineHeight: 1.55, border: `1px solid ${glowColor}38`, background: "rgba(7,8,20,0.9)" }}
+      className="font-mono text-[12.5px] min-w-0 overflow-hidden flex flex-col gap-px"
+      style={{ lineHeight: 1.55 }}
       data-matrix={working ? "live" : "open"}
     >
-      <div className="flex items-center gap-2 min-w-0">
-        <span className="flex-none" style={{ color: glowColor }}>▤</span>
-        <span className="flex-none font-bold" style={{ color: glowColor }}>TASK :</span>
-        <span className="flex-1 min-w-0 truncate font-semibold text-white" title={m.objective}>{m.objective}</span>
-        <span className="flex-none text-[11px] text-white/45 tabular-nums">
-          {m.current}/{m.total} · {elapsed}
-        </span>
-        {!working && (
-          <button type="button" onClick={() => setUnfolded(false)} className="flex-none px-1" style={{ color: glowColor }} aria-label="Fold">
-            ⌃
-          </button>
-        )}
-      </div>
+      {/* Unfolded after it settled: the fold line stays on top so the run folds back. */}
+      {!working && foldWhenDone && m.flat.length > 0 && foldButton(false)}
       {working && thought && (
         <div className="flex gap-2 min-w-0 text-[11.5px] text-white/50" data-matrix-thk>
           <span className="flex-none font-bold" style={{ color: RUN }}>THK</span>
           <span className="flex-1 min-w-0 truncate italic">{thought}</span>
         </div>
       )}
-      <div className="relative mt-0.5 pt-1 pl-5" style={{ borderTop: `1px solid ${glowColor}1f` }} data-matrix-body>
-        {/* The rail: a quiet line the rows hang from (the spine's Xur rides to the running row). */}
-        <span aria-hidden className="absolute w-px" style={{ left: 7, top: 4, bottom: 4, background: `linear-gradient(${glowColor}55, ${glowColor}10)` }} />
+      <div className="flex flex-col gap-px min-w-0" data-matrix-body>
         {m.items.map((it) =>
           it.kind === "row" ? (
             <React.Fragment key={it.row.id}>
@@ -315,9 +312,15 @@ export function MatrixFrame({
         )}
         {madeAtEnd.map((mk) => <MadeRow key={mk.doc.id} made={mk} />)}
         {askActions && asks?.map((a) => <AskPrompt key={a.id} ask={a} variant="row" glowColor={glowColor} actions={askActions} />)}
-        {m.flat.length === 0 && <div className="text-white/35 text-[11.5px]">○ getting ready…</div>}
       </div>
-      {mem && <div className="mt-1 text-[11px] text-white/40 truncate">◈ {mem}</div>}
+      {mem && <div className="text-[11px] text-white/40 truncate">◈ {mem}</div>}
+      {working && (
+        <div className="text-[11.5px] text-white/45 truncate tabular-nums" data-matrix-status>
+          {m.flat.length === 0 ? "getting ready" : "working"} · {elapsed}
+          {/* A shell run cannot be steered; an agent turn can. */}
+          {foldWhenDone ? " · type to steer · ■ stops" : ""}
+        </div>
+      )}
     </div>
   )
 }

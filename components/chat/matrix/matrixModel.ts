@@ -136,12 +136,14 @@ export function rowOpenByDefault(row: MatrixRowModel): boolean {
 /** The one-line fold of a finished run, in plain words. */
 export function foldLine(m: MatrixModel, stopped: boolean, elapsed: string): { mark: string; word: string; rest: string } {
   const steps = `${m.flat.length} step${m.flat.length === 1 ? "" : "s"}`
-  if (stopped) return { mark: "■", word: "STOPPED", rest: `${m.objective} · ${steps} · ${elapsed}` }
+  // "" = the run's length is unknown: no time, never a false "0:00".
+  const time = elapsed ? ` · ${elapsed}` : ""
+  if (stopped) return { mark: "■", word: "STOPPED", rest: `${m.objective} · ${steps}${time}` }
   if (m.failed > 0 && m.flat.every((r) => r.state !== "done")) {
-    return { mark: "✕", word: "FAILED", rest: `${m.objective} · ${steps} · ${elapsed}` }
+    return { mark: "✕", word: "FAILED", rest: `${m.objective} · ${steps}${time}` }
   }
   const retried = m.failed > 0 ? ` · ${m.failed} tried again` : ""
-  return { mark: "✓", word: "DONE", rest: `${m.objective} · ${steps}${retried} · ${elapsed}` }
+  return { mark: "✓", word: "DONE", rest: `${m.objective} · ${steps}${retried}${time}` }
 }
 
 export function formatElapsed(sec: number): string {

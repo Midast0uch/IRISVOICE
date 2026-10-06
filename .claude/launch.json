@@ -36,6 +36,22 @@
       "cwd": "C:\\dev\\IRISVOICE\\iris-launcher"
     },
     {
+      "name": "design-docs",
+      "runtimeExecutable": "C:/Python314/python.exe",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "8766",
+        "--bind",
+        "127.0.0.1",
+        "--directory",
+        "docs/design"
+      ],
+      "cwd": "C:\\dev\\IRISVOICE",
+      "port": 8766,
+      "autoPort": false
+    },
+    {
       "name": "arch-docs",
       "runtimeExecutable": "C:/Python314/python.exe",
       "runtimeArgs": [

@@ -18,12 +18,17 @@ export type ChatTimelineEntry<TMessage extends ChatTimelineMessage = ChatTimelin
  * Cards with a responseTurnId join immediately after the matching message.
  * Legacy cards without a match are inserted by creation time, and only the
  * newest card for each turn survives. Settled tool-less cards are conversation
- * replies rather than artifacts and are omitted.
+ * replies rather than artifacts and are omitted — in personal mode only.
+ *
+ * `developer`: every turn is drawn as its matrix, which folds to one line, so
+ * tool-less cards stay; and the matrix sits BEFORE the answer it produced
+ * (concept 2: prompt -> matrix -> answer), not after it as a personal card does.
  */
 export function buildChatTimeline<TMessage extends ChatTimelineMessage>(
   messages: TMessage[],
   cards: TaskCard[],
   shells: ShellRun[] = [],
+  developer = false,
 ): ChatTimelineEntry<TMessage>[] {
   const base: ChatTimelineEntry<TMessage>[] = messages.map((message, index) => ({
     kind: "message" as const,
@@ -34,19 +39,19 @@ export function buildChatTimeline<TMessage extends ChatTimelineMessage>(
 
   const latestPerTurn = new Map<string, TaskCard>()
   for (const card of cards) {
-    if (isConversationReplyCard(card)) continue
+    if (!developer && isConversationReplyCard(card)) continue
     latestPerTurn.set(card.responseTurnId || `__orphan__:${card.cardId}`, card)
   }
 
   const out: ChatTimelineEntry<TMessage>[] = []
   const rendered = new Set<string>()
   for (const entry of base) {
+    const card = entry.kind === "message" ? latestPerTurn.get(entry.message.id) : undefined
+    const joins = !!card && !rendered.has(card.cardId)
+    if (joins) rendered.add(card!.cardId)
+    if (joins && developer) out.push({ kind: "card", ts: entry.ts, card: card! })
     out.push(entry)
-    if (entry.kind !== "message") continue
-    const card = latestPerTurn.get(entry.message.id)
-    if (!card || rendered.has(card.cardId)) continue
-    rendered.add(card.cardId)
-    out.push({ kind: "card", ts: entry.ts, card })
+    if (joins && !developer) out.push({ kind: "card", ts: entry.ts, card: card! })
   }
 
   const unrendered = [...latestPerTurn.entries()]

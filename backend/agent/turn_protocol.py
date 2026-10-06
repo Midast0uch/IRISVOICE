@@ -464,7 +464,13 @@ def route_bus_event(
         if event in _INTERACTION_EVENTS:
             return em.part("interaction", event=event, data=data)
         if event in _NOTICE_EVENTS:
-            msg = data.get("message") or data.get("reason") or data.get("detail") or event
+            msg = data.get("message") or data.get("reason") or data.get("detail")
+            if not msg:
+                # No words to show: the raw event name is an engine word, never
+                # chat text (live 2026-10-06: a steer printed "steering:ack" as an
+                # IRIS line; the composer already shows the steer's receipt).
+                logger.debug("[Turn %s] %s notice without text skipped", em.turn_id, event)
+                return None
             return em.part("notice", event=event, message=_clip(msg, 2_000), data=data)
         if event == "agent:error":
             msg = data.get("message") or data.get("error") or "agent error"

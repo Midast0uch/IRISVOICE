@@ -337,6 +337,21 @@ def _step_decisive_call(item) -> Optional[dict]:
     return (failed or calls)[-1]
 
 
+def _step_tool_name(item) -> str:
+    """The tool a settled step really used, for its tool:result / tool:error.
+
+    A DER-DAG node has no item.tool (the planner writes goals; the node picks
+    its tools), so the old ``item.tool or "direct"`` labelled every node
+    "direct": the matrix verb read DIRECT and the frontend counted the settled
+    card as tool-less and dropped it (live 2026-10-06). The node's decisive
+    call names the tool; "direct" stays only for a node that made no call."""
+    tool = getattr(item, "tool", None)
+    if tool:
+        return str(tool)
+    call = _step_decisive_call(item)
+    return str(call.get("tool")) if call and call.get("tool") else "direct"
+
+
 _CLAIMS_MISSING_RE = re.compile(
     r"\b(?:did\s+not|didn't|does\s+not|doesn't|do\s+not|could\s+not|couldn't|"
     r"unable\s+to|failed\s+to|not\s+able\s+to)\b[^.\n]{0,60}?\b(?:include|return|"
@@ -774,6 +789,21 @@ _READABLE_FORMAT_RULES = """FORMATTING (your reply is rendered as markdown in a 
 - Structure only where it aids reading. Do not pad a short answer to fill it.
 - Report what the tools actually returned. If something was not returned, say
   so plainly rather than filling the gap."""
+
+
+def _developer_mode(kernel) -> bool:
+    """True when the app runs in developer mode. The card bound (artifact_policy)
+    is a personal-mode rule: developer mode draws EVERY turn as the live matrix
+    (execution audit Phase 4: rows appear / run / fold as nodes do). Live
+    2026-10-06: the bound withheld every task/tool event of a 3-step developer
+    turn, so it showed no rows at all. Module level: stand-in kernels in tests
+    bind only some methods."""
+    fn = getattr(kernel, "_effective_launcher_mode", None)
+    try:
+        return callable(fn) and fn() == "developer"
+    except Exception:  # noqa: BLE001 - a mode read never blocks the gate
+        logger.debug("[AgentKernel] launcher mode read failed", exc_info=True)
+        return False
 
 
 def _edit_diff_fields(item) -> dict:
@@ -9128,7 +9158,7 @@ class AgentKernel:
                             )
                             if card_warranted(
                                 _plan.steps, getattr(_plan, "original_task", "") or ""
-                            ):
+                            ) or _developer_mode(self):
                                 # This turn HAS a card: stop gating the thread.
                                 clear_card_free_conversation(self.conversation_id)
                             else:
@@ -10460,7 +10490,8 @@ Respond with a JSON object:
 
             _artifact_ask = is_artifact_ask(plan.original_task or "")
             self._current_task_text = plan.original_task or ""
-            if card_warranted(items, plan.original_task or ""):
+            # The card bound is a personal-mode rule (see _developer_mode).
+            if card_warranted(items, plan.original_task or "") or _developer_mode(self):
                 # This turn may have a card — clear the conversation-scoped
                 # marker a previous short turn left behind.
                 self._suppressed_card_turn = None
@@ -18613,7 +18644,7 @@ Respond with a JSON object:
                     data={
                         "task_id": _lifecycle_task_id,
                         "result_summary": step_result[:200],
-                        "tool_name": item.tool or "direct",
+                        "tool_name": _step_tool_name(item),
                         "step_number": item.step_number,
                         # REQ-3 AC6 (T2): card_id stays stable across every
                         # event of a card's lifetime.
@@ -18632,7 +18663,7 @@ Respond with a JSON object:
                     data={
                         "task_id": _turn_id or item.step_id,
                         "error": step_result[:200],
-                        "tool_name": item.tool or "direct",
+                        "tool_name": _step_tool_name(item),
                         "step_number": item.step_number,
                     },
                     turn_id=_turn_id,

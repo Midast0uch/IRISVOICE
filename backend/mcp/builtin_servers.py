@@ -669,7 +669,20 @@ class FileManagerServer(BuiltinServer):
 
     @staticmethod
     def _sync_write_file(path: str, content: str) -> None:
-        _atomic_write(path, content)
+        """Write `content` as given (newline=""), keeping a CRLF file CRLF.
+
+        Text mode with newline=None turned every "\\n" into "\\r\\n" on Windows,
+        so each agent write rewrote an LF file's endings: its edit diff showed
+        every line changed and a hunk undo could not apply (live 2026-10-06).
+        Same rule as _sync_edit_file: the file's own endings win."""
+        try:
+            with open(path, "rb") as f:
+                head = f.read(65536)
+            if b"\r\n" in head and "\r\n" not in content:
+                content = content.replace("\n", "\r\n")
+        except OSError:
+            pass  # a new file: written exactly as given
+        _atomic_write(path, content, newline="")
 
     @staticmethod
     def _sync_edit_file(path: str, old: str, new: str) -> dict:

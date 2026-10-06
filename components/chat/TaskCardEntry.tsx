@@ -8,7 +8,7 @@ import { MatrixFrame, type MadeItem } from "@/components/chat/matrix/LiveMatrix"
 import type { AskItem } from "@/lib/turns/asks"
 import type { AskActions } from "@/components/chat/turn/AskPrompt"
 import type { RowDetailData } from "@/components/chat/matrix/matrixModel"
-import type { TaskCard } from "@/hooks/useTaskProgress"
+import { MODE_NON_TOOLS, type TaskCard } from "@/hooks/useTaskProgress"
 import type { TurnRecord } from "@/lib/turns/turnStore"
 import { latestSentence } from "@/components/chat/turn/TurnParts"
 
@@ -40,7 +40,9 @@ export function taskCardToMatrixProps(card: TaskCard): TaskCardProps {
       // REQ-20 AC1: carry the key through. Dropping it here is what left the
       // CLI unable to even detect a bad order.
       seq: s.seq,
-      verb: s.toolName || "exec",
+      // A mode label ("direct") is not a tool: a node that has not named its
+      // tool yet reads WORK, never DIRECT (the result names the real tool).
+      verb: s.toolName && !MODE_NON_TOOLS.has(s.toolName.toLowerCase()) ? s.toolName : s.toolName ? "work" : "exec",
       target: s.activeDetail
         ? `${s.description} — ${s.activeDetail}${s.activeProgress ? ` (${s.activeProgress})` : ""}`
         : s.description,
@@ -119,7 +121,9 @@ export function TaskCardEntry({
           glowColor={glowColor}
           working={card.isWorking}
           stopped={card.terminalState === "terminated_unknown"}
-          elapsedSec={card.isWorking ? matrixElapsedSec : card.durationSec ?? matrixElapsedSec}
+          // A settled card with no known duration shows no time (NaN), never a
+          // false "0:00" from the shared working timer.
+          elapsedSec={card.isWorking ? matrixElapsedSec : card.durationSec ?? Number.NaN}
           thought={card.isWorking ? thinking || (card.actionStream?.[card.actionStream.length - 1] ?? card.currentAction) : undefined}
           liveAction={card.currentAction}
           made={made}

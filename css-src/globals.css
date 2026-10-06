@@ -1012,16 +1012,26 @@ body {
 .iris-rail { position: relative; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--iris-hair); }
 .iris-rail-scroll { position: relative; flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 10px 0; scrollbar-width: none; }
 .iris-rail-cv { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; }
-.iris-rsw { position: relative; z-index: 1; display: flex; margin: 0 8px 4px 24px; border: 1px solid var(--iris-hair); border-radius: 999px; padding: 2px; background: var(--iris-ink); }
+/* The two views ride the spine (owner, 2026-10-06: the concept's pill did not
+   blend with the rail). Each view is a row: its glyph is a knot ON the spine
+   (x = 15 = DashboardRail SPINE_X) and its label starts where the place names
+   start (30 px). A hairline from the label edge sets them off from the places.
+   Folded: the knots only, on the same line as the place orbs. */
+.iris-rsw { position: relative; z-index: 1; display: flex; flex-direction: column; margin: 0 0 6px; padding: 0 0 6px; }
+.iris-rsw::after { content: ""; position: absolute; left: 30px; right: 10px; bottom: 0; height: 1px; background: var(--iris-hair); }
 .iris-rsw button {
-  flex: 1; display: flex; justify-content: center; border: 0; background: none; cursor: pointer; padding: 5px 4px; border-radius: 999px;
-  font: 600 9.5px/1 var(--iris-mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--iris-muted);
+  position: relative; display: flex; align-items: center; width: 100%; border: 0; background: none; cursor: pointer; padding: 6px 10px 6px 30px;
+  font: 600 9.5px/1.2 var(--iris-mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--iris-muted); text-align: left; white-space: nowrap;
 }
-.iris-rsw button[aria-pressed="true"] { background: color-mix(in oklab, var(--b2, #6b9bff) 16%, transparent); color: #e6e9f2; }
-.iris-rsw button .gl { display: none; }
-.iris-rail[data-folded="true"] .iris-rsw { flex-direction: column; margin: 0 4px 6px 6px; border-radius: 10px; }
+.iris-rsw button:hover, .iris-rsw button[aria-pressed="true"] { color: #e6e9f2; }
+.iris-rsw button .gl {
+  position: absolute; left: 15px; top: 50%; transform: translate(-50%, -50%); width: 16px; height: 16px; display: grid; place-items: center;
+  border-radius: 50%; background: var(--iris-ink); font-size: 10px; font-weight: 400; line-height: 1; letter-spacing: 0; color: var(--iris-muted);
+}
+.iris-rsw button[aria-pressed="true"] .gl { color: var(--b2, #6b9bff); box-shadow: 0 0 0 1px color-mix(in oklab, var(--b2, #6b9bff) 45%, transparent); }
+.iris-rail[data-folded="true"] .iris-rsw::after { left: 8px; right: 8px; }
+.iris-rail[data-folded="true"] .iris-rsw button { height: 30px; }
 .iris-rail[data-folded="true"] .iris-rsw button span { display: none; }
-.iris-rail[data-folded="true"] .iris-rsw button .gl { display: inline; font-size: 12px; font-weight: 400; }
 .iris-place {
   position: relative; display: flex; width: 100%; gap: 9px; align-items: center; background: none; border: 0; cursor: pointer;
   padding: 7px 10px 7px 30px; font-weight: 500; font-size: 12.5px; line-height: 1.2; color: var(--iris-muted); text-align: left; white-space: nowrap;
@@ -1030,12 +1040,13 @@ body {
 .iris-place .n { margin-left: auto; font: normal 10px/1 var(--iris-mono); color: var(--iris-run); }
 .iris-rail[data-folded="true"] .iris-place { height: 32px; }
 .iris-rail[data-folded="true"] .iris-place span { display: none; }
-.iris-rail-foot { flex: none; border-top: 1px solid var(--iris-hair); padding: 10px; display: flex; align-items: center; gap: 9px; min-width: 0; }
-.iris-rail-foot .av { flex: none; width: 26px; height: 26px; border-radius: 50%; background: var(--iris-ink-3); display: grid; place-items: center; color: var(--iris-muted); }
+/* The avatar sits on the spine (centre x = 15), its text at the place-name edge (30 px). */
+.iris-rail-foot { flex: none; border-top: 1px solid var(--iris-hair); padding: 10px 10px 10px 4px; display: flex; align-items: center; gap: 4px; min-width: 0; }
+.iris-rail-foot .av { flex: none; width: 22px; height: 22px; border-radius: 50%; background: var(--iris-ink-3); display: grid; place-items: center; color: var(--iris-muted); }
 .iris-rail-foot .tx { min-width: 0; display: flex; flex-direction: column; }
 .iris-rail-foot .tx b { font-weight: 600; font-size: 11px; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .iris-rail-foot .tx small { font: 9.5px/1.3 var(--iris-mono); color: var(--iris-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.iris-rail[data-folded="true"] .iris-rail-foot { justify-content: center; padding: 10px 0; }
+.iris-rail[data-folded="true"] .iris-rail-foot { padding: 10px 0 10px 4px; }
 .iris-rail[data-folded="true"] .iris-rail-foot .tx { display: none; }
 
 /* settings content: find, rows, apply bar */

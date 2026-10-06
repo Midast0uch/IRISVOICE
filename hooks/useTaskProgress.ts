@@ -1043,6 +1043,9 @@ function reduceTaskUpdate(prev: CardsState, d: TaskUpdateDetail): CardsState {
         steps[idx] = {
           ...steps[idx],
           status: "done",
+          // Adopt the tool the step REALLY used (same rule as tool:call). A
+          // DER-DAG node has no planned tool, so only its result names one.
+          toolName: d.tool_name || steps[idx].toolName,
           resultPreview: d.result_summary,
           // Live detail belongs to an in-flight step only.
           activeDetail: undefined,
@@ -1354,6 +1357,11 @@ function reduceTaskUpdate(prev: CardsState, d: TaskUpdateDetail): CardsState {
           // re-arm "Active Execution" (the card kept spinning after
           // task:fail; the latch lives here, only `task:start` re-opens it).
           settled: true,
+          // The run's own length for the fold line ("· 3 steps · 0:21"). The
+          // shared working timer resets to 0 when no card works, so a settled
+          // live card read 0:00. The first settle wins; a hydrated card keeps
+          // the stored value.
+          durationSec: card.durationSec ?? (card.createdAt ? Math.max(0, (Date.now() - card.createdAt) / 1000) : undefined),
           currentStep: deriveCurrentStep(steps),
           currentAction: undefined,
           phase: undefined,

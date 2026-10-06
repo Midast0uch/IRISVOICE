@@ -1045,8 +1045,8 @@ export function ChatWing({
     return () => clearInterval(t)
   }, [shellRunning])
   const renderTimeline = useMemo(
-    () => buildChatTimeline(timelineMessages, taskProgress.cards, shellRuns),
-    [timelineMessages, taskProgress.cards, shellRuns],
+    () => buildChatTimeline(timelineMessages, taskProgress.cards, shellRuns, isDeveloper),
+    [timelineMessages, taskProgress.cards, shellRuns, isDeveloper],
   )
 
   // REQ-3 AC2: elapsed running timer for the active Blueprint Matrix. Ticks
@@ -2082,7 +2082,9 @@ export function ChatWing({
         appendSystem('[shell] → terminal_input')
         logStructured('cli_dispatch', { command: text, kind: 'shell', conversation_id: activeConversationId })
         // Gate 3 T10: active tab's directory rides as workdir (REQ-4 AC1).
-        sendMessage?.('terminal_input', { line: text, ...(activeTabPath ? { workdir: activeTabPath } : {}) })
+        // Send the command without its `>` prefix: the shell runs `line` as typed
+        // after the marker (sending `text` made PowerShell fail on the `>` token).
+        sendMessage?.('terminal_input', { line, ...(activeTabPath ? { workdir: activeTabPath } : {}) })
         recordHistory(text)
         resetRecall()
         if (!snap.isOpen) toggleTerminalOpen()

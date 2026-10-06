@@ -382,15 +382,16 @@ export function TurnView({
         .map((q) => questionCardFor(q))}
 
     <div
-      className={`flex justify-start`}
+      className={`flex ${isDeveloper && message.sender === 'user' ? 'justify-end' : 'justify-start'}`}
     >
       {message.sender === 'user' ? (
-        // User message - no bubble container
+        // User message: no container in personal mode; in developer mode the
+        // prompt is the concept's right-aligned `.you` bubble (iris-strands.html).
         <motion.div
           initial={{ opacity: prefersReducedMotion ? 1 : 0, y: prefersReducedMotion ? 0 : 5 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: prefersReducedMotion ? 0 : 0.15 }}
-          className="max-w-[90%] py-2"
+          className={isDeveloper ? "max-w-[88%] py-1 flex flex-col items-end" : "max-w-[90%] py-2"}
         >
           {/* Phase 4: developer mode shows the prompt line alone (below);
               the "You" header is personal mode's. */}
@@ -519,23 +520,24 @@ export function TurnView({
               )}
             </div>
           ) : isDeveloper ? (
-            /* Developer mode echoes YOUR turn the way a shell
-               does: monospaced, preformatted, behind a prompt
-               glyph. The assistant's replies were already
-               rendering as CLI, but your own messages are half
-               the transcript — leaving them as proportional
-               GUI text is why the view still read as personal
-               mode. renderWithLinks is dropped here on
-               purpose: a shell echo shows what you typed. */
-            /* Phase 4: the PROMPT LINE of a developer turn — the same
-               mono size as the matrix and the answer under it. */
-            <div className="flex items-baseline gap-2 min-w-0" data-prompt-line>
-              <pre className="flex-1 min-w-0 font-mono text-[12.5px] whitespace-pre-wrap break-words" style={{ color: 'rgba(255,255,255,0.9)', lineHeight: 1.55 }}>
-                <span style={{ color: glowColor, fontWeight: 700 }}>❯ </span>{message.text}
-              </pre>
-              <span className="flex-none text-[9px] text-white/30 tabular-nums">
-                {message.timestamp.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-              </span>
+            /* Developer mode: YOUR turn in the mono family, as typed
+               (renderWithLinks dropped on purpose), in the concept's
+               right-aligned bubble; the time is on hover. A `>cmd` keeps
+               its `❯` prompt line (ShellRunEntry). */
+            <div
+              className="min-w-0 font-mono text-[13px] whitespace-pre-wrap break-words"
+              style={{
+                color: '#e6e9f2',
+                lineHeight: 1.5,
+                background: '#0e1122',
+                border: '1px solid rgba(160,190,255,0.09)',
+                borderRadius: '12px 12px 3px 12px',
+                padding: '8px 12px',
+              }}
+              title={message.timestamp.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+              data-prompt-line
+            >
+              {message.text}
             </div>
           ) : (
             // Short message - display fully
