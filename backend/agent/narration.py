@@ -248,33 +248,17 @@ def may_narrate() -> bool:
     _NARRATION_GATE_INTERVAL seconds.  Thread-safe (used from both sync
     tool_bridge.py and async narration.py contexts).
 
-    specs/tool-decision-engine REQ-12: when the decision engine is available,
-    enforced, and confident that this narration should stay silent, silence
-    wins — and the timer slot is NOT consumed (the engine's answer does not
-    commit the 18 s window to nothing). Engine unavailable / shadow mode /
-    low confidence → the timer gate below stands exactly as before (AC12.3).
+    Stage B (2026-10-05): the decision engine is NOT consulted here. This gate
+    asked the Oracle "speak"/"silent" on a constant frame on the event-loop
+    thread, but the narration calibration rows measure a different question
+    (speak_all / speak_first_only / stay_silent, framed from the plan, scored
+    once per turn in AgentKernel._score_narration) and a calibration only
+    transfers to the SAME question. Narration also passes the bar against a
+    free deterministic reference (this timer), so the Oracle would swap a 0 ms
+    rule for a ~300 ms model. The timer gate below is the decision.
     """
     global _narration_gate_last
     now = time.time()
-    try:
-        from backend.agent.decision_engine import gate, get_decision_engine
-
-        eng = get_decision_engine()
-        ds, enforced = gate("narration", ["speak", "silent"],
-                            {"kind": "progress"})
-        # AC25.8: the threshold resolves by ACTIVE BACKEND IDENTITY; None = no
-        # entry for the active backend → fail-closed (the timer gate stands).
-        _thr = eng._cfg.threshold_for("narration")
-        if (
-            enforced
-            and ds is not None
-            and ds.chosen == "silent"
-            and _thr is not None
-            and ds.confident(_thr)
-        ):
-            return False
-    except Exception:
-        pass  # the timer gate alone, as before
     with _narration_gate_lock:
         if now - _narration_gate_last >= _NARRATION_GATE_INTERVAL:
             _narration_gate_last = now

@@ -32,6 +32,11 @@ from backend.agent.tool_decision import (
     ToolDecisionBox,
 )
 
+# Oracle Stage B (2026-10-05): the stand-in engine decides only through the
+# real enforcement chokepoint; see conftest.oracle_decides_module.
+ORACLE_DECIDES = ('tool_choice',)
+pytestmark = pytest.mark.usefixtures("oracle_decides_module")
+
 
 AVAILABLE = [
     {"name": "read_file", "description": "Search the web"},
@@ -153,9 +158,12 @@ class TestCtDe1Shapes:
         # OUT: a recorded non-fit (AC29.5).
         assert CONSUMERS == (
             "tool_choice", "presentation", "narration", "recovery_strategy",
-            "review_verdict", "sufficient", "done", "on_track",
+            "review_verdict", "sufficient", "done",
             "mode", "web_intent", "retry_same",
-            "has_gaps", "use_thinking", "escalate_incomplete", "needs_action",
+            "use_thinking", "escalate_incomplete", "needs_action",
+            # STALE-BY-SPEC (2026-10-05, Oracle Stage B, owner-approved): `on_track`
+            # (no production caller since 2026-10-02) and `has_gaps` (no live
+            # site) are REMOVED. Nothing else changed.
             # Session 364 (owner request): the DEPTH consumer. `sufficient` and
             # `done` ask whether the objective is COVERED; `depth_met` asks
             # whether it is done to the DEPTH the success criteria require -

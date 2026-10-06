@@ -10,8 +10,14 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+import pytest
+
 from backend.agent import explorer as ex
 from backend.agent.decision_engine import Noul
+
+# Oracle Stage B (2026-10-05): the engine's web_intent verdict wins only when
+# web_intent decides through the real chokepoint (conftest.oracle_decides_module).
+ORACLE_DECIDES = ("web_intent",)
 
 _REPO = Path(__file__).resolve().parents[3]
 
@@ -28,6 +34,7 @@ class _Engine:
 
 
 class TestSingleConsumerNoCopies:
+    @pytest.mark.usefixtures("oracle_decides_module")
     def test_single_consumer_no_copies(self):
         """AC15.3: the engine's web_intent verdict wins, and the duplicated
         trigger lists are gone from the kernel."""

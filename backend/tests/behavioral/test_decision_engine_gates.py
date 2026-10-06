@@ -168,12 +168,15 @@ class TestCtDe7Registry:
         # recorded non-fit, AC29.5) and the other assertions are unchanged.
         assert CONSUMERS == (
             "tool_choice", "presentation", "narration", "recovery_strategy",
-            "review_verdict", "sufficient", "done", "on_track",
+            "review_verdict", "sufficient", "done",
             "mode", "web_intent", "retry_same",
-            "has_gaps", "use_thinking", "escalate_incomplete", "needs_action",
+            "use_thinking", "escalate_incomplete", "needs_action",
             # Session 364 (owner request): the DEPTH consumer.
             "depth_met",
         )
+        # STALE-BY-SPEC (2026-10-05, Oracle Stage B, owner-approved): `on_track`
+        # (no production caller since 2026-10-02) and `has_gaps` (no live site)
+        # are REMOVED from the set; nothing else changed.
         c = EngineCounters()
         c.bump_consumer("presentation")
         c.bump_consumer("presentation")
@@ -198,16 +201,23 @@ class TestCtDe7Registry:
 
 
 class TestCtDe8NarrationComposition:
-    def test_confident_enforced_silent_blocks_and_spares_slot(
+    def test_the_engine_never_gates_narration(
             self, install_engine, narration_timer_reset):
-        install_engine(_GateEngine(chosen="silent", confidence=0.97),
-                       enforced=("narration",))
-        assert narration_mod.may_narrate() is False
-        # engine silence must NOT consume the 18 s slot: a later non-engine
-        # decision would still fire… swap to permissive and confirm.
-        install_engine(_GateEngine(chosen="speak", confidence=0.99),
-                       enforced=("narration",))
-        assert narration_mod.may_narrate() is True
+        """SUCCESSOR (2026-10-05, Oracle Stage B, owner-approved) of
+        `test_confident_enforced_silent_blocks_and_spares_slot`. That test pinned
+        that a confident, enforced engine "silent" blocked narration. The gate
+        asked the Oracle "speak"/"silent" on a constant frame - not the question
+        the narration calibration rows measure (speak_all / speak_first_only /
+        stay_silent) - so narration NEVER decides at this gate now: the timer
+        decides, and the engine is not even scored here."""
+        eng = install_engine(_GateEngine(chosen="silent", confidence=0.97),
+                             enforced=("narration",))
+        calls = []
+        _decide = eng.decide
+        eng.decide = lambda *a, **k: (calls.append(a), _decide(*a, **k))[1]
+        assert narration_mod.may_narrate() is True      # the timer admits
+        assert narration_mod.may_narrate() is False     # the timer's 18 s window
+        assert calls == [], "the narration gate scored the engine"
 
     def test_engine_dead_leaves_timer_alone(
             self, install_engine, narration_timer_reset):
@@ -317,24 +327,17 @@ class TestSurfaceGateBehavior:
 
 
 class TestNarrationBackstopBehavior:
-    def _gw(self):
-        return SimpleNamespace(_tool_bridge=None)
-
-    def _call(self, gw, resp="spoken content"):
+    def test_the_backstop_has_no_engine_gate(self):
+        """SUCCESSOR (2026-10-05, Oracle Stage B, owner-approved) of the three
+        tests that drove `IRISGateway._engine_permits_speech` (engine "silent"
+        suppresses the guaranteed-utterance backstop / shadow returns None /
+        dead engine returns None). The method asked the Oracle "speak"/"silent"
+        on a constant frame, scored inline on a reply thread, a different
+        question from the narration calibration rows - narration NEVER decides
+        here, so the method is removed and the backstop speaks whenever nothing
+        reached TTS."""
         from backend.iris_gateway import IRISGateway
 
-        return IRISGateway._engine_permits_speech(gw, resp)
-
-    def test_engine_silent_suppresses_backstop(self, install_engine):
-        install_engine(_GateEngine(chosen="silent", confidence=0.97),
-                       enforced=("narration",))
-        assert self._call(self._gw()) is False      # AC12.4: silence honored
-
-    def test_shadow_returns_none(self, install_engine):
-        install_engine(_GateEngine(chosen="silent", confidence=0.99),
-                       enforced=())
-        assert self._call(self._gw()) is None       # BT-DE-7: legacy reigns
-
-    def test_engine_dead_returns_none(self, install_engine):
-        install_engine(_GateEngine(dead=True), enforced=("narration",))
-        assert self._call(self._gw()) is None       # AC12.3 degrade
+        assert not hasattr(IRISGateway, "_engine_permits_speech")
+        src = Path("backend/iris_gateway.py").read_text(encoding="utf-8")
+        assert "_engine_speech" not in src

@@ -78,18 +78,20 @@ CONSUMERS: Tuple[str, ...] = (
     # a `Noul` (P(statement true)) rather than a two-option Choice (AC14.6).
     "sufficient",
     "done",
-    "on_track",
+    # `on_track` REMOVED 2026-10-05 (owner, Oracle Stage B): no production caller
+    # since 2026-10-02 - a consumer nothing consults is a calibration line that
+    # can never move. `has_gaps` removed with it (below).
     # REQ-15 AC15.1 (T19): mode + web_intent shadow the ModeDetector keyword
     # branch and the duplicated web-trigger lists.
     "mode",
     "web_intent",
     # REQ-17 AC17.1 (T21): the retry_same triage extension.
     "retry_same",
-    # REQ-29 (T46–T49): the remaining decision surface — four choice-shaped
-    # Brain decisions scored in shadow. `has_gaps` is the highest-value miss
-    # (an 800-token Brain call per completed step). `tier0_classify` is a
-    # recorded NON-FIT and is deliberately absent (AC29.5).
-    "has_gaps",
+    # REQ-29 (T46–T49): the remaining decision surface — choice-shaped Brain
+    # decisions scored in shadow. `has_gaps` REMOVED 2026-10-05 (owner): its only
+    # producer (trailing_director.py) was deleted 2026-08-06, so it had no live
+    # site. `tier0_classify` is a recorded NON-FIT and is deliberately absent
+    # (AC29.5).
     "use_thinking",
     "escalate_incomplete",
     "needs_action",
@@ -154,8 +156,8 @@ CONSUMER_JOBS: Dict[str, str] = {
     "tool_choice": "route", "recovery_strategy": "route", "retry_same": "route",
     "depth_route": "route", "browser_next": "route", "web_depth": "route",
     "click_safety": "guard", "needs_action": "guard", "use_thinking": "guard",
-    "review_verdict": "judge_step", "on_track": "judge_step",
-    "escalate_incomplete": "judge_step", "has_gaps": "judge_step",
+    "review_verdict": "judge_step",
+    "escalate_incomplete": "judge_step",
     "done": "judge_goal", "depth_met": "judge_goal", "sufficient": "judge_goal",
     "presentation": "shape", "narration": "shape",
     "event_family": "classify_event",
@@ -309,10 +311,9 @@ class EngineCounters:
         self.by_consumer[consumer_id] = self.by_consumer.get(consumer_id, 0) + 1
 
 
-# Gate enforcement modes (D10): tool_choice enforces at birth; the two visible
-# consumers (presentation cards, narration speech) start shadow — recorded but
-# non-binding — and flip to enforce only after the calibration gate. Override
-# with IRIS_DECISION_ENFORCE="tool_choice,presentation,narration".
+# ENFORCEMENT (2026-10-05, Oracle Stage B): ONE chokepoint, `decides()` below.
+# Every site that lets the Oracle's verdict replace a rule or the Brain asks it;
+# nothing reads IRIS_DECISION_ENFORCE, the bar record or a threshold on its own.
 def _current_backend_identity() -> str:
     """The ACTIVE engine's identity, resolved the way the report resolves it.
 
@@ -388,53 +389,139 @@ def _bar_record_enforced() -> frozenset:
     return frozenset(out)
 
 
-def enforced_consumers() -> frozenset:
-    """The consumers currently enforced (REQ-13..17, REQ-31 AC31.4).
+def _owner_allow_list() -> frozenset:
+    """The consumers the OWNER switched on (``IRIS_DECISION_ENFORCE``, a csv).
 
-    FAIL-CLOSED ON A STALE CONFIGURATION. `EngineConfig.threshold_for` already
-    refuses to hand out a threshold when the deployed cap differs from the
-    calibrated width, but that only makes an enforcing caller see `None` — a
-    caller that forgets to check would still steer. This closes the hole at the
-    SOURCE: when the deployed configuration differs from the calibrated one, NO
-    consumer is enforced, so no flip measured at a superseded configuration can
-    stand (AC31.4/AC31.6). A match is the normal case and enforcement proceeds
-    exactly as before.
+    DEFAULT EMPTY. It used to default to "tool_choice": born "enforced", but
+    tool_choice has no production deciding path and sits below the bar, so the
+    default switched on nothing real and hid that the bar record alone could
+    enforce. The owner decides WHERE the Oracle pays; the bar decides whether it
+    MAY (narration passes the bar - AUROC 0.78, precision 0.905 - but its
+    reference is a free deterministic rule, so enforcing it would swap a 0 ms
+    rule for a 300 ms model that disagrees 10% of the time).
     """
-    raw = os.environ.get("IRIS_DECISION_ENFORCE", "tool_choice")
-    wanted = frozenset(
-        c.strip() for c in raw.split(",") if c.strip() in CONSUMERS
-    )
-    # The bar record can enforce a consumer on its own evidence (option B,
-    # 2026-09-27). The env list stays as the manual override for the DECLARED
-    # set; the record is what lets a consumer earn its own flip.
-    wanted = wanted | _bar_record_enforced()
-    if not wanted:
-        return frozenset()
-    # Reading staleness must NEVER be able to break the reply path. A config
-    # object without the attribute (a stub, a partially-built engine) means
-    # "not stale" — and the real fail-closed guarantee is unaffected, because
-    # `threshold_for` independently returns None on a stale configuration, so
-    # an enforcing caller still cannot steer on a superseded curve.
+    raw = os.environ.get("IRIS_DECISION_ENFORCE", "")
+    return frozenset(c.strip() for c in raw.split(",") if c.strip() in CONSUMERS)
+
+
+def _config_stale() -> bool:
+    """True when the deployed configuration differs from the calibrated one.
+
+    `EngineConfig.threshold_for` already refuses a threshold then, but a caller
+    that forgets to check would still steer (AC31.4/AC31.6). Reading staleness
+    must NEVER break the reply path: a config object without the attribute (a
+    stub, a partially-built engine) or an unreadable one means "not stale" - the
+    real guarantee is that `threshold_for` independently returns None.
+    """
     try:
         cfg = getattr(get_decision_engine(), "_cfg", None)
         _stale_attr = (
             getattr(cfg, "threshold_stale", None) if cfg is not None else None
         )
         stale = bool(_stale_attr() if callable(_stale_attr) else _stale_attr)
-    except Exception as e:  # noqa: BLE001 — an unreadable config changes nothing
+    except Exception as e:  # noqa: BLE001 - an unreadable config changes nothing
         logger.debug("decision_engine: staleness unreadable (%r)", e)
-        return wanted
+        return False
     if stale:
         logger.warning(
             "decision_engine: deployed configuration differs from the "
-            "calibrated one (candidate_cap=%s, calibrated_cap=%s) — thresholds "
-            "are STALE, refusing enforcement for %s (AC31.4)",
+            "calibrated one (candidate_cap=%s, calibrated_cap=%s) - thresholds "
+            "are STALE, refusing enforcement (AC31.4)",
             getattr(cfg, "candidate_cap", None),
             getattr(cfg, "calibrated_cap", None),
-            sorted(wanted),
         )
-        return frozenset()
-    return wanted
+    return stale
+
+
+def _enforcement(consumer_id: str) -> Tuple[Optional[float], str]:
+    """``(calibrated threshold, "")`` when the consumer may decide, else ``(None, why)``.
+
+    The four keys, cheapest first: the owner's switch, the earned bar, a fitted
+    threshold for the ACTIVE engine, a configuration that is not stale.
+    """
+    if consumer_id not in _owner_allow_list():
+        return None, "not switched on (IRIS_DECISION_ENFORCE)"
+    if consumer_id not in _bar_record_enforced():
+        return None, "not earned (no enforced bar record for the active engine)"
+    from . import oracle_calibration
+
+    t = oracle_calibration.threshold(_current_backend_identity(), consumer_id)
+    if t is None:
+        return None, "no fitted threshold for the active engine"
+    if _config_stale():
+        return None, "stale configuration"
+    return t, ""
+
+
+_ENFORCEMENT_LOGGED = False
+
+
+def _log_enforcement_once() -> None:
+    """One INFO line per process: who decides, and why each allow-listed
+    consumer that does not, does not. A silent "nothing decides" would be
+    indistinguishable from a broken switch."""
+    global _ENFORCEMENT_LOGGED
+    if _ENFORCEMENT_LOGGED:
+        return
+    _ENFORCEMENT_LOGGED = True
+    allowed = sorted(_owner_allow_list())
+    deciding, refused = [], []
+    for c in allowed:
+        t, why = _enforcement(c)
+        if t is not None:
+            deciding.append(f"{c}@{t}")
+        else:
+            refused.append(f"{c} ({why})")
+    logger.info(
+        "%s enforcement: deciding=%s; allow-listed but NOT deciding=%s%s",
+        ENGINE_NAME, deciding or "none", refused or "none",
+        "" if allowed else " (IRIS_DECISION_ENFORCE is empty)",
+    )
+
+
+def decides(consumer_id: str) -> Optional[float]:
+    """THE chokepoint: the calibrated threshold when *consumer_id* may decide.
+
+    ALL four hold, else None: the owner switched it on, its bar record says
+    ``enforced`` on the active engine, a threshold was fitted for it on that
+    engine, and the configuration is not stale. With the default configuration
+    NOTHING decides. A site that gets None keeps its rule / Brain path. Never
+    raises (a fault is "does not decide").
+    """
+    try:
+        _log_enforcement_once()
+        return _enforcement(consumer_id)[0]
+    except Exception as e:  # noqa: BLE001 - fail closed
+        logger.debug("decision_engine: decides(%s) failed (%r)", consumer_id, e)
+        return None
+
+
+def oracle_acts(consumer_id: str, raw_conf: float) -> bool:
+    """True when the Oracle's verdict replaces the incumbent for THIS decision.
+
+    ``raw_conf`` is the confidence in the CHOSEN answer (max(p, 1-p) for a
+    yes/no), the number a ledger row carries - the calibration map was fitted on
+    that scale. Below the calibrated threshold the existing path decides.
+    """
+    try:
+        t = decides(consumer_id)
+        if t is None:
+            return False
+        from . import oracle_calibration
+
+        c = oracle_calibration.calibrated(
+            _current_backend_identity(), consumer_id, raw_conf)
+        return c is not None and c >= t
+    except Exception as e:  # noqa: BLE001 - fail closed
+        logger.debug("decision_engine: oracle_acts(%s) failed (%r)", consumer_id, e)
+        return False
+
+
+def enforced_consumers() -> frozenset:
+    """The consumers that currently decide: the INTERSECTION of the owner's
+    switch and the earned bar (``decides`` is not None). Never a union - a bar
+    record alone, or the owner's list alone, enforces nothing."""
+    return frozenset(c for c in _owner_allow_list() if decides(c) is not None)
 
 
 # ---------------------------------------------------------------------------
@@ -1225,7 +1312,7 @@ class DecisionEngine:
     ) -> Optional[Noul]:
         """REQ-14 AC14.6 (T18): score a STATEMENT and return P(true).
 
-        The bool monitor consumers (``sufficient`` / ``done`` / ``on_track``)
+        The bool monitor consumers (``sufficient`` / ``done``)
         ask "is this statement true", so they are answered with a ``Noul`` — a
         single calibrated probability — rather than a two-option Choice.
 
@@ -1540,13 +1627,25 @@ def gate(
     callers then take their legacy heuristic path. enforced=False means
     shadow mode: record the decision but let the heuristics decide.
     Never raises.
+
+    A calibration only transfers to the SAME question. A consumer registered
+    with a fixed label set is scored and may act ONLY on options equal to that
+    set; any other menu returns ``(None, False)`` without scoring (2026-10-05:
+    the narration gate asked "speak"/"silent" on a constant frame while its
+    calibration rows measure speak_all/speak_first_only/stay_silent). `enforced`
+    is the chokepoint's verdict for THIS score's confidence.
     """
     try:
+        from .decision_backend_onnx import get_consumer_spec
+
+        spec = get_consumer_spec(consumer_id)
+        if spec is not None and spec.labels and set(options) != set(spec.labels):
+            return None, False
         eng = get_decision_engine()
         ds = eng.decide(consumer_id, options, frame)
         if ds is None:
             return None, False
-        return ds, consumer_id in enforced_consumers()
+        return ds, oracle_acts(consumer_id, ds.confidence)
     except Exception as _e:
         logger.debug("decision_engine gate failed: %r", _e)
         return None, False

@@ -57,10 +57,14 @@ class TestNeedsActionSafeDirection:
             "a confident engine NEGATIVE narrowed the safe direction — a step "
             "that needs a tool could now be stopped (AC29.4)"
         )
-        assert engine.seen == ["needs_action"], "the consumer was not scored"
-        assert rows and rows[0]["consumer_id"] == "needs_action"
-        assert rows[0]["chosen"] is False    # the engine's own opinion
-        assert rows[0]["brain_bool"] is True
+        # CHANGED (2026-10-05, Oracle Stage B, owner-approved): a lexical True is
+        # final - the engine can only WIDEN it - so it is no longer scored at all
+        # (one reply-path Oracle call saved). This used to assert the consumer was
+        # scored and a row written for a lexical-True goal. The calibration rows
+        # for this consumer now come from lexical-False goals only, scored on the
+        # lane (see test_oracle_enforcement_contract).
+        assert engine.seen == [], "a lexical True was scored although it is final"
+        assert rows == []
 
     def test_the_engine_may_widen_toward_action_when_enforced(
         self, monkeypatch, rows,

@@ -19,6 +19,13 @@ from backend.agent.decision_engine import (
     EngineCounters,
 )
 
+import pytest
+
+# Oracle Stage B (2026-10-05): the stand-in engine decides only through the
+# real enforcement chokepoint; see conftest.oracle_decides_module.
+ORACLE_DECIDES = ('tool_choice',)
+pytestmark = pytest.mark.usefixtures("oracle_decides_module")
+
 MENU = [
     {"name": "search", "description": "instant lookup", "category": "web"},
     {"name": "crawler_query", "description": "deep crawl", "category": "web"},

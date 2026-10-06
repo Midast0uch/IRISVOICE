@@ -18,7 +18,8 @@ from backend.agent.decision_engine import CONSUMERS
 
 _REPO = Path(__file__).resolve().parents[3]
 
-_SURFACE = ("has_gaps", "use_thinking", "escalate_incomplete", "needs_action")
+# `has_gaps` removed 2026-10-05 (Oracle Stage B, owner-approved): no live site.
+_SURFACE = ("use_thinking", "escalate_incomplete", "needs_action")
 _NON_FIT = "tier0_classify"
 
 
@@ -44,7 +45,8 @@ class TestConsumerRegistry:
             )
 
     def test_the_four_surface_consumers_are_registered(self):
-        """All four are enumerated AND have their own criteria (REQ-19)."""
+        """All are enumerated AND have their own criteria (REQ-19). (Four before
+        `has_gaps` was removed; `depth_met` registers here as well.)"""
         for cid in _SURFACE:
             assert cid in CONSUMERS, f"{cid} is not a registered consumer"
 

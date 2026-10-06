@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from backend.agent.decision_engine import (
     CandidateScore,
     DecisionScore,
@@ -15,6 +17,10 @@ from backend.agent.decision_engine import (
     EngineCounters,
 )
 from backend.agent.tool_decision import ToolDecisionBox
+
+# Oracle Stage B (2026-10-05): the stand-in engine decides only through the real
+# enforcement chokepoint; see conftest.oracle_decides_module.
+ORACLE_DECIDES = ("tool_choice",)
 
 
 class _WidthEngine:
@@ -60,6 +66,7 @@ def _resolve(engine):
     return engine.widths[0] if engine.widths else None
 
 
+@pytest.mark.usefixtures("oracle_decides_module")
 class TestCapEffectiveInMenuWidth:
     def test_cap_effective_in_menu_width(self):
         """AC25.4 / BT-DEI-16: a non-default cap is EFFECTIVE in the menu
@@ -108,16 +115,38 @@ class TestCapChangeMarksThresholdStale:
 
 
 class TestStaleRefusesEnforcement:
-    def test_stale_refuses_enforcement(self, monkeypatch):
+    def test_stale_refuses_enforcement(self, monkeypatch, tmp_path):
         """AC31.4: a deployed configuration that differs from the calibrated
-        one marks thresholds STALE and refuses enforcement at the SOURCE."""
+        one marks thresholds STALE and refuses enforcement at the SOURCE.
+
+        Stage B (2026-10-05) setup change, assertions unchanged: enforcement now
+        needs ALL FOUR keys, so the owner switch, the earned bar and a fitted
+        threshold are provided through tmp files, and the ONLY thing that varies
+        between (a) and (b) is the configuration's staleness (the real check, not
+        a patched one). `has_gaps` (a removed consumer) became `depth_met`."""
+        import json
+
         import backend.agent.decision_engine as de_mod
+        from backend.agent import consumer_bar, oracle_calibration
         from backend.agent.decision_engine import (
             EngineConfig,
             enforced_consumers,
         )
 
-        monkeypatch.setenv("IRIS_DECISION_ENFORCE", "tool_choice,has_gaps")
+        engine_id = "gliner25-decide-onnx-int8"
+        _cons = ("tool_choice", "depth_met")
+        (tmp_path / "bar.json").write_text(json.dumps({
+            c: {"consumer_id": c, "rows": 120, "precision": 0.95, "ece": 0.01,
+                "status": "enforced", "gap": "", "config": {"backend_id": engine_id}}
+            for c in _cons}), encoding="utf-8")
+        (tmp_path / "cal.json").write_text(json.dumps({engine_id: {
+            c: {"knots": [[0.5, 0.5], [1.0, 1.0]], "threshold": 0.85}
+            for c in _cons}}), encoding="utf-8")
+        monkeypatch.setattr(consumer_bar, "BAR_PATH", tmp_path / "bar.json")
+        monkeypatch.setattr(oracle_calibration, "CALIBRATION_PATH", tmp_path / "cal.json")
+        oracle_calibration._CACHE.clear()
+        monkeypatch.setattr(de_mod, "_current_backend_identity", lambda: engine_id)
+        monkeypatch.setenv("IRIS_DECISION_ENFORCE", "tool_choice,depth_met")
 
         # (a) calibrated configuration → enforcement proceeds.
         fresh = EngineConfig()
@@ -126,7 +155,7 @@ class TestStaleRefusesEnforcement:
             de_mod, "get_decision_engine",
             lambda: SimpleNamespace(_cfg=fresh),
         )
-        assert enforced_consumers() == frozenset({"tool_choice", "has_gaps"})
+        assert enforced_consumers() == frozenset({"tool_choice", "depth_met"})
 
         # (b) the cap MOVED → no consumer may be enforced on the old curve.
         stale = EngineConfig(candidate_cap=10)     # calibrated width is 6

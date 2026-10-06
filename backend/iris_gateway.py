@@ -3492,18 +3492,15 @@ class IRISGateway:
                     # the streaming ones) so a normal streaming reply that
                     # already spoke its sentences is NOT repeated in full.
                     #
-                    # specs/tool-decision-engine REQ-12 AC12.4: when the
-                    # decision engine is available, enforced, and confident in
-                    # "silent", ITS judgment replaces this backstop — the turn
-                    # ending quiet is a decision, not an accident. Unavailable
-                    # or shadow or unconfident → the backstop below runs as
-                    # before (degrade path).
-                    _engine_speech = self._engine_permits_speech(resp)
+                    # Stage B (2026-10-05): the decision engine no longer gates
+                    # this backstop (it was specs/tool-decision-engine REQ-12
+                    # AC12.4). It asked the Oracle "speak"/"silent" on a constant
+                    # frame, a different question from the one the `narration`
+                    # calibration rows measure, scored inline on a reply thread.
                     if (
                         not _spoken_queued
                         and spoken
                         and spoken.strip()
-                        and _engine_speech is not False
                     ):
                         sentence_queue.put(_normalize_spoken_sentence(spoken))
                         _spoken_queued = True
@@ -3901,67 +3898,6 @@ class IRISGateway:
             },
         )
         _ck.scheduler.admit(node)
-
-    def _engine_permits_speech(self, resp: Optional[str]) -> Optional[bool]:
-        """Narration gate, final-answer admission point (REQ-12).
-
-        Returns True/False only when the engine produced an enforced,
-        confident verdict; None means "the legacy gates stay in charge."
-        Never raises.
-        """
-        try:
-            from backend.agent.decision_engine import gate, get_decision_engine
-
-            eng = get_decision_engine()
-            ds, enforced = gate(
-                "narration", ["speak", "silent"],
-                {"kind": "final", "content_chars": len(resp or "")},
-            )
-            if ds is None:
-                return None
-            # AC25.8: the threshold resolves by ACTIVE BACKEND IDENTITY; None
-            # = no entry for the active backend → fail-closed (shadow).
-            _thr = eng._cfg.threshold_for("narration")
-            meta = {
-                "engine": eng.model_id or "decision-engine",
-                "consumer_id": "narration",
-                "chosen": ds.chosen,
-                "confidence": round(ds.confidence, 4),
-                "candidates": 2,
-                "threshold": _thr,
-                "args_valid": None,
-                "retried": False,
-                "engine_latency_ms": ds.engine_latency_ms,
-                "route": "engine" if (
-                    enforced
-                    and _thr is not None
-                    and ds.confident(_thr)
-                ) else "shadow",
-                "escalated": False,
-            }
-            bridge = getattr(self, "_tool_bridge", None) or getattr(
-                self, "tool_bridge", None)
-            if bridge is None:
-                # Session-345 (live finding): the gateway never had a bridge
-                # reference, so EVERY narration decision row was dropped before
-                # this — the narration consumer's harvest was zero. Resolve the
-                # shared bridge singleton instead of dying on the None.
-                try:
-                    from backend.agent.tool_bridge import get_agent_tool_bridge
-                    bridge = get_agent_tool_bridge()
-                except Exception:
-                    bridge = None
-            recorder = getattr(bridge, "record_decision", None)
-            if callable(recorder):
-                try:
-                    recorder(meta, kind="narration", session_id="unknown")
-                except Exception:
-                    pass
-            if not enforced or _thr is None or not ds.confident(_thr):
-                return None  # shadow / unconfident / fail-closed → legacy gates
-            return ds.chosen == "speak"
-        except Exception:
-            return None
 
     def _speak_response(
         self,

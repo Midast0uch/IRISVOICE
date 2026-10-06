@@ -9,10 +9,11 @@ WHAT IT IS
     smallest threshold on the calibrated scale that holds precision. It writes
     `benchmarks/oracle_calibration.json`. This module reads that file.
 
-WHAT IT IS NOT (yet)
-    Nothing in the running app reads it to decide. Stage A measures; a later
-    stage may route a decision through `calibrated()` / `threshold()` once a
-    consumer earns the hardened bar (consumer_bar.derive_status).
+WHO READS IT (Stage B, 2026-10-05)
+    `decision_engine.decides()` / `oracle_acts()` - the ONE enforcement
+    chokepoint - read `threshold()` / `calibrated()` and nothing else decides. A
+    consumer acts only when the owner switched it on, it earned the hardened bar
+    (consumer_bar.derive_status) AND a threshold was fitted for the active engine.
 
 THE INPUT RULE
     ``raw_conf`` is the confidence in the CHOSEN answer (a Noul row's

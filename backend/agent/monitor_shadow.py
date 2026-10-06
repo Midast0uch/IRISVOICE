@@ -1,10 +1,12 @@
 """Loop-monitor bool consumers — shadow-first (REQ-14, T18).
 
-Three per-turn Brain calls ask a BOOLEAN question about the step state:
+Two per-turn Brain calls ask a BOOLEAN question about the step state:
 
   ``sufficient``  the sufficiency gate   (agent_kernel, advisory-fail-closed)
   ``done``        the Explorer done-bit  (goal-contract override preserved)
-  ``on_track``    the FULL-mode drift check
+
+(``on_track``, the FULL-mode drift check, was removed 2026-10-05: no production
+caller since 2026-10-02.)
 
 Because the question is "is this statement true", each is answered with a
 :class:`~backend.agent.decision_engine.Noul` — a single calibrated probability
@@ -16,6 +18,11 @@ FOUNDATION SCOPE (AC14.1/AC14.2/AC14.4): the Brain calls are UNCHANGED. The
 engine is scored in shadow and its row recorded, so the parity data AC14.3's
 flip needs can accumulate. AC14.3 (skip the Brain on a confident positive) is
 Wave 7's measured flip and is gated behind ``enforced``, which defaults off.
+
+Stage B (2026-10-05): a caller passes the chokepoint's answer -
+``enforced=decides(cid) is not None`` and ``acts=`` (``oracle_acts`` on the
+confidence in the chosen answer) - and, when it does not decide, ``defer=True``
+so the score runs on the ``oracle_shadow`` lane, never on the reply path.
 
 Two invariants this module exists to hold:
   * THE ENGINE NEVER WRITES THE TEXT. On a negative branch the Brain writes
@@ -38,9 +45,6 @@ MONITOR_CONSUMERS: Dict[str, str] = {
         "Is the evidence gathered so far sufficient to answer the objective?"
     ),
     "done": "Is the objective complete?",
-    "on_track": (
-        "Is the current approach still on track to complete the objective?"
-    ),
 }
 
 _TRUE_LABEL = "yes"
@@ -82,7 +86,7 @@ def emit_row(row: Optional[dict]) -> None:
 
 
 def register_monitor_consumers() -> int:
-    """Register the three bool consumers' criteria (REQ-19 AC19.1). Idempotent.
+    """Register the bool consumers' criteria (REQ-19 AC19.1). Idempotent.
 
     A consumer with no criteria is REFUSED by the engine rather than scored
     under another consumer's head, so this must run before any shadow scoring.
@@ -188,6 +192,7 @@ def monitor_bool(
     threshold: float = 0.8,
     defer: bool = False,
     criteria_version: Optional[str] = None,
+    acts: Optional[Callable[[float], bool]] = None,
 ) -> Tuple[bool, str, Optional[dict]]:
     """One monitor judgment: (value, text, shadow_row).
 
@@ -200,6 +205,11 @@ def monitor_bool(
     p <= 1-t), so a confident "not true" enforces just like a confident "true". A NEGATIVE branch still calls ``brain_text_fn`` for the
     text — the engine never writes assessments (AC14.2) — while a POSITIVE
     branch skips the Brain entirely (AC14.3).
+
+    ``acts`` (Stage B): the chokepoint's per-decision test on the confidence in
+    the CHOSEN answer (``max(p, 1-p)``). When given it REPLACES the raw
+    ``threshold`` margin: the verdict is ``p >= 0.5`` and it stands only when
+    ``acts(conf)`` is true; below the calibrated threshold the Brain decides.
 
     Fail-closed (AC14.4): an unavailable/below-threshold Noul leaves the Brain
     in charge; a raising Brain yields ``(False, "")``.
@@ -224,11 +234,17 @@ def monitor_bool(
 
     noul = score_monitor_bool(consumer_id, statement, engine=engine)
 
-    _engine_decides = bool(
-        enforced and noul is not None and noul.confident(threshold)
-    )
+    if acts is not None:
+        _engine_decides = bool(enforced and noul is not None and acts(
+            max(float(noul.probability), 1.0 - float(noul.probability))))
+        _cut = 0.5
+    else:
+        _engine_decides = bool(
+            enforced and noul is not None and noul.confident(threshold)
+        )
+        _cut = threshold
     if _engine_decides:
-        value = bool(noul.true(threshold))
+        value = bool(noul.true(_cut))
         text = "" if value else _safe_text(brain_text_fn)
         row = shadow_row(consumer_id, noul, brain_bool=value)
         return value, text, row
@@ -272,6 +288,8 @@ def sufficiency_gate(
     engine: Any = None,
     enforced: bool = False,
     threshold: float = 0.8,
+    defer: bool = False,
+    acts: Optional[Callable[[float], bool]] = None,
 ) -> Tuple[bool, str]:
     """AC14.4: the sufficiency gate's advisory-FAIL-CLOSED shape.
 
@@ -284,6 +302,7 @@ def sufficiency_gate(
             "sufficient", statement,
             brain_bool_fn=brain_bool_fn, brain_text_fn=brain_text_fn,
             engine=engine, enforced=enforced, threshold=threshold,
+            defer=defer, acts=acts,
         )
         # AC14.1: the row reaches the sink from HERE, so a caller that only
         # wants (value, text) cannot accidentally drop the calibration data.

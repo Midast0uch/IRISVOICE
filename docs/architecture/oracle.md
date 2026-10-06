@@ -4,8 +4,9 @@
 > `tool-decision-engine.md`. The engine's *name* is Oracle; the *model* it runs  
 > keeps its own identity, and that distinction is load-bearing — see §2.
 >
-> **2026-10-01: read §0 (current state) first, then §19 (Jobs).** Sections between §1 and
-> §17 describe the engine as of 2026-09-26/27; where §0 or §19 disagree, those win.
+> **2026-10-05: read §0 (current state, calibration + two-key enforcement) first, then §19
+> (Jobs).** §0-prev is the 2026-10-01 state. Sections between §1 and §17 describe the engine
+> as of 2026-09-26/27; where §0 or §19 disagree, those win.
 >
 > **Last verified: 2026-09-26 (session 360)** against the running app, not against  
 > memory. Every number below says where it came from. Anything not re-measured is  
@@ -15,10 +16,99 @@
 
 ---
 
-## 0. Current state (2026-10-01, session f2fd8db3) — read first
+## 0. Current state (2026-10-05, session ae9c2fb9) — read first
 
-**The Oracle work is PAUSED here (owner): back to the audit tasks.** What is live, what was
-learned, and what is open when the Oracle work resumes.
+**In one line:** the Oracle measures honestly now, each consumer has its own calibrated
+threshold, and a consumer decides only when TWO keys turn - the owner switched it on AND it
+earned the bar. With the default configuration it decides nothing (by design, measured).
+
+### 0.1 What was wrong (measured on the live ledger, `data/memory.db`)
+| Fault | Effect | Fix |
+|---|---|---|
+| yes/no (Noul) rows stored P(true) as `confidence` | a sure "no" read as low confidence; AUROC inverted (web_intent 0.218, escalate_incomplete 0.003, on_track once 0.0) | rows carry `confidence` = max(p, 1-p) and the raw `probability` (explorer, monitor_shadow, surface_shadow; the ledger allow-list dropped `probability`); old rows normalised on load |
+| the same input rescored again and again | 10,308 of 18,467 active-engine rows were repeats (presentation: 2 distinct of 918); the 100-row bar was met by repeats | the report and the fit count DISTINCT rows |
+| one hand-set threshold (0.40) for every consumer, no calibration | a yes/no question at 0.40 is "always sure"; ECE judged on raw scores, so no consumer could pass | per-consumer isotonic calibration + fitted threshold (§0.2) |
+| bar too loose | precision counted on all rows (one confident row could pass it); no ranking check | hardened bar (§0.3) |
+| enforcement broken both ways | earned consumers could not decide (no site passed `enforced=`); unearned ones decided (web_intent at 0.8 with precision 0.41, recovery_strategy, depth_met's private tau 0.80, tool_choice "enforced at birth" with no deciding path) | one chokepoint, two keys (§0.4) |
+| shadow scores on the reply path | median 3.8 s/turn (narration ~1 s/turn on the asyncio loop, 3.6x per turn; web_intent twice per goal; mode, depth_met, escalate_incomplete inline) | every non-deciding call runs on the `oracle_shadow` lane (§0.5) |
+
+### 0.2 Calibration (Stage A, commit db0b0b64)
+- `scripts/fit_oracle_calibration.py` (`--dry-run` prints only) fits, per (backend id,
+  consumer), an **isotonic** map from the row's confidence in the chosen answer to
+  P(agrees with the incumbent), blocks of >= 20 rows; **5-fold out-of-fold** ECE / Brier /
+  AUROC; the **threshold** is the smallest calibrated t with precision >= 0.90, Wilson 95%
+  lower bound >= 0.85 and >= 50 distinct rows at or above it. Output:
+  `benchmarks/oracle_calibration.json`. Refit after a model change or a criteria change.
+- `backend/agent/oracle_calibration.py`: `calibrated(backend, consumer, raw_conf)` and
+  `threshold(backend, consumer)`; never raises (no file / no entry = None = fail-closed).
+- The label is still **agreement with the incumbent** (Brain answer, or the rule the system
+  actually used) - not ground truth. "Earned" means "agrees with the incumbent >= 90% where
+  confident".
+
+### 0.3 The bar (`consumer_bar.derive_status`)
+Enforced only if ALL: distinct rows >= 100; the reference has two classes with the minority
+>= 5%; out-of-fold AUROC >= 0.65; a calibrated threshold exists (so >= 50 rows above it at
+precision >= 0.90, Wilson LB >= 0.85); out-of-fold calibrated ECE <= 0.05. The report names
+every failing clause. `python scripts/consumer_enforcement_report.py --write` writes
+`benchmarks/consumer_bar_record.json`.
+
+### 0.4 Enforcement - one chokepoint, two keys (Stage B)
+`decision_engine.decides(consumer)` returns the calibrated threshold only when all four hold
+(cheapest first): (1) the consumer is in the owner's `IRIS_DECISION_ENFORCE` list
+(**default EMPTY**), (2) its bar record says `enforced` on the active engine, (3) a threshold
+was fitted for it, (4) the configuration is not stale. `oracle_acts(consumer, raw_conf)` =
+decides and calibrated(raw_conf) >= threshold. `enforced_consumers()` is the INTERSECTION.
+One INFO line per process says who decides and why each switched-on consumer does not.
+Every deciding site goes through it: web_intent (explorer), tool_choice (`_engine_try`,
+propose), recovery_strategy, depth_met (private tau removed), sufficient, done,
+escalate_incomplete, use_thinking, needs_action, mode. Below the threshold the incumbent
+(rule or Brain) decides. The narration gate never decides: it asked "speak/silent" on a
+constant frame, not the question the narration rows measure, and a calibration only
+transfers to the same question (the inline consults were removed).
+**Why two keys:** narration passes the bar (AUROC 0.78, precision 0.905) but its incumbent
+is a free deterministic rule; enforcing it would swap a 0 ms rule for a ~300 ms model that
+disagrees 10% of the time. The bar says whether the Oracle MAY decide; the owner says where
+it PAYS (a consumer whose incumbent is a Brain call).
+
+### 0.5 Off the reply path
+narration is scored once per turn on the lane; web_intent once per (turn, goal) (64-entry
+cache) on the lane unless it decides; mode keeps the keyword confidence unless it decides;
+depth_met, escalate_incomplete, use_thinking, sufficient, done run deferred unless they
+decide; needs_action is not scored when the lexical rule already says yes.
+Removed (dead): `on_track` (no caller since 2026-10-02), `has_gaps` (no live site).
+
+### 0.6 Measured result (2026-10-05, active engine gliner25-decide-onnx-int8, distinct rows, out-of-fold)
+| consumer | distinct rows | AUROC | ECE (cal.) | threshold | status / gap |
+|---|---|---|---|---|---|
+| narration | 533 | 0.78 | 0.041 | 0.69 (189 rows above, precision 0.905) | **earned**; not switched on (no payoff) |
+| on_track (removed) | 418 | 0.78 | 0.072 | 0.74 | ECE > 0.05 |
+| tool_choice | 2122 | 0.68 | 0.028 | none | no t reaches precision 0.90 |
+| done | 534 | 0.67 | 0.021 | none | no t reaches precision 0.90 |
+| mode | 545 | 0.49 | 0.236 | none | no ranking once repeats are removed (was 0.73) |
+| web_intent | 654 | 0.53 | 0.023 | none | no ranking as agreement-with-keyword (as a yes/no classifier its AUROC is 0.88; the reference is only 12% yes) |
+| review_verdict | 1537 | 0.55 | 0.016 | none | biased to "refine" (incumbent says pass 96%) |
+| depth_met / depth_route / escalate_incomplete | 654 / 454 / 346 | 0.56 / 0.53 / 0.42 | - | none | no ranking |
+| user_feedback | 250 | 0.31 | - | none | reference one class (2.4% minority) |
+| event_family, event_type:*, presentation, recovery_strategy, sufficient, retry_same, use_thinking, needs_action | 0-72 | - | - | none | too few distinct rows / one class |
+
+### 0.7 What would make the Oracle pay (open)
+1. A consumer whose incumbent is a **Brain call** and that earns the bar is the one worth
+   switching on (it saves seconds). Today none does: tool_choice and done are closest
+   (AUROC 0.67-0.68, no threshold at precision 0.90).
+2. Labels: agreement with the incumbent caps the Oracle at the incumbent's quality. Ground
+   truth (test result, user correction, outcome) where it exists would let it beat it.
+3. Prompt / option work for review_verdict (biased) and user_feedback (near-uniform), then
+   refit; a refit is cheap (`fit_oracle_calibration.py`).
+4. Test-harness hazard: `behavioral/test_wave5_replay_behavior.py` hits a pytest
+   INTERNALERROR ("Bad file descriptor") in ~15-25% of runs since its scoring moved to the
+   lane (the real model loads on a lane thread); stub the engine in that test.
+
+---
+
+## 0-prev. State on 2026-10-01 (session f2fd8db3) - history
+
+**The Oracle work was PAUSED here (owner): back to the audit tasks.** What was live, what was
+learned, and what was open when the Oracle work resumed.
 
 ### 0.1 What runs now
 
@@ -197,6 +287,11 @@ Measured live on this box (`Oracle decide ...` log lines, 2026-09-26):
 see §8 for the stage split.
 
 ## 5. Thresholds — keyed by backend, fail-closed
+
+> **Superseded 2026-10-05 for enforcement (§0.2, §0.4):** a deciding site uses the
+> per-consumer CALIBRATED threshold from `benchmarks/oracle_calibration.json`
+> (`decision_engine.decides`). The single `backend_thresholds` value (0.40) below remains
+> only as the row's recorded operating point.
 
 Resolution order, in `ToolDecisionBox._resolve_decision_threshold`:
 
@@ -679,6 +774,11 @@ produces a figure that describes neither.
 **Before quoting any precision, check `engines=[...]` in the report line.**
 
 ## 17. How a consumer gets enforced
+
+> **Superseded 2026-10-05 (§0.3, §0.4):** the bar is hardened (distinct rows, two classes,
+> AUROC >= 0.65, calibrated threshold, calibrated ECE) and enforcement is the INTERSECTION
+> of the owner's `IRIS_DECISION_ENFORCE` (default empty) and the bar record, through
+> `decision_engine.decides()`. The env list alone or the record alone enforces nothing.
 
 Three gates, all required. Gates 1 and 2 are the protection; gate 3 is the switch.
 

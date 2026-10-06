@@ -39,6 +39,8 @@ _REPO = Path(__file__).resolve().parents[2]
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
+import pytest  # noqa: E402
+
 from backend.agent.explorer import (  # noqa: E402
     WEB_INTENT_CONSUMER,
     _engine_web_intent,
@@ -46,6 +48,12 @@ from backend.agent.explorer import (  # noqa: E402
 )
 from backend.agent.tool_bridge import _DECISION_META_KEYS  # noqa: E402
 from scripts.consumer_enforcement_report import load_rows  # noqa: E402
+
+# Oracle Stage B (2026-10-05): `_engine_web_intent` returns the engine's verdict
+# only when web_intent decides through the real chokepoint; the web_intent row
+# tests below read that verdict, so the fixture turns the chokepoint on for them
+# (see conftest.oracle_decides_module).
+ORACLE_DECIDES = ("web_intent",)
 
 
 def _ledger(tmp_path, decisions):
@@ -166,6 +174,7 @@ class _FakeEngine:
         return _FakeNoul(self._prob)
 
 
+@pytest.mark.usefixtures("oracle_decides_module")
 def test_web_intent_emits_a_row_with_both_halves():
     """The consumer had no row path at all: it scored and wrote nothing."""
     seen = []
@@ -186,6 +195,7 @@ def test_web_intent_emits_a_row_with_both_halves():
     assert row["confidence"] == 0.93
 
 
+@pytest.mark.usefixtures("oracle_decides_module")
 def test_web_intent_records_a_disagreement_honestly():
     """Engine says yes, the keyword heuristic says no: the row must show it."""
     seen = []
@@ -198,6 +208,7 @@ def test_web_intent_records_a_disagreement_honestly():
     assert seen[0]["brain_choice"] == "no"
 
 
+@pytest.mark.usefixtures("oracle_decides_module")
 def test_web_intent_without_a_sink_does_not_raise():
     """No sink installed -> the row is logged, never silently dropped, and the
     caller still gets its verdict."""

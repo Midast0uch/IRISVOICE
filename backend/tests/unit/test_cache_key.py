@@ -9,6 +9,13 @@ from __future__ import annotations
 
 from backend.agent.tool_decision import _evidence_cache_component
 
+import pytest
+
+# Oracle Stage B (2026-10-05): the stand-in engine decides only through the
+# real enforcement chokepoint; see conftest.oracle_decides_module.
+ORACLE_DECIDES = ('tool_choice',)
+pytestmark = pytest.mark.usefixtures("oracle_decides_module")
+
 
 class TestEvidenceDiffersNoCollision:
     def test_evidence_differs_no_collision(self):

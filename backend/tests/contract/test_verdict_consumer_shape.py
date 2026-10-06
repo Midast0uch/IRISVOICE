@@ -153,7 +153,8 @@ class TestMonitorBoolShadowRows:
                 return Noul(consumer_id=consumer_id, probability=self._p,
                             engine_latency_ms=2)
 
-        for cid in ("sufficient", "done", "on_track"):
+        # `on_track` removed 2026-10-05 (Oracle Stage B, owner-approved).
+        for cid in ("sufficient", "done"):
             eng = _Eng(p=0.91)
             calls = {"bool": 0, "text": 0}
 
@@ -186,10 +187,17 @@ class TestMonitorBoolShadowRows:
 
 
 class TestModeConfidenceMeasured:
-    def test_mode_confidence_measured(self):
+    def test_mode_confidence_measured(self, oracle_decides):
         """AC15.2: the inference branch reports the ENGINE's measured
-        probability for the chosen mode, not the hand-set keyword float."""
+        probability for the chosen mode, not the hand-set keyword float.
+
+        Stage B (2026-10-05) setup change, assertions unchanged: the engine's
+        probability replaces the keyword confidence only when `mode` decides
+        through the enforcement chokepoint (the stand-in's 0.72 clears a fitted
+        threshold of 0.70)."""
         from backend.agent.mode_detector import AgentMode, ModeDetector
+
+        oracle_decides("mode", threshold=0.70)
 
         class _Eng:
             def decide(self, consumer_id, options, frame):
@@ -241,6 +249,11 @@ class TestModeConfidenceMeasured:
         detector = ModeDetector()
         detector.set_mode_engine(eng)
         detector.detect("write the code")
+        # Stage B (2026-10-05): a mode that does not decide is scored on the
+        # oracle_shadow lane; the call is observable once the lane drains.
+        from backend.utils.durability_queue import lane
+
+        assert lane("oracle_shadow").flush(10.0)
 
         assert eng.calls, "the mode consumer was never scored"
         consumer_id, labels, frame = eng.calls[0]
@@ -301,6 +314,11 @@ class TestTriageShadowRow:
             failed_tool="crawler_query", error_snippet="upstream timeout",
             objective="OBJ-T21",
         )
+        # Stage B (2026-10-05): the triage does not decide (the counters do), so
+        # its Oracle score and row are produced on the oracle_shadow lane.
+        from backend.utils.durability_queue import lane
+
+        assert lane("oracle_shadow").flush(10.0)
 
         # AC17.2: the counters decide — a confident `retry_same` never steers.
         assert out["strategy"] != "retry_same"

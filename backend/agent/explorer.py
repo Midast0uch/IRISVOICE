@@ -74,7 +74,14 @@ _WEB_INTENT_TRIGGERS = (
 )
 
 
-def _is_web_intent(goal: str, *, engine: Any = None) -> bool:
+# (turn_key, goal) -> verdict. The kernel asks about the same goal up to twice a
+# turn (measured 535 ms of Oracle time per turn on the reply path): one score per
+# (turn, goal), bounded. Only a caller that passes a turn_key is cached.
+_WEB_INTENT_SEEN: Dict[Tuple[Any, str], bool] = {}
+_WEB_INTENT_SEEN_MAX = 64
+
+
+def _is_web_intent(goal: str, *, engine: Any = None, turn_key: Any = None) -> bool:
     """Standalone web-intent heuristic (mirrors AgentKernel._is_web_search_request).
 
     Drives the propose() web fallback so web-research goals resolve to a real
@@ -86,18 +93,30 @@ def _is_web_intent(goal: str, *, engine: Any = None) -> bool:
     duplicate copies that used to live in ``agent_kernel.py`` are gone.
     ``engine=None`` means NO engine (fall through to the keywords); the module
     singleton is never adopted implicitly.
+
+    Stage B (2026-10-05): the engine's verdict decides ONLY through the
+    enforcement chokepoint (`oracle_acts`). It used to decide whenever its
+    confidence reached 0.8, unearned (precision 0.41); otherwise the keyword
+    verdict stands and the Oracle is scored on the lane. ``turn_key`` makes the
+    verdict (and the score) once per (turn, goal).
     """
     if not goal:
         return False
+    _key = (turn_key, goal) if turn_key is not None else None
+    if _key is not None and _key in _WEB_INTENT_SEEN:
+        return _WEB_INTENT_SEEN[_key]
     _lower = goal.lower().strip()
     # The keyword answer is computed on BOTH paths (2026-09-27): it is the row's
     # parity reference when the engine answers, and the answer itself when the
     # engine cannot. A substring scan, so it costs nothing worth naming.
     _keyword = any(t in _lower for t in _WEB_INTENT_TRIGGERS)
     _verdict = _engine_web_intent(goal, engine, keyword=_keyword)
-    if _verdict is not None:
-        return _verdict
-    return _keyword
+    out = _keyword if _verdict is None else _verdict
+    if _key is not None:
+        if len(_WEB_INTENT_SEEN) >= _WEB_INTENT_SEEN_MAX:
+            _WEB_INTENT_SEEN.pop(next(iter(_WEB_INTENT_SEEN)), None)
+        _WEB_INTENT_SEEN[_key] = out
+    return out
 
 
 # Filler a web goal carries about HOW to look ("search the web to confirm", "check a
@@ -137,12 +156,6 @@ def _shape_web_query(goal: str) -> str:
 
 
 WEB_INTENT_CONSUMER = "web_intent"
-
-# Session 366: the two-sided confidence margin for the JEV cascade (oracle.md
-# 17.3). A Noul whose probability sits inside the band is UNSURE and must NOT
-# act; the deterministic keyword path decides instead. 0.8 matches
-# monitor_shadow.monitor_bool's default and the project's other Noul gates.
-_WEB_INTENT_CONFIDENT_TAU = 0.8
 
 # Process-wide row sink for the web_intent consumer (2026-09-27). This consumer
 # had its criteria registered and a live call site but NO row path at all: the
@@ -219,21 +232,17 @@ def _default_engine():
         return None
 
 
-def _engine_web_intent(
-    goal: str, engine: Any = None, keyword: Optional[bool] = None
-) -> Optional[bool]:
-    """The engine's web-intent verdict, or None when it cannot answer.
+def _score_web_intent(
+    goal: str, engine: Any, keyword: Optional[bool]
+) -> Optional[Any]:
+    """Score the goal, write the calibration row, return the Noul (or None).
 
     ``keyword`` is the keyword heuristic's OWN answer, supplied by the caller so
-    the row can carry it as the PARITY REFERENCE (2026-09-27). The engine's
-    verdict steers; the row records what the keyword path would have decided
-    alongside it. Without that reference the row has no label, so this consumer
-    could never be scored however many times it ran.
+    the row can carry it as the PARITY REFERENCE (2026-09-27). The row records
+    what the keyword path would have decided beside the engine's verdict.
+    Without that reference the row has no label, so this consumer could never be
+    scored however many times it ran. Never raises.
     """
-    if engine is AUTO_ENGINE:
-        engine = _default_engine()
-    if engine is None:
-        return None
     try:
         register_web_intent_consumer()
         noul = engine.noul(
@@ -260,26 +269,62 @@ def _engine_web_intent(
                 "engine_latency_ms": getattr(noul, "engine_latency_ms", None),
                 "shadow": True,
             })
-        # SESSION 366: THE JEV CASCADE (oracle.md 17.3). `true(0.5)` turns an
-        # UNSURE belief into a verdict, and this consumer is unsure on most goals.
-        # MEASURED 2026-09-29: 303 rows, 289 "yes" (95%), 216/303 with
-        # 0.2 < p < 0.8 (many at p == 0.5014, a literal coin flip). `_mem_lookup`
-        # uses this verdict to HARD-return crawler_query, so a coin flip was
-        # dispatching a web crawl for local file reads - live: "box resolved
-        # tool='crawler_query' for step 2 (source=memory)" on the goal "Read the
-        # contents of backend/agent/der_constants.py to find the value of
-        # DER_BUDGET_MIN_FLOOR". An UNSURE Noul must not act: return None so the
-        # caller falls back to the deterministic keyword. This does NOT block the
-        # web (the tools stay on the menu); it only stops a WEAK verdict from
-        # PRE-COMMITTING the web through the memory hint. The row above still
-        # records the RAW verdict, so the report keeps showing this consumer as
-        # the non-fit it is (oracle.md 9's tier0_classify precedent).
-        if not noul.confident(_WEB_INTENT_CONFIDENT_TAU):
-            return None
-        return verdict
+        return noul
     except Exception as e:  # noqa: BLE001 — fall back to the keywords
         logger.debug("[web_intent] engine scoring failed: %r", e)
         return None
+
+
+def _engine_web_intent(
+    goal: str, engine: Any = None, keyword: Optional[bool] = None
+) -> Optional[bool]:
+    """The engine's web-intent verdict, or None when it does not decide.
+
+    Stage B (2026-10-05): None unless the enforcement chokepoint says the engine
+    acts on THIS goal (`oracle_acts`, on the confidence in the chosen answer).
+    This used to return the verdict whenever P(true) cleared 0.8 or fell under
+    0.2 with NO enforced check, and decided unearned: web_intent precision 0.41
+    (anti-calibrated: conf < 0.5 agreed 97%, 0.5-0.6 agreed 4%). The calibration
+    row is still written either way. Not deciding -> the score runs on the
+    ``oracle_shadow`` lane and the keyword verdict stands.
+
+    SESSION 366 context, still true: `_mem_lookup` uses this verdict to HARD-
+    return crawler_query, so a coin flip (216/303 rows had 0.2 < p < 0.8) once
+    dispatched a web crawl for local file reads. An unsure verdict must not act.
+    """
+    if engine is AUTO_ENGINE:
+        engine = _default_engine()
+    if engine is None:
+        return None
+    try:
+        from backend.agent.decision_engine import decides, oracle_acts
+
+        if decides(WEB_INTENT_CONSUMER) is None:
+            _shadow_web_intent(goal, engine, keyword)
+            return None
+        noul = _score_web_intent(goal, engine, keyword)
+        if noul is None:
+            return None
+        p = float(noul.probability)
+        if not oracle_acts(WEB_INTENT_CONSUMER, max(p, 1.0 - p)):
+            return None
+        return bool(noul.true(0.5))
+    except Exception as e:  # noqa: BLE001 — fall back to the keywords
+        logger.debug("[web_intent] engine decision failed: %r", e)
+        return None
+
+
+def _shadow_web_intent(goal: str, engine: Any, keyword: Optional[bool]) -> None:
+    """Score + write the row on the ``oracle_shadow`` lane (never on the caller)."""
+    try:
+        from backend.utils.durability_queue import lane
+
+        if not lane("oracle_shadow").submit(
+            "web_intent", lambda: _score_web_intent(goal, engine, keyword)
+        ):
+            logger.warning("[web_intent] shadow row dropped (lane full)")
+    except Exception as e:  # noqa: BLE001 — a shadow never raises
+        logger.warning("[web_intent] shadow submit failed: %r", e)
 
 
 def _extract_json(text: str) -> Optional[Dict[str, Any]]:
@@ -357,10 +402,21 @@ def _engine_tool_choice(
     ``row`` is the CT-DEI-6-shaped ledger row for the engine's verdict:
     ``shadow=False`` when the engine settled the step, ``shadow=True`` when the
     Brain's pick is what actually runs. Never raises.
+
+    Stage B (2026-10-05): the engine decides ONLY through the enforcement
+    chokepoint. ``threshold`` no longer decides - the calibrated threshold does;
+    it is kept in the signature and the row's ``threshold`` field is the
+    calibrated one. When tool_choice does not decide nothing is scored here (a
+    reply-path call for a verdict that cannot run) and the Brain answers.
     """
     if engine is None:
         return None, None
     try:
+        from backend.agent.decision_engine import decides, oracle_acts
+
+        _t = decides(TOOL_CHOICE_CONSUMER)
+        if _t is None:
+            return None, None
         names = [t.get("name") for t in (live_tools or []) if t.get("name")]
         if not names:
             return None, None
@@ -389,14 +445,14 @@ def _engine_tool_choice(
                 {"name": c.name, "prob": round(c.prob, 4)}
                 for c in (ds.distribution or ())
             ],
-            "threshold": float(threshold),
+            "threshold": float(_t),
             "engine_latency_ms": ds.engine_latency_ms,
             "source": "propose",
             "shadow": True,
             "brain_choice": None,
         }
         if (ds.chosen in (_PROPOSE_DELEGATE, _PROPOSE_NONE)
-                or ds.confidence < threshold):
+                or not oracle_acts(TOOL_CHOICE_CONSUMER, ds.confidence)):
             return None, row          # decline → the Brain single-shot runs
         # A confident real tool still needs valid args, or the step cannot be
         # dispatched and the Brain must fill them (AC2.4's ladder).

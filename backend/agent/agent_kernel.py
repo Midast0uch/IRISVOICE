@@ -3494,13 +3494,20 @@ class AgentKernel:
         # RETAINED as the engine-unavailable fallback (AC29.7), and the user's
         # explicit `concise`/`thorough` setting plus the social short-circuit
         # above are untouched — those are rules, not heuristics to calibrate.
+        # Stage B (2026-10-05): the Oracle decides only through the chokepoint;
+        # otherwise the phrase list answers and the score runs on the lane.
         try:
             from backend.agent import surface_shadow as _ss
+            from backend.agent.decision_engine import decides, oracle_acts
 
+            _dec = decides("use_thinking") is not None
             _value, _row = _ss.surface_bool(
                 "use_thinking", text,
                 brain_bool_fn=lambda: _lexical_thinking,
                 engine=_ss.AUTO_ENGINE,
+                # defer is ignored once enforced: a deciding consumer is waited for.
+                enforced=_dec, defer=True,
+                acts=lambda c: oracle_acts("use_thinking", c),
             )
             _ss.emit_row(_row)
             return bool(_value)
@@ -7161,18 +7168,15 @@ class AgentKernel:
             # cases accepted at tau=0.9).
             try:
                 from backend.agent import surface_shadow as _ss_depth
-                from backend.agent.decision_engine import (
-                    enforced_consumers as _enf_consumers,
-                )
+                from backend.agent.decision_engine import decides, oracle_acts
 
-                _depth_enforced = "depth_met" in _enf_consumers()
-                # Workload-specific and NOT assumed to transfer - the paper's own
-                # caveat is that the threshold is selected on pilot data and
-                # validated per workload. Overridable so a pilot sweep can find
-                # the operating point without a code change.
-                _depth_tau = float(
-                    os.environ.get("IRIS_DEPTH_MET_THRESHOLD", "0.80")
-                )
+                # THE CHOKEPOINT decides whether depth_met may act. The private
+                # tau (IRIS_DEPTH_MET_THRESHOLD=0.80 on P(true)) is REMOVED
+                # 2026-10-05: it was a second, hand-set threshold that nothing
+                # calibrated; the fitted per-consumer threshold on the
+                # confidence in the chosen answer replaces it.
+                _depth_tau = decides("depth_met")
+                _depth_enforced = _depth_tau is not None
 
                 _depth_req: List[str] = []
                 try:
@@ -7266,12 +7270,16 @@ class AgentKernel:
                 else:
                     _depth_fallback = lambda: _grade == "pass"  # noqa: E731
 
+                # Not deciding -> the score is a calibration row only: it runs on
+                # the lane (measured 561 ms/turn inline), the loop's grade stands.
                 _depth_value, _depth_row = _ss_depth.surface_bool(
                     "depth_met", _depth_stmt,
                     brain_bool_fn=_depth_fallback,
                     engine=_ss_depth.AUTO_ENGINE,
                     enforced=_depth_enforced,
-                    threshold=_depth_tau,
+                    defer=True,  # ignored once enforced: a deciding consumer is waited for
+                    criteria_version="depth_met/v2",
+                    acts=lambda c: oracle_acts("depth_met", c),
                     frame=_depth_frame,
                 )
                 # 25.6.3: the criteria version rides on every row (the key is on
@@ -7340,7 +7348,7 @@ class AgentKernel:
                         ]
                         logger.info(
                             "[DER] depth_met ENFORCED: pass -> capped, pushing "
-                            "for another route (tau=%.2f, push %d/%d, "
+                            "for another route (calibrated tau=%.2f, push %d/%d, "
                             "open_facts=%d) - %s",
                             _depth_tau, self._depth_push_count, _DEPTH_PUSH_MAX,
                             len(_gc_open), _reasons[-1],
@@ -7616,6 +7624,14 @@ class AgentKernel:
         """
         if not authored:
             return
+        # ONCE PER TURN (2026-10-05): _plan_task runs ~3.6x per turn (every
+        # re-plan) and this scored the Oracle on the asyncio loop thread each
+        # time - measured 1042 ms of the reply per turn (106 of 146 decisions
+        # carried a taskName). The first plan is the question the rows measure.
+        _nkey = getattr(self, "_current_turn_id", None) or task
+        if getattr(self, "_narration_scored_key", None) == _nkey:
+            return
+        self._narration_scored_key = _nkey
         try:
             from backend.agent.decision_backend_onnx import (
                 ConsumerSpec,
@@ -7645,26 +7661,17 @@ class AgentKernel:
                 "beats_admitted": len(beats),
                 "multi_segment": n_steps >= 2,
             }
-            ds = eng.decide("narration", list(options), frame)
-            if ds is None:
-                return
-            self._shadow_row_sink({
-                "consumer_id": "narration",
-                "engine": getattr(eng, "model_id", None) or "decision-engine",
-                "chosen": ds.chosen,
-                "confidence": round(float(ds.confidence), 4),
-                "candidates": [
-                    {"name": c.name, "prob": round(float(c.prob), 4)}
-                    for c in (ds.distribution or ())
-                ],
-                "engine_latency_ms": ds.engine_latency_ms,
-                # The gate's ACTUAL decision, in the same vocabulary: it admits
-                # every authored beat or drops them all. "speak_first_only" is a
-                # capability the engine could unlock later - the gate cannot do
-                # it today, so it never appears as the reference.
-                "brain_choice": "speak_all" if beats else "stay_silent",
-                "shadow": True,
-            })
+            # engine.shadow(): scored on the oracle_shadow lane, the row goes to
+            # the sink from there. The reference is what the gate ACTUALLY did,
+            # in the same vocabulary: it admits every authored beat or drops
+            # them all. "speak_first_only" is a capability the engine could
+            # unlock later - the gate cannot do it today, so it never appears
+            # as the reference.
+            eng.shadow(
+                "narration", list(options), frame,
+                sink=self._shadow_row_sink,
+                reference={"brain_choice": "speak_all" if beats else "stay_silent"},
+            )
         except Exception as _e:  # noqa: BLE001 — a shadow never blocks a turn
             logger.debug("[AgentKernel] narration shadow failed: %r", _e)
 
@@ -8312,7 +8319,12 @@ class AgentKernel:
             # consumer's verdict is never asked for, so web_intent writes no row
             # and can never reach the Wave 7 bar. `engine=None` still means "no
             # engine" on purpose — this is the caller opting in.
-            return bool(_is_web_intent(text or "", engine=AUTO_ENGINE))
+            # turn_key: one Oracle score per (turn, goal) - five call sites ask
+            # about the same goal, twice a turn (Stage B, 2026-10-05).
+            return bool(_is_web_intent(
+                text or "", engine=AUTO_ENGINE,
+                turn_key=getattr(self, "_current_turn_id", None),
+            ))
         except Exception:  # noqa: BLE001 — a failed check is simply "no"
             return False
 
@@ -15156,12 +15168,19 @@ Respond with a JSON object:
         # never writes the `missing` text (AC14.2).
         try:
             from backend.agent import monitor_shadow as _ms
+            from backend.agent.decision_engine import decides, oracle_acts
 
+            # Stage B: only the chokepoint lets the Oracle replace the Brain's
+            # bit; otherwise the score runs on the lane (off the reply path).
+            _dec = decides("sufficient") is not None
             _value, _missing = _ms.sufficiency_gate(
                 _prompt,
                 brain_bool_fn=lambda: _brain_sufficient,
                 brain_text_fn=lambda: _brain_missing,
                 engine=_ms.AUTO_ENGINE,
+                # defer is ignored once enforced: a deciding consumer is waited for.
+                enforced=_dec, defer=True,
+                acts=lambda c: oracle_acts("sufficient", c),
             )
             return _value, _missing
         except Exception:  # noqa: BLE001 — the gate is advisory
@@ -16706,7 +16725,10 @@ Respond with a JSON object:
                 # a repeat is a read observation, not a new side effect.
                 _is_web_goal = False
                 try:
-                    _is_web_goal = bool(_is_web_intent(goal, engine=AUTO_ENGINE))
+                    _is_web_goal = bool(_is_web_intent(
+                        goal, engine=AUTO_ENGINE,
+                        turn_key=getattr(self, "_current_turn_id", None),
+                    ))
                 except Exception:  # noqa: BLE001
                     pass
                 # Spec A4 (RC4): a quick-tier `search` that came back insufficient
@@ -20617,7 +20639,9 @@ Respond with a JSON object:
             # supplies the bool, never the next-goal text (AC14.2).
             try:
                 from backend.agent import monitor_shadow as _ms
+                from backend.agent.decision_engine import decides, oracle_acts
 
+                _done_dec = decides("done") is not None
                 # 3-TUPLE, not 2 (2026-09-27). monitor_bool returns
                 # (value, text, shadow_row). Unpacking two names raised
                 #   ValueError: too many values to unpack (expected 2, got 3)
@@ -20633,10 +20657,20 @@ Respond with a JSON object:
                     brain_text_fn=lambda: str(data.get("description", "") or ""),
                     engine=_ms.AUTO_ENGINE,
                     # shadow score off the reply path (4.3 s at turn end,
-                    # eval c04 2026-10-01); the row is emitted from the lane
+                    # eval c04 2026-10-01); the row is emitted from the lane.
+                    # Stage B: deferral applies only while `done` does not
+                    # decide (monitor_bool ignores defer once enforced) - a
+                    # deciding consumer must be waited for.
                     defer=True,
+                    enforced=_done_dec,
+                    acts=lambda c: oracle_acts("done", c),
                 )
                 _ms.emit_row(_done_row)
+                if _done_dec:
+                    # The value is the final decision (the Oracle's when it was
+                    # confident, else the Brain's own bit): make it the one the
+                    # loop reads below. The Brain's next-goal text stays.
+                    data["done"] = bool(_done_value)
             except Exception as _mon_err:  # noqa: BLE001 — advisory observer
                 # VISIBLE, but still ADVISORY (2026-09-27). This was a bare
                 # `pass`, so a failing monitor consult lost its calibration row

@@ -282,3 +282,94 @@ def onnx_backend():
 def onnx_runner(onnx_backend):
     """The live `_OnnxRunner` behind the loaded backend."""
     return onnx_backend._runner
+
+
+# ── Oracle enforcement chokepoint, for tests that exercise a DECIDING consumer ──
+#
+# Oracle Stage B (2026-10-05): the Oracle's verdict replaces a rule or the Brain
+# ONLY when `decision_engine.decides(consumer)` says so - the owner switched the
+# consumer on (IRIS_DECISION_ENFORCE, default EMPTY), its bar record is
+# `enforced` on the active engine, a threshold was fitted for it, and the
+# configuration is not stale. Tests written before that built a stand-in engine
+# and expected it to decide (tool_choice "enforced at birth"). Those tests check
+# the MECHANICS of the deciding path (menu, cache, ledger rows, evidence seam,
+# recovery), not whether the Oracle has earned the right, so they declare which
+# consumers decide and this fixture turns the REAL chokepoint on for them,
+# against tmp files (never the real bar record or calibration):
+#
+#     ORACLE_DECIDES = ("tool_choice",)
+#     pytestmark = pytest.mark.usefixtures("oracle_decides_module")
+#
+# The calibration map is the identity on [0.5, 1.0] and the threshold is 0.85, so
+# a stand-in confidence of 0.99 acts and 0.40 does not - the same split the
+# tests' old raw threshold (0.85) gave.
+def _enable_oracle(monkeypatch, tmp_path, consumers, threshold=0.85):
+    import json as _json
+
+    from backend.agent import consumer_bar as _cb
+    from backend.agent import decision_engine as _de
+    from backend.agent import oracle_calibration as _oc
+
+    consumers = tuple(consumers)
+    backend = "test-engine-int8"
+    bar = {
+        c: {"consumer_id": c, "rows": 120, "precision": 0.95, "ece": 0.01,
+            "status": "enforced", "gap": "", "config": {"backend_id": backend}}
+        for c in consumers
+    }
+    cal = {backend: {
+        c: {"knots": [[0.5, 0.5], [1.0, 1.0]], "threshold": threshold} for c in consumers
+    }}
+    (tmp_path / "bar.json").write_text(_json.dumps(bar), encoding="utf-8")
+    (tmp_path / "cal.json").write_text(_json.dumps(cal), encoding="utf-8")
+    monkeypatch.setattr(_cb, "BAR_PATH", tmp_path / "bar.json")
+    monkeypatch.setattr(_oc, "CALIBRATION_PATH", tmp_path / "cal.json")
+    _oc._CACHE.clear()
+    monkeypatch.setenv("IRIS_DECISION_ENFORCE", ",".join(consumers))
+    monkeypatch.setattr(_de, "_current_backend_identity", lambda: backend)
+    monkeypatch.setattr(_de, "_config_stale", lambda: False)
+    monkeypatch.setattr(_de, "_ENFORCEMENT_LOGGED", True)
+
+
+@_pytest.fixture
+def oracle_decides_module(request, monkeypatch, tmp_path):
+    """Turn the chokepoint on for the consumers in the module's ORACLE_DECIDES."""
+    _enable_oracle(monkeypatch, tmp_path, getattr(request.module, "ORACLE_DECIDES", ()))
+    yield
+
+
+@_pytest.fixture
+def oracle_decides(monkeypatch, tmp_path):
+    """Callable form: `oracle_decides("presentation")` turns the chokepoint on for
+    those consumers from that point of the test on."""
+    def _enable(*consumers, threshold=0.85):
+        _enable_oracle(monkeypatch, tmp_path, consumers, threshold)
+
+    return _enable
+
+
+# ── No Oracle shadow score may outlive its test body (Oracle Stage B, 2026-10-05) ──
+#
+# Shadow scores now run on the `oracle_shadow` lane (a daemon thread), not inline
+# on the caller. A test that drives a code path which scores the Oracle starts a
+# job that loads the REAL engine (about 5 s, heavy native imports) and used to
+# finish INSIDE the test body, on the test's own thread. On the lane it runs
+# concurrently with pytest's own end-of-test reporting, and on this Windows
+# machine that races: measured, test_wave5_replay_behavior died 4 runs in 5 with
+# `OSError: [Errno 9] Bad file descriptor` in pytest's terminal flush
+# (INTERNALERROR) while the job was loading the model (`JOB START
+# surface:escalate_incomplete` logged, `JOB END` only after the session was
+# gone); fd 1 polled os.fstat() reads "The handle is invalid" in short windows
+# while lane threads run. At HEAD, 12 runs in 12 passed because the inline load
+# kept the main thread busy until the lane jobs had settled. Draining the lane
+# when the test body returns - before the call phase is reported - restores that
+# boundary without changing any test.
+@_pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_call(item):
+    yield
+    try:
+        from backend.utils.durability_queue import lane as _lane
+
+        _lane("oracle_shadow").flush(60.0)
+    except Exception:  # noqa: BLE001 - teardown is best-effort
+        pass

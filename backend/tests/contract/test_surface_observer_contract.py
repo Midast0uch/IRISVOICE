@@ -47,7 +47,12 @@ def _kernel(monkeypatch, zone="chat"):
 class TestConsumerSetIsPinned:
     def test_consumer_set_is_locked(self, monkeypatch):
         """CT-10a: the presentation consumer is PRESERVED (not deleted), and
-        only tool_choice is enforced by default (IRIS_DECISION_ENFORCE).
+        NOTHING is enforced by default (IRIS_DECISION_ENFORCE is empty).
+
+        CHANGED (2026-10-05, Oracle Stage B, owner-approved): the default used to
+        be "tool_choice" (enforced at birth, no production deciding path, below
+        the bar); `on_track` (no production caller) and `has_gaps` (no live site)
+        left the set. The assertion on the default is now `frozenset()`.
 
         SUPERSEDED COUNT (2026-09-26, session 357): CT-10a originally pinned a
         THREE-consumer set. specs/tool-decision-engine-improvements REQ-11/13/
@@ -58,9 +63,9 @@ class TestConsumerSetIsPinned:
         """
         assert set(de.CONSUMERS) == {
             "tool_choice", "presentation", "narration", "recovery_strategy",
-            "review_verdict", "sufficient", "done", "on_track",
+            "review_verdict", "sufficient", "done",
             "mode", "web_intent", "retry_same",
-            "has_gaps", "use_thinking", "escalate_incomplete", "needs_action",
+            "use_thinking", "escalate_incomplete", "needs_action",
             # Session 364 (owner request): the DEPTH consumer, scored at the
             # run-grade chokepoint against the task's success criteria.
             "depth_met",
@@ -75,9 +80,8 @@ class TestConsumerSetIsPinned:
             "deleted) — it is the calibration observer"
         )
         monkeypatch.delenv("IRIS_DECISION_ENFORCE", raising=False)
-        assert de.enforced_consumers() == frozenset({"tool_choice"}), (
-            "default enforcement must stay tool_choice-only; presentation is "
-            "an observer"
+        assert de.enforced_consumers() == frozenset(), (
+            "default enforcement must stay EMPTY; presentation is an observer"
         )
 
 
@@ -232,9 +236,13 @@ class TestNoSteeringFieldWritten:
 
 
 class TestMetaRowShapeBothPaths:
-    def test_meta_row_shape_both_paths(self, monkeypatch):
+    def test_meta_row_shape_both_paths(self, monkeypatch, oracle_decides):
         """AC23.5 / CT-DEI-13: the observer row carries the same shape on
-        BOTH paths (engine and shadow) so calibration joins work uniformly."""
+        BOTH paths (engine and shadow) so calibration joins work uniformly.
+
+        Stage B (2026-10-05) setup change, assertions unchanged: the ENGINE path
+        needs `presentation` to be enforced through all four keys, which the
+        `oracle_decides` fixture provides just before that half of the test."""
         rows = []
 
         def rec(meta, kind, session_id="unknown"):
@@ -264,7 +272,7 @@ class TestMetaRowShapeBothPaths:
         assert shadow_meta["route"] == "shadow"
         # Engine path (enforced + confident).
         rows.clear()
-        monkeypatch.setenv("IRIS_DECISION_ENFORCE", "tool_choice,presentation")
+        oracle_decides("presentation")
         k2 = SimpleNamespace(
             _last_render_emitted=False,
             _pacman_zone_for_turn=lambda: "reference",

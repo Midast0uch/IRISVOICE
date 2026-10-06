@@ -35,6 +35,11 @@ from backend.agent.dynamic_recipe import (
 )
 from backend.agent.tool_decision import DecisionKind, ToolDecisionBox
 
+# Oracle Stage B (2026-10-05): the stand-in engine decides only through the
+# real enforcement chokepoint; see conftest.oracle_decides_module.
+ORACLE_DECIDES = ('tool_choice',)
+pytestmark = pytest.mark.usefixtures("oracle_decides_module")
+
 
 GOAL = "find the RTX 5090 price and save it to notes"
 

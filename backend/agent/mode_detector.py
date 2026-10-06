@@ -189,6 +189,26 @@ class ModeDetector:
             logger.debug("[mode_detector] shadow failed: %r", e)
             return None
 
+    def _shadow_mode_async(self, task_lower: str, keyword_mode: "AgentMode") -> None:
+        """Score the mode on the ``oracle_shadow`` lane and expose the row from
+        there (``last_mode_shadow``; the kernel forwards it once). The reply never
+        waits: measured 446 ms per turn when this ran inline. Never raises."""
+        if self._mode_engine is None:
+            return
+
+        def _job() -> None:
+            row = self._engine_mode_shadow(task_lower, keyword_mode)
+            if row is not None:
+                self.last_mode_shadow = row
+
+        try:
+            from backend.utils.durability_queue import lane
+
+            if not lane("oracle_shadow").submit("shadow:mode", _job):
+                logger.warning("[mode_detector] mode shadow dropped (lane full)")
+        except Exception as e:  # noqa: BLE001 — a shadow never breaks routing
+            logger.warning("[mode_detector] mode shadow submit failed: %r", e)
+
     def detect(
         self,
         task: str,
@@ -225,21 +245,34 @@ class ModeDetector:
             mode, confidence = self._infer_mode(task_lower)
 
             # REQ-15 AC15.2 (T19): on the INFERENCE branch the reported
-            # confidence is the ENGINE's measured probability for the chosen
-            # mode, not the hand-set keyword float — a claim is replaced by a
+            # confidence may be the ENGINE's measured probability for the chosen
+            # mode, not the hand-set keyword float — a claim replaced by a
             # measurement. The MODE stays keyword-decided (AC15.1 shadow: the
             # engine's own pick is recorded, never applied, until AC15.4's
             # measured bar is met). No engine → today's float, unchanged.
-            _shadow = self._engine_mode_shadow(task_lower, mode)
-            if _shadow is not None:
-                self.last_mode_shadow = _shadow
-                # The live confidence stays the engine's probability for the mode
-                # that RUNS (the keyword mode). The row's own `confidence` is now
-                # the engine's probability for the engine's PICK, because that is
-                # what its `chosen` is and what ECE must be computed against.
-                confidence = _shadow.get(
-                    "keyword_confidence", _shadow["confidence"]
-                )
+            #
+            # Stage B (2026-10-05): the replacement happens ONLY through the
+            # enforcement chokepoint. It used to happen always, though `mode` is
+            # not enforced, so an unearned probability fed `needs_clarification`
+            # (confidence < 0.5 on a long task). Not deciding -> the keyword
+            # confidence stands and the score runs on the lane.
+            from backend.agent.decision_engine import decides, oracle_acts
+
+            if decides(self.MODE_CONSUMER) is None:
+                self._shadow_mode_async(task_lower, mode)
+            else:
+                _shadow = self._engine_mode_shadow(task_lower, mode)
+                if _shadow is not None:
+                    self.last_mode_shadow = _shadow
+                    # The row's `confidence` is the engine's probability for the
+                    # engine's PICK (what ECE is computed against); acting
+                    # needs the chosen answer's confidence on that scale.
+                    if oracle_acts(self.MODE_CONSUMER, _shadow["confidence"]):
+                        # The live confidence is the engine's probability for the
+                        # mode that RUNS (the keyword mode).
+                        confidence = _shadow.get(
+                            "keyword_confidence", _shadow["confidence"]
+                        )
 
             # 3. Complexity detection
             complexity = self._detect_complexity(task_lower)

@@ -15,6 +15,13 @@ from unittest.mock import patch
 from backend.agent.decision_engine import CandidateScore, DecisionScore, EngineCounters
 from backend.agent.tool_decision import ToolDecisionBox
 
+import pytest
+
+# Oracle Stage B (2026-10-05): the stand-in engine decides only through the
+# real enforcement chokepoint; see conftest.oracle_decides_module.
+ORACLE_DECIDES = ('tool_choice',)
+pytestmark = pytest.mark.usefixtures("oracle_decides_module")
+
 REGISTRY_ORDER = [
     {"name": "vision_detect_element", "description": "d", "category": "vision"},
     {"name": "vision_analyze_screen", "description": "d", "category": "vision"},

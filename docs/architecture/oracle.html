@@ -65,8 +65,11 @@
         (<code>AgentToolBridge._record_tool_event</code>) puts the decision on the SAME row as the outcome.</p>
       <p><b>2. The Brain never picks cheap.</b> Routine choices cost no reasoning call; the Brain sees only
         below-threshold picks, DELEGATE and broken arguments.</p>
-      <p><b>3. Nobody guesses the pass mark.</b> The threshold is keyed by the backend identity
-        <code>gliner25-decide-onnx-int8</code> (0.40). An unknown backend or a changed menu width enforces nothing.</p>
+      <p><b>3. Nobody guesses the pass mark.</b> Each consumer has its own CALIBRATED threshold for the active engine
+        (<code>benchmarks/oracle_calibration.json</code>, isotonic, tested on rows the fit did not see). No fit, an unknown engine or a
+        changed menu width enforces nothing.</p>
+      <p><b>4. Two keys.</b> A consumer decides only when the owner switched it on (<code>IRIS_DECISION_ENFORCE</code>, default empty)
+        AND it earned the bar. 2026-10-05: nothing decides; narration earned the bar but its incumbent is a free rule, so it is not switched on.</p>
       <p style="color:var(--ink3);font-size:12.5px">The Oracle's own guesses are never evidence. Evidence comes from outside:
         a test, a completion, the user, recurrence, corroboration. Click a box for details.</p>
     </aside>
@@ -116,7 +119,7 @@
 <p class="note">Sources: <code>backend/agent/decision_engine.py</code> (CONSUMERS, ORACLE_JOBS, CONSUMER_JOBS, enforced_consumers),
 <code>tool_decision.py</code>, <code>decision_backend_onnx.py</code>, <code>consumer_bar.py</code>, <code>scripts/consumer_enforcement_report.py</code>,
 <code>benchmarks/oracle_*</code>; oracle.md §0–§19 (2026-10-01) and oracle-addendum.md; live log 2026-10-02 (web_intent 171 ms, narration 254 ms).
-Row counts: oracle.md §17.3.1 (session 365) unless marked.</p>
+Row counts: DISTINCT rows on the active engine, 2026-10-05 (oracle.md §0.6).</p>
 
 <script>
 const LANES = [
@@ -139,10 +142,10 @@ const NODES=[
  {id:"identity",lane:"model",x:960,t:"Backend identity",s:"gliner25-decide-onnx-int8",status:"live",
   role:"The key of every calibrated curve. Renaming it is a recalibration, not a rename: the threshold becomes unaddressable and enforcement fail-closes.",numbers:["threshold 0.40 at menu cap 6 (agent_config.yaml)"]},
  // ASKERS
- {id:"a_box",lane:"ask",x:240,t:"ToolDecisionBox",s:"tool_choice · recovery",status:"enforced",
-  role:"The junction before every tool: memory pre-filter (hint / veto), menu cap 6 + DELEGATE/NONE, then decide('tool_choice'). Also asks recovery_strategy and depth_route.",files:["backend/agent/tool_decision.py ToolDecisionBox.resolve"]},
- {id:"a_mode",lane:"ask",x:500,t:"ModeDetector",s:"mode",status:"shadow",role:"What kind of turn is this (chat, task, code …)? 280 rows, AUROC 0.7873 — the only usable ranking so far.",files:["mode_detector.py"]},
- {id:"a_web",lane:"ask",x:760,t:"Web intent",s:"web_intent",status:"shadow",role:"'Does this turn need the web?' Live log 2026-10-02 20:16:34: chosen=yes conf=0.896 in 171 ms. Anti-calibrated in the rows so far.",numbers:["233 rows"]},
+ {id:"a_box",lane:"ask",x:240,t:"ToolDecisionBox",s:"tool_choice · recovery",status:"shadow",
+  role:"Memory pre-filter, menu cap 6 + DELEGATE/NONE, then decide('tool_choice'). 2026-10-05: resolve() has NO production caller (node steps choose their own tools); tool_choice is scored as a shadow per node call and is below the bar (AUROC 0.68, no threshold at precision 0.90). Its deciding path goes through decides().",files:["backend/agent/tool_decision.py ToolDecisionBox.resolve"]},
+ {id:"a_mode",lane:"ask",x:500,t:"ModeDetector",s:"mode",status:"shadow",role:"What kind of turn is this (chat, task, code …)? 2026-10-05: 545 distinct rows, AUROC 0.49 once repeats are removed (the earlier 0.79 was repeats). Scored on the lane; the keyword confidence is no longer overwritten.",files:["mode_detector.py"]},
+ {id:"a_web",lane:"ask",x:760,t:"Web intent",s:"web_intent",status:"shadow",role:"'Does this turn need the web?' Until 2026-10-05 it DECIDED at 0.8 without the bar (precision 0.41). Its 'anti-calibration' was a stored-P(true) bug; as a yes/no classifier its AUROC is 0.88, but the keyword reference is only 12% yes. Now scored once per turn on the lane; the keyword decides.",numbers:["654 distinct rows"]},
  {id:"a_reply",lane:"ask",x:1020,t:"Reply surface",s:"presentation · narration",status:"shadow",role:"Card or plain? Speak all, some, none? Narration is scored per step (live: speak_all conf 0.489, 254 ms)."},
  {id:"a_review",lane:"ask",x:1280,t:"Reviewer · monitor",s:"review_verdict · done · on_track",status:"shadow",role:"Did the step do its part? Is the goal met? These run on the shadow lane — never on the reply path (they used to cost 167 s + 61 s + 59 s per coding run)."},
  {id:"a_click",lane:"ask",x:1540,t:"Click safety gate",s:"click_safety",status:"shadow",role:"Is this browser action safe without asking? Today rules → Brain judge → you decide; the Oracle only shadows (guard job).",files:["backend/agent/tools/click_safety.py","click_safety_shadow"]},
@@ -164,7 +167,7 @@ const NODES=[
  {id:"e_decide",lane:"engine",x:660,t:"decide() / noul()",s:"Choice or Noul",status:"live",role:"A Choice scores a menu; a Noul is ONE calibrated probability that a statement is true (for bool monitors). A 2-way softmax is not a Noul.",numbers:["one question per run — batching DROPPED (rows of a batch leak into each other, up to 0.62)"]},
  {id:"e_out",lane:"engine",x:990,t:"{chosen, confidence, distribution}",s:"read-only",status:"live",role:"The only output. Read set = the args; write set = the return value, counters, log lines. INLINE_DECISION_COUNTS flags an unenforced consumer scored on the reply path."},
  // GATE
- {id:"g_thr",lane:"gate",x:240,t:"Threshold",s:"explicit → backend → none",status:"live",role:"1) explicit caller value, 2) the active backend's entry, 3) no enforcement (above any probability) + WARNING. A menu wider than calibrated also enforces nothing (threshold_stale).",files:["ToolDecisionBox._resolve_decision_threshold","EngineConfig.threshold_for"]},
+ {id:"g_thr",lane:"gate",x:240,t:"Calibrated threshold",s:"per consumer · per engine",status:"live",role:"oracle_acts(consumer, conf): the calibration map turns the raw confidence in the chosen answer into P(agrees); it acts only at or above the consumer's fitted threshold. No fit = no enforcement. A menu wider than calibrated also enforces nothing (threshold_stale).",files:["backend/agent/oracle_calibration.py","decision_engine.oracle_acts"]},
  {id:"g_cascade",lane:"gate",x:520,t:"JEV cascade",s:"two-sided confidence",status:"live",role:"confident (p ≥ τ or p ≤ 1−τ) → the verdict is ACCEPTED; unsure → escalated to the stronger judge. So an uncalibrated consumer is safe: it only acts where it is sure. Never hand-roll noul.true(0.5)."},
  {id:"g_brain",lane:"gate",x:800,t:"Brain escalation",s:"single shot · bounded retry",status:"live",role:"Below threshold, DELEGATE or broken args → the Brain answers once (bounded retry) with a tool or a REASON."},
  {id:"g_act",lane:"gate",x:1080,t:"Tool bridge acts",s:"execute_tool",status:"live",role:"The hands. The decision block rides along to the ledger."},
@@ -172,9 +175,9 @@ const NODES=[
  // CALIBRATION
  {id:"c_shadow",lane:"cal",x:240,t:"Shadow rows",s:"score + reference",status:"live",role:"Standard row + job + the REFERENCE the system actually used (brain_choice NAME, or brain_bool BOOL). A row without a reference is skipped, never credited.",files:["AgentKernel._shadow_row_sink","contract/test_shadow_row_sink.py"]},
  {id:"c_label",lane:"cal",x:520,t:"One label rule",s:"decision_label()",status:"live",role:"Dispatched row: correct when the outcome is success/reason. Shadow row: correct when chosen == the Brain's answer (name vs name, bool vs bool). Two rules once gave web_intent 1.0 vs 0.377 — now one rule for both scripts.",files:["scripts/calibrate_decision_threshold.py decision_label"]},
- {id:"c_report",lane:"cal",x:800,t:"Enforcement report",s:"precision · ECE · AUROC",status:"live",role:"Groups rows by consumer on the ACTIVE engine; precision at the threshold, ECE, Brier, AUROC. Check AUROC before enforcing: tool_choice once showed precision 1.0 with AUROC 0.5385 (chance).",files:["scripts/consumer_enforcement_report.py"]},
- {id:"c_bar",lane:"cal",x:1080,t:"The bar",s:"≥100 · ≥0.90 · ECE ≤0.05",status:"live",role:"derive_status: rows ≥ 100 AND precision ≥ 0.90 AND ECE ≤ 0.05 → 'enforced' in the bar record (benchmarks/consumer_bar_record.json).",files:["backend/agent/consumer_bar.py derive_status"]},
- {id:"c_enf",lane:"cal",x:1360,t:"enforced_consumers()",s:"bar record ∪ env list",status:"enforced",role:"The set allowed to decide alone: IRIS_DECISION_ENFORCE (default tool_choice — enforced at birth, D10) ∪ consumers the bar record marked enforced. A stale configuration enforces NOTHING.",files:["backend/agent/decision_engine.py enforced_consumers"]},
+ {id:"c_report",lane:"cal",x:800,t:"Calibration fit + report",s:"distinct rows · out-of-fold",status:"live",role:"Distinct rows only (10,308 of 18,467 were repeats). Per consumer: isotonic map, 5-fold out-of-fold ECE / Brier / AUROC, threshold = smallest calibrated t with precision ≥ 0.90, Wilson LB ≥ 0.85, ≥ 50 rows above.",files:["scripts/fit_oracle_calibration.py","scripts/consumer_enforcement_report.py"]},
+ {id:"c_bar",lane:"cal",x:1080,t:"The bar",s:"hardened 2026-10-05",status:"live",role:"derive_status: ≥ 100 DISTINCT rows, two reference classes (minority ≥ 5%), out-of-fold AUROC ≥ 0.65, a calibrated threshold, calibrated ECE ≤ 0.05 → 'enforced' in benchmarks/consumer_bar_record.json. Today only narration passes.",files:["backend/agent/consumer_bar.py derive_status"]},
+ {id:"c_enf",lane:"cal",x:1360,t:"decides(consumer)",s:"owner switch ∩ bar ∩ threshold",status:"live",role:"THE chokepoint (2026-10-05). All four: the owner switched it on (IRIS_DECISION_ENFORCE, default EMPTY), the bar record says enforced, a threshold was fitted, the config is not stale. enforced_consumers() is the INTERSECTION. One log line per process says who decides and why not. Default: nothing decides.",files:["backend/agent/decision_engine.py decides / oracle_acts / enforced_consumers"]},
  // WEB
  {id:"w_intent",lane:"web",x:260,t:"web_intent",s:"interpret · live score",status:"shadow",role:"Does the turn need the web? Scored live; shadow until calibrated (anti-calibrated now: conf < 0.5 agrees 97 %, 0.5–0.6 agrees 4 %)."},
  {id:"w_click",lane:"web",x:560,t:"click_safety",s:"guard · shadow",status:"shadow",role:"Safety of one already-chosen browser action. Today the Brain judge (8 s) and the user question (45 s) decide; once over the bar, obvious-safe clicks skip both (ms instead of seconds)."},
@@ -193,11 +196,11 @@ const EDGES=[
  ["a_web","w_intent","",1],["a_click","w_click","",1],["w_next","j_route","planned",1],["w_depth","j_route","planned",1],["a_reply","w_narr","",1],
 ];
 const FLOWS={
- tool:{name:"A routine tool choice (enforced)",steps:[
+ tool:{name:"A tool choice (the path if it ever earns)",steps:[
   {n:["a_box"],e:[],c:"<b>A DER step needs a tool.</b> ToolDecisionBox pre-filters with memory (hint / veto) and builds a menu of at most 6 + DELEGATE/NONE."},
   {n:["a_box","j_route","p_dial","p_exit","p_prio"],e:[["a_box","j_route"],["j_route","p_dial"],["p_dial","p_exit"],["p_prio","p_exit"]],c:"<b>Route job, on the dial.</b> 64 text ids; a reply-path decision skips the queue."},
   {n:["e_render","e_decide","e_out","onnx"],e:[["p_exit","e_render"],["e_render","e_decide"],["e_decide","e_out"],["onnx","e_decide"]],c:"<b>One run, ~137–270 ms.</b> The engine renders the job, cuts at the budget, scores the menu and returns {chosen, confidence, distribution}."},
-  {n:["e_out","g_thr","identity","g_cascade"],e:[["e_out","g_thr"],["identity","g_thr"],["g_thr","g_cascade"]],c:"<b>Threshold 0.40</b>, keyed by the backend identity. Confident → act."},
+  {n:["e_out","g_thr","identity","g_cascade"],e:[["e_out","g_thr"],["identity","g_thr"],["g_thr","g_cascade"]],c:"<b>Calibrated threshold</b> for this consumer and engine; acts only if the owner switched it on AND it earned the bar. Today tool_choice does neither."},
   {n:["g_cascade","g_act","g_row"],e:[["g_cascade","g_act"],["g_act","g_row"]],c:"<b>Act and record.</b> The tool runs; ONE ledger row carries the decision and the outcome."},
   {n:["g_cascade","g_brain","g_act"],e:[["g_cascade","g_brain"],["g_brain","g_act"]],c:"<b>Otherwise escalate.</b> Unsure, DELEGATE or broken args → the Brain answers once — the Oracle never forces a guess."},
  ]},
@@ -209,8 +212,8 @@ const FLOWS={
  earn:{name:"A consumer earns enforcement",steps:[
   {n:["c_shadow","c_label"],e:[["c_shadow","c_label"]],c:"<b>Rows accumulate.</b> One label rule: chosen vs the Brain's real answer (or the dispatched outcome)."},
   {n:["c_report"],e:[["c_label","c_report"]],c:"<b>Measured on the ACTIVE engine:</b> precision at the threshold, ECE, AUROC. A perfect precision with chance AUROC leaves no escalation band — do not enforce."},
-  {n:["c_bar","c_enf"],e:[["c_report","c_bar"],["c_bar","c_enf"]],c:"<b>The bar:</b> ≥ 100 rows, ≥ 0.90 precision, ECE ≤ 0.05 → 'enforced' in the bar record."},
-  {n:["c_enf","g_thr","g_cascade","g_act"],e:[["c_enf","g_thr"],["g_thr","g_cascade"],["g_cascade","g_act"]],c:"<b>Now it may decide alone</b> where confident — and still escalates where unsure. A changed input = a new criteria_version = start again."},
+  {n:["c_bar","c_enf"],e:[["c_report","c_bar"],["c_bar","c_enf"]],c:"<b>The bar:</b> ≥ 100 distinct rows, two classes, AUROC ≥ 0.65, a calibrated threshold (precision ≥ 0.90, Wilson LB ≥ 0.85, ≥ 50 rows above), calibrated ECE ≤ 0.05 → 'enforced' in the bar record."},
+  {n:["c_enf","g_thr","g_cascade","g_act"],e:[["c_enf","g_thr"],["g_thr","g_cascade"],["g_cascade","g_act"]],c:"<b>Second key: the owner.</b> Earning the bar says it MAY decide; the owner switches it on where it PAYS (an incumbent Brain call). Then it decides where confident and escalates where unsure."},
  ]},
  browser:{name:"A browser click: today and planned",steps:[
   {n:["a_click","j_guard","w_click"],e:[["a_click","j_guard"],["a_click","w_click"]],c:"<b>Today:</b> the Brain chose the element (browser_act args). Click safety: rules → Brain judge (8 s) → you (45 s). The Oracle shadows click_safety."},
@@ -222,26 +225,24 @@ const FLOWS={
 
 /* consumers table */
 const CONSUMERS=[
- ["tool_choice","route","Which of these ≤ 6 tools (or DELEGATE)?","Choice","enforced",568,"enforced at birth (D10) at 0.40; ECE 0.059 vs 0.05 — recollect rows after 6bf92d5a; AUROC once 0.5385","ToolDecisionBox.resolve"],
- ["mode","interpret","What kind of turn is this?","Choice","shadow",280,"MET; AUROC 0.7873 (the only usable ranking)","ModeDetector"],
- ["web_intent","interpret","Does this turn need the web?","Choice","shadow",233,"anti-calibrated: conf < 0.5 agrees 97 %, 0.5–0.6 agrees 4 %; live 171 ms","web intent / explorer"],
- ["presentation","shape","Card or plain reply?","Choice","shadow",232,"still scored inline (move to shadow())","reply surface"],
- ["review_verdict","judge_step","Did this step do its part?","Choice","shadow",228,"off the reply path since 2026-10-01","Reviewer.set_shadow_sink"],
- ["narration","shape","Speak all, some, none?","Choice","shadow",108,"fires per step; still inline","speech gate"],
- ["escalate_incomplete","judge_step","Is this result incomplete?","Noul","shadow",73,"27 to go","surface (REQ-29)"],
- ["recovery_strategy","route","How to recover from this failure?","Choice","shadow",46,"retry_same rides it as a FIELD","ToolDecisionBox.recovery_strategy"],
- ["on_track","judge_step","Is the run on track?","Noul","fault",16,"AUROC 0.0 (INVERTED) — investigate","monitor consult"],
- ["depth_met","judge_goal","Is the depth met?","Noul","shadow",3,"AUROC None (n=2) — do not enforce","run-grade chokepoint"],
- ["sufficient","judge_goal","Are the findings sufficient?","Noul","shadow",1,"first row ever in session 365","_der_findings_sufficient"],
- ["depth_route","route","Which continuation?","Choice","fault",0,"site too narrow — never fires (§17.3.2)","ToolDecisionBox.depth_route"],
- ["done","judge_goal","Is the objective met?","Noul","shadow",0,"shadow lane; few completions reach it","monitor consult"],
+ ["narration","shape","Speak all, some, none?","Choice","shadow",533,"EARNED the bar (AUROC 0.78, ECE 0.041, t 0.69, precision 0.905) - not switched on: its incumbent is a free rule; scored once per turn on the lane","_score_narration"],
+ ["tool_choice","route","Which of these ≤ 6 tools (or DELEGATE)?","Choice","shadow",2122,"AUROC 0.68; no threshold reaches precision 0.90; resolve() has no production caller","node shadow (record_shadow_tool_choice)"],
+ ["done","judge_goal","Is the objective met?","Noul","shadow",534,"AUROC 0.67; no threshold at precision 0.90; closest Brain-incumbent candidate","continuation consult (deferred)"],
+ ["mode","interpret","What kind of turn is this?","Choice","shadow",545,"AUROC 0.49 once repeats are removed (was 0.73); keyword confidence kept","ModeDetector (lane)"],
+ ["web_intent","interpret","Does this turn need the web?","Noul","shadow",654,"decided at 0.8 unearned until 2026-10-05; P(true) bug fixed; as classifier AUROC 0.88, reference 12% yes","explorer (once per turn, lane)"],
+ ["review_verdict","judge_step","Did this step do its part?","Choice","shadow",1537,"AUROC 0.55; biased to refine (incumbent pass 96%)","Reviewer (lane)"],
+ ["depth_met","judge_goal","Is the depth met?","Noul","shadow",654,"AUROC 0.56; private tau 0.80 removed","run-grade chokepoint (deferred)"],
+ ["depth_route","route","Which continuation?","Choice","shadow",454,"AUROC 0.53","ToolDecisionBox.depth_route (lane)"],
+ ["escalate_incomplete","judge_step","Is this result incomplete?","Noul","shadow",346,"AUROC 0.42 (P(true) bug fixed: was 0.003)","der_loop (deferred)"],
+ ["user_feedback","interpret","What did the user's feedback mean?","Choice","shadow",250,"reference one class (2.4% minority); near-uniform engine","event_oracle (lane)"],
+ ["recovery_strategy","route","How to recover from this failure?","Choice","shadow",72,"steered unearned until 2026-10-05; now only via decides()","ToolDecisionBox.recovery_strategy"],
+ ["event_family / event_type:*","classify_event","Which event family / type?","Choice","shadow",14,"14 distinct rows (604 raw)","event_oracle (lane)"],
+ ["presentation","shape","Card or plain reply?","Choice","shadow",2,"2 distinct inputs in 918 rows; card path (create_artifact) now feeds it","reply surface observer"],
+ ["sufficient / use_thinking / needs_action","judge_goal / guard","Sufficient? think? needs action?","Noul","shadow",4,"too few rows; needs_action not scored when the rule already says yes","deferred"],
  ["click_safety","guard","Is this browser action safe without asking?","Choice","shadow",null,"unmeasured; rules → Brain → user decide today","click_safety_shadow"],
- ["event_family / event_type:*","classify_event","Which event family / type?","Choice","shadow",null,"closed event alphabet","event_oracle"],
- ["has_gaps / use_thinking / needs_action","judge_step / guard","Gaps? think? needs action?","Noul","shadow",0,"need a completed step or a reasoning prompt","surface (REQ-29)"],
- ["user_feedback","interpret","What did the user's feedback mean?","Choice","shadow",0,"","—"],
+ ["on_track / has_gaps","judge_step","(removed 2026-10-05)","Noul","fault",0,"no caller / no live site - removed","—"],
  ["browser_next","route","Which marked element next (or done)?","Choice","planned",0,"registered job, zero callers (V15)","— (node loop, planned)"],
  ["web_depth","route","Snippets, crawl, or interact?","Choice","planned",0,"registered job, zero callers (V15)","— (quick tier, planned)"],
- ["vision_needed","guard","Does this step need vision?","Noul","planned",0,"proposal (oracle-addendum §20): hard triggers first, audit sampling","—"],
 ];
 const JOBS=[
  ["interpret","what does the user's message mean?","goal","64","268 / 353 ms"],
@@ -264,6 +265,11 @@ const LEARNED=[
  ["One position per consumer starved the busiest one","8.9 s → one position per decision, due time at arrival"],
  ["Two label rules gave web_intent","1.0 vs 0.377 → one rule"],
  ["Coupling (two sessions)","T4 pass, T8 no measurable effect → stays OFF"],
+ ["Yes/no rows stored P(true) as confidence (2026-10-05)","AUROC inverted: web_intent 0.218, escalate_incomplete 0.003 → max(p,1-p) + probability"],
+ ["Repeats counted as evidence","10,308 of 18,467 rows; mode 0.73 → 0.49 on distinct rows"],
+ ["Calibration before the ECE clause","isotonic, out-of-fold: narration ECE 0.041, tool_choice 0.028 (raw: 0.10-0.56)"],
+ ["Enforcement was broken both ways","web_intent decided unearned at 0.8; earned consumers had no path → two keys, one chokepoint"],
+ ["Shadow scores on the reply path","median 3.8 s/turn → lane (narration ran on the asyncio loop 3.6x/turn)"],
 ];
 
 

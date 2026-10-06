@@ -79,10 +79,16 @@ class _Engine:
 
 
 def _web_intent_row(p, keyword):
+    from backend.utils.durability_queue import lane
+
     seen = []
     set_row_sink(seen.append)
     try:
         _engine_web_intent("find the price online", _Engine(p), keyword=keyword)
+        # Stage B (2026-10-05): a web_intent that does not decide (the default)
+        # writes its calibration row from the oracle_shadow lane, so the row is
+        # observable after the lane drains. The row's shape is unchanged.
+        assert lane("oracle_shadow").flush(10.0)
     finally:
         set_row_sink(None)
     assert len(seen) == 1
@@ -92,7 +98,7 @@ def _web_intent_row(p, keyword):
 @pytest.mark.parametrize("make_row", [
     pytest.param(lambda p: monitor_row("sufficient", _Noul(p), brain_bool=False),
                  id="monitor_shadow"),
-    pytest.param(lambda p: surface_row("has_gaps", _Noul(p), brain_bool=False),
+    pytest.param(lambda p: surface_row("use_thinking", _Noul(p), brain_bool=False),
                  id="surface_shadow"),
     pytest.param(lambda p: _web_intent_row(p, keyword=False), id="explorer_web_intent"),
 ])
@@ -165,9 +171,11 @@ class TestLoadRows:
 
     def test_the_binary_set_is_read_from_the_engine_specs(self):
         b = binary_consumers()
-        assert {"sufficient", "done", "on_track", "has_gaps", "use_thinking",
+        # `on_track` and `has_gaps` were removed 2026-10-05 (Stage B, owner-approved).
+        assert {"sufficient", "done", "use_thinking",
                 "escalate_incomplete", "needs_action", "depth_met",
                 WEB_INTENT_CONSUMER} <= b
+        assert not ({"on_track", "has_gaps"} & b)
         assert not ({"mode", "tool_choice", "presentation", "narration",
                      "review_verdict", "recovery_strategy"} & b)
 

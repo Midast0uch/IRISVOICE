@@ -556,15 +556,21 @@ class DirectorQueue:
         # REQ-29 AC29.3 (T48): shadow-score `escalate_incomplete`. Escalation
         # and EVERY budget / veto-cap safety check stay unchanged — the
         # `self.escalate` call below still owns them, and the engine may never
-        # permit an escalation. Shadow: the keyword list decides (it is also the
-        # engine-unavailable fallback, AC29.7).
+        # permit an escalation. The keyword list decides (it is also the
+        # engine-unavailable fallback, AC29.7) unless the enforcement chokepoint
+        # lets the Oracle act (Stage B, 2026-10-05); not deciding, the score runs
+        # on the lane (measured 326 ms/turn inline).
         try:
             from backend.agent import surface_shadow as _ss
+            from backend.agent.decision_engine import decides, oracle_acts
 
+            _dec = decides("escalate_incomplete") is not None
             _value, _row = _ss.surface_bool(
                 "escalate_incomplete", tool_result_summary,
                 brain_bool_fn=lambda: _lexical_incomplete,
                 engine=_ss.AUTO_ENGINE,
+                enforced=_dec, defer=True,  # defer is ignored once enforced
+                acts=lambda c: oracle_acts("escalate_incomplete", c),
             )
             _ss.emit_row(_row)
             _incomplete = bool(_value)

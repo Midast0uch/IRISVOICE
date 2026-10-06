@@ -25,6 +25,13 @@ from backend.agent.decision_engine import (
 from backend.agent.explorer import _is_web_intent
 from backend.agent.tool_decision import DecisionKind, ToolDecisionBox
 
+import pytest
+
+# Oracle Stage B (2026-10-05): the stand-in engine decides only through the
+# real enforcement chokepoint; see conftest.oracle_decides_module.
+ORACLE_DECIDES = ('tool_choice',)
+pytestmark = pytest.mark.usefixtures("oracle_decides_module")
+
 
 RESEARCH_GOAL = "research everything about the ai hardware market and gather sources"
 INSTANT_GOAL = "what is the current price of the rtx 5090"

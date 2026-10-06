@@ -17,6 +17,13 @@ from backend.agent.decision_engine import (
 )
 from backend.agent.tool_decision import ToolDecisionBox
 
+import pytest
+
+# Oracle Stage B (2026-10-05): the stand-in engine decides only through the
+# real enforcement chokepoint; see conftest.oracle_decides_module.
+ORACLE_DECIDES = ('tool_choice', 'recovery_strategy')
+pytestmark = pytest.mark.usefixtures("oracle_decides_module")
+
 
 class _Engine:
     def __init__(self, chosen, conf=0.99):

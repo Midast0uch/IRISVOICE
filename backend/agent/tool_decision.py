@@ -395,22 +395,29 @@ def _goal_needs_action(goal: str) -> bool:
         return False
     _lexical = any(s in g for s in _ACTION_SIGNALS) or any(
         s in g for s in _PATH_SIGNALS)
-    # REQ-29 AC29.4 (T49): shadow-score `needs_action` and record the row.
     # The SAFE direction is STRUCTURAL, not calibrated: the engine may ADD a
     # True ("when in doubt, act") but may never REMOVE one, so a model false
-    # negative can never stop a step that needs a tool. The lexical heuristic
-    # decides until a TG-13 measured bar says otherwise.
+    # negative can never stop a step that needs a tool. A lexical True is
+    # therefore final and the engine is NOT scored at all (Stage B, 2026-10-05:
+    # it could only widen what is already wide; one reply-path call saved).
+    if _lexical:
+        return True
+    # REQ-29 AC29.4 (T49): score `needs_action` and record the row. The lexical
+    # heuristic decides unless the enforcement chokepoint lets the Oracle act;
+    # not deciding, the score runs on the lane (off the reply path).
     try:
         from backend.agent import surface_shadow as _ss
+        from backend.agent.decision_engine import decides, oracle_acts
 
+        _dec = decides("needs_action") is not None
         _value, _row = _ss.surface_bool(
             "needs_action", goal,
             brain_bool_fn=lambda: _lexical,
             engine=_ss.AUTO_ENGINE,
+            enforced=_dec, defer=True,  # defer is ignored once enforced
+            acts=lambda c: oracle_acts("needs_action", c),
         )
         _ss.emit_row(_row)
-        if _lexical:
-            return True          # the safe direction is never narrowed
         return bool(_value)
     except Exception:  # noqa: BLE001 — the heuristic is the fallback
         return _lexical
@@ -950,8 +957,18 @@ class ToolDecisionBox:
         the failed tool carries probability 0.0 and cannot win; when EVERY
         candidate is ruled out the engine declines and the caller escalates to
         the Brain with the veto set attached (never a force-picked vetoed tool).
+
+        Stage B (2026-10-05): the engine's pick commits ONLY through the
+        enforcement chokepoint (`decides` / `oracle_acts`). tool_choice was
+        "enforced at birth" with no deciding path and sits below the bar; when it
+        does not decide, scoring here is a reply-path Oracle call for nothing, so
+        the legacy ladder runs and the node shadow keeps the calibration rows.
         """
         try:
+            from backend.agent.decision_engine import decides, oracle_acts
+
+            if decides("tool_choice") is None:
+                return None
             all_tools: list[dict] = self._get_available_tools() or []
             memory_hint = (
                 self._memory_lookup(goal) if callable(self._memory_lookup) else None
@@ -1191,7 +1208,8 @@ class ToolDecisionBox:
                 _d.meta = _m("memory-fallback", args_valid=None, retried=False)
                 return _d
             # Below threshold, DELEGATE, or NONE → memory fallback, then escalate (AC3.2).
-            if chosen in (self._DE_DELEGATE, self._DE_NONE) or conf < self._decision_threshold:
+            if chosen in (self._DE_DELEGATE, self._DE_NONE) or not oracle_acts(
+                    "tool_choice", conf):
                 md = self._memory_decision(
                     all_tools, goal, conversation_id, vetoed=vetoed)
                 if md is not None:
@@ -1214,7 +1232,7 @@ class ToolDecisionBox:
                 # conv-128: a confident-wrong NONE on a websearch goal).
                 if (
                     chosen == self._DE_NONE
-                    and conf >= self._decision_threshold
+                    and oracle_acts("tool_choice", conf)
                     and not _goal_needs_gather(goal)
                     and (
                         not _goal_needs_action(goal)
@@ -2550,11 +2568,19 @@ class ToolDecisionBox:
                         ))
                 except Exception:  # noqa: BLE001 — criteria are best-effort
                     pass
-                ds = eng.decide(
-                    "recovery_strategy",
-                    list(self._RECOVERY_STRATEGIES) + [self._DE_DELEGATE],
-                    frame,
-                )
+                _opts = list(self._RECOVERY_STRATEGIES) + [self._DE_DELEGATE]
+                # Stage B (2026-10-05): the engine steers ONLY through the
+                # enforcement chokepoint. It used to steer whenever its
+                # confidence reached the raw 0.40 threshold, with no enforced
+                # check. Not deciding: the score is a calibration row, so it
+                # runs on the lane and the counters' path answers now.
+                from backend.agent.decision_engine import decides, oracle_acts
+
+                if decides("recovery_strategy") is None:
+                    self._shadow_triage(eng, _opts, frame, failed_tool, _thr)
+                    ds = None
+                else:
+                    ds = eng.decide("recovery_strategy", _opts, frame)
                 if ds is not None:
                     # The shadow PAIR: what the engine said vs what ran.
                     _row = {
@@ -2578,7 +2604,7 @@ class ToolDecisionBox:
                 # that the counters would have escalated.
                 if (ds is not None and ds.chosen != self._DE_DELEGATE
                         and ds.chosen != "retry_same"
-                        and ds.confidence >= _thr):
+                        and oracle_acts("recovery_strategy", ds.confidence)):
                     self._recovery_strategy = ds.chosen
                     if _row is not None:
                         # The engine and the counters agree on the outcome.
@@ -2609,6 +2635,44 @@ class ToolDecisionBox:
             self.last_triage_shadow = _row
             self._record_shadow_row(_row)
         return {"strategy": "delegate", "confidence": 0.0, "delegate": True}
+
+    def _shadow_triage(self, eng, opts, frame, failed_tool, thr) -> None:
+        """Score the triage on the ``oracle_shadow`` lane and record the PAIR
+        (engine verdict vs the counters' delegate) from there. Values are bound
+        now; the row shape is the one the inline path always wrote."""
+        def _job() -> None:
+            ds = eng.decide("recovery_strategy", opts, frame)
+            if ds is None:
+                return
+            row = {
+                "consumer_id": "recovery_strategy",
+                "engine": getattr(eng, "model_id", None) or "decision-engine",
+                "chosen": ds.chosen,
+                "confidence": round(float(ds.confidence), 4),
+                "candidates": [
+                    {"name": c.name, "prob": round(c.prob, 4)}
+                    for c in (ds.distribution or ())
+                ],
+                "threshold": thr,
+                "engine_latency_ms": ds.engine_latency_ms,
+                "retry_same_offered": "retry_same" in self._RECOVERY_STRATEGIES,
+                "failed_tool": failed_tool or None,
+                "shadow": True,
+                # AC17.2: the counters' decision stands (delegate = the Brain
+                # plans), whatever the engine picked.
+                "counter_choice": "delegate",
+                "brain_choice": "delegate",
+            }
+            self.last_triage_shadow = row
+            self._record_shadow_row(row)
+
+        try:
+            from backend.utils.durability_queue import lane
+
+            if not lane("oracle_shadow").submit("shadow:recovery_strategy", _job):
+                logger.warning("[TOOL_DECISION] recovery_strategy shadow dropped (lane full)")
+        except Exception as _e:  # noqa: BLE001 - a shadow never raises
+            logger.warning("[TOOL_DECISION] recovery_strategy shadow submit failed: %r", _e)
 
     def depth_route(
         self,

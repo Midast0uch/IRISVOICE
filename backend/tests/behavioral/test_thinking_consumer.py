@@ -60,6 +60,10 @@ class TestUseThinking:
 
         assert k._needs_thinking(
             "why does the sky look blue during the day") is True
+        # Stage B (2026-10-05): the shadow score runs on the oracle_shadow lane.
+        from backend.utils.durability_queue import lane
+
+        assert lane("oracle_shadow").flush(10.0)
         assert engine.seen == ["use_thinking"]
         assert rows and rows[0]["consumer_id"] == "use_thinking"
         assert rows[0]["brain_bool"] is True
