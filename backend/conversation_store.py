@@ -2,7 +2,8 @@
 
 v2 (post-Domain 6.4): SQLite-backed persistence with in-memory hot cache.
 Schema:
-  conversations (id PK, title, created_at, updated_at, pinned)
+  conversations (id PK, title, created_at, updated_at, pinned,
+                 parent_id, tags, reports_to, project_id)
   messages (id PK, conversation_id FK, role, text, turn_id, thinking, timestamp)
 
 Public API is unchanged from the previous in-memory version, but now
@@ -15,12 +16,14 @@ WAL mode: enabled for concurrent read/write safety.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import sqlite3
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -115,6 +118,19 @@ def _create_tables(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, timestamp)"
+    )
+    # Strands (owner decision 2026-10-06): a THREAD is the whole, each chat under
+    # it is a STRAND, and a strand IS a conversation row - messages stay keyed by
+    # conversation id. parent_id NULL = this row is a thread root (and its own
+    # first strand); otherwise it holds the root's id. Added as nullable columns
+    # so an existing store opens unchanged; each ALTER is guarded, so it is
+    # idempotent.
+    have = {r[1] for r in conn.execute("PRAGMA table_info(conversations)")}
+    for col in ("parent_id", "tags", "reports_to", "project_id"):
+        if col not in have:
+            conn.execute(f"ALTER TABLE conversations ADD COLUMN {col} TEXT")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_conversations_parent ON conversations(parent_id)"
     )
 
 
@@ -410,3 +426,206 @@ def truncate_conversation(
         )
 
         return {"truncated": True, "kept_messages": len(messages)}
+
+
+# ── Threads and strands ────────────────────────────────────────────────────
+# A thread = a root conversation (parent_id NULL) + the rows whose parent_id is
+# the root. These functions read SQLite directly and never return message bodies
+# (the thread list must not download every message - measured lag, 2026-10-06).
+
+MAX_TAGS = 8
+MAX_TAG_LEN = 24
+PREVIEW_LEN = 80
+
+
+def normalize_tags(tags: list[str] | None) -> list[str]:
+    """Trim, lowercase, drop blanks and duplicates. Raises ValueError when the
+    result is over the bound (<= MAX_TAGS tags, <= MAX_TAG_LEN chars each) - an
+    over-long tag is refused, never silently cut."""
+    out: list[str] = []
+    for t in tags or []:
+        t = str(t).strip().lower()
+        if not t or t in out:
+            continue
+        if len(t) > MAX_TAG_LEN:
+            raise ValueError(f"tag longer than {MAX_TAG_LEN} characters: {t[:MAX_TAG_LEN]}...")
+        out.append(t)
+    if len(out) > MAX_TAGS:
+        raise ValueError(f"more than {MAX_TAGS} tags")
+    return out
+
+
+def _load_tags(raw: str | None) -> list[str]:
+    try:
+        v = json.loads(raw) if raw else []
+    except ValueError:
+        return []
+    return [t for t in v if isinstance(t, str)] if isinstance(v, list) else []
+
+
+def thread_root_of(conversation_id: str) -> str:
+    """Return the id of the thread root that owns ``conversation_id``.
+
+    A root (parent_id NULL), an unknown id, or an orphan whose root is gone all
+    resolve to the id itself. This is the ONE resolver for "which memory does
+    this strand share" - every strand of a thread resolves to the same value.
+    """
+    with _lock:
+        row = _get_conn().execute(
+            "SELECT parent_id FROM conversations WHERE id = ?", (conversation_id,)
+        ).fetchone()
+    return row[0] if row and row[0] else conversation_id
+
+
+def is_thread_root(conversation_id: str) -> bool:
+    with _lock:
+        row = _get_conn().execute(
+            "SELECT parent_id FROM conversations WHERE id = ?", (conversation_id,)
+        ).fetchone()
+    return row is not None and row[0] is None
+
+
+# One query, indexed: idx_conversations_parent finds each root's children,
+# idx_messages_conv counts/reads messages without touching a message body except
+# the single newest one per thread (for the preview).
+_THREAD_LIST_SQL = """
+SELECT c.id, c.title, c.pinned,
+       MAX(c.updated_at, COALESCE(
+           (SELECT MAX(s.updated_at) FROM conversations s WHERE s.parent_id = c.id), '')),
+       1 + (SELECT COUNT(*) FROM conversations s WHERE s.parent_id = c.id),
+       (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id)
+         + (SELECT COUNT(*) FROM messages m WHERE m.conversation_id IN
+              (SELECT s.id FROM conversations s WHERE s.parent_id = c.id)),
+       (SELECT substr(m2.text, 1, 400) FROM messages m2
+         WHERE m2.conversation_id IN
+               (SELECT c.id UNION ALL SELECT s.id FROM conversations s WHERE s.parent_id = c.id)
+         ORDER BY m2.timestamp DESC LIMIT 1)
+FROM conversations c
+WHERE c.parent_id IS NULL
+ORDER BY c.pinned DESC, 4 DESC
+"""
+
+
+def list_threads() -> list[dict[str, Any]]:
+    """Thread summaries, pinned first then newest. No message bodies."""
+    with _lock:
+        rows = _get_conn().execute(_THREAD_LIST_SQL).fetchall()
+    return [
+        {
+            "id": cid,
+            "title": title,
+            "pinned": bool(pinned),
+            "updated_at": updated_at,
+            "strand_count": strand_count,
+            "message_count": message_count,
+            "last_preview": " ".join((last_text or "").split())[:PREVIEW_LEN],
+        }
+        for cid, title, pinned, updated_at, strand_count, message_count, last_text in rows
+    ]
+
+
+_STRAND_SQL = """
+SELECT c.id, c.title, c.tags, c.reports_to, c.updated_at,
+       (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id)
+FROM conversations c
+WHERE {where}
+ORDER BY c.created_at, c.id
+"""
+
+
+def _strand_dict(row: tuple) -> dict[str, Any]:
+    sid, title, tags, reports_to, updated_at, message_count = row
+    return {
+        "id": sid,
+        "title": title,
+        "tags": _load_tags(tags),
+        "reports_to": reports_to,
+        "updated_at": updated_at,
+        "message_count": message_count,
+    }
+
+
+def list_strands(thread_id: str) -> list[dict[str, Any]] | None:
+    """The root and its children, oldest first. None when ``thread_id`` is not a
+    thread root."""
+    with _lock:
+        if not is_thread_root(thread_id):
+            return None
+        rows = _get_conn().execute(
+            _STRAND_SQL.format(where="c.id = ? OR c.parent_id = ?"), (thread_id, thread_id)
+        ).fetchall()
+    return [_strand_dict(r) for r in rows]
+
+
+def get_strand(strand_id: str) -> dict[str, Any] | None:
+    with _lock:
+        row = _get_conn().execute(
+            _STRAND_SQL.format(where="c.id = ?"), (strand_id,)
+        ).fetchone()
+    return _strand_dict(row) if row else None
+
+
+def create_strand(
+    thread_id: str,
+    name: str,
+    tags: list[str] | None = None,
+    reports_to: str | None = None,
+) -> dict[str, Any]:
+    """Create a strand (a conversation with parent_id = the thread root).
+
+    The id is ``strand-<12 hex>`` (48 random bits - no collision loop, and no
+    import of the agent package just to name a row). Raises ValueError for an
+    unknown thread, bad tags, or a ``reports_to`` that is not a strand of the same
+    thread.
+    """
+    clean = normalize_tags(tags)
+    with _lock:
+        if not is_thread_root(thread_id):
+            raise ValueError(f"thread {thread_id} not found")
+        if reports_to is not None and thread_root_of(reports_to) != thread_id:
+            raise ValueError(f"reports_to {reports_to} is not a strand of thread {thread_id}")
+        strand_id = f"strand-{uuid.uuid4().hex[:12]}"
+        create_conversation(title=name, conv_id=strand_id)
+        _get_conn().execute(
+            "UPDATE conversations SET parent_id = ?, tags = ?, reports_to = ? WHERE id = ?",
+            (thread_id, json.dumps(clean), reports_to, strand_id),
+        )
+    return get_strand(strand_id)  # type: ignore[return-value]
+
+
+def update_strand(
+    strand_id: str, name: str | None = None, tags: list[str] | None = None
+) -> dict[str, Any] | None:
+    """Rename and/or retag a strand. None when it does not exist."""
+    clean = normalize_tags(tags) if tags is not None else None
+    with _lock:
+        if strand_id not in _conversations:
+            return None
+        if name is not None:
+            update_conversation_title(strand_id, name)
+        if clean is not None:
+            _get_conn().execute(
+                "UPDATE conversations SET tags = ? WHERE id = ?",
+                (json.dumps(clean), strand_id),
+            )
+    return get_strand(strand_id)
+
+
+def update_thread(
+    thread_id: str, title: str | None = None, pinned: bool | None = None
+) -> bool:
+    """Rename and/or (un)pin a thread root. False when it is not a thread root."""
+    with _lock:
+        if not is_thread_root(thread_id):
+            return False
+        if title is not None:
+            update_conversation_title(thread_id, title)
+        if pinned is not None:
+            conv = _conversations[thread_id]
+            conv["pinned"] = bool(pinned)
+            conv["updated_at"] = _now()
+            _get_conn().execute(
+                "UPDATE conversations SET pinned = ?, updated_at = ? WHERE id = ?",
+                (1 if pinned else 0, conv["updated_at"], thread_id),
+            )
+    return True
