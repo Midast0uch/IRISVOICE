@@ -14,7 +14,6 @@ import { CARDS_BY_SECTION, getCardsForSection, CARDS_DATA } from '@/data/cards';
 import { SECTION_TO_LABEL, SECTION_TO_ICON, CARD_TO_SECTION_ID } from '@/data/navigation-constants';
 import { ActivityPanel } from './dashboard/ActivityPanel';
 import { LogsPanel } from './dashboard/LogsPanel';
-import { InferenceConsolePanel } from './dashboard/InferenceConsolePanel';
 import { LearnedSkillsPanel } from './wheel-view/LearnedSkillsPanel';
 import { PermissionsSettingsCard } from './chat/PermissionsSettingsCard';
 import { ModelBrowserPanel } from './dashboard/ModelBrowserPanel';
@@ -28,8 +27,7 @@ import { useWorkspaceStore } from '@/stores/workspaceStore';
 // cli-workspace-unification T7 (REQ-7 AC2): the Workspace Hub surface —
 // lazy-loaded so the hub bundle only loads when the rail node is clicked.
 const DeveloperWorkspace = lazy(() => import('@/components/workspace/DeveloperWorkspace'));
-import { DCPStatsPanel } from '@/components/dev/DCPStatsPanel';
-import { MonitorTabContainer } from '@/components/dashboard/MonitorTabContainer';
+import { MonitorPage } from '@/components/dashboard/MonitorPage';
 import { BrowserNavigationOverlay } from '@/components/iris/browser/BrowserNavigationOverlay';
 import { VisionLifecycleChip } from '@/components/iris/browser/VisionLifecycleChip';
 import { useBrowserNavOverlay, type NavOverlaySeed } from '@/hooks/useBrowserNavOverlay';
@@ -557,6 +555,8 @@ export function DarkGlassDashboard({
     return localStorage.getItem('iris_active_tab_v1') || 'voice'
   });
   const [activeSubApp, setActiveSubApp] = useState<string | null>(null);
+  // Asks the Monitor page to open a row (the old Inference console = its stream row).
+  const [monitorOpenRow, setMonitorOpenRow] = useState<{ row: 'stream'; n: number } | null>(null);
   // Live web-search status, rendered as a pill in the CENTRE of the header
   // (between the sub-app title and the notification button). Owned here rather
   // than in dashboard-wing because the header lives here — the wing could only
@@ -1231,9 +1231,18 @@ export function DarkGlassDashboard({
   const sectionsData = useSectionsData();
   const activeSections = sectionsData[activeTab] || [];
 
-  const VIRTUAL_SUB_APPS = new Set(['browser', 'marketplace', 'models', 'inference_console', 'hub']);
+  const VIRTUAL_SUB_APPS = new Set(['browser', 'marketplace', 'models', 'hub']);
 
   const handleSubAppChange = useCallback((appId: string) => {
+    if (appId === 'inference_console') {
+      // The console is the Inference stream row of the Monitor page (docs/architecture/MONITOR.md).
+      setActiveTab('monitor');
+      setActiveSubApp(null);
+      setIsSidebarHidden(false);
+      selectSectionWs('monitor');
+      setMonitorOpenRow((r) => ({ row: 'stream', n: (r?.n ?? 0) + 1 }));
+      return;
+    }
     setActiveSubApp(appId);
     if (VIRTUAL_SUB_APPS.has(appId)) {
       setIsSidebarHidden(true);
@@ -1242,7 +1251,7 @@ export function DarkGlassDashboard({
       // Only send select_category for real backend categories
       selectCategory(appId as any);
     }
-  }, [selectCategory]);
+  }, [selectCategory, selectSectionWs]);
 
   // Listen for card action events (e.g., button fields with action='open_models_screen')
   useEffect(() => {
@@ -1329,9 +1338,11 @@ export function DarkGlassDashboard({
 
   // Navigate to a sub-app when initialSubApp is set from outside (e.g., Browse button in WheelView)
   useEffect(() => {
-    if (initialSubApp) {
+    if (initialSubApp === 'inference_console') {
+      handleSubAppChange(initialSubApp);
+    } else if (initialSubApp) {
       setActiveSubApp(initialSubApp);
-      if (['browser', 'marketplace', 'models', 'inference_console'].includes(initialSubApp)) {
+      if (['browser', 'marketplace', 'models'].includes(initialSubApp)) {
         setIsSidebarHidden(true);
       }
     }
@@ -2060,15 +2071,9 @@ export function DarkGlassDashboard({
     <div className="flex-1 overflow-y-auto p-0">
        {!activeSubApp ? (
          <div className="w-full h-full pl-3 pr-3 py-4 space-y-2">
-            {/* DCP Stats — developer mode only, shown at top of Monitor tab */}
-            {activeTab === 'monitor' && irisMode === 'developer' && (
-              <div className="mb-2 rounded-lg border overflow-hidden" style={{ borderColor: `${glowColor}25`, background: 'rgba(255,255,255,0.015)' }}>
-                <DCPStatsPanel glowColor={glowColor} />
-              </div>
-            )}
-            {/* Monitor tab — render tabbed panel with Analytics | Logs | Diagnostics */}
+            {/* Monitor tab — ONE page: Now / Inference stream / Usage / Logs / Diagnostics (+ Context in developer mode) */}
             {activeTab === 'monitor' ? (
-              <MonitorTabContainer glowColor={glowColor} fontColor="white" sendMessage={sendMessage} />
+              <MonitorPage glowColor={glowColor} sendMessage={sendMessage} developerMode={irisMode === 'developer'} openRow={monitorOpenRow} />
             ) : (
               activeSections.map((section: any) => {
              const isExpanded = expandedSections.has(section.id);
@@ -2406,8 +2411,6 @@ export function DarkGlassDashboard({
           /* T10 (REQ-9): unified Marketplace & Models surface — MCP tools and
              Local Models + HF Hub combined behind one segmented pill. */
           <UnifiedMarketplaceModelsSurface key="marketplace" glowColor={glowColor} fontColor="white" sendMessage={sendMessage} />
-         ) : activeSubApp === 'inference_console' ? (
-          <InferenceConsolePanel key="inference_console" glowColor={glowColor} fontColor="white" />
         ) : activeSubApp === 'models' ? (
            <ModelBrowserPanel key="model_browser" glowColor={glowColor} fontColor="white" sendMessage={sendMessage} />
         ) : activeSubApp === 'hub' ? (
