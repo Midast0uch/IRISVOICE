@@ -690,6 +690,33 @@ body {
   .iris-mx-row, .iris-mx-scan, .iris-mx-breathe { animation: none; }
 }
 
+/* In-turn interactions (± diffs, the lens, ASK rows): look from the approved concept,
+   docs/design/chatview-2026-10-06/iris-strands.html (.dfx, .lens). Most of it is inline;
+   these are the parts that need a pseudo-class or an animation. */
+@keyframes iris-lens-in {
+  from { opacity: 0; transform: scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+.iris-lens { animation: iris-lens-in 0.35s cubic-bezier(0.2, 0.8, 0.2, 1); }
+.iris-dfx {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 18px;
+  padding: 0;
+  border-radius: 4px;
+  border: 1px solid color-mix(in oklab, #5fcf98 45%, transparent);
+  background: rgba(95, 207, 152, 0.08);
+  color: #5fcf98;
+  font: 700 11px/1 ui-monospace, "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+  cursor: pointer;
+}
+.iris-dfx:hover { background: rgba(95, 207, 152, 0.18); }
+.iris-dfx:focus-visible, .iris-ask:focus-visible { outline: 1px solid #5fcf98; outline-offset: 1px; }
+@media (prefers-reduced-motion: reduce) {
+  .iris-lens { animation: none; }
+}
+
 /* Developer mode answer (execution audit Phase 4): the same markdown, in the
    mono family, sized like the matrix above it. */
 .iris-md.iris-md-cli {

@@ -13,6 +13,7 @@
  */
 import { resolveVerb } from "@/lib/cards/verbRegistry"
 import type { TaskCardProps, TaskStepItem } from "@/lib/cli/CLITaskProgressRenderer"
+import type { EditDiff } from "@/lib/diffs/api"
 
 export type RowState = "pending" | "running" | "done" | "failed" | "rerouted"
 
@@ -29,6 +30,8 @@ export interface MatrixRowModel {
   state: RowState
   summary?: string
   detail?: RowDetailData
+  /** Edits this row made: the row shows a ± (opens the review). */
+  diffs?: EditDiff[]
 }
 
 export interface ChamberModel {
@@ -87,6 +90,7 @@ export function buildMatrix(
     state: rowState(s.status),
     summary: s.summary,
     detail: details[s.id],
+    diffs: s.diffs,
   }))
   const ids = new Set(flat.map((r) => r.id))
   const items: MatrixItem[] = []

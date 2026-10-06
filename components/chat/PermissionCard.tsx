@@ -61,7 +61,7 @@ const TOOL_ACTION_LABELS: Record<string, string> = {
 }
 
 /** Human action label for the badge; falls back to a neutral "Permission". */
-function actionLabel(toolName: string): string {
+export function actionLabel(toolName: string): string {
   const key = (toolName || "").toLowerCase()
   if (TOOL_ACTION_LABELS[key]) return TOOL_ACTION_LABELS[key]
   // Unknown tool: de-underscore and title-case so it reads as words, not a

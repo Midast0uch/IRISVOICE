@@ -7,6 +7,12 @@ import { Copy, ThumbsUp, ThumbsDown, Volume2, ChevronDown, ChevronUp, Download, 
 import { RichDocument } from "@/components/chat/RichDocument"
 import { MarkdownMessage } from "@/components/chat/MarkdownMessage"
 import { TurnParts } from "@/components/chat/turn/TurnParts"
+import { ArtifactChip } from "@/components/chat/lens/ArtifactChip"
+import { DiffSummaryChip } from "@/components/chat/diff/DiffMark"
+import { AskPrompt, type AskActions } from "@/components/chat/turn/AskPrompt"
+import type { AskItem } from "@/lib/turns/asks"
+import { partsOf } from "@/lib/turns/turnStore"
+import { diffsOf, type EditDiff, type ToolResultDiffData } from "@/lib/diffs/api"
 import type { TurnRecord } from "@/lib/turns/turnStore"
 import type { TaskProgress } from "@/hooks/useTaskProgress"
 import type { SendMessageFunction } from "@/hooks/useIRISWebSocket"
@@ -65,6 +71,9 @@ export interface TurnViewProps {
   handleRetryPrompt: (errorMessageIndex: number, convId: string) => void
   renderWithLinks: (text: string) => React.ReactNode
   requestDocumentBody: (documentId: string) => void
+  /** IRIS asks of this turn that have no task card to sit in: drawn here, in the turn. */
+  turnAsks?: AskItem[]
+  askActions?: AskActions
 }
 
 export function TurnView({
@@ -110,6 +119,8 @@ export function TurnView({
   handleRetryPrompt,
   renderWithLinks,
   requestDocumentBody,
+  turnAsks,
+  askActions,
 }: TurnViewProps) {
   // Smart message length handling
   const charCount = message.text.length;
@@ -286,6 +297,20 @@ export function TurnView({
                 ? _turnSources.get(doc.turnId || '') || doc.sources
                 : doc.sources
             : undefined
+        // A finished artifact is a compact titled card that opens the lens. A streaming one
+        // (partial) and the live sources list of a running research stay inline, as before.
+        const liveSources =
+          isSourcesCarrier && !!doc.turnId && doc.turnId === taskProgress.turnId && crawlState.sources.length > 0
+        if (!doc.partial && !liveSources) {
+          return (
+            <div key={`doc-${doc.id}`} className="my-3 relative">
+              <ArtifactChip doc={doc} note={doc.updated ? "updated" : undefined} />
+              {doc.error && (
+                <p className="text-[9px] mt-1" style={{ color: '#ef4444' }}>{doc.error}</p>
+              )}
+            </div>
+          )
+        }
         return (
           <div key={`doc-${doc.id}`} className="my-3 relative">
             {doc.updated && (
@@ -799,6 +824,26 @@ export function TurnView({
                   : undefined
               }
             />
+          )}
+
+          {/* In-turn interactions: the edits of this turn (± opens the review in the lens)
+              and IRIS asks that have no task card to sit in. */}
+          {liveTurn && (() => {
+            const seen = new Set<string>()
+            const turnDiffs: EditDiff[] = []
+            for (const r of partsOf(liveTurn, "tool_result")) {
+              for (const d of diffsOf(r.data as ToolResultDiffData)) {
+                if (!seen.has(d.diff_id)) { seen.add(d.diff_id); turnDiffs.push(d) }
+              }
+            }
+            return turnDiffs.length > 0 ? <div className="mt-2 flex"><DiffSummaryChip diffs={turnDiffs} /></div> : null
+          })()}
+          {askActions && turnAsks && turnAsks.length > 0 && (
+            <div className="mt-2 flex flex-col gap-1.5" data-turn-asks>
+              {turnAsks.map((a) => (
+                <AskPrompt key={a.id} ask={a} variant={isDeveloper ? "row" : "card"} glowColor={glowColor} actions={askActions} />
+              ))}
+            </div>
           )}
 
           {/* Feedback action bar */}

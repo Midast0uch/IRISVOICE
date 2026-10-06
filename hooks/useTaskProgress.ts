@@ -2,6 +2,7 @@
 
 import { useSyncExternalStore } from "react"
 import { sortRows, deriveProgress } from "@/lib/cards/rowOrder"
+import { diffsOf, type EditDiff } from "@/lib/diffs/api"
 
 export type TaskStepStatus =
   /** Step has no event record at all - semantically absent but visually pending. */
@@ -153,6 +154,9 @@ export interface TaskStep {
   temporalDelta?: TemporalDeltaInfo
   /** Per-field cross-source verification state (REQ-11). */
   verifiedFields?: Record<string, VerifiedField>
+  /** Edits this step made (agent write_file / edit_file), oldest first. Present only
+   *  when the step's `tool:result` carried a diff; the row shows a ± that opens the review. */
+  diffs?: EditDiff[]
 }
 
 /**
@@ -418,6 +422,9 @@ interface TaskUpdateDetail {
   batch_metrics?: BatchMetrics
   temporal_delta?: TemporalDeltaWire
   verified_fields?: Record<string, VerifiedField>
+  /** Edit diffs of the step (backend/agent/edit_diffs.py): `diff` = the latest, `diffs` = all. */
+  diff?: EditDiff
+  diffs?: EditDiff[]
 }
 
 // Maps a tool name to a short, human-readable action title for the plan card.
@@ -1028,6 +1035,7 @@ function reduceTaskUpdate(prev: CardsState, d: TaskUpdateDetail): CardsState {
     case "tool:result": {
       if (d.step_number == null) return prev
       const td = normalizeTemporalDelta(d.temporal_delta)
+      const stepDiffs = diffsOf(d)
       return applyToCard(prev, d, (card) => {
         const idx = d.step_number! - 1
         if (!card.steps[idx]) return card
@@ -1046,6 +1054,7 @@ function reduceTaskUpdate(prev: CardsState, d: TaskUpdateDetail): CardsState {
           ...(d.extracted_schema ? { extractedSchema: d.extracted_schema } : null),
           ...(d.verified_fields ? { verifiedFields: d.verified_fields } : null),
           ...(td ? { temporalDelta: td } : null),
+          ...(stepDiffs.length ? { diffs: stepDiffs } : null),
         }
         // Card-level aggregates: verification merges across steps; batch
         // counters and schema adopt the newest declared values.

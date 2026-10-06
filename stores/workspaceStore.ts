@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { temporal } from 'zundo'
+import type { EditDiff } from '@/lib/diffs/api'
 
 export type TabType = 'file' | 'folder' | 'conversation' | 'document' | 'terminal'
 
@@ -10,6 +11,12 @@ export interface WorkspaceTab {
   label: string
   icon: string
   isVirtual: boolean
+  /** A dropped artifact keeps its body here (a virtual tab is not fetched from a path). */
+  content?: string
+  /** Format of `content` (markdown, html, table, ...). */
+  format?: string
+  /** A dropped diff review: the edits it shows. */
+  diffs?: EditDiff[]
 }
 
 export type CardState = 'maximized' | 'minimized' | 'archived'

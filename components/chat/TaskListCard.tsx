@@ -26,6 +26,11 @@ import {
   type ChassisVeinState,
 } from "@/components/chat/CardChassis"
 import { formatMemoryEntry } from "@/lib/cards/memoryRegistry"
+import { LOOKED_CLOSER, REPORTED_BACK, plainWords } from "@/lib/cards/plainWords"
+import { parentOf } from "@/components/chat/matrix/matrixModel"
+import { DiffMark } from "@/components/chat/diff/DiffMark"
+import { AskPrompt, type AskActions } from "@/components/chat/turn/AskPrompt"
+import type { AskItem } from "@/lib/turns/asks"
 
 export interface TaskListCardProps {
   steps: TaskStep[]
@@ -75,6 +80,10 @@ export interface TaskListCardProps {
   batchMetrics?: BatchMetrics
   temporalDelta?: TemporalDeltaInfo
   verifiedFields?: Record<string, VerifiedField>
+  /** IRIS asks of this turn (a permission or a question), drawn inside the card; a settled
+   * one stays as the receipt line. */
+  asks?: AskItem[]
+  askActions?: AskActions
 }
 
 const STATUS_META: Record<TaskStepStatus, { color: string; label: string }> = {
@@ -200,6 +209,8 @@ export default function TaskListCard({
   batchMetrics,
   temporalDelta,
   verifiedFields,
+  asks,
+  askActions,
 }: TaskListCardProps) {
   const { getThemeConfig } = useBrandColor()
   const theme = getThemeConfig()
@@ -410,7 +421,7 @@ export default function TaskListCard({
   // the steps. Never fabricate liveness.
   const footnoteText = useMemo(() => {
     const last = memoryEvents?.[memoryEvents.length - 1]
-    if (last) return formatMemoryEntry(last.kind, last.data)?.summary ?? last.kind
+    if (last) return plainWords(formatMemoryEntry(last.kind, last.data)?.summary ?? last.kind)
     if (isWorking) return "Active Execution"
     if (steps.some((s) => s.status === "fail" || s.status === "error")) {
       return "Run failed"
@@ -429,6 +440,16 @@ export default function TaskListCard({
     return last ? MEMORY_TINT[last.kind] ?? null : null
   }, [memoryEvents])
 
+  // Asks live in the subheader, so a waiting ask shows even when the plan is folded.
+  const asksNode =
+    askActions && asks && asks.length > 0 ? (
+      <div className="flex flex-col gap-1.5 min-w-0" data-task-asks>
+        {asks.map((a) => (
+          <AskPrompt key={a.id} ask={a} variant="card" glowColor={glowColor} actions={askActions} />
+        ))}
+      </div>
+    ) : null
+
   return (
     <CardChassis
       veinColor={veinColor}
@@ -437,7 +458,9 @@ export default function TaskListCard({
       counter={{ done: displayStep, total: steps.length }}
       aria-label="Task progress"
       subheader={
-        showThk ? (
+        showThk || asksNode ? (
+          <div className="flex flex-col gap-1.5 min-w-0">
+        {showThk ? (
           /* THK section — own divided strip (variant anatomy). Clickable
              when a real stream exists; italic whisper otherwise. */
           <div className="flex flex-col min-w-0">
@@ -474,6 +497,9 @@ export default function TaskListCard({
                 ))}
               </div>
             )}
+          </div>
+        ) : null}
+        {asksNode}
           </div>
         ) : undefined
       }
@@ -818,7 +844,12 @@ export default function TaskListCard({
                 // slip through hydration ("running") — never crash the card.
                 const meta = STATUS_META[step.status] ?? STATUS_META.unknown
                 const isOpen = expandedStep === step.id
-                const branchLabel = (step as StepWithBranch).branchLabel
+                // A split child (<parent>_s<n>) or a backend-labelled branch row "looked closer";
+                // when it is done it has "reported back" to its parent.
+                const isSplitChild = parentOf(step.id ?? "") !== null
+                const rawBranch = (step as StepWithBranch).branchLabel
+                const branchLabel = rawBranch ? plainWords(rawBranch) : isSplitChild ? LOOKED_CLOSER : undefined
+                const reportedBack = (isSplitChild || !!rawBranch) && step.status === "done"
                 // Session 312 (user-approved): activity rows (phase nodes)
                 // indent under the plan like branch rows — same chronology,
                 // clearer parentage. Settled rows dim slightly so the eye
@@ -839,6 +870,7 @@ export default function TaskListCard({
                     style={{
                       opacity: settled ? 0.75 : 1,
                       transition: "opacity 0.4s ease",
+                      position: "relative",
                     }}
                   >
                     <button
@@ -853,6 +885,8 @@ export default function TaskListCard({
                           ? "cursor-pointer hover:bg-white/[0.03]"
                           : ""
                       }`}
+                      // room for the ± that sits at the end of an editing step's row
+                      style={step.diffs?.length ? { paddingRight: 30 } : undefined}
                     >
                       <ChassisStepNode
                         status={
@@ -892,6 +926,11 @@ export default function TaskListCard({
                         {stepVerb(step) ?? "—"}
                       </span>
                       {branchLabel && <ChassisBranchBadge branchLabel={branchLabel} />}
+                      {reportedBack && (
+                        <span className="shrink-0 text-[9px] font-mono" style={{ color: "rgba(255,255,255,0.4)" }} data-reported-back>
+                          · {REPORTED_BACK}
+                        </span>
+                      )}
                       {/* Target — variant tokens: 10.5px mono, white/85,
                           ONE truncated line. Session 246: max-w caps long-
                           winded planner descriptions even when the row has
@@ -944,6 +983,12 @@ export default function TaskListCard({
                         </span>
                       ) : null}
                     </button>
+                    {/* ± where this step edited a file: opens the review in the lens. */}
+                    {step.diffs && step.diffs.length > 0 ? (
+                      <span style={{ position: "absolute", right: 4, top: 4 }}>
+                        <DiffMark diffs={step.diffs} />
+                      </span>
+                    ) : null}
                     {/* Live-crawl under-row: ONLY while this step is
                         working — rotating host detail + source URL stream
                         beside the plan text. Once done, the summary lives

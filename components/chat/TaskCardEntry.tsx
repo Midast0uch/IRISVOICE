@@ -4,7 +4,9 @@ import React from "react"
 import { sortRows, deriveProgress } from "@/lib/cards/rowOrder"
 import TaskListCard from "@/components/chat/TaskListCard"
 import type { TaskCardProps, TaskStepItem } from "@/lib/cli/CLITaskProgressRenderer"
-import { MatrixFrame } from "@/components/chat/matrix/LiveMatrix"
+import { MatrixFrame, type MadeItem } from "@/components/chat/matrix/LiveMatrix"
+import type { AskItem } from "@/lib/turns/asks"
+import type { AskActions } from "@/components/chat/turn/AskPrompt"
 import type { RowDetailData } from "@/components/chat/matrix/matrixModel"
 import type { TaskCard } from "@/hooks/useTaskProgress"
 
@@ -45,6 +47,7 @@ export function taskCardToMatrixProps(card: TaskCard): TaskCardProps {
       // branchLabel stays free-form backend data ("Diving Deeper" etc.) —
       // never the literal "Sub-Loop" (task-card-v2 CT-9).
       branchLabel: undefined,
+      diffs: s.diffs,
     })),
     // REQ-20 AC3: the progress pair, from the SAME derivation the GUI counter
     // and the XurOrb ring read.
@@ -82,6 +85,11 @@ export interface TaskCardEntryProps {
   isDeveloper: boolean
   glowColor: string
   matrixElapsedSec: number
+  /** Artifacts this task made (developer: MADE rows). */
+  made?: MadeItem[]
+  /** IRIS asks of this turn: shown inside the running card (matrix: ASK rows; personal: in the card). */
+  asks?: AskItem[]
+  askActions?: AskActions
 }
 
 export function TaskCardEntry({
@@ -89,6 +97,9 @@ export function TaskCardEntry({
   isDeveloper,
   glowColor,
   matrixElapsedSec,
+  made,
+  asks,
+  askActions,
 }: TaskCardEntryProps) {
     return isDeveloper ? (
       // Phase 4: the live execution matrix (components, not a printed string).
@@ -104,6 +115,9 @@ export function TaskCardEntry({
           elapsedSec={card.isWorking ? matrixElapsedSec : card.durationSec ?? matrixElapsedSec}
           thought={card.isWorking ? card.actionStream?.[card.actionStream.length - 1] ?? card.currentAction : undefined}
           liveAction={card.currentAction}
+          made={made}
+          asks={asks}
+          askActions={askActions}
         />
       </div>
     ) : (
@@ -140,6 +154,8 @@ export function TaskCardEntry({
         temporalDelta={card.temporalDelta}
         verifiedFields={card.verifiedFields}
         thoughtStream={card.isWorking ? (card.actionStream ?? undefined) : undefined}
+        asks={asks}
+        askActions={askActions}
       />
     )
 }

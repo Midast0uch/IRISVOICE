@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useCallback, useSyncExternalStore } from "react"
 import { applyTurnMessage, getTurnsState, isTurnMessageType } from "@/lib/turns/turnStore"
+import { applyDiffUndoResult } from "@/lib/diffs/undoStore"
 import type { TurnMessage } from "@/lib/turns/protocol"
+import type { DiffUndoResult } from "@/lib/diffs/api"
 // Side-effect import: the agent command store installs its window listeners
 // from app start, so a command that runs before the workspace opens is kept.
 import "@/stores/agentCommandStore"
@@ -775,6 +777,11 @@ export function useIRISWebSocket(
     }
 
     switch (type) {
+      // Edit diffs: the answer to a `diff_undo` (the lens marks a hunk "undone" only on ok).
+      case "diff_undo_result": {
+        applyDiffUndoResult(payload as unknown as DiffUndoResult)
+        break
+      }
       case "full_state": {
         // Legacy message type from old main.py - redirect to initial_state handler
         if (process.env.NODE_ENV !== 'production') {

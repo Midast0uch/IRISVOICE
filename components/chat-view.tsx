@@ -214,6 +214,9 @@ export interface DocRender {
   /** REQ-22 (2026-09-23 live): card header identity — first markdown heading
    * derived from the body at ingest; a closed card must never read blank. */
   title?: string
+  /** ms since epoch this card was made or last updated by the agent (live cards only; the
+   * artifact card's "just now"). Absent after a history reload. */
+  createdAt?: number
   reformatted?: boolean
   // Phase 4 (chat-card-redesign): true when the backend revised an existing
   // document in place, so the card can show an "Updated" indicator.
@@ -1444,6 +1447,7 @@ export function ChatWing({
             .find((l) => l.trim().length >= 3)
           return first ? first.trim().slice(0, 60) : "Document"
         })(),
+        createdAt: Date.now(),
         reformatted: detail.reformatted || false,
         // Partial emits are a stream, not a revision — suppress the badge.
         updated: detail.partial ? false : (detail.updated || false),
@@ -3192,6 +3196,7 @@ ${message.text}`;
               requestDocumentBody={requestDocumentBody}
               conversationChips={conversationChips}
               handleChipClick={handleChipClick}
+              removePendingQuestion={removePendingQuestion}
             />
 
              {/* Document View Modal */}

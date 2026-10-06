@@ -6,6 +6,7 @@ import { useWorkspaceStore, type ViewMode } from '@/stores/workspaceStore'
 import { MindMapView } from './MindMapView'
 import { CodePreviewPanel } from './CodePreviewPanel'
 import { FileText, Map, Code, Eye, BookOpen } from 'lucide-react'
+import { DiffLines } from '@/components/chat/diff/DiffLines'
 
 interface CardContentRendererProps {
   cardId: string
@@ -71,6 +72,11 @@ export function CardContentRenderer({ cardId, tabId, viewMode }: CardContentRend
   // Fetch file content on mount / tab change
   useEffect(() => {
     if (!tab || tab.type === 'conversation' || tab.type === 'terminal') return
+    // A dropped artifact / diff carries its own body: nothing to fetch.
+    if (tab.content !== undefined || tab.diffs) {
+      setContent(tab.content ?? '')
+      return
+    }
     setLoading(true)
     fetch(`/api/file?path=${encodeURIComponent(tab.path)}`)
       .then((res) => res.text())
@@ -105,6 +111,26 @@ export function CardContentRenderer({ cardId, tabId, viewMode }: CardContentRend
     return (
       <div className="text-[10px] text-white/30 truncate">
         {tab.path}
+      </div>
+    )
+  }
+
+  // A dropped diff review: the changed lines, as in the chat's lens.
+  if (tab.diffs) {
+    return (
+      <div className="flex-1 overflow-auto" data-workspace-diff>
+        {tab.diffs.map((d) => (
+          <div key={d.diff_id} className="mb-2">
+            <div className="text-[10px] font-mono truncate" style={{ color: 'rgba(255,255,255,0.7)' }} title={d.path}>
+              ± {d.path}{' '}
+              <span style={{ color: '#5fcf98' }}>+{d.added}</span>{' '}
+              <span style={{ color: '#ff7a6e' }}>−{d.removed}</span>
+            </div>
+            {d.hunks.map((h, i) => (
+              <DiffLines key={i} lines={h.lines} fontSize={10} />
+            ))}
+          </div>
+        ))}
       </div>
     )
   }

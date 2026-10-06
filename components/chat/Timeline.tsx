@@ -10,6 +10,10 @@ import { TaskCardEntry } from "@/components/chat/TaskCardEntry"
 import { ShellRunEntry } from "@/components/chat/matrix/ShellRunEntry"
 import { Spine } from "@/components/chat/spine/Spine"
 import { turnKnots } from "@/components/chat/spine/spineModel"
+import { LensHost } from "@/components/chat/lens/LensHost"
+import { madeItemsFor } from "@/components/chat/matrix/madeRows"
+import type { AskActions } from "@/components/chat/turn/AskPrompt"
+import { asksOfTurn, useLocalAsks, type AskItem } from "@/lib/turns/asks"
 import type { ChatTimelineEntry } from "@/lib/chatview-turn-timeline"
 import type { TurnRecord } from "@/lib/turns/turnStore"
 import type { TaskProgress } from "@/hooks/useTaskProgress"
@@ -80,6 +84,8 @@ export interface TimelineProps {
   conversationChips: ConversationChip[]
   /** Scrolls to a turn (chat-view's handleChipClick). */
   handleChipClick: (messageId: string) => void
+  /** Drops a pending question from the legacy list (an answer given in the turn clears it too). */
+  removePendingQuestion?: (id: string) => void
 }
 
 export function Timeline({
@@ -137,6 +143,7 @@ export function Timeline({
   requestDocumentBody,
   conversationChips,
   handleChipClick,
+  removePendingQuestion,
 }: TimelineProps) {
   // The living spine: the running live turn (the agent rides to its reply when no row runs)
   // and the turns that brought something in from outside (refs / another author) -> knots.
@@ -147,6 +154,59 @@ export function Timeline({
   }, [liveTurnList])
   const knotTurns = React.useMemo(() => turnKnots(liveTurnList), [liveTurnList])
   const spineRunning = isTyping || taskProgressStillRunning || awaitingFirstBlock || streamingId !== null
+
+  // In-turn asks (IRIS needs a permission or an answer). They come from the turn's own
+  // `interaction` parts and sit in the task card of that turn, else in the turn itself.
+  // The answers reuse the legacy responses (same messages, same optimistic removal).
+  const localAsks = useLocalAsks()
+  const askActions = React.useMemo<AskActions>(
+    () => ({
+      permission: (id, action) => {
+        sendMessage?.('notification_response', { notification_id: id, action })
+        removePendingPermission(id)
+      },
+      question: (id, answer, source) => {
+        sendMessage?.('question_response', { question_id: id, answer, source })
+        removePendingQuestion?.(id)
+      },
+    }),
+    [sendMessage, removePendingPermission, removePendingQuestion],
+  )
+  const asksByTurn = React.useMemo(() => {
+    const m = new Map<string, AskItem[]>()
+    for (const t of liveTurnList) {
+      const a = asksOfTurn(t, localAsks)
+      if (a.length) m.set(t.id, a)
+    }
+    return m
+  }, [liveTurnList, localAsks])
+  // The newest card of each turn carries that turn's asks (one place, never two).
+  const askCardOf = React.useMemo(() => {
+    const m = new Map<string, string>()
+    for (const e of renderTimeline) {
+      if (e.kind !== 'card') continue
+      for (const t of [e.card.turnId, e.card.responseTurnId]) if (t) m.set(t, e.card.cardId)
+    }
+    return m
+  }, [renderTimeline])
+  const messageTurnIds = React.useMemo(
+    () => new Set(messages.flatMap((m) => (m.turn_id ? [m.id, m.turn_id] : [m.id]))),
+    [messages],
+  )
+  // Hide the legacy card of an ask ONLY when the turn really shows it (a card or a message).
+  const shownAskIds = React.useMemo(() => {
+    const s = new Set<string>()
+    for (const [turnId, list] of asksByTurn) {
+      if (!askCardOf.has(turnId) && !messageTurnIds.has(turnId)) continue
+      for (const a of list) s.add(a.id)
+    }
+    return s
+  }, [asksByTurn, askCardOf, messageTurnIds])
+  const legacyQuestions = React.useMemo(() => {
+    const m = new Map(pendingQuestions)
+    for (const id of shownAskIds) m.delete(id)
+    return m
+  }, [pendingQuestions, shownAskIds])
 
   return (
     // The wrapper holds the scroll area and the spine overlay side by side: the overlay never scrolls the content.
@@ -227,6 +287,9 @@ export function Timeline({
                   isDeveloper={isDeveloper}
                   glowColor={glowColor}
                   matrixElapsedSec={matrixElapsedSec}
+                  made={isDeveloper ? madeItemsFor(activeConversation?.documents, [card.turnId, card.responseTurnId], card.steps) : undefined}
+                  asks={askCardOf.get(card.turnId ?? '') === card.cardId || askCardOf.get(card.responseTurnId ?? '') === card.cardId ? asksByTurn.get(card.turnId ?? '') ?? asksByTurn.get(card.responseTurnId ?? '') : undefined}
+                  askActions={askActions}
                 />
               )
             }
@@ -247,7 +310,7 @@ export function Timeline({
                 activeConversation={activeConversation}
                 activeConversationId={activeConversationId}
                 anchoredQuestionIds={anchoredQuestionIds}
-                pendingQuestions={pendingQuestions}
+                pendingQuestions={legacyQuestions}
                 questionCardFor={questionCardFor}
                 liveTurnById={liveTurnById}
                 taskProgress={taskProgress}
@@ -277,6 +340,8 @@ export function Timeline({
                 handleRetryPrompt={handleRetryPrompt}
                 renderWithLinks={renderWithLinks}
                 requestDocumentBody={requestDocumentBody}
+                turnAsks={askCardOf.has(message.id) || (message.turn_id ? askCardOf.has(message.turn_id) : false) ? undefined : asksByTurn.get(message.id) ?? (message.turn_id ? asksByTurn.get(message.turn_id) : undefined)}
+                askActions={askActions}
               />
             );
           })}
@@ -409,7 +474,7 @@ export function Timeline({
 
           {/* Permission Cards — inline tool approval UI */}
           <AnimatePresence>
-            {Array.from(pendingPermissions.values()).map((perm) => (
+            {Array.from(pendingPermissions.values()).filter((perm) => !shownAskIds.has(perm.requestId)).map((perm) => (
               <PermissionCard
                 key={perm.requestId}
                 requestId={perm.requestId}
@@ -462,6 +527,7 @@ export function Timeline({
           <AnimatePresence>
             {Array.from(pendingQuestions.values())
               .filter((q) => !anchoredQuestionIds.has(q.questionId))
+              .filter((q) => !shownAskIds.has(q.questionId))
               .map((q) => questionCardFor(q))}
            </AnimatePresence>
           </div>
@@ -477,6 +543,15 @@ export function Timeline({
       conversationChips={conversationChips}
       onChipClick={handleChipClick}
       knotTurns={knotTurns}
+    />
+    {/* The lens: an artifact or an edit review, opened over the timeline (inside the wing). */}
+    <LensHost
+      documents={activeConversation?.documents ?? []}
+      conversationId={activeConversationId}
+      sendMessage={sendMessage}
+      glowColor={glowColor}
+      onPopOutDocument={(docId) => setExpandedDocId(docId)}
+      requestDocumentBody={requestDocumentBody}
     />
     </div>
   )

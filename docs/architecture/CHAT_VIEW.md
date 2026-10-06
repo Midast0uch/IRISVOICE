@@ -291,3 +291,23 @@ Both modes: a tray (`RefTray`: the `to @iris` chip, the picked `#` chips, a hint
 - **No mic button.** Voice stays wake-word.
 
 Guards: `__tests__/composer/composer.test.tsx` (both modes, whole `ChatWing`).
+
+## 10. In-turn interactions: ±, the lens, asks (built 2026-10-06)
+
+Look: `iris-strands.html` (`.dfx`, `.lens`, diff review, `.receipt`). Tests: `__tests__/turnui/*`
+(driven through the real `Timeline` from turn parts and card data shaped like the backend's).
+
+| Piece | Where | Notes |
+|---|---|---|
+| `±` | `components/chat/diff/DiffMark.tsx` | on the matrix row of an editing step (developer), on the step of the personal card, and a summary chip under the reply (both, from the turn's `tool_result` parts). Data: `step.diffs` (`useTaskProgress` keeps `diff` / `diffs` of `tool:result`) |
+| diff review | `components/chat/diff/DiffReview.tsx`, `lib/diffs/undoStore.ts` | per file, per hunk Keep / Undo, per file Undo all -> `sendDiffUndo`. A hunk is "undone" ONLY after `diff_undo_result` ok (the hook files it with `applyDiffUndoResult`); a refusal shows its reason; `undoable:false`, `new_file`, `truncated` each say so |
+| lens | `components/chat/lens/*`, `lib/lens/lensStore.ts` | one overlay inside `Timeline`'s relative wrapper (over the timeline, inside the wing). Artifact opens by doc id and resolves live; Pop out = the full-wing `DocumentPanel` (`setExpandedDocId`); Esc / back close; a thread switch closes |
+| artifact card | `ArtifactChip.tsx` | compact title + `kind · size/rows · time` (`DocRender.createdAt`, live cards only). A streaming (partial) doc and the live sources list stay inline |
+| dashboard drop | `lib/lens/dragPayload.ts`, `lib/workspace/addLensItem.ts`, `DeveloperWorkspace` | the drag carries the payload (`application/x-iris-lens`, body capped at 200 KB); the Workspace Hub makes a document card (`WorkspaceTab.content` / `.diffs`). "To dashboard" in the lens uses the same path |
+| asks | `lib/turns/asks.ts`, `components/chat/turn/AskPrompt.tsx` | folded from the turn's `interaction` parts. Matrix: an ASK row at the end of the rows; personal: inside the card (subheader, so a folded plan still shows it); no card: in the turn. Keys `y`/Enter allow, `n`/Esc deny when the ask has focus. Countdown only when the backend sent `timeout_seconds`. After the answer: a receipt line. Answers use the existing `notification_response` / `question_response`; the legacy card of an ask is hidden only when the turn really shows it |
+| MADE row | `LiveMatrix.tsx` `MadeRow`, `matrix/madeRows.ts` | under the step that ran `create_artifact` / `show`, else last. GUI only: the ANSI export and the parity guard read steps |
+| plain words | `lib/cards/plainWords.ts` | personal card: a split child says "looked closer" and "reported back" once done; engine words in labels / memory summaries are rewritten |
+
+Open: `TaskListCard.display.test.tsx` pins the footer text "Crystallized" / "Learning signal: Crystallized"
+for `learningSignal="crystallized"`; the plain-words rule wants "done". Left as the test has it (a test is
+the requirement); decide which side moves.

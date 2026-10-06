@@ -18,9 +18,22 @@
  *
  * Data: the SAME TaskCardProps the ANSI export renders (renderBlueprintCellMatrixCLI
  * stays for terminal export and logs); per-row details come from the task card.
+ *
+ * In-turn interactions (GUI only; the ANSI export and the parity guard read steps, so
+ * these never change what the matrix says ran):
+ *   ±      on the row of a step that edited a file (opens the review in the lens)
+ *   MADE   a row for an artifact the step made (opens the lens; drags to the dashboard)
+ *   ASK    a row that waits when IRIS needs a permission or an answer; after the answer
+ *          it stays as the receipt line
  */
 import React, { useMemo, useState } from "react"
 import type { TaskCardProps } from "@/lib/cli/CLITaskProgressRenderer"
+import { DiffMark } from "@/components/chat/diff/DiffMark"
+import { AskPrompt, type AskActions } from "@/components/chat/turn/AskPrompt"
+import { artifactMeta, type MetaDoc } from "@/components/chat/lens/artifactMeta"
+import { openLens } from "@/lib/lens/lensStore"
+import { setLensDrag } from "@/lib/lens/dragPayload"
+import type { AskItem } from "@/lib/turns/asks"
 import {
   buildMatrix,
   foldLine,
@@ -100,6 +113,7 @@ export function MatrixRow({
             {chip}
           </span>
         )}
+        {row.diffs && row.diffs.length > 0 && <DiffMark diffs={row.diffs} />}
         {hasDetail && (
           <button
             type="button"
@@ -115,6 +129,45 @@ export function MatrixRow({
       </div>
       {hasDetail && open && row.detail && <RowDetail detail={row.detail} />}
     </>
+  )
+}
+
+/** An artifact a step made: a MADE row. Click / Enter opens the lens; drag takes it to the dashboard. */
+export interface MadeItem {
+  id: string
+  doc: MetaDoc & { id: string; title?: string }
+  /** The step row it hangs under (else the end of the rows). */
+  afterRowId?: string
+}
+
+export function MadeRow({ made }: { made: MadeItem }) {
+  const title = (made.doc.title || "").trim() || "Document"
+  const open = () => openLens({ kind: "artifact", docId: made.doc.id })
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      draggable
+      data-made-row={made.doc.id}
+      aria-label={`Open ${title}`}
+      onClick={open}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault()
+          open()
+        }
+      }}
+      onDragStart={(e) =>
+        setLensDrag(e.dataTransfer, { v: 1, kind: "artifact", id: made.doc.id, title, format: made.doc.format, content: made.doc.content || "" })
+      }
+      className="flex items-center gap-2 min-w-0 px-1 rounded"
+      style={{ minHeight: 22, cursor: "pointer" }}
+    >
+      <span className="flex-none w-3 text-center" style={{ color: OK }}>◆</span>
+      <span className="flex-none font-bold" style={{ color: OK, width: "7ch" }}>MADE</span>
+      <span className="flex-1 min-w-0 truncate text-white/80" title={title}>{title}</span>
+      <span className="flex-none truncate text-[11px]" style={{ maxWidth: "42%", color: "rgba(255,255,255,0.45)" }}>{artifactMeta(made.doc)}</span>
+    </div>
   )
 }
 
@@ -167,6 +220,11 @@ export interface MatrixFrameProps {
   /** Fold a finished run to one line (default). A one-node shell run keeps
    *  its row: its output is the point. */
   foldWhenDone?: boolean
+  /** Artifacts this task made: MADE rows (under their step, else at the end). */
+  made?: MadeItem[]
+  /** IRIS asks of this turn: ASK rows at the end of the rows; settled ones stay as receipts. */
+  asks?: AskItem[]
+  askActions?: AskActions
 }
 
 export function MatrixFrame({
@@ -179,12 +237,25 @@ export function MatrixFrame({
   thought,
   liveAction,
   foldWhenDone = true,
+  made,
+  asks,
+  askActions,
 }: MatrixFrameProps) {
   const m = useMemo(() => buildMatrix(matrix, details), [matrix, details])
   const [unfolded, setUnfolded] = useState(false)
-  const folded = foldWhenDone && !working && !unfolded && m.flat.length > 0
+  // An ask that still waits keeps the matrix open: the question must not hide in a fold.
+  const waitingAsk = !!asks?.some((a) => a.state === "waiting")
+  const folded = foldWhenDone && !working && !unfolded && m.flat.length > 0 && !waitingAsk
   const elapsed = formatElapsed(elapsedSec)
   const mem = memoryLine(matrix)
+  // MADE rows hang under the top-level row of the step that made them; any other goes last.
+  const topRowIds = new Set(m.items.flatMap((it) => (it.kind === "row" ? [it.row.id] : [])))
+  const madeAfter = new Map<string, MadeItem[]>()
+  const madeAtEnd: MadeItem[] = []
+  for (const mk of made ?? []) {
+    if (mk.afterRowId && topRowIds.has(mk.afterRowId)) madeAfter.set(mk.afterRowId, [...(madeAfter.get(mk.afterRowId) ?? []), mk])
+    else madeAtEnd.push(mk)
+  }
 
   if (folded) {
     const f = foldLine(m, stopped, elapsed)
@@ -234,11 +305,16 @@ export function MatrixFrame({
         <span aria-hidden className="absolute w-px" style={{ left: 7, top: 4, bottom: 4, background: `linear-gradient(${glowColor}55, ${glowColor}10)` }} />
         {m.items.map((it) =>
           it.kind === "row" ? (
-            <MatrixRow key={it.row.id} row={it.row} glowColor={glowColor} live={liveAction} />
+            <React.Fragment key={it.row.id}>
+              <MatrixRow row={it.row} glowColor={glowColor} live={liveAction} />
+              {madeAfter.get(it.row.id)?.map((mk) => <MadeRow key={mk.doc.id} made={mk} />)}
+            </React.Fragment>
           ) : (
             <SubLoopChamber key={`ch-${it.chamber.parentId}`} chamber={it.chamber} glowColor={glowColor} live={liveAction} />
           ),
         )}
+        {madeAtEnd.map((mk) => <MadeRow key={mk.doc.id} made={mk} />)}
+        {askActions && asks?.map((a) => <AskPrompt key={a.id} ask={a} variant="row" glowColor={glowColor} actions={askActions} />)}
         {m.flat.length === 0 && <div className="text-white/35 text-[11.5px]">○ getting ready…</div>}
       </div>
       {mem && <div className="mt-1 text-[11px] text-white/40 truncate">◈ {mem}</div>}
