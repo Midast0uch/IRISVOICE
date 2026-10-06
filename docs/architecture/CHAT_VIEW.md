@@ -265,3 +265,29 @@ no longer rendered (kept in the CT-10 allowlist).
 Guards: `__tests__/spine/spineModel.test.ts` (detour math, knot rules, chips in view, scrub),
 `__tests__/spine/spineGutter.test.tsx` (hover list, click, drag, canvas frame, reduced motion,
 structure: no chips in the composer, no second Xur in the matrix).
+
+## The composer (2026-10-06 design)
+
+Both modes: a tray (`RefTray`: the `to @iris` chip, the picked `#` chips, a hint), the project bar
+(`ProjectBar`), then the message box. Files: `components/chat/composer/{refs,ProjectBar}.tsx`.
+
+- **Project bar.** Reads `workspaceStore` (the folder tab and the open file tabs) and adds through
+  `FilePickerModal`. The old developer-only `WorkspaceTabBar` strip in `chat-view.tsx` is gone (the
+  archive badge stays). No branch: the app knows the branch of its own repo (`/api/git/status`), not
+  of the folder the user opened.
+- **`to`.** Only `@iris` exists (no people yet); the payload carries `to: ["@iris"]`.
+- **`#` refs.** Typing `#` opens a picker of ADDRESSES: this conversation's task cards, its
+  artifacts, the strands of its thread (`fetchStrands`, loaded when the picker first opens). A pick
+  becomes a removable chip; `text_message` carries `refs: ["#<id>", ...]`. The gateway adds them to
+  `turn.start.refs`. Never content.
+- **Steer.** A turn running in this conversation (turn store) or a working card: Enter sends
+  `steer`, not a prompt. The timeline shows `↳ you steered: ... · noted` (developer) or
+  `↳ you said: ... · IRIS noted it` (personal) as a `steer-note-` system message (`TurnView`).
+- **Stop.** The one button is `↵` / `Send message` when idle and `■` / `Stop IRIS` while a turn
+  runs. It sends `stop {conversation_id}`. `main.py` pushes it to the steering inbox (the DER loop
+  winds down at its next step boundary) and cancels the text-turn task of that conversation
+  (`cancel_turn_tasks`); the gateway ends the turn `cancelled`. Guard:
+  `backend/tests/contract/test_stop_turn_contract.py`.
+- **No mic button.** Voice stays wake-word.
+
+Guards: `__tests__/composer/composer.test.tsx` (both modes, whole `ChatWing`).

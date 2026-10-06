@@ -5859,6 +5859,12 @@ class IRISGateway:
                     str((_r or {}).get("card_id"))
                     for _r in (payload.get("referenced_cards") or [])
                     if isinstance(_r, dict) and (_r or {}).get("card_id")
+                ]
+                # The composer's # references: addresses only, bounded.
+                + [
+                    _a
+                    for _a in (payload.get("refs") if isinstance(payload.get("refs"), list) else [])[:16]
+                    if isinstance(_a, str) and _a
                 ],
                 mode=payload.get("mode") or "personal",
                 prompt=text,

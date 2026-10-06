@@ -724,3 +724,35 @@ body {
 }
 .iris-edge-ap:hover, .iris-edge-ap[aria-pressed="true"] { opacity: 1; }
 .iris-edge-ap:focus-visible { outline: 1px solid currentColor; outline-offset: 1px; }
+
+/* Composer (docs/design/chatview-2026-10-06/iris-strands.html): the tray with
+   the to-chip and # reference chips, the project bar, the # picker, and the
+   steer line. --b1/--b2 are set inline on .iris-comp from the brand palette. */
+.iris-comp {
+  --b1: hsl(190 100% 64%);
+  --b2: hsl(215 92% 68%);
+  --iris-ink-2: #080a16;
+  --iris-ink-3: #0e1122;
+  --iris-hair: rgba(160, 190, 255, 0.09);
+  --iris-muted: #8a92a8;
+  --iris-faint: rgba(230, 233, 242, 0.38);
+  --iris-mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+.iris-tray { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; min-height: 22px; margin-bottom: 6px; }
+.iris-to { font: 600 11px/1 var(--iris-mono); padding: 4px 7px; border-radius: 999px; border: 1px solid var(--b1); color: var(--b1); }
+.iris-chip { font: 600 11px/1 var(--iris-mono); padding: 4px 7px; border-radius: 5px; background: var(--iris-ink-3); border: 1px solid var(--iris-hair); color: var(--b2); display: inline-flex; gap: 5px; align-items: center; }
+.iris-chip button { background: none; border: 0; color: var(--iris-muted); cursor: pointer; padding: 0 0 0 2px; }
+.iris-hint { font: 10.5px/1 var(--iris-mono); color: var(--iris-faint); }
+.iris-proj { display: flex; gap: 4px; align-items: center; min-width: 0; overflow-x: auto; scrollbar-width: none; font: 11px/1 var(--iris-mono); margin-bottom: 6px; }
+.iris-proj button, .iris-proj .iris-folder { flex: none; display: flex; gap: 5px; align-items: center; border: 1px solid transparent; background: none; border-radius: 5px; padding: 4px 7px; color: var(--iris-muted); white-space: nowrap; }
+.iris-proj button { cursor: pointer; }
+.iris-proj .iris-folder { color: var(--b1); border-color: color-mix(in oklab, var(--b1) 35%, transparent); background: color-mix(in oklab, var(--b1) 9%, transparent); }
+.iris-proj .iris-folder.none { color: var(--iris-muted); border-color: var(--iris-hair); background: none; }
+.iris-proj button[aria-current="true"] { color: #e6e9f2; border-color: var(--iris-hair); background: var(--iris-ink-3); }
+.iris-proj .iris-addf { color: var(--b1); border: 1px dashed color-mix(in oklab, var(--b1) 35%, transparent); }
+.iris-pop { position: absolute; bottom: 100%; left: 12px; right: 12px; margin-bottom: 4px; max-height: 200px; overflow-y: auto; background: var(--iris-ink-2); border: 1px solid color-mix(in oklab, var(--b1) 30%, transparent); border-radius: 10px; padding: 5px; z-index: 50; box-shadow: 0 -12px 30px rgba(0, 0, 0, 0.5); }
+.iris-pop button { display: flex; gap: 8px; width: 100%; align-items: center; background: none; border: 0; padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 12.5px; text-align: left; min-width: 0; color: rgba(255, 255, 255, 0.8); }
+.iris-pop button:hover, .iris-pop button.sel { background: var(--iris-ink-3); }
+.iris-pop button b { color: var(--b2); font: 600 12px var(--iris-mono); }
+.iris-pop button span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.iris-steer { font: 11.5px/1.4 ui-monospace, "Cascadia Mono", Consolas, monospace; color: hsl(215 92% 68%); }

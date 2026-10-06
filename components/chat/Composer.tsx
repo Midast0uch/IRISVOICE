@@ -2,11 +2,23 @@
 
 import React from "react"
 import { motion, AnimatePresence } from "framer-motion"
-import { Send, ChevronDown, Video, Image, Smile } from 'lucide-react'
+import { ChevronDown, Video, Image, Smile } from 'lucide-react'
 import { Icon } from '@iconify/react'
 import { SuggestionPills } from "@/components/chat/SuggestionPills"
 import ContextPill from "@/components/chat/ContextPill"
 import ModelSwitcher from "@/components/ModelSwitcher"
+import { ProjectBar } from "@/components/chat/composer/ProjectBar"
+import {
+  RefTray,
+  RefPicker,
+  useRefCandidates,
+  hashQueryOf,
+  withoutHashQuery,
+  matchRefs,
+  type ComposerRef,
+  type RefDoc,
+} from "@/components/chat/composer/refs"
+import { useBrandPalette } from "@/hooks/useBrandPalette"
 import { recallHistory, appendSystem } from "@/components/terminal/terminalScrollback"
 import type { TerminalSnapshot } from "@/components/terminal/terminalScrollback"
 import type { TaskProgress, TaskCard } from "@/hooks/useTaskProgress"
@@ -61,6 +73,16 @@ export interface ComposerProps {
   // Footer toolbar
   contextUsage: { used: number; max: number }
   taskProgress: TaskProgress
+  // Composer design 2026-10-06: steer/stop, # references.
+  /** The conversation on screen; # candidates and the stop message name it. */
+  conversationId: string | null
+  /** A turn is running in this conversation: Enter steers, the button stops. */
+  isRunning: boolean
+  /** Picked # references (addresses). chat-view puts them in the send payload. */
+  composerRefs: ComposerRef[]
+  setComposerRefs: React.Dispatch<React.SetStateAction<ComposerRef[]>>
+  /** Documents and artifacts shown in this conversation. */
+  refDocs: RefDoc[]
 }
 
 export function Composer({
@@ -101,9 +123,64 @@ export function Composer({
   activeTabPath,
   contextUsage,
   taskProgress,
+  conversationId,
+  isRunning,
+  composerRefs,
+  setComposerRefs,
+  refDocs,
 }: ComposerProps) {
   // Hover state for the upload pill — only the composer reads it.
   const [uploadHovered, setUploadHovered] = React.useState(false)
+
+  // ── # references: a picker of ADDRESSES (never content) ──────────────────
+  const [b1, b2] = useBrandPalette()
+  const hashQuery = hashQueryOf(inputText)
+  const [hashDismissedFor, setHashDismissedFor] = React.useState<string | null>(null)
+  const pickerWanted = hashQuery !== null && hashDismissedFor !== inputText
+  const refCandidates = useRefCandidates({
+    conversationId,
+    cards: mentionCandidates,
+    docs: refDocs,
+    wanted: pickerWanted,
+  })
+  const refMatches = pickerWanted ? matchRefs(refCandidates, composerRefs, hashQuery ?? '') : []
+  const [refSel, setRefSel] = React.useState(0)
+  const refSelIdx = Math.min(refSel, Math.max(0, refMatches.length - 1))
+  const pickRef = (r: ComposerRef) => {
+    setComposerRefs(prev => (prev.some(p => p.address === r.address) ? prev : [...prev, r]))
+    setInputText(t => withoutHashQuery(t))
+    setRefSel(0)
+    inputRef.current?.focus()
+  }
+
+  // ── One send/stop button. A turn runs here: it stops it. ────────────────
+  const stopTurn = () => {
+    sendMessage?.('stop', { conversation_id: conversationId, message_id: `stop-${Date.now()}` })
+  }
+  const sendStopButton = (compact: boolean) => (
+    <motion.button
+      type="button"
+      onClick={() => { if (isRunning) stopTurn(); else void handleSendMessage() }}
+      disabled={!isRunning && (!inputText.trim() || voiceState === 'listening')}
+      className={`flex items-center justify-center ${compact ? 'w-[28px] h-[28px]' : 'w-[32px] h-[32px]'} transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0 font-mono text-[14px] leading-none`}
+      style={{
+        color: isRunning ? '#ff7a6e' : inputText.trim() ? glowColor : 'rgba(255,255,255,0.5)',
+        background: 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
+        border: `1px solid ${isRunning ? 'rgba(255,122,110,0.5)' : inputText.trim() ? glowColor : `${fontColor}80`}`,
+        borderRadius: '9999px',
+        boxShadow: inputText.trim() && !isRunning
+          ? `0 0 12px ${glowColor}40, inset 0 1px 0 rgba(255,255,255,0.03)`
+          : '0 1px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.03)',
+      }}
+      whileHover={{ scale: 1.08 }}
+      whileTap={{ scale: 0.92 }}
+      title={isRunning ? 'Stop IRIS' : 'Send message'}
+      aria-label={isRunning ? 'Stop IRIS' : 'Send message'}
+      data-testid={isRunning ? 'stop-turn' : 'send-message'}
+    >
+      {isRunning ? '■' : '↵'}
+    </motion.button>
+  )
 
     /* Input Area — single fused input for chat + shell.
         T2 (REQ-1 AC3): TerminalSlideOver / TerminalWidget are removed
@@ -112,8 +189,8 @@ export function Composer({
         terminalScrollback subscriptions, which are preserved. */
   return (
       <div
-        className={isRemoteView ? "px-4 pb-4 pt-4 flex-shrink-0 relative z-30 bg-black/60 border-t" : "px-3 pb-3 pt-4 flex-shrink-0 relative z-30 bg-black/60 border-t"}
-        style={{ borderColor: 'rgba(255,255,255,0.05)' }}
+        className={isRemoteView ? "iris-comp px-4 pb-4 pt-4 flex-shrink-0 relative z-30 bg-black/60 border-t" : "iris-comp px-3 pb-3 pt-4 flex-shrink-0 relative z-30 bg-black/60 border-t"}
+        style={{ borderColor: 'rgba(255,255,255,0.05)', ['--b1' as string]: b1, ['--b2' as string]: b2 }}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
@@ -159,6 +236,15 @@ export function Composer({
             </motion.div>
           )}
         </AnimatePresence>
+
+        {/* Composer design 2026-10-06, both modes: who hears this and the
+            picked # references, then the project folder and open files, then
+            the message box. */}
+        <RefTray refs={composerRefs} onRemove={(a) => setComposerRefs(prev => prev.filter(r => r.address !== a))} />
+        <ProjectBar />
+        {refMatches.length > 0 && (
+          <RefPicker items={refMatches} selected={refSelIdx} onPick={pickRef} />
+        )}
 
           {/* Mode-split input area (cli-workspace-unification scope fix):
               DEVELOPER gets the REQ-1/REQ-2 attached two-row footer;
@@ -305,6 +391,7 @@ export function Composer({
               onChange={(e) => {
                 const v = e.target.value;
                 setInputText(v);
+                setRefSel(0);
                 const opening = /(^|\s)@$/.test(v);
                 if (opening && !cardMentionOpen) openCardMentionPicker();
                 setCardMentionOpen(opening);
@@ -320,6 +407,24 @@ export function Composer({
                 e.target.style.height = `${e.target.scrollHeight}px`;
               }}
               onKeyDown={(e) => {
+                // ── # reference picker keys (accept beats send, like the slash menu)
+                if (refMatches.length > 0) {
+                  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                    e.preventDefault()
+                    setRefSel((refSelIdx + (e.key === 'ArrowDown' ? 1 : refMatches.length - 1)) % refMatches.length)
+                    return
+                  }
+                  if ((e.key === 'Enter' || e.key === 'Tab') && !e.shiftKey) {
+                    e.preventDefault()
+                    pickRef(refMatches[refSelIdx])
+                    return
+                  }
+                  if (e.key === 'Escape') {
+                    e.preventDefault()
+                    setHashDismissedFor(inputText)
+                    return
+                  }
+                }
                 // ── Gate 3 T12 (REQ-7): slash menu keys ──────────
                 if (slashMenuOpen && slashMatches.length > 0) {
                   if (e.key === 'Escape') {
@@ -393,7 +498,7 @@ export function Composer({
                   ? "w-full bg-transparent border-0 py-3 pr-2 text-[16px] focus:outline-none transition-all placeholder:text-white/30 disabled:opacity-50 resize-none min-h-[44px] max-h-[120px] scrollbar-hide"
                   : isDeveloper
                     /* pl-5 clears the prompt glyph rendered below. */
-                    ? "w-full bg-transparent border-0 py-2 pl-5 pr-2 font-mono text-[12px] focus:outline-none transition-all placeholder:text-white/25 disabled:opacity-50 resize-none min-h-[36px] max-h-[120px] scrollbar-hide"
+                    ? "w-full bg-transparent border-0 py-2 pl-5 pr-9 font-mono text-[12px] focus:outline-none transition-all placeholder:text-white/25 disabled:opacity-50 resize-none min-h-[36px] max-h-[120px] scrollbar-hide"
                     : "w-full bg-transparent border-0 py-2 pr-2 text-[13px] focus:outline-none transition-all placeholder:text-white/30 disabled:opacity-50 resize-none min-h-[36px] max-h-[120px] scrollbar-hide"
               }
               rows={1}
@@ -408,6 +513,12 @@ export function Composer({
                 caretColor: isDeveloper ? glowColor : undefined,
               }}
             />
+
+            {/* Developer mode: the one send/stop button sits at the end of the
+                line (the footer toolbar has no spare width for it). */}
+            {isDeveloper && (
+              <div className="absolute right-0" style={{ top: '4px' }}>{sendStopButton(true)}</div>
+            )}
 
             {/* Prompt glyph. Developer mode only, and hidden while the
                 mic is open — the line is not yours to type on then. */}
@@ -445,6 +556,9 @@ export function Composer({
               deliberately does NOT disable — the backend per-session
               lock queues messages (long-horizon-der-execution).
               AC3: onClick is handleSendMessage itself; no second path.
+              2026-10-06 (composer design): while a turn runs in this
+              conversation the same button reads "Stop IRIS" and sends the
+              stop message; developer mode gets it at the end of the line.
 
               SUPERSEDES specs/phase-5-switcher REQ-1 AC1 (which removed
               the Send pill). That decision's load-bearing half — AC3,
@@ -453,28 +567,7 @@ export function Composer({
               visibility half is reversed. Signed off 2026-09-04. */}
           {!isDeveloper && (
             <div className="flex-shrink-0" style={{ transform: 'translateY(-6.5px)' }}>
-              <motion.button
-                type="button"
-                onClick={() => { void handleSendMessage() }}
-                disabled={!inputText.trim() || voiceState === 'listening'}
-                className="flex items-center justify-center w-[32px] h-[32px] transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
-                style={{
-                  color: inputText.trim() ? glowColor : 'rgba(255,255,255,0.5)',
-                  background: 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
-                  border: `1px solid ${inputText.trim() ? glowColor : `${fontColor}80`}`,
-                  borderRadius: '9999px',
-                  boxShadow: inputText.trim()
-                    ? `0 0 12px ${glowColor}40, inset 0 1px 0 rgba(255,255,255,0.03)`
-                    : '0 1px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.03)',
-                }}
-                whileHover={{ scale: 1.08 }}
-                whileTap={{ scale: 0.92 }}
-                title="Send message"
-                aria-label="Send message"
-                data-testid="send-message"
-              >
-                <Send size={14} />
-              </motion.button>
+              {sendStopButton(false)}
             </div>
           )}
 

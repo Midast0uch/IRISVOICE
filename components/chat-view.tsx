@@ -37,7 +37,7 @@ import { HistoryPanel } from "@/components/chat/HistoryPanel";
 import { Timeline } from "@/components/chat/Timeline";
 import { QuestionCard } from "@/components/chat/QuestionCard";
 // cli-workspace-unification T5/T6 (REQ-4): project folder bar + archive dock
-import { WorkspaceTabBar } from "@/components/workspace/WorkspaceTabBar";
+import type { ComposerRef } from "@/components/chat/composer/refs";
 import { ArchiveDock } from "@/components/workspace/ArchiveDock";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import type { TaskCard } from "@/hooks/useTaskProgress";
@@ -969,6 +969,20 @@ export function ChatWing({
     setTimeout(() => window.removeEventListener('iris:cards', onCards), 4000)
   }, [sendMessage])
   const mentionCandidates = taskProgress.cards.length > 0 ? taskProgress.cards : mentionCards
+
+  // Composer (2026-10-06 design): # references are ADDRESSES, picked in the
+  // composer and sent with the prompt; a running turn turns Enter into a steer
+  // and the send button into Stop.
+  const [composerRefs, setComposerRefs] = useState<ComposerRef[]>([])
+  useEffect(() => { setComposerRefs([]) }, [activeConversationId])
+  const isTurnRunning = liveTurns.some((t) => t.status === "running")
+  const refDocs = useMemo(
+    () => (conversations.find((c) => c.id === activeConversationId)?.documents ?? []).map((d) => ({
+      id: d.cardId || d.documentId || d.id,
+      title: d.title || d.format,
+    })),
+    [conversations, activeConversationId],
+  )
 
   // ── Gate 3 T9 (REQ-3/D5): DE-UNIFIED. Shell lines no longer merge into
   // the chat stream — they render in the terminal panel only (scrollback
@@ -2199,7 +2213,7 @@ export function ChatWing({
     // boundary, never mid-step, and revises the remaining plan.
     // Mode-independent: steering carries no capability gate, so it works the
     // same in personal and developer mode.
-    if (anyCardWorking && sendMessage) {
+    if ((isTurnRunning || anyCardWorking) && sendMessage) {
       sendMessage('steer', {
         text,
         message_id: `steer-${Date.now()}`,
@@ -2207,7 +2221,8 @@ export function ChatWing({
       })
       const steerNotice: Message = {
         id: `steer-note-${newMessageId()}`,
-        text: 'Steering the running task. The agent applies this at its next step.',
+        // Shown as one line under the running turn (TurnView, steer-note-).
+        text: isDeveloper ? `↳ you steered: ${text} · noted` : `↳ you said: ${text} · IRIS noted it`,
         sender: 'system',
         timestamp: new Date(),
       }
@@ -2229,6 +2244,7 @@ export function ChatWing({
     // live progress instead of hanging on a fixed REST timeout. REST is kept
     // as a fallback for when the WebSocket is unavailable (sendMessage unset).
     setLocalTyping(true)
+    setComposerRefs([]) // the refs ride in this send's payload below
     if (sendMessage) {
       // Send `threadId`, NOT `activeConversationId`. setActiveConversationId
       // was called a few lines up for a new conversation, but a React state
@@ -2252,6 +2268,10 @@ export function ChatWing({
         // resolved to persisted card snapshots so the agent can reason over
         // a PREVIOUS conversation's task results.
         referenced_cards: extractReferencedCards(userMessage.text),
+        // Composer: who hears this (only IRIS for now) and the # references.
+        // Addresses only; IRIS loads the content by address.
+        to: ["@iris"],
+        refs: composerRefs.map((r) => r.address),
         // Developer chat runs its tools in the open project tab's folder, the
         // same workdir `/run` and `>` already send (Gate 3 T10).
         ...(isDeveloper && activeTabPath ? { workdir: activeTabPath } : {}),
@@ -3095,14 +3115,12 @@ ${message.text}`;
               handleDeleteConversation={handleDeleteConversation}
             />
 
-            {/* T5 (REQ-4 AC1/AC2): compact 30px project folder bar — active
-                folder pill + file tabs + [+] opening FilePickerModal. Dev
-                mode only; personal mode never sees it. */}
+            {/* Top strip, dev mode only: the archive count (T6). The T5 project
+                folder bar (folder pill, file tabs, [+]) moved to the composer. */}
             {isDeveloper && !isRemoteView && (
               <div className="h-[30px] shrink-0 flex items-center justify-between overflow-hidden relative z-20" style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                <div className="flex items-center h-full min-w-0 flex-1">
-                  <WorkspaceTabBar />
-                </div>
+                {/* The folder and open files moved to the composer's project bar (both modes). */}
+                <div className="flex items-center h-full min-w-0 flex-1" />
                 {/* T6: archive item count badge in the top bar */}
                 <div
                   className="flex items-center gap-1 px-2 py-0.5 mr-1 rounded-full flex-shrink-0"
@@ -3402,6 +3420,11 @@ ${message.text}`;
               activeTabPath={activeTabPath}
               contextUsage={contextUsage}
               taskProgress={taskProgress}
+              conversationId={activeConversationId}
+              isRunning={isTurnRunning}
+              composerRefs={composerRefs}
+              setComposerRefs={setComposerRefs}
+              refDocs={refDocs}
             />
           </motion.div>
         </motion.div>

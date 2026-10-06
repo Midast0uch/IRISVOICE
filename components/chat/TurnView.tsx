@@ -852,6 +852,9 @@ export function TurnView({
             </div>
           </div>
         </motion.div>
+      ) : message.sender === 'system' && message.id.startsWith('steer-note-') ? (
+        // A steer sent while a turn runs: one line, "↳ you steered: … · noted".
+        <div className="iris-steer py-1" data-testid="steer-note">{message.text}</div>
       ) : message.sender === 'system' ? (
         // System message (plan events: validation/recovery/budget/topology)
         <motion.div
