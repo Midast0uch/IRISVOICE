@@ -3,6 +3,7 @@
 | File | What | Status |
 |---|---|---|
 | `iris-strands.html` | **Concept 2 "IRIS Living Spine", revision 3 — APPROVED by the owner 2026-10-06.** The target look and behaviour for the chat view in both modes. | approved (https://claude.ai/artifact/CDss9BFHkf4QdqMS7ZsSwD) |
+| `iris-dashboard.html` | **Concept 2 rev 4 "Dashboard Spine"** — the dashboard built from the chat's parts: one `◉` menu, a spine rail, settings rows with value summaries, the Apply bar, the Workspace hub with a Views lane, and the `#` / `@` reference rules. | proposed 2026-10-06, waiting for the owner (https://claude.ai/artifact/1vMLK38PPrNDJGiJaNJ8jR) |
 | `iris-braid.html` | Concept 1 "IRIS Braid and Spine". Kept as a reference at the owner's request. | reference |
 | `chatview-split.html` | The first glimpse: one turn stream drawn in both modes, the file split map, the part types. | reference |
 
