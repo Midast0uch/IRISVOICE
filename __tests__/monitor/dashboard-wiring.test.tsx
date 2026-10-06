@@ -2,7 +2,7 @@
  * Wiring: the old Inference console sub-app is now the Inference stream row of
  * the Monitor page. `open_inference_console` (card action, and the
  * `initialSubApp` hand-off from app/page.tsx) must land on the Monitor tab with
- * that row open. Harness mocks mirror dark-glass-dashboard.apply.test.tsx.
+ * the stream pane focused (panes are always shown; there is no open/closed). Harness mocks mirror dark-glass-dashboard.apply.test.tsx.
  */
 
 import "@testing-library/jest-dom";
@@ -151,10 +151,10 @@ jest.mock("@/data/navigation-constants", () => ({
 /*  Tests                                                              */
 /* ------------------------------------------------------------------ */
 
-const streamRow = () =>
-  document.querySelector('[data-row="stream"] .iris-mon-srow') as HTMLElement | null;
+const streamPane = () =>
+  document.querySelector('[data-area="stream"]') as HTMLElement | null;
 
-describe("open_inference_console lands on the Monitor page's stream row", () => {
+describe("open_inference_console lands on the Monitor page's stream pane", () => {
   beforeEach(() => {
     mockSendMessage.mockClear();
     mockSelectSectionWs.mockClear();
@@ -162,19 +162,19 @@ describe("open_inference_console lands on the Monitor page's stream row", () => 
     (globalThis as any).fetch = jest.fn(() => Promise.resolve({ ok: false, json: async () => ({}) }));
   });
 
-  it("card action opens the Monitor tab with the stream row open", async () => {
+  it("card action opens the Monitor tab with the stream pane focused", async () => {
     render(<DarkGlassDashboard />);
-    expect(streamRow()).toBeNull(); // voice tab: no Monitor page yet
+    expect(streamPane()).toBeNull(); // voice tab: no Monitor page yet
 
     await act(async () => {
       window.dispatchEvent(new CustomEvent("iris:card_action", { detail: { action: "open_inference_console" } }));
     });
 
-    expect(streamRow()).not.toBeNull();
-    expect(streamRow()!.getAttribute("aria-expanded")).toBe("true");
+    expect(streamPane()).not.toBeNull();
+    expect(document.activeElement).toBe(streamPane());
     expect(mockSelectSectionWs).toHaveBeenCalledWith("monitor");
-    // five rows, no Context (desktop mode), no separate console surface
-    expect(Array.from(document.querySelectorAll("[data-row]")).map((r) => r.getAttribute("data-row"))).toEqual([
+    // five areas, no Context (desktop mode), no separate console surface
+    expect(Array.from(document.querySelectorAll("[data-area]")).map((r) => r.getAttribute("data-area"))).toEqual([
       "now", "stream", "usage", "logs", "diagnostics",
     ]);
     expect(screen.queryByText("Inference Console")).toBeNull();
@@ -184,7 +184,7 @@ describe("open_inference_console lands on the Monitor page's stream row", () => 
     await act(async () => {
       render(<DarkGlassDashboard initialSubApp="inference_console" />);
     });
-    expect(streamRow()).not.toBeNull();
-    expect(streamRow()!.getAttribute("aria-expanded")).toBe("true");
+    expect(streamPane()).not.toBeNull();
+    expect(document.activeElement).toBe(streamPane());
   });
 });

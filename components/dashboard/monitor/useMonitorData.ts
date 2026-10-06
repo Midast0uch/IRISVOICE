@@ -41,6 +41,7 @@ export type StreamEntry =
 export type StreamFilter = "all" | "calls" | "loads";
 
 const STREAM_CAP = 500;
+const RECENT_CAP = 24;
 
 export function useInferenceStream() {
   const [entries, setEntries] = useState<StreamEntry[]>([]);
@@ -48,6 +49,8 @@ export function useInferenceStream() {
   const [models, setModels] = useState<Record<string, string>>({});
   const [last, setLast] = useState<{ tps: number; latencyMs: number } | null>(null);
   const [avg, setAvg] = useState({ calls: 0, tpsSum: 0 });
+  // tok/s of the last RECENT_CAP calls, oldest first: the Speed tile's sparkline.
+  const [recent, setRecent] = useState<number[]>([]);
   const pausedRef = useRef(paused);
   pausedRef.current = paused;
   const seq = useRef(0);
@@ -69,6 +72,7 @@ export function useInferenceStream() {
         // Pause freezes the stream list only; Now keeps following live.
         setLast({ tps: entry.tps, latencyMs: entry.latencyMs });
         setAvg((a) => ({ calls: a.calls + 1, tpsSum: a.tpsSum + entry.tps }));
+        setRecent((r) => [...r.slice(-(RECENT_CAP - 1)), entry.tps]);
         if (!pausedRef.current) setEntries((prev) => [...prev.slice(-(STREAM_CAP - 1)), entry]);
       } else if (type === "model_load_event") {
         const loaded = payload.action === "loaded";
@@ -108,7 +112,7 @@ export function useInferenceStream() {
   }, [entries]);
 
   const avgTps = avg.calls > 0 ? avg.tpsSum / avg.calls : null;
-  return { entries, paused, setPaused, clear, exportJson, models, last, avgTps };
+  return { entries, paused, setPaused, clear, exportJson, models, last, avgTps, recent };
 }
 
 // ── Usage (WS: monitor_analytics_data, polled) ───────────────────────────────

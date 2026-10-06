@@ -10438,44 +10438,64 @@ body {
   .iris-hd-pin { transition: none; }
 }
 
-/* Monitor page (docs/design/chatview-2026-10-06/iris-dashboard.html, `monitor`):
-   section rows = orb, name, one-line live summary; open = fields under a lit
-   hairline. --mon-acc is set inline from the brand glow colour. */
-.iris-mon { --mon-acc: hsl(215 92% 68%); --mon-hair: rgba(160, 190, 255, 0.09); --mon-muted: #8a92a8; --mon-run: #f2c14e; --mon-ok: #5fcf98; --mon-bad: #ff7a6e;
-  --mon-mono: ui-monospace, "JetBrains Mono", "Cascadia Mono", Consolas, monospace; width: 100%; color: #e6e9f2; }
-.iris-mon-sec { position: relative; border-top: 1px solid var(--mon-hair); }
-.iris-mon-sec:first-child { border-top: 0; }
-.iris-mon-srow { display: flex; gap: 10px; align-items: center; width: 100%; background: none; border: 0; padding: 11px 4px; cursor: pointer; text-align: left; min-width: 0; color: inherit; }
-.iris-mon-srow .o { flex: none; width: 12px; text-align: center; font: 12px/1 var(--mon-mono); color: var(--mon-muted); }
-.iris-mon-sec.open .iris-mon-srow .o { color: var(--mon-acc); }
-.iris-mon-srow b { flex: none; font-weight: 600; font-size: 12.5px; line-height: 1.2; color: #dde2ee; }
-.iris-mon-srow small { flex: 1; min-width: 0; font: 11px/1.2 var(--mon-mono); color: var(--mon-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.iris-mon-fields { margin: 0 0 12px 9px; padding: 2px 0 4px 16px; border-left: 1px solid color-mix(in oklab, var(--mon-acc) 55%, transparent); display: flex; flex-direction: column; }
-.iris-mon-f { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 14px; align-items: center; padding: 8px 0; border-bottom: 1px solid rgba(160, 190, 255, 0.05); }
-.iris-mon-f:last-child { border-bottom: 0; }
-.iris-mon-f .l { min-width: 0; }
-.iris-mon-f .l b { display: flex; gap: 6px; align-items: center; font-weight: 500; font-size: 12.5px; line-height: 1.3; color: #dde2ee; overflow-wrap: anywhere; }
-.iris-mon-f .l b i { width: 6px; height: 6px; border-radius: 50%; background: var(--dot, var(--mon-ok)); flex: none; }
-.iris-mon-f .l small { display: block; font: 10.5px/1.35 var(--mon-mono); color: var(--mon-muted); overflow-wrap: anywhere; }
-.iris-mon-f .c { display: flex; gap: 6px; align-items: center; justify-self: end; max-width: 260px; min-width: 0; flex-wrap: wrap; justify-content: flex-end; }
-.iris-mon-f .c.wide { max-width: none; width: 100%; justify-self: stretch; justify-content: flex-start; grid-column: 1 / -1; }
-.iris-mon-f .num { font: 12px/1.2 var(--mon-mono); color: #cfd5e4; white-space: nowrap; }
-.iris-mon-f .num.bad { color: var(--mon-bad); } .iris-mon-f .num.warn { color: var(--mon-run); } .iris-mon-f .num.ok { color: var(--mon-ok); }
-.iris-mon-sg { display: inline-flex; border: 1px solid var(--mon-hair); border-radius: 999px; padding: 2px; flex-wrap: wrap; }
-.iris-mon-sg button, .iris-mon-btn { font: 500 11px/1 var(--mon-mono); color: var(--mon-muted); background: none; border: 1px solid transparent; border-radius: 999px; padding: 5px 9px; cursor: pointer; }
-.iris-mon-btn { border-color: var(--mon-hair); }
-.iris-mon-btn:disabled { opacity: 0.4; cursor: default; }
-.iris-mon-sg button[aria-pressed="true"], .iris-mon-btn[aria-pressed="true"] { color: #e6e9f2; background: color-mix(in oklab, var(--mon-acc) 16%, transparent); border-color: color-mix(in oklab, var(--mon-acc) 45%, transparent); }
+/* Monitor page (docs/design/chatview-2026-10-06/iris-dashboard.html, `Monitor =
+   an instrument panel`): a tile strip, then panes on a 12-column grid. The
+   page root is the size container, so the narrow layout follows the width the
+   dashboard gives it. --mon-acc is set inline from the brand glow colour. */
+.iris-mon { --mon-acc: hsl(215 92% 68%); --mon-hair: rgba(160, 190, 255, 0.09); --mon-muted: #8a92a8; --mon-faint: rgba(230, 233, 242, 0.38); --mon-run: #f2c14e; --mon-ok: #5fcf98; --mon-bad: #ff7a6e;
+  --mon-ink2: #080a16; --mon-ink3: #0e1122; --mon-fg: #e6e9f2;
+  --mon-mono: ui-monospace, "JetBrains Mono", "Cascadia Mono", Consolas, monospace; width: 100%; color: var(--mon-fg); container-type: inline-size; }
+.iris-mon-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 10px; align-content: start; }
 .iris-mon button:focus-visible, .iris-mon input:focus-visible { outline: 2px solid var(--mon-acc); outline-offset: 2px; }
-.iris-mon-find { flex: 1; min-width: 90px; background: #080a16; border: 1px solid var(--mon-hair); border-radius: 999px; color: #e6e9f2; font: 11px/1 var(--mon-mono); padding: 6px 10px; }
-.iris-mon-lines { width: 100%; max-height: 260px; overflow-y: auto; font: 11px/1.5 var(--mon-mono); color: #cfd5e4; }
-.iris-mon-line { display: flex; gap: 8px; padding: 2px 0; min-width: 0; }
-.iris-mon-line .t { flex: none; color: var(--mon-muted); }
-.iris-mon-line .m { min-width: 0; overflow-wrap: anywhere; }
-.iris-mon-line .m em { font-style: normal; color: var(--mon-acc); }
-.iris-mon-line.error .m { color: var(--mon-bad); } .iris-mon-line.warn .m { color: var(--mon-run); }
-.iris-mon-empty { font: 11px/1.4 var(--mon-mono); color: var(--mon-muted); padding: 6px 0; }
-.iris-mon-bar { width: 90px; height: 5px; border-radius: 999px; background: rgba(255, 255, 255, 0.05); overflow: hidden; }
+.iris-mon-tiles { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--mon-hair); border-radius: 10px; background: var(--mon-ink2); }
+.iris-mon-tile { min-width: 0; padding: 9px 11px; border-left: 1px solid var(--mon-hair); display: flex; flex-direction: column; gap: 3px; }
+.iris-mon-tile:first-child { border-left: 0; }
+.iris-mon-tile .k { font: 600 9.5px/1 var(--mon-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--mon-muted); }
+.iris-mon-tile .v { font: 600 14px/1.2 var(--mon-mono); color: var(--mon-fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; gap: 6px; align-items: center; }
+.iris-mon-tile .v i { width: 6px; height: 6px; border-radius: 50%; background: var(--mon-ok); flex: none; }
+.iris-mon-tile .v i.off { background: var(--mon-muted); }
+.iris-mon-tile .v.big { font-size: 20px; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.iris-mon-tile .v small { font: 500 11px/1 var(--mon-mono); color: var(--mon-muted); }
+.iris-mon-tile .s { font: 10.5px/1.2 var(--mon-mono); color: var(--mon-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.iris-mon-spark { display: flex; gap: 2px; align-items: flex-end; height: 18px; }
+.iris-mon-spark span { flex: 1; background: color-mix(in oklab, var(--mon-acc) 55%, transparent); border-radius: 1px; min-height: 2px; }
+.iris-mon-spark span:last-child { background: var(--mon-acc); }
+.iris-mon-pane { min-width: 0; border: 1px solid var(--mon-hair); border-radius: 10px; background: var(--mon-ink2); display: flex; flex-direction: column; }
+.iris-mon-pane:focus { outline: 1px solid color-mix(in oklab, var(--mon-acc) 55%, transparent); outline-offset: -1px; }
+.iris-mon-pane.w7 { grid-column: span 7; } .iris-mon-pane.w5 { grid-column: span 5; } .iris-mon-pane.w12 { grid-column: 1 / -1; }
+@container (max-width: 600px) {
+  .iris-mon-pane.w7, .iris-mon-pane.w5 { grid-column: 1 / -1; }
+  .iris-mon-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .iris-mon-tile:nth-child(3) { border-left: 0; }
+  .iris-mon-tile:nth-child(n+3) { border-top: 1px solid var(--mon-hair); }
+}
+.iris-mon-pane h4 { margin: 0; display: flex; gap: 6px 8px; align-items: center; padding: 7px 10px; border-bottom: 1px solid var(--mon-hair); font: 600 9.5px/1 var(--mon-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--mon-muted); flex-wrap: wrap; }
+.iris-mon-pane h4 .sp { flex: 1; }
+.iris-mon-pane h4 button { background: none; border: 1px solid var(--mon-hair); border-radius: 5px; padding: 3px 6px; font: 600 9.5px/1 var(--mon-mono); letter-spacing: 0.06em; color: #c9cfdb; cursor: pointer; text-transform: uppercase; }
+.iris-mon-pane h4 button:disabled { opacity: 0.4; cursor: default; }
+.iris-mon-pane h4 button[aria-pressed="true"] { color: var(--mon-fg); border-color: color-mix(in oklab, var(--mon-acc) 55%, transparent); background: color-mix(in oklab, var(--mon-acc) 14%, transparent); }
+.iris-mon-pane h4 .live { width: 6px; height: 6px; border-radius: 50%; background: var(--mon-ok); box-shadow: 0 0 6px var(--mon-ok); }
+.iris-mon-pane h4 .live.off { background: var(--mon-muted); box-shadow: none; }
+.iris-mon-pane h4 input { flex: 0 1 140px; min-width: 80px; background: #04050c; border: 1px solid var(--mon-hair); border-radius: 5px; color: var(--mon-fg); font: 11px/1 var(--mon-mono); padding: 4px 6px; text-transform: none; letter-spacing: 0; }
+.iris-mon-calls { overflow-y: auto; overflow-x: hidden; max-height: 228px; }
+.iris-mon-calls table { width: 100%; table-layout: fixed; border-collapse: collapse; font: 11px/1.35 var(--mon-mono); font-variant-numeric: tabular-nums; }
+.iris-mon-calls td { padding: 5px 10px; border-bottom: 1px solid rgba(160, 190, 255, 0.05); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #c9cfdb; }
+.iris-mon-calls td.m { color: var(--mon-fg); }
+.iris-mon-calls col.t { width: 76px; } .iris-mon-calls col.k { width: 108px; } .iris-mon-calls col.l { width: 88px; }
+.iris-mon-calls tr.load td { color: var(--mon-muted); } .iris-mon-calls tr.load td.m { color: var(--mon-acc); }
+.iris-mon-calls tr { animation: iris-mon-rowin 0.6s ease-out; }
+@keyframes iris-mon-rowin { from { background: color-mix(in oklab, var(--mon-acc) 14%, transparent); } to { background: transparent; } }
+.iris-mon-lat { display: flex; gap: 6px; align-items: center; justify-content: flex-end; }
+.iris-mon-lat b { display: block; height: 3px; border-radius: 2px; background: var(--mon-acc); }
+.iris-mon-lat b.slow { background: var(--mon-run); }
+.iris-mon-usage { padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+.iris-mon-usage .row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font: 11px/1.3 var(--mon-mono); color: var(--mon-muted); }
+.iris-mon-usage .row b { font: 600 16px/1 var(--mon-mono); color: var(--mon-fg); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.iris-mon-usage .row b.sm { font-size: 12px; }
+.iris-mon-axis { display: flex; justify-content: space-between; gap: 8px; font: 9.5px/1 var(--mon-mono); color: var(--mon-faint); }
+.iris-mon-split { display: flex; height: 6px; border-radius: 3px; overflow: hidden; background: var(--mon-ink3); }
+.iris-mon-split b { background: var(--mon-acc); } .iris-mon-split i { background: color-mix(in oklab, var(--mon-acc) 40%, transparent); }
+.iris-mon-bar { width: 100%; height: 4px; border-radius: 2px; background: var(--mon-ink3); overflow: hidden; }
 .iris-mon-bar i { display: block; height: 100%; background: var(--mon-acc); }
 /* The ◉ menu, shared by the chat and the dashboard wing (components/chrome/WingMenu.tsx).
    It opens under the wing header (a positioned box). Concept: iris-dashboard.html `.menu`. */
@@ -10620,3 +10640,24 @@ body {
 .iris-tbl td { padding: 6px; border-bottom: 1px solid rgba(160, 190, 255, 0.05); color: #c9cfdb; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .iris-tbl td small { display: block; font-size: 10px; color: var(--iris-muted); }
 .iris-tbl tr[data-active="true"] td:first-child { color: #e6e9f2; box-shadow: inset 2px 0 0 var(--b2, #6b9bff); }
+.iris-mon-model { display: flex; flex-direction: column; gap: 4px; font: 11px/1.3 var(--mon-mono); color: #c9cfdb; }
+.iris-mon-model > div { display: flex; justify-content: space-between; gap: 8px; min-width: 0; }
+.iris-mon-model span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.iris-mon-model small { color: var(--mon-muted); white-space: nowrap; font: inherit; }
+.iris-mon-checks { list-style: none; margin: 0; padding: 6px 10px; display: flex; flex-direction: column; }
+.iris-mon-checks li { display: flex; gap: 8px; align-items: center; padding: 5px 0; border-bottom: 1px solid rgba(160, 190, 255, 0.05); font: 12px/1.3 var(--mon-mono); color: #dde2ee; min-width: 0; }
+.iris-mon-checks li:last-child { border-bottom: 0; }
+.iris-mon-checks .st { flex: none; width: 12px; text-align: center; color: var(--mon-ok); } .iris-mon-checks .st.w { color: var(--mon-run); } .iris-mon-checks .st.e { color: var(--mon-bad); } .iris-mon-checks .st.i { color: var(--mon-muted); }
+.iris-mon-checks .n { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.iris-mon-checks small { margin-left: auto; flex: 0 1 60%; min-width: 0; text-align: right; font: 10.5px/1.2 var(--mon-mono); color: var(--mon-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.iris-mon-logs { padding: 6px 10px 8px; font: 11px/1.5 var(--mon-mono); max-height: 200px; overflow-y: auto; overflow-x: hidden; }
+.iris-mon-logs > div { display: flex; gap: 8px; white-space: nowrap; min-width: 0; }
+.iris-mon-logs .t { color: var(--mon-faint); flex: none; } .iris-mon-logs .lv { flex: none; width: 34px; }
+.iris-mon-logs .lv.warn { color: var(--mon-run); } .iris-mon-logs .lv.error { color: var(--mon-bad); } .iris-mon-logs .lv.info, .iris-mon-logs .lv.debug { color: var(--mon-muted); }
+.iris-mon-logs .x { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: #c9cfdb; }
+.iris-mon-logs .hid { color: var(--mon-faint); padding-top: 4px; }
+.iris-mon-empty { font: 11px/1.4 var(--mon-mono); color: var(--mon-muted); padding: 8px 10px; }
+.iris-mon-stats { display: flex; flex-wrap: wrap; gap: 6px 18px; padding: 8px 10px; font: 11px/1.3 var(--mon-mono); color: var(--mon-muted); }
+.iris-mon-stats > div { display: flex; gap: 6px; align-items: baseline; }
+.iris-mon-stats b { font: 600 12px/1 var(--mon-mono); color: var(--mon-fg); font-variant-numeric: tabular-nums; }
+@media (prefers-reduced-motion: reduce) { .iris-mon-calls tr { animation: none; } }

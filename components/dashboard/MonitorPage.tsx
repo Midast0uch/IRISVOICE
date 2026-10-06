@@ -3,7 +3,8 @@
 // ONE Monitor page: the old Monitor tab (Analytics | Logs | Diagnostics) and
 // the Inference console, merged with nothing shown twice. Inventory and where
 // each item went: docs/architecture/MONITOR.md. Look: docs/design/
-// chatview-2026-10-06/iris-dashboard.html (`monitor` rows).
+// chatview-2026-10-06/iris-dashboard.html (`Monitor = an instrument panel`):
+// a tile strip, then panes on a 12-column grid.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -12,65 +13,59 @@ import {
   type StreamFilter,
 } from "./monitor/useMonitorData";
 
-export type MonitorRowId = "now" | "stream" | "usage" | "logs" | "diagnostics" | "context";
+export type MonitorPaneId = "stream" | "usage" | "logs" | "diagnostics" | "context";
 
 export interface MonitorPageProps {
   glowColor?: string;
   sendMessage?: (type: string, payload?: any) => boolean;
-  /** Shows the Context row (DCP pruner stats). */
+  /** Shows the Context pane (DCP pruner stats). */
   developerMode?: boolean;
-  /** Open a row from outside; `n` changes on every request so a repeat re-opens it. */
-  openRow?: { row: MonitorRowId; n: number } | null;
+  /** Bring a pane into view and focus it; `n` changes on every request so a repeat does it again. */
+  openRow?: { row: MonitorPaneId; n: number } | null;
 }
 
-// ── Row + field chrome (the concept's .sec / .srow / .fields / .f) ───────────
+// ── Chrome ───────────────────────────────────────────────────────────────────
 
-function Row({ id, name, summary, open, onToggle, children }: {
-  id: MonitorRowId; name: string; summary: string; open: boolean; onToggle: (id: MonitorRowId) => void; children: React.ReactNode;
+function Pane({ id, name, span, paneRef, header, children }: {
+  id: MonitorPaneId; name: string; span: "w7" | "w5" | "w12"; paneRef: React.RefObject<HTMLElement | null>;
+  header: React.ReactNode; children: React.ReactNode;
 }) {
   return (
-    <div className={`iris-mon-sec${open ? " open" : ""}`} data-row={id}>
-      <button className="iris-mon-srow" aria-expanded={open} aria-controls={`iris-mon-${id}`} onClick={() => onToggle(id)}>
-        <span className="o" aria-hidden="true">{open ? "●" : "○"}</span>
-        <b>{name}</b>
-        <small>{summary}</small>
-      </button>
-      {open && <div className="iris-mon-fields" id={`iris-mon-${id}`}>{children}</div>}
-    </div>
+    <section className={`iris-mon-pane ${span}`} data-area={id} aria-label={name} tabIndex={-1} ref={paneRef}>
+      <h4>{header}</h4>
+      {children}
+    </section>
   );
 }
 
-function F({ label, hint, dot, tone, value, wide, children }: {
-  label?: React.ReactNode; hint?: string; dot?: string; tone?: "bad" | "warn" | "ok"; value?: React.ReactNode; wide?: boolean; children?: React.ReactNode;
-}) {
+function Chips<T extends string>({ label, value, options, onChange }: { label: string; value: T; options: readonly T[]; onChange: (v: T) => void }) {
   return (
-    <div className="iris-mon-f">
-      {label !== undefined && (
-        <div className="l">
-          <b>{dot && <i style={{ ["--dot" as any]: dot }} />}{label}</b>
-          {hint && <small>{hint}</small>}
-        </div>
-      )}
-      <div className={`c${wide ? " wide" : ""}`}>
-        {value !== undefined && <span className={`num${tone ? " " + tone : ""}`}>{value}</span>}
-        {children}
-      </div>
-    </div>
-  );
-}
-
-function Seg<T extends string>({ label, value, options, onChange }: { label: string; value: T; options: readonly T[]; onChange: (v: T) => void }) {
-  return (
-    <div className="iris-mon-sg" role="group" aria-label={label}>
+    <span role="group" aria-label={label} style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
       {options.map((o) => (
         <button key={o} aria-pressed={o === value} onClick={() => onChange(o)}>{o}</button>
       ))}
+    </span>
+  );
+}
+
+function Tile({ k, children, s, spark, big }: { k: string; children: React.ReactNode; s?: React.ReactNode; spark?: number[]; big?: boolean }) {
+  const top = spark && spark.length ? Math.max(...spark, 1) : 1;
+  return (
+    <div className="iris-mon-tile">
+      <span className="k">{k}</span>
+      <span className={`v${big ? " big" : ""}`}>{children}</span>
+      {spark && spark.length > 0 && (
+        <div className="iris-mon-spark" aria-hidden="true">
+          {spark.map((v, i) => <span key={i} style={{ height: `${Math.max(8, Math.round((v / top) * 100))}%` }} />)}
+        </div>
+      )}
+      {s !== undefined && <span className="s">{s}</span>}
     </div>
   );
 }
 
-const HEALTH_TONE = { healthy: "ok", warning: "warn", error: "bad", idle: undefined } as const;
-const HEALTH_DOT = { healthy: "var(--mon-ok)", warning: "var(--mon-run)", error: "var(--mon-bad)", idle: "#8a92a8" } as const;
+const STATUS_GLYPH = { healthy: ["●", ""], warning: ["◐", "w"], error: ["✕", "e"], idle: ["○", "i"] } as const;
+const STATUS_WORD = { healthy: "ok", warning: "warning", error: "error", idle: "idle" } as const;
 const LEVELS = ["ALL", "ERROR", "WARNING", "INFO", "DEBUG"] as const;
 type Level = (typeof LEVELS)[number];
 
@@ -88,6 +83,21 @@ function clock(ts: string): string {
   return isNaN(d.getTime()) ? ts.slice(11, 19) || "--:--:--" : d.toTimeString().slice(0, 8);
 }
 
+const secs = (ms: number) => (ms / 1000).toFixed(1);
+
+// Calls fire `onView` once the element is first on screen. Without
+// IntersectionObserver (old webview, tests) it fires at once.
+function useFirstView(ref: React.RefObject<HTMLElement | null>, onView: () => void) {
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (typeof IntersectionObserver === "undefined") { onView(); return; }
+    const io = new IntersectionObserver((hits) => { if (hits.some((h) => h.isIntersecting)) { onView(); io.disconnect(); } });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [ref, onView]);
+}
+
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 export function MonitorPage({ glowColor = "#6b9bff", sendMessage, developerMode = false, openRow = null }: MonitorPageProps) {
@@ -97,71 +107,68 @@ export function MonitorPage({ glowColor = "#6b9bff", sendMessage, developerMode 
   const diag = useMonitorDiagnostics(sendMessage);
   const dcp = useDcpStats(developerMode);
 
-  const [open, setOpen] = useState<Set<MonitorRowId>>(() => new Set<MonitorRowId>(["now"]));
   const [filter, setFilter] = useState<StreamFilter>("all");
   const [streamScroll, setStreamScroll] = useState(true);
   const [logScroll, setLogScroll] = useState(true);
   const [level, setLevel] = useState<Level>("ALL");
   const [search, setSearch] = useState("");
 
-  // Logs and Diagnostics are read from the backend the first time their row
-  // opens (diagnostics runs process and GPU probes, so it never runs unasked).
+  const panes = {
+    stream: useRef<HTMLElement>(null), usage: useRef<HTMLElement>(null), logs: useRef<HTMLElement>(null),
+    diagnostics: useRef<HTMLElement>(null), context: useRef<HTMLElement>(null),
+  };
+
+  // Logs and Diagnostics are read from the backend the first time their pane is
+  // seen (diagnostics runs process and GPU probes, so it never runs unasked).
   const asked = useRef({ logs: false, diagnostics: false });
   const [askedView, setAskedView] = useState({ logs: false, diagnostics: false });
   const refreshLogs = logs.refresh;
   const refreshDiag = diag.refresh;
-  const fetchOnce = useCallback((id: MonitorRowId) => {
+  const fetchOnce = useCallback((id: MonitorPaneId) => {
     if ((id !== "logs" && id !== "diagnostics") || asked.current[id]) return;
     asked.current[id] = true;
     setAskedView({ ...asked.current });
     (id === "logs" ? refreshLogs : refreshDiag)();
   }, [refreshLogs, refreshDiag]);
+  const seeLogs = useCallback(() => fetchOnce("logs"), [fetchOnce]);
+  const seeDiag = useCallback(() => fetchOnce("diagnostics"), [fetchOnce]);
+  useFirstView(panes.logs, seeLogs);
+  useFirstView(panes.diagnostics, seeDiag);
 
-  const toggle = useCallback((id: MonitorRowId) => {
-    setOpen((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
-    fetchOnce(id);
-  }, [fetchOnce]);
-
+  // open_inference_console and friends: bring the pane into view and focus it.
   const openN = openRow?.n;
   useEffect(() => {
     if (!openRow) return;
-    setOpen((prev) => new Set(prev).add(openRow.row));
+    const el = panes[openRow.row]?.current;
     fetchOnce(openRow.row);
+    if (!el) return;
+    const calm = typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (typeof el.scrollIntoView === "function") el.scrollIntoView({ block: "nearest", behavior: calm ? "auto" : "smooth" });
+    el.focus({ preventScroll: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openN]);
 
-  // ── Now ──
-  const modelEntries = Object.entries(stream.models);
-  const speed = stream.last ? `${stream.last.tps} t/s · ${fmtMs(stream.last.latencyMs)}` : null;
-  const nowSummary = [
-    modelEntries.length ? modelEntries.map(([, m]) => shortModel(m)).join(" + ") : "no model load seen",
-    speed ?? "no calls yet",
-  ].join(" · ");
+  // ── Now (tiles) ──
+  const reasoning = stream.models.reasoning;
+  const tool = stream.models.tool;
+  const others = Object.entries(stream.models).filter(([k]) => k !== "reasoning" && k !== "tool");
+  const u = usage.data;
+  const lat = u && u.latency && u.latency.count > 0 ? u.latency : null;
 
   // ── Inference stream ──
   const visible = useMemo(
     () => stream.entries.filter((e) => filter === "all" || (filter === "calls" ? e.kind === "call" : e.kind === "load")),
     [stream.entries, filter],
   );
+  const maxMs = useMemo(() => Math.max(2000, ...visible.map((e) => (e.kind === "call" ? e.latencyMs : 0))), [visible]);
   const listRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (streamScroll && listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
-  }, [visible, streamScroll, open]);
-  const calls = stream.entries.filter((e) => e.kind === "call").length;
-  const streamSummary = stream.entries.length
-    ? `${calls} calls · ${stream.entries.length - calls} loads${stream.paused ? " · paused" : ""}`
-    : stream.paused ? "paused" : "waiting for calls and loads";
+  }, [visible, streamScroll]);
 
   // ── Usage ──
-  const u = usage.data;
-  const usageSummary = u
-    ? `${fmtNum(u.stats.total_tokens)} tokens · ${fmtNum(u.stats.total_calls)} calls · $${u.stats.estimated_cost.toFixed(4)}`
-    : "loading";
   const maxTokens = u && u.models.length ? Math.max(...u.models.map((m) => m.total_tokens)) : 0;
+  const promptShare = u && u.stats.total_tokens > 0 ? (u.stats.total_prompt_tokens / u.stats.total_tokens) * 100 : 0;
 
   // ── Logs ──
   const shownLogs = useMemo(() => {
@@ -177,140 +184,192 @@ export function MonitorPage({ glowColor = "#6b9bff", sendMessage, developerMode 
   const logRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (logScroll && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
-  }, [shownLogs, logScroll, open]);
-  const nErr = logs.lines.filter((l) => levelOf(l.level) === "error").length;
-  const nWarn = logs.lines.filter((l) => levelOf(l.level) === "warn").length;
-  const logsSummary = !askedView.logs && !logs.loaded
-    ? "open to read"
-    : !logs.loaded ? "loading" : `${nErr} errors · ${nWarn} warnings · ${logs.lines.length} lines`;
-
-  // ── Diagnostics ──
-  const cnt = { healthy: 0, warning: 0, error: 0, idle: 0 };
-  diag.checks.forEach((c) => { if (c.status in cnt) cnt[c.status]++; });
-  const diagSummary = !diag.loaded
-    ? (askedView.diagnostics ? "running checks" : "open to run checks")
-    : `${cnt.healthy} of ${diag.checks.length} pass${cnt.error ? ` · ${cnt.error} error` : ""}${cnt.warning ? ` · ${cnt.warning} warning` : ""}`;
+  }, [shownLogs, logScroll, logs.hidden]);
 
   const L = dcp.last;
   return (
     <div className="iris-mon" style={{ ["--mon-acc" as any]: glowColor }}>
-      <Row id="now" name="Now" summary={nowSummary} open={open.has("now")} onToggle={toggle}>
-        {modelEntries.length === 0 ? (
-          <F label="Model" hint="from model load events since this page opened" value="no load seen" />
-        ) : modelEntries.map(([slot, m]) => (
-          <F key={slot} label={slot === "model" ? "Model" : `${slot[0].toUpperCase()}${slot.slice(1)} model`} hint="loaded" value={shortModel(m)} />
-        ))}
-        <F label="Speed" hint="last call" value={speed ?? "—"} />
-        <F label="Average speed" hint="all calls since this page opened" value={stream.avgTps !== null ? `${stream.avgTps.toFixed(1)} t/s` : "—"} />
-      </Row>
+      <div className="iris-mon-grid">
+        <div className="iris-mon-tiles" data-area="now" aria-label="Now" role="group">
+          <Tile k="Reasoning" s={reasoning ? "loaded" : "no load seen"}>
+            <i className={reasoning ? "" : "off"} aria-hidden="true" />{reasoning ? shortModel(reasoning) : "—"}
+          </Tile>
+          <Tile k="Tool" s={tool || others.length === 0 ? (tool ? "loaded" : "no load seen") : `also ${others.map(([slot, m]) => `${slot}: ${shortModel(m)}`).join(", ")}`}>
+            <i className={tool ? "" : "off"} aria-hidden="true" />{tool ? shortModel(tool) : "—"}
+          </Tile>
+          <Tile k="Speed" big spark={stream.recent} s={stream.last ? `last call ${fmtMs(stream.last.latencyMs)} · avg ${stream.avgTps?.toFixed(1)}` : "no calls yet"}>
+            {stream.last ? <>{stream.last.tps}<small> tok/s</small></> : "—"}
+          </Tile>
+          <Tile k="Reply time" big s={lat ? `median call · p95 ${secs(lat.p95_ms)} s` : "no latency data yet"}>
+            {lat ? <>{secs(lat.p50_ms)}<small> s</small></> : "—"}
+          </Tile>
+        </div>
 
-      <Row id="stream" name="Inference stream" summary={streamSummary} open={open.has("stream")} onToggle={toggle}>
-        <F label="Show" hint="every call and every model load">
-          <Seg<StreamFilter> label="Show" value={filter} options={["all", "calls", "loads"] as const} onChange={setFilter} />
-        </F>
-        <F wide>
-          <button className="iris-mon-btn" aria-pressed={stream.paused} onClick={() => stream.setPaused(!stream.paused)}>{stream.paused ? "Resume" : "Pause"}</button>
-          <button className="iris-mon-btn" aria-pressed={streamScroll} onClick={() => setStreamScroll(!streamScroll)}>Auto-scroll</button>
-          <button className="iris-mon-btn" disabled={stream.entries.length === 0} onClick={stream.exportJson}>Export</button>
-          <button className="iris-mon-btn" disabled={stream.entries.length === 0} onClick={stream.clear}>Clear</button>
-        </F>
-        <div className="iris-mon-lines" ref={listRef} aria-label="Inference stream" role="log">
-          {visible.length === 0 ? (
-            <div className="iris-mon-empty">Waiting for inference events…</div>
-          ) : visible.map((e) => (
-            <div key={e.id} className="iris-mon-line">
-              <span className="t">{fmtClock(e.ts)}</span>
-              {e.kind === "call" ? (
-                <span className="m"><em>{shortModel(e.model)}</em> · ↑{e.promptTok} ↓{e.compTok} tok · {e.tps} t/s · {e.latencyMs}ms</span>
+        <Pane id="stream" name="Inference stream" span="w7" paneRef={panes.stream} header={
+          <>
+            <span className={`live${stream.paused ? " off" : ""}`} aria-hidden="true" />Inference stream<span className="sp" />
+            <Chips<StreamFilter> label="Show" value={filter} options={["all", "calls", "loads"] as const} onChange={setFilter} />
+            <button aria-pressed={stream.paused} onClick={() => stream.setPaused(!stream.paused)}>{stream.paused ? "Resume" : "Pause"}</button>
+            <button aria-pressed={streamScroll} onClick={() => setStreamScroll(!streamScroll)}>Auto-scroll</button>
+            <button disabled={stream.entries.length === 0} onClick={stream.exportJson}>Export</button>
+            <button disabled={stream.entries.length === 0} onClick={stream.clear}>Clear</button>
+          </>
+        }>
+          <div className="iris-mon-calls" ref={listRef} aria-label="Inference calls and loads" role="log">
+            {visible.length === 0 ? (
+              <div className="iris-mon-empty">Waiting for inference events…</div>
+            ) : (
+              <table>
+                <colgroup><col className="t" /><col /><col className="k" /><col className="l" /></colgroup>
+                <tbody>
+                  {visible.map((e) => e.kind === "call" ? (
+                    <tr key={e.id} title={`${e.tps} tok/s`}>
+                      <td>{fmtClock(e.ts)}</td>
+                      <td className="m" title={e.model}>{shortModel(e.model)}</td>
+                      <td>{e.promptTok.toLocaleString()} → {e.compTok.toLocaleString()}</td>
+                      <td>
+                        <span className="iris-mon-lat">
+                          <b className={e.latencyMs > 3000 ? "slow" : ""} style={{ width: Math.round((e.latencyMs / maxMs) * 30) }} />
+                          {secs(e.latencyMs)} s
+                        </span>
+                      </td>
+                    </tr>
+                  ) : (
+                    <tr key={e.id} className="load">
+                      <td>{fmtClock(e.ts)}</td>
+                      <td className="m" title={e.model}>{shortModel(e.model)}</td>
+                      <td>{e.action === "loaded" ? `loaded · ${e.profile || "model"}` : "unloaded"}</td>
+                      <td />
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </Pane>
+
+        <Pane id="usage" name="Usage" span="w5" paneRef={panes.usage} header={
+          <>Usage<span className="sp" /><button onClick={usage.refresh}>Refresh</button></>
+        }>
+          {!u ? <div className="iris-mon-empty">Loading usage…</div> : (
+            <div className="iris-mon-usage">
+              <div className="row"><span>Tokens</span><b>{fmtNum(u.stats.total_tokens)}</b></div>
+              <div className="iris-mon-split" aria-hidden="true"><b style={{ width: `${promptShare}%` }} /><i style={{ width: `${100 - promptShare}%` }} /></div>
+              <div className="iris-mon-axis"><span>↑{fmtNum(u.stats.total_prompt_tokens)} prompt</span><span>↓{fmtNum(u.stats.total_completion_tokens)} completion</span></div>
+              {u.stats.total_audio_tokens > 0 && <div className="iris-mon-axis"><span>{fmtNum(u.stats.total_audio_tokens)} audio tokens</span></div>}
+              <div className="row"><span>Calls</span><b>{fmtNum(u.stats.total_calls)}</b></div>
+              <div className="row"><span>Estimated cost, USD</span><b className="sm">{`$${u.stats.estimated_cost.toFixed(4)}`}</b></div>
+              <div className="row"><span>Session</span><b className="sm">{`${u.stats.session_duration_minutes.toFixed(1)} min`}</b></div>
+              {lat && (
+                <>
+                  <div className="row"><span>Latency, average</span><b className="sm">{fmtMs(lat.avg_ms)}</b></div>
+                  <div className="row"><span>Latency, range</span><b className="sm">{`${fmtMs(lat.min_ms)} – ${fmtMs(lat.max_ms)}`}</b></div>
+                </>
+              )}
+              {u.models.length === 0 ? (
+                <div className="iris-mon-axis"><span>no usage recorded yet</span></div>
               ) : (
-                <span className="m">{e.action === "loaded" ? "▶ Loaded" : "■ Unloaded"}: {shortModel(e.model)}{e.action === "loaded" && e.profile ? ` · ${e.profile}` : ""}</span>
+                <div className="iris-mon-model">
+                  {u.models.map((m) => (
+                    <div key={m.model} title={`${m.total_calls} calls · ${m.percentage}% of tokens`} style={{ flexDirection: "column", gap: 3 }}>
+                      <div><span>{m.model}</span><small>{fmtNum(m.total_tokens)} tok · ${m.estimated_cost.toFixed(4)}</small></div>
+                      <span className="iris-mon-bar" aria-hidden="true"><i style={{ width: `${maxTokens ? (m.total_tokens / maxTokens) * 100 : 0}%` }} /></span>
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
-          ))}
-        </div>
-      </Row>
+          )}
+        </Pane>
 
-      <Row id="usage" name="Usage" summary={usageSummary} open={open.has("usage")} onToggle={toggle}>
-        {!u ? <div className="iris-mon-empty">Loading usage…</div> : (
+        <Pane id="logs" name="Logs" span="w7" paneRef={panes.logs} header={
           <>
-            <F label="Tokens" hint={`↑${fmtNum(u.stats.total_prompt_tokens)} prompt · ↓${fmtNum(u.stats.total_completion_tokens)} completion`} value={fmtNum(u.stats.total_tokens)} />
-            <F label="Calls" hint={u.stats.total_audio_tokens ? `${fmtNum(u.stats.total_audio_tokens)} audio tokens` : undefined} value={fmtNum(u.stats.total_calls)} />
-            <F label="Estimated cost" hint="USD" value={`$${u.stats.estimated_cost.toFixed(4)}`} />
-            <F label="Session" value={`${u.stats.session_duration_minutes.toFixed(1)} min`} />
-            {u.latency && u.latency.count > 0 && (
-              <>
-                <F label="Latency, median" hint="p50" value={fmtMs(u.latency.p50_ms)} />
-                <F label="Latency, slow end" hint="p95" value={fmtMs(u.latency.p95_ms)} />
-                <F label="Latency, average" value={fmtMs(u.latency.avg_ms)} />
-                <F label="Latency, range" hint="min to max" value={`${fmtMs(u.latency.min_ms)} – ${fmtMs(u.latency.max_ms)}`} />
-              </>
-            )}
-            {u.models.length === 0 ? (
-              <F label="Models" value="no usage recorded yet" />
-            ) : u.models.map((m) => (
-              <F key={m.model} label={m.model} hint={`${m.total_calls} calls · ${m.percentage}% of tokens`}>
-                <span className="iris-mon-bar" aria-hidden="true"><i style={{ width: `${maxTokens ? (m.total_tokens / maxTokens) * 100 : 0}%` }} /></span>
-                <span className="num">{fmtNum(m.total_tokens)} tok · ${m.estimated_cost.toFixed(4)}</span>
-              </F>
-            ))}
-            <F wide><button className="iris-mon-btn" onClick={usage.refresh}>Refresh</button></F>
+            Logs<span className="sp" />
+            <Chips<Level> label="Level" value={level} options={LEVELS} onChange={setLevel} />
+            <input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="search" aria-label="Filter logs" />
+            <button aria-pressed={logScroll} onClick={() => setLogScroll(!logScroll)}>Auto-scroll</button>
+            <button onClick={logs.refresh}>Refresh</button>
           </>
-        )}
-      </Row>
+        }>
+          <div className="iris-mon-logs" ref={logRef} aria-label="Log lines" role="log">
+            {!logs.loaded ? (
+              <div className="hid">{askedView.logs ? "Loading logs…" : "Logs load when this pane is first seen."}</div>
+            ) : shownLogs.length === 0 ? (
+              <div className="hid">No log lines match.</div>
+            ) : shownLogs.map((l, i) => {
+              const lv = levelOf(l.level);
+              const text = `${l.source ? `${l.source} · ` : ""}${l.message}`;
+              return (
+                <div key={`${l.timestamp}-${i}`}>
+                  <span className="t">{clock(l.timestamp)}</span>
+                  <span className={`lv ${lv}`}>{lv}</span>
+                  <span className="x" title={text}>{text}</span>
+                </div>
+              );
+            })}
+            {logs.hidden > 0 && (
+              <div className="hid">{logs.hidden} model-call {logs.hidden === 1 ? "line is" : "lines are"} in the stream, not here</div>
+            )}
+          </div>
+        </Pane>
 
-      <Row id="logs" name="Logs" summary={logsSummary} open={open.has("logs")} onToggle={toggle}>
-        <F label="Level" hint="app logs; model calls stay in the stream">
-          <Seg<Level> label="Level" value={level} options={LEVELS} onChange={setLevel} />
-        </F>
-        <F wide>
-          <input className="iris-mon-find" type="text" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Filter…" aria-label="Filter logs" />
-          <button className="iris-mon-btn" aria-pressed={logScroll} onClick={() => setLogScroll(!logScroll)}>Auto-scroll</button>
-          <button className="iris-mon-btn" onClick={logs.refresh}>Refresh</button>
-        </F>
-        <div className="iris-mon-lines" ref={logRef} aria-label="Logs" role="log">
-          {!logs.loaded ? (
-            <div className="iris-mon-empty">Loading logs…</div>
-          ) : shownLogs.length === 0 ? (
-            <div className="iris-mon-empty">No log lines match.</div>
-          ) : shownLogs.map((l, i) => (
-            <div key={`${l.timestamp}-${i}`} className={`iris-mon-line ${levelOf(l.level)}`}>
-              <span className="t">{clock(l.timestamp)}</span>
-              <span className="m">{l.level} {l.source ? `${l.source} · ` : ""}{l.message}</span>
+        <Pane id="diagnostics" name="Diagnostics" span="w5" paneRef={panes.diagnostics} header={
+          <>Diagnostics<span className="sp" /><button onClick={diag.refresh}>Run checks</button></>
+        }>
+          {diag.checks.length === 0 && diag.view.issues.length === 0 && diag.view.warnings.length === 0 && diag.view.debug.length === 0 ? (
+            <div className="iris-mon-empty">
+              {diag.loaded ? "No health data available." : askedView.diagnostics ? "Running health checks…" : "Checks run when this pane is first seen."}
             </div>
-          ))}
-        </div>
-        {logs.hidden > 0 && <div className="iris-mon-empty">{logs.hidden} model-call lines hidden; they are in the Inference stream.</div>}
-      </Row>
+          ) : (
+            <ul className="iris-mon-checks">
+              {diag.checks.map((c) => {
+                const [glyph, cls] = STATUS_GLYPH[c.status] ?? STATUS_GLYPH.idle;
+                const word = STATUS_WORD[c.status] ?? "idle";
+                const val = [c.message || word, c.latency_ms > 0 ? `${c.latency_ms.toFixed(0)} ms` : ""].filter(Boolean).join(" · ");
+                const name = c.component.split("_").map((w) => w[0]?.toUpperCase() + w.slice(1)).join(" ");
+                return (
+                  <li key={c.component}>
+                    <span className={`st ${cls}`} role="img" aria-label={word}>{glyph}</span>
+                    <span className="n">{name}</span>
+                    <small title={val}>{val}</small>
+                  </li>
+                );
+              })}
+              {diag.view.issues.map((t, i) => {
+                const text = t.replace(/^(ERROR|ISSUE):?\s*/, "");
+                return <li key={`i${i}`}><span className="st e" role="img" aria-label="error">✕</span><span className="n" title={text}>{text}</span><small>issue</small></li>;
+              })}
+              {diag.view.warnings.map((t, i) => {
+                const text = t.replace(/^(WARN|NOTE):?\s*/, "");
+                return <li key={`w${i}`}><span className="st w" role="img" aria-label="warning">◐</span><span className="n" title={text}>{text}</span><small>warning</small></li>;
+              })}
+              {diag.loaded && diag.view.issues.length === 0 && diag.view.warnings.length === 0 && (
+                <li><span className="st" role="img" aria-label="ok">●</span><span className="n">Issues and warnings</span><small>{diag.trouble.summary || "none"}</small></li>
+              )}
+              {diag.view.debug.map((line, i) => {
+                const k = line.indexOf(":");
+                const val = k > 0 ? line.slice(k + 1).trim() : "";
+                return <li key={`d${i}`}><span className="st i" aria-hidden="true">·</span><span className="n">{k > 0 ? line.slice(0, k) : line}</span><small title={val}>{val}</small></li>;
+              })}
+            </ul>
+          )}
+        </Pane>
 
-      <Row id="diagnostics" name="Diagnostics" summary={diagSummary} open={open.has("diagnostics")} onToggle={toggle}>
-        <F wide><button className="iris-mon-btn" onClick={diag.refresh}>Run checks</button></F>
-        {diag.checks.length === 0 && <div className="iris-mon-empty">{diag.loaded ? "No health data available." : "Running health checks…"}</div>}
-        {diag.checks.map((c) => (
-          <F key={c.component} label={c.component.split("_").map((w) => w[0]?.toUpperCase() + w.slice(1)).join(" ")} hint={c.message || undefined}
-            dot={HEALTH_DOT[c.status] ?? HEALTH_DOT.idle} tone={HEALTH_TONE[c.status]}
-            value={`${c.status === "healthy" ? "OK" : c.status === "warning" ? "WARN" : c.status === "error" ? "ERR" : "IDLE"}${c.latency_ms > 0 ? ` · ${c.latency_ms.toFixed(0)}ms` : ""}`} />
-        ))}
-        {diag.view.issues.map((t, i) => <F key={`i${i}`} label={t.replace(/^(ERROR|ISSUE):?\s*/, "")} hint="issue" dot="var(--mon-bad)" tone="bad" value="ERR" />)}
-        {diag.view.warnings.map((t, i) => <F key={`w${i}`} label={t.replace(/^(WARN|NOTE):?\s*/, "")} hint="warning" dot="var(--mon-run)" tone="warn" value="WARN" />)}
-        {diag.loaded && diag.view.issues.length === 0 && diag.view.warnings.length === 0 && (
-          <F label="Issues and warnings" hint={diag.trouble.summary || undefined} tone="ok" value="none" />
+        {developerMode && (
+          <Pane id="context" name="Context" span="w12" paneRef={panes.context} header={
+            <>Context<span className="sp" /><span style={{ letterSpacing: 0, textTransform: "none", fontWeight: 400 }}>Dynamic Context Pruner</span></>
+          }>
+            <div className="iris-mon-stats">
+              <div><span>Prune passes</span><b>{dcp.passes.toLocaleString()}</b></div>
+              <div><span>Tokens saved</span><b>{dcp.saved.toLocaleString()}</b></div>
+              <div><span>Deduplicated</span><b>{dcp.dedups.toLocaleString()}</b></div>
+              <div><span>Errors purged</span><b>{dcp.errors.toLocaleString()}</b></div>
+              <div><span>Stale writes superseded</span><b>{dcp.writes.toLocaleString()}</b></div>
+              {L && <div title="in / out / saved / dedups / errors / writes"><span>Last pass</span><b>{`${L.input_count} / ${L.output_count} / ${L.tokens_saved} / ${L.dedups} / ${L.errors_purged} / ${L.writes_superseded}`}</b></div>}
+            </div>
+          </Pane>
         )}
-        {diag.view.debug.map((line, i) => {
-          const k = line.indexOf(":");
-          return <F key={`d${i}`} label={k > 0 ? line.slice(0, k) : line} hint="debug" value={k > 0 ? line.slice(k + 1).trim() : undefined} />;
-        })}
-      </Row>
-
-      {developerMode && (
-        <Row id="context" name="Context" summary={dcp.passes ? `${dcp.passes} prune passes · ${fmtNum(dcp.saved)} tokens saved` : "pruner idle, no turns yet"} open={open.has("context")} onToggle={toggle}>
-          <F label="Prune passes" hint="Dynamic Context Pruner" value={dcp.passes.toLocaleString()} />
-          <F label="Tokens saved" value={dcp.saved.toLocaleString()} />
-          <F label="Deduplicated" value={dcp.dedups.toLocaleString()} />
-          <F label="Errors purged" value={dcp.errors.toLocaleString()} />
-          <F label="Stale writes superseded" value={dcp.writes.toLocaleString()} />
-          {L && <F label="Last pass" hint="in / out / saved / dedups / errors / writes" value={`${L.input_count} / ${L.output_count} / ${L.tokens_saved} / ${L.dedups} / ${L.errors_purged} / ${L.writes_superseded}`} />}
-        </Row>
-      )}
+      </div>
     </div>
   );
 }
