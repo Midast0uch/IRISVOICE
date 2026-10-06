@@ -2,8 +2,11 @@
 
 **Supersedes:** `specs/node-chains/design.md` (merged in as Stage C)
 **Requirements:** `specs/wormhole-aperture/requirements.md`
-**BLOCKED on:** `specs/der-ground-truth/` — gate G-DEP. Five of the six substrates below are
-currently unwritten in production; see that spec's audit before implementing any of this.
+**Depends on (updated 2026-10-05):** the DER-DAG (`docs/architecture/DER_DAG.md`), the
+execution-audit Standards S1-S65 and the Oracle (`docs/architecture/oracle.md` §0) — NOT
+`specs/der-ground-truth/`. Read requirements.md "STATUS UPDATE 2026-10-05" (U1-U6) first:
+the substrates are now written, recall episodes are still 0, the edge substrate is still
+undecided, and line references below have drifted.
 
 ---
 
@@ -559,7 +562,7 @@ it stays red and unmodified until REQ-20 lands.
 
 | Gate | Blocks | Evidence required | Where recorded |
 |---|---|---|---|
-| **G-DEP — Ground truth** | EVERY stage | `specs/der-ground-truth/` GT-G4 passed; its REQ-3/4/5 determinations recorded | that spec's tasks.md |
+| **G-DEP — Foundation** (rewritten 2026-10-05) | EVERY stage | Execution-audit Standards S1-S65 hold (guards green); substrate decision (requirements U3) recorded with a fresh read-only `data/memory.db` measurement | tasks.md |
 | **G0 — Channel** | Stage A scoring | A live turn wrote a real `source_channel='recall'` episode in the locked shape, from the wormhole path (not the legacy fallback) | tasks.md, with the query + row |
 | **G1 — Topology** | Stage B | Tier-1a/1b/2 split reported from real traffic; ≥1 hyperedge posterior moved by real outcome evidence | tasks.md, with the numbers |
 | **G2 — Named consumer** | EVERY stage, always | Each new scored quantity names the dispatch/planning site reading it | design.md + review |

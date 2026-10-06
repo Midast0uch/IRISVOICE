@@ -1,9 +1,112 @@
 # Requirements: WORMHOLE + APERTURE — Resonant Recall, Boundary Delivery, and Node Chains
 
-**Status:** Draft — **BLOCKED on `specs/der-ground-truth/`** · **Supersedes:** `specs/node-chains/` (merged in as Stage C)
-**Depends on:** `specs/der-ground-truth/` — gates G0 and G0b below are satisfied THERE, not here.
+**Status:** Draft — **updated 2026-10-05: read "STATUS UPDATE 2026-10-05" first** · **Supersedes:** `specs/node-chains/` (merged in as Stage C)
+**Depends on:** the DER-DAG (`docs/architecture/DER_DAG.md`), the execution-audit Standards S1-S65 (`docs/audits/2026-09-29/PROGRESS.md`) and the Oracle (`docs/architecture/oracle.md` §0). `specs/der-ground-truth/` is NO LONGER the blocker (owner, 2026-10-05) — see U1.
 **Parent concept docs:** `docs/Wormhole-resonant-recall-.md` (physics), `docs/Wormhole-NodeChain-Mailbox.md` (delivery policy), `docs/architecture/FAULTLINE.md` (failure taxonomy)
 **Say "WORMHOLE" for the recall topology. Say "APERTURE" for the delivery valve.**
+
+---
+
+## STATUS UPDATE 2026-10-05 — READ THIS BEFORE ANYTHING BELOW
+
+This spec was written 2026-08-23..09-12. Since then the execution audit
+(`docs/audits/2026-09-29/PROGRESS.md`, Standards S1-S65), the DER-DAG
+(`docs/architecture/DER_DAG.md`) and the Oracle (`docs/architecture/oracle.md` §0) made
+the agent operational. The concepts and the Decisions Locked of 2026-08-23 stand. What
+changed is the GROUND under them. Where the text below disagrees with this section, THIS
+SECTION wins; the older text is kept as the record of what was true then.
+
+### U1. The dependency changed (owner, 2026-10-05)
+
+`specs/der-ground-truth/` is **no longer the blocker** of this spec. Its job (honest
+recording, negative evidence) was done in substance by the execution audit. Every
+"BLOCKED on der-ground-truth", "GT-G4", "GROUND TRUTH REQ-n" and "G-DEP" reference below
+now reads as:
+
+> **G-DEP (FOUNDATION):** the execution-audit Standards S1-S65 hold — their guards are
+> green on the committed code (PROGRESS "Standards" table) — and the substrate decision
+> (U3) is recorded in tasks.md with a fresh read-only measurement of `data/memory.db`.
+
+### U2. The substrates, measured 2026-10-05 (read-only, `data/memory.db`, the primary app store)
+
+| Substrate | 2026-08-23 | 2026-10-05 | Meaning now |
+|---|---|---|---|
+| `der_fan_traces` | 0 | 2,674 (VERIFIED 2,554 / UNVERIFIED 104 / FAILED 16), with `u`, `xi` per step | written; carries NEGATIVE evidence (4.5 %) — the GT-G4 concern is met |
+| `episodes` | 207 | 378 (success 247 / failure 92 / partial 27 / miss 11 / cancelled 1) | written, with failures |
+| `episodes` with `source_channel='recall'` | 0 | **0** (all 378 are `websocket`) | **G0 is still NOT met — REQ-0 is still the first work** |
+| `semantic_entries` | 0 | 1,215 | written |
+| `mycelium_nodes` | 37 | 104 | grew; still small |
+| `mycelium_edges` | 0 | **0** | still starved |
+| `mycelium_landmark_edges` | 6,201, unscored | 6,628, `hit_count`=0 and `traversal_count`=0 on every row | still pure structure |
+| `mycelium_landmarks` | 285 (30 active) | 1,246 (**30** with `activation_count` > 0) | landmarks still do not learn |
+| `mycelium_traversals` | 355 | 1,512 (success 22 / partial 1,194 / miss 296) | written, scored outcomes |
+| `graph_edges` (pheromone) | 997,262, all weighted | **0 in `data/memory.db`** | the "populated substrate" of Decisions 11b is NOT in the app store today — find where it lives (MCM build store only?) before choosing it |
+| `mycelium_pins` / `mycelium_pin_links` | 0 / 354 | 0 / 6,654 | pins still empty; orphan links grew |
+| `memory_chain` (Immortus time layer) | not referenced | 11,453 | exists — see U4 |
+| `memory_events` | — | 8,750 | the event-alphabet store — see U4 |
+
+### U3. The substrate decision is still OPEN — and narrower
+
+Decisions Locked 2 stays UNSETTLED. No edge table holds a scored edge today
+(`mycelium_edges` 0; landmark edges unscored; `graph_edges` empty in the app store). The
+tables that DO carry outcome evidence are `der_fan_traces` (per step: tool, args_hash,
+outcome, u, xi), `episodes`, and `mycelium_traversals`. Note: S54 says region-mediator
+edge scoring runs for DER node steps (`EdgeScorer.record_region_mediator_outcome`,
+`backend/memory/mycelium/scorer.py:146`), yet `mycelium_edges` has 0 rows — check where
+that write lands (or why its guard fails) before Stage A. Decide the substrate first.
+
+### U4. Newer architecture this spec MUST use (do not build parallels)
+
+- **DER-DAG** (`DER_DAG.md`): the planner writes goals with `depends_on`; ONE scheduler
+  (`_der_start_node` / `_der_post_step`) runs each node as `node_executor.run_node`;
+  `_der_finalize_step` verifies, writes the node record, marks goal coverage, scores the
+  edge, then the continuation gate. **The Aperture "boundary" is this node boundary**
+  (after `_der_finalize_step`, before the next `run_node`) — never inside a node's tool
+  loop. Today's physics recommendations are rec 0 EXPAND / 1 COMPRESS / 2 CONTINUE /
+  3 TOPO_VIOLATION; REQ-41 (RECALL as a node state parallel to SPLIT) must be written
+  against these, and NodeRecord + the goal contract are what Stage C chains extract from.
+- **Recall that is already LIVE** (the 2026-08-23 text says none exists — no longer
+  true): `research_memory.recall_prior_research` (PRIOR RESEARCH into synthesis, S55),
+  `ontology_recall.recall_failed_like` via `semantic_gate` (AVOID recall — overlaps
+  REQ-46 recall-by-cause), and `mcm.recall`. Wormhole must REPLACE or FEED these through
+  ONE recall chokepoint, and REQ-0's recall episode should be written there — never a
+  fourth recall path.
+- **The Oracle** (`oracle.md` §0, `backend/agent/decision_engine.py`): any decision a
+  model makes here (aperture policy arms REQ-13/14, "is this recall relevant",
+  QA-Emb questions) is an Oracle CONSUMER: shadow rows first, the hardened bar (>= 100
+  distinct rows, AUROC >= 0.65, calibrated ECE <= 0.05, fitted threshold), and it acts
+  only through `decides()` / `oracle_acts()` with the owner's switch
+  (`IRIS_DECISION_ENFORCE`). REQ-14 shadow evaluation = Oracle shadow rows, not a second
+  harness. QA-Emb (QA-EMB-DISCUSSION.md) asks yes/no questions — that IS the Oracle's
+  shape (one question per run); it must be evaluated as Oracle questions, not a new model.
+- **Event alphabet** (`backend/memory/event_alphabet.py`, `docs/Design/EVENT_TAXONOMY.md`):
+  closed lattices. `aperture_decision`, `aperture_expired`, recall outcomes etc. are
+  Layer-2 LABELS (`register_event_label`), never new lattice VALUES (REQ-46 AC7 is already
+  cited by that module).
+- **Writes**: one native store writer (`db.app_write`), store path through
+  `resolve_memory_store_path`, and every non-reply write (hyperedges, aperture_events,
+  posteriors) on an ORDERED LANE (`backend/utils/durability_queue.lane(name)`) — never
+  inline on the reply path, never a thread per row.
+- **Phase boundary** (CT-3/CT-4): the confounder signature reads live u/xi — allowed in
+  the cognitive layer (recall), forbidden in the phase scheduler. A Tier-2 walk deadline
+  degrades a decision; it never cancels side-lane work (fold-back, not timeouts).
+- **Model calls**: only through `InferenceRouter.generate`.
+
+### U5. Code references drifted
+
+`path:line` references below are from 2026-08-23. `agent_kernel.py` is now ~22k lines and
+most of its line numbers are wrong. Re-locate every reference BY NAME before a task.
+Checked examples: `LandmarkIndex.apply_landmark_decay` is now `landmark.py:802` (was 571);
+`EdgeScorer.record_region_mediator_outcome` `scorer.py:146` (was 145); `apply_decay`
+`scorer.py:201` (was 200). The card footprint writer is `AgentKernel._save_card_footprint`
+(called at the DER card terminal state), as Decisions 11b says.
+
+### U6. The first work, in order
+
+1. Record G-DEP (U1) and the substrate decision (U3) in tasks.md.
+2. REQ-0: one recall chokepoint over the live recall paths (U4) writes the locked
+   `source_channel='recall'` episode from a real DER turn — G0.
+3. Then Stage A as written, on the decided substrate.
 
 ---
 
@@ -128,7 +231,7 @@ Resolved with the user on 2026-08-23. Do not re-litigate.
       decaying, inherited) versus `mycelium_edges` (starved).** Decide it before
       Stage A. Decisions Locked 2 currently names the starved one.
 
-12. **Recorder integrity is `specs/der-ground-truth/`'s job, not this spec's.** A full
+12. **[SUPERSEDED 2026-10-05 by U1/U2: the substrates are now written and carry negative evidence; recall episodes are still 0.]** **Recorder integrity is `specs/der-ground-truth/`'s job, not this spec's.** A full
     execution/memory audit on 2026-08-23 found that five of the six substrates this spec
     builds on have never been written in production: `der_fan_traces`=0 (emitted only by a
     `DCP` the DER loop never constructs), `mycelium_edges`=0 (a caller exists at
@@ -2053,7 +2156,7 @@ signal' with 'no objection' is exactly what let a three-metric gate accept on on
 for months".
 
 **Acceptance Criteria:**
-- AC0 (G-DEP — GROUND TRUTH): THE SYSTEM SHALL NOT begin ANY stage of this spec until
+- AC0 (G-DEP — **FOUNDATION, rewritten 2026-10-05 — see U1:** THE SYSTEM SHALL NOT begin ANY stage of this spec until the execution-audit Standards S1-S65 hold and the substrate decision (U3) is recorded. The original text follows for the record.) (G-DEP — GROUND TRUTH, 2026-08-23): THE SYSTEM SHALL NOT begin ANY stage of this spec until
   `specs/der-ground-truth/` has cleared its gate **GT-G4 (negative evidence)** and its
   determinations for the edge substrate (GROUND TRUTH REQ-5), the pin table (REQ-4), and
   the footprint writer (REQ-3) are recorded. Five of this spec's six substrates are

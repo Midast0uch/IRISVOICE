@@ -9,10 +9,19 @@ claims made while writing this spec so they are not repeated.
 **Card work:** `docs/architecture/TASK_CARD.md` §7 is the checklist for anything you add
 to the card surface.
 
-**BLOCKED on:** `specs/der-ground-truth/` — see gate G-DEP below. Do not start Wave 0 here
-until that spec's GT-G4 has passed.
+**UPDATED 2026-10-05:** read requirements.md "STATUS UPDATE 2026-10-05" (U1-U6) first.
+`specs/der-ground-truth/` is no longer the blocker; G-DEP is rewritten below. All task
+line references are from 2026-08-23 — re-locate by name.
 
-> ### 🚦 GATE G-DEP — GROUND TRUTH *(blocks EVERY stage of this spec)*
+> ### 🚦 GATE G-DEP — FOUNDATION *(rewritten 2026-10-05; blocks EVERY stage)*
+> **Now:** the execution-audit Standards S1-S65 hold (guards green on the committed code),
+> and the substrate decision (requirements U3) is recorded here with a fresh read-only
+> measurement of `data/memory.db`. 2026-10-05 reading: `der_fan_traces` 2,674 (120 not
+> VERIFIED), `episodes` 378 (92 failure), recall episodes **0**, `mycelium_edges` 0,
+> `graph_edges` 0 in the app store, landmarks 1,246 (30 active).
+> **Record here:** `[ ] PASSED  date: ______  substrate: ______  evidence: ______`
+>
+> *Original 2026-08-23 gate, kept for the record:*
 > The 2026-08-23 audit found five of this spec's six substrates unwritten in production
 > (`der_fan_traces`, `mycelium_edges`, `semantic_entries`, `mycelium_pins`, recall
 > episodes), an execution ledger that calls `persist()` and writes nothing, and a physics
