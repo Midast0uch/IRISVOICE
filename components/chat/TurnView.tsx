@@ -364,12 +364,16 @@ export function TurnView({
           transition={{ duration: prefersReducedMotion ? 0 : 0.15 }}
           className="max-w-[90%] py-2"
         >
+          {/* Phase 4: developer mode shows the prompt line alone (below);
+              the "You" header is personal mode's. */}
+          {!isDeveloper && (
           <div className="flex items-center gap-2 mb-1">
             <span className="text-[9px] font-medium text-white/40">You</span>
             <span className="text-[8px] text-white/30 tabular-nums">
               {message.timestamp.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
             </span>
           </div>
+          )}
                             
           {/* Smart message length handling for user messages */}
           {isDocumentMode ? (
@@ -495,9 +499,16 @@ export function TurnView({
                GUI text is why the view still read as personal
                mode. renderWithLinks is dropped here on
                purpose: a shell echo shows what you typed. */
-            <pre className="font-mono text-[11px] leading-[1.5] whitespace-pre-wrap break-words" style={{ color: 'rgba(255,255,255,0.88)' }}>
-              <span style={{ color: glowColor }}>❯ </span>{message.text}
-            </pre>
+            /* Phase 4: the PROMPT LINE of a developer turn — the same
+               mono size as the matrix and the answer under it. */
+            <div className="flex items-baseline gap-2 min-w-0" data-prompt-line>
+              <pre className="flex-1 min-w-0 font-mono text-[12.5px] whitespace-pre-wrap break-words" style={{ color: 'rgba(255,255,255,0.9)', lineHeight: 1.55 }}>
+                <span style={{ color: glowColor, fontWeight: 700 }}>❯ </span>{message.text}
+              </pre>
+              <span className="flex-none text-[9px] text-white/30 tabular-nums">
+                {message.timestamp.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+              </span>
+            </div>
           ) : (
             // Short message - display fully
             <p className="text-[13px] leading-relaxed text-white/90">{renderWithLinks(message.text)}</p>

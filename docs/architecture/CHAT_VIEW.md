@@ -180,7 +180,40 @@ Where each piece lands:
 their own strand and report back. The protocol already carries `strand_id`, `author`, `to`,
 `refs`; the conversation store still needs `parent_id`, `kind`/tags, `project_id` (not built).
 
-## 7. Open
+## 7. Phase 4 — the live execution matrix (built 2026-10-06)
+
+The developer turn is now three parts: the **prompt line** (`❯ text`, 12.5 px mono, no
+"You" header), the **live matrix**, and the **answer** rendered as markdown in the mono
+family (`MarkdownMessage variant="cli"` → `.iris-md.iris-md-cli`; it used to print raw text
+with literal `**` and fences). Personal mode is unchanged (NOT THIS).
+
+| File | Role |
+|---|---|
+| `components/chat/matrix/matrixModel.ts` | pure model: rows from `TaskCardProps`, split children (`<parent>_s<n>`) grouped into a chamber after their parent, plain-word fold line (DONE / FAILED / STOPPED), memory line without learning/crystallize events |
+| `components/chat/matrix/LiveMatrix.tsx` | `MatrixFrame` (header TASK · n/m · time · fold, THK line, rail, memory line), `MatrixRow` (orb · verb · target · chip · chevron), `SubLoopChamber` ("↳ looked closer", folds to "· found it"), `RowDetail` (recent actions, preview, page) |
+| `components/chat/matrix/ShellRunEntry.tsx` | a developer `>cmd`: prompt line + one-node matrix with an EXEC row that opens to its output (does not fold: the output is the point) |
+| `lib/cli/shellRuns.ts` | groups the terminal scrollback into runs (command + output); `[exit N]` / `Terminal error:` / `^C aborted` = failed; the newest run is running until its output is quiet 2.5 s; runs are tagged with the conversation they were typed in |
+| `components/chat/TaskCardEntry.tsx` | developer branch renders `MatrixFrame` (was a 9 px ANSI `<pre>` that scrolled sideways) |
+
+Motion (approved concept 2): rows are born (`iris-mx-born`), the running row scans
+(`iris-mx-scan`), its orb breathes, the agent's Xur rides the rail to the running row(s)
+(faster when several run in parallel), a finished run folds to one line, a failed row opens
+its output by default. All of it stops under `prefers-reduced-motion`. The CSS lives in
+`css-src/globals.css` AND the served `public/globals.css` (the app loads the compiled file;
+`app/globals.css` is not loaded) — new arbitrary Tailwind classes must exist in
+`public/globals.css` or be inline styles (no Tailwind CLI in the cloud container).
+
+Parity: the GUI matrix and the ANSI export (`renderBlueprintCellMatrixCLI`, kept for terminal
+export and logs) render from the same `taskCardToMatrixProps`; a test asserts the same rows,
+order and verbs. Guards: `__tests__/matrix/liveMatrix.test.tsx` (15; the TaskCardEntry guard
+fails on the old `<pre>`).
+
+Not yet (the approved design, next steps): the timeline-wide spine (the Xur trail down the
+whole strand, knots, chips on the spine), the personal-mode spine through the vertical card,
+`±` diff icons + review lens, MADE / ASK / permission rows (reply-surface Phase D),
+parallel-row light lines.
+
+## 8. Open
 
 - Retire the legacy couriers (after Phase 4 and reply-surface B read parts only).
 - `turn.part` `interaction` / `card` / `todo` parts are filed but still drawn by their old

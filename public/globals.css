@@ -10178,3 +10178,41 @@ body {
     }
   }
 }
+
+/* ── Live execution matrix (execution audit Phase 4; approved concept 2) ──
+   Rows are born, the running row scans, its orb breathes. Developer mode only
+   (components/chat/matrix/LiveMatrix.tsx). Reduced motion: still, never hidden. */
+@keyframes iris-mx-born {
+  0% { opacity: 0; transform: translateX(-12px); filter: blur(3px); }
+  60% { opacity: 1; filter: blur(0); }
+  100% { opacity: 1; transform: none; }
+}
+@keyframes iris-mx-scan {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+@keyframes iris-mx-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.iris-mx-row { animation: iris-mx-born 0.7s cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+.iris-mx-scan {
+  background: linear-gradient(90deg, transparent, rgba(242, 193, 78, 0.09), transparent);
+  background-size: 200% 100%;
+  animation: iris-mx-scan 1.6s linear infinite;
+}
+.iris-mx-breathe { animation: iris-mx-breathe 1.4s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .iris-mx-row, .iris-mx-scan, .iris-mx-breathe { animation: none; }
+}
+
+/* Developer mode answer (execution audit Phase 4): the same markdown, in the
+   mono family, sized like the matrix above it. */
+.iris-md.iris-md-cli {
+  font-family: ui-monospace, "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  letter-spacing: 0;
+}
+.iris-md.iris-md-cli h1, .iris-md.iris-md-cli h2, .iris-md.iris-md-cli h3 { font-size: 13px; }
+.iris-md.iris-md-cli h4, .iris-md.iris-md-cli h5, .iris-md.iris-md-cli h6 { font-size: 12.5px; }

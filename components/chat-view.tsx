@@ -42,6 +42,7 @@ import { ArchiveDock } from "@/components/workspace/ArchiveDock";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
 import type { TaskCard } from "@/hooks/useTaskProgress";
 import { buildChatTimeline } from "@/lib/chatview-turn-timeline";
+import { buildShellRuns } from "@/lib/cli/shellRuns";
 import { logStructured } from "@/lib/logger";
 import {
   subscribe as subscribeTerminal,
@@ -995,9 +996,26 @@ export function ChatWing({
       })),
     [messages, liveTurns],
   )
+  // Phase 4: developer `>cmd` runs, drawn in the thread they were typed in.
+  // A one-second tick runs ONLY while the newest run is still running (its
+  // state is time-based: the shell prints no marker on success).
+  const [shellNow, setShellNow] = useState(() => Date.now())
+  const shellRuns = useMemo(
+    () =>
+      isDeveloper
+        ? buildShellRuns(terminalSnapshot.lines, shellNow).filter((r) => r.conversationId === activeConversationId)
+        : [],
+    [isDeveloper, terminalSnapshot.lines, shellNow, activeConversationId],
+  )
+  const shellRunning = shellRuns.some((r) => r.state === "running")
+  useEffect(() => {
+    if (!shellRunning) return
+    const t = setInterval(() => setShellNow(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [shellRunning])
   const renderTimeline = useMemo(
-    () => buildChatTimeline(timelineMessages, taskProgress.cards),
-    [timelineMessages, taskProgress.cards],
+    () => buildChatTimeline(timelineMessages, taskProgress.cards, shellRuns),
+    [timelineMessages, taskProgress.cards, shellRuns],
   )
 
   // REQ-3 AC2: elapsed running timer for the active Blueprint Matrix. Ticks
@@ -2028,7 +2046,7 @@ export function ChatWing({
         setInputText('')
         setJustSent(true)
         setTimeout(() => setJustSent(false), 300)
-        appendCommand(text)
+        appendCommand(text, activeConversationId)
         appendSystem('[shell] → terminal_input')
         logStructured('cli_dispatch', { command: text, kind: 'shell', conversation_id: activeConversationId })
         // Gate 3 T10: active tab's directory rides as workdir (REQ-4 AC1).

@@ -7,6 +7,7 @@ import { RichDocument } from "@/components/chat/RichDocument"
 import { PermissionCard } from "@/components/chat/PermissionCard"
 import { TurnView } from "@/components/chat/TurnView"
 import { TaskCardEntry } from "@/components/chat/TaskCardEntry"
+import { ShellRunEntry } from "@/components/chat/matrix/ShellRunEntry"
 import type { ChatTimelineEntry } from "@/lib/chatview-turn-timeline"
 import type { TurnRecord } from "@/lib/turns/turnStore"
 import type { TaskProgress } from "@/hooks/useTaskProgress"
@@ -190,6 +191,10 @@ export function Timeline({
             // assistant message they belong to (responseTurnId join),
             // or at the bottom for unmatched/legacy cards. Dev mode
             // renders the Blueprint Matrix; personal the GUI card.
+            // Phase 4: a developer `>cmd` renders as its prompt line + an EXEC row.
+            if (entry.kind === "shell") {
+              return <ShellRunEntry key={entry.run.id} run={entry.run} glowColor={glowColor} now={Date.now()} />
+            }
             if (entry.kind === "card") {
               const card = entry.card
               return (

@@ -3,11 +3,9 @@
 import React from "react"
 import { sortRows, deriveProgress } from "@/lib/cards/rowOrder"
 import TaskListCard from "@/components/chat/TaskListCard"
-import {
-  renderBlueprintCellMatrixCLI,
-  type TaskCardProps,
-  type TaskStepItem,
-} from "@/lib/cli/CLITaskProgressRenderer"
+import type { TaskCardProps, TaskStepItem } from "@/lib/cli/CLITaskProgressRenderer"
+import { MatrixFrame } from "@/components/chat/matrix/LiveMatrix"
+import type { RowDetailData } from "@/components/chat/matrix/matrixModel"
 import type { TaskCard } from "@/hooks/useTaskProgress"
 
 // ── cli-workspace-unification T4 (REQ-3): TaskCard → Blueprint Matrix ──────
@@ -27,7 +25,7 @@ function taskStepStatusToMatrix(status: TaskCard["steps"][number]["status"]): Ta
   }
 }
 
-function taskCardToMatrixProps(card: TaskCard): TaskCardProps {
+export function taskCardToMatrixProps(card: TaskCard): TaskCardProps {
   return {
     objective: card.planTitle || card.currentAction || "Task",
     // GROUND TRUTH REQ-20 AC2: render in the AUTHORITATIVE order, derived from
@@ -68,6 +66,17 @@ function taskCardToMatrixProps(card: TaskCard): TaskCardProps {
   }
 }
 
+/** Per-row detail for the matrix (recent actions, output preview, page). */
+function matrixDetails(card: TaskCard): Record<string, RowDetailData> {
+  const out: Record<string, RowDetailData> = {}
+  for (const s of card.steps) {
+    if (s.history?.length || s.resultPreview || s.url) {
+      out[s.id] = { history: s.history, preview: s.resultPreview, url: s.url }
+    }
+  }
+  return out
+}
+
 export interface TaskCardEntryProps {
   card: TaskCard
   isDeveloper: boolean
@@ -82,28 +91,20 @@ export function TaskCardEntry({
   matrixElapsedSec,
 }: TaskCardEntryProps) {
     return isDeveloper ? (
+      // Phase 4: the live execution matrix (components, not a printed string).
+      // The ANSI renderer (renderBlueprintCellMatrixCLI) stays for terminal
+      // export and logs; both render the same taskCardToMatrixProps.
       <div key={`card-${card.cardId}`} className="py-1">
-        <pre
-          className="font-mono text-[9px] leading-[1.35] overflow-x-auto whitespace-pre"
-          style={{ color: 'rgba(255,255,255,0.85)' }}
-        >
-          {renderBlueprintCellMatrixCLI(taskCardToMatrixProps(card), false)
-            .split("\n")
-            .map((ln, i) =>
-              ln.includes("TASK :") ? (
-                <span key={i} style={{ color: glowColor }}>{ln}{"\n"}</span>
-              ) : (
-                <span key={i}>{ln}{"\n"}</span>
-              )
-            )}
-        </pre>
-        {/* REQ-3 AC2: elapsed running timer while live */}
-        {card.isWorking && (
-          <div className="font-mono text-[9px] mt-0.5" style={{ color: glowColor }}>
-            ⏱ {String(Math.floor(matrixElapsedSec / 60)).padStart(2, "0")}:
-            {String(matrixElapsedSec % 60).padStart(2, "0")}
-          </div>
-        )}
+        <MatrixFrame
+          matrix={taskCardToMatrixProps(card)}
+          details={matrixDetails(card)}
+          glowColor={glowColor}
+          working={card.isWorking}
+          stopped={card.terminalState === "terminated_unknown"}
+          elapsedSec={card.isWorking ? matrixElapsedSec : card.durationSec ?? matrixElapsedSec}
+          thought={card.isWorking ? card.actionStream?.[card.actionStream.length - 1] ?? card.currentAction : undefined}
+          liveAction={card.currentAction}
+        />
       </div>
     ) : (
       <TaskListCard

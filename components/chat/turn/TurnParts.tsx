@@ -46,7 +46,7 @@ export function ReasoningLine({ turn, isDeveloper }: { turn: TurnRecord; isDevel
   if (turn.status !== "running" || !turn.reasoning.trim()) return null
   const line = latestSentence(turn.reasoning)
   return isDeveloper ? (
-    <div className="font-mono text-[11px] leading-[1.5] flex gap-2 min-w-0" data-part="reasoning">
+    <div className="font-mono text-[11px] flex gap-2 min-w-0" style={{ lineHeight: 1.5 }} data-part="reasoning">
       <span className="flex-none font-bold" style={{ color: "#f2c14e" }}>THK :</span>
       <span className="truncate italic text-white/55">{line}</span>
     </div>
