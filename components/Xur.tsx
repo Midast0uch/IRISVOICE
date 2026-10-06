@@ -1,17 +1,26 @@
 'use client'
 
 import { useEffect, useRef } from 'react'
+import { makePaletteSampler, type Palette } from '@/lib/brandPalette'
 
 interface XurProps {
   size?: number
   color?: string
   speed?: number
+  /**
+   * Optional brand palette [head, body, tail]. When given, particle i takes a
+   * colour interpolated head -> body -> tail along the trail and `color` is
+   * ignored. Without it the trail is drawn in one `color`, as before.
+   */
+  palette?: Palette
 }
 
-export function Xur({ size = 32, color = 'currentColor', speed = 1 }: XurProps) {
+export function Xur({ size = 32, color = 'currentColor', speed = 1, palette }: XurProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const rafRef = useRef<number>(0)
   const startRef = useRef<number>(0)
+  // A stable key so a new array with the same colours does not restart the loop.
+  const paletteKey = palette ? palette.join('|') : ''
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -27,6 +36,12 @@ export function Xur({ size = 32, color = 'currentColor', speed = 1 }: XurProps) 
     const PARTICLE_COUNT = 68
     const ROTATION_DURATION = 30000 / speed
     const PULSE_DURATION = 4200 / speed
+    // Per-particle colours (head = index 0). Null keeps the single-colour path.
+    const pal = paletteKey ? (paletteKey.split('|') as unknown as Palette) : null
+    const sample = pal ? makePaletteSampler(pal) : null
+    const colors = sample
+      ? Array.from({ length: PARTICLE_COUNT }, (_, i) => sample(i / PARTICLE_COUNT))
+      : null
 
     function detailScale(t: number): number {
       return 0.52 + 0.48 * (0.5 + 0.5 * Math.sin((t / PULSE_DURATION) * Math.PI * 2))
@@ -43,8 +58,10 @@ export function Xur({ size = 32, color = 'currentColor', speed = 1 }: XurProps) 
       const elapsed = timestamp - startRef.current
 
       ctx.clearRect(0, 0, size, size)
-      ctx.strokeStyle = color
-      ctx.fillStyle = color
+      if (!colors) {
+        ctx.strokeStyle = color
+        ctx.fillStyle = color
+      }
 
       const s = detailScale(elapsed)
       const progress = (elapsed % ROTATION_DURATION) / ROTATION_DURATION
@@ -61,6 +78,7 @@ export function Xur({ size = 32, color = 'currentColor', speed = 1 }: XurProps) 
         const fade = 1 - i / PARTICLE_COUNT
         const particleSize = (1 + fade * 2) * (size / 100)
 
+        if (colors) ctx.fillStyle = colors[i]
         ctx.globalAlpha = fade * 0.6
         ctx.beginPath()
         ctx.arc(px, py, particleSize, 0, Math.PI * 2)
@@ -70,6 +88,7 @@ export function Xur({ size = 32, color = 'currentColor', speed = 1 }: XurProps) 
       // Draw leading dot (brightest)
       const lead = curvePoint(currentAngle, s)
       ctx.globalAlpha = 1
+      if (colors) ctx.fillStyle = colors[0]
       ctx.beginPath()
       ctx.arc((lead.x / 100) * size, (lead.y / 100) * size, size / 32, 0, Math.PI * 2)
       ctx.fill()
@@ -86,7 +105,7 @@ export function Xur({ size = 32, color = 'currentColor', speed = 1 }: XurProps) 
 
     rafRef.current = requestAnimationFrame(animate)
     return () => cancelAnimationFrame(rafRef.current)
-  }, [size, color, speed])
+  }, [size, color, speed, paletteKey])
 
   return (
     <canvas
