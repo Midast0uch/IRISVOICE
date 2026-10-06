@@ -23,6 +23,16 @@ import { useLauncherMode } from '@/hooks/useLauncherMode';
 import { useInferenceState } from '@/hooks/useInferenceState';
 import { useCrawlContext } from '@/hooks/CrawlProvider';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
+import { Xur } from '@/components/Xur';
+import { WingMenu, type WingMenuItem } from '@/components/chrome/WingMenu';
+import { ModelRoutingTable } from '@/components/dashboard/ModelRoutingTable';
+import { DashboardRail, type RailPlace, type RailView } from '@/components/dashboard/DashboardRail';
+import {
+  changeKey, changeSection, changedKeys, isPlainFieldSection, isSegmented, sectionMatches, sectionSummary,
+} from '@/components/dashboard/settingsModel';
+import { useBrandPalette } from '@/hooks/useBrandPalette';
+import { brandVars } from '@/components/chat/header/brandVars';
+import type { Palette as BrandPalette } from '@/lib/brandPalette';
 
 // cli-workspace-unification T7 (REQ-7 AC2): the Workspace Hub surface —
 // lazy-loaded so the hub bundle only loads when the rail node is clicked.
@@ -89,6 +99,10 @@ const MAIN_NODES_DATA = [
   { id: 'customize', label: 'Customize', icon: Palette },
   { id: 'monitor', label: 'Monitor', icon: Activity },
 ];
+
+// The surfaces the rail's Surfaces view lists, in order. (The Inference console is not one
+// any more: it moves into Monitor. `inference_console` still routes there.)
+const SURFACE_IDS = ['hub', 'browser', 'models', 'marketplace'];
 
 const CATEGORY_LABELS: Record<string, string> = {
   input: 'Input',
@@ -167,6 +181,8 @@ function convertCardFieldsToDashboardFields(cards: any[]) {
         min: field.min,
         max: field.max,
         unit: field.unit,
+        step: field.step,
+        description: field.description,
         placeholder: field.placeholder,
         action: field.action,
         showIf: field.showIf,
@@ -183,7 +199,7 @@ function useSectionsData() {
       if (!acc[sectionId]) {
         acc[sectionId] = {
           id: sectionId,
-          label: SECTION_TO_LABEL[sectionId]?.toUpperCase() || sectionId.toUpperCase(),
+          label: SECTION_TO_LABEL[sectionId] || sectionId,
           icon: getIconComponent(SECTION_TO_ICON[sectionId] || 'Boxes'),
           fields: convertCardFieldsToDashboardFields(getCardsForSection(sectionId))
         };
@@ -240,10 +256,14 @@ function unsavedSections(
     .filter(([, v]) => !!v && typeof v === 'object' && Object.keys(v).length > 0);
 }
 
-const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, sectionId, updateField, fieldErrors, clearFieldError, sendMessage, audioInputDevices, audioOutputDevices, wakeWords, visionModelOptions, apiKeySaved }: { field: any; glowColor: string; fieldValues?: Record<string, Record<string, string | number | boolean>>; sectionId?: string; updateField?: (sectionId: string, fieldId: string, value: any) => void; fieldErrors?: Record<string, string>; clearFieldError?: (sectionId: string, fieldId: string) => void; sendMessage?: (type: string, payload?: any) => boolean; audioInputDevices?: string[]; audioOutputDevices?: string[]; wakeWords?: string[]; visionModelOptions?: { label: string; value: string }[]; apiKeySaved?: boolean }) {
+const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, sectionId, updateField, fieldErrors, clearFieldError, sendMessage, audioInputDevices, audioOutputDevices, wakeWords, visionModelOptions, apiKeySaved, changed }: { field: any; glowColor: string; fieldValues?: Record<string, Record<string, string | number | boolean>>; sectionId?: string; updateField?: (sectionId: string, fieldId: string, value: any) => void; fieldErrors?: Record<string, string>; clearFieldError?: (sectionId: string, fieldId: string) => void; sendMessage?: (type: string, payload?: any) => boolean; audioInputDevices?: string[]; audioOutputDevices?: string[]; wakeWords?: string[]; visionModelOptions?: { label: string; value: string }[]; apiKeySaved?: boolean; /** The user changed this value and has not applied it: it gets the amber dot. */ changed?: boolean }) {
   const [localValue, setLocalValue] = useState(field.defaultValue ?? '');
   const value = fieldValues && sectionId ? (fieldValues[sectionId]?.[field.id] ?? field.defaultValue ?? '') : localValue;
   const [btnFeedback, setBtnFeedback] = useState<string | null>(null);
+  // A slider drag shows its value at once but commits once, when the pointer lifts
+  // (every commit is a live update to the backend). Keys and assistive tech commit per change.
+  const [draft, setDraft] = useState<number | null>(null);
+  const dragging = useRef(false);
   
   const errorKey = sectionId && field.id ? `${sectionId}:${field.id}` : null;
   const errorMessage = errorKey && fieldErrors ? fieldErrors[errorKey] : null;
@@ -266,15 +286,6 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
     }
   }, [fieldValues, sectionId, updateField, field.id, errorMessage, clearFieldError, sendMessage]);
 
-  const handleSliderClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const p = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-    const min = field.min ?? 0;
-    const max = field.max ?? 100;
-    const newValue = min + p * (max - min);
-    setValue(newValue);
-  }, [field.min, field.max, setValue]);
-
   // Conditional visibility: hide field if showIf condition not met
   if (field.showIf && fieldValues && sectionId) {
     const depValue = fieldValues[sectionId]?.[field.showIf.field];
@@ -282,14 +293,16 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
     if (depValue !== undefined && depValue !== null && !field.showIf.values.includes(depValue)) return null;
   }
 
+  // The label side of a row: name, the amber dot while it is changed, and the hint.
+  const label = (
+    <div className="l">
+      <b>{changed && <i title="changed, not applied" />}{field.label}</b>
+      {field.description && <small>{field.description}</small>}
+    </div>
+  );
+
   if (field.type === 'section') {
-    return (
-      <div className="pt-4 pb-1 border-b border-white/5 mb-2 col-span-full">
-        <span className="text-[9px] font-black uppercase tracking-[0.2em] text-white/30">
-          {field.label}
-        </span>
-      </div>
-    );
+    return <div className="iris-fh">{field.label}</div>;
   }
 
   if (field.type === 'custom') {
@@ -363,8 +376,9 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
 
   if (field.type === 'button') {
     return (
-      <div className="py-2 col-span-full">
+      <div className="iris-f wide">
         <button
+          type="button"
           onClick={() => {
             setBtnFeedback("clicked");
             setTimeout(() => setBtnFeedback(null), 2000);
@@ -374,14 +388,7 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
               setValue("trigger");
             }
           }}
-          className="w-full py-2 px-3 rounded-xl text-[10px] font-bold uppercase tracking-wider transition-all"
-          style={{
-            background: btnFeedback ? `${glowColor}30` : `${glowColor}15`,
-            border: `1px solid ${btnFeedback ? glowColor : `${glowColor}44`}`,
-            color: glowColor,
-          }}
-          onMouseEnter={e => { if (!btnFeedback) { e.currentTarget.style.background = `${glowColor}25`; e.currentTarget.style.borderColor = `${glowColor}66`; }}}
-          onMouseLeave={e => { if (!btnFeedback) { e.currentTarget.style.background = `${glowColor}15`; e.currentTarget.style.borderColor = `${glowColor}44`; }}}
+          className="iris-fbtn"
         >
           {btnFeedback ? `✓ ${field.label}` : field.label}
         </button>
@@ -391,24 +398,19 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
 
   if (field.type === 'toggle') {
     return (
-      <div className="flex items-center justify-between py-1.5 px-1 gap-2">
-        <span className="text-[11px] font-medium text-white/60 flex-1 min-w-0 leading-tight">{field.label}</span>
-        <button
-          onClick={() => setValue(!value)}
-          className="relative w-8 h-4 rounded-full transition-colors"
-          style={{ backgroundColor: value ? glowColor : 'rgba(255,255,255,0.1)' }}
-        >
-          <motion.span
-            className="absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-sm"
-            animate={{ left: value ? '18px' : '2px' }}
-          />
-        </button>
+      <div className="iris-f">
+        {label}
+        <div className="c">
+          <span className="iris-tgw">{value ? 'on' : 'off'}</span>
+          <button type="button" role="switch" aria-checked={!!value} aria-label={field.label} className="iris-tg" onClick={() => setValue(!value)} />
+        </div>
       </div>
     );
   }
 
   if (field.type === 'dropdown') {
-    let options = field.options || [];
+    const baseOptions = field.options || [];
+    let options = baseOptions;
     if (sectionId === 'input' && field.id === 'input_device') options = audioInputDevices || [];
     if (sectionId === 'output' && field.id === 'output_device') options = audioOutputDevices || [];
     if (sectionId === 'wake' && (field.id === 'wake_word' || field.id === 'wake_phrase')) options = wakeWords && wakeWords.length > 0 ? wakeWords : (field.options || []);
@@ -424,18 +426,29 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
     const _optObjs: { label: string; value: string }[] = options.map((o: any) =>
       typeof o === 'string' ? { label: o, value: o } : { label: String(o.label ?? o.value ?? ''), value: String(o.value ?? o.label ?? '') }
     );
-    
+    // A small fixed enum is a segmented control; a list that comes from the
+    // device or the model scan stays a dropdown.
+    const segmented = isSegmented(field, options !== baseOptions);
+
     return (
-      <div className="flex items-center justify-between py-1.5 gap-3 group/field px-1">
-        <span className="text-[11px] font-medium text-white/55 group-hover/field:text-white/80 transition-colors flex-shrink-0 whitespace-nowrap">{field.label}</span>
-        <div className="w-[140px] flex-shrink-0">
-          <CustomDropdown
-            value={value}
-            options={_optObjs}
-            onChange={setValue}
-            glowColor={glowColor}
-            className="text-[10px] py-1 px-2 h-7 w-full"
-          />
+      <div className="iris-f">
+        {label}
+        <div className="c">
+          {segmented ? (
+            <div className="iris-sg" role="group" aria-label={field.label}>
+              {_optObjs.map((o) => (
+                <button key={o.value} type="button" aria-pressed={o.value === value} onClick={() => setValue(o.value)}>{o.label}</button>
+              ))}
+            </div>
+          ) : (
+            <CustomDropdown
+              value={value}
+              options={_optObjs}
+              onChange={setValue}
+              glowColor={glowColor}
+              variant="ink"
+            />
+          )}
         </div>
       </div>
     );
@@ -444,15 +457,33 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
   if (field.type === 'slider') {
     const min = field.min ?? 0;
     const max = field.max ?? 100;
-    const pct = ((Number(value) - min) / (max - min)) * 100;
+    const current = Number(value);
+    const shown = draft ?? (Number.isFinite(current) ? current : min);
+    const commit = () => {
+      dragging.current = false;
+      if (draft !== null) { setValue(draft); setDraft(null); }
+    };
     return (
-      <div className="py-2 px-1">
-        <div className="flex items-center justify-between mb-1.5">
-          <span className="text-[11px] font-medium tracking-wide text-white/60">{field.label}</span>
-          <span className="text-[10px] tabular-nums" style={{ color: glowColor }}>{Math.round(Number(value))}{field.unit || ''}</span>
-        </div>
-        <div className="relative h-1 bg-white/5 rounded-full cursor-pointer" onClick={handleSliderClick}>
-          <div className="absolute left-0 top-0 h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: glowColor }} />
+      <div className="iris-f">
+        {label}
+        <div className="c">
+          <input
+            type="range"
+            className="iris-range"
+            min={min}
+            max={max}
+            step={field.step ?? 1}
+            value={shown}
+            aria-label={field.label}
+            onPointerDown={() => { dragging.current = true; }}
+            onPointerUp={commit}
+            onPointerCancel={commit}
+            onChange={(e) => {
+              const n = Number(e.target.value);
+              if (dragging.current) setDraft(n); else setValue(n);
+            }}
+          />
+          <span className="iris-num">{Math.round(shown)}{field.unit || ''}</span>
         </div>
       </div>
     );
@@ -467,32 +498,33 @@ const FieldRow = memo(function FieldRow({ field, glowColor, fieldValues, section
     // inference keyring, so it must not claim to be saved.
     const keySaved = isSecret && sectionId === 'model_selection' && !!apiKeySaved && !value;
     return (
-      <div className="py-1.5 px-1 col-span-full">
-        <label className="text-[10px] font-medium tracking-wide text-white/50 block mb-1">{field.label}</label>
-        <input
-          type={isSecret ? 'password' : 'text'}
-          value={String(value ?? '')}
-          placeholder={keySaved ? '••••••••••••••••' : (field.placeholder || field.label)}
-          onChange={(e) => setValue(e.target.value)}
-          className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-[11px] text-white/90 placeholder:text-white/25 outline-none transition-all focus:border-white/25 focus:bg-white/8"
-          style={{ fontFamily: field.id.includes('url') || field.id.includes('endpoint') || field.id.includes('key') ? "'JetBrains Mono', monospace" : 'inherit' }}
-          onFocus={(e) => { e.currentTarget.style.borderColor = glowColor + '60'; }}
-          onBlur={(e) => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.1)'; }}
-        />
+      <div className="iris-f wide">
+        {label}
+        <div className="c">
+          <input
+            type={isSecret ? 'password' : 'text'}
+            value={String(value ?? '')}
+            aria-label={field.label}
+            placeholder={keySaved ? '••••••••••••••••' : (field.placeholder || field.label)}
+            onChange={(e) => setValue(e.target.value)}
+            className="iris-input"
+            style={{ fontFamily: field.id.includes('url') || field.id.includes('endpoint') || field.id.includes('key') ? "'JetBrains Mono', monospace" : 'inherit' }}
+          />
+        </div>
         {keySaved && (
-          <p className="text-[9px] text-emerald-400/80 mt-1">Key saved — leave blank to keep it.</p>
+          <p className="iris-fok">Key saved — leave blank to keep it.</p>
         )}
         {errorMessage && (
-          <p className="text-[9px] text-red-400 mt-1">{errorMessage}</p>
+          <p className="iris-ferr">{errorMessage}</p>
         )}
       </div>
     );
   }
 
   return (
-    <div className="flex items-center justify-between py-1.5 px-1">
-      <span className="text-[11px] font-medium tracking-wide text-white/60">{field.label}</span>
-      <span className="text-[11px] text-white/30">{value || '-'}</span>
+    <div className="iris-f">
+      {label}
+      <div className="c"><span className="iris-num" style={{ whiteSpace: 'nowrap' }}>{value || '-'}</span></div>
     </div>
   );
 });
@@ -555,8 +587,6 @@ export function DarkGlassDashboard({
     return localStorage.getItem('iris_active_tab_v1') || 'voice'
   });
   const [activeSubApp, setActiveSubApp] = useState<string | null>(null);
-  // Asks the Monitor page to open a row (the old Inference console = its stream row).
-  const [monitorOpenRow, setMonitorOpenRow] = useState<{ row: 'stream'; n: number } | null>(null);
   // Live web-search status, rendered as a pill in the CENTRE of the header
   // (between the sub-app title and the notification button). Owned here rather
   // than in dashboard-wing because the header lives here — the wing could only
@@ -573,12 +603,27 @@ export function DarkGlassDashboard({
     pagesTotal: number
     error: string | null
   }>({ active: false, query: '', pagesDone: 0, pagesTotal: 0, error: null });
+  // The Xur button folds the rail to orbs only (and unfolds it).
   const [isRailExpanded, setIsRailExpanded] = useState(true);
-  const [isSidebarHidden, setIsSidebarHidden] = useState(false);
-  // T7 (REQ-7 AC1): dual-mode rail — SURFACES (live workspaces) vs SETTINGS
-  // (the 6 category nodes). Collapses to a 2-pip toggle at 56px rail width.
-  const [railMode, setRailMode] = useState<'surfaces' | 'settings'>('surfaces');
-  const [seamHover, setSeamHover] = useState(false);
+  // The rail has two views on one spine: Settings (the six tabs) and Surfaces
+  // (workspace hub, browser, models, marketplace). The view follows what is on
+  // screen: a surface is open, or a settings tab is.
+  const railMode: RailView = activeSubApp ? 'surfaces' : 'settings';
+  // The surface the Surfaces view returns to (the hub until another one is opened).
+  const lastSurfaceRef = useRef('hub');
+  useEffect(() => {
+    if (activeSubApp && SURFACE_IDS.includes(activeSubApp)) lastSurfaceRef.current = activeSubApp;
+  }, [activeSubApp]);
+  // "Find a setting": searches section names and field labels across all settings places.
+  const [findQuery, setFindQuery] = useState('');
+  // Monitor: open_inference_console lands on the Inference stream (docs/architecture/MONITOR.md).
+  const [monitorOpenRow, setMonitorOpenRow] = useState<{ row: 'stream'; n: number } | null>(null);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const closeMenu = useCallback(() => setMenuOpen(false), []);
+  const brand = useBrandPalette();
+  // The dashboard's accent is the second hue; the Xur here rides in the hues from the second on.
+  const xurPalette: BrandPalette = [brand[1], brand[2], brand[0]];
+  const accent = brand[1];
 
   // ── T7 telemetry badge sources (REQ-7 AC2) — EXISTING stores only, no new
   // telemetry backend. If a source is unavailable the badge renders dimmed
@@ -908,6 +953,11 @@ export function DarkGlassDashboard({
   // rewrote cfg.inference.provider behind the live role binding.
   const dirtySectionsRef = useRef<Set<string>>(new Set());
 
+  // Each field's value from BEFORE its first edit since the last Apply, keyed
+  // "section.field". A field counts as changed while its value differs from this
+  // (change it back and it is no longer changed). Apply clears it.
+  const [pristine, setPristine] = useState<Record<string, unknown>>({});
+
   // Persist localFieldValues to localStorage on every change.
   useEffect(() => {
     try {
@@ -981,6 +1031,8 @@ export function DarkGlassDashboard({
   // AND sends the individual field change to the backend via WebSocket (live update).
   // This means the backend always has the latest value, not just after pressing Apply.
   const localUpdateField = useCallback((sectionId: string, fieldId: string, value: any) => {
+    const key = changeKey(sectionId, fieldId);
+    setPristine(p => (key in p ? p : { ...p, [key]: localFieldValuesRef.current[sectionId]?.[fieldId] }));
     setLocalFieldValues(prev => ({
       ...prev,
       [sectionId]: { ...(prev[sectionId] || {}), [fieldId]: value },
@@ -1231,27 +1283,32 @@ export function DarkGlassDashboard({
   const sectionsData = useSectionsData();
   const activeSections = sectionsData[activeTab] || [];
 
+  const handleTabChange = useCallback((tabId: string) => {
+    setActiveTab(tabId);
+    setActiveSubApp(null);
+    setFindQuery('');
+    selectSectionWs(tabId);
+    // Persist so the app reopens on the same tab
+    if (typeof window !== "undefined") {
+      localStorage.setItem('iris_active_tab_v1', tabId)
+    }
+  }, [selectSectionWs]);
+
   const VIRTUAL_SUB_APPS = new Set(['browser', 'marketplace', 'models', 'hub']);
 
   const handleSubAppChange = useCallback((appId: string) => {
+    // The Inference console is part of Monitor now; the old route (the
+    // open_inference_console card action) lands on the Monitor tab.
     if (appId === 'inference_console') {
-      // The console is the Inference stream row of the Monitor page (docs/architecture/MONITOR.md).
-      setActiveTab('monitor');
-      setActiveSubApp(null);
-      setIsSidebarHidden(false);
-      selectSectionWs('monitor');
+      handleTabChange('monitor');
       setMonitorOpenRow((r) => ({ row: 'stream', n: (r?.n ?? 0) + 1 }));
       return;
     }
     setActiveSubApp(appId);
-    if (VIRTUAL_SUB_APPS.has(appId)) {
-      setIsSidebarHidden(true);
-    } else {
-      setIsSidebarHidden(false);
-      // Only send select_category for real backend categories
-      selectCategory(appId as any);
-    }
-  }, [selectCategory, selectSectionWs]);
+    setFindQuery('');
+    // Only send select_category for real backend categories
+    if (!VIRTUAL_SUB_APPS.has(appId)) selectCategory(appId as any);
+  }, [selectCategory, handleTabChange]);
 
   // Listen for card action events (e.g., button fields with action='open_models_screen')
   useEffect(() => {
@@ -1338,14 +1395,11 @@ export function DarkGlassDashboard({
 
   // Navigate to a sub-app when initialSubApp is set from outside (e.g., Browse button in WheelView)
   useEffect(() => {
-    if (initialSubApp === 'inference_console') {
-      handleSubAppChange(initialSubApp);
-    } else if (initialSubApp) {
-      setActiveSubApp(initialSubApp);
-      if (['browser', 'marketplace', 'models'].includes(initialSubApp)) {
-        setIsSidebarHidden(true);
-      }
-    }
+    if (!initialSubApp) return;
+    // The Inference console is part of Monitor now.
+    if (initialSubApp === 'inference_console') handleSubAppChange('inference_console');
+    else setActiveSubApp(initialSubApp);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only a new initialSubApp navigates
   }, [initialSubApp]);
 
   const toggleSection = (sectionId: string) => {
@@ -1424,6 +1478,7 @@ export function DarkGlassDashboard({
       // Record what we just persisted so handleCloseWithSave can detect whether
       // there are further unsaved edits before the next close.
       dirtySectionsRef.current.clear();
+      setPristine({});
     } catch (error) {
       console.error("[DarkGlassDashboard] Apply failed:", error);
     } finally {
@@ -1540,312 +1595,125 @@ export function DarkGlassDashboard({
 
   const glowColor = localTheme.glow?.color || ACCENT_COLOR;
 
-  const handleTabChange = useCallback((tabId: string) => {
-    setActiveTab(tabId);
-    setActiveSubApp(null);
-    selectSectionWs(tabId);
-    // Persist so the app reopens on the same tab
-    if (typeof window !== "undefined") {
-      localStorage.setItem('iris_active_tab_v1', tabId)
+  // The rail's places. Settings: the six tabs, each with its count of changes not yet
+  // applied. Surfaces: the four surfaces, with the telemetry the old badges showed
+  // (running agent tasks, live web, tool count) from the same stores.
+  const fieldDefaults = useMemo(() => {
+    const d: Record<string, unknown> = {};
+    for (const sections of Object.values(sectionsData)) for (const sec of sections) for (const f of sec.fields) d[changeKey(sec.id, f.id)] = f.defaultValue;
+    return d;
+  }, [sectionsData]);
+  const changed = useMemo(() => changedKeys(pristine, fieldValues, fieldDefaults), [pristine, fieldValues, fieldDefaults]);
+  const changedByPlace = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const [place, sections] of Object.entries(sectionsData)) {
+      const ids = new Set(sections.map((sec) => sec.id));
+      out[place] = changed.filter((k) => ids.has(changeSection(k))).length;
     }
-  }, [selectSectionWs]);
+    return out;
+  }, [changed, sectionsData]);
 
-  // T7 (REQ-7 AC2): SURFACES view — dedicated 36px circular orbs with live
-  // ambient telemetry badges fed from EXISTING stores.
-  const SURFACE_NODES = [
+  const settingsPlaces: RailPlace[] = MAIN_NODES_DATA.map((node) => ({
+    id: node.id,
+    label: node.label,
+    badge: changedByPlace[node.id] || undefined,
+    title: changedByPlace[node.id] ? `${node.label} — ${changedByPlace[node.id]} not applied` : node.label,
+  }));
+  const surfacePlaces: RailPlace[] = [
     {
-      id: 'hub',
-      label: 'Workspace Hub',
-      icon: LayoutDashboard,
-      badge: { text: `${runningAgentTasks} Running`, live: runningAgentTasks > 0 },
+      id: 'hub', label: 'Workspace hub',
+      badge: runningAgentTasks > 0 ? runningAgentTasks : undefined,
+      title: `Workspace hub — ${runningAgentTasks} running`,
     },
     {
-      id: 'browser',
-      label: 'Browser Surface',
-      icon: Globe,
-      // [● Live Web] ← browser-surface / crawl active state (existing store).
-      badge: crawlState.active
-        ? { text: 'Live Web', live: true }
-        : { text: 'Web Idle', live: false },
+      id: 'browser', label: 'Browser',
+      badge: crawlState.active ? 'live' : undefined,
+      title: crawlState.active ? 'Browser — live web' : 'Browser — web idle',
     },
+    { id: 'models', label: 'Models', title: 'Browse and manage models' },
     {
-      id: 'marketplace',
-      label: 'Marketplace & Models',
-      icon: ShoppingBag,
-      // [● N Tools] ← tool registry count; null source renders dimmed.
-      badge:
-        mcpToolCount != null
-          ? { text: `${mcpToolCount} Tools`, live: mcpToolCount > 0 }
-          : { text: '— Tools', live: false, dimmed: true },
+      id: 'marketplace', label: 'Marketplace',
+      title: mcpToolCount != null ? `Marketplace — ${mcpToolCount} tools` : 'Marketplace',
     },
   ];
+  const currentPlace = activeSubApp ?? activeTab;
+  const placeLabel =
+    [...settingsPlaces, ...surfacePlaces].find((pl) => pl.id === currentPlace)?.label
+    ?? (activeSubApp ? CATEGORY_LABELS[activeSubApp] : undefined)
+    ?? CATEGORY_LABELS[activeTab]
+    ?? 'Settings';
+
+  const handleRailView = (v: RailView) => {
+    if (v === railMode) return;
+    if (v === 'settings') handleTabChange(activeTab);
+    else handleSubAppChange(lastSurfaceRef.current);
+  };
+  const handleRailPlace = (id: string) => {
+    if (railMode === 'settings') handleTabChange(id);
+    else handleSubAppChange(id);
+  };
+
+  const reasoningModel =
+    (role_bindings.find(r => r.role === 'reasoning')?.instance_id) || (localFieldValues?.local_model?.local_model_path as string) || 'No model';
 
   const renderNavigationRail = () => (
-    <motion.nav
-      initial={false}
-      animate={{
-        width: isSidebarHidden ? 0 : (isRailExpanded ? 160 : 56),
-        opacity: isSidebarHidden ? 0 : 1,
-        x: isSidebarHidden ? -20 : 0
-      }}
-      transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
-      className="flex flex-col h-full border-r relative z-20 overflow-visible shrink-0"
-      style={{
-        borderColor: 'rgba(255,255,255,0.06)',
-        backgroundColor: 'rgba(0,0,0,0.3)'
-      }}
-    >
-      {/* REQ-7 AC4: single unified <nav> container — internal scroll lists
-          handle content overflow; the nav itself is overflow-visible so the
-          seam affordance's right 8px is never clipped. */}
-
-      <div className="flex h-16 items-center px-4 mb-2 gap-3 border-b border-white/[0.03] shrink-0">
-        {isRailExpanded ? (
-          <motion.div className="flex items-center" initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
-            <span className="text-[14px] font-black tracking-[0.1em] text-white uppercase">
-              IRIS <span style={{ color: glowColor }}>VOICE</span>
-            </span>
-          </motion.div>
-        ) : (
-          <div className="w-full flex justify-center">
-            <div className="w-6 h-6 rounded-full" style={{ backgroundColor: ACCENT_COLOR }} />
+    <DashboardRail
+      view={railMode}
+      onView={handleRailView}
+      places={railMode === 'settings' ? settingsPlaces : surfacePlaces}
+      current={currentPlace}
+      onPlace={handleRailPlace}
+      folded={!isRailExpanded}
+      palette={xurPalette}
+      footer={
+        <div className="iris-rail-foot" title={`${voiceState === 'error' ? 'Offline' : 'Online'} · Model: ${reasoningModel}`}>
+          <div className="av"><User size={14} /></div>
+          <div className="tx">
+            <b>{voiceState === 'error' ? 'Offline' : 'Online'}</b>
+            <small>Model: {reasoningModel}</small>
           </div>
-        )}
-      </div>
-
-      {/* REQ-7 AC1: dual-mode segmented glass pill switch — collapses to a
-          2-pip toggle [✦ | ⚙] when the rail is 56px. */}
-      {isRailExpanded ? (
-        <div className="px-3 mb-4 pt-1 flex gap-1 shrink-0">
-          {[
-            { id: 'surfaces', label: '✦ SURFACES' },
-            { id: 'settings', label: '⚙ SETTINGS' },
-          ].map((m) => (
-            <button
-              key={m.id}
-              onClick={() => setRailMode(m.id as 'surfaces' | 'settings')}
-              className="flex-1 h-6 rounded-full text-[8px] font-black tracking-wider transition-all"
-              style={{
-                background: railMode === m.id ? `${glowColor}18` : 'rgba(255,255,255,0.03)',
-                color: railMode === m.id ? glowColor : 'rgba(255,255,255,0.4)',
-                border: `1px solid ${railMode === m.id ? `${glowColor}35` : 'rgba(255,255,255,0.05)'}`,
-              }}
-            >
-              {m.label}
-            </button>
-          ))}
         </div>
-      ) : (
-        <div className="px-2 mb-4 pt-1 flex flex-col gap-2 items-center shrink-0">
-          <button
-            onClick={() => setRailMode('surfaces')}
-            title="Surfaces"
-            className="w-6 h-6 rounded-full flex items-center justify-center transition-all"
-            style={{
-              color: railMode === 'surfaces' ? glowColor : 'rgba(255,255,255,0.35)',
-              background: railMode === 'surfaces' ? `${glowColor}18` : 'transparent',
-            }}
-          >
-            <Sparkles size={12} />
-          </button>
-          <button
-            onClick={() => setRailMode('settings')}
-            title="Settings"
-            className="w-6 h-6 rounded-full flex items-center justify-center transition-all"
-            style={{
-              color: railMode === 'settings' ? glowColor : 'rgba(255,255,255,0.35)',
-              background: railMode === 'settings' ? `${glowColor}18` : 'transparent',
-            }}
-          >
-            <Settings size={12} />
-          </button>
-        </div>
-      )}
-
-      <div className="flex-1 py-1 overflow-y-auto overflow-x-hidden scrollbar-hide">
-        {railMode === 'surfaces' ? (
-          /* REQ-7 AC2: SURFACES — 36px circular nodes with live badges */
-          <div className="flex flex-col gap-3 px-2">
-            {SURFACE_NODES.map((node) => {
-              const Icon = node.icon;
-              const isActive = activeSubApp === node.id;
-              return (
-                <button
-                  key={node.id}
-                  onClick={() => handleSubAppChange(node.id)}
-                  title={isRailExpanded ? node.label : `${node.label} — ${node.badge.text}`}
-                  className="group w-full flex items-center transition-all duration-200 relative rounded-full"
-                  style={{
-                    height: 36,
-                    backgroundColor: isActive ? `${glowColor}2E` : 'transparent',
-                    border: isActive ? `1px solid ${glowColor}40` : '1px solid transparent',
-                    boxShadow: isActive ? `0 0 12px ${glowColor}26` : 'none',
-                    ...(isRailExpanded
-                      ? { paddingLeft: 12, paddingRight: 12, justifyContent: 'flex-start', gap: 10 }
-                      : { width: 36, margin: '0 auto', justifyContent: 'center' }),
-                  }}
-                >
-                  <Icon className="w-4 h-4 flex-shrink-0" style={{ color: isActive ? glowColor : 'rgba(255,255,255,0.35)' }} />
-                  {isRailExpanded && (
-                    <span className="flex flex-col min-w-0">
-                      <span className="text-[9px] font-semibold tracking-wide whitespace-nowrap" style={{ color: isActive ? 'white' : 'rgba(255,255,255,0.4)' }}>
-                        {node.label}
-                      </span>
-                      <span
-                        className="flex items-center gap-1 text-[8px] whitespace-nowrap"
-                        style={{ color: node.badge.live ? glowColor : 'rgba(255,255,255,0.25)', opacity: 'dimmed' in node.badge && node.badge.dimmed ? 0.45 : 1 }}
-                      >
-                        <span
-                          className="w-1 h-1 rounded-full"
-                          style={{
-                            background: node.badge.live ? glowColor : 'rgba(255,255,255,0.25)',
-                            boxShadow: node.badge.live ? `0 0 4px ${glowColor}` : 'none',
-                          }}
-                        />
-                        {node.badge.text}
-                      </span>
-                    </span>
-                  )}
-                  {!isRailExpanded && node.badge.live && (
-                    <span
-                      className="absolute top-1 right-1 w-1.5 h-1.5 rounded-full"
-                      style={{ background: glowColor, boxShadow: `0 0 4px ${glowColor}` }}
-                    />
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        ) : (
-          /* REQ-7 AC3: SETTINGS — all 6 MAIN_NODES_DATA category nodes as
-             36px rounded-full buttons */
-          <div className="flex flex-col gap-3 px-2">
-            {MAIN_NODES_DATA.map((node) => {
-              const Icon = node.icon;
-              const isActive = activeTab === node.id && !activeSubApp;
-              return (
-                <button
-                  key={node.id}
-                  onClick={() => handleTabChange(node.id)}
-                  className="group w-full flex items-center justify-center transition-all duration-200 relative rounded-full"
-                  style={{
-                    height: 36,
-                    backgroundColor: isActive ? `${glowColor}2E` : 'transparent',
-                    border: isActive ? `1px solid ${glowColor}40` : '1px solid transparent',
-                    boxShadow: isActive ? `0 0 12px ${glowColor}26` : 'none',
-                    ...(isRailExpanded ? { paddingLeft: 12, paddingRight: 12, justifyContent: 'flex-start', gap: 10 } : { width: 36, margin: '0 auto' }),
-                  }}
-                  title={isRailExpanded ? undefined : node.label}
-                >
-                  <Icon className="w-4 h-4 flex-shrink-0" style={{ color: isActive ? glowColor : 'rgba(255,255,255,0.35)' }} />
-                  {isRailExpanded && (
-                    <span className="text-[10px] font-semibold tracking-wider whitespace-nowrap" style={{ color: isActive ? 'white' : 'rgba(255,255,255,0.35)' }}>
-                      {node.label}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      <div className="p-4 border-t shrink-0" style={{ borderColor: 'rgba(255,255,255,0.05)' }}>
-        <div className="flex items-center gap-3 min-w-0">
-          <div className="w-8 h-8 rounded-full bg-white/5 flex items-center justify-center flex-shrink-0">
-            <User className="w-4 h-4 text-white/50" />
-          </div>
-          {isRailExpanded && (
-            <div className="flex flex-col min-w-0">
-              <span className="text-[11px] font-semibold text-white truncate">Online</span>
-              <span className="text-[9px] text-white/40 truncate">
-            Model: {(role_bindings.find(r => r.role === 'reasoning')?.instance_id) || (localFieldValues?.local_model?.local_model_path as string) || 'No model'}
-          </span>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* REQ-7 AC5-AC7: seam-anchored chevron affordance + neon laser shimmer.
-          Anchored to the rail's right boundary seam at vertical midpoint —
-          with width 16 and right -8 the internal X=8 axis sits exactly on the
-          1px border. Single unified column of 4 razor micro-chevrons whose
-          apex tips terminate on the seam; the shimmer line ignites on hover. */}
-      {!isSidebarHidden && (
-        <div
-          onClick={() => setIsRailExpanded((v) => !v)}
-          onMouseEnter={() => setSeamHover(true)}
-          onMouseLeave={() => setSeamHover(false)}
-          role="button"
-          aria-label={isRailExpanded ? 'Collapse navigation rail' : 'Expand navigation rail'}
-          title={isRailExpanded ? 'Collapse rail' : 'Expand rail'}
-          style={{
-            position: 'absolute',
-            right: -8,
-            top: '50%',
-            transform: 'translateY(-50%)',
-            width: 16,
-            height: 44,
-            zIndex: 50,
-            cursor: 'pointer',
-          }}
-        >
-          <svg
-            width="16"
-            height="44"
-            viewBox="0 0 16 44"
-            fill="none"
-            style={{
-              display: 'block',
-              overflow: 'visible',
-              filter: seamHover
-                ? `drop-shadow(0 0 6px ${glowColor}) drop-shadow(0 0 2px #ffffff)`
-                : 'none',
-              transition: 'filter 0.15s ease',
-            }}
-          >
-            <defs>
-              <linearGradient id="laserSeamShimmerGrad" x1="8" y1="3" x2="8" y2="37" gradientUnits="userSpaceOnUse">
-                <stop offset="0%" stopColor={glowColor} stopOpacity={0} />
-                <stop offset="25%" stopColor={glowColor} stopOpacity={seamHover ? 0.85 : 0.3} />
-                <stop offset="50%" stopColor="#ffffff" stopOpacity={seamHover ? 1 : 0.55} />
-                <stop offset="75%" stopColor={glowColor} stopOpacity={seamHover ? 0.85 : 0.3} />
-                <stop offset="100%" stopColor={glowColor} stopOpacity={0} />
-              </linearGradient>
-            </defs>
-            {/* Neon laser shimmer line down the seam axis, across the tips */}
-            <line
-              x1={8}
-              y1={3}
-              x2={8}
-              y2={37}
-              stroke="url(#laserSeamShimmerGrad)"
-              strokeWidth={seamHover ? 1.75 : 1.25}
-              strokeLinecap="round"
-            />
-            {/* Single unified vertical stack of 4 micro-chevrons — apex tips
-                terminate on the seam (X=8). Expanded: point LEFT (collapse
-                inward). Collapsed: point RIGHT (expand outward). */}
-            {(isRailExpanded
-              ? ['M 12 7 L 8 11 L 12 15', 'M 12 13 L 8 17 L 12 21', 'M 12 19 L 8 23 L 12 27', 'M 12 25 L 8 29 L 12 33']
-              : ['M 4 7 L 8 11 L 4 15', 'M 4 13 L 8 17 L 4 21', 'M 4 19 L 8 23 L 4 27', 'M 4 25 L 8 29 L 4 33']
-            ).map((d, i) => (
-              <path
-                key={i}
-                d={d}
-                stroke={glowColor}
-                strokeWidth={1.3}
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                fill="none"
-                opacity={0.7 + i * 0.0833}
-              />
-            ))}
-          </svg>
-        </div>
-      )}
-    </motion.nav>
+      }
+    />
   );
+
+  // The ◉ menu holds every control the old header row had, with the same handlers.
+  const menuItems: WingMenuItem[] = [
+    // Chat: only where the old "Open Chat" button showed.
+    ...(((spotlightState === 'dashboardSpotlight' || uiState === 'dashboard_open') && onOpenChat) ? [{
+      id: 'chat',
+      label: 'Chat',
+      title: 'Open Chat',
+      glyph: <MessageSquare size={14} style={{ color: isChatOpen ? accent : undefined }} />,
+      run: () => onOpenChat?.(),
+    }] : []),
+    // Detach / reattach — see the matching control in chat-view.
+    {
+      id: 'detach',
+      label: isDetached ? 'Put the dashboard back' : 'Detach the wing',
+      title: isDetached ? 'Put the dashboard back in the widget' : 'Move the dashboard to its own window',
+      glyph: isDetached ? <Minimize2 size={14} /> : <Maximize2 size={14} />,
+      run: async () => {
+        if (isDetached) {
+          await reattachWing('dashboard')
+        } else if (await detachWing('dashboard')) {
+          onClose?.()
+        }
+      },
+    },
+    {
+      id: 'alerts',
+      label: 'Alerts',
+      title: 'Notifications',
+      glyph: <Bell size={14} style={{ color: isNotificationsOpen || unreadCount > 0 ? accent : undefined }} />,
+      run: () => onNotificationsClick?.(),
+      hint: unreadCount > 0 ? String(unreadCount) : undefined,
+      dot: unreadCount > 0,
+    },
+    // Open IRIS Launcher — re-open the separate launcher app if closed
+    { id: 'launcher', label: 'IRIS launcher', title: 'Open IRIS Launcher', glyph: <ExternalLink size={14} />, run: () => openIrisLauncher() },
+    ...(onClose ? [{ id: 'close', label: 'Close', title: 'Close Dashboard', glyph: <X size={14} />, run: () => handleCloseWithSave(), hint: 'Esc' }] : []),
+  ];
 
   const renderHeader = () => (
     /* ref + onMouseDown make this bar the window's drag handle.
@@ -1855,9 +1723,9 @@ export function DarkGlassDashboard({
        already does. Buttons inside still work: useManualDragWindow only treats
        it as a drag past a 12px threshold, and swallows the click that follows
        a real drag so dragging from a button cannot also press it. */
-    <div ref={dashboardHeaderRef} onMouseDown={handleHeaderDragStart} className="relative flex h-12 items-center justify-between pl-4 pr-4 border-b shrink-0 z-30" style={{ borderColor: 'rgba(255,255,255,0.05)', backgroundColor: 'transparent' }}>
-      {/* Live web-search pill — centred in the header, between the sub-app
-          title and the notification button.
+    <div ref={dashboardHeaderRef} onMouseDown={handleHeaderDragStart} className="iris-hd-head" data-testid="dash-header" style={{ height: 52, cursor: 'grab' }}>
+      {/* Live web-search pill — centred in the header, between the title and
+          the ◉ menu.
 
           The pill lives inside a BAND with equal left/right insets rather than
           being centred with left-1/2. Equal insets keep it centred on the
@@ -1870,13 +1738,12 @@ export function DarkGlassDashboard({
           pointer-events-none: this is status, not a control. */}
       {/* Insets are INLINE, not Tailwind arbitrary values: left-[124px] /
           right-[124px] did not take effect here, so the band sized itself to
-          its content (measured 717px inside a 704px header) and max-w-full on
-          the pill had nothing real to resolve against. Inline styles always
-          apply, and left+right together are what give the band a definite
-          width for the pill to truncate within. */}
+          its content and max-w-full on the pill had nothing real to resolve
+          against. Inline styles always apply, and left+right together are what
+          give the band a definite width for the pill to truncate within. */}
       <div
         className="absolute inset-y-0 z-10 flex items-center justify-center pointer-events-none"
-        style={{ left: 124, right: 124 }}
+        style={{ left: 150, right: 56 }}
       >
       <AnimatePresence>
         {(crawler.active || crawler.error) && (
@@ -1926,198 +1793,164 @@ export function DarkGlassDashboard({
       </AnimatePresence>
       </div>
 
-      <div className="flex items-center gap-3 flex-1">
-        {(activeSubApp === 'browser' || activeSubApp === 'marketplace' || activeSubApp === 'models' || activeSubApp === 'inference_console' || activeSubApp === 'hub') && isSidebarHidden && (
-          <button
-            onClick={() => setIsSidebarHidden(false)}
-            className="p-2 -ml-2 hover:bg-white/5 rounded-lg text-white/40 hover:text-white transition-colors"
-            title="Show Sidebar"
-          >
-            <Menu size={16} />
-          </button>
-        )}
-        <span className="text-[12px] font-black tracking-[0.2em] text-white/90 uppercase whitespace-nowrap">
-          {activeSubApp ? CATEGORY_LABELS[activeSubApp] : `${CATEGORY_LABELS[activeTab] || 'SYSTEM'} HUD`}
-        </span>
+      {/* The brand Xur folds the rail to orbs only, and unfolds it. */}
+      <button
+        type="button"
+        className="iris-hd-xbtn"
+        title="Show or hide place names"
+        aria-label="Show or hide place names"
+        aria-expanded={isRailExpanded}
+        onClick={() => setIsRailExpanded((v) => !v)}
+      >
+        <Xur size={40} palette={xurPalette} speed={voiceState === 'idle' ? 0.8 : 1.6} />
+      </button>
+
+      <div className="iris-dh-ttl">
+        <b>{placeLabel}</b>
+        <small data-testid="dash-sub">
+          {activeSubApp
+            ? 'surface'
+            : <>
+                {activeTab === 'monitor' ? 'settings · live' : 'settings'}
+                {changed.length > 0 && <> · <em>{changed.length} not applied</em></>}
+              </>}
+        </small>
       </div>
 
-      <div className="flex items-center gap-0.5 flex-1 justify-end">
-        {(spotlightState === 'dashboardSpotlight' || uiState === 'dashboard_open') && onOpenChat && (
-          <button
-            onClick={onOpenChat}
-            className="p-2 rounded-lg transition-all duration-150"
-            style={{
-              color: isChatOpen ? glowColor : 'rgba(255,255,255,0.75)',
-              backgroundColor: isChatOpen ? `${glowColor}15` : 'transparent',
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.color = glowColor; e.currentTarget.style.backgroundColor = isChatOpen ? `${glowColor}15` : 'rgba(255,255,255,0.05)'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.color = isChatOpen ? glowColor : 'rgba(255,255,255,0.75)'; e.currentTarget.style.backgroundColor = isChatOpen ? `${glowColor}15` : 'transparent'; }}
-            title="Open Chat"
-          >
-            <MessageSquare size={16} />
-          </button>
-        )}
-        {/* Detach / reattach — see the matching control in chat-view. */}
-        <button
-          onClick={async () => {
-            if (isDetached) {
-              await reattachWing('dashboard')
-            } else if (await detachWing('dashboard')) {
-              onClose?.()
-            }
-          }}
-          className="p-2 rounded-lg transition-all duration-150"
-          style={{ color: 'rgba(255,255,255,0.75)' }}
-          onMouseEnter={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.95)'; e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)'; }}
-          onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.75)'; e.currentTarget.style.backgroundColor = 'transparent'; }}
-          title={isDetached ? "Put the dashboard back in the widget" : "Move the dashboard to its own window"}
-          aria-label={isDetached ? "Reattach dashboard" : "Detach dashboard"}
-        >
-          {isDetached ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
-        </button>
-        {/* Open IRIS Launcher — re-open the separate launcher app if closed */}
-        <button
-          onClick={() => openIrisLauncher()}
-          className="p-2 rounded-lg transition-all duration-150"
-          style={{ color: 'rgba(255,255,255,0.75)' }}
-          onMouseEnter={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.95)'; e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)'; }}
-          onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.75)'; e.currentTarget.style.backgroundColor = 'transparent'; }}
-          title="Open IRIS Launcher"
-        >
-          <ExternalLink size={16} />
-        </button>
-        <button
-          onClick={onNotificationsClick}
-          className="p-2 rounded-lg transition-all duration-150 relative"
-          style={{
-            color: isNotificationsOpen || unreadCount > 0 ? glowColor : 'rgba(255,255,255,0.75)',
-            backgroundColor: isNotificationsOpen ? `${glowColor}15` : 'transparent',
-          }}
-          onMouseEnter={(e) => { e.currentTarget.style.color = glowColor; e.currentTarget.style.backgroundColor = isNotificationsOpen ? `${glowColor}15` : 'rgba(255,255,255,0.05)'; }}
-          onMouseLeave={(e) => { e.currentTarget.style.color = isNotificationsOpen || unreadCount > 0 ? glowColor : 'rgba(255,255,255,0.75)'; e.currentTarget.style.backgroundColor = isNotificationsOpen ? `${glowColor}15` : 'transparent'; }}
-        >
-          <Bell size={16} />
-          {unreadCount > 0 && <motion.div initial={{ scale: 0 }} animate={{ scale: 1 }} className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full" style={{ backgroundColor: glowColor }} />}
-        </button>
-        <button
-          onClick={handleCloseWithSave}
-          className="p-2 rounded-lg transition-all duration-150"
-          style={{ color: 'rgba(255,255,255,0.75)' }}
-          onMouseEnter={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.95)'; e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)'; }}
-          onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.75)'; e.currentTarget.style.backgroundColor = 'transparent'; }}
-          title="Close Dashboard"
-        >
-          <X size={16} />
-        </button>
-      </div>
+      <WingMenu
+        open={menuOpen}
+        onToggle={() => setMenuOpen((o) => !o)}
+        onClose={closeMenu}
+        heading="Dashboard"
+        ariaLabel="Dashboard controls"
+        items={menuItems}
+        dotColor={accent}
+      />
     </div>
   );
 
-  const renderActionBar = () => (
-    <div className="flex items-center justify-between pl-4 pr-4 h-16 border-t bg-black/60 shrink-0 z-40" style={{ borderColor: 'rgba(255,255,255,0.05)' }}>
-      <div className="flex items-center gap-6">
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10">
-          <Wifi className="w-3 h-3" style={{ color: voiceState === 'error' ? '#ef4444' : glowColor }} />
-          <span className="text-[9px] font-medium tracking-wide text-white/80">
-            {voiceState === 'error' ? 'OFFLINE' : 'WS LIVE'}
-          </span>
+  // The settings page: find field, rows, and the Apply bar where the chat's composer sits.
+  const sectionLabelById = useMemo(() => {
+    const m: Record<string, string> = {};
+    for (const sections of Object.values(sectionsData)) for (const sec of sections) m[sec.id] = sec.label;
+    return m;
+  }, [sectionsData]);
+
+  const renderSettingsPage = () => {
+    const q = findQuery.trim();
+    const changedSet = new Set(changed);
+    const inferenceSummary = role_bindings.map((b) => `${b.role} ${b.model_override || b.instance_id}`).join(' · ');
+
+    // The body of a section: its own panel (model routing) or its plain fields.
+    const renderBody = (section: any) => section.id === 'model_inference' ? (
+      <>
+        <ModelRoutingTable providers={providers} role_bindings={role_bindings} />
+        <ModelInferenceSection
+          providers={providers}
+          role_bindings={role_bindings}
+          loading={infLoading}
+          sendRoleBinding={sendRoleBinding}
+          glowColor={accent}
+          provider_presets={provider_presets}
+          sendModelSelection={sendModelSelection}
+          sendInferenceMode={sendInferenceMode}
+          inferenceValues={fieldValues?.inference_mode}
+          model_catalog={model_catalog}
+        />
+      </>
+    ) : (
+      (section.fields || []).map((field: any) => (
+        <FieldRow key={field.id} field={field} glowColor={accent} fieldValues={fieldValues} sectionId={section.id} updateField={updateField} fieldErrors={fieldErrors} clearFieldError={clearFieldError} sendMessage={sendMessage} audioInputDevices={audioInputDevices} audioOutputDevices={audioOutputDevices} wakeWords={wakeWords} visionModelOptions={visionModelOptions} apiKeySaved={apiKeySaved} changed={changedSet.has(changeKey(section.id, field.id))} />
+      ))
+    );
+
+    const renderRow = (section: any, forceOpen: boolean) => {
+      const n = changed.filter((k) => changeSection(k) === section.id).length;
+      const summary = section.id === 'model_inference' ? inferenceSummary : sectionSummary(section.fields || [], fieldValues?.[section.id]);
+      // Not a list of plain fields (model routing, tool and skill lists): a pane with
+      // its own layout and a small mono header, always open.
+      if (!isPlainFieldSection(section)) {
+        return (
+          <section key={section.id} className="iris-pane" data-section={section.id} aria-label={section.label}>
+            <h4>{section.label}{n > 0 && <span className="chg">{n} changed</span>}<small>{summary}</small></h4>
+            <div className="iris-pane-body">{renderBody(section)}</div>
+          </section>
+        );
+      }
+      const isOpen = forceOpen || expandedSections.has(section.id);
+      return (
+        <div key={section.id} className={`iris-sec${isOpen ? ' open' : ''}`} data-section={section.id}>
+          <button type="button" className="iris-srow" aria-expanded={isOpen} onClick={() => toggleSection(section.id)}>
+            <span className="o" aria-hidden="true">{isOpen ? '●' : '○'}</span>
+            <b>{section.label}</b>
+            <small>{summary}</small>
+            {n > 0 && <span className="chg">{n} changed</span>}
+          </button>
+          {isOpen && <div className="iris-fields">{renderBody(section)}</div>}
         </div>
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10">
-          <Brain className="w-3 h-3" style={{ color: glowColor }} />
-          <span className="text-[9px] font-medium tracking-wide text-white/80">
-            {((role_bindings.find(r => r.role === 'reasoning')?.instance_id) || (localFieldValues?.local_model?.local_model_path as string) || 'No model').toUpperCase()} READY
-          </span>
+      );
+    };
+
+    let body: React.ReactNode;
+    if (q) {
+      // Matches across every settings place (Monitor has its own page), grouped by place, shown open.
+      const groups = MAIN_NODES_DATA.filter((n) => n.id !== 'monitor').map((node) => ({
+        node,
+        hits: (sectionsData[node.id] || []).filter((sec) => sectionMatches(sec, q)),
+      })).filter((g) => g.hits.length > 0);
+      body = groups.length === 0
+        ? <div className="iris-empty"><b>No setting matches</b>Try a word like mic, wake, model or memory.</div>
+        : groups.map((g) => (
+            <div key={g.node.id} data-place-group={g.node.id}>
+              <div className="iris-place-h">{g.node.label}</div>
+              {g.hits.map((sec) => renderRow(sec, true))}
+            </div>
+          ));
+    } else if (activeTab === 'monitor') {
+      // Monitor tab — ONE page: Now / Inference stream / Usage / Logs / Diagnostics (+ Context in developer mode)
+      body = <MonitorPage glowColor={glowColor} sendMessage={sendMessage} developerMode={irisMode === 'developer'} openRow={monitorOpenRow} />;
+    } else {
+      body = activeSections.length === 0
+        ? <div className="iris-empty"><b>Nothing to set here</b>This place has no settings yet.</div>
+        : activeSections.map((section: any) => renderRow(section, false));
+    }
+
+    const names = [...new Set(changed.map((k) => sectionLabelById[changeSection(k)] ?? SECTION_TO_LABEL[changeSection(k)] ?? changeSection(k)))].join(', ');
+    return (
+      <>
+        <div className="iris-find">
+          <input
+            type="search"
+            placeholder="Find a setting"
+            aria-label="Find a setting"
+            value={findQuery}
+            onChange={(e) => setFindQuery(e.target.value)}
+          />
+          <small>{q ? 'all places' : 'type to find'}</small>
         </div>
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10">
-          <Activity className="w-3 h-3" style={{ color: glowColor }} />
-          <span className="text-[9px] font-medium tracking-wide text-white/80">
-            {voiceState === 'listening' ? 'LISTENING'
-              : voiceState === 'processing_conversation' || voiceState === 'processing_tool' ? 'PROCESSING'
-              : voiceState === 'speaking' ? 'SPEAKING'
-              : voiceState === 'error' ? 'ERROR'
-              : 'SYSTEM IDLE'}
-          </span>
+        <div className="iris-dash-scroll" id="dscroll">{body}</div>
+        <div className="iris-apply">
+          <div className="sum" data-testid="apply-sum">
+            {changed.length > 0 ? <><b>{changed.length} change{changed.length > 1 ? 's' : ''}</b> · {names}</> : 'All saved'}
+          </div>
+          <button
+            type="button"
+            className="iris-go"
+            onClick={handleApplySettings}
+            disabled={changed.length === 0 || applyStatus === 'applying'}
+          >
+            {applyStatus === 'applying' ? 'Applying…' : applyStatus === 'applied' ? '✓ Applied' : 'Apply'}
+          </button>
         </div>
-        <button 
-          onClick={() => handleSubAppChange('models')}
-          className="px-4 py-1.5 rounded-lg text-[9px] font-bold tracking-wider transition-all border text-white/70 hover:text-white flex items-center gap-1.5"
-          style={{ borderColor: 'rgba(255,255,255,0.15)' }}
-          title="Browse & Manage Models"
-        >
-          <HardDrive size={12} />
-          MODELS
-        </button>
-      </div>
-      <div className="flex items-center gap-4 ml-auto">
-        <button 
-          onClick={handleApplySettings} 
-          disabled={applyStatus === "applying"} 
-          className="px-8 py-2.5 rounded-lg text-[11px] font-bold tracking-wider transition-all disabled:opacity-50"
-          style={{ 
-            backgroundColor: applyStatus === "applied" ? `${glowColor}30` : 'transparent',
-            border: `1px solid ${applyStatus === "applied" ? glowColor : 'rgba(255,255,255,0.1)'}`,
-            color: applyStatus === "applied" ? glowColor : 'rgba(255,255,255,0.7)',
-          }}
-          onMouseEnter={(e) => { if (applyStatus !== "applied") e.currentTarget.style.backgroundColor = glowColor; e.currentTarget.style.color = '#000'; }}
-          onMouseLeave={(e) => { if (applyStatus !== "applied") { e.currentTarget.style.backgroundColor = 'transparent'; e.currentTarget.style.color = 'rgba(255,255,255,0.7)'; } }}
-        >
-          {applyStatus === "applying" ? 'COMMITTING...' : applyStatus === "applied" ? '✓ Applied' : 'APPLY'}
-        </button>
-      </div>
-    </div>
-  );
+      </>
+    );
+  };
 
   const renderContentZone = () => (
+    <div className="iris-dash-content">
+    {!activeSubApp ? renderSettingsPage() : (
     <div className="flex-1 overflow-y-auto p-0">
-       {!activeSubApp ? (
-         <div className="w-full h-full pl-3 pr-3 py-4 space-y-2">
-            {/* Monitor tab — ONE page: Now / Inference stream / Usage / Logs / Diagnostics (+ Context in developer mode) */}
-            {activeTab === 'monitor' ? (
-              <MonitorPage glowColor={glowColor} sendMessage={sendMessage} developerMode={irisMode === 'developer'} openRow={monitorOpenRow} />
-            ) : (
-              activeSections.map((section: any) => {
-             const isExpanded = expandedSections.has(section.id);
-             const sectionFields = section.fields || [];
-             return (
-               <div key={section.id} className="group/section overflow-visible rounded-lg border transition-all" style={{ borderColor: isExpanded ? `${glowColor}30` : 'rgba(255,255,255,0.04)', backgroundColor: isExpanded ? 'rgba(255,255,255,0.02)' : 'rgba(255,255,255,0.01)' }}>
-                 <button onClick={() => toggleSection(section.id)} className="w-full h-11 px-4 flex items-center justify-between transition-all hover:bg-white/[0.04] relative group/btn">
-                   <div className="flex items-center gap-2 min-w-0">
-                     <section.icon size={13} className="flex-shrink-0" style={{ color: isExpanded ? glowColor : 'white' }} />
-                     <span className="text-[11px] font-bold tracking-wide text-white/70 group-hover/btn:text-white uppercase whitespace-nowrap">{section.label}</span>
-                   </div>
-                   <ChevronDown size={13} className="flex-shrink-0 ml-2 text-white/30" style={{ transform: isExpanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.3s' }} />
-                   <div className="absolute bottom-0 left-0 right-0 h-[2px] opacity-0 group-hover/section:opacity-100 transition-all" style={{ background: `linear-gradient(90deg, transparent, ${glowColor}, transparent)` }} />
-                 </button>
-                  {isExpanded && (
-                    <div className="px-4 pb-4 pt-2">
-                      {section.id === 'model_inference' ? (
-                        <ModelInferenceSection
-                          providers={providers}
-                          role_bindings={role_bindings}
-                          loading={infLoading}
-                          sendRoleBinding={sendRoleBinding}
-                          glowColor={glowColor}
-                          provider_presets={provider_presets}
-                          sendModelSelection={sendModelSelection}
-                          sendInferenceMode={sendInferenceMode}
-                          inferenceValues={fieldValues?.inference_mode}
-                          model_catalog={model_catalog}
-                        />
-                      ) : (
-                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-6 gap-y-1">
-                          {sectionFields.map((field: any) => (
-                            <FieldRow key={field.id} field={field} glowColor={glowColor} fieldValues={fieldValues} sectionId={section.id} updateField={updateField} fieldErrors={fieldErrors} clearFieldError={clearFieldError} sendMessage={sendMessage} audioInputDevices={audioInputDevices} audioOutputDevices={audioOutputDevices} wakeWords={wakeWords} visionModelOptions={visionModelOptions} apiKeySaved={apiKeySaved} />
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-            })
-            )}
-           </div>
-        ) : activeSubApp === 'browser' ? (
+       {activeSubApp === 'browser' ? (
           <div className="w-full h-full p-1.5">
           {/* REQ-11 (specs/vision-browser-stage, T12): p-4/md:px-10 -> p-1.5.
               The browser viewport is the star of this surface — inherited
@@ -2411,7 +2244,7 @@ export function DarkGlassDashboard({
           /* T10 (REQ-9): unified Marketplace & Models surface — MCP tools and
              Local Models + HF Hub combined behind one segmented pill. */
           <UnifiedMarketplaceModelsSurface key="marketplace" glowColor={glowColor} fontColor="white" sendMessage={sendMessage} />
-        ) : activeSubApp === 'models' ? (
+         ) : activeSubApp === 'models' ? (
            <ModelBrowserPanel key="model_browser" glowColor={glowColor} fontColor="white" sendMessage={sendMessage} />
         ) : activeSubApp === 'hub' ? (
           /* T7/T8/T9 (REQ-7 AC2, REQ-5, REQ-6): the Visual Workspace Hub —
@@ -2429,36 +2262,22 @@ export function DarkGlassDashboard({
           </div>
          ) : null}
     </div>
+    )}
+    </div>
   );
 
   return (
-    <div className="w-full h-full min-h-0 overflow-hidden flex flex-col text-white relative" style={{ background: 'transparent' }}>
-      <div className="absolute inset-0 pointer-events-none opacity-20 mix-blend-overlay z-0" style={{ backgroundImage: 'url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGQAAABkCAYAAABw4pVUAAAACXBIWXMAAAsTAAALEwEAmpwYAAABaWlDQ1BEaXNwbGF5IFAzAAB4nHWQvUvDUBTFT6tS0DqIDh0cMolD1NIKdnFoKxRFMFQFq1OafgltfCQpUnETVyn4H1jBWXCwiFRwcXAQRAcR3Zw6KbhoeN6XVNoi3sfl/Ticc7lcwBtQGSv2AijplpFMxKS11Lrke4OHnlOqZrKooiwK/v276/PR9d5PiFlNu3YQ2U9cl84ul3aeAlN//V3Vn8maGv3f1EGNGRbgkYmVbYsJ3iUeMWgp4qrgvMvHgtMunzuelWSc+JZY0gpqhrhJLKc7H/6D+J5n2yfMLn0OKytTFEUSM6cINe4XNXkYgmNK8wbcypdXUjxXwER+INsDGB1jMAkybGEHKCsBDFAIr5aJwbXKdrbbMh3b7Ctij6jr0oIFoeLlnELj0oqLYiEo+EHnQj0DSo9QmZQwTnjYSHcWFH7Yq5qxB2pORSp29+sX9m3k0/2J+MhuP4g8CJv/9T9fCZo0zjscOAAAAABJRU5ErkJggg==)' }} />
-      <div className="absolute inset-0 pointer-events-none z-10" style={{ boxShadow: `inset 0 0 60px ${glowColor}05` }} />
-      <div className="flex-1 flex overflow-hidden relative z-20">
+    <div className="iris-dash w-full h-full min-h-0 overflow-hidden flex flex-col text-white relative" style={{ background: 'transparent', ...brandVars(brand) }}>
+      {renderHeader()}
+      {/* min-h-0 on the grid and on its content column is load-bearing, not
+          cosmetic: a flex/grid item with overflow `visible` refuses to shrink
+          below its content, so a long page grew the column and every
+          `overflow-y-auto` inside it had nothing to overflow (the summary tab
+          could not be scrolled). min-h-0 restores the ability to shrink. */}
+      <div className="iris-dash-main" data-folded={!isRailExpanded}>
         {renderNavigationRail()}
-          {/* min-h-0 on BOTH columns is load-bearing, not cosmetic. A flex item
-              whose overflow is `visible` gets min-height:auto, meaning it
-              refuses to shrink below its content — so this column grew to fit a
-              long summary, renderContentZone's `flex-1` resolved against that
-              inflated height, and every `overflow-y-auto` below it (the summary
-              tab included) had nothing to overflow. The content was then simply
-              clipped by the `overflow-hidden` wrapper above, which is exactly
-              what "the summary tab cannot be scrolled" looked like: no
-              scrollbar, no wheel response, text cut off at the bottom. The
-              earlier fix — adding overflow-y-auto to the summary container —
-              was correct and inert, because the height it scrolled within was
-              never bounded. Overflow stays visible here (the header's glow and
-              dropdowns depend on it); min-h-0 only restores the ability to
-              shrink. */}
-          <div className="flex-1 min-h-0 flex flex-col overflow-visible relative">
-            {renderHeader()}
-            <div className="flex-1 min-h-0 flex flex-col overflow-visible">
-              {renderContentZone()}
-            </div>
-          </div>
+        {renderContentZone()}
       </div>
-      {renderActionBar()}
 
       {/* Browser tab-strip scrollbar — 4px glass style matching the wing's
           SidePanel custom-scrollbar (white/5 track, white/20 thumb, 2px

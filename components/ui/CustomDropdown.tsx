@@ -30,6 +30,8 @@ interface CustomDropdownProps {
   /** Force the list to open upward (used when the trigger sits low in the
    * viewport, e.g. the ModelSwitcher's nested dropdowns inside its panel). */
   forceOpenUp?: boolean
+  /** "ink" = the dashboard's look (iris-dashboard.html `.vbtn` + `.opts`); default = the glass look. */
+  variant?: "default" | "ink"
 }
 
 /**
@@ -57,7 +59,9 @@ export const CustomDropdown: React.FC<CustomDropdownProps> = ({
   style,
   placeholder = "Select…",
   forceOpenUp = false,
+  variant = "default",
 }) => {
+  const ink = variant === "ink"
   const [open, setOpen] = useState(false)
   const [focusedIdx, setFocusedIdx] = useState<number>(-1)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -199,7 +203,9 @@ export const CustomDropdown: React.FC<CustomDropdownProps> = ({
         disabled={disabled}
         onClick={handleOpen}
         onKeyDown={handleTriggerKeyDown}
-        className={`iris-select w-full flex items-center justify-between gap-2 text-left text-white rounded-xl cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed select-none ${className}`}
+        className={ink
+          ? `iris-vbtn w-full justify-between disabled:opacity-40 disabled:cursor-not-allowed select-none ${className}`
+          : `iris-select w-full flex items-center justify-between gap-2 text-left text-white rounded-xl cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed select-none ${className}`}
         style={style}
       >
         <span className="min-w-0 flex-1 truncate">{displayLabel}</span>
@@ -231,12 +237,22 @@ export const CustomDropdown: React.FC<CustomDropdownProps> = ({
             left: listPos.left,
             width: listPos.width,
             zIndex: 9050,
-            background: "rgba(10, 10, 14, 0.96)",
-            border: "1px solid rgba(255,255,255,0.08)",
-            boxShadow: "0 8px 32px rgba(0,0,0,0.7)",
-            borderRadius: "6px",
-            backdropFilter: "blur(8px)",
-            WebkitBackdropFilter: "blur(8px)",
+            ...(ink
+              ? {
+                  background: "#080a16",
+                  border: `1px solid color-mix(in oklab, ${glowColor} 35%, transparent)`,
+                  boxShadow: "0 16px 40px rgba(0,0,0,0.6)",
+                  borderRadius: "9px",
+                  padding: "5px",
+                }
+              : {
+                  background: "rgba(10, 10, 14, 0.96)",
+                  border: "1px solid rgba(255,255,255,0.08)",
+                  boxShadow: "0 8px 32px rgba(0,0,0,0.7)",
+                  borderRadius: "6px",
+                  backdropFilter: "blur(8px)",
+                  WebkitBackdropFilter: "blur(8px)",
+                }),
           }}
         >
           {normalizedOpts.length === 0 ? (
@@ -253,8 +269,13 @@ export const CustomDropdown: React.FC<CustomDropdownProps> = ({
                   aria-selected={isSelected}
                   onClick={() => selectOption(opt.value)}
                   onMouseEnter={() => setFocusedIdx(idx)}
-                  className="flex items-center gap-2 px-2 py-1.5 text-[10px] font-medium text-white cursor-pointer transition-colors duration-100 select-none"
-                  style={{
+                  className={ink
+                    ? "flex items-center gap-2 px-2 py-1.5 text-[12.5px] text-white cursor-pointer select-none"
+                    : "flex items-center gap-2 px-2 py-1.5 text-[10px] font-medium text-white cursor-pointer transition-colors duration-100 select-none"}
+                  style={ink ? {
+                    background: isFocused || isSelected ? "#0e1122" : "transparent",
+                    borderRadius: "6px",
+                  } : {
                     background: isFocused
                       ? `color-mix(in srgb, ${glowColor} 18%, rgba(255,255,255,0.04))`
                       : isSelected

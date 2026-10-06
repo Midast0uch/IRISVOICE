@@ -961,3 +961,146 @@ body {
 .iris-mon-empty { font: 11px/1.4 var(--mon-mono); color: var(--mon-muted); padding: 6px 0; }
 .iris-mon-bar { width: 90px; height: 5px; border-radius: 999px; background: rgba(255, 255, 255, 0.05); overflow: hidden; }
 .iris-mon-bar i { display: block; height: 100%; background: var(--mon-acc); }
+/* The ◉ menu, shared by the chat and the dashboard wing (components/chrome/WingMenu.tsx).
+   It opens under the wing header (a positioned box). Concept: iris-dashboard.html `.menu`. */
+.iris-hd-menu { top: 100%; cursor: default; }
+.iris-hd-menu .iris-mh {
+  font: 600 10px/1 ui-monospace, "JetBrains Mono", "Cascadia Mono", Consolas, monospace; letter-spacing: 0.12em;
+  text-transform: uppercase; color: #8a92a8; padding: 6px 8px 4px;
+}
+.iris-hd-menu .g { width: 16px; display: grid; place-items: center; font: 13px/1 ui-monospace, "JetBrains Mono", "Cascadia Mono", Consolas, monospace; color: var(--b2, #6b9bff); }
+.iris-hd-menu .iris-mdot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+
+/* Dashboard wing (components/dark-glass-dashboard.tsx, components/dashboard/*).
+   Concept: docs/design/chatview-2026-10-06/iris-dashboard.html. --b1..--b3 are set inline
+   on .iris-dash from the brand palette; --b2 is the dashboard's accent. */
+.iris-dash {
+  --iris-ink: #04050c; --iris-ink-2: #080a16; --iris-ink-3: #0e1122;
+  --iris-hair: rgba(160, 190, 255, 0.09); --iris-muted: #8a92a8; --iris-run: #f2c14e;
+  --iris-mono: ui-monospace, "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+  color: #e6e9f2;
+}
+.iris-dash button:focus-visible, .iris-dash input:focus-visible { outline: 2px solid var(--b2, #6b9bff); outline-offset: 2px; }
+.iris-dh-ttl { position: relative; min-width: 0; flex: 1; display: flex; flex-direction: column; line-height: 1.2; padding-top: 5px; }
+.iris-dh-ttl b { font-weight: 600; font-size: 13px; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.iris-dh-ttl small { font: 11px/1.35 var(--iris-mono); color: var(--iris-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.iris-dh-ttl small em { font-style: normal; color: var(--iris-run); }
+.iris-dash-main { position: relative; flex: 1; min-height: 0; display: grid; grid-template-columns: 150px minmax(0, 1fr); }
+.iris-dash-main[data-folded="true"] { grid-template-columns: 46px minmax(0, 1fr); }
+
+/* the rail: a spine with two views */
+.iris-rail { position: relative; display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--iris-hair); }
+.iris-rail-scroll { position: relative; flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 10px 0; scrollbar-width: none; }
+.iris-rail-cv { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; }
+.iris-rsw { position: relative; z-index: 1; display: flex; margin: 0 8px 4px 24px; border: 1px solid var(--iris-hair); border-radius: 999px; padding: 2px; background: var(--iris-ink); }
+.iris-rsw button {
+  flex: 1; display: flex; justify-content: center; border: 0; background: none; cursor: pointer; padding: 5px 4px; border-radius: 999px;
+  font: 600 9.5px/1 var(--iris-mono); letter-spacing: 0.1em; text-transform: uppercase; color: var(--iris-muted);
+}
+.iris-rsw button[aria-pressed="true"] { background: color-mix(in oklab, var(--b2, #6b9bff) 16%, transparent); color: #e6e9f2; }
+.iris-rsw button .gl { display: none; }
+.iris-rail[data-folded="true"] .iris-rsw { flex-direction: column; margin: 0 4px 6px 6px; border-radius: 10px; }
+.iris-rail[data-folded="true"] .iris-rsw button span { display: none; }
+.iris-rail[data-folded="true"] .iris-rsw button .gl { display: inline; font-size: 12px; font-weight: 400; }
+.iris-place {
+  position: relative; display: flex; width: 100%; gap: 9px; align-items: center; background: none; border: 0; cursor: pointer;
+  padding: 7px 10px 7px 30px; font-weight: 500; font-size: 12.5px; line-height: 1.2; color: var(--iris-muted); text-align: left; white-space: nowrap;
+}
+.iris-place:hover, .iris-place[aria-current="true"] { color: #e6e9f2; }
+.iris-place .n { margin-left: auto; font: normal 10px/1 var(--iris-mono); color: var(--iris-run); }
+.iris-rail[data-folded="true"] .iris-place { height: 32px; }
+.iris-rail[data-folded="true"] .iris-place span { display: none; }
+.iris-rail-foot { flex: none; border-top: 1px solid var(--iris-hair); padding: 10px; display: flex; align-items: center; gap: 9px; min-width: 0; }
+.iris-rail-foot .av { flex: none; width: 26px; height: 26px; border-radius: 50%; background: var(--iris-ink-3); display: grid; place-items: center; color: var(--iris-muted); }
+.iris-rail-foot .tx { min-width: 0; display: flex; flex-direction: column; }
+.iris-rail-foot .tx b { font-weight: 600; font-size: 11px; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.iris-rail-foot .tx small { font: 9.5px/1.3 var(--iris-mono); color: var(--iris-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.iris-rail[data-folded="true"] .iris-rail-foot { justify-content: center; padding: 10px 0; }
+.iris-rail[data-folded="true"] .iris-rail-foot .tx { display: none; }
+
+/* settings content: find, rows, apply bar */
+.iris-dash-content { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.iris-find { flex: none; display: flex; gap: 8px; align-items: center; padding: 10px 14px 6px; }
+.iris-find input {
+  flex: 1; min-width: 0; background: var(--iris-ink-2); border: 1px solid var(--iris-hair); border-radius: 999px; color: #e6e9f2;
+  font-size: 12.5px; line-height: 1; padding: 8px 12px;
+}
+.iris-find small { font: 10.5px/1 var(--iris-mono); color: var(--iris-muted); white-space: nowrap; }
+.iris-dash-scroll { flex: 1; min-height: 0; overflow: auto; padding: 4px 14px 14px; }
+.iris-place-h { font: 600 10px/1 var(--iris-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--iris-muted); padding: 12px 4px 0; }
+.iris-empty { margin: auto; max-width: 42ch; text-align: center; color: var(--iris-muted); font-size: 13px; padding: 24px 20px; }
+.iris-empty b { display: block; color: #e6e9f2; font-size: 15px; margin-bottom: 4px; }
+.iris-sec { position: relative; border-top: 1px solid var(--iris-hair); }
+.iris-sec:first-child { border-top: 0; }
+.iris-srow { display: flex; gap: 10px; align-items: center; width: 100%; background: none; border: 0; padding: 11px 4px; cursor: pointer; text-align: left; min-width: 0; }
+.iris-srow .o { flex: none; width: 12px; text-align: center; font: 12px/1 var(--iris-mono); color: var(--iris-muted); }
+.iris-sec.open .iris-srow .o { color: var(--b2, #6b9bff); }
+.iris-srow b { flex: none; font-weight: 600; font-size: 12.5px; line-height: 1.2; color: #dde2ee; }
+.iris-srow small { flex: 1; min-width: 0; font: 11px/1.2 var(--iris-mono); color: var(--iris-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.iris-srow .chg {
+  flex: none; font: 600 10px/1 var(--iris-mono); color: var(--iris-run); border: 1px solid color-mix(in oklab, var(--iris-run) 45%, transparent);
+  border-radius: 999px; padding: 3px 6px;
+}
+.iris-fields {
+  margin: 0 0 12px 9px; padding: 2px 0 4px 16px; border-left: 1px solid color-mix(in oklab, var(--b2, #6b9bff) 55%, transparent);
+  display: flex; flex-direction: column;
+}
+.iris-f { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 14px; align-items: center; padding: 8px 0; border-bottom: 1px solid rgba(160, 190, 255, 0.05); }
+.iris-f:last-child { border-bottom: 0; }
+.iris-f.wide { grid-template-columns: minmax(0, 1fr); }
+.iris-f .l { min-width: 0; }
+.iris-f .l b { display: flex; gap: 6px; align-items: center; font-weight: 500; font-size: 12.5px; line-height: 1.3; color: #dde2ee; }
+.iris-f .l b i { width: 6px; height: 6px; border-radius: 50%; background: var(--iris-run); flex: none; }
+.iris-f .l small { display: block; font: 10.5px/1.35 var(--iris-mono); color: var(--iris-muted); }
+.iris-f .c { position: relative; display: flex; gap: 6px; align-items: center; justify-self: end; max-width: 220px; min-width: 0; }
+.iris-f.wide .c { justify-self: stretch; max-width: none; }
+@media (max-width: 520px) { .iris-f { grid-template-columns: minmax(0, 1fr); } .iris-f .c { justify-self: start; } }
+.iris-vbtn {
+  display: flex; gap: 6px; align-items: center; max-width: 220px; min-width: 0; background: var(--iris-ink-2); border: 1px solid var(--iris-hair);
+  border-radius: 7px; padding: 6px 9px; cursor: pointer; font-size: 12px; line-height: 1.2; color: #e6e9f2; text-align: left;
+}
+.iris-vbtn:hover { border-color: color-mix(in oklab, var(--b2, #6b9bff) 40%, transparent); }
+.iris-vbtn span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.iris-vbtn em { font: normal 10px/1 var(--iris-mono); color: var(--b2, #6b9bff); }
+.iris-tg { position: relative; flex: none; width: 34px; height: 18px; border-radius: 999px; border: 1px solid var(--iris-hair); background: var(--iris-ink-2); cursor: pointer; padding: 0; }
+.iris-tg::after { content: ""; position: absolute; top: 3px; left: 3px; width: 10px; height: 10px; border-radius: 50%; background: var(--iris-muted); transition: left 0.2s, background 0.2s; }
+.iris-tg[aria-checked="true"] { border-color: color-mix(in oklab, var(--b2, #6b9bff) 55%, transparent); background: color-mix(in oklab, var(--b2, #6b9bff) 14%, transparent); }
+.iris-tg[aria-checked="true"]::after { left: 19px; background: var(--b2, #6b9bff); box-shadow: 0 0 8px var(--b2, #6b9bff); }
+.iris-tgw { font: 10.5px/1 var(--iris-mono); color: var(--iris-muted); width: 22px; }
+.iris-range { width: 120px; accent-color: var(--b2, #6b9bff); }
+.iris-num { font: 11px/1 var(--iris-mono); color: #e6e9f2; font-variant-numeric: tabular-nums; min-width: 34px; text-align: right; }
+.iris-sg { display: flex; border: 1px solid var(--iris-hair); border-radius: 7px; overflow: hidden; }
+.iris-sg button { background: none; border: 0; padding: 5px 8px; font: 11px/1 var(--iris-mono); color: var(--iris-muted); cursor: pointer; }
+.iris-sg button[aria-pressed="true"] { background: color-mix(in oklab, var(--b2, #6b9bff) 16%, transparent); color: #e6e9f2; }
+.iris-input {
+  width: 100%; background: var(--iris-ink-2); border: 1px solid var(--iris-hair); border-radius: 7px; color: #e6e9f2; font-size: 12px; line-height: 1.3; padding: 7px 10px;
+}
+.iris-input::placeholder { color: rgba(230, 233, 242, 0.3); }
+.iris-input:focus { border-color: color-mix(in oklab, var(--b2, #6b9bff) 55%, transparent); outline: none; }
+.iris-fbtn { width: 100%; background: none; border: 1px solid var(--iris-hair); border-radius: 7px; padding: 7px 10px; cursor: pointer; font: 600 11px/1 var(--iris-mono); color: var(--b2, #6b9bff); }
+.iris-fbtn:hover { background: var(--iris-ink-3); }
+.iris-fh { padding: 10px 0 2px; font: 600 9.5px/1 var(--iris-mono); letter-spacing: 0.14em; text-transform: uppercase; color: var(--iris-muted); }
+.iris-ferr { margin: 2px 0 0; font: 10.5px/1.3 var(--iris-mono); color: #ff7a6e; }
+.iris-fok { margin: 2px 0 0; font: 10.5px/1.3 var(--iris-mono); color: #5fcf98; }
+.iris-apply { flex: none; border-top: 1px solid var(--iris-hair); padding: 8px 14px 10px; display: flex; gap: 8px; align-items: center; min-height: 52px; }
+.iris-apply .sum { flex: 1; min-width: 0; font: 11.5px/1.35 var(--iris-mono); color: var(--iris-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.iris-apply .sum b { color: var(--iris-run); font-weight: 600; }
+.iris-go { font-weight: 600; font-size: 12px; line-height: 1; color: #03141b; background: var(--b2, #6b9bff); border: 0; border-radius: 9px; padding: 9px 16px; cursor: pointer; }
+.iris-go:disabled { opacity: 0.35; cursor: default; }
+@media (prefers-reduced-motion: reduce) { .iris-tg::after { transition: none; } }
+
+/* A settings group that is not a list of plain fields (model routing, tool and skill
+   lists) is a pane: a small mono header, no orb row. Concept: the hub's `.lane h4`. */
+.iris-pane { margin: 8px 0 12px; border: 1px solid var(--iris-hair); border-radius: 10px; background: var(--iris-ink-2); min-width: 0; }
+.iris-pane > h4 {
+  margin: 0; display: flex; gap: 8px; align-items: center; padding: 8px 10px; border-bottom: 1px solid var(--iris-hair);
+  font: 600 10px/1 var(--iris-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--iris-muted);
+}
+.iris-pane > h4 small { margin-left: auto; min-width: 0; letter-spacing: 0; text-transform: none; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.iris-pane > h4 .chg { flex: none; font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--iris-run); border: 1px solid color-mix(in oklab, var(--iris-run) 45%, transparent); border-radius: 999px; padding: 3px 6px; }
+.iris-pane-body { padding: 4px 12px 10px; display: flex; flex-direction: column; min-width: 0; }
+.iris-tbl { width: 100%; border-collapse: collapse; margin: 6px 0 8px; font: 11.5px/1.35 var(--iris-mono); }
+.iris-tbl th { text-align: left; font-weight: 600; font-size: 9.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--iris-muted); padding: 4px 6px; border-bottom: 1px solid var(--iris-hair); }
+.iris-tbl td { padding: 6px; border-bottom: 1px solid rgba(160, 190, 255, 0.05); color: #c9cfdb; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.iris-tbl td small { display: block; font-size: 10px; color: var(--iris-muted); }
+.iris-tbl tr[data-active="true"] td:first-child { color: #e6e9f2; box-shadow: inset 2px 0 0 var(--b2, #6b9bff); }

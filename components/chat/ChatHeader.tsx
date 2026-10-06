@@ -1,10 +1,11 @@
 "use client"
 
-import React, { useCallback, useEffect, useRef, useState } from "react"
+import React, { useCallback, useRef, useState } from "react"
 import { motion } from "framer-motion"
 import { BarChart3, Bell, X, ExternalLink, Maximize2, Minimize2 } from 'lucide-react'
 import { invoke } from "@tauri-apps/api/core"
 import { Xur } from "@/components/Xur"
+import { WingMenu, type WingMenuItem } from "@/components/chrome/WingMenu"
 import { useBrandPalette } from "@/hooks/useBrandPalette"
 import { detachWing, reattachWing } from "@/hooks/useDetachedWing"
 import type { ThreadSummary, Strand } from "@/lib/strands/api"
@@ -83,24 +84,12 @@ export function ChatHeader({
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState("")
   const renameDone = useRef(false)
-  const menuRef = useRef<HTMLDivElement>(null)
   const headH = isRemoteView ? 60 : 52
   const touch = isRemoteView ? " touch" : ""
 
   const closeOverlay = useCallback(() => setOverlay(null), [])
-  useEscape(overlay === "menu", closeOverlay)
   const cancelRename = useCallback(() => { renameDone.current = true; setEditing(false) }, [])
   useEscape(editing, cancelRename)
-
-  // Click outside the menu closes it.
-  useEffect(() => {
-    if (overlay !== "menu") return
-    const h = (e: MouseEvent) => {
-      if (!menuRef.current?.contains(e.target as Node) && !(e.target as Element).closest?.("[data-menu-button]")) setOverlay(null)
-    }
-    document.addEventListener("mousedown", h)
-    return () => document.removeEventListener("mousedown", h)
-  }, [overlay])
 
   const toggle = (which: Exclude<Overlay, null>) => {
     closeDropdowns()
@@ -129,13 +118,46 @@ export function ChatHeader({
     switchStrand(s.id)
   }
 
-  const menuItem = (label: string, titleText: string, icon: React.ReactNode, run: () => void | Promise<void>, hint?: React.ReactNode) => (
-    <button key={label} type="button" role="menuitem" title={titleText} onClick={() => { setOverlay(null); void run() }}>
-      <span style={{ width: 16, display: "grid", placeItems: "center" }}>{icon}</span>
-      {label}
-      {hint ? <span className="k">{hint}</span> : null}
-    </button>
-  )
+  // The ◉ menu: every control the old header had, same handlers.
+  const menuItems: WingMenuItem[] = [
+    {
+      id: "dashboard",
+      label: "Dashboard",
+      title: isDashboardOpen ? "Close Dashboard" : "Open Dashboard",
+      glyph: <BarChart3 size={14} style={{ color: isDashboardOpen ? glowColor : undefined }} />,
+      run: () => {
+        if (isDashboardOpen && onDashboardClose) onDashboardClose()
+        else onDashboardClick()
+        closeDropdowns()
+      },
+    },
+    // Detach / reattach. The chat wing becomes its own OS window so it can
+    // live on a second monitor — the widget window is transparent,
+    // borderless and always-on-top, and cannot span two screens.
+    // Detaching closes the wing here so it is never drawn twice;
+    // closing the detached window puts it back.
+    ...(isRemoteView ? [] : [{
+      id: "detach",
+      label: isDetached ? "Put the chat back" : "Detach the wing",
+      title: isDetached ? "Put chat back in the widget" : "Move chat to its own window",
+      glyph: isDetached ? <Minimize2 size={14} /> : <Maximize2 size={14} />,
+      run: async () => {
+        if (isDetached) await reattachWing('chat')
+        else if (await detachWing('chat')) onClose()
+      },
+    }]),
+    {
+      id: "alerts",
+      label: "Alerts",
+      title: "Notifications",
+      glyph: <Bell size={14} style={{ color: unreadCount > 0 ? glowColor : undefined }} />,
+      run: () => { if (showNotifications) closeDropdowns(); else openNotifications() },
+      hint: unreadCount > 0 ? String(unreadCount) : "",
+      dot: unreadCount > 0,
+    },
+    { id: "launcher", label: "Launcher", title: "Open IRIS Launcher", glyph: <ExternalLink size={14} />, run: () => openIrisLauncher() },
+    { id: "close", label: "Close", title: "Close Chat", glyph: <X size={14} />, run: () => { onClose(); closeDropdowns() }, hint: "Esc" },
+  ]
 
   return (
     <>
@@ -216,58 +238,17 @@ export function ChatHeader({
           ⌖
           {otherStrandWorks && <i className="iris-hd-act" data-testid="strand-activity" role="img" aria-label="Another strand is working" style={{ background: "#f2c14e" }} />}
         </button>
-        <button
-          type="button"
-          className={`iris-hd-iconbtn${touch}`}
-          data-menu-button="true"
-          title="More"
-          aria-label="More"
-          aria-haspopup="menu"
-          aria-expanded={overlay === "menu"}
-          onClick={() => toggle("menu")}
-        >
-          ◉
-          {unreadCount > 0 && <i className="iris-hd-act" role="img" aria-label="Unread alerts" style={{ background: glowColor, animation: "none" }} />}
-        </button>
+        <WingMenu
+          open={overlay === "menu"}
+          onToggle={() => toggle("menu")}
+          onClose={closeOverlay}
+          heading="Chat"
+          ariaLabel="Chat controls"
+          items={menuItems}
+          dotColor={glowColor}
+          buttonClass={touch.trim()}
+        />
       </div>
-
-      {overlay === "menu" && (
-        <div ref={menuRef} className="iris-hd-menu" role="menu" aria-label="Chat controls" style={{ ...brandVars(palette), top: headH }}>
-          {menuItem(
-            "Dashboard",
-            isDashboardOpen ? "Close Dashboard" : "Open Dashboard",
-            <BarChart3 size={14} style={{ color: isDashboardOpen ? glowColor : undefined }} />,
-            () => {
-              if (isDashboardOpen && onDashboardClose) onDashboardClose()
-              else onDashboardClick()
-              closeDropdowns()
-            },
-          )}
-          {/* Detach / reattach. The chat wing becomes its own OS window so it can
-              live on a second monitor — the widget window is transparent,
-              borderless and always-on-top, and cannot span two screens.
-              Detaching closes the wing here so it is never drawn twice;
-              closing the detached window puts it back. */}
-          {!isRemoteView && menuItem(
-            isDetached ? "Put the chat back" : "Detach the wing",
-            isDetached ? "Put chat back in the widget" : "Move chat to its own window",
-            isDetached ? <Minimize2 size={14} /> : <Maximize2 size={14} />,
-            async () => {
-              if (isDetached) await reattachWing('chat')
-              else if (await detachWing('chat')) onClose()
-            },
-          )}
-          {menuItem(
-            "Alerts",
-            "Notifications",
-            <Bell size={14} style={{ color: unreadCount > 0 ? glowColor : undefined }} />,
-            () => { if (showNotifications) closeDropdowns(); else openNotifications() },
-            unreadCount > 0 ? String(unreadCount) : "",
-          )}
-          {menuItem("Launcher", "Open IRIS Launcher", <ExternalLink size={14} />, () => openIrisLauncher())}
-          {menuItem("Close", "Close Chat", <X size={14} />, () => { onClose(); closeDropdowns() }, "Esc")}
-        </div>
-      )}
 
       {overlay === "orbit" && (
         <ThreadOrbit palette={palette} activeThreadId={rootId} onOpen={openThread} onNew={newThread} onClose={closeOverlay} />
