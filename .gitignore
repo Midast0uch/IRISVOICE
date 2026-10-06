@@ -141,3 +141,11 @@ venv/
 .venv/
 llama.cpp/
 data/model_call_times.json
+
+# Files over the GitHub 100 MB limit (removed from history 2026-10-05; kept on disk)
+data/models/parakeet-sherpa/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8/encoder.int8.onnx
+llama.cpp-prismml/bin/cublasLt64_12.dll
+llama.cpp-prismml/bin/cublas64_12.dll
+llama.cpp-prismml/bin/ggml-cuda.dll
+llama.cpp-prismml/cuda_dlls.zip
+llama.cpp-prismml/server.zip
