@@ -177,8 +177,8 @@ Where each piece lands:
 
 **Strands** (owner, 2026-10-06): a thread is the whole; each chat under it is a strand
 (user-named, preset tags + own tags); all strands of a thread share one memory; helpers get
-their own strand and report back. The protocol already carries `strand_id`, `author`, `to`,
-`refs`; the conversation store still needs `parent_id`, `kind`/tags, `project_id` (not built).
+their own strand and report back. The protocol carries `strand_id`, `author`, `to`, `refs`;
+the conversation store carries `parent_id`, `tags`, `reports_to`, `project_id` (built, §12).
 
 ## 7. Phase 4 — the live execution matrix (built 2026-10-06)
 
@@ -196,8 +196,8 @@ with literal `**` and fences). Personal mode is unchanged (NOT THIS).
 | `components/chat/TaskCardEntry.tsx` | developer branch renders `MatrixFrame` (was a 9 px ANSI `<pre>` that scrolled sideways) |
 
 Motion (approved concept 2): rows are born (`iris-mx-born`), the running row scans
-(`iris-mx-scan`), its orb breathes, the agent's Xur rides the rail to the running row(s)
-(faster when several run in parallel), a finished run folds to one line, a failed row opens
+(`iris-mx-scan`), its orb breathes, the agent's Xur rides the spine (§9) to the running row(s)
+(the rail Xur was removed when the spine landed), a finished run folds to one line, a failed row opens
 its output by default. All of it stops under `prefers-reduced-motion`. The CSS lives in
 `css-src/globals.css` AND the served `public/globals.css` (the app loads the compiled file;
 `app/globals.css` is not loaded) — new arbitrary Tailwind classes must exist in
@@ -208,18 +208,21 @@ export and logs) render from the same `taskCardToMatrixProps`; a test asserts th
 order and verbs. Guards: `__tests__/matrix/liveMatrix.test.tsx` (15; the TaskCardEntry guard
 fails on the old `<pre>`).
 
-Not yet (the approved design, next steps): the timeline-wide spine (the Xur trail down the
-whole strand, knots, chips on the spine), the personal-mode spine through the vertical card,
-`±` diff icons + review lens, MADE / ASK / permission rows (reply-surface Phase D),
-parallel-row light lines.
+The rest of the approved design landed the same day: the spine (§9), the composer, the
+in-turn interactions (§10), the header (§11), strands and diffs on the backend (§12).
 
 ## 8. Open
 
 - Retire the legacy couriers (after Phase 4 and reply-surface B read parts only).
-- `turn.part` `interaction` / `card` / `todo` parts are filed but still drawn by their old
-  views.
-- Strands in the conversation store; the thread list lag (it downloads every thread with every
-  message on each open — `openHistory()` → `fetchConversations()`).
+- `interaction` parts now draw in the turn (asks, §10); `card` / `todo` parts are still drawn by
+  their old views (task card store, document cards).
+- `TaskListCard.display.test.tsx` pins the footer word "Crystallized" for
+  `learningSignal="crystallized"`; the plain-words rule wants another word. Owner decides.
+- Stop: the DER loop runs in an executor thread; a stop reaches it at its next step boundary
+  (steering inbox), not mid-step.
+- An edit made in a step that FAILS emits no `tool:result`, so its diff is not shown.
+- The project bar has no branch (the app knows only its own repo's branch).
+- Peers / `@person` (Nostr, GOALS 7b) are not built: `to` is always `@iris`.
 - Live gate on the owner's machine (a real text turn, a voice turn, an error turn; record
   them with `IRIS_TURN_RECORD_DIR` and add them as fixtures).
 
@@ -266,7 +269,7 @@ Guards: `__tests__/spine/spineModel.test.ts` (detour math, knot rules, chips in 
 `__tests__/spine/spineGutter.test.tsx` (hover list, click, drag, canvas frame, reduced motion,
 structure: no chips in the composer, no second Xur in the matrix).
 
-## The composer (2026-10-06 design)
+## 9a. The composer (built 2026-10-06)
 
 Both modes: a tray (`RefTray`: the `to @iris` chip, the picked `#` chips, a hint), the project bar
 (`ProjectBar`), then the message box. Files: `components/chat/composer/{refs,ProjectBar}.tsx`.
@@ -311,3 +314,59 @@ Look: `iris-strands.html` (`.dfx`, `.lens`, diff review, `.receipt`). Tests: `__
 Open: `TaskListCard.display.test.tsx` pins the footer text "Crystallized" / "Learning signal: Crystallized"
 for `learningSignal="crystallized"`; the plain-words rule wants "done". Left as the test has it (a test is
 the requirement); decide which side moves.
+
+## 11. The header (built 2026-10-06)
+
+`components/chat/ChatHeader.tsx` + `components/chat/header/*`. Look: `iris-strands.html`.
+
+- **Row:** brand Xur (`useBrandPalette`; opens the thread orbit; faster while voice is busy) ·
+  thread name (click to rename in place → `patchThread`) · the current strand under it (the root
+  strand reads "main"; no dropdown arrow) · `⌖` strand map (a dot when a turn runs in another
+  strand, `useRunningConversations` over the turn store) · `◉` menu: dashboard, detach/reattach,
+  alerts (unread count), launcher, close — every old header control, same handlers.
+- **Thread orbit** (`ThreadOrbit.tsx`): threads on the Xur's loops; pinned threads keep the
+  lower loops; wheel turns it; typing filters; click opens the thread root; pin/unpin; "+ new
+  thread". Data: `fetchThreads()` (summary only). It never calls `fetchConversations` — the
+  old `HistoryPanel` path downloaded every message and lagged; `HistoryPanel` is no longer
+  rendered.
+- **Strand map** (`StrandMap.tsx`): the strands of this thread with tags, "reports to", a
+  working dot; click switches (`openStrand`, loads the row with `GET /api/conversations/{id}`
+  when chat-view has not loaded it); "new strand" = name + preset tags (plan, build, research,
+  people, swarm) + own tags → `createStrand`.
+- **Edge light** (`ChatEdge.tsx` → `components/chrome/EdgeLight.tsx`): the chat wing's top
+  edge with the spotlight aperture set into it, same handler and titles ("Maximize chat" /
+  "Restore balanced view"); `working` = a turn runs in this conversation. The outer box clips
+  with `clipPath: inset(-14px 0 0 0)` (was `overflow:hidden`, which cut the aperture), as in
+  the dashboard wing.
+
+Guards: `__tests__/header/*` (orbit from a mocked `fetchThreads`, never `fetchConversations`;
+filter; pinned on lower loops; rename; create strand with tags; switch; every old control in
+`◉`; aperture → spotlight handler; no render loop with no active conversation).
+
+## 12. Strands, shared memory and diffs (backend, built 2026-10-06)
+
+- **Strands** (`backend/conversation_store.py`, `backend/api/chat.py`): a strand IS a
+  conversation row (messages stay keyed by conversation id). Nullable columns `parent_id`
+  (NULL = thread root), `tags` (JSON), `reports_to`, `project_id`; index
+  `idx_conversations_parent`. `GET /api/threads` is one indexed summary query (`SEARCH c USING
+  INDEX idx_conversations_parent`); `GET/POST /api/threads/{id}/strands`, `PATCH
+  /api/strands/{id}`, `PATCH /api/threads/{id}`. Tags: trimmed, lowercased, ≤ 8, ≤ 24 chars
+  (refused with 422, never cut). Deleting a root deletes its strands. Client:
+  `lib/strands/api.ts`. Guard: `backend/tests/contract/test_strands_contract.py`.
+- **Shared memory — no wiring needed.** The app's recall paths already read across
+  conversations: `research_memory.recall_prior_research` ("any conversation") and
+  `ontology_recall` (thread id is a ranking input only). So every strand of a thread already
+  recalls the same memory. What stays per strand is the kernel's context window
+  (`get_agent_kernel(conversation_id, …)`), which the design wants. `thread_root_of()` exists
+  for a future thread-scoped read; it has no caller yet.
+- **Diffs** (`backend/agent/edit_diffs.py`): the chokepoint is `AgentToolBridge.execute_mcp_tool`
+  for `file_manager` `write_file` / `edit_file` (snapshot before, compare after, off the loop).
+  The payload `diff {diff_id, path, added, removed, hunks, truncated, undoable, new_file}` rides
+  the step's `tool:result` (`diffs` when a step made several edits); a card-free turn still
+  files it into the turn. Bounds: 400 lines / 64 KB per payload, 2 MB pre-image for undo, 8 MB
+  read cap, in-memory LRU ledger 200 diffs / 64 MB. `diff_undo {diff_id, hunk_index?}` →
+  `diff_undo_result {ok, reason?, told_iris}` runs mid-turn (`_UNLOCKED_FRAMES`); an undo
+  restores the exact bytes (or reverse-applies one hunk when its lines still match) and tells
+  IRIS through the conversation's own memory ("[Edit undone by the user] …") plus one
+  `CORRECTION` memory event. Guard: `backend/tests/contract/test_edit_diff_contract.py`.
+
