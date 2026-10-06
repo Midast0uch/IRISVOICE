@@ -1,11 +1,19 @@
 "use client"
 
-import React from "react"
+import React, { useCallback, useEffect, useRef, useState } from "react"
 import { motion } from "framer-motion"
-import { BarChart3, Bell, History, X, ExternalLink, Maximize2, Minimize2 } from 'lucide-react'
+import { BarChart3, Bell, X, ExternalLink, Maximize2, Minimize2 } from 'lucide-react'
 import { invoke } from "@tauri-apps/api/core"
-import { IrisApertureIcon } from "@/components/ui/IrisApertureIcon"
+import { Xur } from "@/components/Xur"
+import { useBrandPalette } from "@/hooks/useBrandPalette"
 import { detachWing, reattachWing } from "@/hooks/useDetachedWing"
+import type { ThreadSummary, Strand } from "@/lib/strands/api"
+import { ThreadOrbit } from "@/components/chat/header/ThreadOrbit"
+import { StrandMap } from "@/components/chat/header/StrandMap"
+import { brandVars } from "@/components/chat/header/brandVars"
+import { useEscape } from "@/components/chat/header/useEscape"
+import { useRunningConversations } from "@/components/chat/header/useRunningConversations"
+import { strandLabel, useThreadContext } from "@/components/chat/header/useThreadContext"
 
 // Launch the separate IRIS Launcher Tauri app (bidirectional launcher⇄widget).
 const openIrisLauncher = async () => {
@@ -26,21 +34,25 @@ export interface ChatHeaderProps {
   // Header drag (the ref is owned by the parent: useManualDragWindow attaches to it)
   chatHeaderRef: React.RefObject<HTMLDivElement | null>
   handleHeaderDragStart: (e: React.MouseEvent) => void
-  // Dashboard / spotlight / close
+  // Dashboard / close. (The spotlight aperture is the wing's EdgeLight: header/ChatEdge.)
   isDashboardOpen: boolean
   onDashboardClose?: () => void
   onDashboardClick: () => void
-  onSpotlightToggle?: () => void
-  isInChatSpotlight: boolean
   onClose: () => void
-  // Dropdown panels
+  // Notifications dropdown
   showNotifications: boolean
   openNotifications: () => void
   unreadCount: number
-  showHistory: boolean
-  openHistory: () => void
   closeDropdowns: () => void
+  // Threads and strands. A strand IS a conversation id.
+  activeConversationId: string | null
+  /** Title shown until the thread list answers (and for a conversation it does not list). */
+  fallbackTitle?: string
+  onNewThread: () => void
+  onOpenConversation: (conversationId: string) => void
 }
+
+type Overlay = "orbit" | "map" | "menu" | null
 
 export function ChatHeader({
   isRemoteView,
@@ -54,22 +66,84 @@ export function ChatHeader({
   isDashboardOpen,
   onDashboardClose,
   onDashboardClick,
-  onSpotlightToggle,
-  isInChatSpotlight,
   onClose,
   showNotifications,
   openNotifications,
   unreadCount,
-  showHistory,
-  openHistory,
   closeDropdowns,
+  activeConversationId,
+  fallbackTitle,
+  onNewThread,
+  onOpenConversation,
 }: ChatHeaderProps) {
+  const palette = useBrandPalette()
+  const ctx = useThreadContext(activeConversationId)
+  const running = useRunningConversations()
+  const [overlay, setOverlay] = useState<Overlay>(null)
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState("")
+  const renameDone = useRef(false)
+  const menuRef = useRef<HTMLDivElement>(null)
+  const headH = isRemoteView ? 60 : 52
+  const touch = isRemoteView ? " touch" : ""
+
+  const closeOverlay = useCallback(() => setOverlay(null), [])
+  useEscape(overlay === "menu", closeOverlay)
+  const cancelRename = useCallback(() => { renameDone.current = true; setEditing(false) }, [])
+  useEscape(editing, cancelRename)
+
+  // Click outside the menu closes it.
+  useEffect(() => {
+    if (overlay !== "menu") return
+    const h = (e: MouseEvent) => {
+      if (!menuRef.current?.contains(e.target as Node) && !(e.target as Element).closest?.("[data-menu-button]")) setOverlay(null)
+    }
+    document.addEventListener("mousedown", h)
+    return () => document.removeEventListener("mousedown", h)
+  }, [overlay])
+
+  const toggle = (which: Exclude<Overlay, null>) => {
+    closeDropdowns()
+    setOverlay((o) => (o === which ? null : which))
+  }
+
+  const title = ctx.root?.title ?? fallbackTitle ?? "New thread"
+  const canRename = !!ctx.root
+  const startRename = () => { if (!canRename) return; renameDone.current = false; setDraft(title); setEditing(true) }
+  const saveRename = () => {
+    if (renameDone.current) return
+    renameDone.current = true
+    setEditing(false)
+    const next = draft.trim()
+    if (next && next !== title) ctx.rename(next).catch((e) => console.warn("[ChatHeader] rename failed:", e))
+  }
+
+  const otherStrandWorks = ctx.strands.some((s) => s.id !== activeConversationId && running.has(s.id))
+  const rootId = ctx.root?.id ?? null
+
+  const openThread = (t: ThreadSummary) => { setOverlay(null); onOpenConversation(t.id) }
+  const newThread = () => { setOverlay(null); onNewThread() }
+  const switchStrand = (id: string) => { setOverlay(null); onOpenConversation(id) }
+  const strandMade = async (s: Strand) => {
+    await ctx.reloadStrands() // the new strand is in the list before it becomes the active one
+    switchStrand(s.id)
+  }
+
+  const menuItem = (label: string, titleText: string, icon: React.ReactNode, run: () => void | Promise<void>, hint?: React.ReactNode) => (
+    <button key={label} type="button" role="menuitem" title={titleText} onClick={() => { setOverlay(null); void run() }}>
+      <span style={{ width: 16, display: "grid", placeItems: "center" }}>{icon}</span>
+      {label}
+      {hint ? <span className="k">{hint}</span> : null}
+    </button>
+  )
+
   return (
-      <div 
+    <>
+      <div
         ref={chatHeaderRef}
         onMouseDown={handleHeaderDragStart}
-        className={isRemoteView ? "h-[60px] px-4 flex items-center flex-shrink-0 border-b relative z-30" : "h-12 px-3 flex items-center flex-shrink-0 border-b relative z-30"}
-        style={{ borderColor: `${glowColor}15`, position: 'relative', cursor: isRemoteView ? undefined : 'grab' }}
+        className="iris-hd-head"
+        style={{ ...brandVars(palette), height: headH, cursor: isRemoteView ? undefined : 'grab' }}
       >
         {/* Global error line */}
         {globalError && (
@@ -80,196 +154,137 @@ export function ChatHeader({
             transition={{ duration: 2, repeat: Infinity }}
           />
         )}
-        
-        {/* Left section: Pulse + Title + Dashboard */}
-        <div className="flex items-center gap-2 flex-1">
-          <motion.div
-            className="w-1.5 h-1.5 rounded-full"
-            style={{ backgroundColor: glowColor }}
-            animate={{
-              scale: voiceState === 'listening' ? [1, 1.4, 1] : 1,
-              opacity: voiceState === 'listening' ? [1, 0.6, 1] : 1
-            }}
-            transition={{ duration: 1.2, repeat: Infinity }}
-          />
-          <span
-            className="text-[13px] font-semibold tracking-wide"
-            style={{ color: fontColor, opacity: 0.9 }}
-          >
-            IRIS
-          </span>
-          {/* Dashboard - positioned next to IRIS text - toggles open/close */}
-          <button
-            onClick={() => {
-              if (isDashboardOpen && onDashboardClose) {
-                onDashboardClose();
-              } else {
-                onDashboardClick();
-              }
-              closeDropdowns();
-            }}
-            className={isRemoteView ? "p-2.5 rounded-lg transition-all duration-150 min-h-[44px] min-w-[44px] flex items-center justify-center" : "p-1.5 rounded-lg transition-all duration-150"}
-            style={{
-              color: isDashboardOpen ? glowColor : 'rgba(255,255,255,0.75)',
-              backgroundColor: isDashboardOpen ? `${glowColor}15` : 'transparent'
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.color = isDashboardOpen ? glowColor : 'rgba(255,255,255,0.95)';
-              e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.color = isDashboardOpen ? glowColor : 'rgba(255,255,255,0.75)';
-              e.currentTarget.style.backgroundColor = isDashboardOpen ? `${glowColor}15` : 'transparent';
-            }}
-            title={isDashboardOpen ? "Close Dashboard" : "Open Dashboard"}
-          >
-            <BarChart3 size={isRemoteView ? 20 : 14} />
-          </button>
-          {/* Detach / reattach. The chat wing becomes its own OS window
-              so it can live on a second monitor — the widget window is
-              transparent, borderless and always-on-top, and cannot span
-              two screens. Detaching closes the wing here so it is never
-              drawn twice; closing the detached window puts it back. */}
-          {!isRemoteView && (
+
+        {/* The brand Xur opens the thread orbit. It runs faster while IRIS listens or works. */}
+        <button
+          type="button"
+          className="iris-hd-xbtn"
+          title="Your threads"
+          aria-label="Open your threads"
+          aria-haspopup="dialog"
+          aria-expanded={overlay === "orbit"}
+          onClick={() => toggle("orbit")}
+        >
+          <Xur size={40} palette={palette} speed={voiceState === "idle" ? 1 : 1.8} />
+        </button>
+
+        <div className="iris-hd-ttl">
+          {editing ? (
+            <input
+              autoFocus
+              className="iris-hd-nameinput"
+              aria-label="Thread name"
+              value={draft}
+              maxLength={120}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); saveRename() } }}
+              onBlur={saveRename}
+              onMouseDown={(e) => e.stopPropagation()}
+            />
+          ) : (
             <button
-              onClick={async () => {
-                if (isDetached) {
-                  await reattachWing('chat')
-                } else if (await detachWing('chat')) {
-                  onClose()
-                }
-              }}
-              className="p-1.5 rounded-lg transition-all duration-150"
-              style={{ color: 'rgba(255,255,255,0.75)' }}
-              onMouseEnter={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.95)'; e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.75)'; e.currentTarget.style.backgroundColor = 'transparent'; }}
-              title={isDetached ? "Put chat back in the widget" : "Move chat to its own window"}
-              aria-label={isDetached ? "Reattach chat" : "Detach chat"}
+              type="button"
+              className="iris-hd-name"
+              style={{ color: fontColor }}
+              title={canRename ? "Click to rename" : title}
+              disabled={!canRename}
+              onClick={startRename}
             >
-              {isDetached ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+              {title}
             </button>
           )}
-          {/* Open IRIS Launcher — re-open the separate launcher app if closed */}
-          <button
-            onClick={() => openIrisLauncher()}
-            className={isRemoteView ? "p-2.5 rounded-lg transition-all duration-150 min-h-[44px] min-w-[44px] flex items-center justify-center" : "p-1.5 rounded-lg transition-all duration-150"}
-            style={{ color: 'rgba(255,255,255,0.75)' }}
-            onMouseEnter={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.95)'; e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.75)'; e.currentTarget.style.backgroundColor = 'transparent'; }}
-            title="Open IRIS Launcher"
-          >
-            <ExternalLink size={isRemoteView ? 20 : 14} />
-          </button>
-        </div>
-
-        {/* Center: Spotlight Iris Aperture Button — embedded on top border line */}
-        {onSpotlightToggle && (
-          <div className="absolute left-1/2 -translate-x-1/2 top-0 -translate-y-1/2 z-40">
-            <button
-              onClick={() => {
-                onSpotlightToggle();
-                closeDropdowns();
-              }}
-              className={isRemoteView ? "p-2.5 rounded-full transition-all duration-150 border min-h-[44px] min-w-[44px] flex items-center justify-center" : "p-1.5 rounded-full transition-all duration-150 border"}
-              style={{
-                color: isInChatSpotlight ? glowColor : 'rgba(255,255,255,0.7)',
-                backgroundColor: isInChatSpotlight ? `${glowColor}20` : 'transparent',
-                borderColor: isInChatSpotlight ? `${glowColor}50` : 'rgba(255,255,255,0.2)',
-                boxShadow: isInChatSpotlight ? `0 0 8px ${glowColor}40` : 'none',
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.color = glowColor;
-                e.currentTarget.style.borderColor = `${glowColor}50`;
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.color = isInChatSpotlight ? glowColor : 'rgba(255,255,255,0.7)';
-                e.currentTarget.style.borderColor = isInChatSpotlight ? `${glowColor}50` : 'rgba(255,255,255,0.2)';
-              }}
-              title={isInChatSpotlight ? "Restore balanced view" : "Maximize chat"}
-            >
-              <IrisApertureIcon
-                isActive={isInChatSpotlight}
-                glowColor={glowColor}
-                fontColor={fontColor}
-                size={isRemoteView ? 18 : 14}
-              />
+          {ctx.current && (
+            <button type="button" className="iris-hd-strandbtn" title="Strands of this thread" aria-label="Switch strand" onClick={() => toggle("map")}>
+              <span style={{ color: palette[1] }}>◆</span>
+              <b>{strandLabel(ctx.current, rootId)}</b>
+              {ctx.current.tags.map((t) => <span key={t}>· {t}</span>)}
+              {ctx.strands.length > 1 && <span>· {ctx.strands.length} strands</span>}
             </button>
-          </div>
-        )}
-
-        {/* Right section: Notifications + History + Close */}
-        <div className="flex items-center gap-1 flex-1 justify-end">
-          {/* Notifications */}
-          <button
-            onClick={() => showNotifications ? closeDropdowns() : openNotifications()}
-            className={isRemoteView ? "p-2.5 rounded-lg transition-all duration-150 relative min-h-[44px] min-w-[44px] flex items-center justify-center" : "p-2 rounded-lg transition-all duration-150 relative"}
-            style={{
-              color: showNotifications ? glowColor : unreadCount > 0 ? glowColor : 'rgba(255,255,255,0.75)',
-              backgroundColor: showNotifications ? `${glowColor}15` : 'transparent'
-            }}
-            onMouseEnter={(e) => {
-              if (!showNotifications) e.currentTarget.style.color = unreadCount > 0 ? glowColor : 'rgba(255,255,255,0.95)';
-              e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)';
-            }}
-            onMouseLeave={(e) => {
-              if (!showNotifications) e.currentTarget.style.color = unreadCount > 0 ? glowColor : 'rgba(255,255,255,0.75)';
-              e.currentTarget.style.backgroundColor = 'transparent';
-            }}
-            title="Notifications"
-          >
-            <Bell size={16} />
-            {unreadCount > 0 && (
-              <motion.span
-                initial={{ scale: 0 }}
-                animate={{ scale: 1 }}
-                className="absolute top-1 right-1 w-2 h-2 rounded-full"
-                style={{ backgroundColor: glowColor }}
-              />
-            )}
-          </button>
-
-          {/* History */}
-          <button
-            onClick={() => showHistory ? closeDropdowns() : openHistory()}
-            className={isRemoteView ? "p-2.5 rounded-lg transition-all duration-150 min-h-[44px] min-w-[44px] flex items-center justify-center" : "p-2 rounded-lg transition-all duration-150"}
-            style={{
-              color: showHistory ? glowColor : 'rgba(255,255,255,0.75)',
-              backgroundColor: showHistory ? `${glowColor}15` : 'transparent'
-            }}
-            onMouseEnter={(e) => {
-              if (!showHistory) e.currentTarget.style.color = 'rgba(255,255,255,0.95)';
-              e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)';
-            }}
-            onMouseLeave={(e) => {
-              if (!showHistory) e.currentTarget.style.color = 'rgba(255,255,255,0.75)';
-              e.currentTarget.style.backgroundColor = 'transparent';
-            }}
-            title="Conversation History"
-          >
-            <History size={isRemoteView ? 20 : 16} />
-          </button>
-
-          {/* Close */}
-          <button
-            onClick={() => {
-              onClose();
-              closeDropdowns();
-            }}
-            className={isRemoteView ? "p-2.5 rounded-lg transition-all duration-150 min-h-[44px] min-w-[44px] flex items-center justify-center" : "p-2 rounded-lg transition-all duration-150"}
-            style={{ color: 'rgba(255,255,255,0.75)' }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.color = 'rgba(255,255,255,0.95)';
-              e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)';
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.color = 'rgba(255,255,255,0.75)';
-              e.currentTarget.style.backgroundColor = 'transparent';
-            }}
-            title="Close Chat"
-          >
-            <X size={isRemoteView ? 20 : 16} />
-          </button>
+          )}
         </div>
+
+        <button
+          type="button"
+          className={`iris-hd-iconbtn${touch}`}
+          title="Strands of this thread"
+          aria-label="Strands of this thread"
+          aria-haspopup="dialog"
+          aria-expanded={overlay === "map"}
+          disabled={!rootId}
+          onClick={() => toggle("map")}
+        >
+          ⌖
+          {otherStrandWorks && <i className="iris-hd-act" data-testid="strand-activity" role="img" aria-label="Another strand is working" style={{ background: "#f2c14e" }} />}
+        </button>
+        <button
+          type="button"
+          className={`iris-hd-iconbtn${touch}`}
+          data-menu-button="true"
+          title="More"
+          aria-label="More"
+          aria-haspopup="menu"
+          aria-expanded={overlay === "menu"}
+          onClick={() => toggle("menu")}
+        >
+          ◉
+          {unreadCount > 0 && <i className="iris-hd-act" role="img" aria-label="Unread alerts" style={{ background: glowColor, animation: "none" }} />}
+        </button>
       </div>
+
+      {overlay === "menu" && (
+        <div ref={menuRef} className="iris-hd-menu" role="menu" aria-label="Chat controls" style={{ ...brandVars(palette), top: headH }}>
+          {menuItem(
+            "Dashboard",
+            isDashboardOpen ? "Close Dashboard" : "Open Dashboard",
+            <BarChart3 size={14} style={{ color: isDashboardOpen ? glowColor : undefined }} />,
+            () => {
+              if (isDashboardOpen && onDashboardClose) onDashboardClose()
+              else onDashboardClick()
+              closeDropdowns()
+            },
+          )}
+          {/* Detach / reattach. The chat wing becomes its own OS window so it can
+              live on a second monitor — the widget window is transparent,
+              borderless and always-on-top, and cannot span two screens.
+              Detaching closes the wing here so it is never drawn twice;
+              closing the detached window puts it back. */}
+          {!isRemoteView && menuItem(
+            isDetached ? "Put the chat back" : "Detach the wing",
+            isDetached ? "Put chat back in the widget" : "Move chat to its own window",
+            isDetached ? <Minimize2 size={14} /> : <Maximize2 size={14} />,
+            async () => {
+              if (isDetached) await reattachWing('chat')
+              else if (await detachWing('chat')) onClose()
+            },
+          )}
+          {menuItem(
+            "Alerts",
+            "Notifications",
+            <Bell size={14} style={{ color: unreadCount > 0 ? glowColor : undefined }} />,
+            () => { if (showNotifications) closeDropdowns(); else openNotifications() },
+            unreadCount > 0 ? String(unreadCount) : "",
+          )}
+          {menuItem("Launcher", "Open IRIS Launcher", <ExternalLink size={14} />, () => openIrisLauncher())}
+          {menuItem("Close", "Close Chat", <X size={14} />, () => { onClose(); closeDropdowns() }, "Esc")}
+        </div>
+      )}
+
+      {overlay === "orbit" && (
+        <ThreadOrbit palette={palette} activeThreadId={rootId} onOpen={openThread} onNew={newThread} onClose={closeOverlay} />
+      )}
+
+      {overlay === "map" && rootId && (
+        <StrandMap
+          threadId={rootId}
+          palette={palette}
+          activeId={activeConversationId}
+          running={running}
+          onSwitch={switchStrand}
+          onCreated={strandMade}
+          onClose={closeOverlay}
+          top={headH}
+        />
+      )}
+    </>
   )
 }

@@ -33,7 +33,8 @@ import { TurnParts } from "@/components/chat/turn/TurnParts";
 import { Composer } from "@/components/chat/Composer";
 import { ChatHeader } from "@/components/chat/ChatHeader";
 import { NotificationsPanel } from "@/components/chat/NotificationsPanel";
-import { HistoryPanel } from "@/components/chat/HistoryPanel";
+import { ChatEdge } from "@/components/chat/header/ChatEdge";
+import { loadConversationRow } from "@/components/chat/header/loadConversationRow";
 import { Timeline } from "@/components/chat/Timeline";
 import { QuestionCard } from "@/components/chat/QuestionCard";
 // cli-workspace-unification T5/T6 (REQ-4): project folder bar + archive dock
@@ -314,8 +315,8 @@ export function ChatWing({
   // after the page loaded — in another window/client, or while the panel was
   // closed — never appeared until a full reload (Chrome showed 441 threads
   // while the backend store already had 442: the live superconductor thread
-  // was invisible). The fetch is now a reusable callback; openHistory()
-  // re-runs it every time the panel opens.
+  // was invisible). The fetch is now a reusable callback. (The header's thread
+  // orbit no longer calls it: it reads the summary list, GET /api/threads.)
   const fetchConversations = React.useCallback(async (): Promise<Conversation[]> => {
     return callConversationApi(
       "GET /api/conversations",
@@ -523,7 +524,6 @@ export function ChatWing({
     sendMessage?.('set_web_mode', { enabled: webMode })
   }, [webMode, sendMessage])
   const [justSent, setJustSent] = useState(false)
-  const [showHistory, setShowHistory] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   // REQ-6 AC3/AC4 (T7): the timeline only auto-scrolls while the user is
@@ -2331,7 +2331,6 @@ export function ChatWing({
     const oldId = activeConversationId;
     setActiveConversationId(conversationId);
     setCurrentConversationId(conversationId);
-    setShowHistory(false);
     // Notify backend of conversation switch for context persistence
     if (sendMessage && oldId && oldId !== conversationId) {
       sendMessage('switch_conversation', {
@@ -2774,7 +2773,7 @@ ${message.text}`;
           return;
         }
         // Close any open dropdowns next
-        if (showNotifications || showHistory) {
+        if (showNotifications) {
           closeDropdowns();
           return;
         }
@@ -2785,46 +2784,26 @@ ${message.text}`;
     
     window.addEventListener("keydown", handleEscape);
     return () => window.removeEventListener("keydown", handleEscape);
-  }, [isOpen, showNotifications, showHistory, onClose, documentModalMessage]);
+  }, [isOpen, showNotifications, onClose, documentModalMessage]);
 
   // Dropdown exclusivity handlers
   const openNotifications = () => {
     setShowNotifications(true);
-    setShowHistory(false);
   };
 
-  const openHistory = () => {
-    setShowHistory(true);
-    setShowNotifications(false);
-    // Session 246: the thread list used to be mount-only — threads created
-    // after load (other window/client) never appeared. Re-fetch on every
-    // panel open; do NOT touch activeConversationId here (never yank the
-    // thread the user is reading just because they opened the list).
-    //
-    // Session 296: fetchConversations maps REST rows that carry NO renders,
-    // so it builds every Conversation with documents: [] — a blind replace
-    // here wiped every prism card in every thread. Cards only exist in
-    // memory (iris:document_render; get_documents rehydration is
-    // metadata-only by contract CT-DOC-1 and cannot restore a body), so the
-    // wipe was permanent for the session. Preserve the documents we already
-    // hold; fetched threads we have never seen keep their (empty) list.
-    fetchConversations()
-      .then((convs) => {
-        setConversations((prev) =>
-          convs.map((c) => {
-            const existing = prev.find((p) => p.id === c.id)
-            return existing && existing.documents.length > 0
-              ? { ...c, documents: existing.documents }
-              : c
-          }),
-        )
-      })
-      .catch(() => {})
-  };
+  // Open a strand or thread chosen in the header (a strand IS a conversation id).
+  // One that chat-view has not loaded yet (made after the mount-time list) is
+  // fetched first so its messages show and new messages are kept.
+  const openStrand = async (conversationId: string) => {
+    if (!conversations.some((c) => c.id === conversationId)) {
+      const row = await loadConversationRow(conversationId)
+      if (row) setConversations((prev) => (prev.some((c) => c.id === conversationId) ? prev : [row, ...prev]))
+    }
+    handleSelectConversation(conversationId)
+  }
 
   const closeDropdowns = () => {
     setShowNotifications(false);
-    setShowHistory(false);
   };
 
   // Render message text with clickable URL links
@@ -2998,7 +2977,9 @@ ${message.text}`;
             width: getSpotlightWidth(),
             height: getOuterHeight(),
             maxHeight: getOuterMaxHeight(),
-            overflow: 'hidden',
+            // Clipped on three sides; the top reaches 14 px up so the aperture set
+            // into the top edge (ChatEdge) is whole, not cut in half.
+            clipPath: 'inset(-14px 0 0 0)',
             perspective: getOuterPerspective(),
             zIndex: getSpotlightZIndex(),
             filter: getSpotlightFilter(),
@@ -3036,6 +3017,8 @@ ${message.text}`;
               `,
               borderRadius: getInnerBorderRadius(),
               border: isRemoteView ? `1px solid ${glowColor}20` : `1px solid ${glowColor}20`,
+              // The top border is the EdgeLight hairline (ChatEdge), so it is transparent here.
+              borderTopColor: onSpotlightToggle ? 'transparent' : undefined,
               touchAction: 'manipulation',
               willChange: 'auto',
             }}
@@ -3083,15 +3066,15 @@ ${message.text}`;
               isDashboardOpen={isDashboardOpen}
               onDashboardClose={onDashboardClose}
               onDashboardClick={onDashboardClick}
-              onSpotlightToggle={onSpotlightToggle}
-              isInChatSpotlight={isInChatSpotlight}
               onClose={onClose}
               showNotifications={showNotifications}
               openNotifications={openNotifications}
               unreadCount={unreadCount}
-              showHistory={showHistory}
-              openHistory={openHistory}
               closeDropdowns={closeDropdowns}
+              activeConversationId={activeConversationId}
+              fallbackTitle={activeConversation?.title}
+              onNewThread={handleNewConversation}
+              onOpenConversation={openStrand}
             />
 
             {/* Notification Dropdown Panel */}
@@ -3103,20 +3086,6 @@ ${message.text}`;
               unreadCount={unreadCount}
               handlePermissionGrant={handlePermissionGrant}
               handlePermissionDeny={handlePermissionDeny}
-            />
-
-            {/* History Dropdown Panel - Thread-Based */}
-            <HistoryPanel
-              showHistory={showHistory}
-              prefersReducedMotion={prefersReducedMotion}
-              glowColor={glowColor}
-              fontColor={fontColor}
-              conversations={conversations}
-              activeConversationId={activeConversationId}
-              handleNewConversation={handleNewConversation}
-              handleSelectConversation={handleSelectConversation}
-              handlePinConversation={handlePinConversation}
-              handleDeleteConversation={handleDeleteConversation}
             />
 
             {/* Top strip, dev mode only: the archive count (T6). The T5 project
@@ -3432,6 +3401,18 @@ ${message.text}`;
               refDocs={refDocs}
             />
           </motion.div>
+
+          {/* Edge light: the top edge as one hairline with the spotlight aperture set into it. */}
+          {onSpotlightToggle && (
+            <ChatEdge
+              glowColor={glowColor}
+              isFlat={isFlat}
+              transform={getSpotlightTransform()}
+              isInChatSpotlight={isInChatSpotlight}
+              onSpotlightToggle={onSpotlightToggle}
+              activeConversationId={activeConversationId}
+            />
+          )}
         </motion.div>
       )}
     </AnimatePresence>
