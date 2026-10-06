@@ -23,6 +23,11 @@ import {
   type SpotlightStr,
 } from "@/lib/orbWingGeometry";
 import { ConversationChips } from "@/components/chat/ConversationChips";
+// Phase 3 (turn protocol): live turns come from the turn store, filed by the
+// conversation each event names; TurnParts draws reasoning / notices / errors.
+import { useConversationTurns, getTurnsState, type TurnRecord } from "@/lib/turns/turnStore";
+import { mergeLiveTurns } from "@/lib/turns/mergeTurns";
+import { TurnParts } from "@/components/chat/turn/TurnParts";
 
 // Lazy-load entire workspace — only bundles in developer mode
 // (cli-workspace-unification T1: ChatView no longer replaces its body with the
@@ -613,6 +618,8 @@ export function ChatWing({
   }
 
   const [inputText, setInputText] = useState("")
+  // handleSendMessage shadows setInputText for pill sends; this is the real setter.
+  const setInputTextState = setInputText
   const [webMode, setWebMode] = useState(() => {
     try {
       return localStorage.getItem('iris-web-mode') === 'true'
@@ -957,6 +964,10 @@ export function ChatWing({
       // Get active conversation messages
       const activeConversation = conversations.find(c => c.id === activeConversationId);
       const messages = activeConversation?.messages || [];
+      // Phase 3: the live turns of THIS conversation (the store files each
+      // turn under the conversation its events name — never the one on screen).
+      const liveTurns = useConversationTurns(activeConversationId);
+      const liveTurnById = useMemo(() => new Map(liveTurns.map((t) => [t.id, t])), [liveTurns]);
 
       // REQ-11/REQ-12 (reply-surface-contract T21/T22): a question whose turn
       // already has a message renders INLINE at that turn; the bottom block is
@@ -1087,9 +1098,24 @@ export function ChatWing({
   // whose response scrolled away) fall back to the bottom in creation order.
   // Conversation-reply cards (settled, tool-less — isConversationReplyCard)
   // are suppressed entirely: cards are for artifacts, not conversation.
+  // Phase 3: a turn that streams before its final message lands (or that
+  // ends in an error / cancel and never gets one) renders as a placeholder
+  // anchored by its turn id — the same anchor live messages use.
+  const timelineMessages = useMemo(
+    () =>
+      mergeLiveTurns(messages, liveTurns, (t: TurnRecord): Message => ({
+        id: t.id,
+        text: t.text,
+        sender: "assistant",
+        timestamp: new Date(t.startedAt),
+        turn_id: t.id,
+        feedback: null,
+      })),
+    [messages, liveTurns],
+  )
   const renderTimeline = useMemo(
-    () => buildChatTimeline(messages, taskProgress.cards),
-    [messages, taskProgress.cards],
+    () => buildChatTimeline(timelineMessages, taskProgress.cards),
+    [timelineMessages, taskProgress.cards],
   )
 
   // REQ-3 AC2: elapsed running timer for the active Blueprint Matrix. Ticks
@@ -1284,10 +1310,10 @@ export function ChatWing({
       // (doc.turnId === message.id) can never match and the card falls to
       // the orphan bottom pile. Never return before the anchor is created.
       // The render branch decides bubble visibility, not ingest.
-      if (isTextRenderedAsDocument(turnId, text)) {
-        seenTurnIds.current.add(turnId)
-        // fall through — anchor creation below keeps the card inline
-      }
+      // (Audit bug, fixed in Phase 3: this branch used to add turnId to
+      // seenTurnIds, and the dedupe just below then RETURNED before the anchor
+      // existed — the card fell to the orphan pile. The render branch decides
+      // bubble visibility; ingest always creates the anchor.)
 
       // Deduplicate by turn_id — skip if we've already finalized this turn.
       if (turnId && seenTurnIds.current.has(turnId)) {
@@ -1324,7 +1350,10 @@ export function ChatWing({
       // (chat-view.tsx:3463) — see SESSION-2026-08-27-STATE.md "Duplicate React
       // keys" for the full root cause.
       const messageId = turnId ?? newMessageId()
-      const currentActiveId = activeConversationIdRef.current
+      // Audit bug: the final text was written to whatever conversation was on
+      // screen. The turn store knows the conversation the turn ran in.
+      const turnConvId = turnId ? getTurnsState().byId[turnId]?.conversationId : undefined
+      const currentActiveId = turnConvId || activeConversationIdRef.current
       if (currentActiveId) {
         setConversations(prev => prev.map(conv =>
           conv.id === currentActiveId
@@ -1433,47 +1462,10 @@ export function ChatWing({
     }
   }, [])
 
-  // Handle streaming chat chunks (iris:chat_chunk) from the WebSocket path.
-  // The backend streams these during generation so the UI shows live progress
-  // instead of hanging on a 120s REST timeout. Keyed by turn_id so concurrent
-  // turns (different conversations) don't collide, and so the final
-  // text_response can update the same message (no duplicate).
-  useEffect(() => {
-    function handleChatChunk(e: Event) {
-      const detail = (e as CustomEvent).detail as { chunk?: string; turn_id?: string }
-      const chunk = detail.chunk
-      if (!chunk) return
-      const turnId = detail.turn_id
-      if (!turnId) return
-      const convId = activeConversationIdRef.current
-      if (!convId) return
-      setConversations(prev => prev.map(conv => {
-        if (conv.id !== convId) return conv
-        const messages = [...conv.messages]
-        const idx = messages.findIndex(m => m.id === turnId)
-        if (idx >= 0) {
-          const updated = messages[idx].text + chunk
-          messages[idx] = {
-            ...messages[idx],
-            text: updated,
-            words: updated.split(' '),
-          }
-        } else {
-          messages.push({
-            id: turnId,
-            text: chunk,
-            sender: 'assistant',
-            timestamp: new Date(),
-            words: chunk.split(' '),
-            feedback: null,
-          })
-        }
-        return { ...conv, messages }
-      }))
-    }
-    window.addEventListener('iris:chat_chunk', handleChatChunk)
-    return () => window.removeEventListener('iris:chat_chunk', handleChatChunk)
-  }, [])
+  // Streaming text (formerly iris:chat_chunk -> active conversation) now
+  // renders from the turn store: every WS turn streams as turn.part text
+  // deltas filed under the turn's own conversation (Phase 3; audit bug:
+  // chunks were written to whatever conversation was on screen).
 
   // Handle document:render — agent pushed a rich document (plan Issue D.3).
   // Appended inline with format pills; reformat updates the same doc by turn_id.
@@ -2064,7 +2056,7 @@ export function ChatWing({
     }
   }, [voiceState, isSpeaking]);
 
-  const handleSendMessage = async () => {
+  const handleSendMessage = async (overrideText?: string) => {
     // Send guards (REQ-1 AC3, Phase 5, amended per long-horizon-der-execution):
     // the backend per-session message lock QUEUES messages in order, so a
     // send during a running turn is safe — the message is processed after the
@@ -2072,8 +2064,13 @@ export function ChatWing({
     // sends during long websearch turns (observed: user could not send
     // anything for 23 minutes). Blocking is now limited to genuinely
     // impossible states: empty input and an actively-listening mic.
-    if (!inputText.trim() || voiceState === 'listening') return
-    const text = inputText.trim()
+    // A string override comes from a suggestion pill; anything else (a click
+    // event) means "send what is typed".
+    const fromInput = typeof overrideText !== "string"
+    const text = (fromInput ? inputText : overrideText).trim()
+    if (!text || voiceState === 'listening') return
+    // Clear the box only for a typed send: a pill must not wipe a draft.
+    const setInputText = (v: string) => { if (fromInput) setInputTextState(v) }
 
     if (text === '/help' || text.toLowerCase().startsWith('/help ')) {
       setInputText('')
@@ -2347,6 +2344,10 @@ export function ChatWing({
       sendMessage("text_message", {
         text: userMessage.text,
         conversation_id: threadId,
+        // Phase 3: turn.start echoes client_ref, so the live turn renders right
+        // under this prompt; mode lets the backend tag the turn.
+        client_ref: userMessage.id,
+        mode: isDeveloper ? "developer" : "personal",
         // Session 246 (@-card-mentions): @taskcard:<id> tokens in the text are
         // resolved to persisted card snapshots so the agent can reason over
         // a PREVIOUS conversation's task results.
@@ -2562,76 +2563,19 @@ export function ChatWing({
   }
 
   const handleRetryPrompt = (errorMessageIndex: number, convId: string) => {
-    // Debounce rapid retries
+    // Audit bug: this used to call fetch INSIDE a setConversations updater
+    // (React may run an updater twice -> two requests) and left a "Retrying..."
+    // message that nothing removed. A retry IS a resend of the prompt above the
+    // error, so it takes the one resend path (pure updater, fetch outside).
     if (retryingMessageId) return
-
-    setConversations(prev =>
-      prev.map(conv => {
-        if (conv.id !== convId) return conv
-        const msgs = conv.messages
-        // Find the last user message before the error
-        let lastUserMsg: (typeof msgs)[0] | null = null
-        for (let i = errorMessageIndex - 1; i >= 0; i--) {
-          if (msgs[i].sender === "user") {
-            lastUserMsg = msgs[i]
-            break
-          }
-        }
-        if (!lastUserMsg) return conv // no user message found
-
-        // Remove the error message and show loading state
-        const errorMsg = msgs[errorMessageIndex]
-        const newMsgs = msgs.filter((_, i) => i !== errorMessageIndex)
-        setRetryingMessageId(lastUserMsg.id)
-
-        // Re-send to /api/chat
-        fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: lastUserMsg.text, thread_id: convId }),
-        })
-          .then((res) => {
-            if (!res.ok) throw new Error(`Chat returned ${res.status}`)
-            return res.json()
-          })
-          .then((data) => {
-            setRetryingMessageId(null)
-            // Unify through iris:text_response — same as the primary handler.
-            window.dispatchEvent(new CustomEvent('iris:text_response', {
-              detail: {
-                text: data.content || "",
-                sender: 'assistant',
-                thinking: data.thinking || "",
-                turn_id: data.turn_id,
-              }
-            }))
-          })
-          .catch(() => {
-            setRetryingMessageId(null)
-            // Restore the error message
-            setConversations((innerPrev) =>
-              innerPrev.map((ic) => {
-                if (ic.id !== convId) return ic
-                return { ...ic, messages: [...ic.messages, errorMsg] }
-              })
-            )
-          })
-
-        return {
-          ...conv,
-          messages: [
-            ...newMsgs,
-            {
-              id: newMessageId(),
-              text: "Retrying...",
-              sender: "assistant",
-              timestamp: new Date(),
-              thinking: "",
-            },
-          ],
-        }
-      })
-    )
+    const conv = conversations.find((c) => c.id === convId)
+    if (!conv) return
+    for (let i = errorMessageIndex - 1; i >= 0; i--) {
+      if (conv.messages[i].sender === "user") {
+        handleResendUserMessage(i, convId)
+        return
+      }
+    }
   }
 
   const handleNewConversation = () => {
@@ -3827,7 +3771,12 @@ ${message.text}`;
                     const charCount = message.text.length;
                     const contentType = getContentType(message);
                     const isExpanded = isMessageExpanded(message.id);
-                    const shouldTruncate = charCount > MESSAGE_THRESHOLDS.TRUNCATE_AT;
+                    // Phase 3: the turn this message belongs to (live session only).
+                    const liveTurn = liveTurnById.get(message.id) ?? (message.turn_id ? liveTurnById.get(message.turn_id) : undefined);
+                    // Audit bug: a reply froze at 6 lines and remounted while it
+                    // streamed. A running turn is never clamped.
+                    const isStreaming = liveTurn?.status === "running";
+                    const shouldTruncate = !isStreaming && charCount > MESSAGE_THRESHOLDS.TRUNCATE_AT;
                     // Artifact card rules:
                     //   - Media, email, explicit file uploads → artifact at DOCUMENT_MODE_AT (400 chars)
                     //   - Long markdown from assistant (code blocks, headers) → artifact at MARKDOWN_ARTIFACT_AT (800 chars)
@@ -3941,41 +3890,10 @@ ${message.text}`;
                             ((d.content || '').trim().length > 0 || !!d.documentId),
                         )
                         if (_myTurnDocs.length === 0) return null
-                        // Empty-result websearch should NOT be a prism card — it is
-                        // conversational plain text. The agent sometimes wraps a
-                        // "no usable results" synthesis as markdown with an empty
-                        // source list (observed live 2026-08-27: "I wasn't able to
-                        // pull any direct image URLs..." rendered as MARKDOWN|WEB).
-                        // That is the "plain text renders as prism" report. Detect
-                        // it structurally (no sources + failure phrasing) and
-                        // downgrade to an inline MarkdownMessage so it scrolls as
-                        // text, not as a glass artifact.
-                        const _isEmptyResultDoc = (doc: (typeof _myTurnDocs)[number], sources: unknown): boolean => {
-                          const srcLen = Array.isArray(sources) ? sources.length : 0
-                          if (srcLen > 0) return false
-                          const lc = (doc.content || '').toLowerCase()
-                          // Fast structural signal: the card claims "0 URLs
-                          // retrieved" or explicitly says it pulled nothing.
-                          // Checked case-insensitively; kept narrow so a legit
-                          // empty-source markdown (e.g. a generated table) does
-                          // NOT match.
-                          return (
-                            // Audit 2026-09-22 (F10): aligned with the backend
-                            // _is_empty_websearch_synthesis verdict list — the
-                            // "what was attempted + what failed" pair was missing
-                            // here, so a stale card shaped that way slipped
-                            // through this second-tier guard.
-                            (lc.includes("what was attempted") && lc.includes("what failed")) ||
-                            lc.includes("wasn't able to pull") ||
-                            lc.includes("wasn't able to retrieve") ||
-                            lc.includes("no usable direct image") ||
-                            lc.includes("no usable content") ||
-                            lc.includes("no candidate urls") ||
-                            lc.includes("retry produced no usable content") ||
-                            (lc.includes("image urls retrieved") && lc.includes(" 0")) ||
-                            (lc.includes("what failed") && lc.includes("no usable"))
-                          )
-                        }
+                        // (Phase 3: the frontend copy of the failed-search rule,
+                        // _isEmptyResultDoc, is gone. Whether a reply is a card is
+                        // decided once, by the agent's create_artifact call —
+                        // reply-surface Phase A removed the backend copy.)
                         // Build the per-turn source map once (markdown carrier
                         // merges sources from same-turn siblings).
                         const _turnSources = new Map<string, { url: string; title: string }[]>()
@@ -4024,23 +3942,6 @@ ${message.text}`;
                                   ? _turnSources.get(doc.turnId || '') || doc.sources
                                   : doc.sources
                               : undefined
-                          // Empty-result websearch → plain text, not a prism.
-                          // Keeps the "no information" answer in the bubble
-                          // stream where it scrolls inline, instead of a
-                          // glass card at the bottom.
-                          if (_isEmptyResultDoc(doc, docSources)) {
-                            return (
-                              <div key={`doc-${doc.id}`} className="my-2 max-w-[90%]">
-                                <MarkdownMessage
-                                  text={doc.content}
-                                  variant={isDeveloper ? 'cli' : 'markdown'}
-                                />
-                                {doc.error && (
-                                  <p className="text-[9px] mt-1" style={{ color: '#ef4444' }}>{doc.error}</p>
-                                )}
-                              </div>
-                            )
-                          }
                           return (
                             <div key={`doc-${doc.id}`} className="my-3 relative">
                               {doc.updated && (
@@ -4523,7 +4424,28 @@ ${message.text}`;
                                 variant={isDeveloper ? 'cli' : 'markdown'}
                               />
                             ))}
-                            
+
+                            {/* Phase 3: reasoning line, notices and errors of this turn —
+                                events that had no listener before. */}
+                            {liveTurn && (
+                              <TurnParts
+                                turn={liveTurn}
+                                isDeveloper={isDeveloper}
+                                glowColor={glowColor}
+                                onRetry={
+                                  liveTurn.status === "error" && activeConversationId
+                                    ? () => {
+                                        const conv = conversations.find((c) => c.id === activeConversationId)
+                                        const idx = conv
+                                          ? conv.messages.findIndex((m) => m.id === liveTurn.clientRef)
+                                          : -1
+                                        if (idx >= 0) handleResendUserMessage(idx, activeConversationId)
+                                      }
+                                    : undefined
+                                }
+                              />
+                            )}
+
                             {/* Feedback action bar */}
                             <div className="flex items-center gap-2 mt-2 pt-2 border-t border-white/5">
                               {/* Icon-only, like every other action here. The
@@ -5027,28 +4949,10 @@ ${message.text}`;
                   onSelect={(s: Suggestion) => {
                     if (!s.message) return
                     setCurrentSuggestions([])
-                    // Add as a user message and send via WS — same flow as handleSendMessage
-                    const userMsg = {
-                      id: newMessageId(),
-                      text: s.message,
-                      sender: 'user' as const,
-                      timestamp: new Date(),
-                    }
-                    setConversations(prev =>
-                      activeConversationId
-                        ? prev.map(c => c.id === activeConversationId
-                            ? { ...c, messages: [...c.messages, userMsg], lastMessagePreview: s.message.substring(0, 60), timestamp: new Date() }
-                            : c)
-                        : (() => {
-                            // See the note on the other newId site — conversation ids
-                            // are React keys and must not collide either.
-                            const newId = newMessageId()
-                            activeConversationIdRef.current = newId
-                            setActiveConversationId(newId)
-                            return [...prev, { id: newId, title: (s.message || 'New conversation').replace(/\s+/g, ' ').trim().slice(0, 60) || 'New conversation', preview: s.message.substring(0, 60), messages: [userMsg], documents: [], timestamp: new Date(), isPinned: false, lastMessagePreview: s.message.substring(0, 60) }]
-                          })()
-                    )
-                    sendMessage?.('text_message', { text: s.message })
+                    // Audit bug: this path built its own message and sent it
+                    // with no conversation_id, no typing state and no dev
+                    // routing. It now takes the one send path.
+                    void handleSendMessage(s.message)
                   }}
                   onDismiss={() => setCurrentSuggestions([])}
                   mode={isDeveloper ? 'developer' : 'personal'}
@@ -5375,7 +5279,7 @@ ${message.text}`;
                   <div className="flex-shrink-0" style={{ transform: 'translateY(-6.5px)' }}>
                     <motion.button
                       type="button"
-                      onClick={handleSendMessage}
+                      onClick={() => { void handleSendMessage() }}
                       disabled={!inputText.trim() || voiceState === 'listening'}
                       className="flex items-center justify-center w-[32px] h-[32px] transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
                       style={{

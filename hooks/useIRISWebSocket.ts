@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useSyncExternalStore } from "react"
-import { applyTurnMessage, isTurnMessageType } from "@/lib/turns/turnStore"
+import { applyTurnMessage, getTurnsState, isTurnMessageType } from "@/lib/turns/turnStore"
 import type { TurnMessage } from "@/lib/turns/protocol"
 // Side-effect import: the agent command store installs its window listeners
 // from app start, so a command that runs before the workspace opens is kept.
@@ -770,7 +770,7 @@ export function useIRISWebSocket(
     // into the turn store (lib/turns/turnStore.ts), which files them by the
     // turn and conversation the EVENT names. No CustomEvent hop, no guessing.
     if (isTurnMessageType(type)) {
-      applyTurnMessage({ type, payload } as TurnMessage)
+      applyTurnMessage({ type, payload } as unknown as TurnMessage)
       return
     }
 
@@ -1033,6 +1033,12 @@ export function useIRISWebSocket(
           seenTurnIdsRef.current.add(_turnId)
         }
         const content = typeof payload.content === 'string' ? payload.content : null
+        // Phase 3: an error of a live turn shows as that turn's error part
+        // (TurnParts). The legacy error message would show it a second time,
+        // dressed as an assistant reply.
+        if (payload.role === 'error' && _turnId && getTurnsState().byId[_turnId]) {
+          break
+        }
         if (content) {
           const thinking = typeof payload.thinking === 'string' ? payload.thinking : undefined
           // `spoken` is the line TTS actually says — a short briefing when the
