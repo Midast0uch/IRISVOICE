@@ -217,6 +217,62 @@ input[type=range]{width:120px;accent-color:var(--b2)}
 .tool{margin:auto;max-width:42ch;text-align:center;color:var(--muted);font-size:13px;padding:20px}
 .tool b{display:block;color:var(--fg);font:500 18px/1.3 var(--voice);margin-bottom:4px}
 
+/* Monitor = an instrument panel, not settings rows: live tiles, a call table, charts, a log pane */
+.content{container-type:inline-size}
+.mon{flex:1;min-height:0;overflow:auto;padding:12px 14px 14px;display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:10px;align-content:start}
+.tiles{grid-column:1/-1;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--hair);border-radius:10px;background:var(--ink-2)}
+.tile{min-width:0;padding:9px 11px;border-left:1px solid var(--hair);display:flex;flex-direction:column;gap:3px}
+.tile:first-child{border-left:0}
+.tile .k{font:600 9.5px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.tile .v{font:600 14px/1.2 var(--sans);color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;gap:6px;align-items:center}
+.tile .v i{width:6px;height:6px;border-radius:50%;background:var(--ok);flex:none}
+.tile .v.big{font:600 20px/1.1 var(--mono);font-variant-numeric:tabular-nums}
+.tile .s{font:10.5px/1.2 var(--mono);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.spark{display:flex;gap:2px;align-items:flex-end;height:18px}
+.spark span{flex:1;background:color-mix(in oklab,var(--b2) 55%,transparent);border-radius:1px;min-height:2px}
+.spark span:last-child{background:var(--b2)}
+.pane{min-width:0;border:1px solid var(--hair);border-radius:10px;background:var(--ink-2);display:flex;flex-direction:column}
+.pane.w7{grid-column:span 7}.pane.w5{grid-column:span 5}.pane.w12{grid-column:1/-1}
+@container (max-width:600px){.pane.w7,.pane.w5{grid-column:1/-1}.tiles{grid-template-columns:repeat(2,minmax(0,1fr))}.tile:nth-child(3){border-left:0}.tile:nth-child(n+3){border-top:1px solid var(--hair)}}
+.pane h4{margin:0;display:flex;gap:8px;align-items:center;padding:7px 10px;border-bottom:1px solid var(--hair);font:600 9.5px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted);flex-wrap:wrap}
+.pane h4 .sp{flex:1}
+.pane h4 button{background:none;border:1px solid var(--hair);border-radius:5px;padding:3px 6px;font:600 9.5px/1 var(--mono);letter-spacing:.06em;color:#c9cfdb;cursor:pointer;text-transform:uppercase}
+.pane h4 button[aria-pressed="true"]{color:var(--fg);border-color:color-mix(in oklab,var(--b2) 55%,transparent);background:color-mix(in oklab,var(--b2) 14%,transparent)}
+.pane h4 .live{width:6px;height:6px;border-radius:50%;background:var(--ok);box-shadow:0 0 6px var(--ok)}
+.pane h4 .live.off{background:var(--muted);box-shadow:none}
+.calls{overflow:auto;max-height:228px}
+.calls table{width:100%;table-layout:fixed;border-collapse:collapse;font:11px/1.35 var(--mono);font-variant-numeric:tabular-nums}
+.calls td{padding:5px 10px;border-bottom:1px solid rgba(160,190,255,.05);white-space:nowrap;color:#c9cfdb}
+.calls td{overflow:hidden;text-overflow:ellipsis}
+.calls td.m{color:var(--fg)}
+.calls col.t{width:66px}.calls col.k{width:100px}.calls col.l{width:78px}
+.calls tr.load td{color:var(--muted)} .calls tr.load td.m{color:var(--b1)}
+.calls tr.new td{animation:rowin .6s ease-out}
+@keyframes rowin{from{background:color-mix(in oklab,var(--b2) 14%,transparent)}to{background:transparent}}
+.lat{display:flex;gap:6px;align-items:center;justify-content:flex-end}
+.lat b{display:block;height:3px;border-radius:2px;background:var(--b2)}
+.lat b.slow{background:var(--run)}
+.usage{padding:10px;display:flex;flex-direction:column;gap:10px}
+.usage .row{display:flex;justify-content:space-between;align-items:baseline;font:11px/1.3 var(--mono);color:var(--muted)}
+.usage .row b{font:600 16px/1 var(--mono);color:var(--fg);font-variant-numeric:tabular-nums}
+.hours{display:flex;gap:2px;align-items:flex-end;height:44px;border-bottom:1px solid var(--hair)}
+.hours span{flex:1;background:color-mix(in oklab,var(--b2) 45%,transparent);border-radius:1px 1px 0 0}
+.hours span.now{background:var(--b2)}
+.axis{display:flex;justify-content:space-between;font:9.5px/1 var(--mono);color:var(--faint)}
+.okbar{display:flex;height:6px;border-radius:3px;overflow:hidden;background:var(--ink-3)}
+.okbar b{background:var(--ok)} .okbar i{background:var(--bad)}
+.checks2{list-style:none;margin:0;padding:6px 10px;display:flex;flex-direction:column}
+.checks2 li{display:flex;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid rgba(160,190,255,.05);font:12px/1.3 var(--sans);color:#dde2ee}
+.checks2 li:last-child{border-bottom:0}
+.checks2 .st{flex:none;font:12px/1 var(--mono);color:var(--ok)} .checks2 .st.w{color:var(--run)}
+.checks2 small{margin-left:auto;font:10.5px/1 var(--mono);color:var(--muted);white-space:nowrap}
+.logs{padding:6px 10px 8px;font:11px/1.5 var(--mono);max-height:170px;overflow:auto}
+.logs div{display:flex;gap:8px;white-space:nowrap}
+.logs .t{color:var(--faint);flex:none}.logs .lv{flex:none;width:34px}.logs .lv.warn{color:var(--run)}.logs .lv.error{color:var(--bad)}.logs .lv.info{color:var(--muted)}
+.logs .x{min-width:0;overflow:hidden;text-overflow:ellipsis;color:#c9cfdb}
+.logs .hid{color:var(--faint);padding-top:4px}
+.pane h4 input{flex:0 1 140px;min-width:80px;background:var(--ink);border:1px solid var(--hair);border-radius:5px;color:var(--fg);font:11px/1 var(--mono);padding:4px 6px;text-transform:none;letter-spacing:0}
+
 /* reference section */
 .rules{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px;margin-top:14px}
 .rule{border-top:1px solid var(--hair);padding-top:10px;font-size:13.5px;color:#c3cad8;min-width:0}
@@ -325,7 +381,8 @@ input[type=range]{width:120px;accent-color:var(--b2)}
     <li><i>STAYS</i><span>Spotlight: the spotlit wing is 680 px; the other is 360 px at opacity 0.3 with saturate(0.6) blur(2px), and it takes no clicks. The aperture keeps its place on the top edge.</span></li>
     <li><i>STAYS</i><span>The Workspace hub keeps its terminal, task lanes, archive and file tabs. Dropped items never become project files and never hide a lane.</span></li>
     <li><i>STAYS</i><span>The surfaces (Workspace hub, Browser, Models, Marketplace) keep their own content. They get the new header and rail only.</span></li>
-    <li><i class="ch">CHANGES</i><span>Monitor and the Inference console become ONE Monitor page in Settings: Now, Inference stream, Usage, Logs, Diagnostics. Model calls and loads appear only in the stream; Logs keeps the app's own lines.</span></li>
+    <li><i class="ch">CHANGES</i><span>Monitor and the Inference console become ONE Monitor page in Settings, laid out as an instrument panel (not settings rows): a strip of live tiles (models, speed, reply time), the inference stream as a live table, usage charts, a log pane and the diagnostics checks. Model calls and loads appear only in the stream; Logs keeps the app's own lines.</span></li>
+    <li><i class="ch">CHANGES</i><span>Rows with orbs are only for plain setting fields. Content that is not a list of fields (model roles, device and permission lists, live data) keeps a layout made for it, in the same ink and hairlines.</span></li>
     <li><i class="ch">CHANGES</i><span>Header: the row of four icon buttons (open chat, detach, launcher, alerts) moves into the ◉ menu. It is the same menu component as the chat.</span></li>
     <li><i class="ch">CHANGES</i><span>The rail: a Settings / Surfaces switch at the top, as before; icon circles become places on a spine with names; the Xur button folds it to orbs only.</span></li>
     <li><i class="ch">CHANGES</i><span>Settings boxes: a row with a one-line summary replaces the bordered box with a chevron. Open rows light their hairline; changed values get an amber dot and the row counts them.</span></li>
@@ -565,6 +622,7 @@ input[type=range]{width:120px;accent-color:var(--b2)}
     const ch = changed();
     $("dSub").innerHTML = P.grp === "Settings" ? (D.place === "monitor" ? "settings · live" : "settings") + (ch.length ? ' · <em>' + ch.length + " not applied</em>" : "") : "surface";
     if (D.place === "hub") return renderHub(c);
+    if (D.place === "monitor") return renderMonitor(c);
     if (!SECTIONS[D.place]) { c.innerHTML = '<div class="tool"><b>' + esc(P.name) + "</b>Its content stays as it is today. This concept gives it the new header, the rail and the edge light only.</div>"; return; }
     const keep = document.activeElement && document.activeElement.id === "findIn";
     let body = "";
@@ -612,6 +670,67 @@ input[type=range]{width:120px;accent-color:var(--b2)}
     if (t.dataset.rng) { const [p, s, f] = t.dataset.rng.split("."), F = SECTIONS[p].find((x) => x.id === s).fields.find((x) => x.id === f); VAL[t.dataset.rng] = Number(t.value); t.nextElementSibling.textContent = fmt(F, Number(t.value)); }
   });
   $("content").addEventListener("change", (e) => { if (e.target.dataset && e.target.dataset.rng) render(); });
+
+  // ── Monitor: an instrument panel (owner 2026-10-06: settings rows do not fit live data) ──
+  const M = { show: "all", paused: false, lvl: "warn", q: "", seq: 3, calls: [
+    { id: 3, t: "08:41:07", kind: "call", m: "qwen3-4b", tok: "612 → 88", ms: 900 },
+    { id: 2, t: "08:41:05", kind: "call", m: "qwen3-30b-a3b", tok: "2,140 → 310", ms: 1600 },
+    { id: 1, t: "08:40:52", kind: "load", m: "qwen3-4b", tok: "loaded · fast", ms: 0 },
+  ], fresh: 0 };
+  const LOGS = [
+    { t: "08:39:12", lv: "warn", x: "[router] hedge sent at 10.2 s (p75 x2)" },
+    { t: "08:38:40", lv: "info", x: "[voice] wake word heard · Hey IRIS" },
+    { t: "08:37:03", lv: "error", x: "[browser] page timed out after 15 s · retried" },
+    { t: "08:36:51", lv: "info", x: "[store] memory.db checkpoint · 412 MB" },
+  ];
+  const HOURS = [2, 1, 0, 0, 0, 0, 1, 4, 9, 14, 11, 7, 6, 9, 12, 10, 8, 5, 6, 4, 3, 2, 1, 0];
+  function renderMonitor(c) {
+    const rows = M.calls.filter((r) => M.show === "all" || (M.show === "calls" ? r.kind === "call" : r.kind === "load"));
+    const maxMs = Math.max(2000, ...M.calls.map((r) => r.ms));
+    const lv = ["info", "warn", "error"], minLv = lv.indexOf(M.lvl);
+    const logs = LOGS.filter((l) => lv.indexOf(l.lv) >= minLv && (!M.q || l.x.toLowerCase().includes(M.q.toLowerCase())));
+    const keep = document.activeElement && document.activeElement.id === "logq";
+    c.innerHTML = '<div class="mon">' +
+      '<div class="tiles" aria-label="Now">' +
+        '<div class="tile"><span class="k">Reasoning</span><span class="v"><i></i>qwen3-30b-a3b</span><span class="s">loaded · balanced</span></div>' +
+        '<div class="tile"><span class="k">Tool</span><span class="v"><i></i>qwen3-4b</span><span class="s">loaded · fast</span></div>' +
+        '<div class="tile"><span class="k">Speed</span><span class="v big">41<small style="font:500 11px var(--mono);color:var(--muted)"> tok/s</small></span><div class="spark">' + [30, 34, 28, 40, 38, 36, 41].map((v) => '<span style="height:' + Math.round(v / 41 * 100) + '%"></span>').join("") + "</div></div>" +
+        '<div class="tile"><span class="k">Reply time</span><span class="v big">6.1<small style="font:500 11px var(--mono);color:var(--muted)"> s</small></span><span class="s">median · p90 11.4 s</span></div>' +
+      "</div>" +
+      '<section class="pane w7"><h4><span class="live' + (M.paused ? " off" : "") + '"></span>Inference stream<span class="sp"></span>' + ["all", "calls", "loads"].map((v) => '<button data-mshow="' + v + '" aria-pressed="' + (M.show === v) + '">' + v + "</button>").join("") + '<button data-mpause aria-pressed="' + M.paused + '">' + (M.paused ? "resume" : "pause") + '</button><button data-mexport>export</button></h4>' +
+        '<div class="calls"><table><colgroup><col class="t"><col><col class="k"><col class="l"></colgroup><tbody>' + rows.map((r) => '<tr class="' + (r.kind === "load" ? "load" : "") + (r.id > M.fresh ? " new" : "") + '"><td>' + r.t + '</td><td class="m">' + esc(r.m) + "</td><td>" + esc(r.tok) + "</td><td>" + (r.kind === "call" ? '<span class="lat"><b class="' + (r.ms > 3000 ? "slow" : "") + '" style="width:' + Math.round(r.ms / maxMs * 30) + 'px"></b>' + (r.ms / 1000).toFixed(1) + " s</span>" : "") + "</td></tr>").join("") + "</tbody></table></div></section>" +
+      '<section class="pane w5"><h4>Usage<span class="sp"></span><span style="letter-spacing:0;text-transform:none;font-weight:400">today</span></h4><div class="usage">' +
+        '<div class="row"><span>tokens</span><b>182,400</b></div><div class="hours">' + HOURS.map((v, i) => '<span class="' + (i === 9 ? "now" : "") + '" style="height:' + Math.max(3, Math.round(v / 14 * 100)) + '%" title="' + i + ':00 · ' + v + 'k"></span>').join("") + '</div><div class="axis"><span>00</span><span>06</span><span>12</span><span>18</span><span>24</span></div>' +
+        '<div class="row"><span>turns</span><b>37</b></div><div class="okbar" title="35 done · 2 failed"><b style="width:94.6%"></b><i style="width:5.4%"></i></div><div class="axis"><span>35 done</span><span>2 failed</span></div>' +
+      "</div></section>" +
+      '<section class="pane w7"><h4>Logs<span class="sp"></span>' + lv.map((v) => '<button data-mlvl="' + v + '" aria-pressed="' + (M.lvl === v) + '">' + v + "+</button>").join("") + '<input id="logq" type="search" placeholder="search" aria-label="Search logs" value="' + esc(M.q) + '"></h4>' +
+        '<div class="logs">' + (logs.map((l) => '<div><span class="t">' + l.t + '</span><span class="lv ' + l.lv + '">' + l.lv + '</span><span class="x">' + esc(l.x) + "</span></div>").join("") || '<div class="hid">No lines at this level.</div>') + '<div class="hid">' + M.calls.filter((r) => r.kind === "call").length + " model-call lines are in the stream, not here</div></div></section>" +
+      '<section class="pane w5"><h4>Diagnostics<span class="sp"></span><button data-mrun>run checks</button></h4><ul class="checks2">' +
+        [["●", "", "Backend", "ok · 12 ms"], ["●", "", "Voice", "Parakeet · ready"], ["●", "", "Models", "2 loaded"], ["●", "", "App memory", "412 MB"], ["◐", "w", "GPU", "78% VRAM"], ["●", "", "Keyring", "API key saved"]].map((d) => '<li><span class="st ' + d[1] + '">' + d[0] + "</span>" + d[2] + "<small>" + d[3] + "</small></li>").join("") +
+      "</ul></section></div>";
+    M.fresh = M.calls[0].id;
+    if (keep) { const i = $("logq"); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }
+  }
+  $("content").addEventListener("click", (e) => {
+    if (D.place !== "monitor") return;
+    const t = e.target.closest("button"); if (!t) return;
+    if (t.dataset.mshow) M.show = t.dataset.mshow;
+    else if (t.hasAttribute("data-mpause")) M.paused = !M.paused;
+    else if (t.dataset.mlvl) M.lvl = t.dataset.mlvl;
+    else if (t.hasAttribute("data-mexport")) { toast($("dwing"), "Exported " + M.calls.length + " lines as JSONL · same as today"); return; }
+    else if (t.hasAttribute("data-mrun")) { toast($("dwing"), "Ran 6 checks · 5 pass, 1 warning"); return; }
+    else return;
+    renderMonitor($("content"));
+  });
+  $("content").addEventListener("input", (e) => { if (e.target.id === "logq" && D.place === "monitor") { M.q = e.target.value; renderMonitor($("content")); } });
+  const MODELS = [["qwen3-4b", "612 → 88", 900], ["qwen3-30b-a3b", "1,880 → 240", 1500], ["qwen3-4b", "430 → 61", 700], ["qwen3-30b-a3b", "3,020 → 410", 3400]];
+  if (!RM) setInterval(() => {
+    if (M.paused || document.hidden) return;
+    const d = new Date(), pick = MODELS[M.seq % MODELS.length];
+    M.calls.unshift({ id: ++M.seq, t: d.toTimeString().slice(0, 8), kind: "call", m: pick[0], tok: pick[1], ms: pick[2] });
+    M.calls.length = Math.min(M.calls.length, 40);
+    if (D.place === "monitor" && !$("dwing").querySelector(".menu")) renderMonitor($("content"));
+  }, 2600);
 
   // ── workspace hub: every tool stays; Views is one more lane ──
   function renderHub(c) {
