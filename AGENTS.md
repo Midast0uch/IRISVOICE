@@ -13,7 +13,9 @@ You are working on **IRIS Voice**, a voice-controlled desktop assistant.
 - **Desktop**: Tauri (Rust) — borderless widget, system tray, global shortcuts
 - **Audio**: Porcupine wake word, WebRTC/STT pipeline, WebSocket streaming
 - **Auth**: OAuth handlers, OS keyring for secure credential storage
-- **Database**: MCM SDK coordinate graph at `.mcm/coordinates.db` (project-local; set `MCM_DB_PATH=C:\dev\IRISVOICE\.mcm\coordinates.db`)
+- **App memory (what IRIS remembers)**: `data/memory.db` — the application's memory store, opened only through `resolve_memory_store_path` and written through `db.app_write`. Mycelium nodes/edges/landmarks, `memory_chain` (Immortus), `episodes`, `der_fan_traces`, `document_data`, `memory_events`. Its recall paths are in the app: `research_memory.recall_prior_research`, `ontology_recall.recall_failed_like`. THIS is the memory that specs (wormhole-aperture), the Oracle and any memory UI are about.
+- **Dev memory (what the coding agents remember while BUILDING IRIS)**: the MCM SDK / `mcm-cad` MCP server, coordinate graph at `.mcm/coordinates.db` (project-local; set `MCM_DB_PATH=C:\dev\IRISVOICE\.mcm\coordinates.db`). Tools: `get_session`, `mcm_recall`, `pin_add`, `record_*`, landmarks. `backend/agent/mcm.py` (`MCM.recall`, `compress`) is a LITE in-app port of this dev tool (context-window compress/recover); it is NOT IRIS's memory and NOT one of its recall paths.
+- **Do not mix them up**: an MCM pin, event or landmark is build history, not app data, and `mcm_recall` / `MCM.recall` is never an app recall path. The two stores share a schema only so the build store can be inherited at hand-off (see WHAT DONE LOOKS LIKE); until then they are separate.
 
 Read `.mcm/GOALS.md` for the objective, completion condition, gates and domain status, then
 `docs/audits/2026-09-29/PROGRESS.md` (START HERE = current work order; Standards = what must not

@@ -68,9 +68,10 @@ that write lands (or why its guard fails) before Stage A. Decide the substrate f
 - **Recall that is already LIVE** (the 2026-08-23 text says none exists — no longer
   true): `research_memory.recall_prior_research` (PRIOR RESEARCH into synthesis, S55),
   `ontology_recall.recall_failed_like` via `semantic_gate` (AVOID recall — overlaps
-  REQ-46 recall-by-cause), and `mcm.recall`. Wormhole must REPLACE or FEED these through
-  ONE recall chokepoint, and REQ-0's recall episode should be written there — never a
-  fourth recall path.
+  REQ-46 recall-by-cause). Wormhole must REPLACE or FEED these through ONE recall
+  chokepoint, and REQ-0's recall episode should be written there — never a third recall
+  path. (`backend/agent/mcm.py` `MCM.recall` is NOT one of them: it is a lite in-app port
+  of the MCM development memory tool, not IRIS's memory — see CLAUDE.md.)
 - **The Oracle** (`oracle.md` §0, `backend/agent/decision_engine.py`): any decision a
   model makes here (aperture policy arms REQ-13/14, "is this recall relevant",
   QA-Emb questions) is an Oracle CONSUMER: shadow rows first, the hardened bar (>= 100
