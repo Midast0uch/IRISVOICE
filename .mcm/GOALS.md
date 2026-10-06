@@ -61,6 +61,26 @@ VERIFIED this audit (commits 6c34c569 … 8655ff40 on `feat/agent-multi-step-too
   fixed.
 - Research group: **OPEN** (1/6 at baseline, not re-run).
 
+### 4b. Chat view + developer surface (2026-10-06, sessions 01UufETT + ee236373)
+
+VERIFIED live on the owner's machine (commits c471431f, c24201fc; MCM HANDOFF 14):
+- Execution-audit Phase 3 (turn protocol + turn store + chat-view split) and Phase 4 (live
+  matrix): a developer turn shows prompt bubble -> matrix rows (real verbs) -> one DONE fold
+  line -> answer; Stop ends the turn with exactly one `turn.end cancelled`; `>cmd` is an EXEC row.
+- Strands on the real `data/conversations.db` (1,686 threads, list 12 ms): create, tag, report
+  back, cascade delete; a strand's reply saves to the strand; `@` is the same list in every strand.
+OPEN for "IRIS develops itself inside the app" (Gate 3 readiness):
+- **Per-project port registry + launch (owner, 2026-10-06)**: each active project folder of a
+  thread/strand registers its frontend/backend processes and ports (like Claude Code's
+  `.claude/launch.json` + preview); Surfaces -> Workspace hub lists them (start/stop/logs/open in
+  Browser surface); the agent can start/verify its own dev servers through it. Design first
+  (where it sits in Surfaces; one registry per project folder; ports never collide across
+  threads); today only the IRIS manager (`scripts/iris_process_manager.py`) exists.
+- Live gate rest: a voice turn, an error turn, an edit + Undo, recorded replay fixtures
+  (`IRIS_TURN_RECORD_DIR`); retire the legacy couriers; turn parts survive a reload.
+- Execution-audit Phase 5: split `backend/agent/agent_kernel.py` (~22k lines) - NOT started.
+- The agent's sandbox repo (7c) - not started.
+
 ## 5. Gates
 
 | Gate | Goal | Status |
