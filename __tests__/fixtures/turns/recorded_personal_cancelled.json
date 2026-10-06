@@ -1,0 +1,38 @@
+{
+  "name": "recorded_personal_cancelled",
+  "source": "recorded: 32c33da7-58d.jsonl",
+  "messages": [
+    {
+      "type": "turn.start",
+      "payload": {
+        "v": 1,
+        "turn_id": "32c33da7-58d",
+        "conversation_id": "conv-942",
+        "strand_id": "conv-942",
+        "author": "user",
+        "to": [
+          "@iris"
+        ],
+        "refs": [],
+        "mode": "personal",
+        "prompt": "Write a 700-word short story about a clockmaker in a mountain village.",
+        "ts": 1791319091.878519,
+        "client_ref": "1791319091876-3"
+      }
+    },
+    {
+      "type": "turn.end",
+      "payload": {
+        "v": 1,
+        "turn_id": "32c33da7-58d",
+        "conversation_id": "conv-942",
+        "status": "cancelled",
+        "parts": 0,
+        "text": "",
+        "speak": "",
+        "ts": 1791319100.790713,
+        "error": "cancelled"
+      }
+    }
+  ]
+}

@@ -152,3 +152,6 @@ llama.cpp-prismml/server.zip
 
 # Agent git worktrees (temporary work copies)
 .claude/worktrees/
+
+# Turn recordings (IRIS_TURN_RECORD_DIR) - raw dev captures; fixtures go to __tests__/fixtures/turns
+data/turn_recordings/

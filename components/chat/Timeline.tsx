@@ -279,7 +279,15 @@ export function Timeline({
           style={{ color: `${fontColor}50` }}
         >
           <p className="text-center text-[11px]">
-            {conversations.length === 0 ? (
+            {activeConversationId ? (
+              // An open thread or strand with nothing in it yet (a new strand
+              // showed "Select a conversation" although it was open, 2026-10-06).
+              <>
+                Nothing here yet
+                <br />
+                <span className="text-[10px] opacity-70">Say what this is for.</span>
+              </>
+            ) : conversations.length === 0 ? (
               <>
                 Start a conversation
                 <br />

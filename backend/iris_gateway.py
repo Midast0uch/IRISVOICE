@@ -152,6 +152,13 @@ _TTS_FIRST_CHUNK_BUDGET_S = 180.0
 
 logger = logging.getLogger(__name__)
 
+# One id per backend process: initial_state carries it so an open page can tell a
+# reconnect from a restart (a restart loses the running turns: their turn.end
+# never comes).
+_BOOT_ID = __import__("uuid").uuid4().hex[:12]
+# The Stopped line, word for word as the chat shows it (components/chat/turn/TurnParts.tsx).
+_STOPPED_LINE = "■ Stopped. IRIS kept what it finished."
+
 
 # The composer's "#" can point at project files (address "file:<path>"). The agent gets the
 # ADDRESSES as one per-turn system line and reads the files with its own file tools; the
@@ -3440,8 +3447,11 @@ class IRISGateway:
                     if _text.lstrip().startswith("{"):
                         return
                     # Turn protocol: the same chunks the UI shows (JSON guard
-                    # above already applied).
+                    # above already applied). An ended (stopped) turn stays
+                    # quiet - same rule as the text path.
                     _turn.text(chunk)
+                    if _turn.ended:
+                        return
                     if loop and loop.is_running():
                         asyncio.run_coroutine_threadsafe(
                             self._ws_manager.send_to_client(
@@ -6019,6 +6029,14 @@ class IRISGateway:
                                 _chunk_json[0] = _joined.startswith("{")
                         if _chunk_json[0]:
                             return
+                        # A stopped (or otherwise ended) turn stays quiet: the
+                        # executor thread cannot be cancelled, so its late reply
+                        # arrived after "Stopped" and drew an empty IRIS entry
+                        # through chat_chunk (live 2026-10-06). The turn already
+                        # counts and logs parts after its end.
+                        if _turn.ended:
+                            _turn.text(chunk)  # counted as dropped_after_end
+                            return
                         _turn.text(chunk)
                         _loop = self._main_loop
                         if _loop and _loop.is_running():
@@ -6546,8 +6564,12 @@ class IRISGateway:
                 await self._send_error(client_id, friendly)
                 _turn.error(friendly, code="agent_error")
                 _turn.end("error", error=friendly)
+                self._persist_turn_outcome(payload, session_id, conversation_id, turn_id, friendly)
             except asyncio.CancelledError:
                 _turn.end("cancelled", error="cancelled")
+                self._persist_turn_outcome(
+                    payload, session_id, conversation_id, turn_id, _STOPPED_LINE
+                )
                 raise
             finally:
                 # Exactly one turn.end, on every path (a path that returned
@@ -8141,6 +8163,10 @@ class IRISGateway:
                 "payload": {
                     "state": state.model_dump() if state else {},
                     "current_conversation_id": active_cid,
+                    # This backend process. A page that saw another id ends the
+                    # turns it still shows as running: a restarted backend never
+                    # sends their turn.end (useIRISWebSocket endsForLostTurns).
+                    "boot_id": _BOOT_ID,
                 },
             },
         )
@@ -11866,6 +11892,29 @@ class IRISGateway:
             },
         )
 
+    def _persist_turn_outcome(
+        self, payload: dict, session_id: str, conversation_id: str, turn_id: str, text: str
+    ) -> None:
+        """Save a stopped or failed text turn's outcome line to its conversation.
+
+        The turn store is memory-only, so after a reload a stopped or failed turn
+        showed only its prompt (live 2026-10-06). The same plain line the chat
+        shows is saved as the turn's reply, to the turn's OWN conversation (the
+        frame's id first - see the success-path persist). Never raises.
+        """
+        try:
+            from backend.conversation_store import add_message as _store_add
+
+            conv = (
+                payload.get("conversation_id")
+                or self._active_conversation_id.get(session_id)
+                or conversation_id
+            )
+            if conv and text:
+                _store_add(conv, "assistant", text, turn_id=turn_id, source="ws_turn_outcome")
+        except Exception as exc:  # noqa: BLE001 - a save never fails the turn
+            self._logger.warning("[Turn %s] outcome not saved: %s", turn_id, exc)
+
     async def _handle_terminal_input(
         self, session_id: str, client_id: str, message: dict
     ) -> None:
@@ -11882,6 +11931,14 @@ class IRISGateway:
             await self._send_error(
                 client_id, "Terminal only available in developer mode"
             )
+            # The EXEC row reads terminal_output, not error frames: without this
+            # line a refused command showed as a quiet "done" row (live
+            # 2026-10-06). "Terminal error:" marks the row failed (shellRuns).
+            await self._ws_manager.send_to_client(client_id, {
+                "type": "terminal_output",
+                "line": "Terminal error: the shell runs only in developer mode",
+                "proc_id": f"shell-{session_id}",
+            })
             return
 
         try:

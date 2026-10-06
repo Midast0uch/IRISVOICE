@@ -134,12 +134,14 @@ export function rowOpenByDefault(row: MatrixRowModel): boolean {
 }
 
 /** The one-line fold of a finished run, in plain words. */
-export function foldLine(m: MatrixModel, stopped: boolean, elapsed: string): { mark: string; word: string; rest: string } {
+export function foldLine(m: MatrixModel, stopped: boolean, elapsed: string, turnFailed = false): { mark: string; word: string; rest: string } {
   const steps = `${m.flat.length} step${m.flat.length === 1 ? "" : "s"}`
   // "" = the run's length is unknown: no time, never a false "0:00".
   const time = elapsed ? ` · ${elapsed}` : ""
   if (stopped) return { mark: "■", word: "STOPPED", rest: `${m.objective} · ${steps}${time}` }
-  if (m.failed > 0 && m.flat.every((r) => r.state !== "done")) {
+  // turnFailed: the turn itself ended in an error (a lost backend, an agent
+  // error) - never "DONE", whatever rows had finished.
+  if (turnFailed || (m.failed > 0 && m.flat.every((r) => r.state !== "done"))) {
     return { mark: "✕", word: "FAILED", rest: `${m.objective} · ${steps}${time}` }
   }
   const retried = m.failed > 0 ? ` · ${m.failed} tried again` : ""

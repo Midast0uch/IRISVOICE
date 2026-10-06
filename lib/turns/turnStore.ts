@@ -223,6 +223,24 @@ export function reduceTurnMessage(state: TurnsState, msg: TurnMessage): TurnsSta
   }
 }
 
+/**
+ * `turn.end` messages for every turn still running: used when the backend
+ * process changed under an open page (its `boot_id` on initial_state differs),
+ * because a restarted backend never sends the end of a turn it lost. Each end
+ * is an error the chat shows; `parts` = what arrived, so nothing is awaited.
+ */
+export function endsForLostTurns(state: TurnsState, reason: string): TurnMessage[] {
+  return Object.values(state.byId)
+    .filter((t) => t.status === "running")
+    .map((t) => ({
+      type: "turn.end",
+      payload: {
+        v: 1, turn_id: t.id, conversation_id: t.conversationId, status: "error",
+        parts: t.parts.length, text: t.text, speak: "", error: reason, ts: Date.now() / 1000,
+      },
+    }) as unknown as TurnMessage)
+}
+
 export function isTurnMessageType(type: unknown): type is TurnMessage["type"] {
   return type === "turn.start" || type === "turn.part" || type === "turn.end"
 }

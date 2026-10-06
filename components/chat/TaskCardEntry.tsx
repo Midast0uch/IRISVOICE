@@ -120,7 +120,10 @@ export function TaskCardEntry({
           details={matrixDetails(card)}
           glowColor={glowColor}
           working={card.isWorking}
-          stopped={card.terminalState === "terminated_unknown"}
+          // The turn's own end decides the word (turn.end is guaranteed): a
+          // stopped turn read "DONE" and a failed one "DONE · tried again".
+          stopped={card.terminalState === "terminated_unknown" || turn?.status === "cancelled"}
+          failed={turn?.status === "error"}
           // A settled card with no known duration shows no time (NaN), never a
           // false "0:00" from the shared working timer.
           elapsedSec={card.isWorking ? matrixElapsedSec : card.durationSec ?? Number.NaN}

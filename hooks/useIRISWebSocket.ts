@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useSyncExternalStore } from "react"
-import { applyTurnMessage, getTurnsState, isTurnMessageType } from "@/lib/turns/turnStore"
+import { applyTurnMessage, endsForLostTurns, getTurnsState, isTurnMessageType } from "@/lib/turns/turnStore"
 import { applyDiffUndoResult } from "@/lib/diffs/undoStore"
 import type { TurnMessage } from "@/lib/turns/protocol"
 import type { DiffUndoResult } from "@/lib/diffs/api"
@@ -172,6 +172,10 @@ function ensureThreadMirror() {
 // useInferenceState, the dashboard) via their window listeners. NavigationContext
 // is the app root and mounts first, so it is reliably the primary. Connection
 // state is a shared store so every instance's `isConnected` agrees.
+// The backend process this page last saw (initial_state.boot_id). A different
+// id on reconnect = the backend restarted: turns that were running there will
+// never send turn.end, so they end here as errors (endsForLostTurns).
+let _lastBootId: string | undefined
 let _sharedWs: WebSocket | null = null
 let _sharedRefcount = 0
 let _sharedHandleMessage: ((message: Record<string, unknown>) => void) | null = null
@@ -773,6 +777,13 @@ export function useIRISWebSocket(
     // turn and conversation the EVENT names. No CustomEvent hop, no guessing.
     if (isTurnMessageType(type)) {
       applyTurnMessage({ type, payload } as unknown as TurnMessage)
+      // The card store settles a card that still works when its turn ends
+      // (useTaskProgress settleCardsOfEndedTurn).
+      if (type === "turn.end" && typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("iris:turn_end", {
+          detail: { turn_id: payload.turn_id, conversation_id: payload.conversation_id, status: payload.status },
+        }))
+      }
       return
     }
 
@@ -792,6 +803,19 @@ export function useIRISWebSocket(
       case "initial_state":
       case "state_sync": {
         const state: IRISState = payload.state as IRISState
+        const bootId = typeof payload.boot_id === "string" ? payload.boot_id : undefined
+        if (bootId) {
+          if (_lastBootId && _lastBootId !== bootId) {
+            for (const end of endsForLostTurns(getTurnsState(), "IRIS restarted during this turn")) {
+              applyTurnMessage(end)
+              const ep = (end as unknown as { payload: Record<string, unknown> }).payload
+              window.dispatchEvent(new CustomEvent("iris:turn_end", {
+                detail: { turn_id: ep.turn_id, conversation_id: ep.conversation_id, status: ep.status },
+              }))
+            }
+          }
+          _lastBootId = bootId
+        }
         if (state && state.active_theme) setTheme(state.active_theme)
         if (state && state.field_values) setFieldValues(state.field_values)
         if (state && state.sections) setSections(state.sections)

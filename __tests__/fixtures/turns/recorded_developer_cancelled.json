@@ -1,0 +1,229 @@
+{
+  "name": "recorded_developer_cancelled",
+  "source": "recorded: 7a232fe9-1fe.jsonl",
+  "messages": [
+    {
+      "type": "turn.start",
+      "payload": {
+        "v": 1,
+        "turn_id": "7a232fe9-1fe",
+        "conversation_id": "conv-942",
+        "strand_id": "conv-942",
+        "author": "user",
+        "to": [
+          "@iris"
+        ],
+        "refs": [],
+        "mode": "developer",
+        "prompt": "Write a 700-word short story about a lighthouse in winter.",
+        "ts": 1791319568.7543035,
+        "client_ref": "1791319568750-2"
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "7a232fe9-1fe",
+        "conversation_id": "conv-942",
+        "seq": 1,
+        "ts": 1791319571.5611296,
+        "part": {
+          "type": "todo",
+          "event": "task:start",
+          "data": {
+            "task_id": "7a232fe9-1fe",
+            "description": "Write a 700-word short story about a lighthouse in winter.",
+            "plan_title": "Compose lighthouse story",
+            "mode": "implement",
+            "steps": [
+              {
+                "id": "s1",
+                "description": "Write the full 700-word short story about a lighthouse in winter",
+                "status": "pending",
+                "toolName": null,
+                "stepNumber": 1,
+                "seq": 1
+              }
+            ],
+            "total_steps": 1,
+            "origin": "initial",
+            "card_id": "card_7a232fe9-1fe",
+            "card_relation": "new",
+            "conversation_id": "conv-942",
+            "agent_id": "session_iris",
+            "project_id": null,
+            "turn_id": "7a232fe9-1fe"
+          }
+        }
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "7a232fe9-1fe",
+        "conversation_id": "conv-942",
+        "seq": 2,
+        "ts": 1791319571.5894706,
+        "part": {
+          "type": "todo",
+          "event": "task:start",
+          "data": {
+            "task_id": "7a232fe9-1fe",
+            "description": "Write a 700-word short story about a lighthouse in winter.",
+            "plan_title": "Compose lighthouse story",
+            "mode": "agentic",
+            "steps": [
+              {
+                "id": "s1",
+                "description": "Write the full 700-word short story about a lighthouse in winter",
+                "status": "pending",
+                "stepNumber": 1,
+                "toolName": null,
+                "seq": 1
+              }
+            ],
+            "total_steps": 1,
+            "origin": "initial",
+            "card_id": "card_7a232fe9-1fe",
+            "card_relation": "continues",
+            "conversation_id": "conv-942",
+            "agent_id": "session_iris",
+            "project_id": null,
+            "turn_id": "7a232fe9-1fe"
+          }
+        }
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "7a232fe9-1fe",
+        "conversation_id": "conv-942",
+        "seq": 3,
+        "ts": 1791319571.8802507,
+        "part": {
+          "type": "tool_call",
+          "name": "tool",
+          "call_id": null,
+          "data": {
+            "task_id": "7a232fe9-1fe",
+            "tool_name": "direct",
+            "description": "Write the full 700-word short story about a lighthouse in winter",
+            "params": {},
+            "step_number": 1,
+            "card_id": "card_7a232fe9-1fe",
+            "conversation_id": "conv-942"
+          }
+        }
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "7a232fe9-1fe",
+        "conversation_id": "conv-942",
+        "seq": 4,
+        "ts": 1791319577.0437965,
+        "part": {
+          "type": "tool_result",
+          "name": "tool",
+          "call_id": null,
+          "ok": true,
+          "data": {
+            "task_id": "7a232fe9-1fe",
+            "result_summary": "The wind howled over the jagged cliffs of Grayhaven, a thin ribbon of seafoam curling and disappearing into the night. Snow fell in relentless sheets, muffling the world into a soft, white hush that s",
+            "tool_name": "direct",
+            "step_number": 1,
+            "card_id": "card_7a232fe9-1fe",
+            "conversation_id": "conv-942"
+          }
+        }
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "7a232fe9-1fe",
+        "conversation_id": "conv-942",
+        "seq": 5,
+        "ts": 1791319577.9297507,
+        "part": {
+          "type": "todo",
+          "event": "memory:event",
+          "data": {
+            "kind": "episodic",
+            "task_summary": "[Step 1] Write the full 700-word short story about a lighthouse in winter",
+            "outcome_type": "store",
+            "duration_ms": 0,
+            "conversation_id": "conv-942"
+          }
+        }
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "7a232fe9-1fe",
+        "conversation_id": "conv-942",
+        "seq": 6,
+        "ts": 1791319578.0408053,
+        "part": {
+          "type": "todo",
+          "event": "task:fail",
+          "data": {
+            "task_id": "7a232fe9-1fe",
+            "card_id": "card_7a232fe9-1fe",
+            "outcome": "failure",
+            "steps_completed": 1,
+            "conversation_id": "conv-942"
+          }
+        }
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "7a232fe9-1fe",
+        "conversation_id": "conv-942",
+        "seq": 7,
+        "ts": 1791319578.1756558,
+        "part": {
+          "type": "todo",
+          "event": "task:progress",
+          "data": {
+            "description": "Synthesizing answer",
+            "action": "Synthesizing",
+            "update_step": true,
+            "detail": "Synthesizing answer",
+            "detail_progress": "",
+            "phase": "synthesizing",
+            "phase_sequence": 90,
+            "seq": 2,
+            "conversation_id": "conv-942"
+          }
+        }
+      }
+    },
+    {
+      "type": "turn.end",
+      "payload": {
+        "v": 1,
+        "turn_id": "7a232fe9-1fe",
+        "conversation_id": "conv-942",
+        "status": "cancelled",
+        "parts": 7,
+        "text": "",
+        "speak": "",
+        "ts": 1791319578.5666869,
+        "error": "cancelled"
+      }
+    }
+  ]
+}

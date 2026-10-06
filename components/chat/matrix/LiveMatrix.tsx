@@ -213,6 +213,8 @@ export interface MatrixFrameProps {
   working: boolean
   /** The user stopped the turn. */
   stopped?: boolean
+  /** The turn ended in an error (its turn.end status). */
+  failed?: boolean
   elapsedSec: number
   /** Latest reasoning (turn reasoning, else the card's current action). */
   thought?: string
@@ -234,6 +236,7 @@ export function MatrixFrame({
   glowColor,
   working,
   stopped = false,
+  failed = false,
   elapsedSec,
   thought,
   liveAction,
@@ -261,7 +264,7 @@ export function MatrixFrame({
 
   // Concept 2 (iris-strands.html, devTurn): no frame, no TASK header. The rows sit
   // on the timeline's spine (the spine is the rail); a settled run is ONE fold line.
-  const f = foldLine(m, stopped, elapsed)
+  const f = foldLine(m, stopped, elapsed, failed)
   const foldColor = f.word === "DONE" ? OK : f.word === "FAILED" ? BAD : "rgba(255,255,255,0.5)"
   const foldButton = (isFolded: boolean) => (
     <button

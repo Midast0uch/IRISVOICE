@@ -46,6 +46,16 @@ export function useLauncherMode(): LauncherMode {
     if (urlMode === "developer" || urlMode === "personal") {
       // Explicit ?mode= param — backend should never override
       urlModeRef.current = urlMode
+      // ...and the backend must agree: its tool gates read the persisted mode,
+      // not the URL. A page opened as ?mode=developer while the config said
+      // personal had every >cmd refused ("terminal not allowed in personal
+      // mode", live 2026-10-06). Same endpoint the launcher posts to.
+      fetch("/api/mode", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: urlMode }),
+        signal: AbortSignal.timeout(5000),
+      }).catch((e) => console.warn("[useLauncherMode] mode sync failed:", e))
     } else if (params.get("remote") === "1") {
       // ?remote=1 without explicit mode — force personal, prevent backend override
       urlModeRef.current = "personal"

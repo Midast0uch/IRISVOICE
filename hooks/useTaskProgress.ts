@@ -989,6 +989,38 @@ function appendAction(stream: string[] | undefined, action: string | undefined):
   return [...(stream ?? []), action].slice(-ACTION_STREAM_CAP)
 }
 
+/**
+ * The turn ended: any card of that turn that still works is settled the same
+ * way task:done / task:fail settles it. Live 2026-10-06: task:done was withheld
+ * (or never sent: a restart, a cancel), the card stayed isWorking, and the
+ * composer turned EVERY later message into a steer (isTurnRunning ||
+ * anyCardWorking). turn.end is the one end the backend guarantees.
+ */
+export function settleCardsOfEndedTurn(
+  prev: CardsState,
+  turnId: string,
+  conversationId?: string,
+  status?: string,
+): CardsState {
+  const convIds = conversationId ? [conversationId] : Object.keys(prev.byConversation)
+  let next = prev
+  for (const convId of convIds) {
+    const conv = next.byConversation[convId]
+    if (!conv) continue
+    for (const id of conv.order) {
+      const c = conv.byId[id]
+      if (!c?.isWorking || (c.turnId !== turnId && c.responseTurnId !== turnId)) continue
+      next = reduceTaskUpdate(next, {
+        type: status === "ok" ? "task:done" : "task:fail",
+        card_id: c.cardId,
+        conversation_id: convId,
+        ...(status === "cancelled" ? { outcome: "cancelled" } : null),
+      } as TaskUpdateDetail)
+    }
+  }
+  return next
+}
+
 function reduceTaskUpdate(prev: CardsState, d: TaskUpdateDetail): CardsState {
   switch (d.type) {
     case "task:start":
@@ -1581,6 +1613,18 @@ function _installCardListeners(): void {
     }
     window.addEventListener("iris:task_update", handler)
     return () => window.removeEventListener("iris:task_update", handler)
+  })()
+
+  // A turn ended (lib/turns/turnStore: exactly one turn.end per turn): settle
+  // its card if it still works (see settleCardsOfEndedTurn).
+  ;(() => {
+    const handler = (e: Event) => {
+      const d = (e as CustomEvent<{ turn_id?: string; conversation_id?: string; status?: string }>).detail
+      if (!d?.turn_id) return
+      setCardsState((prev) => settleCardsOfEndedTurn(prev, d.turn_id!, d.conversation_id, d.status))
+    }
+    window.addEventListener("iris:turn_end", handler)
+    return () => window.removeEventListener("iris:turn_end", handler)
   })()
 
   ;(() => {

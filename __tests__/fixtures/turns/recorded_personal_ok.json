@@ -1,0 +1,65 @@
+{
+  "name": "recorded_personal_ok",
+  "source": "recorded: f7df4b6c-726.jsonl",
+  "messages": [
+    {
+      "type": "turn.start",
+      "payload": {
+        "v": 1,
+        "turn_id": "f7df4b6c-726",
+        "conversation_id": "conv-942",
+        "strand_id": "conv-942",
+        "author": "user",
+        "to": [
+          "@iris"
+        ],
+        "refs": [],
+        "mode": "personal",
+        "prompt": "In one sentence, what is the capital of Japan?",
+        "ts": 1791319030.8121467,
+        "client_ref": "1791319030810-1"
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "f7df4b6c-726",
+        "conversation_id": "conv-942",
+        "seq": 1,
+        "ts": 1791319046.8760984,
+        "part": {
+          "type": "text",
+          "delta": "\n\nANSWER: The capital of Japan is Tokyo"
+        }
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "f7df4b6c-726",
+        "conversation_id": "conv-942",
+        "seq": 2,
+        "ts": 1791319046.8764367,
+        "part": {
+          "type": "text",
+          "delta": "."
+        }
+      }
+    },
+    {
+      "type": "turn.end",
+      "payload": {
+        "v": 1,
+        "turn_id": "f7df4b6c-726",
+        "conversation_id": "conv-942",
+        "status": "ok",
+        "parts": 2,
+        "text": "ANSWER: The capital of Japan is Tokyo.",
+        "speak": "ANSWER: The capital of Japan is Tokyo.",
+        "ts": 1791319048.5350246
+      }
+    }
+  ]
+}
