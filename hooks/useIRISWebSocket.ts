@@ -1513,7 +1513,7 @@ export function useIRISWebSocket(
       case "inference_event":
       case "model_load_event":
       // ── Local model / hardware events ── forwarded to iris:ws_message so
-      // ModelsScreen and InferenceConsolePanel receive them without prop-drilling.
+      // ModelsScreen and the Monitor page (useMonitorData) receive them without prop-drilling.
       case "local_models_list":
       case "hardware_info":
       case "local_model_status": {

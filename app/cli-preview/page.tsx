@@ -309,7 +309,7 @@ function renderBlueprintMatrixUnicode(task: TaskItem) {
       </div>
       <div className="text-cyan-400 flex items-center gap-2 text-[10px]">
         <span>│</span>
-        <span className="text-emerald-300/80">Skill crystallized into data/memory.db (skills)</span>
+        <span className="text-emerald-300/80">Skill learned · saved to data/memory.db (skills)</span>
       </div>
       {task.memoryRecalled && (
         <div className="text-cyan-400 flex items-center gap-2 text-[10px]">

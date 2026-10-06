@@ -104,7 +104,7 @@ export const LearnedSkillsPanel: React.FC<LearnedSkillsPanelProps> = ({ glowColo
             </div>
             <span className="text-[10px] text-white/40 uppercase tracking-wider block">No Learned Skills</span>
             <p className="text-[9px] text-white/20 mt-2 leading-relaxed">
-              IRIS hasn't crystallized any new workflows yet. Try asking her to help you with complex tasks!
+              IRIS hasn't learned any new workflows yet. Try asking her to help you with complex tasks!
             </p>
           </motion.div>
         ) : (

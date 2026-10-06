@@ -194,7 +194,7 @@ function buildFooter(task: TaskCardProps, wall: string, closeLine: string, useCo
 
   if (task.isCrystallized) {
     pushLine("✦ CONVERGED", ANSI.brightGreen + ANSI.bold)
-    pushLine("Skill crystallized into data/memory.db (skills)", ANSI.brightGreen)
+    pushLine("Skill learned · saved to data/memory.db (skills)", ANSI.brightGreen)
     if (lastMem) pushLine(lastMem.detail, ANSI.dim)
   } else if (lastMem) {
     pushLine(`MEM: ${lastMem.detail}`, ANSI.dim)

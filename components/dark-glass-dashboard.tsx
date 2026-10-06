@@ -1937,7 +1937,12 @@ export function DarkGlassDashboard({
             type="button"
             className="iris-go"
             onClick={handleApplySettings}
-            disabled={changed.length === 0 || applyStatus === 'applying'}
+            // As before: each field already updates the backend live; Apply saves EVERY
+            // section globally (confirm_card + /api/config/save), so it works at any time.
+            // It only looks quieter while nothing changed since the last Apply (owner 2026-10-06).
+            title="Save every setting, in all sections"
+            style={changed.length === 0 && applyStatus !== 'applied' ? { opacity: 0.6 } : undefined}
+            disabled={applyStatus === 'applying'}
           >
             {applyStatus === 'applying' ? 'Applying…' : applyStatus === 'applied' ? '✓ Applied' : 'Apply'}
           </button>

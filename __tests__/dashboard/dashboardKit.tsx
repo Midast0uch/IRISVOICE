@@ -54,7 +54,6 @@ jest.mock("@/components/dashboard/ActivityPanel", () => ({ ActivityPanel: () => 
 jest.mock("@/components/dashboard/LogsPanel", () => ({ LogsPanel: () => null }))
 jest.mock("@/components/dashboard/ModelBrowserPanel", () => ({ ModelBrowserPanel: () => <div data-testid="models-surface" /> }))
 jest.mock("@/components/dashboard/MonitorPage", () => ({ MonitorPage: () => <div data-testid="monitor-page" /> }))
-jest.mock("@/components/dev/DCPStatsPanel", () => ({ DCPStatsPanel: () => null }))
 jest.mock("@/components/iris/browser/BrowserNavigationOverlay", () => ({ BrowserNavigationOverlay: () => null }))
 jest.mock("@/components/integrations/MarketplaceScreen", () => ({ MarketplaceScreen: () => null }))
 jest.mock("@/components/integrations/UnifiedMarketplaceModelsSurface", () => ({ UnifiedMarketplaceModelsSurface: () => <div data-testid="marketplace-surface" /> }))

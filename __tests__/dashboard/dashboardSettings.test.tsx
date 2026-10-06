@@ -25,7 +25,9 @@ describe("settings rows", () => {
   it("changing a field marks its dot, the row count, the rail, the header and the apply bar; Apply sends it", async () => {
     mountDashboard()
     expect(screen.getByTestId("apply-sum").textContent).toBe("All saved")
-    expect(screen.getByRole("button", { name: "Apply" })).toBeDisabled()
+    // Apply works at any time, as before the redesign (owner 2026-10-06); it only looks quieter at rest.
+    expect(screen.getByRole("button", { name: "Apply" })).not.toBeDisabled()
+    expect(screen.getByRole("button", { name: "Apply" }).style.opacity).toBe("0.6")
 
     fireEvent.click(screen.getByRole("switch", { name: "Voice Activity Detection" }))
 
