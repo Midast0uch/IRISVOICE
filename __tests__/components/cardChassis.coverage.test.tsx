@@ -83,6 +83,9 @@ const NON_CARD_ALLOWLIST: string[] = [
   "components/chat/SuggestionPills.tsx",
   "components/chat/ConversationChips.tsx",
   "components/chat/MermaidDiagram.tsx",
+  // Phase 3 (2026-10-06): the input area moved out of chat-view.tsx into its
+  // own file. Message path: the composer never renders a card.
+  "components/chat/Composer.tsx",
 ]
 
 /** The chassis implementation itself — neither a card surface (nothing to
