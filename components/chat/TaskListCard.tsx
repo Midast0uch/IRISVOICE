@@ -26,6 +26,11 @@ import {
   type ChassisVeinState,
 } from "@/components/chat/CardChassis"
 import { formatMemoryEntry } from "@/lib/cards/memoryRegistry"
+import { LOOKED_CLOSER, REPORTED_BACK, plainWords } from "@/lib/cards/plainWords"
+import { parentOf } from "@/components/chat/matrix/matrixModel"
+import { DiffMark } from "@/components/chat/diff/DiffMark"
+import { AskPrompt, type AskActions } from "@/components/chat/turn/AskPrompt"
+import type { AskItem } from "@/lib/turns/asks"
 
 export interface TaskListCardProps {
   steps: TaskStep[]
@@ -47,6 +52,9 @@ export interface TaskListCardProps {
   /** Live agent thinking stream (newest last) — the THK section's expandable
    * trace. Rendered ONLY when real reasoning arrived; never fabricated. */
   thoughtStream?: string[]
+  /** The model's live reasoning, latest sentence (the turn's reasoning while it runs). When set it is the card's ONE
+   * thinking line, under the running step ("thinking · …"), and the action-based THK strip steps aside. */
+  thinking?: string
   /** Session 246: total wall-clock seconds the completed run took
    * (rehydrated cards). Renders a frozen duration pill in the footer. */
   durationSec?: number
@@ -75,6 +83,10 @@ export interface TaskListCardProps {
   batchMetrics?: BatchMetrics
   temporalDelta?: TemporalDeltaInfo
   verifiedFields?: Record<string, VerifiedField>
+  /** IRIS asks of this turn (a permission or a question), drawn inside the card; a settled
+   * one stays as the receipt line. */
+  asks?: AskItem[]
+  askActions?: AskActions
 }
 
 const STATUS_META: Record<TaskStepStatus, { color: string; label: string }> = {
@@ -192,6 +204,7 @@ export default function TaskListCard({
   currentAction,
   phase,
   thoughtStream,
+  thinking,
   durationSec,
   cardActive,
   cardId,
@@ -200,6 +213,8 @@ export default function TaskListCard({
   batchMetrics,
   temporalDelta,
   verifiedFields,
+  asks,
+  askActions,
 }: TaskListCardProps) {
   const { getThemeConfig } = useBrandColor()
   const theme = getThemeConfig()
@@ -357,7 +372,7 @@ export default function TaskListCard({
   // real reasoning entries exist; "Reflecting..." fills the gap while
   // thinking with nothing said yet (variant behavior).
   const hasThoughts = (thoughtStream?.length ?? 0) > 0
-  const showThk = Boolean(currentAction || isWorking || hasThoughts)
+  const showThk = !thinking && Boolean(currentAction || isWorking || hasThoughts)
   const latestThought = hasThoughts ? thoughtStream![thoughtStream!.length - 1] : currentAction
   const streamRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
@@ -370,6 +385,8 @@ export default function TaskListCard({
   // registry (AC2) and ONLY when a real event has been received (AC4).
   const memoryKind = learningSignal === "crystallized" ? "crystallized" : learningSignal ? "learning" : null
   const memoryEntry = memoryKind ? formatMemoryEntry(memoryKind, { signal: learningSignal }) : null
+  // On screen the engine word "crystallized" reads "Learned" (owner, 2026-10-06); the internal value stays.
+  const learnedSummary = memoryEntry ? (learningSignal === "crystallized" ? "Learned" : memoryEntry.summary) : ""
 
   const signalTint: Record<string, string> = {
     avoided: "#f59e0b", // amber — a step was avoided (AVOID)
@@ -410,7 +427,7 @@ export default function TaskListCard({
   // the steps. Never fabricate liveness.
   const footnoteText = useMemo(() => {
     const last = memoryEvents?.[memoryEvents.length - 1]
-    if (last) return formatMemoryEntry(last.kind, last.data)?.summary ?? last.kind
+    if (last) return plainWords(formatMemoryEntry(last.kind, last.data)?.summary ?? last.kind)
     if (isWorking) return "Active Execution"
     if (steps.some((s) => s.status === "fail" || s.status === "error")) {
       return "Run failed"
@@ -429,6 +446,16 @@ export default function TaskListCard({
     return last ? MEMORY_TINT[last.kind] ?? null : null
   }, [memoryEvents])
 
+  // Asks live in the subheader, so a waiting ask shows even when the plan is folded.
+  const asksNode =
+    askActions && asks && asks.length > 0 ? (
+      <div className="flex flex-col gap-1.5 min-w-0" data-task-asks>
+        {asks.map((a) => (
+          <AskPrompt key={a.id} ask={a} variant="card" glowColor={glowColor} actions={askActions} />
+        ))}
+      </div>
+    ) : null
+
   return (
     <CardChassis
       veinColor={veinColor}
@@ -437,7 +464,9 @@ export default function TaskListCard({
       counter={{ done: displayStep, total: steps.length }}
       aria-label="Task progress"
       subheader={
-        showThk ? (
+        showThk || asksNode ? (
+          <div className="flex flex-col gap-1.5 min-w-0">
+        {showThk ? (
           /* THK section — own divided strip (variant anatomy). Clickable
              when a real stream exists; italic whisper otherwise. */
           <div className="flex flex-col min-w-0">
@@ -474,6 +503,9 @@ export default function TaskListCard({
                 ))}
               </div>
             )}
+          </div>
+        ) : null}
+        {asksNode}
           </div>
         ) : undefined
       }
@@ -514,9 +546,9 @@ export default function TaskListCard({
                 color: signalTint[learningSignal] ?? veinColor,
                 textShadow: `0 0 8px ${signalTint[learningSignal] ?? veinColor}55`,
               }}
-              title={`Learning signal: ${memoryEntry.summary}`}
+              title={`Learning signal: ${learnedSummary}`}
             >
-              {memoryEntry.glyph} {memoryEntry.summary}
+              {memoryEntry.glyph} {learnedSummary}
             </span>
           ) : (
             <span
@@ -810,13 +842,26 @@ export default function TaskListCard({
                 ) : null}
               </div>
             )}
-            <div className="flex flex-col gap-1">
+            {/* data-task-steps / data-task-step: the timeline spine measures the step dots
+                and bends into this line; data-task-step carries the displayed status. */}
+            <div className="flex flex-col gap-1" data-task-steps>
               {displaySteps.map((step, i) => {
+                // The ONE thinking line sits under the running step (else under the last one).
+                const showThinking =
+                  !!thinking &&
+                  (displaySteps.some((x) => x.status === "working")
+                    ? displaySteps.findIndex((x) => x.status === "working") === i
+                    : i === displaySteps.length - 1)
                 // Session 246: guard against backend-native statuses that
                 // slip through hydration ("running") — never crash the card.
                 const meta = STATUS_META[step.status] ?? STATUS_META.unknown
                 const isOpen = expandedStep === step.id
-                const branchLabel = (step as StepWithBranch).branchLabel
+                // A split child (<parent>_s<n>) or a backend-labelled branch row "looked closer";
+                // when it is done it has "reported back" to its parent.
+                const isSplitChild = parentOf(step.id ?? "") !== null
+                const rawBranch = (step as StepWithBranch).branchLabel
+                const branchLabel = rawBranch ? plainWords(rawBranch) : isSplitChild ? LOOKED_CLOSER : undefined
+                const reportedBack = (isSplitChild || !!rawBranch) && step.status === "done"
                 // Session 312 (user-approved): activity rows (phase nodes)
                 // indent under the plan like branch rows — same chronology,
                 // clearer parentage. Settled rows dim slightly so the eye
@@ -832,10 +877,12 @@ export default function TaskListCard({
                      the hierarchy shift the preview shows. */
                   <div
                     key={step.id ?? i}
+                    data-task-step={step.status}
                     className={`flex flex-col ${branchLabel || isPhaseRow ? "pl-4" : ""}`}
                     style={{
                       opacity: settled ? 0.75 : 1,
                       transition: "opacity 0.4s ease",
+                      position: "relative",
                     }}
                   >
                     <button
@@ -850,6 +897,8 @@ export default function TaskListCard({
                           ? "cursor-pointer hover:bg-white/[0.03]"
                           : ""
                       }`}
+                      // room for the ± that sits at the end of an editing step's row
+                      style={step.diffs?.length ? { paddingRight: 30 } : undefined}
                     >
                       <ChassisStepNode
                         status={
@@ -889,6 +938,11 @@ export default function TaskListCard({
                         {stepVerb(step) ?? "—"}
                       </span>
                       {branchLabel && <ChassisBranchBadge branchLabel={branchLabel} />}
+                      {reportedBack && (
+                        <span className="shrink-0 text-[9px] font-mono" style={{ color: "rgba(255,255,255,0.4)" }} data-reported-back>
+                          · {REPORTED_BACK}
+                        </span>
+                      )}
                       {/* Target — variant tokens: 10.5px mono, white/85,
                           ONE truncated line. Session 246: max-w caps long-
                           winded planner descriptions even when the row has
@@ -941,6 +995,12 @@ export default function TaskListCard({
                         </span>
                       ) : null}
                     </button>
+                    {/* ± where this step edited a file: opens the review in the lens. */}
+                    {step.diffs && step.diffs.length > 0 ? (
+                      <span style={{ position: "absolute", right: 4, top: 4 }}>
+                        <DiffMark diffs={step.diffs} />
+                      </span>
+                    ) : null}
                     {/* Live-crawl under-row: ONLY while this step is
                         working — rotating host detail + source URL stream
                         beside the plan text. Once done, the summary lives
@@ -983,6 +1043,16 @@ export default function TaskListCard({
                             {step.url}
                           </span>
                         ) : null}
+                      </span>
+                    ) : null}
+                    {showThinking ? (
+                      <span
+                        className="pl-[88px] pb-1 min-w-0 truncate italic text-[10px] leading-snug"
+                        style={{ color: "rgba(255,255,255,0.45)" }}
+                        data-thinking-line
+                        title={thinking}
+                      >
+                        thinking · {thinking}
                       </span>
                     ) : null}
                     {/* T21 (REQ-22/REQ-14): temporal-diff pills for THIS step —

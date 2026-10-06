@@ -149,6 +149,7 @@ logger = logging.getLogger(__name__)
 
 # GROUND TRUTH REQ-17 / REQ-13: backend-owned row ordering key + swallowed-
 # write counters. Pure in-process modules (threading only).
+from backend.agent import edit_diffs as _edit_diffs
 from backend.agent import row_sequence as _row_sequence
 from backend.agent import write_counters as _write_counters
 
@@ -1336,12 +1337,25 @@ class AgentToolBridge:
         if not server:
             return {"error": f"MCP server '{server_name}' not found"}
 
+        _diff_before = None
         if server_name == "file_manager":
             params = self._anchor_file_paths(params, session_id)
             if tool_name in ("read_file", "list_directory"):
                 params = {k: (self._self_edit_view(v, session_id)
                               if k in self._FILE_PATH_KEYS and isinstance(v, str) else v)
                           for k, v in params.items()}
+            # Edit diffs: the file as it is BEFORE the write (the final, anchored
+            # path). This is the one place every agent file write passes.
+            if tool_name in _edit_diffs.DIFF_TOOLS:
+                try:
+                    from backend.tool_args import path_arg as _path_arg
+
+                    _dpath = _path_arg(params)
+                    if _dpath:
+                        _diff_before = await asyncio.to_thread(_edit_diffs.snapshot, _dpath)
+                except Exception:  # noqa: BLE001 - a diff never blocks a write
+                    logger.warning("[ToolBridge] session=%s diff snapshot failed for %s",
+                                   session_id, tool_name, exc_info=True)
 
         try:
             # Check rate limit
@@ -1409,6 +1423,16 @@ class AgentToolBridge:
                     result=result,
                     risk_score=0.4
                 )
+
+            # Edit diffs: after the write (also after a write the tool flagged as
+            # failed, e.g. a .py edit that no longer compiles: the file changed).
+            if _diff_before is not None and isinstance(result, dict):
+                _d = await asyncio.to_thread(
+                    _edit_diffs.record_after, _diff_before, session_id,
+                    getattr(self, "_active_conversation_id", {}).get(session_id) or "",
+                )
+                if _d:
+                    result["diff"] = _d
 
             return result
 

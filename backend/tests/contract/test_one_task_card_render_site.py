@@ -45,6 +45,8 @@ class TestOneTaskCardRenderSite:
         moves it to a new fallback component is caught, not just the count."""
         sites = _render_sites()
         assert len(sites) == 1
-        assert Path(sites[0]) == Path("components/chat-view.tsx"), (
+        # Phase 3 split (owner-approved 2026-10-06): chat-view's timeline moved out
+        # of chat-view.tsx; the one <TaskListCard site now lives in TaskCardEntry.tsx.
+        assert Path(sites[0]) == Path("components/chat/TaskCardEntry.tsx"), (
             f"unexpected render site location: {sites}"
         )

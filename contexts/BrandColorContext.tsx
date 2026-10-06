@@ -263,7 +263,7 @@ const STORAGE_KEY_BASE_PLATE = 'iris-base-plate-color'
 const STORAGE_KEY_THEME = 'iris-preferred-theme'
 
 // === CONTEXT ===
-const BrandColorContext = createContext<BrandColorContextType | undefined>(undefined)
+export const BrandColorContext = createContext<BrandColorContextType | undefined>(undefined)
 
 // === PROVIDER ===
 export function BrandColorProvider({ children }: { children: React.ReactNode }) {

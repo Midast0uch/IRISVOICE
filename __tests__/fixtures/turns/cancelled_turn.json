@@ -1,0 +1,51 @@
+{
+  "name": "cancelled_turn",
+  "source": "scripted through the real TurnEmitter + route_bus_event",
+  "messages": [
+    {
+      "type": "turn.start",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-cancel-1",
+        "conversation_id": "conv-dev",
+        "strand_id": "conv-dev",
+        "author": "user",
+        "to": [
+          "@iris"
+        ],
+        "refs": [],
+        "mode": "developer",
+        "prompt": "refactor the planner",
+        "ts": 1790000000.0
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-cancel-1",
+        "conversation_id": "conv-dev",
+        "seq": 1,
+        "ts": 1790000000.25,
+        "part": {
+          "type": "text",
+          "delta": "Starting with the planner"
+        }
+      }
+    },
+    {
+      "type": "turn.end",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-cancel-1",
+        "conversation_id": "conv-dev",
+        "status": "cancelled",
+        "parts": 1,
+        "text": "",
+        "speak": "",
+        "ts": 1790000000.5,
+        "error": "cancelled"
+      }
+    }
+  ]
+}

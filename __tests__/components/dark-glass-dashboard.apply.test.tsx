@@ -135,10 +135,8 @@ jest.mock("@/components/ui/CustomDropdown", () => () => null);
 jest.mock("@/components/ui/IrisApertureIcon", () => () => null);
 jest.mock("@/components/dashboard/ActivityPanel", () => () => null);
 jest.mock("@/components/dashboard/LogsPanel", () => () => null);
-jest.mock("@/components/dashboard/InferenceConsolePanel", () => () => null);
 jest.mock("@/components/dashboard/ModelBrowserPanel", () => () => null);
-jest.mock("@/components/dashboard/MonitorTabContainer", () => () => null);
-jest.mock("@/components/dev/DCPStatsPanel", () => () => null);
+jest.mock("@/components/dashboard/MonitorPage", () => ({ MonitorPage: () => null }));
 jest.mock("@/components/iris/browser/BrowserNavigationOverlay", () => () => null);
 jest.mock("@/components/wheel-view/LearnedSkillsPanel", () => () => null);
 jest.mock("@/components/integrations/MarketplaceScreen", () => () => null);
@@ -188,7 +186,7 @@ describe("DarkGlassDashboard APPLY — self-managed section exclusion", () => {
       );
     });
 
-    const applyButton = screen.getByRole("button", { name: "APPLY" });
+    const applyButton = screen.getByRole("button", { name: "Apply" });
     fireEvent.click(applyButton);
 
     // Ordinary section IS persisted...

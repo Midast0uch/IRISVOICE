@@ -183,17 +183,11 @@ jest.mock("@/components/dashboard/ActivityPanel", () => ({
 jest.mock("@/components/dashboard/LogsPanel", () => ({
   LogsPanel: () => null,
 }));
-jest.mock("@/components/dashboard/InferenceConsolePanel", () => ({
-  InferenceConsolePanel: () => null,
-}));
 jest.mock("@/components/dashboard/ModelBrowserPanel", () => ({
   ModelBrowserPanel: () => null,
 }));
-jest.mock("@/components/dashboard/MonitorTabContainer", () => ({
-  MonitorTabContainer: () => null,
-}));
-jest.mock("@/components/dev/DCPStatsPanel", () => ({
-  DCPStatsPanel: () => null,
+jest.mock("@/components/dashboard/MonitorPage", () => ({
+  MonitorPage: () => null,
 }));
 jest.mock("@/components/iris/browser/BrowserNavigationOverlay", () => ({
   BrowserNavigationOverlay: () => null,
@@ -217,7 +211,7 @@ jest.mock("@/components/integrations/MarketplaceScreen", () => ({
 // only defaults 'model_inference' etc. into expandedSections, not
 // 'local_model'), so the badge is not in the DOM until its header is opened.
 function expandLocalModelSection() {
-  fireEvent.click(screen.getByText("LOCAL MODEL"));
+  fireEvent.click(screen.getByText("Local Model"));
 }
 
 /* ------------------------------------------------------------------ */

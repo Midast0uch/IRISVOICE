@@ -7,7 +7,10 @@ import { DarkGlassDashboard } from "./dark-glass-dashboard"
 import { useNavigation } from "@/contexts/NavigationContext"
 import { useBrandColor } from "@/contexts/BrandColorContext"
 import { SendMessageFunction } from "@/hooks/useIRISWebSocket"
-import { IrisApertureIcon } from "@/components/ui/IrisApertureIcon"
+import { EdgeLight } from "@/components/chrome/EdgeLight"
+import { EdgeTrail } from "@/components/chrome/EdgeTrail"
+import { useBrandPalette } from "@/hooks/useBrandPalette"
+import { withAlpha, type Palette } from "@/lib/brandPalette"
 import { SpotlightState, UILayoutState } from "@/hooks/useUILayoutState"
 import { useLauncherMode } from "@/hooks/useLauncherMode"
 import {
@@ -121,6 +124,9 @@ export function DashboardWing({
   const brandTheme = getThemeConfig()
   const glowColor = brandTheme.glow.color || "#00d4ff"
   const fontColor = brandTheme.text.primary || "#ffffff"
+  const palette = useBrandPalette()
+  // The concept draws the dashboard edge in the second hue (--b2) and the chat edge in the first.
+  const edgePalette: Palette = [palette[1], palette[2], palette[0]]
 
   // Global error state
   const globalError = voiceState === 'error';
@@ -267,7 +273,9 @@ export function DashboardWing({
             width: isFlat ? '100vw' : getSpotlightWidth(),
             height: isDetached ? '100vh' : isRemoteView ? '100dvh' : '88vh',
             maxHeight: isDetached ? '100vh' : isRemoteView ? '100dvh' : 'calc(100vh - 24px)',
-            overflow: 'hidden',
+            // overflow stays clipped on three sides; the top reaches 14 px up so
+            // the aperture set into the top edge is whole, not cut in half.
+            clipPath: 'inset(-14px 0 0 0)',
             perspective: isFlat ? 'none' : '800px',
             zIndex: getSpotlightZIndex(),
             filter: getSpotlightFilter(),
@@ -292,81 +300,24 @@ export function DashboardWing({
                 transformOrigin: 'right center',
                 transformStyle: isFlat ? 'flat' : 'preserve-3d',
                 transform: isFlat ? 'rotateY(0deg) rotateX(0deg)' : undefined,
-                background: 'linear-gradient(225deg, rgba(10,11,22,0.97) 0%, rgba(6,7,14,0.99) 100%)',
+                // The approved ink ground with a faint brand radial (concept `.dash`).
+                background: `radial-gradient(120% 50% at 100% 0%, ${withAlpha(palette[1], 0.07)}, transparent 60%), #04050c`,
                 boxShadow: isFlat ? 'none' : `
-                  inset 0 1px 1px rgba(255,255,255,0.05),
                   inset 0 -1px 1px rgba(0,0,0,0.5),
                   0 0 0 1px rgba(0,0,0,0.8)
                 `,
                 borderRadius: isFlat ? '0px' : '12px',
-                border: isFlat ? 'none' : `1px solid ${glowColor}20`,
+                // The top border is the EdgeLight hairline, so it is transparent here.
+                border: isFlat ? 'none' : `1px solid ${withAlpha(palette[1], 0.2)}`,
+                borderTopColor: isFlat ? undefined : 'transparent',
                 touchAction: 'manipulation',
                 willChange: 'auto',
               }}
           >
-            {/* HUD Effects Overlay */}
-            <div 
-              className="absolute inset-0 pointer-events-none z-10"
-              style={{
-                background: `
-                  linear-gradient(180deg, transparent 0%, rgba(255,255,255,0.02) 50%, transparent 100%),
-                  repeating-linear-gradient(
-                    0deg,
-                    transparent,
-                    transparent 2px,
-                    rgba(0,0,0,0.03) 2px,
-                    rgba(0,0,0,0.03) 4px
-                  )
-                `,
-                backgroundSize: '100% 100%, 100% 4px',
-              }}
-            />
-            
-            {/* Edge Fresnel Effect */}
-            <div 
-              className="absolute inset-0 pointer-events-none z-20"
-              style={{
-                background: `
-                  linear-gradient(90deg, ${glowColor}08 0%, transparent 15%, transparent 85%, ${glowColor}08 100%),
-                  linear-gradient(0deg, ${glowColor}05 0%, transparent 20%, transparent 80%, ${glowColor}05 100%)
-                `,
-              }}
-            />
-
-
-            {/* IrisApertureIcon — centered on full panel width, embedded on top border */}
-            {onSpotlightToggle && !isRemoteView && (
-              <div className="absolute left-1/2 -translate-x-1/2 top-0 -translate-y-1/2 z-50">
-                <button
-                  onClick={onSpotlightToggle}
-                  className="p-1.5 rounded-full transition-all duration-150 border"
-                  style={{
-                    color: isInDashboardSpotlight ? glowColor : 'rgba(255,255,255,0.75)',
-                    backgroundColor: isInDashboardSpotlight ? `${glowColor}20` : 'transparent',
-                    borderColor: isInDashboardSpotlight ? `${glowColor}60` : 'rgba(255,255,255,0.25)',
-                    boxShadow: isInDashboardSpotlight ? `0 0 10px ${glowColor}50` : 'none',
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.color = glowColor;
-                    e.currentTarget.style.borderColor = `${glowColor}60`;
-                    e.currentTarget.style.boxShadow = `0 0 8px ${glowColor}40`;
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.color = isInDashboardSpotlight ? glowColor : 'rgba(255,255,255,0.75)';
-                    e.currentTarget.style.borderColor = isInDashboardSpotlight ? `${glowColor}60` : 'rgba(255,255,255,0.25)';
-                    e.currentTarget.style.boxShadow = isInDashboardSpotlight ? `0 0 10px ${glowColor}50` : 'none';
-                  }}
-                  title={isInDashboardSpotlight ? "Restore balanced view" : "Maximize dashboard"}
-                >
-                  <IrisApertureIcon
-                    isActive={isInDashboardSpotlight}
-                    glowColor={glowColor}
-                    fontColor={fontColor}
-                    size={14}
-                  />
-                </button>
-              </div>
-            )}
+            {/* Faint particle trail along the inner left edge (concept drawDashEdge) */}
+            <div className="absolute inset-0 pointer-events-none" style={{ zIndex: 15 }}>
+              <EdgeTrail palette={palette} />
+            </div>
 
             {/* Dashboard Content - Fully delegated to DarkGlassDashboard */}
             <div className="flex-1 overflow-hidden relative z-10 flex flex-col">
@@ -408,6 +359,32 @@ export function DashboardWing({
               </div>
             </div>
           </motion.div>
+
+          {/* Edge light: the top edge as one hairline with the spotlight aperture set into it,
+              centred on the top border. It tilts with the panel (same transform), outside the
+              panel's clip so the aperture is whole. */}
+          {onSpotlightToggle && !isRemoteView && (
+            <motion.div
+              className="absolute inset-0 pointer-events-none"
+              animate={isFlat ? {} : { transform: getSpotlightTransform() }}
+              transition={isFlat ? { duration: 0 } : { type: "spring", stiffness: 280, damping: 25, mass: 0.8 }}
+              style={{
+                zIndex: 50,
+                transformOrigin: 'right center',
+                transformStyle: isFlat ? 'flat' : 'preserve-3d',
+                transform: isFlat ? 'rotateY(0deg) rotateX(0deg)' : undefined,
+              }}
+            >
+              <EdgeLight
+                glowColor={glowColor}
+                palette={edgePalette}
+                spotlit={isInDashboardSpotlight}
+                onAperture={onSpotlightToggle}
+                apertureTitle={isInDashboardSpotlight ? "Restore balanced view" : "Maximize dashboard"}
+                isActive={isInDashboardSpotlight}
+              />
+            </motion.div>
+          )}
         </motion.div>
       )}
     </AnimatePresence>

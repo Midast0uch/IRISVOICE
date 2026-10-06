@@ -83,6 +83,21 @@ const NON_CARD_ALLOWLIST: string[] = [
   "components/chat/SuggestionPills.tsx",
   "components/chat/ConversationChips.tsx",
   "components/chat/MermaidDiagram.tsx",
+  // Phase 3 (2026-10-06): the input area moved out of chat-view.tsx into its
+  // own file. Message path: the composer never renders a card.
+  "components/chat/Composer.tsx",
+  // Phase 3 (2026-10-06): the wing header moved out of chat-view.tsx. Chrome: the header bar never renders a card.
+  "components/chat/ChatHeader.tsx",
+  // Phase 3 (2026-10-06): the notifications dropdown moved out of chat-view.tsx. Chrome: a notification list is not a card.
+  "components/chat/NotificationsPanel.tsx",
+  // Phase 3 (2026-10-06): the history dropdown moved out of chat-view.tsx. Chrome: a thread list is not a card.
+  "components/chat/HistoryPanel.tsx",
+  // Phase 3 (2026-10-06): the timeline scroll area moved out of chat-view.tsx. Message path: the container never renders a card of its own.
+  "components/chat/Timeline.tsx",
+  // Phase 3 (2026-10-06): one message turn moved out of chat-view.tsx. Message path: bubbles and the prism cards it joins; never a CardChassis.
+  "components/chat/TurnView.tsx",
+  // Phase 3 (2026-10-06): the inline task-card entry moved out of chat-view.tsx. Message path: it hosts the existing TaskListCard / matrix, never CardChassis directly.
+  "components/chat/TaskCardEntry.tsx",
 ]
 
 /** The chassis implementation itself — neither a card surface (nothing to

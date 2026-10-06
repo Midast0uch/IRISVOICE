@@ -26,6 +26,7 @@ import logging
 from typing import Any, List, Tuple
 
 from .event_bus import get_event_bus, IRISStreamEvent
+from .turn_protocol import route_bus_event
 
 logger = logging.getLogger(__name__)
 
@@ -226,6 +227,17 @@ class WSEventBridge:
                     logger.debug(
                         "[WSEventBridge] %s withheld (card-free turn)", evt.value
                     )
+                    # An edit's diff is not a card: a card-free turn still shows
+                    # the ± of its edit. It goes into the turn only (the legacy
+                    # frame stays withheld, so no phantom card is rebuilt).
+                    _wd = getattr(payload, "data", None)
+                    if evt is IRISStreamEvent.TOOL_RESULT and isinstance(_wd, dict) and _wd.get("diff"):
+                        route_bus_event(
+                            evt.value, _wd,
+                            turn_id=getattr(payload, "turn_id", None),
+                            conversation_id=getattr(payload, "conversation_id", None)
+                            or _wd.get("conversation_id"),
+                        )
                     return
                 session_id = getattr(payload, "session_id", None)
                 data = getattr(payload, "data", None) or {}
@@ -265,6 +277,17 @@ class WSEventBridge:
                     # the one connected client; the conversation_id carried on
                     # the wire lets the frontend drop stale events.
                     asyncio.run_coroutine_threadsafe(self._ws.broadcast(msg), loop)
+                # Phase 3 (turn protocol): the same event, filed as a numbered
+                # part of its live turn. Runs AFTER the card-free-turn gate
+                # above, so a withheld card stays withheld in the turn too.
+                # The legacy message above stays until the chat view reads
+                # turns only. Never raises.
+                route_bus_event(
+                    evt.value,
+                    data,
+                    turn_id=getattr(payload, "turn_id", None),
+                    conversation_id=conv_id,
+                )
             except Exception as e:  # one bad payload never breaks others
                 logger.warning("[WSEventBridge] %s forward failed: %s", evt.value, e)
 

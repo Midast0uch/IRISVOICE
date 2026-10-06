@@ -134,7 +134,7 @@ export default function TaskPreviewPage() {
         { id: 's3', verb: 'search', target: 'FastAPI WebSocket disconnect handlers', status: 'done', branchLabel: 'Sub-Loop: Docs', summary: 'Found 3 connection lifecycle patterns' },
         { id: 's4', verb: 'exec', target: 'pytest tests/test_ws_resilience.py', status: 'crystallized', summary: 'All resilience tests passed' },
       ], isThinking: false, currentThought: '', thoughtHistory: '', isCrystallized: true,
-        memoryEvents: [{ direction: 'crystallize', engine: 'coordinates', detail: 'Crystallized verified pattern into memory skills store' }] },
+        memoryEvents: [{ direction: 'crystallize', engine: 'coordinates', detail: 'Learned a verified pattern into the memory skills store' }] },
     }
     setScenario(scenarios[stepIndex] || scenarios[0])
   }
@@ -225,7 +225,7 @@ export default function TaskPreviewPage() {
               { idx: 0, label: '0. Ready' }, { idx: 1, label: '1. ↙ Recall' },
               { idx: 2, label: '2. Read' }, { idx: 3, label: '3. ↗ Patch' },
               { idx: 4, label: '4. Sub-Loop' }, { idx: 5, label: '5. Test' },
-              { idx: 6, label: '6. ✦ Crystallize' },
+              { idx: 6, label: '6. ✦ Learned' },
             ].map((st) => (
               <button key={st.idx} onClick={() => handleStepClick(st.idx)}
                 className={`px-2.5 py-1 rounded transition-colors ${

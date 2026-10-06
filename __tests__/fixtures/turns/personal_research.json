@@ -1,0 +1,246 @@
+{
+  "name": "personal_research",
+  "source": "scripted through the real TurnEmitter + route_bus_event",
+  "messages": [
+    {
+      "type": "turn.start",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-res-1",
+        "conversation_id": "conv-personal",
+        "strand_id": "conv-personal",
+        "author": "user",
+        "to": [
+          "@iris"
+        ],
+        "refs": [],
+        "mode": "personal",
+        "prompt": "compare the three STT engines and give me a page",
+        "ts": 1790000000.0,
+        "client_ref": "msg-user-1"
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-res-1",
+        "conversation_id": "conv-personal",
+        "seq": 1,
+        "ts": 1790000000.25,
+        "part": {
+          "type": "reasoning",
+          "delta": "Three engines, three independent searches. "
+        }
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-res-1",
+        "conversation_id": "conv-personal",
+        "seq": 2,
+        "ts": 1790000000.5,
+        "part": {
+          "type": "todo",
+          "event": "task:start",
+          "data": {
+            "card_id": "card-1",
+            "turn_id": "turn-res-1",
+            "plan_title": "Compare STT engines",
+            "steps": [
+              {
+                "id": "s1",
+                "description": "Search WhisperX"
+              },
+              {
+                "id": "s2",
+                "description": "Search Parakeet"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-res-1",
+        "conversation_id": "conv-personal",
+        "seq": 3,
+        "ts": 1790000000.75,
+        "part": {
+          "type": "tool_call",
+          "name": "web_search",
+          "call_id": "c1",
+          "data": {
+            "tool": "web_search",
+            "call_id": "c1",
+            "turn_id": "turn-res-1",
+            "args": {
+              "query": "whisperx benchmark"
+            }
+          }
+        }
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-res-1",
+        "conversation_id": "conv-personal",
+        "seq": 4,
+        "ts": 1790000001.0,
+        "part": {
+          "type": "tool_result",
+          "name": "web_search",
+          "call_id": "c1",
+          "ok": true,
+          "data": {
+            "tool": "web_search",
+            "call_id": "c1",
+            "success": true,
+            "turn_id": "turn-res-1",
+            "summary": "6 sources"
+          }
+        }
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-res-1",
+        "conversation_id": "conv-personal",
+        "seq": 5,
+        "ts": 1790000001.25,
+        "part": {
+          "type": "interaction",
+          "event": "permission:request",
+          "data": {
+            "request_id": "p1",
+            "turn_id": "turn-res-1",
+            "tool": "run_command",
+            "command": "pip show faster-whisper"
+          }
+        }
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-res-1",
+        "conversation_id": "conv-personal",
+        "seq": 6,
+        "ts": 1790000001.5,
+        "part": {
+          "type": "interaction",
+          "event": "permission:granted",
+          "data": {
+            "request_id": "p1",
+            "turn_id": "turn-res-1"
+          }
+        }
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-res-1",
+        "conversation_id": "conv-personal",
+        "seq": 7,
+        "ts": 1790000001.75,
+        "part": {
+          "type": "card",
+          "data": {
+            "turn_id": "turn-res-1",
+            "document_id": "doc-1",
+            "card_id": "art-1",
+            "title": "STT engine comparison",
+            "kind": "page",
+            "summary": "Benchmark table, latency chart, sources",
+            "format": "html"
+          }
+        }
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-res-1",
+        "conversation_id": "conv-personal",
+        "seq": 8,
+        "ts": 1790000002.0,
+        "part": {
+          "type": "todo",
+          "event": "task:done",
+          "data": {
+            "card_id": "card-1",
+            "turn_id": "turn-res-1"
+          }
+        }
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-res-1",
+        "conversation_id": "conv-personal",
+        "seq": 9,
+        "ts": 1790000002.25,
+        "part": {
+          "type": "text",
+          "delta": "**WhisperX** is the best fit. "
+        }
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-res-1",
+        "conversation_id": "conv-personal",
+        "seq": 10,
+        "ts": 1790000002.5,
+        "part": {
+          "type": "text",
+          "delta": "It is the fastest on your GPU "
+        }
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-res-1",
+        "conversation_id": "conv-personal",
+        "seq": 11,
+        "ts": 1790000002.75,
+        "part": {
+          "type": "text",
+          "delta": "and has word timing."
+        }
+      }
+    },
+    {
+      "type": "turn.end",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-res-1",
+        "conversation_id": "conv-personal",
+        "status": "ok",
+        "parts": 11,
+        "text": "**WhisperX** is the best fit. It is the fastest on your GPU and has word timing.",
+        "speak": "WhisperX is the best fit.",
+        "ts": 1790000003.0
+      }
+    }
+  ]
+}

@@ -51,6 +51,9 @@ export interface TerminalLine {
    * are interleaved into the timeline.
    */
   source?: "chat"
+  /** Phase 4: the conversation a `>cmd` was typed in, so the chat timeline
+   *  draws the run in that thread only (lib/cli/shellRuns). */
+  conversationId?: string
 }
 
 export interface TerminalTaskStep {
@@ -289,8 +292,12 @@ export function appendLine(kind: TerminalLineKind, text: string): void {
   notify()
 }
 
-export function appendCommand(text: string): void {
-  appendLine("command", `$ ${text}`)
+export function appendCommand(text: string, conversationId?: string | null): void {
+  lines = [
+    ...lines,
+    { id: nextId++, kind: "command" as const, text: `$ ${text}`, ts: Date.now(), ...(conversationId ? { conversationId } : {}) },
+  ].slice(-MAX_LINES)
+  notify()
 }
 
 export function appendOutput(text: string): void {

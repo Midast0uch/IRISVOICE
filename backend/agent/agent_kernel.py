@@ -776,6 +776,16 @@ _READABLE_FORMAT_RULES = """FORMATTING (your reply is rendered as markdown in a 
   so plainly rather than filling the gap."""
 
 
+def _edit_diff_fields(item) -> dict:
+    """The ``diff`` / ``diffs`` fields of a step's tool:result data ({} when the
+    step edited no file). Module level: stand-in kernels in tests bind only some
+    methods."""
+    eds = getattr(item, "edit_diffs", None)
+    if not isinstance(eds, list) or not eds:
+        return {}
+    return {"diff": eds[-1], **({"diffs": list(eds)} if len(eds) > 1 else {})}
+
+
 def _remember_turn_urls(kernel, step_result, _where: str = "") -> int:
     """AC2.1 / AC9.3 / AC10.2 (session-319 fix): harvest every URL a step
     touched into turn memory, on ANY path.
@@ -16051,7 +16061,11 @@ Respond with a JSON object:
                         if _tops
                         else _cbase
                     )
-                return json.dumps(raw, ensure_ascii=False, default=str)
+                # `diff` (edit diffs) is for the chat, never for the model.
+                return json.dumps(
+                    {k: v for k, v in raw.items() if k != "diff"},
+                    ensure_ascii=False, default=str,
+                )
             except Exception:
                 return str(raw)
         try:
@@ -17177,6 +17191,22 @@ Respond with a JSON object:
         (sources / har_path for the reply). Never raises."""
         if not dr:
             return
+        # Edit diffs: the diff rides the tool result from the bridge. It goes
+        # onto the step (-> its tool:result event) and OFF the result, so the
+        # model and the step text never read it.
+        _res = getattr(dr, "result", None)
+        if isinstance(_res, dict) and "diff" in _res:
+            try:
+                _d = _res.pop("diff")
+                if isinstance(_d, dict):
+                    _eds = getattr(item, "edit_diffs", None)
+                    if not isinstance(_eds, list):
+                        _eds = []
+                        item.edit_diffs = _eds
+                    _eds.append(_d)
+                    del _eds[:-12]  # bounded: a node makes at most 12 calls
+            except Exception:  # noqa: BLE001 - a diff never fails a step
+                logger.debug("[DER] edit diff capture skipped", exc_info=True)
         # pin_42ddd255162d: dispatch-time gather sanction - the dispatch runs
         # for EVERY crawl (real or dedupe-hit), so record the query hash here:
         # guaranteed bookkeeping for the per-task crawl budget/veto. A deadline
@@ -18588,6 +18618,9 @@ Respond with a JSON object:
                         # REQ-3 AC6 (T2): card_id stays stable across every
                         # event of a card's lifetime.
                         **self._card_envelope(_lifecycle_task_id),
+                        # Edit diffs: `diff` = the step's latest edit; `diffs` =
+                        # every edit when the step made more than one.
+                        **_edit_diff_fields(item),
                     },
                     turn_id=_turn_id,
                     conversation_id=self.conversation_id,

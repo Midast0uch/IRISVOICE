@@ -144,10 +144,10 @@ export interface MarkdownMessageProps {
    * How the body reads.
    *
    * "markdown" — parsed and styled prose. Personal mode.
-   * "cli"      — the raw text, monospaced and preformatted, the way a terminal
-   *              prints it. Developer mode. Task cards there already render as
-   *              a monospaced matrix, so a proportional, markdown-styled answer
-   *              between two CLI blocks was the odd one out.
+   * "cli"      — developer mode: the same markdown, set in the mono family at
+   *              12.5 px (execution audit Phase 4: "the answer is markdown
+   *              rendered in the same mono family"). It used to print the raw
+   *              text, so ** and code fences showed as literal characters.
    *
    * The TTS highlight works in both: it paints a Range over live text nodes and
    * never inserts elements, so it does not care which tree it is over.
@@ -165,23 +165,10 @@ export function MarkdownMessage({
   const ref = useRef<HTMLDivElement>(null)
   useTtsWordHighlight(ref, highlightIndex, highlightActive)
 
-  const displayText = variant === "markdown" ? unwrapDocumentFences(text) : text
-
-  if (variant === "cli") {
-    return (
-      <div ref={ref} className={`iris-cli ${className}`}>
-        <pre
-          className="font-mono text-[11px] leading-[1.5] whitespace-pre-wrap break-words"
-          style={{ color: "rgba(255,255,255,0.86)" }}
-        >
-          {text}
-        </pre>
-      </div>
-    )
-  }
+  const displayText = unwrapDocumentFences(text)
 
   return (
-    <div ref={ref} className={`iris-md ${className}`}>
+    <div ref={ref} className={`iris-md ${variant === "cli" ? "iris-md-cli" : ""} ${className}`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{

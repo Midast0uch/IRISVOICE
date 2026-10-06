@@ -1,0 +1,92 @@
+{
+  "name": "reordered_delivery",
+  "source": "scripted through the real TurnEmitter + route_bus_event",
+  "messages": [
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-ooo-1",
+        "conversation_id": "conv-personal",
+        "seq": 2,
+        "ts": 1790000000.5,
+        "part": {
+          "type": "text",
+          "delta": "lo, "
+        }
+      }
+    },
+    {
+      "type": "turn.start",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-ooo-1",
+        "conversation_id": "conv-personal",
+        "strand_id": "conv-personal",
+        "author": "user",
+        "to": [
+          "@iris"
+        ],
+        "refs": [],
+        "mode": "personal",
+        "prompt": "say hello",
+        "ts": 1790000000.0
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-ooo-1",
+        "conversation_id": "conv-personal",
+        "seq": 4,
+        "ts": 1790000001.0,
+        "part": {
+          "type": "text",
+          "delta": "ld."
+        }
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-ooo-1",
+        "conversation_id": "conv-personal",
+        "seq": 1,
+        "ts": 1790000000.25,
+        "part": {
+          "type": "text",
+          "delta": "Hel"
+        }
+      }
+    },
+    {
+      "type": "turn.end",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-ooo-1",
+        "conversation_id": "conv-personal",
+        "status": "ok",
+        "parts": 4,
+        "text": "",
+        "speak": "Hello, world.",
+        "ts": 1790000001.25
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-ooo-1",
+        "conversation_id": "conv-personal",
+        "seq": 3,
+        "ts": 1790000000.75,
+        "part": {
+          "type": "text",
+          "delta": "wor"
+        }
+      }
+    }
+  ]
+}

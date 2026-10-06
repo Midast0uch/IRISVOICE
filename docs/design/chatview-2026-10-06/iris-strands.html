@@ -1,0 +1,1090 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"></head><body>
+<title>IRIS Living Spine</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap">
+<style>
+/* Layout: hero with the brand Xur, a short "what changed" list, then the chat wing beside the
+   dashboard wing (both in the same ink), then the checklist I worked through.
+   The Xur sends two trails: one across the header (the strands of this thread) and one down the
+   chat (the spine). Dark-only on purpose. Brand tokens --b1..--b3 are rewritten by the theme
+   picker, the way BrandColorContext rewrites the app's glow. */
+:root{
+  color-scheme: dark;
+  --ink:#04050c; --ink-2:#080a16; --ink-3:#0e1122;
+  --hair:rgba(160,190,255,.09);
+  --fg:#e6e9f2; --muted:#8a92a8; --faint:rgba(230,233,242,.38);
+  --b1:hsl(190 100% 64%); --b2:hsl(215 92% 68%); --b3:hsl(150 85% 60%);
+  --peer:#c69bff; --swarm:#ff9a76;
+  --run:#f2c14e; --ok:#5fcf98; --bad:#ff7a6e;
+  --sans:"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --voice:"Newsreader", Georgia, "Times New Roman", serif;
+  --mono:"JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+*{box-sizing:border-box}
+body{background:var(--ink);color:var(--fg);font:15px/1.6 var(--sans);margin:0}
+.wrap{padding-inline:16px;padding-block:0 72px;max-width:1220px;margin:0 auto}
+.col{max-width:70ch}
+h1{font:500 44px/1.05 var(--voice);letter-spacing:-.01em;margin:0 0 12px;text-wrap:balance}
+h2{font:500 28px/1.2 var(--voice);margin:56px 0 12px;text-wrap:balance}
+p{margin:0 0 12px}
+.muted{color:var(--muted)}
+code,kbd{font-family:var(--mono);font-size:.85em}
+code{background:var(--ink-3);padding:1px 5px;border-radius:4px}
+kbd{border:1px solid rgba(255,255,255,.2);border-bottom-width:2px;border-radius:4px;padding:0 4px}
+button{font:inherit;color:inherit}
+button:focus-visible,[tabindex]:focus-visible,textarea:focus-visible,input:focus-visible,[contenteditable]:focus-visible{outline:2px solid var(--b1);outline-offset:2px}
+.eyebrow{font:600 11px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--b1)}
+.hero{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:24px;align-items:center;padding-block:36px 8px}
+@media (max-width:760px){.hero{grid-template-columns:minmax(0,1fr)}}
+.hero canvas{width:100%;max-width:330px;aspect-ratio:1;justify-self:center;display:block}
+.lede{font:400 19px/1.55 var(--voice);color:#cfd5e4}
+.changes{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px 20px;margin-top:18px;padding:0;list-style:none}
+.changes li{border-top:1px solid var(--hair);padding-top:10px;font-size:13.5px;color:#c3cad8}
+.changes b{display:block;color:var(--fg);font:500 16px/1.3 var(--voice);margin-bottom:2px}
+
+.stagebar{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;margin:16px 0 12px}
+.grp{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.grp > span{font:600 10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.seg{font:500 12px/1 var(--sans);color:#c9cfdb;background:transparent;border:1px solid rgba(255,255,255,.13);border-radius:999px;padding:7px 11px;cursor:pointer}
+.seg[aria-pressed="true"]{color:var(--b1);border-color:var(--b1);background:color-mix(in oklab,var(--b1) 12%,transparent)}
+.sw{width:22px;height:22px;border-radius:50%;border:2px solid transparent;cursor:pointer;padding:0}
+.sw[aria-pressed="true"]{border-color:#fff}
+input[type=range]{width:110px;accent-color:var(--b1)}
+.go{font:600 12px/1 var(--sans);color:#03141b;background:var(--b1);border:0;border-radius:999px;padding:8px 14px;cursor:pointer}
+.hint{font:12px/1.4 var(--mono);color:var(--muted)}
+.stage{display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start}
+
+/* ── chat wing ── */
+.wwrap{position:relative;flex:none;width:min(480px,100%);transition:width .45s cubic-bezier(.3,.7,.2,1)}
+.wwrap.dwrap{width:min(400px,100%)}
+.wwrap.big{width:min(680px,100%)}
+.wwrap.small{width:min(360px,100%)}
+.wwrap.small > .wing,.wwrap.small > .dash{opacity:.3;filter:saturate(.6) blur(2px);pointer-events:none}
+.wwrap.small .ap{pointer-events:auto}
+.edgeCv{position:absolute;left:0;right:0;top:-12px;width:100%;height:24px;pointer-events:none;z-index:6}
+.wing{position:relative;width:100%;height:760px;display:flex;flex-direction:column;border-radius:14px;overflow:hidden;
+  background:radial-gradient(120% 50% at 0% 0%,color-mix(in oklab,var(--b1) 7%,transparent),transparent 60%),var(--ink);
+  border:1px solid color-mix(in oklab,var(--b1) 22%,transparent);border-top-color:transparent;box-shadow:0 0 0 1px #000,0 30px 80px rgba(0,0,0,.6);transition:opacity .45s,filter .45s}
+.head{position:relative;flex:none;height:52px;display:flex;align-items:flex-start;gap:8px;padding:4px 10px 0 2px;border-bottom:1px solid var(--hair)}
+.xbtn{position:relative;flex:none;width:44px;height:44px;border:0;background:none;padding:0;cursor:pointer;border-radius:50%}
+.xbtn canvas{width:44px;height:44px;display:block}
+.ttl{position:relative;min-width:0;flex:1;display:flex;flex-direction:column;line-height:1.2;padding-top:4px}
+.ttl [contenteditable]{font:600 13px/1.25 var(--sans);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-radius:3px;padding:0 2px;align-self:flex-start;max-width:100%}
+.strandbtn{align-self:flex-start;max-width:100%;display:flex;gap:6px;align-items:center;background:none;border:0;padding:1px 2px;cursor:pointer;font:11px/1.3 var(--mono);color:var(--muted);border-radius:4px;min-width:0}
+.strandbtn b{color:var(--fg);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.strandbtn span{white-space:nowrap}
+.strandbtn .act,.iconbtn .act{width:6px;height:6px;border-radius:50%;background:var(--run);animation:breathe 1.2s infinite;flex:none}
+.iconbtn .act{position:absolute;top:-3px;right:-3px}
+.iconbtn{position:relative;flex:none;width:30px;height:30px;margin-top:6px;border-radius:8px;border:1px solid var(--hair);background:var(--ink-2);cursor:pointer;display:grid;place-items:center;color:#cdd6ea;font:14px/1 var(--mono)}
+/* the aperture sits ON the top edge, centred (same place as today), with no box of its own */
+.ap{position:absolute;left:50%;top:0;transform:translate(-50%,-50%);z-index:7;width:26px;height:26px;border:0;border-radius:50%;background:radial-gradient(circle,var(--ink) 55%,transparent 72%);display:grid;place-items:center;cursor:pointer;padding:0;opacity:.8;transition:opacity .2s}
+.ap:hover,.ap[aria-pressed="true"]{opacity:1}
+.ap svg{width:12px;height:12px;overflow:visible}
+.ap path{fill:var(--b1);transition:transform .4s cubic-bezier(.3,1.6,.4,1)}
+.dwrap .ap path{fill:var(--b2)}
+.ap[aria-pressed="true"] .pt{transform:translate(var(--dx),var(--dy))}
+.menu{position:absolute;top:52px;right:8px;z-index:25;background:var(--ink-2);border:1px solid color-mix(in oklab,var(--b1) 25%,transparent);border-radius:10px;padding:6px;min-width:210px;box-shadow:0 16px 40px rgba(0,0,0,.6)}
+.menu button{display:flex;width:100%;gap:10px;align-items:center;background:none;border:0;padding:7px 8px;border-radius:6px;cursor:pointer;font-size:12.5px;text-align:left}
+.menu button:hover{background:var(--ink-3)}
+.menu .k{margin-left:auto;font:10.5px/1 var(--mono);color:var(--muted)}
+
+.bodywrap{position:relative;flex:1;min-height:0}
+.body{position:absolute;inset:0;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;scroll-behavior:smooth}
+#spineCv{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:4}
+.gutter{position:absolute;left:0;top:0;bottom:0;width:30px;z-index:6;cursor:ns-resize}
+.turns{position:relative;padding:14px 12px 24px 40px;display:flex;flex-direction:column;gap:14px}
+.turn{position:relative;display:flex;flex-direction:column;gap:8px;min-width:0}
+.who{font:600 10px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted);display:flex;gap:8px;align-items:center}
+.who .dot{width:6px;height:6px;border-radius:50%;background:var(--c,var(--muted))}
+.you{align-self:flex-end;max-width:88%;background:var(--ink-3);border:1px solid var(--hair);border-radius:12px 12px 3px 12px;padding:8px 12px;font-size:13.5px;line-height:1.5}
+.you.other{align-self:flex-start;border-radius:12px 12px 12px 3px;border-color:color-mix(in oklab,var(--peer) 30%,transparent)}
+.voice{font:400 16px/1.55 var(--voice);color:#e9ecf4}
+.voice p,.ans p{margin:0 0 8px}
+.voice strong{font-weight:500;color:#fff}
+.ref{display:inline-flex;gap:4px;align-items:center;font:600 11px/1 var(--mono);padding:3px 6px;border-radius:5px;background:var(--ink-3);border:1px solid var(--hair);color:var(--c,var(--b1));white-space:nowrap;vertical-align:1px}
+.note{font:11.5px/1.45 var(--mono);color:var(--muted)}
+.note.hintline{color:#d7c3ff}
+.listen{font:11.5px/1.4 var(--mono);color:var(--faint)}
+.knotlbl{font:11px/1.35 var(--mono);color:var(--c);display:flex;gap:6px;align-items:baseline}
+.knotlbl::before{content:"⟜";opacity:.8}
+.steer{font:11.5px/1.4 var(--mono);color:var(--b2)}
+.sources{display:flex;flex-wrap:wrap;gap:5px;font:10.5px/1 var(--mono)}
+.sources span{padding:4px 6px;border-radius:4px;border:1px solid var(--hair);color:var(--muted)}
+
+/* developer matrix */
+.dev .turns{font:12.5px/1.55 var(--mono)}
+.ans{color:rgba(255,255,255,.9);word-break:break-word}
+.ans code{background:none;color:var(--b1);padding:0}
+.thk{display:flex;gap:8px;min-width:0;color:var(--muted);font-size:11.5px}
+.thk .k{color:var(--run);font-weight:700;flex:none}
+.thk .t{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-style:italic}
+.mr{position:relative;display:flex;gap:8px;align-items:center;min-width:0;min-height:22px;padding:0 4px;border-radius:4px}
+.mr.born{animation:born .7s cubic-bezier(.2,.8,.2,1) both}
+.mr .orb{flex:none;width:12px;text-align:center}
+.mr .vb{flex:none;width:7ch;font-weight:700}
+.mr .tg{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:rgba(255,255,255,.82)}
+.mr .rs{flex:none;font-size:11px;color:var(--muted);max-width:42%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.s-pending .orb,.s-pending .vb{color:rgba(255,255,255,.32)}
+.s-running{background:linear-gradient(90deg,transparent,rgba(242,193,78,.09),transparent);background-size:200% 100%;animation:scan 1.6s linear infinite}
+.s-running .orb,.s-running .vb{color:var(--run)}
+.s-done .orb,.s-done .vb{color:var(--b1)}
+.s-failed .orb,.s-failed .vb{color:var(--bad)}
+.s-passed .orb,.s-passed .vb{color:var(--ok)}
+.s-recall .orb,.s-recall .vb{color:var(--b2)}
+.s-stopped .orb,.s-stopped .vb{color:var(--muted)}
+.par{border-left:1px solid rgba(242,193,78,.35);margin-left:5px;padding-left:6px;display:flex;flex-direction:column;gap:1px}
+.par.settled{border-left-color:color-mix(in oklab,var(--b1) 25%,transparent)}
+.closer{margin:2px 0 2px 16px;border-left:1px dashed color-mix(in oklab,var(--b2) 60%,transparent);padding:2px 0 2px 8px;overflow:hidden;transition:max-height .6s ease,opacity .5s ease;max-height:120px}
+.closer.folded{max-height:22px;opacity:.75}
+.closer .cl{color:var(--b2);font-size:11px}
+.det{margin:2px 0 4px 24px;border-left:1px solid rgba(255,255,255,.12);padding:3px 8px;font-size:11.5px;color:#c4cad6;white-space:pre-wrap;word-break:break-word}
+.foldline{display:flex;gap:8px;align-items:center;min-width:0;font-size:12px;background:none;border:0;padding:0;cursor:pointer;width:100%;text-align:left;font-family:var(--mono)}
+.foldline .t{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted)}
+.perm{margin:2px 0 4px 24px;font-size:11.5px;color:#dfe6f2;display:flex;flex-wrap:wrap;gap:4px 10px}
+.perm button{background:none;border:0;color:#dfe6f2;font:inherit;cursor:pointer;padding:0}
+.perm .k{color:var(--b1)}
+
+/* the diff icon: appears where an edit happens; click to review, drag to the dashboard */
+.dfx{flex:none;display:inline-grid;place-items:center;width:20px;height:18px;border-radius:4px;border:1px solid color-mix(in oklab,var(--ok) 45%,transparent);background:rgba(95,207,152,.08);color:var(--ok);font:700 11px/1 var(--mono);cursor:pointer;padding:0}
+.dfx:hover{background:rgba(95,207,152,.18)}
+.dchip{align-self:flex-start;display:inline-flex;gap:8px;align-items:center;border:1px solid color-mix(in oklab,var(--ok) 35%,transparent);background:var(--ink-2);border-radius:8px;padding:6px 9px;font:11.5px/1 var(--mono);cursor:pointer;color:var(--fg)}
+.dchip .add{color:var(--ok)} .dchip .del{color:var(--bad)}
+.dchip .grip{color:var(--faint)}
+
+/* personal: the vertical task card; the spine draws its step line */
+.card{border:1px solid color-mix(in oklab,var(--b1) 22%,transparent);border-radius:12px;background:linear-gradient(180deg,color-mix(in oklab,var(--b1) 5%,transparent),transparent 40%),var(--ink-2);padding:10px 12px 8px;min-width:0}
+.card .top{display:flex;gap:8px;align-items:center;min-width:0}
+.card .top b{flex:1;min-width:0;font:600 12.5px/1.3 var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.card .state{flex:none;font:600 10px/1 var(--mono);padding:3px 6px;border-radius:4px;letter-spacing:.04em}
+.card .chev{flex:none;background:none;border:0;color:var(--b1);cursor:pointer;font:13px/1 var(--mono);padding:2px 4px}
+.rail{display:flex;gap:2px;margin:8px 0 6px}
+.rail i{flex:1;height:3px;border-radius:2px;background:rgba(255,255,255,.1);transition:background .3s}
+.rail i.done{background:var(--b1)} .rail i.running{background:var(--run);animation:breathe 1.2s infinite} .rail i.failed{background:var(--bad)} .rail i.passed{background:var(--ok)} .rail i.recall{background:var(--b2)}
+.goal{font:11px/1.4 var(--mono);color:var(--muted);margin-bottom:6px}
+.goal b{color:var(--b1);font-weight:600}
+.steps{position:relative;list-style:none;margin:0;padding:0 0 0 2px;display:flex;flex-direction:column;gap:3px}
+.st{position:relative;display:flex;flex-direction:column;min-width:0}
+.st.born{animation:born .7s cubic-bezier(.2,.8,.2,1) both}
+.st .ln{display:flex;gap:8px;align-items:center;min-width:0;padding:1px 0}
+.st .lnb{display:flex;gap:8px;align-items:baseline;min-width:0;flex:1;cursor:pointer;background:none;border:0;padding:0;text-align:left;font-family:var(--mono)}
+.st .d{flex:none;width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,.2);transform:translateY(1px);box-shadow:0 0 0 3px var(--ink-2)}
+.st.running .d{background:transparent;box-shadow:none}
+.st.done .d{background:var(--b1)} .st.failed .d{background:var(--bad)} .st.passed .d{background:var(--ok)} .st.recall .d{background:var(--b2)}
+.st .v{flex:none;width:9.5ch;font:600 10.5px/1.4 var(--mono);color:var(--muted)}
+.st.running .v{color:var(--run)} .st.failed .v{color:var(--bad)} .st.passed .v{color:var(--ok)}
+.st .tg{flex:1;min-width:0;font:10.5px/1.4 var(--mono);color:rgba(255,255,255,.85);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.st .sm{flex:none;max-width:36%;font:10px/1.4 var(--mono);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.st .ok{flex:none;font:600 10px/1 var(--mono);color:var(--ok)}
+.st .live{margin:2px 0 2px 16px;font:10.5px/1.5 var(--mono);color:rgba(242,193,78,.85);border-left:1px solid rgba(242,193,78,.3);padding-left:8px}
+.st .live div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.st .live div:last-child::after{content:"▍";animation:blink 1s steps(2) infinite}
+.st .why{margin:2px 0 2px 16px;font:10.5px/1.5 var(--mono);color:#ffb3aa}
+.st .box{margin:4px 0 4px 16px;border:1px solid var(--hair);border-radius:6px;padding:6px 8px;font:10.5px/1.5 var(--mono);color:#c4cad6;white-space:pre-wrap;word-break:break-word;background:rgba(0,0,0,.25)}
+.st.sub{margin-left:14px}
+.closerhead{margin:2px 0 0 14px;font:10.5px/1.4 var(--mono);color:var(--b2)}
+.foot{display:flex;gap:8px;align-items:center;margin-top:8px;padding-top:6px;border-top:1px solid var(--hair);font:10px/1.4 var(--mono);color:var(--muted);min-width:0}
+.foot .mem{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--b2)}
+.foot .id{flex:none;color:var(--b1)}
+.pcard{border:1px solid color-mix(in oklab,var(--run) 45%,transparent);border-radius:10px;background:var(--ink-2);padding:9px 10px;font-size:12.5px}
+.pcard .cmd{font:11.5px/1.5 var(--mono);background:rgba(0,0,0,.35);border-radius:6px;padding:5px 8px;margin:6px 0}
+.pcard .row{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}
+.receipt{font:11.5px/1.4 var(--sans);color:var(--muted)}
+.receipt b{color:var(--ok);font-weight:500}
+
+/* artifact chip + lens */
+.art{display:flex;gap:10px;align-items:center;border:1px solid color-mix(in oklab,var(--ok) 35%,transparent);border-radius:10px;padding:8px 10px;background:var(--ink-2);cursor:pointer;min-width:0}
+.art .ic{flex:none;width:28px;height:28px;border-radius:7px;display:grid;place-items:center;background:rgba(95,207,152,.12);color:var(--ok);font:600 12px/1 var(--mono)}
+.art .tx{flex:1;min-width:0;display:flex;flex-direction:column}
+.art .tx b{font:600 13px/1.3 var(--sans);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.art .tx span{font:11px/1.3 var(--mono);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.art .grip{flex:none;color:var(--faint);font:14px/1 var(--mono);cursor:grab}
+.lens{position:absolute;inset:0;z-index:15;background:var(--ink);display:flex;flex-direction:column;animation:lensin .35s cubic-bezier(.2,.8,.2,1)}
+.lens .lh{flex:none;display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;padding:8px 10px;border-bottom:1px solid var(--hair);min-width:0}
+.lens .lh b{flex:1;min-width:120px;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lens .lb{flex:1;overflow:auto;padding:14px 16px;font:400 15px/1.55 var(--voice)}
+.lens table{border-collapse:collapse;width:100%;font:12.5px/1.4 var(--sans);margin:8px 0 12px}
+.lens th,.lens td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--hair)}
+.small{font:500 11.5px/1 var(--sans);background:var(--ink-3);border:1px solid var(--hair);border-radius:6px;padding:6px 8px;cursor:pointer;white-space:nowrap;color:var(--fg)}
+.small.warn{color:var(--bad)}
+/* diff review */
+.dfile{border:1px solid var(--hair);border-radius:8px;margin-bottom:12px;overflow:hidden;font-family:var(--mono)}
+.dfile .fh{display:flex;gap:8px;align-items:center;padding:7px 10px;background:var(--ink-2);font-size:12px;min-width:0}
+.dfile .fh b{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600}
+.hunk{border-top:1px solid var(--hair)}
+.hunk .hh{display:flex;gap:6px;align-items:center;padding:4px 10px;font-size:10.5px;color:var(--muted);background:rgba(255,255,255,.02)}
+.hunk .hh span{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hunk pre{margin:0;padding:6px 10px;font:11.5px/1.55 var(--mono);overflow-x:auto;white-space:pre}
+.hunk .a{color:var(--ok);background:rgba(95,207,152,.07);display:block}
+.hunk .r{color:var(--bad);background:rgba(255,122,110,.07);display:block}
+.hunk.undone pre{opacity:.4;text-decoration:line-through}
+
+/* chips on the spine */
+.chips{position:absolute;left:30px;top:8px;max-height:calc(100% - 16px);width:min(250px,calc(100% - 46px));z-index:12;background:var(--ink-2);border:1px solid color-mix(in oklab,var(--b1) 25%,transparent);border-radius:10px;padding:8px 6px;overflow:auto;box-shadow:12px 0 40px rgba(0,0,0,.5);animation:chipin .2s ease-out}
+.chips .h{font:600 10px/1 var(--mono);letter-spacing:.12em;color:var(--muted);text-transform:uppercase;padding:2px 6px 8px}
+.chips button{display:flex;gap:8px;width:100%;align-items:center;background:none;border:1px solid transparent;border-radius:6px;padding:6px;cursor:pointer;text-align:left;font-size:12px;min-width:0;color:rgba(255,255,255,.62)}
+.chips button.here{color:#fff;border-color:color-mix(in oklab,var(--b1) 35%,transparent);background:color-mix(in oklab,var(--b1) 8%,transparent)}
+.chips button:hover{color:#fff;background:var(--ink-3)}
+.chips button span{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chips i{flex:none;width:7px;height:7px;border-radius:50%;background:var(--c)}
+.chips small{flex:none;font:10px/1 var(--mono);color:var(--muted)}
+
+/* thread orbit */
+.orbit{position:absolute;inset:0;z-index:20;background:radial-gradient(60% 50% at 50% 46%,color-mix(in oklab,var(--b1) 9%,transparent),transparent 70%),rgba(4,5,12,.97);animation:lensin .3s ease-out}
+.orbit canvas{position:absolute;inset:0;width:100%;height:100%}
+.olbl{position:absolute;transform:translate(-50%,-50%);max-width:128px;font:500 11.5px/1.25 var(--sans);text-align:center;color:rgba(255,255,255,.62);background:none;border:0;cursor:pointer;padding:4px;border-radius:6px}
+.olbl small{display:block;font:10px/1.2 var(--mono);color:var(--muted)}
+.olbl.front{color:#fff;font-weight:600}
+.olbl.front small{color:var(--b1)}
+.olbl.pinned{color:#fff}
+.olbl.pinned small{color:var(--b2)}
+.ocap{position:absolute;left:0;right:0;top:14px;text-align:center;font:600 10px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.ofoot{position:absolute;left:12px;right:12px;bottom:12px;display:flex;gap:8px;align-items:center}
+.ofoot input{flex:1;min-width:0;background:var(--ink-2);border:1px solid color-mix(in oklab,var(--b1) 35%,transparent);border-radius:999px;color:var(--fg);font:12.5px/1 var(--sans);padding:9px 12px}
+
+/* map = the strand switcher */
+.map{position:absolute;inset:0;z-index:14;background:var(--ink);animation:lensin .35s ease-out}
+.map canvas{position:absolute;inset:0;width:100%;height:100%}
+.slbl{position:absolute;transform:translateX(-50%);top:10px;display:flex;flex-direction:column;align-items:center;gap:3px;background:var(--ink-2);border:1px solid var(--hair);border-radius:8px;padding:6px 8px;cursor:pointer;max-width:110px;text-align:center}
+.slbl b{font:600 11.5px/1.2 var(--sans);color:var(--c)}
+.slbl span{font:9.5px/1.25 var(--mono);color:var(--muted)}
+.slbl[aria-current="true"]{border-color:var(--c)}
+.slbl .act{width:6px;height:6px;border-radius:50%;background:var(--run);animation:breathe 1.2s infinite}
+.mapfoot{position:absolute;left:10px;right:10px;bottom:10px;display:flex;flex-direction:column;gap:6px}
+.mapfoot .cap{font:11px/1.4 var(--mono);color:var(--muted)}
+.newrow{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.newrow input{flex:1;min-width:120px;background:var(--ink-2);border:1px solid color-mix(in oklab,var(--b1) 40%,transparent);border-radius:999px;color:var(--fg);font:12px/1 var(--sans);padding:7px 10px}
+.tagpick{font:600 10px/1 var(--mono);padding:5px 7px;border-radius:4px;border:1px solid var(--hair);background:none;color:var(--muted);cursor:pointer}
+.tagpick[aria-pressed="true"]{color:var(--b1);border-color:var(--b1)}
+.newrow .own{flex:0 1 110px;min-width:90px;border-color:var(--hair);border-radius:4px;font:10.5px/1 var(--mono);padding:5px 7px}
+
+/* composer: tray, project bar, message box */
+.comp{flex:none;border-top:1px solid var(--hair);padding:8px 10px 10px;display:flex;flex-direction:column;gap:6px;position:relative}
+.tray{display:flex;flex-wrap:wrap;gap:5px;align-items:center;min-height:22px}
+.to{font:600 11px/1 var(--mono);padding:4px 7px;border-radius:999px;border:1px solid var(--c);color:var(--c)}
+.chip{font:600 11px/1 var(--mono);padding:4px 7px;border-radius:5px;background:var(--ink-3);border:1px solid var(--hair);display:inline-flex;gap:5px;align-items:center}
+.chip button{background:none;border:0;color:var(--muted);cursor:pointer;padding:0 0 0 2px}
+.proj{display:flex;gap:4px;align-items:center;min-width:0;overflow-x:auto;scrollbar-width:none;font:11px/1 var(--mono)}
+.proj button{flex:none;display:flex;gap:5px;align-items:center;border:1px solid transparent;background:none;border-radius:5px;padding:4px 7px;cursor:pointer;color:var(--muted);white-space:nowrap}
+.proj .folder{color:var(--b1);border-color:color-mix(in oklab,var(--b1) 35%,transparent);background:color-mix(in oklab,var(--b1) 9%,transparent)}
+.proj .tab[aria-current="true"]{color:var(--fg);border-color:var(--hair);background:var(--ink-3)}
+.proj .addf{color:var(--b1);border:1px dashed color-mix(in oklab,var(--b1) 35%,transparent)}
+.proj .branch{margin-left:auto;color:var(--faint);cursor:default}
+.inrow{display:flex;gap:6px;align-items:flex-end}
+textarea{flex:1;min-width:0;resize:none;height:38px;background:var(--ink-2);border:1px solid rgba(255,255,255,.12);border-radius:10px;color:var(--fg);font:13.5px/1.4 var(--sans);padding:9px 10px}
+.dev textarea{font-family:var(--mono);font-size:12.5px}
+.rbtn{flex:none;width:38px;height:38px;border-radius:10px;border:1px solid var(--hair);background:var(--ink-2);cursor:pointer;display:grid;place-items:center;font:14px/1 var(--mono);color:#cdd6ea}
+.rbtn.stop{color:var(--bad);border-color:color-mix(in oklab,var(--bad) 50%,transparent)}
+.tools{display:flex;gap:6px;align-items:center;font:10.5px/1 var(--mono);color:var(--muted);min-width:0;overflow:hidden}
+.tools span{padding:4px 7px;border-radius:5px;border:1px solid var(--hair);white-space:nowrap}
+.tools .sp{flex:1;border:0;padding:0}
+.pop{position:absolute;bottom:100%;left:10px;right:10px;margin-bottom:4px;background:var(--ink-2);border:1px solid color-mix(in oklab,var(--b1) 30%,transparent);border-radius:10px;padding:5px;z-index:12;box-shadow:0 -12px 30px rgba(0,0,0,.5)}
+.pop button{display:flex;gap:8px;width:100%;align-items:center;background:none;border:0;padding:6px 8px;border-radius:6px;cursor:pointer;font-size:12.5px;text-align:left;min-width:0}
+.pop button:hover,.pop button.sel{background:var(--ink-3)}
+.pop button span{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.toast{position:absolute;left:50%;bottom:150px;transform:translateX(-50%);background:var(--ink-3);border:1px solid color-mix(in oklab,var(--b1) 35%,transparent);font:12px/1.4 var(--sans);padding:8px 12px;border-radius:8px;z-index:30;max-width:90%;text-align:center}
+
+/* ── dashboard wing, same ink ── */
+.dash{position:relative;width:100%;height:760px;border-radius:14px;overflow:hidden;display:flex;flex-direction:column;
+  background:radial-gradient(120% 50% at 100% 0%,color-mix(in oklab,var(--b2) 7%,transparent),transparent 60%),var(--ink);
+  border:1px solid color-mix(in oklab,var(--b2) 20%,transparent);border-top-color:transparent;box-shadow:0 0 0 1px #000,0 30px 80px rgba(0,0,0,.6);transition:opacity .45s,filter .45s}
+#dashCv{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.dhead{position:relative;flex:none;height:52px;display:flex;align-items:center;gap:10px;padding:0 12px 0 22px;border-bottom:1px solid var(--hair)}
+.dhead b{font:600 13px/1 var(--sans)}
+.dtabs{position:relative;flex:none;display:flex;gap:2px;padding:6px 10px 6px 18px;border-bottom:1px solid var(--hair);overflow-x:auto;scrollbar-width:none}
+.dtabs button{flex:none;background:none;border:0;border-bottom:2px solid transparent;padding:6px 8px;font:500 12px/1 var(--sans);color:var(--muted);cursor:pointer}
+.dtabs button[aria-current="true"]{color:var(--fg);border-bottom-color:var(--b2)}
+.dtabs button small{font:10px/1 var(--mono);color:var(--b2);margin-left:4px}
+.drop{position:relative;flex:1;min-height:0;margin:10px 10px 10px 22px;border:1px dashed rgba(255,255,255,.12);border-radius:10px;display:flex;flex-direction:column;gap:8px;padding:10px;overflow:auto;transition:border-color .2s,background .2s}
+.drop.over{border-color:var(--ok);background:rgba(95,207,152,.06)}
+.drop .empty{margin:auto;text-align:center;font-size:12.5px;color:var(--muted)}
+.wcard{border:1px solid var(--hair);border-radius:9px;background:var(--ink-2);overflow:hidden;animation:born .6s ease-out both;min-width:0;flex:none}
+.wcard .wh{display:flex;gap:8px;align-items:center;padding:7px 9px;border-bottom:1px solid var(--hair);font:11.5px/1.2 var(--mono);min-width:0}
+.wcard .wh b{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:600}
+.wcard .wh .k{font-size:10px;color:var(--muted);white-space:nowrap}
+.wcard .wh button{background:none;border:0;color:var(--muted);cursor:pointer;padding:0 2px}
+.wcard pre{margin:0;padding:7px 9px;font:10.5px/1.5 var(--mono);overflow-x:auto;white-space:pre}
+.wcard .a{color:var(--ok)} .wcard .r{color:var(--bad)}
+.wcard .doc{padding:8px 10px;font:13px/1.45 var(--voice);color:#d9deea}
+
+/* checklist */
+.check{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
+.ck{background:var(--ink-2);border:1px solid var(--hair);border-radius:12px;padding:14px 16px}
+.ck h3{margin:0 0 8px;font:500 18px/1.3 var(--voice)}
+.ck ul{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:8px}
+.ck li{font-size:13.5px;color:#c3cad8;display:grid;grid-template-columns:auto 1fr;gap:8px}
+.ck li i{font-style:normal;font:600 10px/1.8 var(--mono);padding:0 5px;border-radius:4px;height:fit-content;white-space:nowrap}
+.ck li i.in{color:var(--ok);background:rgba(95,207,152,.1)}
+.ck li i.next{color:var(--b2);background:color-mix(in oklab,var(--b2) 12%,transparent)}
+.ck li b{color:var(--fg);font-weight:500}
+ol.qs{padding-left:20px} ol.qs li{margin-bottom:8px}
+
+@keyframes breathe{0%,100%{opacity:1}50%{opacity:.35}}
+@keyframes blink{50%{opacity:0}}
+@keyframes born{0%{opacity:0;transform:translateX(-14px);filter:blur(3px)}60%{opacity:1;filter:blur(0)}100%{transform:none}}
+@keyframes scan{from{background-position:200% 0}to{background-position:-200% 0}}
+@keyframes lensin{from{opacity:0;transform:scale(.97)}to{opacity:1;transform:none}}
+@keyframes chipin{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}.body{scroll-behavior:auto}}
+</style>
+
+<div class="wrap">
+  <section class="hero">
+    <div>
+      <div class="eyebrow">Concept 2 · revision 2 · threads, strands and the living spine</div>
+      <h1>IRIS Living Spine</h1>
+      <p class="lede">The Xur pours its trail down the chat as the spine. When IRIS works, the spine gathers back into the Xur at the step that runs, in both modes. Above it, the wing's top edge is one quiet line. The spotlight aperture sits in that line, and a slow light leaves it when work happens.</p>
+      <p class="muted">Change the brand colour above the wing. The Xur takes three neighbouring hues from it. The first concept stays as it was, for reference.</p>
+    </div>
+    <canvas id="heroXur" width="660" height="660" aria-label="The Xur in the current brand colours"></canvas>
+  </section>
+
+  <ul class="changes">
+    <li><b>Strands open from ⌖</b>The ⌖ icon is back in the header. It opens the map of the strands. The current strand shows under the thread name, with no dropdown arrow. Add a strand in the map, with preset tags or your own.</li>
+    <li><b>The edge light</b>The header trails are gone. The top edge of each wing is one hairline, with the aperture set into it at the centre. At rest, a faint light leaves the aperture every few seconds. When a strand works, the light takes that strand's colour and comes more often. In spotlight, the light stays on near the aperture.</li>
+    <li><b>The spine runs through the card</b>In personal mode, the spine bends into the task card and becomes its step line. The Xur rides it to the step that runs, as in developer mode.</li>
+    <li><b>Diffs</b>An edit shows a small ± icon where it happens. Click it to review the change, keep it or undo it. Drag it to the dashboard workspace, like an artifact.</li>
+    <li><b>Folder and file tabs</b>Both modes have the project bar above the message box: the folder, the open files, and + to add a folder or repo.</li>
+    <li><b>Spotlight as today</b>Each wing has its aperture at the top middle, on the edge. The other wing shrinks to 360 px, fades and blurs, and takes no clicks, as the app does now. Pinned threads keep their place on the Xur's lower loops.</li>
+  </ul>
+
+  <h2>Try it</h2>
+  <div class="col"><p class="muted">Press <b>Run the turn</b> in each mode. IRIS asks before it runs the tests: press <kbd>y</kbd> or click Allow. While it works, type in the message box to steer it, or press the stop button. Click a <b>±</b> icon to review a diff, or drag it to the dashboard. Click ⌖ to switch strands. Click the Xur for your threads. Click the small diamond on the top edge of a wing for spotlight.</p></div>
+
+  <div class="stagebar">
+    <div class="grp" role="group" aria-label="Mode"><span>Mode</span><button class="seg" id="mDev" aria-pressed="true">Developer</button><button class="seg" id="mPer" aria-pressed="false">Personal</button></div>
+    <div class="grp" role="group" aria-label="Brand colour" id="themes"><span>Brand</span></div>
+    <div class="grp"><input type="range" id="hue" min="0" max="359" value="190" aria-label="Brand hue"></div>
+    <button class="go" id="run">▶ Run the turn</button>
+    <span class="hint" id="hint">fix the cap · ready</span>
+  </div>
+
+  <div class="stage">
+    <div class="wwrap" id="cwrap">
+    <canvas class="edgeCv" id="edgeChat" aria-hidden="true"></canvas>
+    <button class="ap" id="apChat" data-spot="chat" title="Spotlight the chat" aria-label="Spotlight the chat" aria-pressed="false"><svg viewBox="-8 -8 16 16" aria-hidden="true"><path class="pt" style="--dx:0px;--dy:-3px" d="M0 -7 L2 -2 L-2 -2Z"/><path class="pt" style="--dx:3px;--dy:0px" d="M7 0 L2 2 L2 -2Z"/><path class="pt" style="--dx:0px;--dy:3px" d="M0 7 L-2 2 L2 2Z"/><path class="pt" style="--dx:-3px;--dy:0px" d="M-7 0 L-2 -2 L-2 2Z"/></svg></button>
+    <div class="wing dev" id="wing">
+      <div class="head" id="head">
+        <button class="xbtn" id="xbtn" title="Your threads" aria-label="Open your threads"><canvas id="headXur" width="88" height="88"></canvas></button>
+        <div class="ttl">
+          <span contenteditable="true" spellcheck="false" id="threadName" title="Click to rename">IRISVOICE · router budget</span>
+          <button class="strandbtn" id="strandBtn" title="Strands of this thread" aria-label="Switch strand"></button>
+        </div>
+        <button class="iconbtn" id="mapBtn" title="Strands of this thread" aria-label="Strands of this thread">⌖</button>
+        <button class="iconbtn" id="apBtn" title="More" aria-label="More">◉</button>
+      </div>
+      <div class="bodywrap" id="bodywrap">
+        <div class="body" id="body"><div class="turns" id="turns"></div></div>
+        <canvas id="spineCv" aria-hidden="true"></canvas>
+        <div class="gutter" id="gutter" title="Hover for the turns of this strand; drag to scrub"></div>
+      </div>
+      <div class="comp" id="comp">
+        <div class="tray" id="tray"></div>
+        <div class="proj" id="proj" role="tablist" aria-label="Project folder and open files"></div>
+        <div class="inrow">
+          <textarea id="ta" rows="1" placeholder="Message…" aria-label="Message"></textarea>
+          <button class="rbtn" id="sendstop" title="Send" aria-label="Send">↵</button>
+        </div>
+        <div class="tools"><span>web</span><span>bonsai-2.6b + brain</span><span class="sp"></span><span>ctx 41%</span></div>
+      </div>
+    </div>
+
+    </div>
+    <div class="wwrap dwrap" id="dwrap">
+    <canvas class="edgeCv" id="edgeDash" aria-hidden="true"></canvas>
+    <button class="ap" id="apDash" data-spot="dash" title="Spotlight the dashboard" aria-label="Spotlight the dashboard" aria-pressed="false"><svg viewBox="-8 -8 16 16" aria-hidden="true"><path class="pt" style="--dx:0px;--dy:-3px" d="M0 -7 L2 -2 L-2 -2Z"/><path class="pt" style="--dx:3px;--dy:0px" d="M7 0 L2 2 L2 -2Z"/><path class="pt" style="--dx:0px;--dy:3px" d="M0 7 L-2 2 L2 2Z"/><path class="pt" style="--dx:-3px;--dy:0px" d="M-7 0 L-2 -2 L-2 2Z"/></svg></button>
+    <div class="dash" id="dash">
+      <canvas id="dashCv" aria-hidden="true"></canvas>
+      <div class="dhead"><b>Dashboard</b><span class="hint" style="font-size:11px">same ink, edge and trail as the chat</span></div>
+      <div class="dtabs" role="tablist"><button aria-current="true">Workspace <small id="wsCount"></small></button><button>Browser</button><button>Models</button><button>Memory</button></div>
+      <div class="drop" id="drop"><div class="empty">Drag an artifact or a ± diff here.<br><small>It stays open beside the chat.</small></div></div>
+    </div>
+    </div>
+  </div>
+
+  <h2>What I checked for each mode</h2>
+  <div class="col"><p>You were right about the diff review. So I went through what a person does in each mode, and asked what the interface must give them. <b>In this mock</b> means you can try it above. <b>Next</b> means it is part of the build plan.</p></div>
+  <div class="check">
+    <div class="ck"><h3>Developer mode</h3><ul>
+      <li><i class="in">IN THIS MOCK</i><span><b>Review diffs.</b> A ± icon at each edit, one review for the whole turn, keep or undo per change, drag to the dashboard.</span></li>
+      <li><i class="in">IN THIS MOCK</i><span><b>Approve commands in the turn.</b> The row waits for <kbd>y</kbd> / <kbd>n</kbd> and leaves a receipt.</span></li>
+      <li><i class="in">IN THIS MOCK</i><span><b>Steer or stop while IRIS works.</b> Type to steer (the steering inbox exists today); the stop button ends the turn and says so.</span></li>
+      <li><i class="in">IN THIS MOCK</i><span><b>Know where IRIS works.</b> Folder, open files and branch above the message box.</span></li>
+      <li><i class="next">NEXT</i><span><b>Shell output that stays.</b> A <code>&gt;cmd</code> is one EXEC row whose output opens in place.</span></li>
+      <li><i class="next">NEXT</i><span><b>Undo a whole turn.</b> "Go back to before this turn" restores the files and the chat (revert exists for the chat today).</span></li>
+      <li><i class="next">NEXT</i><span><b>Keys.</b> <kbd>Ctrl K</kbd> threads, <kbd>Ctrl J</kbd> strands, <kbd>Ctrl D</kbd> diff review, <kbd>Esc</kbd> stop.</span></li>
+    </ul></div>
+    <div class="ck"><h3>Personal mode</h3><ul>
+      <li><i class="next">NEXT</i><span><b>Voice as today.</b> The wake word and the voice path stay; the header Xur shows when IRIS listens.</span></li>
+      <li><i class="in">IN THIS MOCK</i><span><b>See the work without the jargon.</b> The vertical card keeps every event in plain words, and the spine runs through it.</span></li>
+      <li><i class="in">IN THIS MOCK</i><span><b>Know when another strand finishes.</b> A dot on ⌖ while it works, the edge light in its colour, and a short note when it is done.</span></li>
+      <li><i class="in">IN THIS MOCK</i><span><b>Sources under research answers.</b> One quiet row of source chips, not a card (see “budget rules”).</span></li>
+      <li><i class="next">NEXT</i><span><b>Spoken word follows the text.</b> The word highlight that exists today, in the new reply face.</span></li>
+      <li><i class="next">NEXT</i><span><b>Files in, files out.</b> Drop a file on the message box to attach it; artifacts open in the lens.</span></li>
+    </ul></div>
+    <div class="ck"><h3>Both modes, and the network</h3><ul>
+      <li><i class="in">IN THIS MOCK</i><span><b>Who hears this.</b> The <code>to:</code> chip. With people, only <code>@iris</code> sends a prompt.</span></li>
+      <li><i class="in">IN THIS MOCK</i><span><b>Helpers get their own strand</b> and report back to the strand that started them, as a knot.</span></li>
+      <li><i class="next">NEXT</i><span><b>Who is here.</b> In a strand with people: who is online, who is typing, and a signed mark on each message (Nostr).</span></li>
+      <li><i class="next">NEXT</i><span><b>Find anything.</b> One search over threads, strands and turns, from the thread orbit.</span></li>
+      <li><i class="next">NEXT</i><span><b>Quiet motion.</b> With reduced motion on, the trails stand still and only the running step shows change.</span></li>
+    </ul></div>
+  </div>
+
+  <h2>Questions for you</h2>
+  <ol class="qs col">
+    <li><b>Settled.</b> Diff undo restores the file and tells IRIS. Spotlight keeps today's behaviour.</li>
+    <li><b>Approval.</b> When this concept is right for you, I start Phase 3: the turn protocol (with strand, author, <code>to</code> and references), then the strand store, then these views.</li>
+  </ol>
+</div>
+
+<script>
+(() => {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const DPR = Math.min(2, window.devicePixelRatio || 1);
+  const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+  // ── brand: one hue → three neighbour hues (BrandColorContext shimmer primary/secondary/accent) ──
+  const THEMES = [["Aether", 190, 25, -40], ["Ember", 25, -35, -55], ["Aurum", 45, 15, -25], ["Verdant", 145, 45, -55]];
+  const B = { h: 190, d2: 25, d3: -40 };
+  const hsl = (h, s, l, a = 1) => "hsla(" + ((h % 360) + 360) % 360 + "," + s + "%," + l + "%," + a + ")";
+  function setBrand(h, d2, d3) {
+    B.h = h; if (d2 !== undefined) { B.d2 = d2; B.d3 = d3; }
+    const r = document.documentElement.style;
+    r.setProperty("--b1", hsl(B.h, 100, 64)); r.setProperty("--b2", hsl(B.h + B.d2, 92, 68)); r.setProperty("--b3", hsl(B.h + B.d3, 85, 60));
+    $("hue").value = String(((B.h % 360) + 360) % 360);
+  }
+  function trailColor(f, a) {
+    const h = f > .5 ? B.h + (1 - f) * 2 * B.d2 : B.h + B.d2 + (0.5 - f) * 2 * (B.d3 - B.d2);
+    return hsl(h, 95, 56 + f * 16, a);
+  }
+  $("themes").insertAdjacentHTML("beforeend", THEMES.map((t, i) => '<button class="sw" data-theme="' + i + '" aria-pressed="' + (i === 0) + '" title="' + t[0] + '" aria-label="' + t[0] + '" style="background:conic-gradient(' + hsl(t[1], 100, 62) + "," + hsl(t[1] + t[2], 90, 64) + "," + hsl(t[1] + t[3], 85, 58) + "," + hsl(t[1], 100, 62) + ')"></button>').join(""));
+
+  // ── the Xur curve (components/Xur.tsx) ──
+  function xurPoint(a, s) { return [7 * Math.cos(a) - 3 * s * Math.cos(9 * a), 7 * Math.sin(a) - 3 * s * Math.sin(9 * a)]; }
+  function drawXur(ctx, cx, cy, R, now, o) {
+    const sc = R / 10, n = o.n || 64, rot = (o.rot != null ? o.rot : now * (o.speed || 1) / 30000 * Math.PI * 12);
+    for (let i = 0; i < n; i++) {
+      const a = rot - (i / n) * Math.PI * 2, [x, y] = xurPoint(a, o.s), f = 1 - i / n;
+      ctx.fillStyle = trailColor(f, (o.alpha || 1) * (0.15 + f * 0.75));
+      ctx.beginPath(); ctx.arc(cx + x * sc, cy + y * sc, Math.max(.5, (0.35 + f * 1.4) * (o.dot || R / 12)), 0, 6.283); ctx.fill();
+    }
+  }
+  function fitCanvas(cv) {
+    const r = cv.getBoundingClientRect(), w = Math.max(1, Math.round(r.width * DPR)), h = Math.max(1, Math.round(r.height * DPR));
+    if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+    const ctx = cv.getContext("2d"); ctx.setTransform(DPR, 0, 0, DPR, 0, 0); return [ctx, r.width, r.height];
+  }
+  const hh = (i) => { const x = Math.sin(i * 127.1) * 43758.5453; return x - Math.floor(x); };
+
+  // ── state ──
+  const S = { dev: true, strand: "fix", running: false, done: false, stopped: false, open: true, follow: false, phase: "expand", nodes: [], thk: "", ans: "", born: new Set(), closerFolded: false, refs: {}, extra: {}, live: {}, inkUntil: 0, perm: null, steers: [], spot: "none", undone: {} };
+  const STRANDS = [
+    { id: "fix", name: "fix the cap", tags: ["build"], c: "--b1" },
+    { id: "rules", name: "budget rules", tags: ["plan"], c: "--b2" },
+    { id: "ana", name: "with Ana", tags: ["people"], c: "--peer", to: "@ana", ph: "Message Ana (add @iris to ask IRIS)…" },
+    { id: "callers", name: "check callers", tags: ["swarm"], c: "--swarm", by: "fix" },
+  ];
+  STRANDS.forEach((s) => { S.refs[s.id] = []; S.extra[s.id] = []; });
+  const curStrand = () => STRANDS.find((x) => x.id === S.strand);
+  const REFS = [{ k: "#T-38", t: "task card · router window test" }, { k: "#A-12", t: "artifact · router budget plan" }, { k: "#rules/3", t: "budget rules · turn 3" }, { k: "#ana/4", t: "with Ana · her agent's fix" }];
+  const PEOPLE = [{ k: "@iris", t: "your agent" }, { k: "@ana", t: "Ana · another IRIS user" }, { k: "@ana.iris", t: "Ana's agent" }, { k: "@swarm", t: "helpers (they get their own strand)" }];
+  const DIFFS = {
+    "router.py": { path: "backend/agent/inference/router.py", add: 4, del: 1, hunks: [
+      { at: "@@ -12 +12,2 @@ imports", lines: ["  from .tokens import count_tokens", "+ from .budget import _RESERVE"] },
+      { at: "@@ -431 +432,3 @@ def _cap_messages_to_window", lines: ["- budget = window - max_tokens", "+ # keep room for the system frame", "+ budget = window - max_tokens - _RESERVE", "  messages = _trim(messages, budget)"] },
+    ] },
+    "test_router.py": { path: "tests/unit/test_router.py", add: 3, del: 0, hunks: [
+      { at: "@@ +88,3 @@ def test_reserve_is_pinned", lines: ["+ def test_reserve_is_pinned():", "+     # a change to the reserve must be on purpose", "+     assert _RESERVE == 256"] },
+    ] },
+  };
+
+  // ── header: current strand, and the Xur's trail across the header (one line per strand) ──
+  function renderHead() {
+    const st = curStrand(), others = STRANDS.filter((s) => s.id !== S.strand && S.live[s.id]).length;
+    $("strandBtn").innerHTML = '<span style="color:var(' + st.c + ')">◆</span><b>' + esc(st.name) + "</b>" + st.tags.map((t) => "<span>· " + esc(t) + "</span>").join("") + "<span>· " + STRANDS.length + " strands</span>";
+    $("mapBtn").innerHTML = "⌖" + (others ? '<span class="act" title="another strand is working"></span>' : "");
+  }
+  // ── the edge light: one hairline per wing, the aperture set into it; a slow light leaves it ──
+  const PULSES = { chat: [], dash: [] }, NEXT_P = { chat: 0, dash: 0 };
+  function drawEdge(cvId, key, now, spotted, accentVar) {
+    const [c, w, h] = fitCanvas($(cvId)); c.clearRect(0, 0, w, h);
+    const y = h / 2, cx = w / 2, gapR = 11, rad = 14, base = css(accentVar) || "#3fd6ff";
+    const work = STRANDS.find((s) => S.live[s.id]);
+    // emit: idle every ~7 s, while a strand works every ~2.6 s, in that strand's colour
+    if (now > NEXT_P[key]) { PULSES[key].push({ t0: now, col: key === "chat" && work ? css(work.c) : base }); NEXT_P[key] = now + (key === "chat" && work ? 2600 : 7000) + Math.random() * 900; }
+    PULSES[key] = PULSES[key].filter((p) => now - p.t0 < 9000);
+    // the hairline, with a small gap where the aperture sits
+    const line = (x0, x1) => { const g = c.createLinearGradient(x0, 0, x1, 0); const near = x0 < cx; g.addColorStop(0, hexA(base, near ? .05 : .22)); g.addColorStop(1, hexA(base, near ? .22 : .05)); c.strokeStyle = g; c.lineWidth = 1; c.beginPath(); c.moveTo(x0, y + .5); c.lineTo(x1, y + .5); c.stroke(); };
+    line(rad, cx - gapR); line(cx + gapR, w - rad);
+    // spotlight: a steady glow near the aperture
+    if (spotted) { for (const dir of [-1, 1]) { const g = c.createLinearGradient(cx + dir * gapR, 0, cx + dir * 90, 0); g.addColorStop(0, hexA(base, .7)); g.addColorStop(1, hexA(base, 0)); c.strokeStyle = g; c.lineWidth = 1.2; c.beginPath(); c.moveTo(cx + dir * gapR, y + .5); c.lineTo(cx + dir * 90, y + .5); c.stroke(); } }
+    // pulses travel outward both ways, slowly, and fade before the corners
+    for (const p of PULSES[key]) {
+      const d = gapR + (now - p.t0) * .045, fade = Math.max(0, 1 - d / (w / 2 - rad));
+      for (const dir of [-1, 1]) { const x = cx + dir * d, g = c.createLinearGradient(x - 26, 0, x + 26, 0); g.addColorStop(0, hexA(p.col, 0)); g.addColorStop(.5, hexA(p.col, .55 * fade)); g.addColorStop(1, hexA(p.col, 0)); c.strokeStyle = g; c.lineWidth = 1.3; c.beginPath(); c.moveTo(x - 26, y + .5); c.lineTo(x + 26, y + .5); c.stroke(); }
+    }
+  }
+  // colour helper: accept hsl()/hsla()/#hex from the tokens and add an alpha
+  function hexA(col, a) {
+    if (col.startsWith("#")) { const n = parseInt(col.slice(1), 16); return "rgba(" + (n >> 16 & 255) + "," + (n >> 8 & 255) + "," + (n & 255) + "," + a + ")"; }
+    const m = col.match(/hsla?\(([^,]+),\s*([^,]+),\s*([^,)]+)/); return m ? "hsla(" + m[1] + "," + m[2] + "," + m[3] + "," + a + ")" : col;
+  }
+
+  // ── project bar: folder, open files, add a folder ──
+  const PROJ = { folder: "IRISVOICE", tabs: ["router.py", "test_router.py"], active: "router.py" };
+  function renderProj() {
+    $("proj").innerHTML = '<button class="folder" data-folder="1" title="Project folder">▸ ' + esc(PROJ.folder) + " ▾</button>" + PROJ.tabs.map((t) => '<button class="tab" role="tab" data-tab="' + esc(t) + '" aria-current="' + (t === PROJ.active) + '">' + esc(t) + "</button>").join("") + '<button class="addf" data-addf="1" title="Add a folder or repo">+</button><button class="branch" tabindex="-1">⎇ feat/router · ' + (S.done && !S.stopped ? "1 changed" : "clean") + "</button>";
+  }
+
+  // ── content ──
+  const md = (s) => esc(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/`([^`]+)`/g, "<code>$1</code>").replace(/(#[A-Za-z]+[-/][\w]+)/g, '<span class="ref">$1</span>').replace(/(@[a-z.]+)/g, '<span class="ref" style="--c:var(--peer)">$1</span>');
+  const paras = (s) => s.split(/\n\n+/).map((p) => "<p>" + md(p) + "</p>").join("");
+  const dfx = (f) => '<button class="dfx" data-diff="' + f + '" draggable="true" title="Review the change to ' + f + ' (drag to the dashboard)" aria-label="Review the change to ' + f + '">±</button>';
+  function turnHTML(t) {
+    const k = t.knot ? ' data-knot="' + t.knot + '" data-knotc="' + (t.kc || "--b2") + '"' : "";
+    const chip = t.chip ? ' data-chip="' + esc(t.chip) + '"' : "";
+    const kl = t.knotText ? '<div class="knotlbl" style="--c:var(' + (t.kc || "--b2") + ')">' + t.knotText + "</div>" : "";
+    if (t.kind === "you") return '<div class="turn"' + k + chip + '><div class="you' + (t.other ? " other" : "") + '">' + (t.other ? '<div class="who" style="--c:var(--peer)"><span class="dot"></span>' + esc(t.other) + "</div>" : "") + md(t.text) + "</div>" + kl + "</div>";
+    if (t.kind === "iris") return '<div class="turn"' + k + chip + '><div class="who" style="--c:var(--b1)"><span class="dot"></span>IRIS</div><div class="' + (S.dev ? "ans" : "voice") + '">' + paras(t.text) + "</div>" + (t.diff ? '<button class="dchip" data-diff="' + t.diff + '" draggable="true"><span style="color:var(--ok)">±</span>' + t.diff + ' <span class="add">+' + DIFFS[t.diff].add + '</span><span class="grip">⠿</span></button>' : "") + (t.sources ? '<div class="sources">' + t.sources.map((s) => "<span>" + esc(s) + "</span>").join("") + "</div>" : "") + kl + "</div>";
+    if (t.kind === "agent") return '<div class="turn"' + k + chip + '><div class="who" style="--c:var(--peer)"><span class="dot"></span>' + esc(t.who) + '</div><div class="' + (S.dev ? "ans" : "voice") + '">' + paras(t.text) + '</div><div class="note hintline">◇ a hint from another IRIS · it counts only after it works here</div></div>';
+    if (t.kind === "listen") return '<div class="turn"><div class="listen">' + (t.text || "◌ IRIS heard this · no @iris, so nothing went to the agent") + "</div></div>";
+    if (t.kind === "art") return '<div class="turn"' + chip + '><div class="art" draggable="true" data-art="1" tabindex="0" role="button" aria-label="Open Router budget plan"><div class="ic">≡</div><div class="tx"><b>Router budget plan</b><span>#A-12 · document · 1 table · 2 decisions</span></div><span class="grip" title="Drag to the dashboard">⠿</span></div></div>';
+    if (t.kind === "helpers") return '<div class="turn"' + k + chip + '><div class="who" style="--c:var(--swarm)"><span class="dot"></span>3 helpers · all done</div>' + t.rows.map((r) => '<div class="mr s-done"><span class="orb" style="color:var(--swarm)">●</span><span class="vb" style="color:var(--swarm)">' + esc(r[0]) + '</span><span class="tg">' + esc(r[1]) + '</span><span class="rs">' + esc(r[2]) + "</span></div>").join("") + '<div class="knotlbl" style="--c:var(--swarm)">reported back to “fix the cap”</div></div>';
+    return "";
+  }
+  const STATIC = {
+    rules: [
+      { kind: "you", chip: "What should the budget rule be?", text: "Before we touch the router: what should the window budget rule be?" },
+      { kind: "iris", chip: "IRIS: window − max − reserve", text: "The budget should be the window minus `max_tokens` minus a fixed reserve for the system frame. We measured the reserve at **256 tokens** in September.\n\nI wrote the rule and the two open decisions into a plan.", sources: ["router.py", "PROGRESS S58", "2 past turns"] },
+      { kind: "art", chip: "Router budget plan · #A-12" },
+      { kind: "you", chip: "Also add a check", text: "Good. Also add a check that fails if anyone changes the reserve by accident." },
+      { kind: "iris", chip: "IRIS: added the check", diff: "test_router.py", text: "Done. One test pins the reserve at 256. This strand is for planning, but small builds are fine here too." },
+    ],
+    ana: [
+      { kind: "you", other: "Ana", chip: "Ana: lost half the prompt?", knot: "ana", kc: "--peer", text: "Our IRIS kept losing half the prompt on long chats. Did yours?" },
+      { kind: "you", chip: "You: fixing it now", text: "Yes, the window cap. We fix it in another strand right now." },
+      { kind: "listen" },
+      { kind: "agent", who: "ana.iris · her agent", chip: "Ana's agent: a fix", knot: "ana.iris", kc: "--peer", text: "A fix to try: subtract a **256-token reserve** in the cap. 4 of our runs passed after it." },
+    ],
+    callers: [
+      { kind: "listen", text: "◌ IRIS made this strand from “fix the cap” · it reports back there" },
+      { kind: "you", chip: "Check the three callers", text: "@swarm check the three callers of the cap at the same time" },
+      { kind: "helpers", chip: "Helpers: only generate()", rows: [["HELPER 1", "generate() uses the cap", "1 call"], ["HELPER 2", "stream() has its own budget", "0 calls"], ["HELPER 3", "summarize() has its own budget", "0 calls"]] },
+    ],
+  };
+
+  // ── the fix strand: one turn, both views ──
+  const N = (id, v, pv, t, extra) => Object.assign({ id, v, pv, t, s: "pending", lines: [] }, extra);
+  const get = (id) => S.nodes.find((n) => n.id === id);
+  function add(n) { S.nodes.push(n); S.born.add(n.id); }
+  function set(id, s, r, sum) { const n = get(id); n.s = s; if (r) n.r = r; if (sum) n.sum = sum; }
+  function line(id, l) { const n = get(id); n.lines.push(l); if (n.lines.length > 3) n.lines.shift(); }
+  function script() {
+    return [
+      [300, () => { S.thk = "Use the rule from the plan, then find every caller."; S.phase = "expand"; }],
+      [400, () => add(N("n1", "RECALL", "Remembered", "budget rules · turn 3"))],
+      [150, () => { set("n1", "running"); line("n1", "looking up #rules/3"); }],
+      [700, () => { set("n1", "recall", "◈ plan", "window − max − 256"); S.knotRecall = true; }],
+      [300, () => { add(N("n2", "GREP", "Searched", "_cap_messages_to_window", { par: true })); add(N("n3", "READ", "Read", "router.py 419–466", { par: true })); add(N("n4", "READ", "Read", "tests/unit/test_router.py", { par: true })); }],
+      [200, () => { for (const id of ["n2", "n3", "n4"]) set(id, "running"); line("n2", "rg _cap_messages_to_window"); line("n3", "open router.py"); line("n4", "open test_router.py"); }],
+      [500, () => { line("n2", "router.py:431"); line("n3", "reading lines 419–466"); }],
+      [600, () => set("n3", "done", "48 ln", "cap ignores the reserve")],
+      [300, () => { line("n2", "3 matches in 2 files"); set("n2", "done", "3 hits", "1 real caller"); S.helpers = true; }],
+      [400, () => set("n4", "done", "12 tests", "1 test covers it")],
+      [300, () => { S.thk = "The cap subtracts max_tokens but not the reserve."; S.phase = "compress"; add(N("n5", "PATCH", "Edited", "router.py", { diff: "router.py" })); }],
+      [150, () => { set("n5", "running"); line("n5", "writing the new budget line"); }],
+      [900, () => set("n5", "done", "+3 −1", "subtract _RESERVE")],
+      [300, () => { add(N("n6", "EXEC", "Ran", "pytest tests/unit/test_router.py")); set("n6", "running"); S.perm = { node: "n6", cmd: "pytest tests/unit/test_router.py -q", state: "waiting" }; line("n6", "waiting for your OK"); }, "perm"],
+      [150, () => { line("n6", "collected 12 items"); }],
+      [600, () => line("n6", "test_router.py ....F.......")],
+      [600, () => { set("n6", "failed", "✗ 1 failed", "_RESERVE is not defined"); get("n6").why = "NameError: _RESERVE is not defined in router.py"; S.thk = "_RESERVE lives somewhere else. Look closer."; S.phase = "expand"; }],
+      [400, () => add(N("s1", "GREP", "Searched", "_RESERVE =", { sub: "n6" }))],
+      [150, () => { set("s1", "running"); line("s1", "rg '_RESERVE ='"); }],
+      [700, () => set("s1", "done", "budget.py", "inference/budget.py:12")],
+      [250, () => { add(N("s2", "FOUND", "Found", "import it from budget.py", { sub: "n6" })); set("s2", "passed", "✓"); }],
+      [600, () => { S.closerFolded = true; S.phase = "compress"; add(N("n7", "PATCH", "Edited", "router.py · import _RESERVE", { diff: "router.py" })); }],
+      [150, () => { set("n7", "running"); line("n7", "adding the import"); }],
+      [600, () => { set("n7", "done", "+1", "import added"); S.knotSwarm = true; S.live.callers = false; }],
+      [300, () => add(N("n8", "EXEC", "Ran", "pytest tests/unit/test_router.py"))],
+      [150, () => { set("n8", "running"); line("n8", "collected 12 items"); }],
+      [900, () => { line("n8", "test_router.py ............"); set("n8", "passed", "✓ 12 passed", "all green"); get("n8").verified = true; }],
+      [300, () => { S.ans = "Fixed. The cap now subtracts the 256-token reserve, as the plan in #rules/3 says.\n\nThe first run failed because `_RESERVE` lives in `budget.py`. I imported it, and all 12 router tests pass. The helpers confirmed that only `generate()` uses the cap."; S.inkUntil = performance.now() + 1800; }],
+      [900, () => { S.live.fix = false; S.running = false; S.done = true; S.open = false; S.follow = false; }],
+    ];
+  }
+
+  const ORB = { pending: "○", running: "◎", done: "●", failed: "✕", passed: "✓", recall: "◈", stopped: "■" };
+  function mrow(n) {
+    const waiting = S.perm && S.perm.node === n.id && S.perm.state === "waiting";
+    return '<div class="mr s-' + n.s + (S.born.has(n.id) ? " born" : "") + '"' + (n.s === "running" ? ' data-run="1"' : "") + '><span class="orb">' + ORB[n.s] + '</span><span class="vb">' + esc(n.v) + '</span><span class="tg">' + esc(n.t) + '</span><span class="rs">' + (waiting ? "needs you" : n.s === "running" ? "…" : esc(n.r || "")) + "</span>" + (n.diff && n.s === "done" ? dfx(n.diff) : "") + "</div>" + (waiting ? '<div class="perm"><span>runs in IRISVOICE · changes nothing</span><button data-perm="y"><span class="k">[y]</span> allow</button><button data-perm="a"><span class="k">[a]</span> always here</button><button data-perm="n"><span class="k">[n]</span> deny</button></div>' : "");
+  }
+  function devTurn() {
+    const h = [];
+    if (S.done && !S.open) {
+      h.push('<button class="foldline" data-unfold="1"><span style="color:' + (S.stopped ? "var(--muted)" : "var(--ok)") + ';font-weight:700">' + (S.stopped ? "■ STOPPED" : "✓ DONE") + '</span><span class="t">' + (S.stopped ? "you stopped it · " : "fixed the router cap · ") + S.nodes.length + ' steps · 0:21</span><span style="color:var(--b1)">⌄</span></button>');
+      return h.join("");
+    }
+    if (S.thk) h.push('<div class="thk"><span class="k">THK</span><span class="t">' + esc(S.thk) + "</span></div>");
+    let inPar = false;
+    for (const n of S.nodes) {
+      if (n.sub) continue;
+      if (n.par && !inPar) { h.push('<div class="par' + (S.nodes.filter((m) => m.par).every((m) => m.s !== "running") ? " settled" : "") + '">'); inPar = true; }
+      if (!n.par && inPar) { h.push("</div>"); inPar = false; }
+      h.push(mrow(n));
+      if (n.why && !S.closerFolded) h.push('<div class="det" style="color:#ffb3aa">' + esc(n.why) + "</div>");
+      const kids = S.nodes.filter((k) => k.sub === n.id);
+      if (kids.length) h.push('<div class="closer' + (S.closerFolded ? " folded" : "") + '"><div class="cl">↳ looked closer · where does _RESERVE live?' + (S.closerFolded ? " · found it" : "") + "</div>" + kids.map(mrow).join("") + "</div>");
+    }
+    if (inPar) h.push("</div>");
+    for (const s of S.steers) h.push('<div class="steer">↳ you steered: ' + esc(s) + " · noted</div>");
+    if (S.perm && S.perm.state !== "waiting") h.push('<div class="note">' + (S.perm.state === "denied" ? '<span style="color:var(--bad)">✕</span> denied' : '<span style="color:var(--ok)">✓</span> allowed') + " (you) · " + esc(S.perm.cmd) + "</div>");
+    if (S.running) h.push('<div class="note">' + (S.phase === "expand" ? "exploring" : "narrowing in") + " · type to steer · ■ stops</div>");
+    return h.join("");
+  }
+  function step(n) {
+    const cls = "st " + n.s + (n.sub ? " sub" : "") + (S.born.has(n.id) ? " born" : "");
+    let h = '<li class="' + cls + '"' + (n.s === "running" ? ' data-run="1"' : "") + '><div class="ln"><button class="lnb" data-step="' + n.id + '"><span class="d"></span><span class="v">' + esc(n.pv) + '</span><span class="tg">' + esc(n.t) + "</span>" + (n.sum ? '<span class="sm">' + esc(n.sum) + "</span>" : "") + (n.verified ? '<span class="ok" title="checked by a test">✓</span>' : "") + "</button>" + (n.diff && n.s === "done" ? dfx(n.diff) : "") + "</div>";
+    if (n.s === "running" && n.lines.length) h += '<div class="live">' + n.lines.map((l) => "<div>" + esc(l) + "</div>").join("") + "</div>";
+    if (n.s === "failed" && n.why) h += '<div class="why">✕ ' + esc(n.why) + " · tried again below</div>";
+    if (S.openStep === n.id && n.lines.length) h += '<div class="box">' + n.lines.map(esc).join("\n") + "</div>";
+    return h + "</li>";
+  }
+  function personalCard() {
+    const top = S.nodes.filter((n) => !n.sub);
+    const finished = top.filter((n) => n.s !== "pending" && n.s !== "running").length;
+    const failed = S.nodes.some((n) => n.s === "failed");
+    const state = S.stopped ? ["STOPPED", "var(--muted)"] : S.done ? ["✓ DONE", "var(--ok)"] : S.perm && S.perm.state === "waiting" ? ["NEEDS YOU", "var(--run)"] : S.running ? ["WORKING", "var(--run)"] : ["READY", "var(--muted)"];
+    let h = '<div class="card" data-card="1"><div class="top"><b>Fix the router window cap</b><span class="state" style="color:' + state[1] + ";border:1px solid " + state[1] + '">' + state[0] + '</span><button class="chev" data-cardfold="1" aria-label="Fold the card">' + (S.cardFolded ? "⌄" : "⌃") + "</button></div>";
+    h += '<div class="rail">' + top.map((n) => '<i class="' + n.s + '"></i>').join("") + "</div>";
+    if (!S.cardFolded) {
+      h += '<div class="goal"><b>Goal</b> · the router tests pass with the reserve · ' + finished + " of " + top.length + " steps" + (failed ? " · 1 tried again" : "") + "</div>";
+      h += '<ul class="steps" data-steps="1">';
+      for (const n of S.nodes) {
+        if (n.sub) continue;
+        h += step(n);
+        const kids = S.nodes.filter((k) => k.sub === n.id);
+        if (kids.length) h += '<li class="closerhead">↳ looked closer · where does _RESERVE live?' + (S.closerFolded ? " · found it" : "") + "</li>" + (S.closerFolded ? "" : kids.map(step).join(""));
+      }
+      h += "</ul>";
+    }
+    h += '<div class="foot"><span class="mem">' + (S.knotRecall ? "◈ used: budget rules (plan) · avoided: a fix that failed on Sep 22" : "◈ memory ready") + "</span><span>" + (S.done ? "0:21" : S.running ? "⏱ live" : "") + '</span><span class="id">#T-41 ⧉</span></div></div>';
+    if (S.perm && S.perm.state === "waiting") h += '<div class="pcard"><b>Run the router tests?</b> <span class="muted">IRIS needs your OK · changes nothing</span><div class="cmd">' + esc(S.perm.cmd) + '</div><div class="row"><button class="small" data-perm="n">Deny · Esc</button><button class="small" data-perm="a">Always here</button><button class="small" data-perm="y" style="color:#1a1203;background:var(--run);border-color:var(--run)">Allow ↵</button></div></div>';
+    else if (S.perm) h += '<div class="receipt">' + (S.perm.state === "denied" ? '<b style="color:var(--bad)">✕ Denied</b>' : "<b>✓ Allowed</b>") + " · run tests · " + esc(S.perm.cmd) + "</div>";
+    for (const s of S.steers) h += '<div class="steer">↳ you said: ' + esc(s) + " · IRIS noted it</div>";
+    return h;
+  }
+  function fixHTML() {
+    const h = [];
+    h.push('<div class="turn" data-chip="Continue #T-38 with the rule" data-knot="rules" data-knotc="--b2"><div class="you">' + md("Continue #T-38 with the rule from #rules/3") + '</div><div class="knotlbl" style="--c:var(--b2)">pulled in from “budget rules”</div></div>');
+    if (!S.running && !S.done) { h.push('<div class="turn"><div class="listen">Press Run the turn to watch IRIS work.</div></div>'); return h.join(""); }
+    h.push('<div class="turn" data-chip="▸ Fix the router window cap" data-agentturn="1">' + (S.dev ? devTurn() : personalCard()) + "</div>");
+    if (S.helpers) h.push('<div class="turn"' + (S.knotSwarm ? ' data-knot="callers" data-knotc="--swarm"' : "") + '><div class="knotlbl" style="--c:var(--swarm)">' + (S.knotSwarm ? "“check callers” reported back · only generate() uses the cap" : "started helpers in a new strand: “check callers”") + "</div></div>");
+    if (S.ans) h.push('<div class="turn" data-chip="IRIS: fixed, 12 passed" data-ink="1">' + (S.dev ? "" : '<div class="who" style="--c:var(--b1)"><span class="dot"></span>IRIS</div>') + '<div class="' + (S.dev ? "ans" : "voice") + '">' + paras(S.ans) + '</div><button class="dchip" data-diff="router.py" draggable="true" title="Review all changes in this turn"><span style="color:var(--ok)">±</span>1 file changed · router.py <span class="add">+4</span><span class="del">−1</span> · review<span class="grip">⠿</span></button></div>');
+    if (S.stopped) h.push('<div class="turn"><div class="note">■ This turn stopped. IRIS kept what it finished; nothing else ran.</div></div>');
+    return h.join("");
+  }
+
+  // ── render ──
+  function render() {
+    const st = curStrand();
+    $("wing").classList.toggle("dev", S.dev);
+    renderHead(); renderProj();
+    const base = S.strand === "fix" ? fixHTML() : (STATIC[S.strand] || [{ kind: "listen", text: "◌ A new strand. It shares this thread's memory." }]).map(turnHTML).join("");
+    $("turns").innerHTML = base + S.extra[S.strand].map(turnHTML).join("");
+    S.born.clear();
+    const busy = S.running && S.strand === "fix";
+    $("ta").placeholder = busy ? "Steer IRIS while it works…" : st.ph || "Message IRIS in “" + st.name + "”…";
+    $("sendstop").textContent = busy ? "■" : "↵"; $("sendstop").classList.toggle("stop", busy); $("sendstop").title = busy ? "Stop IRIS" : "Send"; $("sendstop").setAttribute("aria-label", busy ? "Stop IRIS" : "Send");
+    renderTray(); measure();
+  }
+  function renderTray() {
+    const st = curStrand(), to = st.to || "@iris";
+    $("tray").innerHTML = '<span class="to" style="--c:' + (to === "@iris" ? "var(--b1)" : "var(--peer)") + '" title="Who hears this message">to ' + esc(to) + "</span>" + S.refs[S.strand].map((r, i) => '<span class="chip" style="color:var(--b2)">' + esc(r.k) + '<button data-unref="' + i + '" aria-label="Remove ' + esc(r.k) + '">×</button></span>').join("") + '<span class="hint" style="font-size:10.5px">' + (S.refs[S.strand].length ? "IRIS gets these addresses" : "# adds a reference · @ picks who hears") + "</span>";
+  }
+
+  // ── measure the DOM for the spine ──
+  const SP = { chips: [], knots: [], target: null, runs: [], contentH: 0, agentY: null, detour: null };
+  function measure() {
+    const turns = $("turns"), base = turns.getBoundingClientRect().top, bw = $("bodywrap").getBoundingClientRect();
+    const yOf = (el) => el.getBoundingClientRect().top - base + 11;
+    SP.contentH = turns.scrollHeight;
+    SP.chips = [...turns.querySelectorAll("[data-chip]")].map((el) => ({ y: yOf(el), label: el.dataset.chip }));
+    const prevK = new Map(SP.knots.map((k) => [k.id, k.born]));
+    SP.knots = [...turns.querySelectorAll("[data-knot]")].map((el) => { const id = S.strand + ":" + el.dataset.knot; return { id, y: yOf(el), c: el.dataset.knotc, born: prevK.get(id) || performance.now() }; });
+    // personal mode: the spine bends into the card and becomes its step line
+    const steps = turns.querySelector("[data-steps]");
+    if (steps && !S.dev) {
+      const dots = [...steps.querySelectorAll(".d")];
+      if (dots.length) { const r0 = dots[0].getBoundingClientRect(), r1 = dots[dots.length - 1].getBoundingClientRect(); SP.detour = { x: r0.left + r0.width / 2 - bw.left, y0: r0.top + 4 - base, y1: r1.top + 4 - base }; }
+      else SP.detour = null;
+      SP.runs = [...steps.querySelectorAll("[data-run] .d")].map((d) => d.getBoundingClientRect().top + 4 - base);
+    } else { SP.detour = null; SP.runs = [...turns.querySelectorAll("[data-run]")].map(yOf); }
+    const ink = turns.querySelector("[data-ink]"), at = turns.querySelector("[data-agentturn]");
+    if (S.strand !== "fix" || (!S.running && performance.now() > S.inkUntil)) SP.target = null;
+    else if (SP.runs.length) SP.target = SP.runs.reduce((a, b) => a + b, 0) / SP.runs.length;
+    else if (ink && performance.now() < S.inkUntil) SP.target = yOf(ink);
+    else if (at) SP.target = yOf(at);
+    if (SP.target != null && S.follow) { const body = $("body"); body.scrollTop = Math.max(0, SP.target - body.clientHeight * .55); }
+  }
+  const X0 = 20;
+  const smooth = (a, b, x) => { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+  function xAt(y) {
+    const d = SP.detour; if (!d) return X0;
+    const k = Math.min(smooth(d.y0 - 46, d.y0, y), 1 - smooth(d.y1, d.y1 + 46, y));
+    return X0 + (d.x - X0) * k;
+  }
+
+  // ── one animation loop ──
+  let last = performance.now(), flow = 0, DT = 16.7;
+  const working = () => S.running || performance.now() < S.inkUntil;
+  function frame(now) {
+    const dt = Math.min(64, now - last); last = now; DT = dt;
+    const busy = working();
+    flow += dt * (busy ? 0.05 : 0.012);
+    { const [c, w, h] = fitCanvas($("heroXur")); c.clearRect(0, 0, w, h); drawXur(c, w / 2, h / 2, w * .42, now, { s: .6 + .45 * Math.sin(now / 2600), n: 170, speed: .6, dot: 4.2 }); }
+    { const [c, w, h] = fitCanvas($("headXur")); c.clearRect(0, 0, w, h); drawXur(c, w / 2, h / 2, w * .38, now, { s: busy ? 1.1 : .55, n: 56, speed: busy ? 1.6 : .5 }); }
+    drawEdge("edgeChat", "chat", now, S.spot === "chat", "--b1"); drawEdge("edgeDash", "dash", now, S.spot === "dash", "--b2"); drawSpine(now, busy); drawDashEdge(now);
+    if (ORB_STATE.open) drawOrbit(now);
+    if (MAP_STATE.open) drawMap(now);
+    requestAnimationFrame(frame);
+  }
+  function drawSpine(now, busy) {
+    const cv = $("spineCv"), [c, w, h] = fitCanvas(cv), top = $("body").scrollTop;
+    c.clearRect(0, 0, w, h);
+    const gap = busy ? 3.6 : 4.5, first = SP.chips.length ? SP.chips[0].y - 18 : 0;
+    if (SP.target != null) SP.agentY = SP.agentY == null ? SP.target : SP.agentY + (SP.target - SP.agentY) * (1 - Math.pow(0.9, DT / 16.7)); else SP.agentY = null;
+    const ay = SP.agentY != null ? SP.agentY - top : null, ax = SP.agentY != null ? xAt(SP.agentY) : X0;
+    const startY = Math.max(-30, first - top - 10), endY = Math.min(h, SP.contentH - top);
+    const wobK = (yc) => 1 - (SP.detour ? Math.min(1, Math.abs(xAt(yc) - X0) / 20) : 0);
+    // core filament
+    if (endY > startY) { const g = c.createLinearGradient(0, Math.max(0, startY), 0, Math.max(1, endY)); g.addColorStop(0, trailColor(1, 0)); g.addColorStop(.08, trailColor(.9, .25)); g.addColorStop(.6, trailColor(.5, .16)); g.addColorStop(1, trailColor(.1, .05));
+      c.strokeStyle = g; c.lineWidth = 1; c.beginPath(); let fst = true; for (let y = Math.max(-30, startY); y <= endY; y += 4) { const yc = y + top, x = xAt(yc) + Math.sin(yc / 41 + now / 1700) * 2.4 * wobK(yc); fst ? c.moveTo(x, y) : c.lineTo(x, y); fst = false; } c.stroke(); }
+    // particles
+    const i0 = Math.floor((top - flow) / gap) - 1;
+    for (let i = i0; ; i++) {
+      const yc = i * gap + flow, y = yc - top; if (y > endY) break; if (y < -30) continue;
+      const r = hh(i), bx = xAt(yc), inCard = 1 - wobK(yc);
+      let x = bx + (Math.sin(yc / 41 + now / 1700) * 2.4 + (r - .5) * 3.2) * (1 - inCard * .7), a = (.22 + r * .45) * (1 - inCard * .25), size = (.5 + r * 1.5) * (1 - inCard * .3);
+      if (y < startY + 30) a *= Math.max(0, (y - startY + 30) / 60);
+      if (ay != null) { const d = y - ay; if (Math.abs(d) < 60) { const k = 1 - Math.abs(d) / 60; x += (ax - x) * k; a *= 1 - k * .85; } }
+      const f = .5 + .5 * Math.sin(yc / 260 - now / 5000);
+      c.fillStyle = trailColor(f, a); c.beginPath(); c.arc(x, y, size, 0, 6.283); c.fill();
+    }
+    for (const ch of SP.chips) { const y = ch.y - top; if (y < -10 || y > h + 10) continue; const x = xAt(ch.y); c.strokeStyle = trailColor(.9, .55); c.lineWidth = 1; c.beginPath(); c.moveTo(x + 5, y); c.lineTo(x + 10, y); c.stroke(); }
+    for (const k of SP.knots) {
+      const y = k.y - top; if (y < -20 || y > h + 20) continue;
+      const age = (now - k.born) / 1000, R = 8 * Math.min(1, age / .8) + (age < 2 ? Math.sin(age * 6) * 1.5 * (1 - age / 2) : 0), col = css(k.c), kx = xAt(k.y);
+      for (let j = 0; j < 30; j++) { const aa = now / 2400 - j / 30 * 6.283, [px, py] = xurPoint(aa, 1); c.globalAlpha = .25 + .7 * (1 - j / 30); c.fillStyle = col; c.beginPath(); c.arc(kx + px * R / 10, y + py * R / 10, .9, 0, 6.283); c.fill(); }
+      c.globalAlpha = 1;
+    }
+    if (ay != null) {
+      const wide = SP.runs.length > 1 ? 1.25 : S.phase === "compress" ? .35 : .9, waiting = S.perm && S.perm.state === "waiting";
+      drawXur(c, ax, ay, SP.detour ? 10 : 13, now, { s: waiting ? .25 : wide, n: 60, speed: waiting ? .4 : 2.4 });
+      if (SP.runs.length > 1) for (const ry of SP.runs) {
+        const y = ry - top; c.strokeStyle = "rgba(242,193,78,.55)"; c.setLineDash([3, 5]); c.lineDashOffset = -now / 40; c.beginPath(); c.moveTo(ax + 12, ay); c.bezierCurveTo(ax + 20, ay, ax + 14, y, SP.detour ? ax + 6 : 40, y); c.stroke(); c.setLineDash([]);
+      }
+    }
+  }
+  function drawDashEdge(now) {
+    const [c, w, h] = fitCanvas($("dashCv")); c.clearRect(0, 0, w, h);
+    const x0 = 10, fl = (now * .015) % 6;
+    for (let y = fl; y < h; y += 6) { const r = hh(Math.round(y - fl) * 3.1), a = y < 60 ? y / 60 : 1; c.fillStyle = trailColor(.5 + .5 * Math.sin(y / 200 - now / 5000), (.14 + r * .3) * a); c.beginPath(); c.arc(x0 + Math.sin(y / 45 + now / 2000) * 2 + (r - .5) * 2, y, .5 + r * 1.1, 0, 6.283); c.fill(); }
+  }
+
+  // ── chips on the spine ──
+  let chipTimer = null, scrubbing = false;
+  function showChips() {
+    if ($("chips")) return;
+    const d = document.createElement("div"); d.className = "chips"; d.id = "chips";
+    const top = $("body").scrollTop, h = $("body").clientHeight;
+    const items = SP.chips.map((ch, i) => { const knot = SP.knots.find((k) => Math.abs(k.y - ch.y) < 4); return '<button data-jump="' + i + '" class="' + (ch.y >= top && ch.y <= top + h ? "here" : "") + '" style="--c:' + (knot ? "var(" + knot.c + ")" : "var(--b1)") + '"><i></i><span>' + esc(ch.label) + "</span>" + (knot ? "<small>from outside</small>" : "") + "</button>"; }).join("");
+    d.innerHTML = '<div class="h">Turns in “' + esc(curStrand().name) + '”</div>' + (items || '<div class="hint" style="padding:6px">No turns yet.</div>');
+    $("bodywrap").appendChild(d);
+    d.addEventListener("mouseleave", () => d.remove());
+  }
+  $("gutter").addEventListener("mouseenter", () => { chipTimer = setTimeout(showChips, 140); });
+  $("gutter").addEventListener("mouseleave", (e) => { clearTimeout(chipTimer); if (!e.relatedTarget || !e.relatedTarget.closest || !e.relatedTarget.closest(".chips")) { const c = $("chips"); if (c) c.remove(); } });
+  $("gutter").addEventListener("pointerdown", (e) => { scrubbing = true; $("gutter").setPointerCapture(e.pointerId); scrub(e); });
+  $("gutter").addEventListener("pointermove", (e) => { if (scrubbing) scrub(e); });
+  $("gutter").addEventListener("pointerup", () => { scrubbing = false; });
+  function scrub(e) { const r = $("gutter").getBoundingClientRect(), b = $("body"); b.style.scrollBehavior = "auto"; b.scrollTop = ((e.clientY - r.top) / r.height) * (b.scrollHeight - b.clientHeight); b.style.scrollBehavior = ""; S.follow = false; }
+
+  // ── thread orbit: recent threads turn on the upper loops; pinned threads keep the lower loops ──
+  const THREADS = [
+    { t: "IRISVOICE · router budget", m: "4 strands · now", pin: true }, { t: "IRISVOICE · STT engines", m: "2 strands · yesterday" }, { t: "Trip to Lisbon", m: "1 strand · Oct 2" },
+    { t: "IRISVOICE · Nostr hive", m: "3 strands · Sep 30", pin: true }, { t: "Taxes 2026", m: "1 strand · Sep 28" }, { t: "Garden irrigation", m: "2 strands · Sep 27" },
+    { t: "Mom's birthday", m: "1 strand · Sep 25", pin: true }, { t: "IRISVOICE · launcher", m: "5 strands · Sep 24" }, { t: "Reading list", m: "1 strand · Sep 20" },
+    { t: "Bike repair", m: "1 strand · Sep 18" }, { t: "IRISVOICE · Oracle", m: "3 strands · Sep 15" }, { t: "Job search", m: "2 strands · Sep 12" }];
+  const ORB_STATE = { open: false, rot: 0, target: 0, q: "" };
+  const orbList = () => THREADS.filter((t) => !t.pin && t.t.toLowerCase().includes(ORB_STATE.q));
+  function openOrbit() {
+    closeOverlays();
+    ORB_STATE.open = true; ORB_STATE.q = ""; ORB_STATE.target = ORB_STATE.rot = 0;
+    const d = document.createElement("div"); d.className = "orbit"; d.id = "orbit";
+    d.innerHTML = '<canvas id="orbCv"></canvas><div class="ocap">Your threads · ◆ pinned keep the lower loops</div><div id="olbls"></div><div class="ofoot"><input id="oq" placeholder="Find a thread · scroll to turn · Enter opens" aria-label="Find a thread"><button class="small" data-newthread="1">+ New thread</button><button class="small" data-close="1">Esc</button></div>';
+    $("wing").appendChild(d);
+    d.addEventListener("wheel", (e) => { e.preventDefault(); ORB_STATE.target += Math.sign(e.deltaY); }, { passive: false });
+    $("oq").addEventListener("input", (e) => { ORB_STATE.q = e.target.value.toLowerCase(); ORB_STATE.target = ORB_STATE.rot = 0; });
+    $("oq").addEventListener("keydown", (e) => { const L = orbList(); if (e.key === "Enter" && L.length) pickThread(L[((Math.round(ORB_STATE.target) % L.length) + L.length) % L.length]); if (e.key === "ArrowRight" || e.key === "ArrowDown") { e.preventDefault(); ORB_STATE.target++; } if (e.key === "ArrowLeft" || e.key === "ArrowUp") { e.preventDefault(); ORB_STATE.target--; } });
+    setTimeout(() => $("oq").focus(), 30);
+  }
+  function pickThread(t) { closeOverlays(); $("threadName").textContent = t.t; toast("Opened “" + t.t + "”. Only its strands load."); }
+  function drawOrbit(now) {
+    const cv = $("orbCv"); if (!cv) { ORB_STATE.open = false; return; }
+    const [c, w, h] = fitCanvas(cv); c.clearRect(0, 0, w, h);
+    ORB_STATE.rot += (ORB_STATE.target - ORB_STATE.rot) * 0.12;
+    const cx = w / 2, cy = h * .47, R = Math.min(w, h) * .25, step = Math.PI / 4;
+    drawXur(c, cx, cy, R, now, { s: 1, n: 260, rot: -Math.PI / 2 - ORB_STATE.rot * step + now / 9000, speed: 0, dot: 2.6 });
+    const rr = R * 1.18 + 18, at = (ang) => [Math.max(64, Math.min(w - 64, cx + Math.cos(ang) * rr * 1.12)), cy + Math.sin(ang) * rr];
+    let html = "";
+    THREADS.filter((t) => t.pin).slice(0, 3).forEach((t, k) => { const [x, y] = at(Math.PI / 2 + (k - 1) * step); html += '<button class="olbl pinned" data-thread="' + THREADS.indexOf(t) + '" style="left:' + x.toFixed(0) + "px;top:" + y.toFixed(0) + 'px">◆ ' + esc(t.t) + "<small>" + esc(t.m) + "</small></button>"; });
+    const L = orbList();
+    if (L.length) for (let k = -2; k <= 2; k++) {
+      if (L.length < 5 && Math.abs(k) > Math.floor((L.length - 1) / 2) + (k > 0 && L.length % 2 === 0 ? 1 : 0)) continue;
+      const raw = Math.round(ORB_STATE.target) + k, idx = ((raw % L.length) + L.length) % L.length, rel = raw - ORB_STATE.rot;
+      if (Math.abs(rel) > 2.4) continue;
+      const [x, y] = at(-Math.PI / 2 + rel * step), t = L[idx];
+      html += '<button class="olbl' + (k === 0 ? " front" : "") + '" data-thread="' + THREADS.indexOf(t) + '" style="left:' + x.toFixed(0) + "px;top:" + y.toFixed(0) + "px;opacity:" + Math.max(.25, 1 - Math.abs(rel) * .22).toFixed(2) + '">' + esc(t.t) + "<small>" + esc(t.m) + "</small></button>";
+    }
+    else html += '<span class="olbl" style="left:' + cx + "px;top:" + (cy - rr) + 'px">no thread matches</span>';
+    const box = $("olbls"); if (box && box.dataset.h !== html) { box.innerHTML = html; box.dataset.h = html; }
+  }
+
+  // ── map = the strand switcher ──
+  const MAP_STATE = { open: false, tags: [] };
+  const PRESETS = ["plan", "build", "research", "people", "swarm"];
+  function openMap() {
+    closeOverlays(); MAP_STATE.open = true; MAP_STATE.tags = [];
+    const d = document.createElement("div"); d.className = "map"; d.id = "map";
+    d.innerHTML = '<canvas id="mapCv" role="img" aria-label="Strands of this thread as streams, knots where they meet"></canvas><div id="maplbls"></div><div class="mapfoot"><div class="cap">Click a strand to open it. A knot is where one strand used something from another, or where another agent or person came in.</div><div class="newrow" id="newrow"></div></div>';
+    $("bodywrap").appendChild(d); renderNewRow(); placeMapLabels();
+  }
+  function renderNewRow() {
+    const tags = PRESETS.concat(MAP_STATE.tags.filter((t) => !PRESETS.includes(t)));
+    $("newrow").innerHTML = '<input id="nsName" placeholder="+ new strand: name it" aria-label="New strand name">' + tags.map((t) => '<button class="tagpick" data-tagpick="' + esc(t) + '" aria-pressed="' + MAP_STATE.tags.includes(t) + '">' + esc(t) + "</button>").join("") + '<input class="own" id="ownTag" placeholder="your own tag ↵" aria-label="Your own tag"><button class="small" data-mkstrand="1">Add</button>';
+  }
+  function placeMapLabels() {
+    const box = $("maplbls"); if (!box) return;
+    const w = $("bodywrap").clientWidth;
+    box.innerHTML = STRANDS.map((s, i) => '<button class="slbl" data-strand="' + s.id + '" aria-current="' + (s.id === S.strand) + '" style="left:' + (w * (i + 1) / (STRANDS.length + 1)).toFixed(0) + "px;--c:var(" + s.c + ')"><b>' + esc(s.name) + "</b><span>" + esc(s.tags.join(" · ") || "no tag") + (s.by ? "<br>reports to “" + esc(STRANDS.find((x) => x.id === s.by).name) + "”" : "") + "</span>" + (S.live[s.id] ? '<span class="act"></span>' : "") + "</button>").join("");
+  }
+  function drawMap(now) {
+    const cv = $("mapCv"); if (!cv) { MAP_STATE.open = false; return; }
+    const [c, w, h] = fitCanvas(cv); c.clearRect(0, 0, w, h);
+    const cols = STRANDS.map((s, i) => ({ x: w * (i + 1) / (STRANDS.length + 1), col: css(s.c) || "#8ea6ff", live: S.live[s.id] }));
+    const X = (ci, y) => cols[ci].x + Math.sin(y / 50 + ci * 1.7) * 7, y0 = 80, y1 = h - 130;
+    cols.forEach((cc, ci) => { const off = (now / (cc.live ? 18 : 40)) % 6; for (let y = y0; y < y1; y += 6) { const yy = y + off, r = hh(ci * 999 + y); c.globalAlpha = (cc.live ? .35 : .2) + r * .4; c.fillStyle = cc.col; c.beginPath(); c.arc(X(ci, yy) + (r - .5) * 2, yy, .6 + r * 1.1, 0, 6.283); c.fill(); } });
+    c.globalAlpha = 1;
+    const meets = [[1, 150, 0, 130], [3, 230, 0, 300], [2, 270, 0, 370], [0, 390, 2, 430]].filter((m) => m[0] < cols.length && m[2] < cols.length && Math.max(m[1], m[3]) < y1);
+    for (const [a, ya, b, yb] of meets) {
+      c.strokeStyle = cols[a].col; c.globalAlpha = .6; c.setLineDash([2, 4]); c.lineDashOffset = -now / 50;
+      c.beginPath(); c.moveTo(X(a, ya), ya); c.bezierCurveTo((X(a, ya) + X(b, yb)) / 2, ya, (X(a, ya) + X(b, yb)) / 2, yb, X(b, yb), yb); c.stroke(); c.setLineDash([]);
+      for (let j = 0; j < 30; j++) { const aa = now / 2400 - j / 30 * 6.283, [px, py] = xurPoint(aa, 1); c.globalAlpha = .25 + .7 * (1 - j / 30); c.fillStyle = cols[a].col; c.beginPath(); c.arc(X(b, yb) + px * .75, yb + py * .75, .9, 0, 6.283); c.fill(); }
+      c.globalAlpha = 1;
+    }
+  }
+  function makeStrand() {
+    const name = ($("nsName").value || "").trim() || "new strand", id = "s" + STRANDS.length;
+    STRANDS.push({ id, name, tags: MAP_STATE.tags.slice(), c: ["--b3", "--b2", "--peer"][STRANDS.length % 3] }); S.refs[id] = []; S.extra[id] = [];
+    S.strand = id; closeOverlays(); render(); toast("“" + name + "” shares this thread's memory.");
+  }
+
+  // ── lens: artifact and diff review ──
+  function closeOverlays() { document.querySelectorAll(".lens,.map,.menu,.orbit,.chips").forEach((e) => e.remove()); ORB_STATE.open = false; MAP_STATE.open = false; }
+  function openLens() {
+    closeOverlays();
+    const d = document.createElement("div"); d.className = "lens";
+    d.innerHTML = '<div class="lh"><button class="small" data-close="1">◂ back</button><b>Router budget plan · #A-12</b><button class="small" data-pop="1">Pop out</button><button class="small" data-todash="art">To dashboard</button></div><div class="lb"><p><strong>Rule.</strong> budget = window − max_tokens − reserve. The reserve holds the system frame.</p><table><thead><tr><th>Input</th><th>Today</th><th>Planned</th></tr></thead><tbody><tr><td>window 8192, max 4096</td><td>4096</td><td>3840</td></tr><tr><td>window 32768, max 4096</td><td>28672</td><td>28416</td></tr></tbody></table><p><strong>Decision 1.</strong> The reserve stays at 256 until a measurement says otherwise.</p><p><strong>Decision 2.</strong> Only <code>generate()</code> uses the cap. The helpers in “check callers” confirmed it.</p></div>';
+    $("bodywrap").appendChild(d);
+  }
+  function hunkHTML(f, i, hk) {
+    const id = f + ":" + i, undone = S.undone[id];
+    return '<div class="hunk' + (undone ? " undone" : "") + '"><div class="hh"><span>' + esc(hk.at) + "</span>" + (undone ? '<button class="small" data-redo="' + id + '">Put back</button>' : '<button class="small" data-keep="' + id + '">Keep</button><button class="small warn" data-undo="' + id + '">Undo</button>') + "</div><pre>" + hk.lines.map((l) => l[0] === "+" ? '<span class="a">' + esc(l) + "</span>" : l[0] === "-" ? '<span class="r">' + esc(l) + "</span>" : esc(l)).join("\n") + "</pre></div>";
+  }
+  function openDiff(f) {
+    closeOverlays();
+    const D = DIFFS[f], d = document.createElement("div"); d.className = "lens"; d.id = "difflens"; d.dataset.f = f;
+    d.innerHTML = '<div class="lh"><button class="small" data-close="1">◂ back</button><b>Changes · ' + esc(f) + '</b><button class="small" data-keepall="1">Keep all</button><button class="small warn" data-undoall="' + f + '">Undo all</button><button class="small" data-todash="' + f + '">To dashboard</button></div><div class="lb" style="font-family:var(--mono)"><div class="dfile"><div class="fh"><b>' + esc(D.path) + '</b><span style="color:var(--ok)">+' + D.add + '</span><span style="color:var(--bad)">−' + D.del + "</span></div>" + D.hunks.map((hk, i) => hunkHTML(f, i, hk)).join("") + '</div><p class="hint">Undo restores the file. IRIS also learns that the change was not wanted.</p></div>';
+    $("bodywrap").appendChild(d);
+  }
+  function refreshDiff() { const d = $("difflens"); if (d) openDiff(d.dataset.f); }
+  function openMenu() {
+    if (document.querySelector(".menu")) { closeOverlays(); return; }
+    closeOverlays();
+    const d = document.createElement("div"); d.className = "menu";
+    d.innerHTML = [["▦", "Dashboard", ""], ["⇱", "Detach the wing", ""], ["◔", "Alerts", "2"], ["◎", "Launcher", ""], ["✕", "Close", "Esc"]].map((m) => '<button data-menu="' + m[1] + '"><span style="width:16px;text-align:center">' + m[0] + "</span>" + m[1] + '<span class="k">' + m[2] + "</span></button>").join("");
+    $("wing").appendChild(d);
+  }
+  function toast(msg) { const t = document.createElement("div"); t.className = "toast"; t.textContent = msg; t.setAttribute("role", "status"); $("wing").appendChild(t); setTimeout(() => t.remove(), 2800); }
+
+  // ── dashboard workspace ──
+  const EMPTY = '<div class="empty">Drag an artifact or a ± diff here.<br><small>It stays open beside the chat.</small></div>';
+  function pinToDash(what) {
+    const drop = $("drop");
+    if (!drop.querySelector(".wcard")) drop.innerHTML = "";
+    const card = document.createElement("div"); card.className = "wcard";
+    if (what === "art") card.innerHTML = '<div class="wh"><span style="color:var(--ok)">≡</span><b>Router budget plan</b><span class="k">#A-12</span><button aria-label="Close">×</button></div><div class="doc">budget = window − max_tokens − reserve. The reserve stays at 256.</div>';
+    else { const D = DIFFS[what]; card.innerHTML = '<div class="wh"><span style="color:var(--ok)">±</span><b>' + esc(what) + '</b><span class="k">+' + D.add + " −" + D.del + ' · live</span><button aria-label="Close">×</button></div><pre>' + D.hunks.flatMap((hk) => hk.lines).map((l) => l[0] === "+" ? '<span class="a">' + esc(l) + "</span>" : l[0] === "-" ? '<span class="r">' + esc(l) + "</span>" : esc(l)).join("\n") + "</pre>"; }
+    card.querySelector(".wh button").addEventListener("click", () => { card.remove(); countWs(); if (!drop.querySelector(".wcard")) drop.innerHTML = EMPTY; });
+    drop.appendChild(card); countWs();
+    toast("Opened in the dashboard workspace.");
+  }
+  function countWs() { const n = $("drop").querySelectorAll(".wcard").length; $("wsCount").textContent = n ? String(n) : ""; }
+
+  // ── the turn: steps that can pause for a permission and be stopped ──
+  let timers = [], queue = [], qi = 0;
+  function nextStep() {
+    if (qi >= queue.length || S.stopped) return;
+    const [d, fn, gate] = queue[qi];
+    timers.push(setTimeout(() => {
+      qi++; fn(); afterStep();
+      if (gate === "perm") return; // wait for the person
+      nextStep();
+    }, d));
+  }
+  function afterStep() {
+    if (S.strand === "fix") render(); else { renderHead(); if (MAP_STATE.open) placeMapLabels(); }
+    if (S.knotSwarm && !S.toldSwarm) { S.toldSwarm = true; if (S.strand !== "fix") toast("“check callers” reported back to “fix the cap”."); }
+    if (S.done) { $("hint").textContent = "fix the cap · done"; if (S.strand !== "fix" && !S.toldDone) { S.toldDone = true; toast("“fix the cap” is done · 12 tests pass."); } }
+  }
+  function answerPerm(k) {
+    if (!S.perm || S.perm.state !== "waiting") return;
+    S.perm.state = k === "n" ? "denied" : "allowed";
+    const n = get(S.perm.node); n.lines = [];
+    if (k === "n") { n.s = "failed"; n.r = "✕ denied"; S.thk = "You said no to the tests. I stop here."; finish(true); return; }
+    render(); nextStep();
+  }
+  function finish(stopped) {
+    timers.forEach(clearTimeout); timers = [];
+    S.nodes.forEach((n) => { if (n.s === "running" || n.s === "pending") { n.s = "stopped"; n.r = "stopped"; } });
+    S.stopped = !!stopped; S.running = false; S.done = true; S.open = true; S.live.fix = false; S.live.callers = false; S.follow = false;
+    if (S.perm && S.perm.state === "waiting") S.perm.state = "denied";
+    $("hint").textContent = "fix the cap · stopped"; render();
+  }
+  function run() {
+    timers.forEach(clearTimeout); timers = []; closeOverlays();
+    Object.assign(S, { strand: "fix", running: true, done: false, stopped: false, nodes: [], thk: "", ans: "", closerFolded: false, follow: true, open: true, knotRecall: false, knotSwarm: false, helpers: false, cardFolded: false, openStep: null, inkUntil: 0, perm: null, steers: [], toldSwarm: false, toldDone: false });
+    S.live.fix = true; S.live.callers = true; SP.agentY = null;
+    $("hint").textContent = "fix the cap · IRIS is working";
+    queue = script(); qi = 0; render(); nextStep();
+  }
+
+  // ── composer ──
+  let pop = null, popSel = 0;
+  function showPop(kind) {
+    const items = kind === "#" ? REFS : PEOPLE; closePop();
+    pop = document.createElement("div"); pop.className = "pop"; pop.dataset.kind = kind;
+    pop.innerHTML = items.map((r, i) => '<button data-pick="' + i + '" class="' + (i === popSel ? "sel" : "") + '"><b style="color:' + (kind === "#" ? "var(--b2)" : "var(--peer)") + ';font:600 12px var(--mono)">' + esc(r.k) + "</b><span>" + esc(r.t) + "</span></button>").join("");
+    $("comp").appendChild(pop);
+  }
+  function closePop() { if (pop) pop.remove(); pop = null; popSel = 0; }
+  function pick(i) {
+    const kind = pop.dataset.kind, ta = $("ta");
+    if (kind === "#") { S.refs[S.strand].push(REFS[i]); ta.value = ta.value.replace(/#\S*$/, ""); renderTray(); }
+    else ta.value = ta.value.replace(/@\S*$/, PEOPLE[i].k + " ");
+    closePop(); ta.focus();
+  }
+  function send() {
+    const ta = $("ta"), text = ta.value.trim(); if (!text) return;
+    if (S.running && S.strand === "fix") { S.steers.push(text); ta.value = ""; render(); toast("IRIS got it while it works."); return; }
+    const E = S.extra[S.strand], refs = S.refs[S.strand].map((r) => r.k), st = curStrand();
+    const crossRef = refs.find((r) => !r.startsWith("#" + S.strand));
+    E.push({ kind: "you", chip: "You: " + text.slice(0, 26), text: text + (refs.length ? "  " + refs.join(" ") : ""), knot: crossRef ? "ref" + E.length : null, kc: "--b2", knotText: crossRef ? "pulled in from another strand: " + esc(crossRef) : "" });
+    if ((st.to || "@iris") !== "@iris" && !/@iris\b/.test(text)) { E.push({ kind: "listen" }); toast("Sent to Ana only. Nothing went to the agent."); }
+    else if (S.strand === "ana") E.push({ kind: "iris", chip: "IRIS: her fix matches ours", knot: "fixref" + E.length, kc: "--b1", knotText: "used “fix the cap” · the same rule passed there", text: "Her agent proposes the same rule that passed in “fix the cap”. I can tell her it held up here, which raises her trust score." });
+    else E.push({ kind: "iris", chip: "IRIS: reply", text: refs.length ? "I loaded " + refs.join(" ") + " from memory by address. I use them in this strand." : "This is a demo reply. In the app, this starts a turn in “" + st.name + "”, with the thread's shared memory." });
+    ta.value = ""; S.refs[S.strand] = []; render();
+    setTimeout(() => { $("body").scrollTop = $("body").scrollHeight; measure(); }, 60);
+  }
+
+  // ── wiring ──
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest("button,[data-art]");
+    if (!b) { if (!e.target.closest(".menu,#apBtn")) document.querySelectorAll(".menu").forEach((m) => m.remove()); return; }
+    const ds = b.dataset;
+    if (ds.strand) { S.strand = ds.strand; closeOverlays(); $("hint").textContent = curStrand().name + (S.live.fix && S.strand !== "fix" ? " · “fix the cap” still works (see the header trail)" : ""); render(); }
+    else if (ds.tagpick) { const t = ds.tagpick; MAP_STATE.tags = MAP_STATE.tags.includes(t) ? MAP_STATE.tags.filter((x) => x !== t) : [...MAP_STATE.tags, t]; const v = $("nsName").value; renderNewRow(); $("nsName").value = v; }
+    else if (ds.mkstrand) makeStrand();
+    else if (ds.theme) { const t = THEMES[+ds.theme]; setBrand(t[1], t[2], t[3]); document.querySelectorAll(".sw").forEach((x) => x.setAttribute("aria-pressed", String(x === b))); }
+    else if (ds.art) openLens();
+    else if (ds.diff) openDiff(ds.diff);
+    else if (ds.undo) { S.undone[ds.undo] = true; refreshDiff(); toast("Undone. The file is back as it was."); }
+    else if (ds.redo) { delete S.undone[ds.redo]; refreshDiff(); }
+    else if (ds.keep) toast("Kept.");
+    else if (ds.keepall) { closeOverlays(); toast("All changes kept."); }
+    else if (ds.undoall) { DIFFS[ds.undoall].hunks.forEach((_, i) => { S.undone[ds.undoall + ":" + i] = true; }); refreshDiff(); toast("All changes in this file undone."); }
+    else if (ds.close) closeOverlays();
+    else if (ds.pop) toast("Pops out to its own window, like the detached wing.");
+    else if (ds.todash) { closeOverlays(); pinToDash(ds.todash); }
+    else if (ds.menu) { closeOverlays(); toast(ds.menu + " (demo)"); }
+    else if (ds.unfold) { S.open = true; render(); }
+    else if (ds.cardfold) { S.cardFolded = !S.cardFolded; render(); }
+    else if (ds.step) { S.openStep = S.openStep === ds.step ? null : ds.step; render(); }
+    else if (ds.perm) answerPerm(ds.perm);
+    else if (ds.unref) { S.refs[S.strand].splice(+ds.unref, 1); renderTray(); }
+    else if (ds.pick) pick(+ds.pick);
+    else if (ds.jump) { const ch = SP.chips[+ds.jump]; if (ch) { $("body").scrollTop = Math.max(0, ch.y - 40); S.follow = false; } const c = $("chips"); if (c) c.remove(); }
+    else if (ds.thread) pickThread(THREADS[+ds.thread]);
+    else if (ds.newthread) { closeOverlays(); $("threadName").textContent = "New thread"; toast("A new thread starts with one strand. Name it in the header."); }
+    else if (ds.tab) { PROJ.active = ds.tab; renderProj(); }
+    else if (ds.folder) toast("Switch the folder or repo for this thread (demo).");
+    else if (ds.addf) toast("Choose a folder or a repo to work in (demo).");
+    else if (b.id === "run") run();
+    else if (b.id === "xbtn") (ORB_STATE.open ? closeOverlays : openOrbit)();
+    else if (b.id === "strandBtn" || b.id === "mapBtn") (MAP_STATE.open ? closeOverlays : openMap)();
+    else if (b.id === "apBtn") openMenu();
+    else if (ds.spot) { setSpot(S.spot === ds.spot ? "none" : ds.spot); }
+    else if (b.id === "sendstop") { if (S.running && S.strand === "fix") { finish(true); toast("Stopped. IRIS kept what it finished."); } else send(); }
+    else if (b.id === "mDev" || b.id === "mPer") { S.dev = b.id === "mDev"; $("mDev").setAttribute("aria-pressed", String(S.dev)); $("mPer").setAttribute("aria-pressed", String(!S.dev)); render(); }
+  });
+  // the header's lower band (the trails) also opens the strands
+  // spotlight: one wing grows to 680 px; the other shrinks to 360 px, fades and blurs (today's behaviour)
+  function setSpot(v) {
+    S.spot = v;
+    $("cwrap").classList.toggle("big", v === "chat"); $("cwrap").classList.toggle("small", v === "dash");
+    $("dwrap").classList.toggle("big", v === "dash"); $("dwrap").classList.toggle("small", v === "chat");
+    $("apChat").setAttribute("aria-pressed", String(v === "chat")); $("apDash").setAttribute("aria-pressed", String(v === "dash"));
+    setTimeout(() => { measure(); if (MAP_STATE.open) placeMapLabels(); }, 480);
+  }
+  document.addEventListener("keydown", (e) => {
+    if (e.target.id === "nsName" && e.key === "Enter") { makeStrand(); return; }
+    if (e.target.id === "ownTag" && e.key === "Enter") { const t = e.target.value.trim().toLowerCase(); if (t && !MAP_STATE.tags.includes(t)) MAP_STATE.tags.push(t); const v = $("nsName").value; renderNewRow(); $("nsName").value = v; $("ownTag").focus(); return; }
+    if (S.perm && S.perm.state === "waiting" && !/TEXTAREA|INPUT/.test(e.target.tagName) && !e.target.isContentEditable) {
+      if (e.key === "y" || e.key === "Enter") { e.preventDefault(); answerPerm("y"); return; }
+      if (e.key === "a") { e.preventDefault(); answerPerm("a"); return; }
+      if (e.key === "n" || e.key === "Escape") { e.preventDefault(); answerPerm("n"); return; }
+    }
+    if (e.target.dataset && e.target.dataset.art && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openLens(); }
+    if (e.key === "Escape") { closeOverlays(); closePop(); }
+  });
+  $("hue").addEventListener("input", (e) => { setBrand(+e.target.value); document.querySelectorAll(".sw").forEach((x) => x.setAttribute("aria-pressed", "false")); });
+  const ta = $("ta");
+  ta.addEventListener("input", () => { const m = ta.value.match(/(^|\s)([@#])\S*$/); if (m) showPop(m[2]); else closePop(); });
+  ta.addEventListener("keydown", (e) => {
+    if (pop) { const n = pop.querySelectorAll("button").length; if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); popSel = (popSel + (e.key === "ArrowDown" ? 1 : n - 1)) % n; showPop(pop.dataset.kind); return; } if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pick(popSel); return; } }
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+  });
+  $("body").addEventListener("wheel", () => { S.follow = false; }, { passive: true });
+  $("body").addEventListener("scroll", () => { if (!S.running) measure(); }, { passive: true });
+  document.addEventListener("dragstart", (e) => { const t = e.target.dataset || {}; if (t.art) e.dataTransfer.setData("text/plain", "art"); else if (t.diff) e.dataTransfer.setData("text/plain", t.diff); });
+  const drop = $("drop");
+  drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+  drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+  drop.addEventListener("drop", (e) => { e.preventDefault(); drop.classList.remove("over"); const v = e.dataTransfer.getData("text/plain"); pinToDash(DIFFS[v] ? v : "art"); });
+  $("threadName").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); e.target.blur(); toast("Thread renamed."); } });
+  window.addEventListener("resize", () => { measure(); if (MAP_STATE.open) placeMapLabels(); });
+  setInterval(() => { if (S.running || performance.now() < S.inkUntil) measure(); }, 120);
+
+  // first frame: the finished fix turn, so the page is complete at rest
+  setBrand(190, 25, -40);
+  for (const [, fn] of script()) fn();
+  S.perm.state = "allowed"; get("n6").lines = []; get("n6").s = "failed";
+  S.born.clear(); S.inkUntil = 0;
+  render();
+  requestAnimationFrame(frame);
+})();
+</script>
+</body></html>

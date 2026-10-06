@@ -1,0 +1,852 @@
+<title>IRIS Dashboard Spine</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap">
+<style>
+/* Layout: hero, then the chat wing beside the dashboard wing (same ink, same header anatomy,
+   same ◉ menu), then the reference rules for # and @ in a project, then what stays and what
+   changes. Dark-only on purpose, like the approved concept (iris-strands.html). Brand tokens
+   --b1..--b3 are rewritten by the theme swatches, the way BrandColorContext does it. */
+:root{
+  color-scheme: dark;
+  --ink:#04050c; --ink-2:#080a16; --ink-3:#0e1122;
+  --hair:rgba(160,190,255,.09);
+  --fg:#e6e9f2; --muted:#8a92a8; --faint:rgba(230,233,242,.38);
+  --b1:hsl(190 100% 64%); --b2:hsl(215 92% 68%); --b3:hsl(150 85% 60%);
+  --peer:#c69bff; --run:#f2c14e; --ok:#5fcf98; --bad:#ff7a6e;
+  --sans:"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --voice:"Newsreader", Georgia, "Times New Roman", serif;
+  --mono:"JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+*{box-sizing:border-box}
+body{background:var(--ink);color:var(--fg);font:15px/1.6 var(--sans);margin:0}
+.wrap{padding-inline:16px;padding-block:0 72px;max-width:1240px;margin:0 auto}
+.col{max-width:70ch}
+h1{font:500 44px/1.05 var(--voice);letter-spacing:-.01em;margin:0 0 12px;text-wrap:balance}
+h2{font:500 28px/1.2 var(--voice);margin:56px 0 12px;text-wrap:balance}
+p{margin:0 0 12px}
+.muted{color:var(--muted)}
+code,kbd{font-family:var(--mono);font-size:.85em}
+code{background:var(--ink-3);padding:1px 5px;border-radius:4px}
+kbd{border:1px solid rgba(255,255,255,.2);border-bottom-width:2px;border-radius:4px;padding:0 4px}
+button,input,select{font:inherit;color:inherit}
+button:focus-visible,input:focus-visible,textarea:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--b1);outline-offset:2px}
+.eyebrow{font:600 11px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--b2);margin-bottom:14px}
+.hero{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:24px;align-items:center;padding-block:36px 8px}
+@media (max-width:760px){.hero{grid-template-columns:minmax(0,1fr)}}
+.hero canvas{width:100%;max-width:300px;aspect-ratio:1;justify-self:center;display:block}
+.lede{font:400 19px/1.55 var(--voice);color:#cfd5e4}
+.changes{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px 20px;margin-top:18px;padding:0;list-style:none}
+.changes li{border-top:1px solid var(--hair);padding-top:10px;font-size:13.5px;color:#c3cad8}
+.changes b{display:block;color:var(--fg);font:500 16px/1.3 var(--voice);margin-bottom:2px}
+
+.stagebar{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;margin:16px 0 14px}
+.grp{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.grp > span{font:600 10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.seg{font:500 12px/1 var(--sans);color:#c9cfdb;background:transparent;border:1px solid rgba(255,255,255,.13);border-radius:999px;padding:7px 11px;cursor:pointer}
+.seg[aria-pressed="true"]{color:var(--b1);border-color:var(--b1);background:color-mix(in oklab,var(--b1) 12%,transparent)}
+.sw{width:22px;height:22px;border-radius:50%;border:2px solid transparent;cursor:pointer;padding:0}
+.sw[aria-pressed="true"]{border-color:#fff}
+.hint{font:12px/1.4 var(--mono);color:var(--muted)}
+.stage{display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start}
+
+/* ── shared wing chrome (chat and dashboard use the SAME pieces) ── */
+.wwrap{position:relative;flex:none;transition:width .45s cubic-bezier(.3,.7,.2,1)}
+.wwrap.cw{width:min(400px,100%)}
+.wwrap.dw{width:min(780px,100%)}
+.wwrap.cw.big{width:min(680px,100%)} .wwrap.dw.big{width:min(820px,100%)}
+.wwrap.small{width:min(360px,100%)}
+.wwrap.small > .wing{opacity:.3;filter:saturate(.6) blur(2px);pointer-events:none}
+.wwrap.small .ap{pointer-events:auto}
+.edgeCv{position:absolute;left:0;right:0;top:-12px;width:100%;height:24px;pointer-events:none;z-index:6}
+.wing{position:relative;width:100%;height:720px;display:flex;flex-direction:column;border-radius:14px;overflow:hidden;
+  background:radial-gradient(120% 50% at var(--rx,0%) 0%,color-mix(in oklab,var(--acc) 7%,transparent),transparent 60%),var(--ink);
+  border:1px solid color-mix(in oklab,var(--acc) 22%,transparent);border-top-color:transparent;box-shadow:0 0 0 1px #000,0 30px 80px rgba(0,0,0,.6);transition:opacity .45s,filter .45s}
+.cw .wing{--acc:var(--b1)}
+.dw .wing{--acc:var(--b2);--rx:100%}
+.head{position:relative;flex:none;height:52px;display:flex;align-items:flex-start;gap:8px;padding:4px 10px 0 2px;border-bottom:1px solid var(--hair)}
+.xbtn{position:relative;flex:none;width:44px;height:44px;border:0;background:none;padding:0;cursor:pointer;border-radius:50%}
+.xbtn canvas{width:44px;height:44px;display:block}
+.ttl{min-width:0;flex:1;display:flex;flex-direction:column;line-height:1.2;padding-top:5px}
+.ttl b{font:600 13px/1.25 var(--sans);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ttl small{font:11px/1.35 var(--mono);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ttl small em{font-style:normal;color:var(--run)}
+.iconbtn{position:relative;flex:none;width:30px;height:30px;margin-top:6px;border-radius:8px;border:1px solid var(--hair);background:var(--ink-2);cursor:pointer;display:grid;place-items:center;color:#cdd6ea;font:14px/1 var(--mono)}
+.iconbtn .dot{position:absolute;top:-3px;right:-3px;width:7px;height:7px;border-radius:50%;background:var(--acc)}
+.ap{position:absolute;left:50%;top:0;transform:translate(-50%,-50%);z-index:7;width:26px;height:26px;border:0;border-radius:50%;background:radial-gradient(circle,var(--ink) 55%,transparent 72%);display:grid;place-items:center;cursor:pointer;padding:0;opacity:.8}
+.ap:hover,.ap[aria-pressed="true"]{opacity:1}
+.ap svg{width:12px;height:12px;overflow:visible}
+.ap path{fill:var(--acc,var(--b1))}
+.cw .ap{--acc:var(--b1)} .dw .ap{--acc:var(--b2)}
+/* the ◉ menu: ONE component, used by both wings */
+.menu{position:absolute;top:52px;right:8px;z-index:25;background:var(--ink-2);border:1px solid color-mix(in oklab,var(--acc) 25%,transparent);border-radius:10px;padding:6px;min-width:220px;box-shadow:0 16px 40px rgba(0,0,0,.6)}
+.menu .mh{font:600 10px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted);padding:6px 8px 4px}
+.menu button{display:flex;width:100%;gap:10px;align-items:center;background:none;border:0;padding:7px 8px;border-radius:6px;cursor:pointer;font-size:12.5px;text-align:left}
+.menu button:hover{background:var(--ink-3)}
+.menu .g{width:16px;text-align:center;font:13px/1 var(--mono);color:var(--acc)}
+.menu .k{margin-left:auto;font:10.5px/1 var(--mono);color:var(--muted)}
+.menu hr{border:0;border-top:1px solid var(--hair);margin:4px 0}
+.toast{position:absolute;left:50%;bottom:70px;transform:translateX(-50%);background:var(--ink-3);border:1px solid color-mix(in oklab,var(--acc) 35%,transparent);font:12px/1.4 var(--sans);padding:8px 12px;border-radius:8px;z-index:30;max-width:90%;text-align:center}
+
+/* ── chat wing (static except the composer and the drag chips) ── */
+.cbody{position:relative;flex:1;min-height:0;overflow:auto;padding:14px 12px 14px 40px;display:flex;flex-direction:column;gap:12px}
+#cspine{position:absolute;left:0;top:0;width:34px;height:100%;pointer-events:none}
+.who{font:600 10px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted);display:flex;gap:8px;align-items:center}
+.who i{width:6px;height:6px;border-radius:50%;background:var(--b1)}
+.you{align-self:flex-end;max-width:88%;background:var(--ink-3);border:1px solid var(--hair);border-radius:12px 12px 3px 12px;padding:8px 12px;font-size:13.5px;line-height:1.5}
+.voice{font:400 16px/1.55 var(--voice);color:#e9ecf4;margin:0}
+.dragrow{display:flex;flex-wrap:wrap;gap:6px}
+.dchip{display:inline-flex;gap:7px;align-items:center;font:600 11px/1 var(--mono);padding:6px 8px;border-radius:6px;background:var(--ink-3);border:1px solid var(--hair);cursor:grab;color:var(--fg)}
+.dchip .g{color:var(--b1)} .dchip.diff .g{color:var(--ok)}
+.dchip small{font-weight:400;color:var(--muted)}
+.comp{flex:none;border-top:1px solid var(--hair);padding:8px 10px 10px;display:flex;flex-direction:column;gap:6px;position:relative}
+.tray{display:flex;flex-wrap:wrap;gap:5px;align-items:center;min-height:22px}
+.to{font:600 11px/1 var(--mono);padding:4px 7px;border-radius:999px;border:1px solid var(--b1);color:var(--b1)}
+.chip{font:600 11px/1 var(--mono);padding:4px 7px;border-radius:5px;background:var(--ink-3);border:1px solid var(--hair);display:inline-flex;gap:5px;align-items:center;color:var(--b2)}
+.chip.path{color:var(--fg);border-style:dashed;border-color:rgba(255,255,255,.18)}
+.chip.path::before{content:"▸";color:var(--b1)}
+.chip.who2{color:var(--peer);border-radius:999px}
+.chip button{background:none;border:0;color:var(--muted);cursor:pointer;padding:0 0 0 2px}
+.proj{display:flex;gap:4px;align-items:center;min-width:0;overflow-x:auto;scrollbar-width:none;font:11px/1 var(--mono)}
+.proj span{flex:none;padding:4px 7px;border-radius:5px;color:var(--muted);white-space:nowrap;border:1px solid transparent}
+.proj .folder{color:var(--b1);border-color:color-mix(in oklab,var(--b1) 35%,transparent);background:color-mix(in oklab,var(--b1) 9%,transparent)}
+.proj .cur{color:var(--fg);border-color:var(--hair);background:var(--ink-3)}
+.inrow{display:flex;gap:6px;align-items:flex-end}
+textarea{flex:1;min-width:0;resize:none;height:38px;background:var(--ink-2);border:1px solid rgba(255,255,255,.12);border-radius:10px;color:var(--fg);font:13.5px/1.4 var(--sans);padding:9px 10px}
+.rbtn{flex:none;width:38px;height:38px;border-radius:10px;border:1px solid var(--hair);background:var(--ink-2);display:grid;place-items:center;font:14px/1 var(--mono);color:#cdd6ea}
+.pop{position:absolute;bottom:100%;left:10px;right:10px;margin-bottom:4px;background:var(--ink-2);border:1px solid color-mix(in oklab,var(--b1) 30%,transparent);border-radius:10px;padding:5px;z-index:12;box-shadow:0 -12px 30px rgba(0,0,0,.5);max-height:300px;overflow:auto}
+.pop .ph{font:600 10px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted);padding:7px 8px 4px;display:flex;justify-content:space-between}
+.pop .ph small{letter-spacing:0;text-transform:none;font-weight:400}
+.pop button{display:flex;gap:8px;width:100%;align-items:center;background:none;border:0;padding:6px 8px;border-radius:6px;cursor:pointer;font-size:12.5px;text-align:left;min-width:0}
+.pop button:hover,.pop button.sel{background:var(--ink-3)}
+.pop button b{flex:none;font:600 11.5px/1 var(--mono);color:var(--b2);min-width:68px}
+.pop button b.p{color:var(--fg)} .pop button b.w{color:var(--peer)}
+.pop button span{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#c9cfdb}
+
+/* ── dashboard wing ── */
+.dmain{position:relative;flex:1;min-height:0;display:grid;grid-template-columns:150px minmax(0,1fr)}
+.dw.narrow .dmain{grid-template-columns:46px minmax(0,1fr)}
+.rail{position:relative;border-right:1px solid var(--hair);overflow:auto;padding:10px 0}
+#railCv{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none}
+.rail .rh{position:relative;font:600 9.5px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--muted);padding:10px 12px 6px 30px}
+.dw.narrow .rail .rh{visibility:hidden;height:14px;padding:0}
+/* two views on one spine, like the old rail: Settings and Surfaces */
+.rsw{position:relative;z-index:1;display:flex;margin:0 8px 4px 24px;border:1px solid var(--hair);border-radius:999px;padding:2px;background:var(--ink)}
+.rsw button{flex:1;padding:5px 4px!important;justify-content:center;border-radius:999px;font:600 9.5px/1 var(--mono)!important;letter-spacing:.1em;text-transform:uppercase}
+.rsw button[aria-pressed="true"]{background:color-mix(in oklab,var(--b2) 16%,transparent);color:var(--fg)}
+.rsw button .gl{display:none}
+.dw.narrow .rsw{flex-direction:column;margin:0 4px 6px 6px;border-radius:10px}
+.dw.narrow .rsw button span{display:none}
+.dw.narrow .rsw button .gl{display:inline;font-size:12px}
+.rail button{position:relative;display:flex;width:100%;gap:9px;align-items:center;background:none;border:0;padding:7px 10px 7px 30px;cursor:pointer;font:500 12.5px/1.2 var(--sans);color:var(--muted);text-align:left;white-space:nowrap}
+.rail button:hover{color:var(--fg)}
+.rail button[aria-current="true"]{color:var(--fg)}
+.rail button .n{font:10px/1 var(--mono);color:var(--run);margin-left:auto}
+.dw.narrow .rail button span{display:none}
+.dw.narrow .rail button{padding-left:30px;height:32px}
+.content{position:relative;display:flex;flex-direction:column;min-width:0;min-height:0}
+.find{flex:none;display:flex;gap:8px;align-items:center;padding:10px 14px 6px}
+.find input{flex:1;min-width:0;background:var(--ink-2);border:1px solid var(--hair);border-radius:999px;color:var(--fg);font:12.5px/1 var(--sans);padding:8px 12px}
+.find small{font:10.5px/1 var(--mono);color:var(--muted);white-space:nowrap}
+.scroll{flex:1;min-height:0;overflow:auto;padding:4px 14px 14px}
+/* a settings section = a strand: orb, name, a one-line summary of its values; open = lit hairline */
+.sec{position:relative;border-top:1px solid var(--hair)}
+.sec:first-child{border-top:0}
+.srow{display:flex;gap:10px;align-items:center;width:100%;background:none;border:0;padding:11px 4px;cursor:pointer;text-align:left;min-width:0}
+.srow .o{flex:none;width:12px;text-align:center;font:12px/1 var(--mono);color:var(--muted)}
+.sec.open .srow .o{color:var(--b2)}
+.srow b{flex:none;font:600 12.5px/1.2 var(--sans);color:#dde2ee}
+.srow small{flex:1;min-width:0;font:11px/1.2 var(--mono);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.srow .chg{flex:none;font:600 10px/1 var(--mono);color:var(--run);border:1px solid color-mix(in oklab,var(--run) 45%,transparent);border-radius:999px;padding:3px 6px}
+.fields{margin:0 0 12px 9px;padding:2px 0 4px 16px;border-left:1px solid color-mix(in oklab,var(--b2) 55%,transparent);display:flex;flex-direction:column}
+.f{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 14px;align-items:center;padding:8px 0;border-bottom:1px solid rgba(160,190,255,.05)}
+.f:last-child{border-bottom:0}
+.f .l{min-width:0}
+.f .l b{display:flex;gap:6px;align-items:center;font:500 12.5px/1.3 var(--sans);color:#dde2ee}
+.f .l b i{width:6px;height:6px;border-radius:50%;background:var(--run);flex:none}
+.f .l small{display:block;font:10.5px/1.35 var(--mono);color:var(--muted)}
+.f .c{display:flex;gap:6px;align-items:center;justify-self:end;max-width:220px;min-width:0}
+@media (max-width:520px){.f{grid-template-columns:minmax(0,1fr)}.f .c{justify-self:start}}
+.vbtn{display:flex;gap:6px;align-items:center;max-width:220px;min-width:0;background:var(--ink-2);border:1px solid var(--hair);border-radius:7px;padding:6px 9px;cursor:pointer;font:12px/1.2 var(--sans);color:var(--fg)}
+.vbtn span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.vbtn em{font:10px/1 var(--mono);color:var(--b2);font-style:normal}
+.tg{position:relative;width:34px;height:18px;border-radius:999px;border:1px solid var(--hair);background:var(--ink-2);cursor:pointer;padding:0}
+.tg::after{content:"";position:absolute;top:3px;left:3px;width:10px;height:10px;border-radius:50%;background:var(--muted);transition:left .2s,background .2s}
+.tg[aria-checked="true"]{border-color:color-mix(in oklab,var(--b2) 55%,transparent);background:color-mix(in oklab,var(--b2) 14%,transparent)}
+.tg[aria-checked="true"]::after{left:19px;background:var(--b2);box-shadow:0 0 8px var(--b2)}
+.tgw{font:10.5px/1 var(--mono);color:var(--muted);width:22px}
+input[type=range]{width:120px;accent-color:var(--b2)}
+.num{font:11px/1 var(--mono);color:var(--fg);font-variant-numeric:tabular-nums;width:34px;text-align:right}
+.sg{display:flex;border:1px solid var(--hair);border-radius:7px;overflow:hidden}
+.sg button{background:none;border:0;padding:5px 8px;font:11px/1 var(--mono);color:var(--muted);cursor:pointer}
+.sg button[aria-pressed="true"]{background:color-mix(in oklab,var(--b2) 16%,transparent);color:var(--fg)}
+.opts{position:absolute;z-index:20;background:var(--ink-2);border:1px solid color-mix(in oklab,var(--b2) 35%,transparent);border-radius:9px;padding:5px;min-width:200px;box-shadow:0 16px 40px rgba(0,0,0,.6)}
+.opts button{display:flex;width:100%;gap:8px;align-items:center;background:none;border:0;padding:6px 8px;border-radius:6px;cursor:pointer;font-size:12.5px;text-align:left}
+.opts button:hover,.opts button[aria-selected="true"]{background:var(--ink-3)}
+.opts button small{margin-left:auto;font:10px/1 var(--mono);color:var(--muted)}
+/* the apply bar sits where the chat's composer sits */
+.apply{flex:none;border-top:1px solid var(--hair);padding:8px 14px 10px;display:flex;gap:8px;align-items:center;min-height:52px}
+.apply .sum{flex:1;min-width:0;font:11.5px/1.35 var(--mono);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.apply .sum b{color:var(--run);font-weight:600}
+.ghost{background:none;border:1px solid var(--hair);border-radius:9px;padding:8px 12px;cursor:pointer;font:500 12px/1 var(--sans);color:#c9cfdb}
+.go{font:600 12px/1 var(--sans);color:#03141b;background:var(--b2);border:0;border-radius:9px;padding:9px 16px;cursor:pointer}
+.go:disabled,.ghost:disabled{opacity:.35;cursor:default}
+/* workspace hub: the tools stay; Views is one more lane */
+.hubbar{flex:none;display:flex;gap:4px;align-items:center;padding:8px 14px;border-bottom:1px solid var(--hair);font:11px/1 var(--mono);overflow-x:auto;scrollbar-width:none}
+.hubbar span{flex:none;padding:4px 7px;border-radius:5px;color:var(--muted);white-space:nowrap;border:1px solid transparent}
+.hubbar .folder{color:var(--b1);border-color:color-mix(in oklab,var(--b1) 35%,transparent)}
+.hubbar .cur{color:var(--fg);border-color:var(--hair);background:var(--ink-3)}
+.lanes{flex:1;min-height:0;overflow:auto;display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;padding:10px 14px 14px;align-content:start}
+.lane{min-width:0;border:1px solid var(--hair);border-radius:10px;background:var(--ink-2);display:flex;flex-direction:column}
+.lane h4{margin:0;display:flex;gap:6px;align-items:center;padding:8px 10px;border-bottom:1px solid var(--hair);font:600 10px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.lane h4 small{margin-left:auto;letter-spacing:0;text-transform:none;font-weight:400}
+.lane .lb{padding:8px 10px;display:flex;flex-direction:column;gap:6px;font:11.5px/1.45 var(--mono);color:#c9cfdb;min-width:0}
+.term div{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.term .p{color:var(--b1)}
+.kcard{border:1px solid var(--hair);border-radius:7px;padding:6px 8px;font:12px/1.35 var(--sans);color:#dde2ee}
+.kcard small{display:block;font:10px/1.3 var(--mono);color:var(--muted)}
+.lane.views{border-style:dashed;border-color:rgba(255,255,255,.14);background:transparent;transition:border-color .2s,background .2s}
+.lane.views.over{border-color:var(--ok);background:rgba(95,207,152,.06)}
+.lane.views .empty{color:var(--muted);font:12px/1.45 var(--sans);text-align:center;padding:14px 6px}
+.vcard{border:1px solid var(--hair);border-radius:7px;background:var(--ink-3);padding:7px 9px;display:flex;flex-direction:column;gap:4px;min-width:0}
+.vcard .t{display:flex;gap:6px;align-items:center;font:600 12px/1.3 var(--sans);color:var(--fg);min-width:0}
+.vcard .t span{min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.vcard .t button{margin-left:auto;background:none;border:0;color:var(--muted);cursor:pointer}
+.vcard pre{margin:0;font:11px/1.45 var(--mono);white-space:pre-wrap;color:#c9cfdb}
+.vcard .add{color:var(--ok)} .vcard .del{color:var(--bad)}
+.tool{margin:auto;max-width:42ch;text-align:center;color:var(--muted);font-size:13px;padding:20px}
+.tool b{display:block;color:var(--fg);font:500 18px/1.3 var(--voice);margin-bottom:4px}
+
+/* Monitor = an instrument panel, not settings rows: live tiles, a call table, charts, a log pane */
+.content{container-type:inline-size}
+.mon{flex:1;min-height:0;overflow:auto;padding:12px 14px 14px;display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:10px;align-content:start}
+.tiles{grid-column:1/-1;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border:1px solid var(--hair);border-radius:10px;background:var(--ink-2)}
+.tile{min-width:0;padding:9px 11px;border-left:1px solid var(--hair);display:flex;flex-direction:column;gap:3px}
+.tile:first-child{border-left:0}
+.tile .k{font:600 9.5px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.tile .v{font:600 14px/1.2 var(--sans);color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;gap:6px;align-items:center}
+.tile .v i{width:6px;height:6px;border-radius:50%;background:var(--ok);flex:none}
+.tile .v.big{font:600 20px/1.1 var(--mono);font-variant-numeric:tabular-nums}
+.tile .s{font:10.5px/1.2 var(--mono);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.spark{display:flex;gap:2px;align-items:flex-end;height:18px}
+.spark span{flex:1;background:color-mix(in oklab,var(--b2) 55%,transparent);border-radius:1px;min-height:2px}
+.spark span:last-child{background:var(--b2)}
+.pane{min-width:0;border:1px solid var(--hair);border-radius:10px;background:var(--ink-2);display:flex;flex-direction:column}
+.pane.w7{grid-column:span 7}.pane.w5{grid-column:span 5}.pane.w12{grid-column:1/-1}
+@container (max-width:600px){.pane.w7,.pane.w5{grid-column:1/-1}.tiles{grid-template-columns:repeat(2,minmax(0,1fr))}.tile:nth-child(3){border-left:0}.tile:nth-child(n+3){border-top:1px solid var(--hair)}}
+.pane h4{margin:0;display:flex;gap:8px;align-items:center;padding:7px 10px;border-bottom:1px solid var(--hair);font:600 9.5px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted);flex-wrap:wrap}
+.pane h4 .sp{flex:1}
+.pane h4 button{background:none;border:1px solid var(--hair);border-radius:5px;padding:3px 6px;font:600 9.5px/1 var(--mono);letter-spacing:.06em;color:#c9cfdb;cursor:pointer;text-transform:uppercase}
+.pane h4 button[aria-pressed="true"]{color:var(--fg);border-color:color-mix(in oklab,var(--b2) 55%,transparent);background:color-mix(in oklab,var(--b2) 14%,transparent)}
+.pane h4 .live{width:6px;height:6px;border-radius:50%;background:var(--ok);box-shadow:0 0 6px var(--ok)}
+.pane h4 .live.off{background:var(--muted);box-shadow:none}
+.calls{overflow:auto;max-height:228px}
+.calls table{width:100%;table-layout:fixed;border-collapse:collapse;font:11px/1.35 var(--mono);font-variant-numeric:tabular-nums}
+.calls td{padding:5px 10px;border-bottom:1px solid rgba(160,190,255,.05);white-space:nowrap;color:#c9cfdb}
+.calls td{overflow:hidden;text-overflow:ellipsis}
+.calls td.m{color:var(--fg)}
+.calls col.t{width:66px}.calls col.k{width:100px}.calls col.l{width:78px}
+.calls tr.load td{color:var(--muted)} .calls tr.load td.m{color:var(--b1)}
+.calls tr.new td{animation:rowin .6s ease-out}
+@keyframes rowin{from{background:color-mix(in oklab,var(--b2) 14%,transparent)}to{background:transparent}}
+.lat{display:flex;gap:6px;align-items:center;justify-content:flex-end}
+.lat b{display:block;height:3px;border-radius:2px;background:var(--b2)}
+.lat b.slow{background:var(--run)}
+.usage{padding:10px;display:flex;flex-direction:column;gap:10px}
+.usage .row{display:flex;justify-content:space-between;align-items:baseline;font:11px/1.3 var(--mono);color:var(--muted)}
+.usage .row b{font:600 16px/1 var(--mono);color:var(--fg);font-variant-numeric:tabular-nums}
+.hours{display:flex;gap:2px;align-items:flex-end;height:44px;border-bottom:1px solid var(--hair)}
+.hours span{flex:1;background:color-mix(in oklab,var(--b2) 45%,transparent);border-radius:1px 1px 0 0}
+.hours span.now{background:var(--b2)}
+.axis{display:flex;justify-content:space-between;font:9.5px/1 var(--mono);color:var(--faint)}
+.okbar{display:flex;height:6px;border-radius:3px;overflow:hidden;background:var(--ink-3)}
+.okbar b{background:var(--ok)} .okbar i{background:var(--bad)}
+.checks2{list-style:none;margin:0;padding:6px 10px;display:flex;flex-direction:column}
+.checks2 li{display:flex;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid rgba(160,190,255,.05);font:12px/1.3 var(--sans);color:#dde2ee}
+.checks2 li:last-child{border-bottom:0}
+.checks2 .st{flex:none;font:12px/1 var(--mono);color:var(--ok)} .checks2 .st.w{color:var(--run)}
+.checks2 small{margin-left:auto;font:10.5px/1 var(--mono);color:var(--muted);white-space:nowrap}
+.logs{padding:6px 10px 8px;font:11px/1.5 var(--mono);max-height:170px;overflow:auto}
+.logs div{display:flex;gap:8px;white-space:nowrap}
+.logs .t{color:var(--faint);flex:none}.logs .lv{flex:none;width:34px}.logs .lv.warn{color:var(--run)}.logs .lv.error{color:var(--bad)}.logs .lv.info{color:var(--muted)}
+.logs .x{min-width:0;overflow:hidden;text-overflow:ellipsis;color:#c9cfdb}
+.logs .hid{color:var(--faint);padding-top:4px}
+.pane h4 input{flex:0 1 140px;min-width:80px;background:var(--ink);border:1px solid var(--hair);border-radius:5px;color:var(--fg);font:11px/1 var(--mono);padding:4px 6px;text-transform:none;letter-spacing:0}
+
+/* reference section */
+.rules{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px;margin-top:14px}
+.rule{border-top:1px solid var(--hair);padding-top:10px;font-size:13.5px;color:#c3cad8;min-width:0}
+.rule .sig{font:600 22px/1 var(--mono);display:block;margin-bottom:6px}
+.rule b{display:block;color:var(--fg);font:500 16px/1.3 var(--voice);margin-bottom:4px}
+.ex{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
+.checks{list-style:none;padding:0;margin:14px 0 0;display:flex;flex-direction:column;gap:8px}
+.checks li{display:flex;gap:10px;font-size:13.5px;color:#c3cad8;border-top:1px solid var(--hair);padding-top:8px}
+.checks i{flex:none;font:600 10px/1.6 var(--mono);font-style:normal;color:var(--ok);width:58px}
+.checks i.ch{color:var(--b2)} .checks i.q{color:var(--run)}
+@media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}}
+</style>
+
+<div class="wrap">
+  <section class="hero">
+    <div class="col">
+      <div class="eyebrow">IRIS · concept 2 rev 4 · the dashboard · approved 2026-10-06</div>
+      <h1>The dashboard joins the spine</h1>
+      <p class="lede">Your chat now has a Xur, a spine, an edge light and one ◉ menu. Until now the dashboard only borrowed the ink. In this revision it is built from the same parts, so the two wings read as one instrument.</p>
+      <ul class="changes">
+        <li><b>One ◉ menu</b>The same button and the same menu in both wings. The first item swaps: the chat menu offers the dashboard, the dashboard menu offers the chat.</li>
+        <li><b>The rail is a spine with two views</b>Settings and Surfaces, as in the old rail. Each view puts its places on one particle line, and the Xur rides it to where you are.</li>
+        <li><b>Settings read before you open them</b>Each settings box becomes a row that shows its current values in one line. Open it and the line lights.</li>
+        <li><b>Calm controls</b>Dropdowns, switches and sliders use the composer's ink, hairlines and mono numbers. A changed value gets the amber dot that IRIS uses for work in progress.</li>
+        <li><b>Apply where you type</b>The Apply bar sits where the chat's message box sits, and it names what you changed.</li>
+        <li><b>The hub keeps its tools</b>Terminal, tasks and archive stay. Things you drag from the chat land in a Views lane beside them.</li>
+      </ul>
+    </div>
+    <canvas id="heroCv" width="600" height="600" aria-label="The brand Xur, drawn in three neighbouring hues"></canvas>
+  </section>
+
+  <div class="stagebar">
+    <div class="grp" id="themes"><span>Brand</span></div>
+    <div class="grp"><span>Spotlight</span>
+      <button class="seg" data-spot="none" aria-pressed="true">Balanced</button>
+      <button class="seg" data-spot="chat" aria-pressed="false">Chat</button>
+      <button class="seg" data-spot="dash" aria-pressed="false">Dashboard</button>
+    </div>
+    <span class="hint">Click ◉ in either wing. Open a settings row and change a value. Drag the artifact or the ± from the chat onto the Workspace hub. Type # or @ in the message box.</span>
+  </div>
+
+  <div class="stage">
+    <!-- chat wing -->
+    <div class="wwrap cw" id="cwrap">
+      <canvas class="edgeCv" id="cedge"></canvas>
+      <button class="ap" id="cap" aria-pressed="false" title="Maximize chat" aria-label="Maximize chat"><svg viewBox="-6 -6 12 12"><path d="M0-5 5 0 0 5-5 0z"/></svg></button>
+      <div class="wing" id="cwing">
+        <div class="head">
+          <button class="xbtn" title="Your threads" aria-label="Your threads"><canvas id="cxur" width="88" height="88"></canvas></button>
+          <div class="ttl"><b>Router budget</b><small>fix the cap</small></div>
+          <button class="iconbtn" title="Strands" aria-label="Strands">⌖</button>
+          <button class="iconbtn" data-menu="chat" title="More" aria-label="More" aria-expanded="false">◉</button>
+        </div>
+        <div class="cbody">
+          <canvas id="cspine"></canvas>
+          <div class="you">Make the budget rules a page I can keep, and fix the router cap.</div>
+          <div class="who"><i></i>IRIS</div>
+          <p class="voice">Done. The rules are an artifact, and the cap now keeps room for the system frame. Drag either one to your workspace.</p>
+          <div class="dragrow">
+            <span class="dchip" draggable="true" data-drag="art" title="Drag to the Workspace hub"><span class="g">▤</span>Router budget plan <small>doc · 4 rules</small></span>
+            <span class="dchip diff" draggable="true" data-drag="diff" title="Drag to the Workspace hub"><span class="g">±</span>router.py <small>+4 −1</small></span>
+          </div>
+        </div>
+        <div class="comp" id="comp">
+          <div class="tray" id="tray"></div>
+          <div class="proj"><span class="folder">▸ iris-voice</span><span class="cur">router.py</span><span>budget.py</span><span>test_router.py</span></div>
+          <div class="inrow">
+            <textarea id="ta" rows="1" placeholder="Message IRIS… (# what, @ who)" aria-label="Message"></textarea>
+            <div class="rbtn" aria-hidden="true">↵</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- dashboard wing -->
+    <div class="wwrap dw" id="dwrap">
+      <canvas class="edgeCv" id="dedge"></canvas>
+      <button class="ap" id="dap" aria-pressed="false" title="Maximize dashboard" aria-label="Maximize dashboard"><svg viewBox="-6 -6 12 12"><path d="M0-5 5 0 0 5-5 0z"/></svg></button>
+      <div class="wing" id="dwing">
+        <div class="head">
+          <button class="xbtn" id="railToggle" title="Show or hide place names" aria-label="Show or hide place names"><canvas id="dxur" width="88" height="88"></canvas></button>
+          <div class="ttl"><b id="dTitle">Voice</b><small id="dSub">settings</small></div>
+          <button class="iconbtn" data-menu="dash" title="More" aria-label="More" aria-expanded="false">◉<span class="dot" id="alertDot"></span></button>
+        </div>
+        <div class="dmain">
+          <nav class="rail" id="rail" aria-label="Dashboard places"><canvas id="railCv"></canvas></nav>
+          <div class="content" id="content"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h2>Two signs, one meaning each</h2>
+  <div class="col">
+    <p>In a project, <code>#</code> and <code>@</code> also appear in code: a heading, an issue number, a decorator, a package scope. So each sign has one job, and it opens a list only when the message needs it.</p>
+  </div>
+  <div class="rules">
+    <div class="rule"><span class="sig" style="color:var(--peer)">@</span><b>Who hears this</b>People, IRIS and helper agents. It fills the <code>to</code> chip. Only <code>@iris</code> starts a prompt when people share the strand.<div class="ex"><span class="to">to @iris</span><span class="chip who2">@ana</span></div></div>
+    <div class="rule"><span class="sig" style="color:var(--b2)">#</span><b>What you point at</b>One list with two groups. <em>IRIS made</em>: task cards, artifacts, turns, strands. <em>This project</em>: folders and files from the project bar. The chips look different, so you always see which kind you sent.<div class="ex"><span class="chip">#T-38</span><span class="chip">#A-12</span><span class="chip path">src/router.py</span></div></div>
+    <div class="rule"><span class="sig" style="color:var(--muted)">#&nbsp;@</span><b>When it stays text</b>Inside <code>`code`</code> and code blocks. At the start of a line followed by a space (a heading). After a letter or a digit (<code>a@b.com</code>, <code>C#</code>). Press <kbd>Esc</kbd> to keep the sign as typed.</div>
+  </div>
+
+  <h2>What stays and what changes</h2>
+  <ul class="checks">
+    <li><i>STAYS</i><span>Every setting, its saved value and its handler. Apply still commits all changes at once.</span></li>
+    <li><i>STAYS</i><span>Spotlight: the spotlit wing is 680 px; the other is 360 px at opacity 0.3 with saturate(0.6) blur(2px), and it takes no clicks. The aperture keeps its place on the top edge.</span></li>
+    <li><i>STAYS</i><span>The Workspace hub keeps its terminal, task lanes, archive and file tabs. Dropped items never become project files and never hide a lane.</span></li>
+    <li><i>STAYS</i><span>The surfaces (Workspace hub, Browser, Models, Marketplace) keep their own content. They get the new header and rail only.</span></li>
+    <li><i class="ch">CHANGES</i><span>Monitor and the Inference console become ONE Monitor page in Settings, laid out as an instrument panel (not settings rows): a strip of live tiles (models, speed, reply time), the inference stream as a live table, usage charts, a log pane and the diagnostics checks. Model calls and loads appear only in the stream; Logs keeps the app's own lines.</span></li>
+    <li><i class="ch">CHANGES</i><span>Rows with orbs are only for plain setting fields. Content that is not a list of fields (model roles, device and permission lists, live data) keeps a layout made for it, in the same ink and hairlines.</span></li>
+    <li><i class="ch">CHANGES</i><span>Header: the row of four icon buttons (open chat, detach, launcher, alerts) moves into the ◉ menu. It is the same menu component as the chat.</span></li>
+    <li><i class="ch">CHANGES</i><span>The rail: a Settings / Surfaces switch at the top, as before; icon circles become places on a spine with names; the Xur button folds it to orbs only.</span></li>
+    <li><i class="ch">CHANGES</i><span>Settings boxes: a row with a one-line summary replaces the bordered box with a chevron. Open rows light their hairline; changed values get an amber dot and the row counts them.</span></li>
+    <li><i class="ch">CHANGES</i><span>A "find a setting" field at the top searches every place, the same way the thread orbit finds threads.</span></li>
+    <li><i class="ch">CHANGES</i><span>Files sit under <code>#</code> in their own "This project" group. The old <code>@taskcard</code> list moves to <code>#</code>, so <code>@</code> only picks who hears.</span></li>
+  </ul>
+</div>
+
+<script>
+(() => {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const DPR = Math.min(2, window.devicePixelRatio || 1);
+  const RM = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+
+  // ── brand: one hue → three neighbour hues ──
+  const THEMES = [["Aether", 190, 25, -40], ["Ember", 25, -35, -55], ["Aurum", 45, 15, -25], ["Verdant", 145, 45, -55]];
+  const B = { h: 190, d2: 25, d3: -40 };
+  const hsl = (h, s, l, a = 1) => "hsla(" + ((h % 360) + 360) % 360 + "," + s + "%," + l + "%," + a + ")";
+  function setBrand(t) {
+    B.h = t[1]; B.d2 = t[2]; B.d3 = t[3];
+    const r = document.documentElement.style;
+    r.setProperty("--b1", hsl(B.h, 100, 64)); r.setProperty("--b2", hsl(B.h + B.d2, 92, 68)); r.setProperty("--b3", hsl(B.h + B.d3, 85, 60));
+  }
+  function trailColor(f, a, shift) {
+    const h0 = B.h + (shift || 0);
+    const h = f > .5 ? h0 + (1 - f) * 2 * B.d2 : h0 + B.d2 + (0.5 - f) * 2 * (B.d3 - B.d2);
+    return hsl(h, 95, 56 + f * 16, a);
+  }
+  $("themes").insertAdjacentHTML("beforeend", THEMES.map((t, i) => '<button class="sw" data-theme="' + i + '" aria-pressed="' + (i === 0) + '" title="' + t[0] + '" aria-label="' + t[0] + '" style="background:conic-gradient(' + hsl(t[1], 100, 62) + "," + hsl(t[1] + t[2], 90, 64) + "," + hsl(t[1] + t[3], 85, 58) + "," + hsl(t[1], 100, 62) + ')"></button>').join(""));
+  $("themes").addEventListener("click", (e) => { const b = e.target.closest(".sw"); if (!b) return; document.querySelectorAll(".sw").forEach((x) => x.setAttribute("aria-pressed", String(x === b))); setBrand(THEMES[+b.dataset.theme]); });
+
+  function xurPoint(a, s) { return [7 * Math.cos(a) - 3 * s * Math.cos(9 * a), 7 * Math.sin(a) - 3 * s * Math.sin(9 * a)]; }
+  function drawXur(ctx, cx, cy, R, now, o) {
+    const sc = R / 10, n = o.n || 64, rot = RM ? 0.6 : now * (o.speed || 1) / 30000 * Math.PI * 12;
+    for (let i = 0; i < n; i++) {
+      const a = rot - (i / n) * Math.PI * 2, [x, y] = xurPoint(a, o.s), f = 1 - i / n;
+      ctx.fillStyle = trailColor(f, (o.alpha || 1) * (0.15 + f * 0.75), o.shift);
+      ctx.beginPath(); ctx.arc(cx + x * sc, cy + y * sc, Math.max(.5, (0.35 + f * 1.4) * (o.dot || R / 12)), 0, 6.283); ctx.fill();
+    }
+  }
+  function fitCanvas(cv) {
+    const r = cv.getBoundingClientRect(), w = Math.max(1, Math.round(r.width * DPR)), h = Math.max(1, Math.round(r.height * DPR));
+    if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+    const ctx = cv.getContext("2d"); ctx.setTransform(DPR, 0, 0, DPR, 0, 0); return [ctx, r.width, r.height];
+  }
+  const hh = (i) => { const x = Math.sin(i * 127.1) * 43758.5453; return x - Math.floor(x); };
+  function hexA(col, a) {
+    if (col.startsWith("#")) { const n = parseInt(col.slice(1), 16); return "rgba(" + (n >> 16 & 255) + "," + (n >> 8 & 255) + "," + (n & 255) + "," + a + ")"; }
+    const m = col.match(/hsla?\(([^,\s]+)[,\s]+([^,\s]+)[,\s]+([^,)\s]+)/); return m ? "hsla(" + m[1] + "," + m[2] + "," + m[3] + "," + a + ")" : col;
+  }
+
+  // ── edge lights (same drawing for both wings) ──
+  const PULSES = { chat: [], dash: [] }, NEXT_P = { chat: 0, dash: 1800 };
+  let spot = "none";
+  function drawEdge(cvId, key, now, spotted, accentVar) {
+    const [c, w, h] = fitCanvas($(cvId)); c.clearRect(0, 0, w, h);
+    const y = h / 2, cx = w / 2, gapR = 11, rad = 14, base = css(accentVar) || "#3fd6ff";
+    if (!RM && now > NEXT_P[key]) { PULSES[key].push({ t0: now }); NEXT_P[key] = now + 7000 + Math.random() * 900; }
+    PULSES[key] = PULSES[key].filter((p) => now - p.t0 < 9000);
+    const line = (x0, x1) => { const g = c.createLinearGradient(x0, 0, x1, 0); const near = x0 < cx; g.addColorStop(0, hexA(base, near ? .05 : .22)); g.addColorStop(1, hexA(base, near ? .22 : .05)); c.strokeStyle = g; c.lineWidth = 1; c.beginPath(); c.moveTo(x0, y + .5); c.lineTo(x1, y + .5); c.stroke(); };
+    line(rad, cx - gapR); line(cx + gapR, w - rad);
+    if (spotted) { for (const dir of [-1, 1]) { const g = c.createLinearGradient(cx + dir * gapR, 0, cx + dir * 90, 0); g.addColorStop(0, hexA(base, .7)); g.addColorStop(1, hexA(base, 0)); c.strokeStyle = g; c.lineWidth = 1.2; c.beginPath(); c.moveTo(cx + dir * gapR, y + .5); c.lineTo(cx + dir * 90, y + .5); c.stroke(); } }
+    for (const p of PULSES[key]) {
+      const d = gapR + (now - p.t0) * .045, fade = Math.max(0, 1 - d / (w / 2 - rad));
+      for (const dir of [-1, 1]) { const x = cx + dir * d, g = c.createLinearGradient(x - 26, 0, x + 26, 0); g.addColorStop(0, hexA(base, 0)); g.addColorStop(.5, hexA(base, .55 * fade)); g.addColorStop(1, hexA(base, 0)); c.strokeStyle = g; c.lineWidth = 1.3; c.beginPath(); c.moveTo(x - 26, y + .5); c.lineTo(x + 26, y + .5); c.stroke(); }
+    }
+  }
+
+  // ── spotlight: today's behaviour ──
+  function setSpot(s) {
+    spot = s;
+    document.querySelectorAll("[data-spot]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.spot === s)));
+    $("cwrap").classList.toggle("big", s === "chat"); $("cwrap").classList.toggle("small", s === "dash");
+    $("dwrap").classList.toggle("big", s === "dash"); $("dwrap").classList.toggle("small", s === "chat");
+    $("cap").setAttribute("aria-pressed", String(s === "chat")); $("dap").setAttribute("aria-pressed", String(s === "dash"));
+    $("cap").title = $("cap").ariaLabel = s === "chat" ? "Restore balanced view" : "Maximize chat";
+    $("dap").title = $("dap").ariaLabel = s === "dash" ? "Restore balanced view" : "Maximize dashboard";
+  }
+  document.querySelectorAll("[data-spot]").forEach((b) => b.addEventListener("click", () => setSpot(b.dataset.spot)));
+  $("cap").addEventListener("click", () => setSpot(spot === "chat" ? "none" : "chat"));
+  $("dap").addEventListener("click", () => setSpot(spot === "dash" ? "none" : "dash"));
+
+  // ── the ◉ menu: ONE builder, two wings ──
+  let unread = 2;
+  const MENU = (wing) => [
+    { g: wing === "chat" ? "▦" : "◧", t: wing === "chat" ? "Dashboard" : "Chat", k: wing === "chat" ? "open" : "open" },
+    { g: "⇱", t: "Detach to its own window" },
+    { g: "◔", t: "Alerts", k: unread ? unread + " new" : "none" },
+    { g: "◎", t: "IRIS launcher" },
+    "hr",
+    { g: "✕", t: "Close " + (wing === "chat" ? "chat" : "dashboard") },
+  ];
+  function toast(wingEl, text) {
+    const old = wingEl.querySelector(".toast"); if (old) old.remove();
+    const t = document.createElement("div"); t.className = "toast"; t.textContent = text; wingEl.appendChild(t);
+    setTimeout(() => t.remove(), 2400);
+  }
+  function closeMenus() { document.querySelectorAll(".menu").forEach((m) => m.remove()); document.querySelectorAll("[data-menu]").forEach((b) => b.setAttribute("aria-expanded", "false")); }
+  document.querySelectorAll("[data-menu]").forEach((btn) => btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const wing = btn.dataset.menu, wingEl = btn.closest(".wing"), open = wingEl.querySelector(".menu");
+    closeMenus(); if (open) return;
+    const m = document.createElement("div"); m.className = "menu"; m.setAttribute("role", "menu");
+    m.innerHTML = '<div class="mh">' + (wing === "chat" ? "Chat" : "Dashboard") + "</div>" + MENU(wing).map((it) => it === "hr" ? "<hr>" : '<button role="menuitem"><span class="g">' + it.g + "</span>" + esc(it.t) + (it.k ? '<span class="k">' + esc(it.k) + "</span>" : "") + "</button>").join("");
+    wingEl.appendChild(m); btn.setAttribute("aria-expanded", "true");
+    m.addEventListener("click", (ev) => { const b = ev.target.closest("button"); if (!b) return; const label = b.textContent; closeMenus(); if (label.startsWith("Alerts")) { unread = 0; $("alertDot").hidden = true; } toast(wingEl, label.replace(/\d+ new|none|open/, "").trim() + " · same handler as today"); });
+    const first = m.querySelector("button"); if (first) first.focus();
+  }));
+  document.addEventListener("click", (e) => { if (!e.target.closest(".menu")) closeMenus(); });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeMenus(); closeOpts(); } });
+
+  // ── dashboard data: places, sections, fields (real IRIS settings) ──
+  const PLACES = [
+    { grp: "Settings", id: "voice", name: "Voice" }, { grp: "Settings", id: "agent", name: "Agent" },
+    { grp: "Settings", id: "automate", name: "Automate" }, { grp: "Settings", id: "system", name: "System" },
+    { grp: "Settings", id: "customize", name: "Customize" }, { grp: "Settings", id: "monitor", name: "Monitor" },
+    { grp: "Surfaces", id: "hub", name: "Workspace hub" }, { grp: "Surfaces", id: "browser", name: "Browser" },
+    { grp: "Surfaces", id: "models", name: "Models" }, { grp: "Surfaces", id: "market", name: "Marketplace" },
+  ];
+  const SECTIONS = {
+    voice: [
+      { id: "input", name: "Input", fields: [
+        { id: "mic", l: "Microphone", h: "the device IRIS listens on", t: "sel", v: "Realtek Mic Array", o: ["Realtek Mic Array", "USB Headset", "Webcam C920"] },
+        { id: "gain", l: "Input gain", h: "0.0 – 2.0", t: "rng", v: 0.8, min: 0, max: 2, step: 0.1 },
+        { id: "ns", l: "Noise suppression", h: "filters fans and keyboards", t: "tg", v: true },
+      ] },
+      { id: "wake", name: "Wake word", fields: [
+        { id: "phrase", l: "Wake phrase", h: "Porcupine keyword", t: "sel", v: "Hey IRIS", o: ["Hey IRIS", "Computer", "Jarvis"] },
+        { id: "sens", l: "Sensitivity", h: "higher wakes more easily", t: "rng", v: 0.55, min: 0, max: 1, step: 0.05 },
+      ] },
+      { id: "speech", name: "Speech", fields: [
+        { id: "stt", l: "Speech to text", h: "Whisper is the fallback only", t: "seg", v: "Parakeet", o: ["Parakeet", "Whisper"] },
+        { id: "lang", l: "Language", h: "", t: "sel", v: "English (US)", o: ["English (US)", "English (UK)", "Deutsch", "Español"] },
+      ] },
+      { id: "output", name: "Output", fields: [
+        { id: "spk", l: "Speaker", h: "", t: "sel", v: "Speakers (Realtek)", o: ["Speakers (Realtek)", "USB Headset"] },
+        { id: "vol", l: "Voice volume", h: "", t: "rng", v: 0.7, min: 0, max: 1, step: 0.05 },
+        { id: "tvoice", l: "Voice", h: "the TTS voice", t: "sel", v: "Aria · calm", o: ["Aria · calm", "Leo · warm", "Nova · bright"] },
+      ] },
+    ],
+    agent: [
+      { id: "models", name: "Model inference", fields: [
+        { id: "brain", l: "Reasoning model", h: "plans and answers", t: "sel", v: "qwen3-30b-a3b · local", o: ["qwen3-30b-a3b · local", "claude-sonnet · cloud", "gpt-oss-20b · local"] },
+        { id: "tool", l: "Tool model", h: "runs the steps", t: "sel", v: "qwen3-4b · local", o: ["qwen3-4b · local", "qwen3-8b · local"] },
+        { id: "eff", l: "Planner effort", h: "low plans in about 1.6 s", t: "seg", v: "low", o: ["low", "medium", "high"] },
+      ] },
+      { id: "perm", name: "Permissions", fields: [
+        { id: "ask", l: "Ask before shell commands", h: "IRIS waits for y / n in the turn", t: "tg", v: true },
+        { id: "auto", l: "Auto-approve reads", h: "read_file, list_directory", t: "tg", v: true },
+      ] },
+      { id: "mem", name: "Memory", fields: [
+        { id: "recall", l: "Recall breadth", h: "how many earlier findings IRIS reads", t: "rng", v: 3, min: 1, max: 8, step: 1 },
+        { id: "learn", l: "Learn from undo", h: "an undone edit becomes a lesson", t: "tg", v: true },
+      ] },
+    ],
+    automate: [{ id: "routines", name: "Routines", fields: [{ id: "morning", l: "Morning brief", h: "weekdays 08:45", t: "tg", v: false }, { id: "watch", l: "Watch my PRs", h: "", t: "tg", v: true }] }],
+    system: [{ id: "startup", name: "Startup", fields: [{ id: "boot", l: "Start with Windows", h: "", t: "tg", v: true }, { id: "warm", l: "Pre-read voice models", h: "idle, low priority", t: "tg", v: true }] }, { id: "keys", name: "Keys and accounts", fields: [{ id: "key", l: "API key", h: "kept in the OS keyring", t: "sel", v: "saved", o: ["saved", "replace…"] }] }],
+    // Monitor = the old Monitor tab AND the Inference console, one page, nothing twice.
+    monitor: [
+      { id: "now", name: "Now", fields: [
+        { id: "brain", l: "Reasoning model", h: "loaded · profile balanced", t: "info", v: "qwen3-30b-a3b" },
+        { id: "tool", l: "Tool model", h: "loaded · profile fast", t: "info", v: "qwen3-4b" },
+        { id: "speed", l: "Speed", h: "last call", t: "info", v: "41 tok/s · 1.6 s" },
+      ] },
+      { id: "stream", name: "Inference stream", fields: [
+        { id: "show", l: "Show", h: "every call and every model load, newest first", t: "seg", v: "all", o: ["all", "calls", "loads"] },
+        { id: "l1", l: "08:41:07 · qwen3-4b", h: "call", t: "info", v: "612 → 88 tok · 0.9 s" },
+        { id: "l2", l: "08:41:05 · qwen3-30b-a3b", h: "call", t: "info", v: "2,140 → 310 tok · 1.6 s" },
+        { id: "l3", l: "08:40:52 · qwen3-4b", h: "load", t: "info", v: "loaded · fast" },
+      ] },
+      { id: "usage", name: "Usage", fields: [
+        { id: "tok", l: "Tokens today", h: "all models", t: "info", v: "182,400" },
+        { id: "turns", l: "Turns today", h: "", t: "info", v: "37 · 2 failed" },
+        { id: "p50", l: "Reply time", h: "median, without speech", t: "info", v: "6.1 s" },
+      ] },
+      { id: "logs", name: "Logs", fields: [
+        { id: "lvl", l: "Level", h: "app logs; model calls stay in the stream", t: "seg", v: "warn", o: ["info", "warn", "error"] },
+        { id: "w1", l: "08:39:12", h: "router", t: "info", v: "hedge sent at 10.2 s" },
+      ] },
+      { id: "diag", name: "Diagnostics", fields: [
+        { id: "health", l: "Health", h: "backend, voice, models, store", t: "info", v: "6 of 6 pass" },
+        { id: "store", l: "App memory", h: "data/memory.db", t: "info", v: "412 MB" },
+      ] },
+    ],
+    customize: [{ id: "look", name: "Look", fields: [{ id: "theme", l: "Brand", h: "the Xur takes three neighbouring hues", t: "seg", v: "Aether", o: ["Aether", "Ember", "Aurum", "Verdant"] }, { id: "motion", l: "Motion", h: "follows the system setting too", t: "seg", v: "full", o: ["full", "calm", "off"] }] }],
+  };
+  const VAL = {}; const SAVED = {};
+  for (const p in SECTIONS) for (const s of SECTIONS[p]) for (const f of s.fields) { VAL[p + "." + s.id + "." + f.id] = f.v; SAVED[p + "." + s.id + "." + f.id] = f.v; }
+  const D = { view: "Settings", last: { Settings: "voice", Surfaces: "hub" }, place: "voice", open: new Set(["voice.input"]), q: "", views: [], railNarrow: false };
+  const fmt = (f, v) => f.t === "tg" ? (v ? "on" : "off") : f.t === "rng" ? (Number.isInteger(f.step) ? String(v) : Number(v).toFixed(f.step < 0.1 ? 2 : 1)) : String(v);
+  // Monitor's filters are views, not settings: they never count as a change to apply.
+  const changed = () => Object.keys(VAL).filter((k) => !k.startsWith("monitor.") && VAL[k] !== SAVED[k]);
+
+  // the rail
+  function renderRail() {
+    const r = $("rail"); r.querySelectorAll(".rh,button,.rsw").forEach((x) => x.remove());
+    r.insertAdjacentHTML("beforeend", '<div class="rsw" role="group" aria-label="Rail view">' + [["Settings", "⚙"], ["Surfaces", "▦"]].map(([v, g]) => '<button data-view="' + v + '" aria-pressed="' + (D.view === v) + '" title="' + v + '"><span>' + v + '</span><b class="gl">' + g + "</b></button>").join("") + "</div>");
+    for (const p of PLACES) {
+      if (p.grp !== D.view) continue;
+      const n = changed().filter((k) => k.startsWith(p.id + ".")).length;
+      r.insertAdjacentHTML("beforeend", '<button data-place="' + p.id + '" aria-current="' + (D.place === p.id) + '" title="' + esc(p.name) + '"><span>' + esc(p.name) + "</span>" + (n ? '<em class="n" style="font-style:normal">' + n + "</em>" : "") + "</button>");
+    }
+  }
+  $("rail").addEventListener("click", (e) => {
+    const v = e.target.closest("[data-view]");
+    if (v) { D.view = v.dataset.view; D.place = D.last[D.view]; D.q = ""; railY = null; render(); return; }
+    const b = e.target.closest("[data-place]"); if (!b) return; D.place = b.dataset.place; D.last[D.view] = D.place; D.q = ""; render();
+  });
+  $("railToggle").addEventListener("click", () => { D.railNarrow = !D.railNarrow; $("dwrap").classList.toggle("narrow", D.railNarrow); });
+
+  // the content
+  function control(path, f) {
+    const v = VAL[path];
+    if (f.t === "sel") return '<button class="vbtn" data-sel="' + path + '" aria-haspopup="listbox"><span>' + esc(v) + "</span><em>⌄</em></button>";
+    if (f.t === "tg") return '<span class="tgw">' + (v ? "on" : "off") + '</span><button class="tg" role="switch" aria-checked="' + v + '" data-tg="' + path + '" aria-label="' + esc(f.l) + '"></button>';
+    if (f.t === "rng") return '<input type="range" id="r-' + path.replace(/\./g, "-") + '" min="' + f.min + '" max="' + f.max + '" step="' + f.step + '" value="' + v + '" data-rng="' + path + '" aria-label="' + esc(f.l) + '"><span class="num">' + fmt(f, v) + "</span>";
+    if (f.t === "info") return '<span class="num" style="width:auto;white-space:nowrap">' + esc(v) + "</span>";
+    if (f.t === "seg") return '<div class="sg" role="group" aria-label="' + esc(f.l) + '">' + f.o.map((o) => '<button data-seg="' + path + '" data-v="' + esc(o) + '" aria-pressed="' + (o === v) + '">' + esc(o) + "</button>").join("") + "</div>";
+    return "";
+  }
+  function sectionHTML(place, s, forceOpen) {
+    const key = place + "." + s.id, open = forceOpen || D.open.has(key);
+    const n = s.fields.filter((f) => VAL[key + "." + f.id] !== SAVED[key + "." + f.id]).length;
+    const summary = place === "monitor" ? s.fields.filter((f) => f.t === "info").slice(0, 2).map((f) => f.v).join(" · ") : s.fields.map((f) => (f.t === "tg" ? f.l.split(" ")[0].toLowerCase() + " " : "") + fmt(f, VAL[key + "." + f.id])).join(" · ");
+    let h = '<div class="sec' + (open ? " open" : "") + '"><button class="srow" data-sec="' + key + '" aria-expanded="' + open + '"><span class="o">' + (open ? "●" : "○") + "</span><b>" + esc(s.name) + "</b><small>" + esc(summary) + "</small>" + (n ? '<span class="chg">' + n + " changed</span>" : "") + "</button>";
+    if (open) h += '<div class="fields">' + s.fields.map((f) => { const p = key + "." + f.id, ch = VAL[p] !== SAVED[p]; return '<div class="f"><div class="l"><b>' + (ch ? "<i title=\"changed, not applied\"></i>" : "") + esc(f.l) + "</b>" + (f.h ? "<small>" + esc(f.h) + "</small>" : "") + '</div><div class="c">' + control(p, f) + "</div></div>"; }).join("") + "</div>";
+    return h + "</div>";
+  }
+  function render() {
+    renderRail();
+    if (RM) requestAnimationFrame(frame);
+    const P = PLACES.find((p) => p.id === D.place), c = $("content");
+    $("dTitle").textContent = P.name;
+    const ch = changed();
+    $("dSub").innerHTML = P.grp === "Settings" ? (D.place === "monitor" ? "settings · live" : "settings") + (ch.length ? ' · <em>' + ch.length + " not applied</em>" : "") : "surface";
+    if (D.place === "hub") return renderHub(c);
+    if (D.place === "monitor") return renderMonitor(c);
+    if (!SECTIONS[D.place]) { c.innerHTML = '<div class="tool"><b>' + esc(P.name) + "</b>Its content stays as it is today. This concept gives it the new header, the rail and the edge light only.</div>"; return; }
+    const keep = document.activeElement && document.activeElement.id === "findIn";
+    let body = "";
+    if (D.q) {
+      const q = D.q.toLowerCase(); let hits = 0;
+      for (const p in SECTIONS) for (const s of SECTIONS[p]) {
+        const m = s.name.toLowerCase().includes(q) || s.fields.some((f) => f.l.toLowerCase().includes(q));
+        if (m) { hits++; body += '<div class="hint" style="padding:8px 4px 0">' + esc(PLACES.find((x) => x.id === p).name) + "</div>" + sectionHTML(p, s, true); }
+      }
+      if (!hits) body = '<div class="tool"><b>No setting matches</b>Try a word like mic, wake, model or memory.</div>';
+    } else body = SECTIONS[D.place].map((s) => sectionHTML(D.place, s, false)).join("");
+    c.innerHTML = '<div class="find"><input id="findIn" type="search" placeholder="Find a setting" aria-label="Find a setting" value="' + esc(D.q) + '"><small>' + (D.q ? "all places" : "type to find") + "</small></div>" +
+      '<div class="scroll" id="dscroll">' + body + "</div>" +
+      '<div class="apply"><div class="sum">' + (ch.length ? "<b>" + ch.length + " change" + (ch.length > 1 ? "s" : "") + "</b> · " + esc([...new Set(ch.map((k) => { const [p, s] = k.split("."); return SECTIONS[p].find((x) => x.id === s).name; }))].join(", ")) : "All saved") + '</div><button class="ghost" id="discard"' + (ch.length ? "" : " disabled") + '>Discard</button><button class="go" id="applyBtn"' + (ch.length ? "" : " disabled") + ">Apply</button></div>";
+    if (keep) { const i = $("findIn"); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }
+  }
+  // options list for a select (the composer's pop look, in the dashboard hue)
+  let optsFor = null;
+  function closeOpts() { const o = document.querySelector(".opts"); if (o) o.remove(); optsFor = null; }
+  $("content").addEventListener("click", (e) => {
+    const t = e.target;
+    const sec = t.closest("[data-sec]"); if (sec) { const k = sec.dataset.sec; D.open.has(k) ? D.open.delete(k) : D.open.add(k); render(); return; }
+    const tg = t.closest("[data-tg]"); if (tg) { VAL[tg.dataset.tg] = !VAL[tg.dataset.tg]; render(); return; }
+    const sg = t.closest("[data-seg]"); if (sg) { VAL[sg.dataset.seg] = sg.dataset.v; if (sg.dataset.seg === "customize.look.theme") { const th = THEMES.find((x) => x[0] === sg.dataset.v); setBrand(th); document.querySelectorAll(".sw").forEach((x) => x.setAttribute("aria-pressed", String(THEMES[+x.dataset.theme] === th))); } render(); return; }
+    const sel = t.closest("[data-sel]");
+    if (sel) {
+      const path = sel.dataset.sel; if (optsFor === path) { closeOpts(); return; } closeOpts();
+      const [p, s, f] = path.split("."), F = SECTIONS[p].find((x) => x.id === s).fields.find((x) => x.id === f);
+      const o = document.createElement("div"); o.className = "opts"; o.setAttribute("role", "listbox");
+      o.innerHTML = F.o.map((v) => '<button role="option" aria-selected="' + (v === VAL[path]) + '" data-pick="' + esc(v) + '">' + esc(v) + (v === SAVED[path] ? "<small>saved</small>" : "") + "</button>").join("");
+      const wr = $("dwing").getBoundingClientRect(), br = sel.getBoundingClientRect();
+      o.style.top = (br.bottom - wr.top + 4) + "px"; o.style.right = Math.max(8, wr.right - br.right) + "px";
+      $("dwing").appendChild(o); optsFor = path;
+      o.addEventListener("click", (ev) => { const b = ev.target.closest("[data-pick]"); if (!b) return; VAL[path] = b.dataset.pick; closeOpts(); render(); });
+      const cur = o.querySelector('[aria-selected="true"]'); if (cur) cur.focus();
+      return;
+    }
+    if (t.id === "discard") { for (const k of changed()) VAL[k] = SAVED[k]; render(); toast($("dwing"), "Discarded. Nothing changed."); return; }
+    if (t.id === "applyBtn") { const n = changed().length; for (const k of changed()) SAVED[k] = VAL[k]; render(); toast($("dwing"), "Applied " + n + " change" + (n > 1 ? "s" : "") + ". IRIS uses them now."); return; }
+  });
+  document.addEventListener("click", (e) => { if (!e.target.closest(".opts") && !e.target.closest("[data-sel]")) closeOpts(); });
+  $("content").addEventListener("input", (e) => {
+    const t = e.target;
+    if (t.id === "findIn") { D.q = t.value.trim(); render(); return; }
+    if (t.dataset.rng) { const [p, s, f] = t.dataset.rng.split("."), F = SECTIONS[p].find((x) => x.id === s).fields.find((x) => x.id === f); VAL[t.dataset.rng] = Number(t.value); t.nextElementSibling.textContent = fmt(F, Number(t.value)); }
+  });
+  $("content").addEventListener("change", (e) => { if (e.target.dataset && e.target.dataset.rng) render(); });
+
+  // ── Monitor: an instrument panel (owner 2026-10-06: settings rows do not fit live data) ──
+  const M = { show: "all", paused: false, lvl: "warn", q: "", seq: 3, calls: [
+    { id: 3, t: "08:41:07", kind: "call", m: "qwen3-4b", tok: "612 → 88", ms: 900 },
+    { id: 2, t: "08:41:05", kind: "call", m: "qwen3-30b-a3b", tok: "2,140 → 310", ms: 1600 },
+    { id: 1, t: "08:40:52", kind: "load", m: "qwen3-4b", tok: "loaded · fast", ms: 0 },
+  ], fresh: 0 };
+  const LOGS = [
+    { t: "08:39:12", lv: "warn", x: "[router] hedge sent at 10.2 s (p75 x2)" },
+    { t: "08:38:40", lv: "info", x: "[voice] wake word heard · Hey IRIS" },
+    { t: "08:37:03", lv: "error", x: "[browser] page timed out after 15 s · retried" },
+    { t: "08:36:51", lv: "info", x: "[store] memory.db checkpoint · 412 MB" },
+  ];
+  const HOURS = [2, 1, 0, 0, 0, 0, 1, 4, 9, 14, 11, 7, 6, 9, 12, 10, 8, 5, 6, 4, 3, 2, 1, 0];
+  function renderMonitor(c) {
+    const rows = M.calls.filter((r) => M.show === "all" || (M.show === "calls" ? r.kind === "call" : r.kind === "load"));
+    const maxMs = Math.max(2000, ...M.calls.map((r) => r.ms));
+    const lv = ["info", "warn", "error"], minLv = lv.indexOf(M.lvl);
+    const logs = LOGS.filter((l) => lv.indexOf(l.lv) >= minLv && (!M.q || l.x.toLowerCase().includes(M.q.toLowerCase())));
+    const keep = document.activeElement && document.activeElement.id === "logq";
+    c.innerHTML = '<div class="mon">' +
+      '<div class="tiles" aria-label="Now">' +
+        '<div class="tile"><span class="k">Reasoning</span><span class="v"><i></i>qwen3-30b-a3b</span><span class="s">loaded · balanced</span></div>' +
+        '<div class="tile"><span class="k">Tool</span><span class="v"><i></i>qwen3-4b</span><span class="s">loaded · fast</span></div>' +
+        '<div class="tile"><span class="k">Speed</span><span class="v big">41<small style="font:500 11px var(--mono);color:var(--muted)"> tok/s</small></span><div class="spark">' + [30, 34, 28, 40, 38, 36, 41].map((v) => '<span style="height:' + Math.round(v / 41 * 100) + '%"></span>').join("") + "</div></div>" +
+        '<div class="tile"><span class="k">Reply time</span><span class="v big">6.1<small style="font:500 11px var(--mono);color:var(--muted)"> s</small></span><span class="s">median · p90 11.4 s</span></div>' +
+      "</div>" +
+      '<section class="pane w7"><h4><span class="live' + (M.paused ? " off" : "") + '"></span>Inference stream<span class="sp"></span>' + ["all", "calls", "loads"].map((v) => '<button data-mshow="' + v + '" aria-pressed="' + (M.show === v) + '">' + v + "</button>").join("") + '<button data-mpause aria-pressed="' + M.paused + '">' + (M.paused ? "resume" : "pause") + '</button><button data-mexport>export</button></h4>' +
+        '<div class="calls"><table><colgroup><col class="t"><col><col class="k"><col class="l"></colgroup><tbody>' + rows.map((r) => '<tr class="' + (r.kind === "load" ? "load" : "") + (r.id > M.fresh ? " new" : "") + '"><td>' + r.t + '</td><td class="m">' + esc(r.m) + "</td><td>" + esc(r.tok) + "</td><td>" + (r.kind === "call" ? '<span class="lat"><b class="' + (r.ms > 3000 ? "slow" : "") + '" style="width:' + Math.round(r.ms / maxMs * 30) + 'px"></b>' + (r.ms / 1000).toFixed(1) + " s</span>" : "") + "</td></tr>").join("") + "</tbody></table></div></section>" +
+      '<section class="pane w5"><h4>Usage<span class="sp"></span><span style="letter-spacing:0;text-transform:none;font-weight:400">today</span></h4><div class="usage">' +
+        '<div class="row"><span>tokens</span><b>182,400</b></div><div class="hours">' + HOURS.map((v, i) => '<span class="' + (i === 9 ? "now" : "") + '" style="height:' + Math.max(3, Math.round(v / 14 * 100)) + '%" title="' + i + ':00 · ' + v + 'k"></span>').join("") + '</div><div class="axis"><span>00</span><span>06</span><span>12</span><span>18</span><span>24</span></div>' +
+        '<div class="row"><span>turns</span><b>37</b></div><div class="okbar" title="35 done · 2 failed"><b style="width:94.6%"></b><i style="width:5.4%"></i></div><div class="axis"><span>35 done</span><span>2 failed</span></div>' +
+      "</div></section>" +
+      '<section class="pane w7"><h4>Logs<span class="sp"></span>' + lv.map((v) => '<button data-mlvl="' + v + '" aria-pressed="' + (M.lvl === v) + '">' + v + "+</button>").join("") + '<input id="logq" type="search" placeholder="search" aria-label="Search logs" value="' + esc(M.q) + '"></h4>' +
+        '<div class="logs">' + (logs.map((l) => '<div><span class="t">' + l.t + '</span><span class="lv ' + l.lv + '">' + l.lv + '</span><span class="x">' + esc(l.x) + "</span></div>").join("") || '<div class="hid">No lines at this level.</div>') + '<div class="hid">' + M.calls.filter((r) => r.kind === "call").length + " model-call lines are in the stream, not here</div></div></section>" +
+      '<section class="pane w5"><h4>Diagnostics<span class="sp"></span><button data-mrun>run checks</button></h4><ul class="checks2">' +
+        [["●", "", "Backend", "ok · 12 ms"], ["●", "", "Voice", "Parakeet · ready"], ["●", "", "Models", "2 loaded"], ["●", "", "App memory", "412 MB"], ["◐", "w", "GPU", "78% VRAM"], ["●", "", "Keyring", "API key saved"]].map((d) => '<li><span class="st ' + d[1] + '">' + d[0] + "</span>" + d[2] + "<small>" + d[3] + "</small></li>").join("") +
+      "</ul></section></div>";
+    M.fresh = M.calls[0].id;
+    if (keep) { const i = $("logq"); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }
+  }
+  $("content").addEventListener("click", (e) => {
+    if (D.place !== "monitor") return;
+    const t = e.target.closest("button"); if (!t) return;
+    if (t.dataset.mshow) M.show = t.dataset.mshow;
+    else if (t.hasAttribute("data-mpause")) M.paused = !M.paused;
+    else if (t.dataset.mlvl) M.lvl = t.dataset.mlvl;
+    else if (t.hasAttribute("data-mexport")) { toast($("dwing"), "Exported " + M.calls.length + " lines as JSONL · same as today"); return; }
+    else if (t.hasAttribute("data-mrun")) { toast($("dwing"), "Ran 6 checks · 5 pass, 1 warning"); return; }
+    else return;
+    renderMonitor($("content"));
+  });
+  $("content").addEventListener("input", (e) => { if (e.target.id === "logq" && D.place === "monitor") { M.q = e.target.value; renderMonitor($("content")); } });
+  const MODELS = [["qwen3-4b", "612 → 88", 900], ["qwen3-30b-a3b", "1,880 → 240", 1500], ["qwen3-4b", "430 → 61", 700], ["qwen3-30b-a3b", "3,020 → 410", 3400]];
+  if (!RM) setInterval(() => {
+    if (M.paused || document.hidden) return;
+    const d = new Date(), pick = MODELS[M.seq % MODELS.length];
+    M.calls.unshift({ id: ++M.seq, t: d.toTimeString().slice(0, 8), kind: "call", m: pick[0], tok: pick[1], ms: pick[2] });
+    M.calls.length = Math.min(M.calls.length, 40);
+    if (D.place === "monitor" && !$("dwing").querySelector(".menu")) renderMonitor($("content"));
+  }, 2600);
+
+  // ── workspace hub: every tool stays; Views is one more lane ──
+  function renderHub(c) {
+    c.innerHTML = '<div class="hubbar"><span class="folder">▸ iris-voice</span><span class="cur">router.py</span><span>budget.py</span><span>test_router.py</span></div>' +
+      '<div class="lanes">' +
+      '<div class="lane"><h4>Terminal<small>pwsh</small></h4><div class="lb term"><div><span class="p">❯</span> pytest tests/unit/test_router.py -q</div><div>12 passed in 0.84s</div><div><span class="p">❯</span> git status</div><div> M backend/agent/inference/router.py</div></div></div>' +
+      '<div class="lane"><h4>Tasks<small>3</small></h4><div class="lb"><div class="kcard">Fix the router cap<small>#T-38 · done</small></div><div class="kcard">Budget rules page<small>#A-12 · kept</small></div><div class="kcard">Check other callers<small>helper strand · running</small></div></div></div>' +
+      '<div class="lane"><h4>Archive<small>14 items</small></h4><div class="lb"><div>snapshots · 3</div><div>closed tabs · 11</div></div></div>' +
+      '<div class="lane views" id="views"><h4>Views<small>from the chat</small></h4><div class="lb">' + (D.views.length ? D.views.map(viewCard).join("") : '<div class="empty">Drag an artifact or a ± diff here. It stays open beside your tools.</div>') + "</div></div>" +
+      "</div>";
+    const v = $("views");
+    v.addEventListener("dragover", (e) => { e.preventDefault(); v.classList.add("over"); });
+    v.addEventListener("dragleave", () => v.classList.remove("over"));
+    v.addEventListener("drop", (e) => { e.preventDefault(); v.classList.remove("over"); const k = e.dataTransfer.getData("text/plain"); if (k === "art" || k === "diff") { D.views.push(k); render(); toast($("dwing"), "Added to Views. The terminal, tasks and archive stay."); } });
+    v.addEventListener("click", (e) => { const b = e.target.closest("[data-unview]"); if (b) { D.views.splice(+b.dataset.unview, 1); render(); } });
+  }
+  function viewCard(k, i) {
+    if (k === "art") return '<div class="vcard"><div class="t"><span style="color:var(--b1)">▤</span><span>Router budget plan</span><button data-unview="' + i + '" aria-label="Close view">×</button></div><pre>1. Keep 256 tokens for the system frame.\n2. Never trim the newest user turn.</pre></div>';
+    return '<div class="vcard"><div class="t"><span style="color:var(--ok)">±</span><span>router.py · +4 −1</span><button data-unview="' + i + '" aria-label="Close view">×</button></div><pre><span class="del">- budget = window - max_tokens</span>\n<span class="add">+ budget = window - max_tokens - _RESERVE</span></pre></div>';
+  }
+  document.addEventListener("dragstart", (e) => { const d = e.target.closest && e.target.closest("[data-drag]"); if (d) { e.dataTransfer.setData("text/plain", d.dataset.drag); if (D.place !== "hub") { D.view = "Surfaces"; D.place = D.last.Surfaces = "hub"; railY = null; render(); } } });
+
+  // ── composer: # (what) and @ (who), with the "stays text" rules ──
+  const REFS_IRIS = [{ k: "#T-38", t: "task card · router window test" }, { k: "#A-12", t: "artifact · router budget plan" }, { k: "#rules/3", t: "strand turn · budget rules" }, { k: "#strand:rules", t: "strand · budget rules" }];
+  const REFS_PROJ = [{ k: "src/", t: "folder · 41 files", path: "backend/agent/inference/" }, { k: "router.py", t: "open file", path: "backend/agent/inference/router.py" }, { k: "budget.py", t: "file", path: "backend/agent/inference/budget.py" }, { k: "test_router.py", t: "file", path: "tests/unit/test_router.py" }];
+  const WHO = [{ k: "@iris", t: "your agent" }, { k: "@ana", t: "Ana · shares this strand" }, { k: "@swarm", t: "helpers · they get their own strand" }];
+  const C = { to: ["@iris"], refs: [], pick: null, sel: 0 };
+  function renderTray() {
+    $("tray").innerHTML = C.to.map((w, i) => '<span class="' + (i === 0 ? "to" : "chip who2") + '">' + (i === 0 ? "to " : "") + esc(w) + (i ? '<button data-unto="' + i + '" aria-label="Remove ' + esc(w) + '">×</button>' : "") + "</span>").join("") +
+      C.refs.map((r, i) => '<span class="chip' + (r.path ? " path" : "") + '" title="' + esc(r.path || r.t) + '">' + esc(r.path ? r.k : r.k) + '<button data-unref="' + i + '" aria-label="Remove ' + esc(r.k) + '">×</button></span>').join("") +
+      '<span class="hint" style="font-size:10.5px">' + (C.refs.length ? "IRIS gets these addresses, never the content" : "# what you point at · @ who hears") + "</span>";
+  }
+  // a sign opens the list only at a word start, outside code, and not as a line-start heading
+  function trigger(text, pos) {
+    const before = text.slice(0, pos), m = /(^|[\s(])([#@])([\w./:-]*)$/.exec(before);
+    if (!m) return null;
+    const ticks = (before.match(/`/g) || []).length; if (ticks % 2 === 1) return null;
+    const fences = (before.match(/```/g) || []).length; if (fences % 2 === 1) return null;
+    const lineStart = /(^|\n)$/.test(before.slice(0, before.length - m[2].length - m[3].length));
+    if (m[2] === "#" && lineStart && m[3] === "" && /^\s/.test(text.slice(pos))) return null;
+    return { sign: m[2], q: m[3].toLowerCase(), at: before.length - m[2].length - m[3].length };
+  }
+  function renderPop() {
+    const old = $("pop"); if (old) old.remove(); if (!C.pick) return;
+    const q = C.pick.q, f = (arr) => arr.filter((r) => (r.k + " " + r.t + " " + (r.path || "")).toLowerCase().includes(q));
+    let html = "", items = [];
+    if (C.pick.sign === "@") { const w = f(WHO); items = w.map((r) => ({ r, kind: "who" })); html += '<div class="ph">Who hears this<small>@</small></div>' + w.map((r, i) => '<button data-pi="' + i + '"><b class="w">' + esc(r.k) + "</b><span>" + esc(r.t) + "</span></button>").join(""); }
+    else {
+      const a = f(REFS_IRIS), b = f(REFS_PROJ);
+      a.forEach((r) => items.push({ r, kind: "iris" })); b.forEach((r) => items.push({ r, kind: "proj" }));
+      if (a.length) html += '<div class="ph">IRIS made<small>cards · artifacts · turns · strands</small></div>' + a.map((r, i) => '<button data-pi="' + i + '"><b>' + esc(r.k) + "</b><span>" + esc(r.t) + "</span></button>").join("");
+      if (b.length) html += '<div class="ph">This project<small>iris-voice</small></div>' + b.map((r, i) => '<button data-pi="' + (a.length + i) + '"><b class="p">▸ ' + esc(r.k) + "</b><span>" + esc(r.path) + "</span></button>").join("");
+    }
+    if (!items.length) html = '<div class="ph">Nothing matches<small>Esc keeps the sign as text</small></div>';
+    C.items = items; C.sel = Math.min(C.sel, Math.max(0, items.length - 1));
+    const d = document.createElement("div"); d.className = "pop"; d.id = "pop"; d.innerHTML = html; $("comp").appendChild(d);
+    d.querySelectorAll("[data-pi]").forEach((b) => b.classList.toggle("sel", +b.dataset.pi === C.sel));
+    d.addEventListener("mousedown", (e) => { const b = e.target.closest("[data-pi]"); if (b) { e.preventDefault(); choose(+b.dataset.pi); } });
+  }
+  function choose(i) {
+    const it = C.items && C.items[i]; if (!it) return;
+    const ta = $("ta"), pos = ta.selectionStart, v = ta.value;
+    ta.value = v.slice(0, C.pick.at) + v.slice(pos); ta.selectionStart = ta.selectionEnd = C.pick.at;
+    if (it.kind === "who") { if (!C.to.includes(it.r.k)) C.to.push(it.r.k); }
+    else if (!C.refs.some((r) => r.k === it.r.k)) C.refs.push(it.r);
+    C.pick = null; renderTray(); renderPop(); ta.focus();
+  }
+  $("ta").addEventListener("input", () => { const ta = $("ta"); C.pick = trigger(ta.value, ta.selectionStart); C.sel = 0; renderPop(); });
+  $("ta").addEventListener("keydown", (e) => {
+    if (!C.pick) return;
+    const n = (C.items || []).length;
+    if (e.key === "ArrowDown" && n) { e.preventDefault(); C.sel = (C.sel + 1) % n; renderPop(); }
+    else if (e.key === "ArrowUp" && n) { e.preventDefault(); C.sel = (C.sel - 1 + n) % n; renderPop(); }
+    else if ((e.key === "Enter" || e.key === "Tab") && n) { e.preventDefault(); choose(C.sel); }
+    else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); C.pick = null; renderPop(); }
+  });
+  $("ta").addEventListener("blur", () => setTimeout(() => { C.pick = null; renderPop(); }, 120));
+  $("tray").addEventListener("click", (e) => { const a = e.target.closest("[data-unref]"), b = e.target.closest("[data-unto]"); if (a) C.refs.splice(+a.dataset.unref, 1); if (b) C.to.splice(+b.dataset.unto, 1); renderTray(); });
+
+  // ── canvases ──
+  function drawRail(now) {
+    const cv = $("railCv"), rail = $("rail"), [c, w, h] = fitCanvas(cv); c.clearRect(0, 0, w, h);
+    const x = 15, top = 8, bottom = rail.scrollHeight - 8;
+    const fl = RM ? 0 : (now * .012) % 7;
+    for (let y = top + fl; y < bottom; y += 7) { const r = hh(Math.round(y - fl)); c.fillStyle = trailColor(.35 + .3 * r, .1 + r * .18, B.d2 * .5); c.beginPath(); c.arc(x + (r - .5) * 1.6, y, .45 + r * .8, 0, 6.283); c.fill(); }
+    rail.querySelectorAll("[data-place]").forEach((b) => {
+      const y = b.offsetTop + b.offsetHeight / 2, cur = b.getAttribute("aria-current") === "true";
+      c.fillStyle = cur ? css("--b2") : "rgba(138,146,168,.55)";
+      c.beginPath(); c.arc(x, y, cur ? 3 : 2.2, 0, 6.283); c.fill();
+      if (!cur) { c.fillStyle = "#04050c"; c.beginPath(); c.arc(x, y, 1.1, 0, 6.283); c.fill(); }
+    });
+    const cur = rail.querySelector('[aria-current="true"]');
+    if (cur) {
+      const ty = cur.offsetTop + cur.offsetHeight / 2;
+      railY = railY == null || RM ? ty : railY + (ty - railY) * .12;
+      drawXur(c, x, railY, 10, now, { s: .55, n: 44, speed: 1.2, dot: .9, shift: B.d2 });
+    }
+  }
+  let railY = null;
+  function drawSpine(now) {
+    const [c, w, h] = fitCanvas($("cspine")); c.clearRect(0, 0, w, h);
+    const fl = RM ? 0 : (now * .02) % 6;
+    for (let y = fl; y < h; y += 6) { const r = hh(Math.round(y - fl) * 1.7); c.fillStyle = trailColor(.5 + .5 * Math.sin(y / 160 - now / 4000), .12 + r * .3); c.beginPath(); c.arc(18 + Math.sin(y / 50 + now / 2400) * 2, y, .5 + r, 0, 6.283); c.fill(); }
+  }
+  function frame(now) {
+    const hc = $("heroCv").getContext("2d"); hc.setTransform(1, 0, 0, 1, 0, 0); hc.clearRect(0, 0, 600, 600); drawXur(hc, 300, 300, 150, now, { s: .55, n: 120, speed: .7, dot: 9 });
+    const cx = $("cxur").getContext("2d"); cx.clearRect(0, 0, 88, 88); drawXur(cx, 44, 44, 22, now, { s: .55, n: 64, speed: 1, dot: 2 });
+    const dx = $("dxur").getContext("2d"); dx.clearRect(0, 0, 88, 88); drawXur(dx, 44, 44, 22, now, { s: .55, n: 64, speed: .8, dot: 2, shift: B.d2 });
+    drawEdge("cedge", "chat", now, spot === "chat", "--b1"); drawEdge("dedge", "dash", now, spot === "dash", "--b2");
+    drawRail(now); drawSpine(now);
+    if (!RM && !document.hidden) requestAnimationFrame(frame);
+  }
+  document.addEventListener("visibilitychange", () => { if (!document.hidden && !RM) requestAnimationFrame(frame); });
+
+  setBrand(THEMES[0]); renderTray(); render(); setSpot("none");
+  requestAnimationFrame(frame);
+  if (RM) window.addEventListener("resize", () => requestAnimationFrame(frame));
+})();
+</script>

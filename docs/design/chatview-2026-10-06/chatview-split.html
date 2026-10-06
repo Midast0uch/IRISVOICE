@@ -1,0 +1,654 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"></head><body>
+<title>IRIS ChatView Split</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600;700&display=swap">
+<style>
+/* Layout: a reading column for the explanation, then a wide stage where the two IRIS wings
+   (personal | developer) play ONE recorded turn side by side, with the event stream under them.
+   Dark-only on purpose: IRIS is a dark glass widget, and the mock must look like the app. */
+:root{
+  color-scheme: dark;
+  --bg:#050510;          /* app backdrop behind the wings */
+  --wing:#0a0b16;        /* wing glass */
+  --wing-2:#070814;      /* matrix well */
+  --line:rgba(255,255,255,.07);
+  --fg:#e5e5e5;
+  --muted:#8b93a7;
+  --dim:rgba(229,229,229,.42);
+  --glow:#00d4ff;        /* IRIS brand glow (GLOW in cli-preview) */
+  --glow-soft:rgba(0,212,255,.14);
+  --run:#f2c14e;         /* running orb / waiting */
+  --ok:#5fcf98;          /* crystallized / made / allowed */
+  --bad:#ff7a6e;         /* failed / denied */
+  --sub:#c69bff;         /* sub-loop chamber / question */
+  --page:#0b0d16;        /* explanation panels */
+  --sans:"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono:"JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:15px/1.6 var(--sans);margin:0}
+.wrap{padding-inline:16px;padding-block:28px 64px;max-width:1240px;margin:0 auto}
+.col{max-width:72ch}
+h1{font:600 30px/1.2 var(--sans);letter-spacing:-.01em;margin:0 0 6px;text-wrap:balance}
+h2{font:600 20px/1.3 var(--sans);margin:44px 0 10px;text-wrap:balance}
+h3{font:600 15px/1.4 var(--sans);margin:22px 0 8px}
+p{margin:0 0 12px}
+.eyebrow{font:600 11px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--glow);margin-bottom:12px}
+.lede{color:#c9cfdb}
+.muted{color:var(--muted)}
+code,kbd{font-family:var(--mono);font-size:.86em}
+code{background:rgba(255,255,255,.06);padding:1px 5px;border-radius:4px}
+kbd{border:1px solid rgba(255,255,255,.18);border-bottom-width:2px;border-radius:4px;padding:0 5px;color:#dfe6f2}
+.tag{display:inline-block;font:600 10px/1 var(--mono);letter-spacing:.06em;padding:4px 6px;border-radius:4px;vertical-align:middle}
+.t3{background:rgba(0,212,255,.12);color:var(--glow)}
+.t4{background:rgba(242,193,78,.12);color:var(--run)}
+.tb{background:rgba(95,207,152,.12);color:var(--ok)}
+
+/* ── stage controls ─────────────────────────────────────────── */
+.controls{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center;margin:18px 0 14px;padding:12px 14px;background:var(--page);border:1px solid var(--line);border-radius:10px}
+.ctl{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.ctl > span{font:600 10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--muted);margin-right:2px}
+.seg{font:500 12px/1 var(--sans);color:#c9cfdb;background:transparent;border:1px solid rgba(255,255,255,.12);border-radius:999px;padding:7px 11px;cursor:pointer}
+.seg[aria-pressed="true"]{color:var(--glow);border-color:var(--glow);background:var(--glow-soft)}
+.seg:focus-visible,.btn:focus-visible,.chev:focus-visible,button:focus-visible{outline:2px solid var(--glow);outline-offset:2px}
+.play{font:600 12px/1 var(--sans);color:#06121a;background:var(--glow);border:0;border-radius:999px;padding:8px 14px;cursor:pointer}
+.status{font:12px/1.4 var(--mono);color:var(--muted);min-height:1.4em}
+.status b{color:var(--run);font-weight:600}
+
+/* ── the two wings ──────────────────────────────────────────── */
+.stage{display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start;justify-content:center}
+figure{margin:0;min-width:0;display:flex;flex-direction:column;gap:8px}
+figcaption{font:600 11px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted);display:flex;gap:8px;align-items:center}
+.wing{width:min(var(--wing-w,510px),calc(100vw - 32px));height:620px;display:flex;flex-direction:column;border-radius:12px;overflow:hidden;
+  background:linear-gradient(135deg,rgba(10,11,22,.97),rgba(6,7,14,.99));border:1px solid rgba(0,212,255,.13);
+  box-shadow:inset 0 1px 1px rgba(255,255,255,.05),0 0 0 1px rgba(0,0,0,.8),0 20px 60px rgba(0,0,0,.5);transition:width .25s ease}
+.whead{height:40px;flex:none;display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid var(--line);background:rgba(0,0,0,.35)}
+.pulse{width:8px;height:8px;border-radius:50%;background:var(--glow);box-shadow:0 0 6px var(--glow)}
+.whead b{font:700 13px/1 var(--sans);letter-spacing:.08em}
+.whead small{font:10px/1 var(--mono);color:var(--dim)}
+.whead .sp{flex:1}
+.whead .ic{width:18px;height:18px;border-radius:4px;border:1px solid rgba(255,255,255,.12)}
+.folder{height:28px;flex:none;display:flex;align-items:center;gap:6px;padding:0 10px;border-bottom:1px solid rgba(0,212,255,.08);font:10px/1 var(--mono);color:var(--glow)}
+.folder span{background:rgba(0,212,255,.12);border:1px solid rgba(0,212,255,.25);border-radius:4px;padding:3px 7px}
+.scroll{flex:1;overflow-y:auto;overflow-x:hidden;padding:12px;display:flex;flex-direction:column;gap:10px;scroll-behavior:smooth;overscroll-behavior:contain}
+.compose{flex:none;border-top:1px solid var(--line);padding:10px 12px;display:flex;gap:8px;align-items:center}
+.compose .box{flex:1;min-width:0;border:1px solid rgba(255,255,255,.12);border-radius:999px;padding:8px 14px;font:12px/1 var(--sans);color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wing.dev .compose .box{border-radius:6px;font-family:var(--mono)}
+.empty{margin:auto;text-align:center;color:var(--dim);font-size:12px}
+
+/* ── personal mode parts ─────────────────────────────────────── */
+.ubub{align-self:flex-end;max-width:85%;background:rgba(0,212,255,.10);border:1px solid rgba(0,212,255,.22);border-radius:12px 12px 4px 12px;padding:8px 12px;font-size:13px;line-height:1.5}
+.gc{border:1px solid rgba(255,255,255,.09);border-left:2px solid var(--vein,var(--glow));background:rgba(255,255,255,.03);border-radius:10px;padding:9px 10px;min-width:0}
+.gc .row{display:flex;gap:10px;align-items:center;min-width:0}
+.gc .ico{flex:none;width:28px;height:28px;border-radius:8px;display:grid;place-items:center;font:600 13px/1 var(--mono);background:rgba(0,212,255,.12);color:var(--glow)}
+.gc .tt{flex:1;min-width:0;display:flex;flex-direction:column}
+.gc .tt b{font:600 13px/1.3 var(--sans);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.gc .tt span{font-size:11px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chev{flex:none;background:none;border:0;color:var(--glow);font:14px/1 var(--mono);cursor:pointer;padding:4px 6px;border-radius:4px}
+.btn{font:500 11px/1 var(--sans);color:#d6dcea;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.14);border-radius:6px;padding:6px 9px;cursor:pointer;white-space:nowrap}
+.btn.go{color:#1a1203;background:var(--run);border-color:var(--run)}
+.btn.pick{color:#e9ddff;border-color:rgba(198,155,255,.4)}
+.steps{list-style:none;margin:8px 0 0;padding:6px 0 0 4px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:4px}
+.steps li{display:flex;gap:8px;align-items:center;font-size:12px;min-width:0}
+.steps li .tx{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#cfd6e3}
+.steps li .rs{flex:none;font:10px/1 var(--mono);color:var(--muted)}
+.steps li.sub{padding-left:16px}
+.dot{flex:none;width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,.2)}
+.dot.running,.dot.waiting{background:var(--run);animation:breathe 1.4s ease-in-out infinite}
+.dot.done{background:var(--glow)}
+.dot.failed{background:var(--bad)}
+.dot.made{background:var(--ok)}
+.live{margin-top:6px;font-size:11px;color:var(--run);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.think{font-size:11px;color:var(--muted);font-style:italic;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;gap:6px;align-items:center}
+.think i{font-style:normal;color:var(--run)}
+.reply{font-size:13px;line-height:1.6;color:rgba(255,255,255,.9);min-width:0}
+.reply .lbl{font:600 10px/1 var(--mono);letter-spacing:.12em;color:var(--glow);margin-bottom:6px}
+.reply p{margin:0 0 8px}
+.reply ul{margin:0 0 8px;padding-left:18px}
+.reply code{font-size:11.5px}
+.caret{display:inline-block;width:7px;height:13px;background:var(--glow);vertical-align:-2px;margin-left:2px;animation:blink 1s steps(2) infinite}
+.actions{display:flex;gap:4px;margin-top:2px}
+.actions button{background:none;border:0;color:var(--dim);font:11px/1 var(--sans);padding:4px 6px;border-radius:4px;cursor:pointer}
+.cmd{font:11.5px/1.5 var(--mono);background:rgba(0,0,0,.35);border-radius:6px;padding:6px 8px;margin:8px 0;overflow-x:auto;white-space:pre}
+.risk{font-size:11px;color:#f6d58a;margin:6px 0 0}
+.btnrow{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end;margin-top:8px}
+.ring{flex:none;font:600 11px/1 var(--mono);color:var(--run)}
+.receipt{font-size:11.5px;color:var(--muted);display:flex;gap:6px;align-items:baseline;min-width:0}
+.receipt .x{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#cfd6e3;min-width:0}
+.okc{color:var(--ok)} .badc{color:var(--bad)}
+.opts{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.peek{margin-top:8px;height:64px;border-radius:6px;background:repeating-linear-gradient(180deg,rgba(255,255,255,.05) 0 6px,transparent 6px 14px),rgba(0,0,0,.25)}
+.err{border:1px solid rgba(255,122,110,.35);background:rgba(255,122,110,.07);border-radius:10px;padding:9px 10px;font-size:12px;display:flex;gap:10px;align-items:center}
+.err b{color:var(--bad);font-weight:600}
+.sep{height:1px;background:var(--line);margin:4px 0}
+
+/* ── developer mode parts (the live matrix) ─────────────────── */
+.wing.dev .scroll{font:12.5px/1.55 var(--mono);gap:8px}
+.pl{color:#dfe6f2;word-break:break-word}
+.pl .ps{color:var(--glow);font-weight:700}
+.mx{border:1px solid rgba(0,212,255,.22);border-radius:6px;background:var(--wing-2);padding:6px 8px;min-width:0}
+.mh{display:flex;gap:8px;align-items:center;min-width:0}
+.mh .k{color:#7fe3ff;font-weight:700;flex:none}
+.mh .t{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:#fff;font-weight:600}
+.mh .n{flex:none;color:var(--muted);font-size:11px}
+.thk{display:flex;gap:8px;min-width:0;color:var(--muted);font-size:11.5px;margin:2px 0 4px}
+.thk .k{color:var(--run);font-weight:700;flex:none}
+.thk .t{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-style:italic}
+.mbody{border-top:1px solid rgba(0,212,255,.12);padding-top:4px;margin-top:2px}
+.mr{display:flex;gap:8px;align-items:center;min-width:0;min-height:21px;animation:rowin .28s ease-out}
+.mr .rail{flex:none;width:10px;color:rgba(255,255,255,.22);text-align:center}
+.mr .orb{flex:none;width:12px;text-align:center}
+.mr .vb{flex:none;width:6.2ch;font-weight:700}
+.mr .tg{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:rgba(255,255,255,.82)}
+.mr .rs{flex:none;font-size:11px;color:var(--muted);max-width:42%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mr .chev{font-size:12px;padding:0 4px}
+.s-pending .orb,.s-pending .vb{color:rgba(255,255,255,.35)}
+.s-running .orb,.s-waiting .orb{color:var(--run);animation:breathe 1.4s ease-in-out infinite}
+.s-running .vb,.s-waiting .vb{color:var(--run)}
+.s-done .orb,.s-done .vb{color:#7fe3ff}
+.s-failed .orb,.s-failed .vb{color:var(--bad)}
+.s-made .orb,.s-made .vb{color:var(--ok)}
+.s-ask .vb{color:var(--sub)}
+.chamber{margin:2px 0 2px 18px;border:1px dashed rgba(198,155,255,.35);border-radius:6px;padding:2px 6px 4px;animation:rowin .28s ease-out}
+.chamber .cl{color:var(--sub);font-weight:700;font-size:11.5px}
+.det{margin:2px 0 4px 30px;border-left:1px solid rgba(255,255,255,.12);padding:4px 8px;font-size:11.5px;color:#c4cad6;white-space:pre-wrap;word-break:break-word;background:rgba(255,255,255,.02)}
+.det .add{color:var(--ok)} .det .del{color:var(--bad)} .det .more{color:var(--dim)}
+.wait{margin:2px 0 4px 30px;color:#dfe6f2;font-size:11.5px;display:flex;flex-wrap:wrap;gap:4px 10px}
+.wait button{background:none;border:0;color:#dfe6f2;font:inherit;cursor:pointer;padding:0}
+.wait .k{color:var(--glow)}
+.mem{color:var(--muted);font-size:11px;margin-top:4px}
+.fold{display:flex;gap:8px;align-items:center;min-width:0;cursor:pointer;background:none;border:0;color:inherit;font:inherit;padding:0;width:100%;text-align:left}
+.fold .t{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ans{color:rgba(255,255,255,.9);min-width:0;word-break:break-word}
+.ans p{margin:0 0 6px}
+.ans ul{margin:0 0 6px;padding-left:2ch}
+.ans code{background:none;color:#7fe3ff;padding:0}
+.ans strong{color:#fff}
+.artl{display:flex;gap:8px;align-items:center;min-width:0}
+.artl .t{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.artl button{background:none;border:0;color:#7fe3ff;font:inherit;cursor:pointer;padding:0}
+.derr{color:var(--bad)}
+.spin::after{content:"⠋";display:inline-block;animation:spin .8s steps(1) infinite}
+
+/* ── event stream ───────────────────────────────────────────── */
+.events{margin-top:16px;background:var(--page);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
+.events h3{margin:0 0 6px;font-size:13px}
+.log{font:11.5px/1.6 var(--mono);height:180px;overflow:auto;white-space:pre;color:#b9c1d0;overscroll-behavior:contain}
+.log .s{color:var(--glow)} .log .e{color:var(--ok)} .log .x{color:var(--bad)} .log .seq{color:var(--dim)}
+
+/* ── the split map ──────────────────────────────────────────── */
+.panel{background:var(--page);border:1px solid var(--line);border-radius:10px;padding:16px;min-width:0}
+.split{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.25fr);gap:16px}
+@media (max-width:820px){.split{grid-template-columns:minmax(0,1fr)}}
+.bar{display:flex;flex-direction:column;gap:3px;font:12px/1.35 var(--mono)}
+.bar div{display:flex;gap:8px;align-items:center;padding:6px 8px;border-radius:5px;background:rgba(255,255,255,.04);min-width:0}
+.bar div span:first-child{flex:none;width:9.5ch;color:var(--muted)}
+.bar div span:last-child{flex:1;min-width:0}
+.tree{font:12.5px/1.75 var(--mono);white-space:pre;overflow-x:auto;color:#cfd6e3}
+.tree .f{color:#fff;font-weight:600} .tree .n{color:var(--muted)} .tree .new{color:var(--glow)} .tree .ex{color:var(--ok)}
+.tablewrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:13px;min-width:560px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font:600 10.5px/1.2 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+td code{white-space:nowrap}
+.qs{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+.q{background:var(--page);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+.q b{display:block;font-size:14px;margin-bottom:4px}
+.q p{font-size:13px;color:#c2c9d6;margin:0}
+.q .now{font-size:12px;color:var(--muted);margin-top:6px}
+
+@keyframes breathe{0%,100%{opacity:1}50%{opacity:.35}}
+@keyframes blink{50%{opacity:0}}
+@keyframes rowin{from{opacity:.0;transform:translateY(-3px)}to{opacity:1;transform:none}}
+@keyframes spin{0%{content:"⠋"}12%{content:"⠙"}25%{content:"⠹"}37%{content:"⠸"}50%{content:"⠼"}62%{content:"⠴"}75%{content:"⠦"}87%{content:"⠧"}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}.scroll{scroll-behavior:auto}}
+</style>
+
+<div class="wrap">
+  <div class="col">
+    <div class="eyebrow">Execution audit · Phase 3 + Phase 4 · design glimpse</div>
+    <h1>IRIS ChatView Split</h1>
+    <p class="lede">Today one 5,645-line file reads twenty kinds of messages and guesses which ones belong to which reply. The split gives every reply one folder with numbered pages, and every kind of page gets its own small viewer.</p>
+    <p class="muted">Press <b>Play turn</b>. Both wings draw the same recorded turn from one event stream. The left wing is personal mode. The right wing is developer mode with the live execution matrix. When IRIS asks for permission or asks a question, the turn waits for you. Answer in either wing, and both wings change, because they read one store. The content is made up to show the layout.</p>
+    <p class="muted">Tags: <span class="tag t3">P3</span> turn protocol + store + split &nbsp;<span class="tag t4">P4</span> live matrix &nbsp;<span class="tag tb">B</span> reply-surface Phase B (compact cards, receipts), which builds on Phase 3.</p>
+  </div>
+
+  <div class="controls" role="group" aria-label="Preview controls">
+    <div class="ctl" id="scen"><span>Turn</span>
+      <button class="seg" data-s="fix" aria-pressed="true">Fix a failing test</button>
+      <button class="seg" data-s="research" aria-pressed="false">Research + page</button>
+      <button class="seg" data-s="cmd" aria-pressed="false">&gt;cmd</button>
+      <button class="seg" data-s="error" aria-pressed="false">Error turn</button>
+    </div>
+    <div class="ctl" id="width"><span>Wing</span>
+      <button class="seg" data-w="360" aria-pressed="false">360</button>
+      <button class="seg" data-w="510" aria-pressed="true">510</button>
+      <button class="seg" data-w="680" aria-pressed="false">680</button>
+    </div>
+    <div class="ctl"><button class="play" id="play">▶ Play turn</button><button class="seg" id="instant" aria-pressed="false">Skip to end</button></div>
+    <div class="status" id="status" aria-live="polite">Ready. Pick a turn and press Play.</div>
+  </div>
+
+  <div class="stage">
+    <figure>
+      <figcaption>Personal mode <span class="tag tb">B</span></figcaption>
+      <div class="wing" id="wp">
+        <div class="whead"><span class="pulse"></span><b>IRIS</b><span class="sp"></span><span class="ic"></span><span class="ic"></span><span class="ic"></span></div>
+        <div class="scroll" id="sp"><div class="empty">Start a conversation<br><small>How can I help you today?</small></div></div>
+        <div class="compose"><div class="box">Ask IRIS…</div></div>
+      </div>
+    </figure>
+    <figure>
+      <figcaption>Developer mode <span class="tag t4">P4</span></figcaption>
+      <div class="wing dev" id="wd">
+        <div class="whead"><span class="pulse"></span><b>IRIS</b><small>CLI</small><span class="sp"></span><span class="ic"></span><span class="ic"></span><span class="ic"></span></div>
+        <div class="folder"><span>▸ IRISVOICE</span></div>
+        <div class="scroll" id="sd"><div class="empty">iris@dev ›</div></div>
+        <div class="compose"><div class="box">❯ type, &gt;cmd or /run</div></div>
+      </div>
+    </figure>
+  </div>
+
+  <div class="events">
+    <h3>Event stream <span class="tag t3">P3</span> <span class="muted" style="font-weight:400;font-size:12px">one <code>turn.start</code>, numbered <code>turn.part</code> events, exactly one <code>turn.end</code></span></h3>
+    <div class="log" id="log" tabindex="0" aria-label="Turn protocol events">(no events yet)</div>
+  </div>
+
+  <div class="col">
+    <h2>How the file splits</h2>
+    <p>Think of today's chat view as one clerk at a front desk. Twenty couriers drop envelopes, and the clerk matches them to replies by reading the turn number on each one. When a match fails, a card goes to the "orphan" pile or a reply goes to the wrong thread.</p>
+    <p>After the split, the backend sends one numbered folder per turn. One store files the pages. Small viewers only draw what the store holds, and they do not guess.</p>
+  </div>
+
+  <div class="split">
+    <div class="panel">
+      <h3 style="margin-top:0">Today: <code>components/chat-view.tsx</code></h3>
+      <p class="muted" style="font-size:13px">5,645 lines · 39 useState · 39 useEffect · 20 window listeners</p>
+      <div class="bar">
+        <div><span>370–1100</span><span>conversations, hydration, card store glue</span></div>
+        <div><span>1100–2060</span><span>20 <code>iris:*</code> listeners that guess the turn</span></div>
+        <div><span>2067–2400</span><span>send (chat, <code>&gt;cmd</code>, <code>/run</code>, dev routing)</span></div>
+        <div><span>2405–3010</span><span>thread + message actions, upload, permissions</span></div>
+        <div><span>3141–3700</span><span>frame, header, notifications, history</span></div>
+        <div><span>3696–4822</span><span>timeline, bubbles, cards, orphan pile</span></div>
+        <div><span>4823–5005</span><span>document modal + panel</span></div>
+        <div><span>5011–5644</span><span>composer: slash menu, @mentions, toolbar</span></div>
+      </div>
+    </div>
+    <div class="panel">
+      <h3 style="margin-top:0">After: one store, small views</h3>
+<div class="tree"><span class="new">backend/agent/turn_protocol.py</span>   <span class="n">schema + emit; turn.end guard</span>
+<span class="new">lib/turns/protocol.ts</span>            <span class="n">generated from the schema</span>
+<span class="new">lib/turns/turnStore.ts</span>           <span class="n">reducer, useSyncExternalStore</span>
+
+<span class="f">ChatShell.tsx</span>  <span class="n">frame, wing geometry, panels</span>
+├─ ChatHeader · HistoryPanel · NotificationsPanel
+├─ <span class="ex">WorkspaceTabBar</span>  <span class="n">(exists)</span>
+├─ <span class="f">Timeline.tsx</span>  <span class="n">scroll, pin to bottom</span>
+│  └─ <span class="f">TurnView.tsx</span>  <span class="n">one per turn</span>
+│     ├─ personal → <span class="new">PartView</span> per type
+│     │   text · reasoning · task · artifact
+│     │   permission · question · error
+│     └─ developer → PromptLine
+│         <span class="new">MatrixFrame</span> → MatrixRow
+│           SubLoopChamber · RowDetail
+│         Answer · ArtifactLine
+├─ <span class="f">Composer.tsx</span>  <span class="n">personal | dev</span>
+└─ <span class="ex">DocumentPanel</span>  <span class="n">(exists)</span></div>
+    </div>
+  </div>
+
+  <h3>The part types, and how each mode draws them</h3>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Part</th><th>Personal mode</th><th>Developer mode</th><th>Bug it closes</th></tr></thead>
+    <tbody>
+      <tr><td><code>text</code> delta</td><td>Markdown reply, streams in full</td><td>Markdown in mono under the matrix</td><td>500-char clamp and remount while streaming</td></tr>
+      <tr><td><code>reasoning</code> delta</td><td>One quiet "Thinking" line</td><td><code>THK</code> line: latest sentence only</td><td>Live reasoning had no listener</td></tr>
+      <tr><td><code>todo</code> + <code>tool_call</code> / <code>tool_result</code></td><td>Task card: one live step line, opens to steps</td><td>Matrix rows that appear, run and fold; sub-loop chambers</td><td>9 px ASCII picture that scrolls sideways</td></tr>
+      <tr><td><code>card</code></td><td>Compact named card: icon, title, meta, Open</td><td><code>✦ MADE</code> row + one artifact line</td><td>Card-anchor early return, the orphan pile</td></tr>
+      <tr><td><code>permission</code></td><td>Card in its turn, then a one-line receipt</td><td>Row waits: <kbd>y</kbd> / <kbd>n</kbd></td><td>Cards stacked at the bottom, no record</td></tr>
+      <tr><td><code>question</code></td><td>Options with number keys, then "You chose"</td><td><code>ASK</code> row: <kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd></td><td>Answered questions vanished</td></tr>
+      <tr><td><code>error</code></td><td>Red line in the turn, with Retry</td><td>Failed row + <code>✕ FAILED</code> fold</td><td>Backend errors had no listener</td></tr>
+      <tr><td><code>turn.end</code></td><td>Task card folds; actions appear</td><td>Matrix folds to one line</td><td>Events written to the active thread, not the named one</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="col">
+    <h2>Open for your UX input</h2>
+    <p>Phase 3 has a hard rule: no visual redesign in the same change. So the structure lands first, with today's look in personal mode. The points below are the places where your additions fit best. Tell me what you want in each one, or add new ones.</p>
+  </div>
+  <div class="qs">
+    <div class="q"><b>Motion of the matrix</b><p>How a row is born, how the running orb breathes, how the frame folds at the end.</p><div class="now">Now: a short fade-in, a slow pulse, a one-line fold.</div></div>
+    <div class="q"><b>Parallel nodes</b><p>The DAG runs independent nodes side by side. Should parallel rows show as a group with one bracket, or as plain rows?</p><div class="now">Now: plain rows, more than one orb runs.</div></div>
+    <div class="q"><b>Reasoning in personal mode</b><p>One quiet line, a chevron to the full text, or nothing.</p><div class="now">Now: one line while the turn runs, hidden after.</div></div>
+    <div class="q"><b>Where an artifact opens</b><p>The side panel in the wing, the dashboard wing, or the browser surface.</p><div class="now">Now: "Open" goes to the document panel.</div></div>
+    <div class="q"><b>Permission timer</b><p>The countdown length, and what "Always here" covers (thread, project, or command).</p><div class="now">Now: 20 s in this demo; at zero it denies and says so.</div></div>
+    <div class="q"><b>Turn actions</b><p>Copy, speak, retry, edit, feedback. On every turn, on hover only, or in one menu.</p><div class="now">Now: a small row under the finished reply.</div></div>
+  </div>
+</div>
+
+<script>
+(() => {
+  "use strict";
+  // ── recorded turns: [delay ms, event] — the same stream feeds both wings ──
+  const P = (type, body) => ({ t: "turn.part", type, ...body });
+  const SCEN = {
+    fix: { prompt: "the router test fails after the window change — fix it", title: "Fix the router window test", recalled: "recalled 2 episodes on window budgets", ev: [
+      [400, P("reasoning", { d: "The test fails after the window change. " })],
+      [500, P("todo", { id: "n1", verb: "READ", target: "backend/agent/inference/router.py", status: "pending" })],
+      [80,  P("todo", { id: "n2", verb: "EXEC", target: "pytest tests/unit/test_router.py -q", status: "pending" })],
+      [80,  P("todo", { id: "n3", verb: "PATCH", target: "router.py", status: "pending" })],
+      [80,  P("todo", { id: "n4", verb: "EXEC", target: "re-run router tests", status: "pending" })],
+      [300, P("tool_call", { node: "n1", live: "reading router.py" })],
+      [900, P("tool_result", { node: "n1", ok: true, chip: "419–466" })],
+      [300, P("reasoning", { d: "The cap subtracts max_tokens but not the 256-token reserve. " })],
+      [300, P("tool_call", { node: "n2", live: "pytest tests/unit/test_router.py" })],
+      [1400, P("tool_result", { node: "n2", ok: false, chip: "✗ exit 1", detail: { kind: "out", lines: ["…36 lines above", "FAILED test_router.py::test_cap_respects_reserve", "AssertionError: expected 8192, got 4096", "2 failed, 10 passed in 1.84s"] } })],
+      [400, P("todo", { id: "s1", sub: "find callers", verb: "GREP", target: "_cap_messages_to_window", status: "pending", parent: "n2" })],
+      [200, P("tool_call", { node: "s1", live: "grep _cap_messages_to_window" })],
+      [800, P("tool_result", { node: "s1", ok: true, chip: "3 hits" })],
+      [200, P("todo", { id: "s2", sub: "find callers", verb: "FOLD", target: "only generate() calls it", status: "made", parent: "n2" })],
+      [300, P("reasoning", { d: "Only generate() calls it, so the fix stays local. " })],
+      [300, P("tool_call", { node: "n3", live: "editing router.py" })],
+      [1100, P("tool_result", { node: "n3", ok: true, chip: "+3 −1", detail: { kind: "diff", lines: ["- budget = window - max_tokens", "+ budget = window - max_tokens - _RESERVE"] } })],
+      [300, P("tool_call", { node: "n4", live: "pytest tests/unit/test_router.py" })],
+      [1300, P("tool_result", { node: "n4", ok: true, chip: "✓ 12 passed" })],
+      [300, P("text", { d: "Fixed. The window cap in **`_cap_messages_to_window`** subtracted `max_tokens` but not the 256-token reserve, so long prompts lost half their room.\n\n" })],
+      [500, P("text", { d: "- Added the reserve to the budget (`router.py`, +3 −1).\n- Router tests: 12 passed, 0 failed.\n- Only `generate()` calls the cap, so nothing else changes." })],
+      [500, { t: "turn.end", status: "ok", speak: "Fixed. The router test passes now." }],
+    ]},
+    research: { prompt: "research the three STT engines and give me a comparison page", title: "Compare STT engines", recalled: "recalled 2 memories on your STT pipeline", ev: [
+      [400, P("reasoning", { d: "Three engines, three independent searches. " })],
+      [400, P("todo", { id: "r1", verb: "SEARCH", target: "WhisperX benchmarks", status: "pending" })],
+      [60,  P("todo", { id: "r2", verb: "SEARCH", target: "Parakeet TDT accuracy", status: "pending" })],
+      [60,  P("todo", { id: "r3", verb: "SEARCH", target: "faster-whisper latency on GPU", status: "pending" })],
+      [60,  P("todo", { id: "r4", verb: "EXEC", target: "pip show faster-whisper", status: "pending" })],
+      [60,  P("todo", { id: "r5", verb: "WRITE", target: "comparison page", status: "pending" })],
+      [300, P("tool_call", { node: "r1", live: "searching WhisperX" })],
+      [80,  P("tool_call", { node: "r2", live: "searching Parakeet" })],
+      [80,  P("tool_call", { node: "r3", live: "searching faster-whisper" })],
+      [1100, P("tool_result", { node: "r2", ok: true, chip: "5 src" })],
+      [400, P("tool_result", { node: "r1", ok: true, chip: "6 src" })],
+      [500, P("tool_result", { node: "r3", ok: true, chip: "3 src" })],
+      [300, P("permission", { id: "p1", node: "r4", cmd: "pip show faster-whisper", what: "Run a command in IRISVOICE", risk: "Reads package info · changes nothing", wait: true })],
+      [200, P("tool_call", { node: "r4", live: "pip show faster-whisper" })],
+      [700, P("tool_result", { node: "r4", ok: true, chip: "1.0.3" })],
+      [300, P("tool_call", { node: "r5", live: "writing the page" })],
+      [1300, P("card", { id: "a1", node: "r5", title: "STT engine comparison", kind: "page", meta: "HTML page · table, 2 charts · 14 sources", size: "html · 38 KB" })],
+      [200, P("tool_result", { node: "r5", ok: true, chip: "page", made: true })],
+      [300, P("text", { d: "**WhisperX** is the best fit for your pipeline. It is the fastest on your GPU and has word timing, which your TTS highlight needs.\n\n" })],
+      [500, P("text", { d: "Parakeet was more accurate on clean audio, but it has no Windows build yet. The page has the benchmark table, a latency chart and my sources." })],
+      [400, P("question", { id: "q1", q: "Save this comparison to memory?", options: ["Yes, as a reference", "Only the verdict", "No"], wait: true })],
+      [400, { t: "turn.end", status: "ok", speak: "WhisperX is the best fit. The comparison page is ready." }],
+    ]},
+    cmd: { prompt: ">git status --short", title: "git status --short", cmd: true, ev: [
+      [200, P("todo", { id: "c1", verb: "EXEC", target: "git status --short", status: "pending" })],
+      [100, P("tool_call", { node: "c1", live: "git status --short" })],
+      [700, P("tool_result", { node: "c1", ok: true, chip: "✓ exit 0", open: true, detail: { kind: "out", lines: [" M components/chat-view.tsx", " M hooks/useIRISWebSocket.ts", "?? lib/turns/turnStore.ts"] } })],
+      [200, { t: "turn.end", status: "ok", speak: "" }],
+    ]},
+    error: { prompt: "what changed in the Tauri 2.3 release?", title: "Tauri 2.3 release notes", ev: [
+      [400, P("reasoning", { d: "One search for the release notes. " })],
+      [300, P("todo", { id: "e1", verb: "SEARCH", target: "Tauri 2.3 release notes", status: "pending" })],
+      [200, P("tool_call", { node: "e1", live: "searching the web" })],
+      [1600, P("tool_result", { node: "e1", ok: false, chip: "✗ 503", detail: { kind: "out", lines: ["search provider: 503 Service Unavailable (3 attempts)"] } })],
+      [300, P("error", { code: "search_unavailable", text: "The web search service did not answer after 3 attempts." })],
+      [300, { t: "turn.end", status: "error", speak: "The web search failed. Try again in a minute." }],
+    ]},
+  };
+
+  // ── the turn store: ONE reducer, both views read it ──
+  let turn = null, seq = 0, timers = [], t0 = 0, clock = null, waiting = null, queue = [], qi = 0, scenKey = "fix", instant = false;
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const fmt = (ms) => { const s = Math.floor(ms / 1000); return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0"); };
+
+  function reduce(ev) {
+    if (ev.t === "turn.start") {
+      turn = { id: ev.turn_id, status: "running", prompt: ev.prompt, title: ev.title, cmd: !!ev.cmd, recalled: ev.recalled, reasoning: "", text: "", nodes: [], byId: {}, perms: [], qs: [], cards: [], errors: [], frameOpen: true, open: {} };
+      return;
+    }
+    if (!turn) return;
+    if (ev.t === "turn.end") { turn.status = ev.status; turn.speak = ev.speak; turn.endedAt = Date.now(); turn.frameOpen = false; return; }
+    const ty = ev.type;
+    if (ty === "reasoning") turn.reasoning += ev.d;
+    else if (ty === "text") turn.text += ev.d;
+    else if (ty === "todo") {
+      const n = { id: ev.id, verb: ev.verb, target: ev.target, status: ev.status, parent: ev.parent || null, sub: ev.sub || null, chip: "", live: "" };
+      turn.nodes.push(n); turn.byId[n.id] = n;
+    } else if (ty === "tool_call") {
+      const n = turn.byId[ev.node]; n.status = "running"; n.live = ev.live; n.started = Date.now();
+    } else if (ty === "tool_result") {
+      const n = turn.byId[ev.node]; n.status = ev.made ? "made" : ev.ok ? "done" : "failed"; n.chip = ev.chip; n.detail = ev.detail; n.live = "";
+      if (ev.made) n.verb = "MADE";
+      if (!ev.ok || ev.open) turn.open[n.id] = true;   // a failure opens by default
+    } else if (ty === "permission") {
+      turn.perms.push({ id: ev.id, node: ev.node, cmd: ev.cmd, what: ev.what, risk: ev.risk, state: "waiting", deadline: Date.now() + 20000 });
+      const n = turn.byId[ev.node]; if (n) n.status = "waiting";
+    } else if (ty === "question") {
+      turn.qs.push({ id: ev.id, q: ev.q, options: ev.options, state: "waiting", deadline: Date.now() + 120000 });
+    } else if (ty === "card") turn.cards.push({ id: ev.id, title: ev.title, kind: ev.kind, meta: ev.meta, size: ev.size });
+    else if (ty === "error") turn.errors.push({ code: ev.code, text: ev.text });
+    else if (ty === "permission.resolved") {
+      const p = turn.perms.find((x) => x.id === ev.id); p.state = ev.state;
+      const n = turn.byId[p.node]; if (n && ev.state !== "allowed") { n.status = "failed"; n.chip = ev.state === "timeout" ? "✕ timed out" : "✕ denied"; }
+    } else if (ty === "question.answered") {
+      const q = turn.qs.find((x) => x.id === ev.id); q.state = "answered"; q.choice = ev.choice;
+    }
+  }
+
+  // ── tiny markdown (bold, inline code, bullet lists, paragraphs) ──
+  function md(src) {
+    const inline = (s) => esc(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/`([^`]+)`/g, "<code>$1</code>");
+    return src.split(/\n\n+/).map((block) => {
+      const lines = block.split("\n").filter(Boolean);
+      if (lines.length && lines.every((l) => l.startsWith("- "))) return "<ul>" + lines.map((l) => "<li>" + inline(l.slice(2)) + "</li>").join("") + "</ul>";
+      return lines.length ? "<p>" + inline(lines.join(" ")) + "</p>" : "";
+    }).join("");
+  }
+  const lastSentence = (s) => { const parts = s.trim().split(/(?<=\.)\s+/); return parts[parts.length - 1] || ""; };
+  const ORB = { pending: "○", running: "◎", waiting: "◎", done: "●", failed: "✕", made: "✦" };
+
+  // ── personal view ──
+  function renderPersonal() {
+    const el = $("sp");
+    if (!turn) { el.innerHTML = '<div class="empty">Start a conversation<br><small>How can I help you today?</small></div>'; return; }
+    const now = Date.now(), running = turn.status === "running", h = [];
+    if (turn.cmd) {
+      h.push('<div class="empty">Shell commands (<code>&gt;cmd</code>) are a developer-mode feature.<br><small>Personal mode has no shell line.</small></div>');
+      el.innerHTML = h.join(""); return;
+    }
+    h.push('<div class="ubub">' + esc(turn.prompt) + "</div>");
+    const top = turn.nodes.filter((n) => !n.parent), all = turn.nodes;
+    if (all.length) {
+      const done = top.filter((n) => n.status === "done" || n.status === "made" || n.status === "failed").length;
+      const cur = all.find((n) => n.status === "running" || n.status === "waiting");
+      const meta = running ? done + " of " + top.length + " steps · " + fmt(now - t0) : done + " of " + top.length + " steps · " + fmt(turn.endedAt - t0) + (turn.recalled ? " · 2 memories used" : "");
+      const open = !!turn.open.__card;
+      h.push('<div class="gc" style="--vein:' + (turn.status === "error" ? "var(--bad)" : "var(--glow)") + '"><div class="row"><div class="ico">▤</div><div class="tt"><b>' + esc(turn.title) + "</b><span>" + meta + '</span></div><button class="chev" data-toggle="__card" aria-expanded="' + open + '" aria-label="Show steps">' + (open ? "⌃" : "⌄") + "</button></div>");
+      if (running && cur) h.push('<div class="live">◎ ' + esc(cur.status === "waiting" ? "Waiting for your answer" : cur.live || cur.target) + " …</div>");
+      if (open) h.push('<ul class="steps">' + all.map((n) => '<li class="' + (n.parent ? "sub" : "") + '"><span class="dot ' + n.status + '"></span><span class="tx">' + esc(n.parent ? "↳ " + n.target : n.verb.charAt(0) + n.verb.slice(1).toLowerCase() + " · " + n.target) + '</span><span class="rs">' + esc(n.chip) + "</span></li>").join("") + "</ul>");
+      h.push("</div>");
+    }
+    if (running && turn.reasoning) h.push('<div class="think"><i>●</i>Thinking: ' + esc(lastSentence(turn.reasoning)) + "</div>");
+    for (const p of turn.perms) {
+      if (p.state === "waiting") {
+        const left = Math.max(0, p.deadline - now);
+        h.push('<div class="gc" style="--vein:var(--run)"><div class="row"><div class="ico" style="background:rgba(242,193,78,.12);color:var(--run)">⚡</div><div class="tt"><b>' + esc(p.what) + "</b><span>runs in the project folder</span></div><span class=\"ring\">" + fmt(left) + '</span></div><div class="cmd">' + esc(p.cmd) + '</div><div class="risk">' + esc(p.risk) + '</div><div class="btnrow"><button class="btn" data-perm="denied">Deny <span class="muted">Esc</span></button><button class="btn" data-perm="allowed">Always here</button><button class="btn go" data-perm="allowed">Allow ↵</button></div></div>');
+      } else {
+        const ok = p.state === "allowed";
+        h.push('<div class="receipt"><span class="' + (ok ? "okc" : "badc") + '">' + (ok ? "✓" : "✕") + "</span>" + (ok ? "Allowed" : p.state === "timeout" ? "Timed out → denied" : "Denied") + ' · run command · <span class="x">' + esc(p.cmd) + "</span></div>");
+      }
+    }
+    if (turn.text) h.push('<div class="reply"><div class="lbl">IRIS</div>' + md(turn.text) + (running ? '<span class="caret"></span>' : "") + "</div>");
+    for (const e of turn.errors) h.push('<div class="err"><b>✕</b><span style="flex:1;min-width:0">' + esc(e.text) + '</span><button class="btn" data-retry="1">Retry</button></div>');
+    for (const c of turn.cards) {
+      const open = !!turn.open["card_" + c.id];
+      h.push('<div class="gc" style="--vein:var(--ok)"><div class="row"><div class="ico" style="background:rgba(95,207,152,.12);color:var(--ok)">&lt;/&gt;</div><div class="tt"><b>' + esc(c.title) + "</b><span>" + esc(c.meta) + '</span></div><button class="btn">Open</button><button class="chev" data-toggle="card_' + c.id + '" aria-label="Peek">' + (open ? "⌃" : "⌄") + "</button></div>" + (open ? '<div class="peek"></div>' : "") + "</div>");
+    }
+    for (const q of turn.qs) {
+      if (q.state === "waiting") h.push('<div class="gc" style="--vein:var(--sub)"><div class="row"><div class="ico" style="background:rgba(198,155,255,.12);color:var(--sub)">?</div><div class="tt"><b>' + esc(q.q) + "</b><span>Asking you · " + fmt(Math.max(0, q.deadline - now)) + '</span></div></div><div class="opts">' + q.options.map((o, i) => '<button class="btn pick" data-q="' + i + '"><kbd>' + (i + 1) + "</kbd> " + esc(o) + "</button>").join("") + "</div></div>");
+      else h.push('<div class="receipt"><span style="color:var(--sub)">?</span>You chose · <span class="x">' + esc(q.options[q.choice]) + "</span></div>");
+    }
+    if (!running) h.push('<div class="actions"><button>Copy</button><button>Speak</button><button>Retry</button><button>👍</button><button>👎</button></div>');
+    el.innerHTML = h.join("");
+  }
+
+  // ── developer view: prompt line, live matrix, answer ──
+  function row(n, last) {
+    const isOpen = !!turn.open[n.id], hasDet = !!n.detail;
+    const chip = n.status === "running" ? '<span class="spin"></span> ' + fmt(Date.now() - (n.started || Date.now())) : n.status === "waiting" ? "waiting" : esc(n.chip);
+    let h = '<div class="mr s-' + n.status + '"><span class="rail">' + (last ? " " : "┊") + '</span><span class="orb">' + ORB[n.status] + '</span><span class="vb">' + esc(n.verb) + '</span><span class="tg">' + esc(n.target) + '</span><span class="rs">' + chip + "</span>" + (hasDet ? '<button class="chev" data-toggle="' + n.id + '" aria-expanded="' + isOpen + '" aria-label="Show output">' + (isOpen ? "⌃" : "⌄") + "</button>" : "") + "</div>";
+    if (hasDet && isOpen) h += '<div class="det">' + n.detail.lines.map((l) => {
+      const c = l.startsWith("+ ") ? "add" : l.startsWith("- ") ? "del" : l.startsWith("…") ? "more" : "";
+      return c ? '<span class="' + c + '">' + esc(l) + "</span>" : esc(l);
+    }).join("\n") + "</div>";
+    const p = turn.perms.find((x) => x.node === n.id && x.state === "waiting");
+    if (p) h += '<div class="wait"><span>' + esc(p.risk.toLowerCase()) + ' · ' + fmt(Math.max(0, p.deadline - Date.now())) + '</span><button data-perm="allowed"><span class="k">[y]</span> allow</button><button data-perm="allowed"><span class="k">[a]</span> always here</button><button data-perm="denied"><span class="k">[n]</span> deny</button></div>';
+    return h;
+  }
+  function renderDev() {
+    const el = $("sd");
+    if (!turn) { el.innerHTML = '<div class="empty">iris@dev ›</div>'; return; }
+    const now = Date.now(), running = turn.status === "running", h = [];
+    h.push('<div class="pl"><span class="ps">iris@dev ›</span> ' + esc(turn.prompt) + "</div>");
+    const top = turn.nodes.filter((n) => !n.parent);
+    const done = top.filter((n) => n.status === "done" || n.status === "made").length;
+    const subs = [...new Set(turn.nodes.filter((n) => n.sub).map((n) => n.sub))];
+    if (turn.nodes.length) {
+      h.push('<div class="mx">');
+      if (!turn.frameOpen && !running) {
+        const ok = turn.status === "ok";
+        h.push('<button class="fold" data-frame="1" aria-expanded="false"><span style="color:' + (ok ? "var(--ok)" : "var(--bad)") + ';font-weight:700;flex:none">' + (ok ? "✦ CONVERGED" : "✕ FAILED") + '</span><span class="t muted">· ' + turn.nodes.length + " nodes" + (subs.length ? " · " + subs.length + " sub-loop" : "") + " · " + fmt(turn.endedAt - t0) + '</span><span style="color:var(--glow)">⌄</span></button>');
+      } else {
+        h.push('<div class="mh"><span style="color:var(--glow)">▤</span><span class="k">TASK :</span><span class="t">' + esc(turn.title) + '</span><span class="n">' + done + "/" + top.length + " · " + fmt((running ? now : turn.endedAt) - t0) + "</span>" + (running ? "" : '<button class="chev" data-frame="1" aria-label="Fold">⌃</button>') + "</div>");
+        if (turn.reasoning && !turn.cmd) h.push('<div class="thk"><span class="k">THK :</span><span class="t">' + esc(lastSentence(turn.reasoning)) + "</span></div>");
+        h.push('<div class="mbody">');
+        top.forEach((n, i) => {
+          h.push(row(n, i === top.length - 1));
+          const kids = turn.nodes.filter((k) => k.parent === n.id);
+          if (kids.length) h.push('<div class="chamber"><div class="cl">↳ [sub-loop: ' + esc(kids[0].sub) + "]</div>" + kids.map((k, j) => row(k, j === kids.length - 1)).join("") + "</div>");
+        });
+        for (const q of turn.qs) {
+          if (q.state === "waiting") h.push('<div class="mr s-waiting s-ask"><span class="rail"> </span><span class="orb">◎</span><span class="vb">ASK</span><span class="tg">' + esc(q.q.toLowerCase()) + '</span><span class="rs" style="color:var(--run)">' + fmt(Math.max(0, q.deadline - now)) + '</span></div><div class="wait">' + q.options.map((o, i) => '<button data-q="' + i + '"><span class="k">[' + (i + 1) + "]</span> " + esc(o.toLowerCase()) + "</button>").join("") + "</div>");
+          else h.push('<div class="mr s-done"><span class="rail"> </span><span class="orb">●</span><span class="vb">ASK</span><span class="tg">' + esc(q.q.toLowerCase()) + '</span><span class="rs">→ ' + esc(q.options[q.choice].toLowerCase()) + "</span></div>");
+        }
+        h.push("</div>");
+        if (turn.recalled) h.push('<div class="mem">MEM: ' + esc(turn.recalled) + "</div>");
+      }
+      h.push("</div>");
+    }
+    for (const p of turn.perms) if (p.state !== "waiting" && !turn.frameOpen) h.push('<div class="muted" style="font-size:11px">' + (p.state === "allowed" ? '<span class="okc">✓</span> allowed (you)' : '<span class="badc">✕</span> ' + p.state) + " · " + esc(p.cmd) + "</div>");
+    if (turn.text) h.push('<div class="ans">' + md(turn.text) + (running ? '<span class="caret"></span>' : "") + "</div>");
+    for (const e of turn.errors) h.push('<div class="derr">✕ error · ' + esc(e.code) + " · " + esc(e.text) + ' <span class="muted">[r] retry</span></div>');
+    for (const c of turn.cards) h.push('<div class="artl"><span style="color:var(--ok)">▣</span><span class="t">' + esc(c.title) + ' <span class="muted">· ' + esc(c.size) + '</span></span><button>[open]</button></div>');
+    el.innerHTML = h.join("");
+  }
+
+  function render() {
+    const pinned = [$("sp"), $("sd")].map((e) => e.scrollHeight - e.scrollTop - e.clientHeight < 48);
+    renderPersonal(); renderDev();
+    [$("sp"), $("sd")].forEach((e, i) => { if (pinned[i]) e.scrollTop = e.scrollHeight; });
+  }
+
+  // ── event log ──
+  function log(ev) {
+    const L = $("log");
+    if (ev.t === "turn.start") L.innerHTML = "";
+    let line;
+    if (ev.t === "turn.start") line = '<span class="s">turn.start</span> {turn_id:"' + ev.turn_id + '", conversation_id:"conv_7f2", mode:"both"}';
+    else if (ev.t === "turn.end") line = '<span class="' + (ev.status === "ok" ? "e" : "x") + '">turn.end</span>   {status:"' + ev.status + '", speak:' + JSON.stringify(ev.speak) + "}";
+    else {
+      seq++;
+      const { t, type, wait, ...rest } = ev;
+      void t; void wait;
+      let body = JSON.stringify(rest).replace(/"([a-z_]+)":/g, "$1:");
+      if (body.length > 110) body = body.slice(0, 107) + "…}";
+      line = '<span class="seq">#' + String(seq).padStart(2, "0") + '</span> turn.part <b>' + esc(type) + "</b> " + esc(body);
+    }
+    L.innerHTML += (L.innerHTML ? "\n" : "") + line;
+    L.scrollTop = L.scrollHeight;
+  }
+
+  // ── playback ──
+  function emit(ev) { reduce(ev); log(ev); render(); }
+  function setStatus(s) { $("status").innerHTML = s; }
+  function stop() { timers.forEach(clearTimeout); timers = []; clearInterval(clock); clock = null; waiting = null; }
+  function next() {
+    if (qi >= queue.length) { clearInterval(clock); clock = null; setStatus(turn.status === "ok" ? "Turn ended: <code>ok</code>. The frame folded. Press the fold line to open it." : "Turn ended: <code>" + turn.status + "</code>. The error shows in the chat."); $("play").textContent = "↻ Replay"; return; }
+    const [delay, ev] = queue[qi];
+    const go = () => {
+      qi++; emit(ev);
+      if (ev.wait) {
+        waiting = ev;
+        setStatus(ev.type === "permission" ? "<b>Waiting for you.</b> Allow or deny in either wing (<kbd>Enter</kbd> / <kbd>Esc</kbd>)." : "<b>Waiting for you.</b> Pick an option in either wing (<kbd>1</kbd> <kbd>2</kbd> <kbd>3</kbd>).");
+        if (instant) answer(ev.type === "permission" ? "allowed" : 0);
+        return;
+      }
+      next();
+    };
+    if (instant) go(); else timers.push(setTimeout(go, delay));
+  }
+  function answer(v) {
+    if (!waiting) return;
+    const w = waiting; waiting = null;
+    if (w.type === "permission") emit(P("permission.resolved", { id: w.id, state: v }));
+    else emit(P("question.answered", { id: w.id, choice: v }));
+    setStatus("Playing…");
+    if (w.type === "permission" && v !== "allowed") {
+      // A denied command skips its node's tool call and result.
+      while (qi < queue.length && queue[qi][1].node === w.node && (queue[qi][1].type === "tool_call" || queue[qi][1].type === "tool_result")) qi++;
+    }
+    next();
+  }
+  function play() {
+    stop(); seq = 0; turn = null; instant = $("instant").getAttribute("aria-pressed") === "true";
+    const s = SCEN[scenKey];
+    queue = s.ev; qi = 0; t0 = Date.now();
+    emit({ t: "turn.start", turn_id: "turn_" + Math.random().toString(36).slice(2, 7), prompt: s.prompt, title: s.title, recalled: s.recalled, cmd: s.cmd });
+    setStatus("Playing…"); $("play").textContent = "↻ Restart";
+    clock = setInterval(() => {
+      if (!turn || turn.status !== "running") return;
+      const now = Date.now();
+      for (const p of turn.perms) if (p.state === "waiting" && now >= p.deadline) { answer("timeout"); return; }
+      render();
+    }, 250);
+    next();
+  }
+
+  // ── wiring ──
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    if (b.dataset.s) { scenKey = b.dataset.s; $("scen").querySelectorAll(".seg").forEach((x) => x.setAttribute("aria-pressed", String(x === b))); play(); }
+    else if (b.dataset.w) { document.documentElement.style.setProperty("--wing-w", b.dataset.w + "px"); $("width").querySelectorAll(".seg").forEach((x) => x.setAttribute("aria-pressed", String(x === b))); }
+    else if (b.id === "play") play();
+    else if (b.id === "instant") b.setAttribute("aria-pressed", String(b.getAttribute("aria-pressed") !== "true"));
+    else if (b.dataset.perm && waiting && waiting.type === "permission") answer(b.dataset.perm);
+    else if (b.dataset.q && waiting && waiting.type === "question") answer(Number(b.dataset.q));
+    else if (b.dataset.toggle && turn) { turn.open[b.dataset.toggle] = !turn.open[b.dataset.toggle]; render(); }
+    else if (b.dataset.frame && turn) { turn.frameOpen = !turn.frameOpen; render(); }
+    else if (b.dataset.retry) play();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (!waiting || e.metaKey || e.ctrlKey || e.altKey) return;
+    if (waiting.type === "permission") {
+      if (e.key === "Enter" || e.key === "y" || e.key === "a") { e.preventDefault(); answer("allowed"); }
+      else if (e.key === "Escape" || e.key === "n") { e.preventDefault(); answer("denied"); }
+    } else if (waiting.type === "question" && /^[1-3]$/.test(e.key)) { e.preventDefault(); answer(Number(e.key) - 1); }
+  });
+
+  // First frame: show the finished "fix" turn so the page is complete at rest.
+  instant = true; queue = SCEN.fix.ev; qi = 0; t0 = Date.now() - 42000;
+  reduce({ t: "turn.start", turn_id: "turn_demo", prompt: SCEN.fix.prompt, title: SCEN.fix.title, recalled: SCEN.fix.recalled });
+  log({ t: "turn.start", turn_id: "turn_demo" });
+  for (const [, ev] of queue) { reduce(ev); log(ev); }
+  turn.endedAt = t0 + 42000;
+  turn.nodes.forEach((n) => { if (n.started) n.started = t0; });
+  render(); instant = false; qi = queue.length;
+  setStatus("Showing a finished turn. Press <b>Play turn</b> to watch one live.");
+})();
+</script>
+</body></html>

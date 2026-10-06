@@ -3107,6 +3107,29 @@ async def _on_wake_word_async(wake_word_name: str):
 _session_message_locks: Dict[str, asyncio.Lock] = {}
 _client_tasks: Dict[str, Set[asyncio.Task]] = {}
 
+
+def _turn_task_name(conversation_id: str) -> str:
+    """Name a task that runs one text turn, so a stop can find it."""
+    return f"turn:{conversation_id}"
+
+
+def cancel_turn_tasks(client_id: str, conversation_id: str) -> int:
+    """Cancel the text turns this client has running (or queued) in a conversation.
+
+    The gateway turns the CancelledError into turn.end status "cancelled".
+    The DER loop runs in an executor thread that the cancel cannot reach, so
+    the WS handler also pushes a "stop" record to the steering inbox; the loop
+    reads it at its next step boundary and winds down. Returns the number of
+    tasks cancelled.
+    """
+    name = _turn_task_name(conversation_id)
+    cancelled = 0
+    for task in list(_client_tasks.get(client_id, ())):
+        if not task.done() and task.get_name() == name:
+            task.cancel()
+            cancelled += 1
+    return cancelled
+
 # Message types that are handled immediately (lightweight control frames)
 _CONTROL_FRAMES = {"ping", "pong", "request_state"}
 
@@ -3131,7 +3154,11 @@ _CONTROL_FRAMES |= {"notification_response", "question_response"}
 # shell => serialized commands"), so two commands from one session still run in
 # the order they arrived. The lock was ordering the shell against the AGENT's
 # turn, which is exactly the coupling that has to go.
-_UNLOCKED_FRAMES = {"terminal_input"}
+#
+# diff_undo (edit diffs): the user reviews an edit while the agent may still be
+# working; the undo must not wait for the turn to end. It does file I/O (off the
+# loop, in the handler), so it is a background task, not an inline control frame.
+_UNLOCKED_FRAMES = {"terminal_input", "diff_undo"}
 
 # REQ-15 (T25/T26): steer / pause / stop / resume ride a dedicated channel so
 # they reach the RUNNING DER loop at its next step boundary instead of
@@ -3140,6 +3167,7 @@ try:
     from backend.agent.steering import (
         STEERING_CHANNELS,
         CHANNEL_RESUME,
+        CHANNEL_STOP,
         get_steering_inbox,
         emit_queued_ack,
         resend_stale_acks,
@@ -3147,6 +3175,7 @@ try:
 except Exception:  # pragma: no cover — import must never break startup
     STEERING_CHANNELS = frozenset()
     CHANNEL_RESUME = "resume"
+    CHANNEL_STOP = "stop"
 
     def get_steering_inbox(*_a, **_k):  # type: ignore[no-redef]
         return None
@@ -3266,6 +3295,19 @@ async def websocket_endpoint(
                                     or _sp.get("message_id")),
                     )
                     emit_queued_ack(_rec)
+                    # Stop IRIS (composer button): the record above stops the
+                    # DER loop at its next step boundary; cancelling the turn's
+                    # task ends the turn NOW ("cancelled"), so the UI does not
+                    # wait on the boundary.
+                    if msg_type == CHANNEL_STOP:
+                        _cancelled = cancel_turn_tasks(
+                            client_id,
+                            _sp.get("conversation_id") or active_session_id,
+                        )
+                        logger.info(
+                            f"[WS] stop cancelled {_cancelled} turn task(s) for "
+                            f"client {client_id}"
+                        )
                     # REQ-26 AC1-AC4: acknowledge RECEIPT out loud. The ack
                     # frame and the chat line are both VISIBLE signals; a
                     # voice-first user gets neither. Measured on 2026-08-26:
@@ -3327,8 +3369,17 @@ async def websocket_endpoint(
                             exc_info=True,
                         )
 
+                _tp = message.get("payload")
                 task = asyncio.create_task(
-                    _dispatch(message, active_session_id, client_id)
+                    _dispatch(message, active_session_id, client_id),
+                    name=(
+                        _turn_task_name(
+                            (_tp.get("conversation_id") if isinstance(_tp, dict) else None)
+                            or active_session_id
+                        )
+                        if msg_type == "text_message"
+                        else None
+                    ),
                 )
                 _client_tasks.setdefault(client_id, set()).add(task)
                 task.add_done_callback(

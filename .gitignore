@@ -149,3 +149,6 @@ llama.cpp-prismml/bin/cublas64_12.dll
 llama.cpp-prismml/bin/ggml-cuda.dll
 llama.cpp-prismml/cuda_dlls.zip
 llama.cpp-prismml/server.zip
+
+# Agent git worktrees (temporary work copies)
+.claude/worktrees/

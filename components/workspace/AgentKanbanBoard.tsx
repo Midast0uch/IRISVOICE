@@ -29,7 +29,7 @@ const COLUMNS: Array<{ id: string; label: string; icon: typeof CircleDashed }> =
   { id: 'backlog', label: 'BACKLOG', icon: CircleDashed },
   { id: 'in_progress', label: 'IN PROGRESS', icon: CircleDot },
   { id: 'review', label: 'REVIEW', icon: Eye },
-  { id: 'crystallized', label: 'CRYSTALLIZED', icon: Sparkles },
+  { id: 'crystallized', label: 'LEARNED', icon: Sparkles },
 ]
 
 function statusOf(task: AgentKanbanTask): string {

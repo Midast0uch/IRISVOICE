@@ -1,0 +1,67 @@
+{
+  "name": "error_turn",
+  "source": "scripted through the real TurnEmitter + route_bus_event",
+  "messages": [
+    {
+      "type": "turn.start",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-err-1",
+        "conversation_id": "conv-personal",
+        "strand_id": "conv-personal",
+        "author": "user",
+        "to": [
+          "@iris"
+        ],
+        "refs": [],
+        "mode": "personal",
+        "prompt": "what changed in Tauri 2.3?",
+        "ts": 1790000000.0
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-err-1",
+        "conversation_id": "conv-personal",
+        "seq": 1,
+        "ts": 1790000000.25,
+        "part": {
+          "type": "reasoning",
+          "delta": "One search for the release notes. "
+        }
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-err-1",
+        "conversation_id": "conv-personal",
+        "seq": 2,
+        "ts": 1790000000.5,
+        "part": {
+          "type": "error",
+          "code": "turn_exception",
+          "message": "RuntimeError: API returned 429: rate limit",
+          "recoverable": false
+        }
+      }
+    },
+    {
+      "type": "turn.end",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-err-1",
+        "conversation_id": "conv-personal",
+        "status": "error",
+        "parts": 2,
+        "text": "",
+        "speak": "",
+        "ts": 1790000000.75,
+        "error": "RuntimeError: API returned 429: rate limit"
+      }
+    }
+  ]
+}

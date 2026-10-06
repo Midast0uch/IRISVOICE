@@ -9,6 +9,7 @@ import { useWorkspacePersistence } from '@/hooks/useWorkspacePersistence'
 import { WorkspaceTabBar } from './WorkspaceTabBar'
 import { KanbanCanvas } from './KanbanCanvas'
 import { ArchiveDock } from './ArchiveDock'
+import { ViewsLane } from './ViewsLane'
 import { Xur } from '@/components/Xur'
 import { HelpPanel } from '@/components/terminal/HelpPanel'
 import { FloatingPanel } from './FloatingPanel'
@@ -16,6 +17,8 @@ import { useAgentTaskEvents } from '@/hooks/useAgentTaskEvents'
 import { AgentCommandsPanel } from './AgentCommandsPanel'
 import { Focus, Terminal, Eye, EyeOff, Archive as ArchiveIcon, LayoutGrid, HelpCircle, Undo2, Redo2, Camera, RotateCcw } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
+import { hasLensDrag, readLensDrop } from '@/lib/lens/dragPayload'
+import { addLensToWorkspace } from '@/lib/workspace/addLensItem'
 
 const TerminalWidget = lazy(() => import('../terminal/TerminalWidget'))
 
@@ -207,6 +210,8 @@ export function DeveloperWorkspace({ conversationId }: { conversationId?: string
   const canRedo = (useWorkspaceStore as any).canRedo ?? false
   const [draggedTabId, setDraggedTabId] = React.useState<string | null>(null)
   const [helpOpen, setHelpOpen] = React.useState(false)
+  // An artifact or a ± diff dragged from the chat lands in the Views lane (never a tab).
+  const [lensOver, setLensOver] = React.useState(false)
   const [cliTools, setCliTools] = React.useState<{ name: string; display_name: string; when_to_use: string; available: boolean; reason: string | null }[]>([])
   const handleHelp = React.useCallback(async () => {
     try {
@@ -298,8 +303,25 @@ export function DeveloperWorkspace({ conversationId }: { conversationId?: string
       >
         <div
           className="flex flex-col h-full w-full relative"
+          data-workspace-drop
+          data-drop-over={lensOver ? 'true' : 'false'}
+          onDragOver={(e) => {
+            if (!hasLensDrag(e.dataTransfer)) return
+            e.preventDefault()
+            setLensOver(true)
+          }}
+          onDragLeave={() => setLensOver(false)}
+          onDrop={(e) => {
+            const p = readLensDrop(e.dataTransfer)
+            setLensOver(false)
+            if (!p) return
+            e.preventDefault()
+            addLensToWorkspace(p)
+          }}
           style={{
             background: 'linear-gradient(180deg, rgba(10,11,22,0.2) 0%, rgba(6,7,14,0.1) 100%)',
+            outline: lensOver ? '1px dashed #5fcf98' : undefined,
+            outlineOffset: -2,
           }}
         >
         {/* Top toolbar — ONE row, 32px compact (not 40px). Help + history + snapshots in one line. */}
@@ -363,20 +385,26 @@ export function DeveloperWorkspace({ conversationId }: { conversationId?: string
           )}
         </AnimatePresence>
 
-        <AnimatePresence initial={false}>
-          {showKanban && (
-            <motion.div
-              key="kanban"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.2 }}
-              className="flex-1 min-h-0"
-            >
-              <KanbanCanvas onPopOut={handlePopOut} />
-            </motion.div>
-          )}
-        </AnimatePresence>
+        {/* The tools keep their place; the Views lane sits beside them and is always there. */}
+        <div className="flex-1 min-h-0 flex">
+          <div className="flex-1 min-w-0 min-h-0 flex flex-col">
+            <AnimatePresence initial={false}>
+              {showKanban && (
+                <motion.div
+                  key="kanban"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.2 }}
+                  className="flex-1 min-h-0"
+                >
+                  <KanbanCanvas onPopOut={handlePopOut} />
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+          <ViewsLane over={lensOver} />
+        </div>
 
       </div>
     </DndContext>

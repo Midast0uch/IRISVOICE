@@ -1,5 +1,6 @@
 import stringWidth from "string-width"
 import { resolveVerb } from "../cards/verbRegistry"
+import type { EditDiff } from "../diffs/api"
 
 /**
  * CLI TASK PROGRESS RENDERER — Blueprint Matrix (REQ-8, REQ-9)
@@ -84,6 +85,8 @@ export interface TaskStepItem {
   summary?: string // Compact 1-line output summary
   branchLabel?: string // If spawned as sub-loop or parallel worker
   memoryEffect?: "recalled" | "stored" | "crystallized"
+  /** Edits this step made (the GUI draws a ± on the row; the ANSI export ignores it). */
+  diffs?: EditDiff[]
 }
 
 export interface TaskCardProps {
@@ -191,7 +194,7 @@ function buildFooter(task: TaskCardProps, wall: string, closeLine: string, useCo
 
   if (task.isCrystallized) {
     pushLine("✦ CONVERGED", ANSI.brightGreen + ANSI.bold)
-    pushLine("Skill crystallized into data/memory.db (skills)", ANSI.brightGreen)
+    pushLine("Skill learned · saved to data/memory.db (skills)", ANSI.brightGreen)
     if (lastMem) pushLine(lastMem.detail, ANSI.dim)
   } else if (lastMem) {
     pushLine(`MEM: ${lastMem.detail}`, ANSI.dim)

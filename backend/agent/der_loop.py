@@ -273,6 +273,9 @@ class QueueItem:
     # The reviewer's reason when it vetoed this step; the next attempt's node
     # is told it instead of starting blind.
     review_feedback: str = ""
+    # Diffs of the files this step edited (backend/agent/edit_diffs.py payloads),
+    # collected where each call returns and carried on the step's tool:result.
+    edit_diffs: List[Dict[str, Any]] = field(default_factory=list)
 
     @property
     def footprint(self) -> Optional[NodeRecord]:

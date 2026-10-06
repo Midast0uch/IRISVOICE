@@ -1,0 +1,759 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"></head><body>
+<title>IRIS Braid and Spine</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;600;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap">
+<style>
+/* Layout: a hero with the living Xur, five short ideas, then one working wing (with a dashboard
+   drop zone beside it) that you can drive, then the header/footer map and the data changes.
+   Dark-only on purpose: IRIS is a dark widget; "ink with bioluminescent filaments" is the look. */
+:root{
+  color-scheme: dark;
+  --ink:#04050c;         /* page + wing ground: deep ink, slight blue */
+  --ink-2:#080a16;       /* raised surfaces */
+  --ink-3:#0d1020;       /* chips, wells */
+  --hair:rgba(160,190,255,.09);
+  --fg:#e6e9f2;
+  --muted:#8a92a8;
+  --faint:rgba(230,233,242,.38);
+  --iris:#3fd6ff;        /* IRIS presence, build strand */
+  --plan:#8ea6ff;        /* plan strand */
+  --peer:#c69bff;        /* other minds: peers and their agents */
+  --swarm:#ff9a76;       /* sub-agents */
+  --run:#f2c14e;         /* work in motion */
+  --proof:#5fcf98;       /* verified, landmark */
+  --bad:#ff7a6e;
+  --sans:"IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --voice:"Newsreader", Georgia, "Times New Roman", serif;  /* IRIS speaking (personal) */
+  --mono:"JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+*{box-sizing:border-box}
+body{background:var(--ink);color:var(--fg);font:15px/1.6 var(--sans);margin:0}
+.wrap{padding-inline:16px;padding-block:0 72px;max-width:1180px;margin:0 auto}
+.col{max-width:70ch}
+h1{font:500 44px/1.05 var(--voice);letter-spacing:-.01em;margin:0 0 12px;text-wrap:balance}
+h2{font:500 28px/1.2 var(--voice);margin:56px 0 12px;text-wrap:balance}
+h3{font:600 15px/1.4 var(--sans);margin:20px 0 6px}
+p{margin:0 0 12px}
+.muted{color:var(--muted)}
+code,kbd{font-family:var(--mono);font-size:.85em}
+code{background:var(--ink-3);padding:1px 5px;border-radius:4px}
+kbd{border:1px solid rgba(255,255,255,.2);border-bottom-width:2px;border-radius:4px;padding:0 4px}
+button{font:inherit;color:inherit}
+button:focus-visible,[tabindex]:focus-visible,textarea:focus-visible,[contenteditable]:focus-visible{outline:2px solid var(--iris);outline-offset:2px}
+.eyebrow{font:600 11px/1 var(--mono);letter-spacing:.16em;text-transform:uppercase;color:var(--iris)}
+
+/* hero */
+.hero{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:24px;align-items:center;padding-block:36px 8px}
+@media (max-width:760px){.hero{grid-template-columns:minmax(0,1fr)}}
+.hero canvas{width:100%;max-width:340px;aspect-ratio:1;justify-self:center;display:block}
+.lede{font:400 19px/1.55 var(--voice);color:#cfd5e4}
+
+/* ideas */
+.ideas{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-top:20px}
+.idea{border-top:1px solid var(--hair);padding:12px 2px 0}
+.idea b{display:block;font:500 17px/1.3 var(--voice);margin-bottom:4px}
+.idea b i{font-style:normal;font-family:var(--mono);font-size:12px;margin-right:6px}
+.idea p{font-size:13.5px;color:#bcc3d3;margin:0}
+
+/* stage */
+.stagebar{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;margin:16px 0 12px}
+.seg{font:500 12px/1 var(--sans);color:#c9cfdb;background:transparent;border:1px solid rgba(255,255,255,.13);border-radius:999px;padding:7px 11px;cursor:pointer}
+.seg[aria-pressed="true"]{color:var(--iris);border-color:var(--iris);background:rgba(63,214,255,.1)}
+.go{font:600 12px/1 var(--sans);color:#03141b;background:var(--iris);border:0;border-radius:999px;padding:8px 14px;cursor:pointer}
+.hint{font:12px/1.4 var(--mono);color:var(--muted)}
+.stage{display:flex;flex-wrap:wrap;gap:20px;align-items:flex-start}
+
+/* the wing */
+.wing{position:relative;width:min(480px,100%);height:700px;display:flex;flex-direction:column;border-radius:14px;overflow:hidden;
+  background:radial-gradient(120% 60% at 0% 0%,rgba(63,214,255,.06),transparent 60%),var(--ink);
+  border:1px solid rgba(63,214,255,.16);box-shadow:0 0 0 1px #000,0 30px 80px rgba(0,0,0,.6)}
+.head{flex:none;height:44px;display:flex;align-items:center;gap:8px;padding:0 10px 0 8px;border-bottom:1px solid var(--hair)}
+.head canvas{width:28px;height:28px;flex:none}
+.ttl{min-width:0;flex:1;display:flex;flex-direction:column;line-height:1.15}
+.ttl [contenteditable]{font:600 13px/1.2 var(--sans);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-radius:3px;padding:0 2px}
+.ttl small{font:10.5px/1.2 var(--mono);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.ttl small b{font-weight:600}
+.iconbtn{flex:none;width:30px;height:30px;border-radius:8px;border:1px solid var(--hair);background:var(--ink-2);cursor:pointer;display:grid;place-items:center;color:#cdd6ea;font:14px/1 var(--mono)}
+.menu{position:absolute;top:44px;right:8px;z-index:20;background:var(--ink-2);border:1px solid rgba(63,214,255,.2);border-radius:10px;padding:6px;min-width:210px;box-shadow:0 16px 40px rgba(0,0,0,.6)}
+.menu button{display:flex;width:100%;gap:10px;align-items:center;background:none;border:0;padding:7px 8px;border-radius:6px;cursor:pointer;font-size:12.5px;text-align:left}
+.menu button:hover{background:var(--ink-3)}
+.menu .k{margin-left:auto;font:10.5px/1 var(--mono);color:var(--muted)}
+
+/* the braid: strands of one thread */
+.braid{flex:none;position:relative;height:46px;border-bottom:1px solid var(--hair);overflow:hidden}
+.braid svg{position:absolute;inset:0;width:100%;height:100%}
+.strands{position:absolute;inset:0;display:flex;align-items:center;gap:6px;padding:0 8px;overflow-x:auto;scrollbar-width:none}
+.strand{flex:none;display:flex;align-items:center;gap:6px;font:500 11.5px/1 var(--sans);padding:6px 9px;border-radius:999px;border:1px solid transparent;background:rgba(4,5,12,.72);cursor:pointer;color:var(--muted);backdrop-filter:blur(4px)}
+.strand i{width:7px;height:7px;border-radius:50%;background:var(--c);flex:none;box-shadow:0 0 6px var(--c)}
+.strand[aria-current="true"]{color:var(--fg);border-color:var(--c);background:rgba(4,5,12,.9)}
+.strand .live{width:6px;height:6px;border-radius:50%;background:var(--run);animation:breathe 1.2s infinite}
+.strand.add{color:var(--iris);border:1px dashed rgba(63,214,255,.35)}
+
+/* body with the spine */
+.body{position:relative;flex:1;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;scroll-behavior:smooth}
+.spine{position:absolute;left:0;top:0;width:100%;pointer-events:none;overflow:visible}
+.turns{position:relative;padding:14px 12px 18px 34px;display:flex;flex-direction:column;gap:14px}
+.agent{position:absolute;left:2px;width:30px;height:30px;transition:top .55s cubic-bezier(.3,.7,.2,1),opacity .3s;z-index:3;pointer-events:none}
+.turn{position:relative;display:flex;flex-direction:column;gap:8px;min-width:0}
+.who{font:600 10px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--muted);display:flex;gap:8px;align-items:center}
+.who .dot{width:6px;height:6px;border-radius:50%;background:var(--c,var(--muted))}
+.you{align-self:flex-end;max-width:88%;background:var(--ink-3);border:1px solid var(--hair);border-radius:12px 12px 3px 12px;padding:8px 12px;font-size:13.5px;line-height:1.5}
+.you.peer{align-self:flex-start;border-radius:12px 12px 12px 3px;border-color:rgba(198,155,255,.25)}
+.voice{font:400 16px/1.55 var(--voice);color:#e9ecf4}
+.voice p{margin:0 0 8px}
+.voice strong{font-weight:500;color:#fff}
+.voice code{font-size:12px}
+.ref{display:inline-flex;gap:4px;align-items:center;font:600 11px/1 var(--mono);padding:3px 6px;border-radius:5px;background:var(--ink-3);border:1px solid var(--hair);color:var(--c,var(--iris));cursor:pointer;white-space:nowrap;vertical-align:1px}
+.ref.peerref{--c:var(--peer)}
+.note{font:11.5px/1.45 var(--mono);color:var(--muted);display:flex;gap:6px;align-items:baseline}
+.note.hint-proof{color:#d7c3ff}
+.listen{font:11.5px/1.4 var(--mono);color:var(--faint);display:flex;gap:6px;align-items:center}
+.listen canvas{width:14px;height:14px}
+
+/* developer: the living matrix */
+.dev .turns{font:12.5px/1.55 var(--mono)}
+.pl{color:#dfe6f2;word-break:break-word}
+.pl .ps{color:var(--iris);font-weight:700}
+.mx{position:relative;min-width:0;padding:2px 0 2px 0}
+.thk{display:flex;gap:8px;min-width:0;color:var(--muted);font-size:11.5px}
+.thk .k{color:var(--run);font-weight:700;flex:none}
+.thk .t{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-style:italic}
+.ink-in{display:inline-block;animation:inkin .5s ease-out both}
+.mr{position:relative;display:flex;gap:8px;align-items:center;min-width:0;min-height:22px;padding:0 4px;border-radius:4px}
+.mr.born{animation:born .7s cubic-bezier(.2,.8,.2,1) both}
+.mr .orb{flex:none;width:12px;text-align:center}
+.mr .vb{flex:none;width:7ch;font-weight:700;letter-spacing:.02em}
+.mr .tg{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:rgba(255,255,255,.82)}
+.mr .rs{flex:none;font-size:11px;color:var(--muted);max-width:40%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.s-pending .orb,.s-pending .vb{color:rgba(255,255,255,.32)}
+.s-running{background:linear-gradient(90deg,rgba(242,193,78,.0),rgba(242,193,78,.09),rgba(242,193,78,0));background-size:200% 100%;animation:scan 1.6s linear infinite}
+.s-running .orb,.s-running .vb{color:var(--run)}
+.s-done .orb,.s-done .vb{color:#86e6ff}
+.s-failed .orb,.s-failed .vb{color:var(--bad)}
+.s-proof .orb,.s-proof .vb{color:var(--proof)}
+.s-recall .vb,.s-recall .orb{color:var(--plan)}
+.par{position:relative;border-left:1px solid rgba(242,193,78,.35);margin-left:5px;padding-left:6px;display:flex;flex-direction:column;gap:1px}
+.par.settled{border-left-color:rgba(134,230,255,.25)}
+.chamber{margin:2px 0 2px 16px;border-left:1px dashed rgba(198,155,255,.5);padding:2px 0 2px 8px;overflow:hidden;transition:max-height .6s ease,opacity .5s ease;max-height:120px}
+.chamber.folded{max-height:0;opacity:0;padding:0}
+.chamber .cl{color:var(--peer);font-weight:700;font-size:11px}
+.det{margin:2px 0 4px 24px;border-left:1px solid rgba(255,255,255,.12);padding:3px 8px;font-size:11.5px;color:#c4cad6;white-space:pre-wrap;word-break:break-word}
+.det .add{color:var(--proof)} .det .del{color:var(--bad)}
+.fold{display:flex;gap:8px;align-items:center;min-width:0;font-size:12px}
+.fold .t{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--muted)}
+.ans{color:rgba(255,255,255,.9);word-break:break-word}
+.ans p{margin:0 0 6px}
+.ans code{background:none;color:#86e6ff;padding:0}
+
+/* personal: the trail card */
+.trail{border:1px solid var(--hair);border-radius:12px;background:var(--ink-2);padding:10px 12px;min-width:0}
+.trail .top{display:flex;gap:8px;align-items:center;min-width:0}
+.trail .top b{flex:1;min-width:0;font:600 13px/1.3 var(--sans);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.trail .top span{font:11px/1 var(--mono);color:var(--muted);flex:none}
+.beads{display:flex;align-items:center;gap:0;margin:10px 2px 6px}
+.bead{width:10px;height:10px;border-radius:50%;flex:none;background:rgba(255,255,255,.18);transition:background .3s,box-shadow .3s}
+.bead.running{background:var(--run);box-shadow:0 0 10px var(--run);animation:breathe 1.2s infinite}
+.bead.done{background:var(--iris)} .bead.failed{background:var(--bad)} .bead.proof{background:var(--proof);box-shadow:0 0 10px var(--proof)} .bead.recall{background:var(--plan)}
+.link{flex:1;height:1px;background:rgba(255,255,255,.12);min-width:6px}
+.trail .now{font-size:12px;color:var(--run);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* artifact chip + lens */
+.art{display:flex;gap:10px;align-items:center;border:1px solid rgba(95,207,152,.3);border-radius:10px;padding:8px 10px;background:var(--ink-2);cursor:pointer;min-width:0}
+.art .ic{flex:none;width:28px;height:28px;border-radius:7px;display:grid;place-items:center;background:rgba(95,207,152,.12);color:var(--proof);font:600 12px/1 var(--mono)}
+.art .tx{flex:1;min-width:0;display:flex;flex-direction:column}
+.art .tx b{font:600 13px/1.3 var(--sans);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.art .tx span{font:11px/1.3 var(--mono);color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.art .grip{flex:none;color:var(--faint);font:14px/1 var(--mono);cursor:grab}
+.lens{position:absolute;inset:90px 0 0 0;z-index:15;background:var(--ink);display:flex;flex-direction:column;animation:lensin .35s cubic-bezier(.2,.8,.2,1)}
+.lens .lh{flex:none;display:flex;gap:8px;align-items:center;padding:8px 10px;border-bottom:1px solid var(--hair);min-width:0}
+.lens .lh b{flex:1;min-width:0;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.lens .lb{flex:1;overflow:auto;padding:16px 18px;font:400 15px/1.55 var(--voice)}
+.lens table{border-collapse:collapse;width:100%;font:12.5px/1.4 var(--sans);margin:8px 0 12px}
+.lens th,.lens td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--hair)}
+.lens th{font:600 10.5px/1 var(--mono);color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
+.small{font:500 11.5px/1 var(--sans);background:var(--ink-3);border:1px solid var(--hair);border-radius:6px;padding:6px 8px;cursor:pointer;white-space:nowrap}
+
+/* composer */
+.comp{flex:none;border-top:1px solid var(--hair);padding:8px 10px 10px;display:flex;flex-direction:column;gap:6px;position:relative}
+.tray{display:flex;flex-wrap:wrap;gap:5px;align-items:center;min-height:22px}
+.to{font:600 11px/1 var(--mono);padding:4px 7px;border-radius:999px;border:1px solid var(--c);color:var(--c);background:rgba(0,0,0,.2)}
+.chip{font:600 11px/1 var(--mono);padding:4px 7px;border-radius:5px;background:var(--ink-3);border:1px solid var(--hair);color:#cdd6ea;display:inline-flex;gap:5px;align-items:center}
+.chip button{background:none;border:0;color:var(--muted);cursor:pointer;padding:0 0 0 2px}
+.inputrow{display:flex;gap:8px;align-items:flex-end}
+.inputrow canvas{width:22px;height:22px;flex:none;margin-bottom:6px}
+textarea{flex:1;min-width:0;resize:none;height:38px;background:var(--ink-2);border:1px solid rgba(255,255,255,.12);border-radius:10px;color:var(--fg);font:13.5px/1.4 var(--sans);padding:9px 10px}
+.dev textarea{font-family:var(--mono);font-size:12.5px}
+.tools{display:flex;gap:6px;align-items:center;font:10.5px/1 var(--mono);color:var(--muted);min-width:0;overflow:hidden}
+.tools span{padding:4px 7px;border-radius:5px;border:1px solid var(--hair);white-space:nowrap}
+.tools .sp{flex:1;border:0;padding:0}
+.pop{position:absolute;bottom:100%;left:10px;right:10px;margin-bottom:4px;background:var(--ink-2);border:1px solid rgba(63,214,255,.25);border-radius:10px;padding:5px;z-index:12;box-shadow:0 -12px 30px rgba(0,0,0,.5)}
+.pop button{display:flex;gap:8px;width:100%;align-items:center;background:none;border:0;padding:6px 8px;border-radius:6px;cursor:pointer;font-size:12.5px;text-align:left;min-width:0}
+.pop button:hover,.pop button.sel{background:var(--ink-3)}
+.pop button span{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pop small{font:10.5px/1 var(--mono);color:var(--muted);flex:none}
+
+/* constellation */
+.map{position:absolute;inset:90px 0 0 0;z-index:14;background:radial-gradient(80% 60% at 50% 40%,rgba(63,214,255,.06),transparent),var(--ink);animation:lensin .4s ease-out}
+.map svg{width:100%;height:100%;display:block}
+.map .cap{position:absolute;left:12px;right:12px;bottom:10px;font:11.5px/1.4 var(--mono);color:var(--muted);display:flex;gap:8px;align-items:center}
+.map .cap span{flex:1}
+
+/* dashboard drop zone */
+.dash{width:min(330px,100%);min-height:300px;border-radius:14px;border:1px solid var(--hair);background:var(--ink-2);padding:12px;display:flex;flex-direction:column;gap:10px}
+.dash h3{margin:0;font:600 11px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.drop{flex:1;min-height:220px;border:1px dashed rgba(255,255,255,.14);border-radius:10px;display:flex;flex-direction:column;gap:8px;padding:10px;transition:border-color .2s,background .2s}
+.drop.over{border-color:var(--proof);background:rgba(95,207,152,.06)}
+.drop .empty{margin:auto;text-align:center;font-size:12.5px;color:var(--muted)}
+.pinned{border:1px solid rgba(95,207,152,.3);border-radius:8px;padding:8px 10px;font-size:12.5px;animation:born .6s ease-out both}
+.pinned b{display:block;font-size:13px}
+.toast{position:absolute;left:50%;bottom:120px;transform:translateX(-50%);background:var(--ink-3);border:1px solid rgba(63,214,255,.3);color:var(--fg);font:12px/1.4 var(--sans);padding:8px 12px;border-radius:8px;z-index:30;max-width:90%;text-align:center}
+
+/* map of header/footer and tables */
+.panel{background:var(--ink-2);border:1px solid var(--hair);border-radius:12px;padding:16px;min-width:0}
+.two{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
+.zone{font:12px/1.5 var(--mono);color:#cdd6ea}
+.zone .row{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:8px;border:1px solid var(--hair);border-radius:8px;margin-bottom:6px}
+.zone .lbl{font:600 10px/1 var(--mono);letter-spacing:.12em;color:var(--muted);text-transform:uppercase;width:100%}
+.zone .b{padding:3px 7px;border-radius:5px;background:var(--ink-3);border:1px solid var(--hair);max-width:100%;overflow-wrap:anywhere}
+.zone .x{text-decoration:line-through;color:var(--faint)}
+.tablewrap{overflow-x:auto}
+table.t{border-collapse:collapse;width:100%;font-size:13px;min-width:560px}
+table.t th,table.t td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--hair);vertical-align:top}
+table.t th{font:600 10.5px/1.2 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+ol.qs{padding-left:20px} ol.qs li{margin-bottom:8px}
+
+@keyframes breathe{0%,100%{opacity:1}50%{opacity:.35}}
+@keyframes born{0%{opacity:0;transform:translateX(-14px);filter:blur(3px)}60%{opacity:1;filter:blur(0)}100%{transform:none}}
+@keyframes scan{from{background-position:200% 0}to{background-position:-200% 0}}
+@keyframes inkin{from{opacity:0;filter:blur(4px);letter-spacing:.06em}to{opacity:1;filter:none;letter-spacing:0}}
+@keyframes lensin{from{opacity:0;transform:scale(.97)}to{opacity:1;transform:none}}
+@keyframes dash{to{stroke-dashoffset:-24}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}.body{scroll-behavior:auto}}
+</style>
+
+<div class="wrap">
+  <section class="hero">
+    <div>
+      <div class="eyebrow">Concept · chat view, threads, and the CLI</div>
+      <h1>IRIS Braid and Spine</h1>
+      <p class="lede">IRIS remembers in a way no other harness does. It keeps a time line of what happened, proven landmarks, and a graph of what led to what. The interface should let you see that memory at work, and the Xur should be the body of the agent, not a loading spinner.</p>
+      <p class="muted">Scroll to the working wing to try it. Everything below is a concept. Nothing in the app has changed yet.</p>
+    </div>
+    <canvas id="heroXur" width="680" height="680" aria-label="The Xur: the IRIS agent's body, drawn from the same curve as the app logo"></canvas>
+  </section>
+
+  <div class="ideas">
+    <div class="idea"><b><i>01</i>The Xur is the agent</b><p>The logo curve becomes the agent's body. It sits in the prompt and listens. When IRIS works, it moves into the matrix, to the row that runs. Its shape follows the work: wide loops when IRIS explores, a tight curve when it narrows down.</p></div>
+    <div class="idea"><b><i>02</i>The spine</b><p>A thin line runs down every chat. Each turn is a bead on it. When IRIS recalls something, a filament reaches back to the place it came from, even in another chat. A proven fact leaves a star.</p></div>
+    <div class="idea"><b><i>03</i>The braid</b><p>One thread holds many chats, like strands of one braid: build, plan, a peer, a swarm. All strands share one memory. The braid sits on the wing's top edge, so a switch is one click.</p></div>
+    <div class="idea"><b><i>04</i>@ and #</b><p><code>@</code> picks who hears you. In a peer chat, only <code>@iris</code> sends a prompt. <code>#</code> picks what to remember: a task card, an artifact, a landmark. IRIS gets the address, and its memory does the rest.</p></div>
+    <div class="idea"><b><i>05</i>The lens</b><p>Click an artifact and it opens inside the wing. Drag it to the dashboard workspace, or pop it out to its own window. The whole wing can detach too.</p></div>
+  </div>
+
+  <h2>Try it</h2>
+  <div class="col"><p class="muted">Switch strands on the braid. In <b>build</b>, press <b>Run the turn</b> and follow the Xur. In <b>ana</b>, type a message with and without <code>@iris</code>. Type <code>#</code> to add a reference. Click the artifact in <b>plan</b>, or drag it to the dashboard. The ⌖ button opens the map of the whole thread.</p></div>
+
+  <div class="stagebar" role="group" aria-label="Wing controls">
+    <button class="seg" id="mDev" aria-pressed="true">Developer</button>
+    <button class="seg" id="mPer" aria-pressed="false">Personal</button>
+    <button class="go" id="run">▶ Run the turn</button>
+    <span class="hint" id="hint">Build strand · ready</span>
+  </div>
+
+  <div class="stage">
+    <div class="wing dev" id="wing">
+      <div class="head">
+        <canvas id="headXur" width="56" height="56" aria-hidden="true"></canvas>
+        <div class="ttl">
+          <span contenteditable="true" spellcheck="false" id="threadName" title="Click to rename">IRISVOICE · router budget</span>
+          <small id="sub"><b style="color:var(--iris)">▸ IRISVOICE</b> · 4 strands · one memory</small>
+        </div>
+        <button class="iconbtn" id="mapBtn" title="Map of this thread" aria-label="Map of this thread">⌖</button>
+        <button class="iconbtn" id="threadsBtn" title="All threads" aria-label="All threads">≋</button>
+        <button class="iconbtn" id="apBtn" title="More" aria-label="More">◉</button>
+      </div>
+      <div class="braid"><svg id="braidSvg" aria-hidden="true"></svg><div class="strands" id="strands" role="tablist" aria-label="Strands of this thread"></div></div>
+      <div class="body" id="body">
+        <svg class="spine" id="spine" aria-hidden="true"></svg>
+        <canvas class="agent" id="agentXur" width="72" height="72" aria-hidden="true"></canvas>
+        <div class="turns" id="turns"></div>
+      </div>
+      <div class="comp" id="comp">
+        <div class="tray" id="tray"></div>
+        <div class="inputrow"><canvas id="promptXur" width="44" height="44" aria-hidden="true"></canvas><textarea id="ta" rows="1" placeholder="Message…" aria-label="Message"></textarea></div>
+        <div class="tools"><span id="projChip">▸ IRISVOICE</span><span>web</span><span>bonsai-2.6b + brain</span><span class="sp"></span><span>ctx 41%</span></div>
+      </div>
+    </div>
+
+    <div class="dash">
+      <h3>Dark glass dashboard · workspace</h3>
+      <div class="drop" id="drop"><div class="empty">Drag an artifact here.<br><small>It stays open beside the chat.</small></div></div>
+    </div>
+  </div>
+
+  <h2>The header and the footer, reorganized</h2>
+  <div class="col"><p>Today the top bar holds nine controls and the bottom bar holds seven. The thread list hides behind one of them. The new layout gives each bar one job. The top bar says <b>where you are</b>. The braid says <b>which chat</b>. The composer tray says <b>who hears you and what IRIS should remember</b>.</p></div>
+  <div class="two">
+    <div class="panel zone">
+      <div class="row"><span class="lbl">Today · top</span><span class="b">pulse</span><span class="b">IRIS</span><span class="b">dashboard</span><span class="b">detach</span><span class="b">launcher</span><span class="b">spotlight</span><span class="b">bell</span><span class="b x">history ▾</span><span class="b">close</span></div>
+      <div class="row"><span class="lbl">Today · folder bar (dev)</span><span class="b">tabs</span><span class="b">archive</span></div>
+      <div class="row"><span class="lbl">Today · bottom</span><span class="b">web</span><span class="b">upload</span><span class="b">model</span><span class="b">context</span><span class="b">pills</span><span class="b">send</span><span class="b">voice</span></div>
+    </div>
+    <div class="panel zone">
+      <div class="row"><span class="lbl">New · top (where you are)</span><span class="b" style="color:var(--iris)">Xur</span><span class="b">thread name (rename in place)</span><span class="b">project</span><span class="b">⌖ map</span><span class="b">≋ threads</span><span class="b">◉ menu: dashboard, detach, launcher, alerts, close</span></div>
+      <div class="row"><span class="lbl">New · braid (which chat)</span><span class="b">build</span><span class="b">plan</span><span class="b">@ana</span><span class="b">swarm</span><span class="b">+ strand</span></div>
+      <div class="row"><span class="lbl">New · composer (who + what)</span><span class="b">to: @iris</span><span class="b"># refs</span><span class="b">Xur prompt</span><span class="b">project · web · model · ctx</span></div>
+    </div>
+  </div>
+
+  <h2>Why the thread list lags today</h2>
+  <div class="col">
+    <p>Each time you open the list, the app downloads every thread with every message in it. It then rebuilds the whole conversation state and animates about 780 rows. Picture a librarian who carries every book to the desk each time you ask for the catalogue.</p>
+    <p class="muted">Proof: <code>openHistory()</code> calls <code>fetchConversations()</code> on each open (<code>chat-view.tsx:2928</code>). That fetch maps the full <code>messages</code> of every thread and replaces <code>conversations</code>. Each row is a <code>motion.div</code>. The fix: the list reads only titles and counts, it is virtualized, and messages load only for the strand you open.</p>
+  </div>
+
+  <h2>What this changes in the data</h2>
+  <div class="tablewrap">
+  <table class="t">
+    <thead><tr><th>Thing</th><th>Today</th><th>With braids</th></tr></thead>
+    <tbody>
+      <tr><td>Thread</td><td><code>conversations</code> row: id, title, pinned</td><td>Adds <code>project_id</code>. The thread owns the memory scope.</td></tr>
+      <tr><td>Strand</td><td>none (a fork endpoint exists: <code>/api/chat/threads/{id}/fork</code>)</td><td>A conversation with <code>parent_id</code> + <code>kind</code>: build, plan, peer, swarm.</td></tr>
+      <tr><td>Message author</td><td><code>role</code>: user or assistant</td><td><code>author</code> (you, iris, a peer, a peer's agent, a sub-agent) + <code>to</code> (the @ list).</td></tr>
+      <tr><td>Reference</td><td><code>@</code> card mentions in text</td><td><code>refs</code>: task card, artifact, landmark, turn ids. Addresses only, never content.</td></tr>
+      <tr><td>Turn protocol (Phase 3)</td><td>no strand or author</td><td><code>turn.start</code> carries <code>thread_id</code>, <code>strand_id</code>, <code>author</code>, <code>to</code>, <code>refs</code>.</td></tr>
+      <tr><td>Sub-agent</td><td>sub-loop chamber inside one turn</td><td>The same operator one level up: a strand that forks and folds back as one bead.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <h2>Questions for you</h2>
+  <ol class="qs col">
+    <li><b>Names.</b> "Thread" for the whole, "strand" for each chat under it? Or other words?</li>
+    <li><b>The spine in personal mode.</b> Show it in both modes, or only in developer mode?</li>
+    <li><b>IRIS's voice.</b> In personal mode, IRIS speaks in a book face (as on this page), and you write in the plain face. Keep that, or one face for both?</li>
+    <li><b>Order of work.</b> I suggest Phase 3 first, with the new fields in the protocol (strand, author, to, refs). Then the braid and the lens, then the living matrix (Phase 4). Peer chat over Nostr waits for the network (GOALS 7b), but the data shape is ready for it.</li>
+  </ol>
+</div>
+
+<script>
+(() => {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const reduced = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // ── the Xur: the same curve as components/Xur.tsx (7cos t − 3s·cos 9t) ──
+  // `s` is the loop depth. Wide loops = EXPAND (exploring); tight = COMPRESS (narrowing).
+  const xurs = [];
+  function Xur(canvas, opts) {
+    const o = Object.assign({ color: "#3fd6ff", speed: 1, s: .8, n: 68, glow: 0 }, opts);
+    const ctx = canvas.getContext("2d");
+    const x = { canvas, o, s: o.s, t0: performance.now(), visible: true };
+    x.draw = (now) => {
+      const W = canvas.width, H = canvas.height;
+      x.s += (x.o.s - x.s) * 0.04;
+      ctx.clearRect(0, 0, W, H);
+      const rot = ((now - x.t0) * x.o.speed / 30000) * Math.PI * 2 * 6;
+      const breathe = 0.85 + 0.15 * Math.sin((now - x.t0) * x.o.speed / 700);
+      const sc = Math.min(W, H) / 100 * 3.9 * breathe;
+      ctx.fillStyle = x.o.color;
+      if (x.o.glow) { ctx.shadowColor = x.o.color; ctx.shadowBlur = x.o.glow; }
+      for (let i = 0; i < x.o.n; i++) {
+        const a = rot - (i / x.o.n) * Math.PI * 2;
+        const px = W / 2 + (7 * Math.cos(a) - 3 * x.s * Math.cos(9 * a)) * sc;
+        const py = H / 2 + (7 * Math.sin(a) - 3 * x.s * Math.sin(9 * a)) * sc;
+        const f = 1 - i / x.o.n;
+        ctx.globalAlpha = f * 0.75;
+        ctx.beginPath(); ctx.arc(px, py, (0.6 + f * 2.2) * Math.min(W, H) / 100, 0, Math.PI * 2); ctx.fill();
+      }
+      ctx.globalAlpha = 1; ctx.shadowBlur = 0;
+    };
+    xurs.push(x);
+    return x;
+  }
+  const hero = Xur($("heroXur"), { color: "#3fd6ff", speed: .6, s: 1, n: 140, glow: 12 });
+  const head = Xur($("headXur"), { speed: .5, s: .6, n: 54 });
+  const agent = Xur($("agentXur"), { color: "#f2c14e", speed: 2.2, s: 1, n: 56, glow: 10 });
+  const prompt = Xur($("promptXur"), { speed: .35, s: .45, n: 40 });
+  let heroPhase = 0;
+  function frame(now) {
+    // the hero slowly breathes between expand and compress
+    hero.o.s = 0.55 + 0.45 * Math.sin(now / 2600);
+    for (const x of xurs) if (x.visible) x.draw(now);
+    drawBraid(now);
+    requestAnimationFrame(frame);
+  }
+  if (reduced) { for (const x of xurs) x.draw(performance.now()); } else requestAnimationFrame(frame);
+  void heroPhase;
+
+  // ── state: one thread, four strands, one memory ──
+  const STRANDS = [
+    { id: "build", label: "build", c: "var(--iris)", hex: "#3fd6ff", to: "@iris", ph: "Ask IRIS to build…" },
+    { id: "plan", label: "plan", c: "var(--plan)", hex: "#8ea6ff", to: "@iris", ph: "Think it through with IRIS…" },
+    { id: "ana", label: "@ana", c: "var(--peer)", hex: "#c69bff", to: "@ana", ph: "Message Ana (add @iris to ask IRIS)…" },
+    { id: "swarm", label: "swarm", c: "var(--swarm)", hex: "#ff9a76", to: "@swarm", ph: "Brief the swarm…" },
+  ];
+  const S = { strand: "build", dev: true, running: false, done: false, refs: { build: [], plan: [], ana: [], swarm: [] }, extra: { build: [], plan: [], ana: [], swarm: [] }, live: {}, nodes: [], thk: "", ans: "", born: new Set(), chamberFolded: false, landmark: false, lens: false, map: false };
+  const REFS = [
+    { k: "#T-38", t: "task card · router window test", c: "var(--iris)" },
+    { k: "#A-12", t: "artifact · router budget plan", c: "var(--proof)" },
+    { k: "#L-07", t: "landmark · reserve is 256 tokens", c: "var(--proof)" },
+    { k: "#plan/3", t: "plan strand · turn 3", c: "var(--plan)" },
+  ];
+  const PEOPLE = [
+    { k: "@iris", t: "your agent", c: "var(--iris)" },
+    { k: "@ana", t: "Ana · peer", c: "var(--peer)" },
+    { k: "@ana.iris", t: "Ana's agent", c: "var(--peer)" },
+    { k: "@swarm", t: "sub-agents of this thread", c: "var(--swarm)" },
+  ];
+
+  // ── the braid: strands drawn as weaving curves, with light moving on working strands ──
+  function drawBraid(now) {
+    const svg = $("braidSvg"); const W = svg.clientWidth || 480, H = 46;
+    let h = "";
+    STRANDS.forEach((st, i) => {
+      const active = st.id === S.strand, working = !!S.live[st.id];
+      let d = "";
+      for (let x = 0; x <= W; x += 8) {
+        const y = H / 2 + Math.sin(x / 38 + i * 1.6 + (reduced ? 0 : now / 2400)) * 11 * (active ? .55 : 1);
+        d += (x ? "L" : "M") + x + " " + y.toFixed(1);
+      }
+      h += '<path d="' + d + '" fill="none" stroke="' + st.hex + '" stroke-opacity="' + (active ? .55 : .16) + '" stroke-width="' + (active ? 1.6 : 1) + '"' + (working ? ' stroke-dasharray="3 9" style="animation:dash .8s linear infinite"' : "") + "/>";
+    });
+    svg.innerHTML = h;
+  }
+  function renderStrands() {
+    $("strands").innerHTML = STRANDS.map((st) => '<button class="strand" role="tab" data-strand="' + st.id + '" style="--c:' + st.c + '" aria-current="' + (st.id === S.strand) + '"><i></i>' + esc(st.label) + (S.live[st.id] ? '<span class="live" title="working"></span>' : "") + "</button>").join("") + '<button class="strand add" data-add="1" title="New strand from here">+ strand</button>';
+  }
+
+  // ── content per strand ──
+  const md = (s) => esc(s).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>").replace(/`([^`]+)`/g, "<code>$1</code>").replace(/(#[A-Za-z]+[-/][\w]+)/g, '<span class="ref">$1</span>').replace(/(@[a-z.]+)/g, '<span class="ref peerref">$1</span>');
+  const paras = (s) => s.split(/\n\n+/).map((p) => "<p>" + md(p) + "</p>").join("");
+  const ORB = { pending: "○", running: "◎", done: "●", failed: "✕", proof: "✦", recall: "◈" };
+
+  function turnHTML(t) {
+    if (t.kind === "you") return '<div class="turn" data-bead="' + (t.bead || "") + '"><div class="you' + (t.peer ? " peer" : "") + '">' + (t.peer ? '<div class="who" style="--c:var(--peer)"><span class="dot"></span>' + esc(t.peer) + "</div>" : "") + md(t.text) + "</div></div>";
+    if (t.kind === "iris") return '<div class="turn" data-bead="' + (t.bead || "") + '"' + (t.fil ? ' data-fil="' + t.fil + '"' : "") + '><div class="who" style="--c:var(--iris)"><span class="dot"></span>IRIS</div><div class="' + (S.dev ? "ans" : "voice") + '">' + paras(t.text) + "</div>" + (t.note ? '<div class="note">' + t.note + "</div>" : "") + "</div>";
+    if (t.kind === "peerAgent") return '<div class="turn" data-bead="' + (t.bead || "") + '"><div class="who" style="--c:var(--peer)"><span class="dot"></span>ana.iris · her agent</div><div class="' + (S.dev ? "ans" : "voice") + '">' + paras(t.text) + '</div><div class="note hint-proof">◇ hint, not proof · it becomes a landmark only after it passes here</div></div>';
+    if (t.kind === "listen") return '<div class="turn"><div class="listen">◌ IRIS listened · no @iris, so no prompt was sent</div></div>';
+    if (t.kind === "art") return '<div class="turn" data-bead="' + (t.bead || "") + '"><div class="art" draggable="true" data-art="1" tabindex="0" role="button" aria-label="Open Router budget plan"><div class="ic">≡</div><div class="tx"><b>Router budget plan</b><span>#A-12 · document · 1 table · 2 decisions</span></div><span class="grip" title="Drag to the dashboard">⠿</span></div></div>';
+    if (t.kind === "swarm") return '<div class="turn" data-bead="' + (t.bead || "") + '"><div class="who" style="--c:var(--swarm)"><span class="dot"></span>swarm · 3 sub-agents · folded</div>' + t.rows.map((r) => '<div class="mr s-' + r.s + '"><span class="orb" style="color:' + r.c + '">' + ORB[r.s] + '</span><span class="vb" style="color:' + r.c + '">' + esc(r.v) + '</span><span class="tg">' + esc(r.t) + '</span><span class="rs">' + esc(r.r) + "</span></div>").join("") + '<div class="note">✦ folded back into build as one bead · <span class="ref">#T-39</span></div></div>';
+    return "";
+  }
+
+  const STATIC = {
+    plan: [
+      { kind: "you", text: "Before we touch the router: what should the window budget rule be?", bead: "p1" },
+      { kind: "iris", text: "The budget should be the window minus `max_tokens` minus a fixed reserve for the system frame. The reserve was 256 tokens when we measured it in September.\n\nI wrote the rule and the two open decisions into a plan.", bead: "p2", fil: "lm", note: "◈ recalled <span class=\"ref\" style=\"--c:var(--proof)\">#L-07</span> reserve is 256 tokens · proven 2026-09-14" },
+      { kind: "art", bead: "p3" },
+    ],
+    ana: [
+      { kind: "you", peer: "Ana", text: "Our IRIS kept losing half the prompt on long chats. Did yours?", bead: "a1" },
+      { kind: "you", text: "Yes, the window cap. We are fixing it in build right now.", bead: "a2" },
+      { kind: "listen" },
+      { kind: "peerAgent", text: "Shared fix candidate: subtract a **256-token reserve** in the cap. 4 of our runs passed after it.", bead: "a3" },
+    ],
+    swarm: [
+      { kind: "you", text: "@swarm check the three callers of the cap in parallel", bead: "w1" },
+      { kind: "swarm", bead: "w2", rows: [
+        { s: "done", v: "AGENT·1", t: "generate() · uses the cap", r: "1 call", c: "#ff9a76" },
+        { s: "done", v: "AGENT·2", t: "stream() · own budget", r: "0 calls", c: "#ffc29e" },
+        { s: "done", v: "AGENT·3", t: "summarize() · own budget", r: "0 calls", c: "#ffb08a" },
+      ] },
+    ],
+  };
+
+  // ── build strand: the living matrix ──
+  function buildHTML() {
+    const h = [];
+    h.push('<div class="turn" data-bead="b0"><div class="you">' + md("Continue #T-38 with the rule from #plan/3") + "</div></div>");
+    if (!S.running && !S.done) { h.push('<div class="turn"><div class="listen">Press <b>Run the turn</b> above to watch IRIS work.</div></div>'); return h.join(""); }
+    const tid = "b1";
+    if (S.dev) {
+      h.push('<div class="turn" data-bead="' + tid + '"' + (S.landmark ? ' data-star="1"' : "") + ' data-fil="plan"><div class="mx">');
+      if (S.done && !S.open) {
+        h.push('<button class="fold" data-unfold="1" style="background:none;border:0;padding:0;cursor:pointer;width:100%;text-align:left"><span style="color:var(--proof);font-weight:700">✦ CONVERGED</span><span class="t">· ' + S.nodes.length + " nodes · 1 sub-loop · 1 landmark · 0:21</span><span style=\"color:var(--iris)\">⌄</span></button>");
+      } else {
+        if (S.thk) h.push('<div class="thk"><span class="k">THK</span><span class="t"><span class="ink-in" id="thkInk">' + esc(S.thk) + "</span></span></div>");
+        let inPar = false;
+        S.nodes.forEach((n) => {
+          if (n.par && !inPar) { h.push('<div class="par' + (S.nodes.filter((m) => m.par).every((m) => m.s !== "running") ? " settled" : "") + '">'); inPar = true; }
+          if (!n.par && inPar) { h.push("</div>"); inPar = false; }
+          if (n.sub) return;
+          h.push(row(n));
+          if (n.det && (n.s === "failed" || n.s === "done" && n.open)) h.push('<div class="det">' + n.det.map((l) => l.startsWith("+") ? '<span class="add">' + esc(l) + "</span>" : l.startsWith("-") ? '<span class="del">' + esc(l) + "</span>" : esc(l)).join("\n") + "</div>");
+          const kids = S.nodes.filter((k) => k.sub === n.id);
+          if (kids.length) h.push('<div class="chamber' + (S.chamberFolded ? " folded" : "") + '"><div class="cl">↳ sub-loop · find the reserve constant</div>' + kids.map(row).join("") + "</div>");
+        });
+        if (inPar) h.push("</div>");
+      }
+      h.push("</div></div>");
+      if (S.ans) h.push('<div class="turn"><div class="ans">' + paras(S.ans) + "</div>" + (S.landmark ? '<div class="note" style="color:var(--proof)">✦ new landmark <span class="ref" style="--c:var(--proof)">#L-08</span> "cap = window − max_tokens − 256" · proven by 12 passing tests</div>' : "") + "</div>");
+    } else {
+      const top = S.nodes.filter((n) => !n.sub);
+      const cur = S.nodes.find((n) => n.s === "running");
+      h.push('<div class="turn" data-bead="' + tid + '"' + (S.landmark ? ' data-star="1"' : "") + ' data-fil="plan"><div class="trail"><div class="top"><b>Fix the router window cap</b><span>' + top.filter((n) => n.s !== "pending" && n.s !== "running").length + "/" + top.length + '</span></div><div class="beads">' + top.map((n, i) => (i ? '<span class="link"></span>' : "") + '<span class="bead ' + (n.s === "recall" ? "recall" : n.s) + '" title="' + esc(n.v + " " + n.t) + '"></span>').join("") + "</div>" + (cur ? '<div class="now">◎ ' + esc(cur.live || cur.t) + "</div>" : S.done ? '<div class="note" style="color:var(--proof)">✦ converged · 1 landmark</div>' : "") + "</div></div>");
+      if (S.ans) h.push('<div class="turn"><div class="who" style="--c:var(--iris)"><span class="dot"></span>IRIS</div><div class="voice">' + paras(S.ans) + "</div></div>");
+    }
+    return h.join("");
+  }
+  function row(n) {
+    const born = S.born.has(n.id) ? " born" : "";
+    return '<div class="mr s-' + n.s + born + '" data-node="' + n.id + '"' + (n.s === "running" ? " data-run=\"1\"" : "") + '><span class="orb">' + ORB[n.s] + '</span><span class="vb">' + esc(n.v) + '</span><span class="tg">' + esc(n.t) + '</span><span class="rs">' + (n.s === "running" ? "…" : esc(n.r || "")) + "</span></div>";
+  }
+
+  // ── render the wing ──
+  function render() {
+    const st = STRANDS.find((x) => x.id === S.strand);
+    $("wing").classList.toggle("dev", S.dev);
+    renderStrands();
+    const list = S.strand === "build" ? buildHTML() : STATIC[S.strand].map(turnHTML).join("");
+    $("turns").innerHTML = list + S.extra[S.strand].map(turnHTML).join("");
+    S.born.clear();
+    $("ta").placeholder = st.ph;
+    renderTray();
+    requestAnimationFrame(layout);
+  }
+  function renderTray() {
+    const st = STRANDS.find((x) => x.id === S.strand);
+    $("tray").innerHTML = '<span class="to" style="--c:' + st.c + '" title="Who hears this message">to ' + esc(st.to) + "</span>" + S.refs[S.strand].map((r, i) => '<span class="chip" style="color:' + r.c + '">' + esc(r.k) + '<button data-unref="' + i + '" aria-label="Remove ' + esc(r.k) + '">×</button></span>').join("") + '<span class="hint" style="font-size:10.5px">' + (S.refs[S.strand].length ? "IRIS gets these addresses" : "# adds a reference · @ picks who hears") + "</span>";
+  }
+
+  // ── the spine: beads, filaments to memory, stars for landmarks; the agent Xur rides it ──
+  function layout() {
+    const body = $("body"), turns = $("turns"), svg = $("spine");
+    const H = turns.scrollHeight; svg.setAttribute("height", H); svg.style.height = H + "px";
+    const beads = [...turns.querySelectorAll("[data-bead]")].map((el) => ({ el, y: el.offsetTop + 10 }));
+    const st = STRANDS.find((x) => x.id === S.strand);
+    let h = "";
+    if (beads.length) h += '<line x1="17" x2="17" y1="' + (beads[0].y) + '" y2="' + (beads[beads.length - 1].y) + '" stroke="' + st.hex + '" stroke-opacity=".28" stroke-width="1"/>';
+    for (const b of beads) {
+      const star = b.el.dataset.star;
+      h += star ? '<path d="M17 ' + (b.y - 7) + " L19 " + (b.y - 2) + " L24 " + b.y + " L19 " + (b.y + 2) + " L17 " + (b.y + 7) + " L15 " + (b.y + 2) + " L10 " + b.y + " L15 " + (b.y - 2) + 'Z" fill="#5fcf98"/>' : '<circle cx="17" cy="' + b.y + '" r="3.2" fill="' + st.hex + '" fill-opacity=".85"/>';
+      const fil = b.el.dataset.fil;
+      if (fil) {
+        // a filament reaches up and out of the chat: memory from another strand or a landmark
+        const col = fil === "plan" ? "#8ea6ff" : "#5fcf98";
+        h += '<path d="M17 ' + b.y + " C 2 " + (b.y - 30) + ", 2 " + (b.y - 60) + ", 17 " + Math.max(4, b.y - 92) + '" fill="none" stroke="' + col + '" stroke-width="1" stroke-dasharray="2 4"' + (reduced ? "" : ' style="animation:dash 1.4s linear infinite"') + "/>";
+        h += '<circle cx="17" cy="' + Math.max(4, b.y - 92) + '" r="2.2" fill="' + col + '"/>';
+      }
+    }
+    svg.innerHTML = h;
+    // the agent Xur goes where the work is
+    const runs = [...turns.querySelectorAll("[data-run]")];
+    const ag = $("agentXur");
+    if (S.running && S.strand === "build") {
+      let y;
+      if (runs.length) y = runs.reduce((a, r) => a + r.getBoundingClientRect().top, 0) / runs.length - turns.getBoundingClientRect().top;
+      else { const thk = turns.querySelector(".thk, .trail"); y = thk ? thk.getBoundingClientRect().top - turns.getBoundingClientRect().top : 40; }
+      ag.style.top = (y - 4) + "px"; ag.style.opacity = 1; agent.visible = true;
+      agent.o.s = runs.length > 1 ? 1.25 : S.phase === "compress" ? .3 : .8;
+      agent.o.color = S.phase === "compress" ? "#86e6ff" : "#f2c14e";
+      // parallel rows: light flows from the Xur to each running row
+      if (runs.length > 1) for (const r of runs) {
+        const ry = r.getBoundingClientRect().top - turns.getBoundingClientRect().top + 11;
+        h += '<path d="M28 ' + (y + 11) + " C 32 " + (y + 11) + ", 30 " + ry + ", 38 " + ry + '" fill="none" stroke="#f2c14e" stroke-width="1.2" stroke-dasharray="3 5"' + (reduced ? "" : ' style="animation:dash .6s linear infinite"') + "/>";
+      }
+      svg.innerHTML = h;
+      if (S.follow) body.scrollTop = Math.max(0, y - body.clientHeight / 2);
+    } else { ag.style.opacity = 0; agent.visible = false; }
+    head.o.s = S.running ? 1 : .6; head.o.speed = S.running ? 1.4 : .5;
+    prompt.o.color = S.running ? "rgba(63,214,255,.35)" : "#3fd6ff";
+  }
+
+  // ── the build turn: a recorded run with real motion ──
+  const N = (id, v, t, extra) => Object.assign({ id, v, t, s: "pending" }, extra);
+  function script() {
+    return [
+      [300, () => { S.thk = "Read the rule from plan, then find every caller."; S.phase = "expand"; }],
+      [500, () => add(N("n1", "RECALL", "#plan/3 · budget rule", { live: "recalling the plan" }))],
+      [200, () => set("n1", "running")],
+      [700, () => set("n1", "recall", "◈ plan · #L-07")],
+      [300, () => { add(N("n2", "GREP", "_cap_messages_to_window", { par: true, live: "searching callers" })); add(N("n3", "READ", "router.py 419–466", { par: true, live: "reading router.py" })); add(N("n4", "READ", "tests/unit/test_router.py", { par: true, live: "reading the test" })); }],
+      [250, () => { set("n2", "running"); set("n3", "running"); set("n4", "running"); }],
+      [1100, () => set("n3", "done", "48 ln")],
+      [400, () => set("n2", "done", "3 hits")],
+      [500, () => set("n4", "done", "12 tests")],
+      [300, () => { S.thk = "The cap subtracts max_tokens but not the reserve."; S.phase = "compress"; add(N("n5", "PATCH", "router.py", { live: "editing router.py" })); }],
+      [200, () => set("n5", "running")],
+      [1000, () => { set("n5", "done", "+3 −1"); const n = get("n5"); n.det = ["- budget = window - max_tokens", "+ budget = window - max_tokens - _RESERVE"]; n.open = true; }],
+      [300, () => add(N("n6", "EXEC", "pytest tests/unit/test_router.py", { live: "running the tests" }))],
+      [200, () => set("n6", "running")],
+      [1300, () => { set("n6", "failed", "✗ 1 failed"); get("n6").det = ["NameError: _RESERVE is not defined"]; S.thk = "_RESERVE is not defined here. Find where it lives."; S.phase = "expand"; }],
+      [400, () => { add(N("s1", "GREP", "_RESERVE =", { sub: "n6", live: "grep _RESERVE" })); }],
+      [150, () => set("s1", "running")],
+      [800, () => set("s1", "done", "inference/budget.py")],
+      [250, () => { add(N("s2", "FOLD", "import it from budget.py", { sub: "n6" })); set("s2", "proof", "folded"); }],
+      [700, () => { S.chamberFolded = true; S.phase = "compress"; add(N("n7", "PATCH", "router.py · import _RESERVE", { live: "adding the import" })); }],
+      [150, () => set("n7", "running")],
+      [700, () => set("n7", "done", "+1")],
+      [200, () => add(N("n8", "EXEC", "pytest tests/unit/test_router.py", { live: "running the tests" }))],
+      [150, () => set("n8", "running")],
+      [1200, () => { set("n8", "proof", "✓ 12 passed"); S.thk = "Proven by the tests. Crystallize the rule."; }],
+      [500, () => { S.ans = "Fixed. The cap now subtracts the 256-token reserve, as the plan in #plan/3 says.\n\nThe first run failed because `_RESERVE` lives in `budget.py`. I imported it, and all 12 router tests pass."; }],
+      [600, () => { S.landmark = true; S.live.build = false; S.running = false; S.done = true; S.open = false; S.follow = false; }],
+    ];
+  }
+  const get = (id) => S.nodes.find((n) => n.id === id);
+  function add(n) { S.nodes.push(n); S.born.add(n.id); }
+  function set(id, s, r) { const n = get(id); n.s = s; if (r) n.r = r; }
+  let timers = [];
+  function run() {
+    timers.forEach(clearTimeout); timers = [];
+    Object.assign(S, { strand: "build", running: true, done: false, nodes: [], thk: "", ans: "", chamberFolded: false, landmark: false, follow: true, open: true });
+    S.live.build = true; closeOverlays();
+    $("hint").textContent = "Build strand · IRIS is working";
+    render();
+    let t = 0;
+    for (const [d, fn] of script()) { t += d; timers.push(setTimeout(() => { fn(); if (S.strand === "build") render(); else renderStrands(); if (S.done) $("hint").textContent = "Build strand · done · a landmark star sits on the spine"; }, t)); }
+  }
+
+  // ── composer: @ picks who hears, # adds references ──
+  let pop = null, popSel = 0;
+  function showPop(kind) {
+    const items = kind === "#" ? REFS : PEOPLE;
+    closePop();
+    pop = document.createElement("div"); pop.className = "pop"; pop.dataset.kind = kind;
+    pop.innerHTML = items.map((r, i) => '<button data-pick="' + i + '" class="' + (i === popSel ? "sel" : "") + '"><b style="color:' + r.c + ';font:600 12px var(--mono)">' + esc(r.k) + "</b><span>" + esc(r.t) + "</span>" + (kind === "#" ? "<small>address</small>" : "") + "</button>").join("");
+    $("comp").appendChild(pop);
+  }
+  function closePop() { if (pop) pop.remove(); pop = null; popSel = 0; }
+  function pick(i) {
+    const kind = pop.dataset.kind, ta = $("ta");
+    if (kind === "#") { S.refs[S.strand].push(REFS[i]); ta.value = ta.value.replace(/#\S*$/, ""); renderTray(); }
+    else ta.value = ta.value.replace(/@\S*$/, PEOPLE[i].k + " ");
+    closePop(); ta.focus();
+  }
+  function send() {
+    const ta = $("ta"), text = ta.value.trim(); if (!text) return;
+    const E = S.extra[S.strand], refs = S.refs[S.strand].map((r) => r.k).join(" ");
+    E.push({ kind: "you", text: text + (refs ? "  " + refs : ""), bead: "x" + E.length });
+    if (S.strand === "ana" && !/@iris\b/.test(text)) {
+      E.push({ kind: "listen" });
+      toast("Sent to Ana only. IRIS heard it, but no prompt went to the agent.");
+    } else if (S.strand === "ana") {
+      E.push({ kind: "iris", bead: "x" + E.length + "i", fil: "plan", text: "Ana's agent proposes the same rule our build strand just proved. I can mark her hint as **held up here**, which raises her trust score.", note: "◈ recalled build · #L-08" });
+    } else {
+      E.push({ kind: "iris", bead: "x" + E.length + "i", fil: refs ? "plan" : "", text: refs ? "Got it. I loaded " + refs + " from memory by address and will use them in this strand." : "This is a demo reply. In the app, this starts a turn in the **" + S.strand + "** strand, with the thread's shared memory." });
+    }
+    ta.value = ""; S.refs[S.strand] = []; render();
+    setTimeout(() => { $("body").scrollTop = $("body").scrollHeight; }, 50);
+  }
+
+  // ── lens, map, menus, drag to dashboard ──
+  function closeOverlays() { document.querySelectorAll(".lens,.map,.menu").forEach((e) => e.remove()); }
+  function openLens() {
+    closeOverlays();
+    const d = document.createElement("div"); d.className = "lens";
+    d.innerHTML = '<div class="lh"><button class="small" data-close="1">◂ plan</button><b>Router budget plan · #A-12</b><button class="small" data-pop="1">Pop out</button><button class="small" data-todash="1">To dashboard</button></div><div class="lb"><p><strong>Rule.</strong> budget = window − max_tokens − reserve. The reserve holds the system frame.</p><table><thead><tr><th>Input</th><th>Today</th><th>Planned</th></tr></thead><tbody><tr><td>window 8192, max 4096</td><td>4096</td><td>3840</td></tr><tr><td>window 32768, max 4096</td><td>28672</td><td>28416</td></tr></tbody></table><p><strong>Decision 1.</strong> The reserve stays a constant (256) until the Oracle earns the job.</p><p><strong>Decision 2.</strong> Only <code>generate()</code> uses the cap; the swarm checked the other callers.</p></div>';
+    $("wing").appendChild(d);
+  }
+  function openMap() {
+    closeOverlays();
+    const d = document.createElement("div"); d.className = "map";
+    const W = 480, H = 600, cols = { build: 90, plan: 190, ana: 300, swarm: 400 };
+    let s = "";
+    const B = {};
+    STRANDS.forEach((st, i) => {
+      const x = cols[st.id], wob = (y) => x + Math.sin(y / 60 + i) * 10;
+      let p = "M" + x + " 40";
+      for (let y = 40; y <= 520; y += 20) p += " L" + wob(y).toFixed(1) + " " + y;
+      s += '<path d="' + p + '" fill="none" stroke="' + st.hex + '" stroke-opacity=".5"/>';
+      s += '<text x="' + x + '" y="26" text-anchor="middle" fill="' + st.hex + '" font-family="JetBrains Mono, monospace" font-size="12">' + esc(st.label) + "</text>";
+      const n = { build: 6, plan: 4, ana: 4, swarm: 2 }[st.id];
+      B[st.id] = [];
+      for (let k = 0; k < n; k++) { const y = 70 + k * (420 / n) + i * 9; B[st.id].push([+wob(y).toFixed(1), y]); }
+    });
+    // filaments: memory one strand used from another (bead to bead)
+    const fil = (a, b, col) => '<path d="M' + a[0] + " " + a[1] + " C " + ((a[0] + b[0]) / 2) + " " + a[1] + ", " + ((a[0] + b[0]) / 2) + " " + b[1] + ", " + b[0] + " " + b[1] + '" stroke="' + col + '" fill="none" stroke-dasharray="2 4"' + (reduced ? "" : ' style="animation:dash 1.4s linear infinite"') + "/>";
+    s += fil(B.plan[1], B.build[3], "#8ea6ff") + fil(B.build[3], B.ana[3], "#c69bff") + fil(B.swarm[1], B.build[4], "#ff9a76");
+    const star = (x, y) => '<path d="M' + x + " " + (y - 9) + " L" + (x + 2.5) + " " + (y - 2.5) + " L" + (x + 9) + " " + y + " L" + (x + 2.5) + " " + (y + 2.5) + " L" + x + " " + (y + 9) + " L" + (x - 2.5) + " " + (y + 2.5) + " L" + (x - 9) + " " + y + " L" + (x - 2.5) + " " + (y - 2.5) + 'Z" fill="#5fcf98"/>';
+    STRANDS.forEach((st) => B[st.id].forEach(([x, y], k) => {
+      const isStar = (st.id === "build" && k === 3) || (st.id === "plan" && k === 0);
+      s += isStar ? star(x, y) : '<circle cx="' + x + '" cy="' + y + '" r="4" fill="' + st.hex + '"><title>' + esc(st.label) + " turn " + (k + 1) + "</title></circle>";
+    }));
+    d.innerHTML = '<svg viewBox="0 0 ' + W + " " + H + '" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Map of the thread: four strands, their turns, landmarks and memory filaments">' + s + '</svg><div class="cap"><span>Strands are columns, turns are beads, stars are landmarks, dashed lines are memory that one strand used from another.</span><button class="small" data-close="1">Close</button></div>';
+    $("wing").appendChild(d);
+  }
+  function openMenu() {
+    if (document.querySelector(".menu")) { closeOverlays(); return; }
+    closeOverlays();
+    const d = document.createElement("div"); d.className = "menu";
+    d.innerHTML = [["▦", "Dashboard", "⌘D"], ["⇱", "Detach the wing", "drag the edge"], ["◔", "Alerts", "2"], ["◎", "Launcher", ""], ["✕", "Close", "Esc"]].map((m) => '<button data-menu="' + m[1] + '"><span style="width:16px;text-align:center">' + m[0] + "</span>" + m[1] + '<span class="k">' + m[2] + "</span></button>").join("");
+    $("wing").appendChild(d);
+  }
+  function openThreads() {
+    closeOverlays();
+    const d = document.createElement("div"); d.className = "map";
+    const rows = [["IRISVOICE · router budget", "4 strands · now", true], ["IRISVOICE · STT engines", "2 strands · yesterday"], ["Home · trip to Lisbon", "1 strand · Oct 2"], ["IRISVOICE · Nostr hive", "3 strands · Sep 30"], ["Taxes 2026", "1 strand · Sep 28"]];
+    d.innerHTML = '<div style="padding:14px;display:flex;flex-direction:column;gap:6px;height:100%;overflow:auto"><div class="hint" style="margin-bottom:6px">Threads · titles only, so the list opens at once · 781 total</div>' + rows.map((r) => '<button class="small" data-close="1" style="display:flex;gap:10px;align-items:center;padding:10px;text-align:left;' + (r[2] ? "border-color:var(--iris)" : "") + '"><svg width="34" height="18" aria-hidden="true"><path d="M0 9 Q8 1 17 9 T34 9" stroke="#3fd6ff" fill="none"/><path d="M0 9 Q8 17 17 9 T34 9" stroke="#8ea6ff" fill="none" opacity=".7"/></svg><span style="flex:1;min-width:0"><b style="display:block;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">' + esc(r[0]) + '</b><span class="hint">' + esc(r[1]) + "</span></span></button>").join("") + '<button class="small" data-close="1" style="margin-top:6px;color:var(--iris)">+ New thread</button></div>';
+    $("wing").appendChild(d);
+  }
+  function pinToDash() {
+    const drop = $("drop");
+    if (!drop.querySelector(".pinned")) drop.innerHTML = "";
+    const p = document.createElement("div"); p.className = "pinned";
+    p.innerHTML = "<b>Router budget plan</b><span class=\"hint\">#A-12 · live link to the plan strand</span>";
+    drop.appendChild(p);
+    toast("Opened in the dashboard workspace.");
+  }
+  function toast(msg) {
+    const t = document.createElement("div"); t.className = "toast"; t.textContent = msg; t.setAttribute("role", "status");
+    $("wing").appendChild(t); setTimeout(() => t.remove(), 2600);
+  }
+
+  // ── wiring ──
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest("button,[data-art]"); if (!b) { if (!e.target.closest(".menu,#apBtn")) document.querySelectorAll(".menu").forEach((m) => m.remove()); return; }
+    if (b.dataset.strand) { S.strand = b.dataset.strand; closeOverlays(); $("hint").textContent = STRANDS.find((x) => x.id === S.strand).label + " strand" + (S.live.build && S.strand !== "build" ? " · build is still working (see the braid)" : ""); render(); }
+    else if (b.dataset.add) toast("A new strand starts here. It shares this thread's memory.");
+    else if (b.dataset.art) openLens();
+    else if (b.dataset.close) closeOverlays();
+    else if (b.dataset.pop) toast("Pops out to its own window (Tauri), like the detached wing.");
+    else if (b.dataset.todash) { closeOverlays(); pinToDash(); }
+    else if (b.dataset.menu) { closeOverlays(); toast(b.dataset.menu + " (demo)"); }
+    else if (b.dataset.unfold) { S.open = true; render(); }
+    else if (b.dataset.unref) { S.refs[S.strand].splice(Number(b.dataset.unref), 1); renderTray(); }
+    else if (b.dataset.pick) pick(Number(b.dataset.pick));
+    else if (b.id === "run") run();
+    else if (b.id === "mapBtn") openMap();
+    else if (b.id === "threadsBtn") openThreads();
+    else if (b.id === "apBtn") openMenu();
+    else if (b.id === "mDev" || b.id === "mPer") { S.dev = b.id === "mDev"; $("mDev").setAttribute("aria-pressed", String(S.dev)); $("mPer").setAttribute("aria-pressed", String(!S.dev)); render(); }
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.target.dataset && e.target.dataset.art && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); openLens(); }
+    if (e.key === "Escape") { closeOverlays(); closePop(); }
+  });
+  const ta = $("ta");
+  ta.addEventListener("input", () => {
+    const m = ta.value.match(/(^|\s)([@#])\S*$/);
+    if (m) showPop(m[2]); else closePop();
+  });
+  ta.addEventListener("keydown", (e) => {
+    if (pop) {
+      const n = pop.querySelectorAll("button").length;
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); popSel = (popSel + (e.key === "ArrowDown" ? 1 : n - 1)) % n; showPop(pop.dataset.kind); return; }
+      if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); pick(popSel); return; }
+    }
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+  });
+  $("body").addEventListener("wheel", () => { S.follow = false; }, { passive: true });
+  // drag an artifact to the dashboard workspace
+  document.addEventListener("dragstart", (e) => { if (e.target.dataset && e.target.dataset.art) e.dataTransfer.setData("text/plain", "A-12"); });
+  const drop = $("drop");
+  drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+  drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+  drop.addEventListener("drop", (e) => { e.preventDefault(); drop.classList.remove("over"); pinToDash(); });
+  $("threadName").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); e.target.blur(); toast("Thread renamed."); } });
+  window.addEventListener("resize", () => requestAnimationFrame(layout));
+
+  // First frame: the build strand after a finished run, so the page is complete at rest.
+  for (const [, fn] of script()) fn();
+  S.born.clear();
+  render();
+})();
+</script>
+</body></html>

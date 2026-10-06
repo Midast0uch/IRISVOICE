@@ -1,9 +1,8 @@
 "use client"
 
 import React, { useState, useEffect, useRef, useCallback, useMemo, useSyncExternalStore } from "react"
-import { sortRows, deriveProgress } from "@/lib/cards/rowOrder";
 import { motion, AnimatePresence } from "framer-motion"
-import { Send, X, BarChart3, Plus, Trash2, AlertCircle, Bell, AlertTriangle, Shield, Loader, CheckCircle, Info, History, Pin, Copy, ThumbsUp, ThumbsDown, Volume2, ChevronDown, ChevronUp, Download, Share, FileText, Mail, Video, Image, File, Smile, ExternalLink, RefreshCw, Pencil, Archive, Maximize2, Minimize2 } from 'lucide-react';
+import { X, Copy, Download, Share, FileText, Mail, Video, Image, File, Archive } from 'lucide-react';
 import { Icon } from '@iconify/react';
 import { Xur } from "@/components/Xur";
 import { useNavigation } from "@/contexts/NavigationContext";
@@ -12,7 +11,6 @@ import { SendMessageFunction } from "@/hooks/useIRISWebSocket";
 import { mergeRenderedDocuments } from "@/lib/documentMerge";
 import { formatPlanEventMessage } from "@/components/chat/planEventMessage";
 import { useReducedMotion } from "@/hooks/useReducedMotion";
-import { IrisApertureIcon } from "@/components/ui/IrisApertureIcon";
 import { SpotlightState, SpotlightStateType } from "@/hooks/useUILayoutState";
 import { useLauncherMode } from "@/hooks/useLauncherMode";
 import {
@@ -22,27 +20,30 @@ import {
   TILT_DEG,
   type SpotlightStr,
 } from "@/lib/orbWingGeometry";
-import { ConversationChips } from "@/components/chat/ConversationChips";
+// Phase 3 (turn protocol): live turns come from the turn store, filed by the
+// conversation each event names; TurnParts draws reasoning / notices / errors.
+import { useConversationTurns, getTurnsState, type TurnRecord } from "@/lib/turns/turnStore";
+import { mergeLiveTurns } from "@/lib/turns/mergeTurns";
+import { TurnParts } from "@/components/chat/turn/TurnParts";
 
 // Lazy-load entire workspace — only bundles in developer mode
 // (cli-workspace-unification T1: ChatView no longer replaces its body with the
 // workspace in dev mode — the unified scroll IS the dev-mode body. The Visual
 // Workspace Hub lives in the Dashboard Wing, not here.)
-import { SuggestionPills } from "@/components/chat/SuggestionPills";
-import { PermissionCard } from "@/components/chat/PermissionCard";
+import { Composer } from "@/components/chat/Composer";
+import { ChatHeader } from "@/components/chat/ChatHeader";
+import { NotificationsPanel } from "@/components/chat/NotificationsPanel";
+import { ChatEdge } from "@/components/chat/header/ChatEdge";
+import { loadConversationRow } from "@/components/chat/header/loadConversationRow";
+import { Timeline } from "@/components/chat/Timeline";
 import { QuestionCard } from "@/components/chat/QuestionCard";
 // cli-workspace-unification T5/T6 (REQ-4): project folder bar + archive dock
-import { WorkspaceTabBar } from "@/components/workspace/WorkspaceTabBar";
+import type { ComposerRef } from "@/components/chat/composer/refs";
 import { ArchiveDock } from "@/components/workspace/ArchiveDock";
 import { useWorkspaceStore } from "@/stores/workspaceStore";
-import TaskListCard from "@/components/chat/TaskListCard";
-import {
-  renderBlueprintCellMatrixCLI,
-  type TaskCardProps,
-  type TaskStepItem,
-} from "@/lib/cli/CLITaskProgressRenderer";
 import type { TaskCard } from "@/hooks/useTaskProgress";
 import { buildChatTimeline } from "@/lib/chatview-turn-timeline";
+import { buildShellRuns } from "@/lib/cli/shellRuns";
 import { logStructured } from "@/lib/logger";
 import {
   subscribe as subscribeTerminal,
@@ -56,34 +57,19 @@ import {
   TERMINAL_HELP,
   // Gate 3 T10/T11/T14
   recordHistory,
-  recallHistory,
   resetRecall,
   loadHistory,
   setWorkdir as setTerminalWorkdir,
 } from "@/components/terminal/terminalScrollback";
-import ContextPill from "@/components/chat/ContextPill";
-import ModelSwitcher from "@/components/ModelSwitcher";
 import { RichDocument } from "@/components/chat/RichDocument";
-import { MarkdownMessage } from "@/components/chat/MarkdownMessage";
 import { DocumentPanel } from "@/components/chat/DocumentPanel";
 import { useManualDragWindow } from "@/hooks/useManualDragWindow"
 import { useTaskProgress } from "@/hooks/useTaskProgress";
 import { useCrawlContext } from "@/hooks/CrawlProvider";
 import type { ConversationChip, Suggestion } from "@/types/iris";
-import { invoke } from "@tauri-apps/api/core";
-import { detachWing, reattachWing } from "@/hooks/useDetachedWing";
-
-// Launch the separate IRIS Launcher Tauri app (bidirectional launcher⇄widget).
-const openIrisLauncher = async () => {
-  try {
-    await invoke("launch_launcher");
-  } catch (e) {
-    console.warn("[ChatView] launch_launcher failed:", e);
-  }
-};
 
 // Notification types for the universal notification system
-interface Notification {
+export interface Notification {
   id: string;
   type: 'alert' | 'permission' | 'error' | 'task' | 'completion';
   title: string;
@@ -148,20 +134,6 @@ function normalizeCardText(value: string): string {
 
 export type ContentType = 'markdown' | 'email' | 'video' | 'picture' | 'text';
 
-const MESSAGE_THRESHOLDS = {
-  TRUNCATE_AT: 500,            // plain text expand/collapse threshold
-  DOCUMENT_MODE_AT: 400,       // artifact card threshold for media/email/file uploads
-  // MARKDOWN_ARTIFACT_AT removed 2026-08-17 — length is not what makes something a
-  // document. See the isDocumentMode comment below: a document is what the agent
-  // stored via a `show` payload and arrives as DOCUMENT_RENDER.
-  WARNING_AT: 3000
-} as const;
-
-// REQ-6 AC3/AC4 (T7): how far from the bottom still counts as "pinned".
-// Absorbs sub-pixel rounding between scrollHeight and clientHeight so a user
-// resting at the bottom is never mistaken for a user who scrolled up.
-const PINNED_THRESHOLD_PX = 48;
-
 const ContentTypePatterns = {
   video: /(?:youtube\.com|youtu\.be|vimeo\.com|\.mp4|\.webm|\.mov)/i,
   picture: /\.(jpg|jpeg|png|gif|webp|svg|bmp)(?:\?.*)?$/i,
@@ -190,31 +162,7 @@ const ContentTypeLabels: Record<ContentType, string> = {
   text: 'Text Document'
 };
 
-// Helper functions for notification styling
-const getNotificationColor = (type: string, glowColor: string): string => {
-  switch (type) {
-    case 'alert': return '#fbbf24'; // amber
-    case 'permission': return '#3b82f6'; // blue
-    case 'error': return '#ef4444'; // red
-    case 'task': return '#a855f7'; // purple
-    case 'completion': return '#22c55e'; // green
-    default: return glowColor;
-  }
-};
-
-const getNotificationIcon = (type: string, glowColor: string) => {
-  const iconProps = { size: 10, style: { color: getNotificationColor(type, glowColor) } };
-  switch (type) {
-    case 'alert': return <AlertTriangle {...iconProps} />;
-    case 'permission': return <Shield {...iconProps} />;
-    case 'error': return <AlertCircle {...iconProps} />;
-    case 'task': return <Loader {...iconProps} className="animate-spin" />;
-    case 'completion': return <CheckCircle {...iconProps} />;
-    default: return <Info {...iconProps} />;
-  }
-};
-
-interface Message {
+export interface Message {
   id: string
   text: string
   sender: "user" | "assistant" | "error" | "system"
@@ -240,7 +188,7 @@ interface Message {
 }
 
 // Thread-based conversation structure
-interface Conversation {
+export interface Conversation {
   id: string;
   title: string;
   preview: string;
@@ -251,67 +199,9 @@ interface Conversation {
   lastMessagePreview: string;
 }
 
-// ── cli-workspace-unification T4 (REQ-3): TaskCard → Blueprint Matrix ──────
-// The GUI card (TaskListCard) and the ASCII renderer must describe the SAME
-// task from the SAME store (useTaskProgress cards); only ONE renders per mode
-// (pin_d222bf18dc6b). This conversion never re-maps verbs locally — the
-// backend tool name flows straight into resolveVerb() (T8a contract).
-
-function taskStepStatusToMatrix(status: TaskCard["steps"][number]["status"]): TaskStepItem["status"] {
-  switch (status) {
-    case "working": return "running"
-    case "done": return "done"
-    case "fail":
-    case "error": return "failed"
-    case "vetoed": return "rerouted"
-    default: return "pending" // pending / skipped / unknown
-  }
-}
-
-function taskCardToMatrixProps(card: TaskCard): TaskCardProps {
-  return {
-    objective: card.planTitle || card.currentAction || "Task",
-    // GROUND TRUTH REQ-20 AC2: render in the AUTHORITATIVE order, derived from
-    // the shared key — not inherited from whatever array position the GUI card
-    // happened to hand over.
-    steps: sortRows(card.steps).map((s): TaskStepItem => ({
-      id: s.id,
-      // REQ-20 AC1: carry the key through. Dropping it here is what left the
-      // CLI unable to even detect a bad order.
-      seq: s.seq,
-      verb: s.toolName || "exec",
-      target: s.activeDetail
-        ? `${s.description} — ${s.activeDetail}${s.activeProgress ? ` (${s.activeProgress})` : ""}`
-        : s.description,
-      status: taskStepStatusToMatrix(s.status),
-      summary: s.resultPreview,
-      // branchLabel stays free-form backend data ("Diving Deeper" etc.) —
-      // never the literal "Sub-Loop" (task-card-v2 CT-9).
-      branchLabel: undefined,
-    })),
-    // REQ-20 AC3: the progress pair, from the SAME derivation the GUI counter
-    // and the XurOrb ring read.
-    ...deriveProgress(card.steps, card.totalSteps),
-    isThinking: card.isWorking && !card.currentAction,
-    currentThought: card.currentAction,
-    isCrystallized: card.learningSignal === "crystallized" || card.terminalState === "done",
-    memoryEvents: (card.memoryEvents || []).map((m) => ({
-      direction:
-        String(m.kind).includes("cryst")
-          ? "crystallize"
-          : String(m.kind).includes("store") || String(m.kind).includes("compress")
-            ? "store"
-            : "retrieve",
-      engine: "episodic" as const,
-      detail: typeof m.data?.detail === "string" ? m.data.detail : String(m.kind || "memory activity"),
-      timestamp: m.at,
-    })),
-  }
-}
-
 
 // Rich document pushed by the agent via the document:render WS event (plan Issue D.3).
-interface DocRender {
+export interface DocRender {
   id: string
   format: string
   content: string
@@ -325,6 +215,9 @@ interface DocRender {
   /** REQ-22 (2026-09-23 live): card header identity — first markdown heading
    * derived from the body at ingest; a closed card must never read blank. */
   title?: string
+  /** ms since epoch this card was made or last updated by the agent (live cards only; the
+   * artifact card's "just now"). Absent after a history reload. */
+  createdAt?: number
   reformatted?: boolean
   // Phase 4 (chat-card-redesign): true when the backend revised an existing
   // document in place, so the card can show an "Updated" indicator.
@@ -422,8 +315,8 @@ export function ChatWing({
   // after the page loaded — in another window/client, or while the panel was
   // closed — never appeared until a full reload (Chrome showed 441 threads
   // while the backend store already had 442: the live superconductor thread
-  // was invisible). The fetch is now a reusable callback; openHistory()
-  // re-runs it every time the panel opens.
+  // was invisible). The fetch is now a reusable callback. (The header's thread
+  // orbit no longer calls it: it reads the summary list, GET /api/threads.)
   const fetchConversations = React.useCallback(async (): Promise<Conversation[]> => {
     return callConversationApi(
       "GET /api/conversations",
@@ -613,6 +506,8 @@ export function ChatWing({
   }
 
   const [inputText, setInputText] = useState("")
+  // handleSendMessage shadows setInputText for pill sends; this is the real setter.
+  const setInputTextState = setInputText
   const [webMode, setWebMode] = useState(() => {
     try {
       return localStorage.getItem('iris-web-mode') === 'true'
@@ -629,7 +524,6 @@ export function ChatWing({
     sendMessage?.('set_web_mode', { enabled: webMode })
   }, [webMode, sendMessage])
   const [justSent, setJustSent] = useState(false)
-  const [showHistory, setShowHistory] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   // REQ-6 AC3/AC4 (T7): the timeline only auto-scrolls while the user is
@@ -746,7 +640,6 @@ export function ChatWing({
   // Conversation chips — input focus state (chips slide away on focus)
   const { isDeveloper } = useLauncherMode()
   const [isInputFocused, setIsInputFocused] = useState(false)
-  const [uploadHovered, setUploadHovered] = useState(false)
 
   // Help lives in Workspace Bar (one-row, 32px) — chat's /help delegates there via iris:toggle_help
   const handleHelp = useCallback(async () => {
@@ -957,6 +850,10 @@ export function ChatWing({
       // Get active conversation messages
       const activeConversation = conversations.find(c => c.id === activeConversationId);
       const messages = activeConversation?.messages || [];
+      // Phase 3: the live turns of THIS conversation (the store files each
+      // turn under the conversation its events name — never the one on screen).
+      const liveTurns = useConversationTurns(activeConversationId);
+      const liveTurnById = useMemo(() => new Map(liveTurns.map((t) => [t.id, t])), [liveTurns]);
 
       // REQ-11/REQ-12 (reply-surface-contract T21/T22): a question whose turn
       // already has a message renders INLINE at that turn; the bottom block is
@@ -1046,14 +943,23 @@ export function ChatWing({
       .map(c => ({ card_id: c.cardId, conversation_id: c.conversationId }))
   }, [taskProgress.cards])
 
-  // @-mention picker state: opens when the composer text ends with a bare '@'.
-  // Session 246: on a NEW thread the hook holds no cards (get_cards is
-  // per-conversation), so opening the picker requests a cross-thread scan
+  // The cards a message points at: "#" picks (they carry card_id + conversation_id)
+  // plus any @taskcard:<id> token in the text (old drafts keep working).
+  const referencedCardsOf = useCallback((text: string, picked: ComposerRef[]) => {
+    const out = new Map<string, { card_id: string; conversation_id: string }>()
+    for (const r of picked) {
+      if (r.card) out.set(r.card.cardId, { card_id: r.card.cardId, conversation_id: r.card.conversationId })
+    }
+    for (const c of extractReferencedCards(text)) if (!out.has(c.card_id)) out.set(c.card_id, c)
+    return [...out.values()]
+  }, [extractReferencedCards])
+
+  // Task cards are referenced through "#" (the "@" list is who hears). The hook
+  // holds the cards of this conversation only (get_cards is per-conversation),
+  // so the first "#" list of a conversation requests a cross-thread scan
   // (payload.all) and keeps the candidates in local state.
-  const [cardMentionOpen, setCardMentionOpen] = useState(false)
   const [mentionCards, setMentionCards] = useState<TaskCard[]>([])
-  const openCardMentionPicker = useCallback(() => {
-    setCardMentionOpen(true)
+  const loadRefCards = useCallback(() => {
     const onCards = (e: Event) => {
       const wire = (e as CustomEvent).detail?.cards || []
       const mapped: TaskCard[] = wire.map((p: any) => ({
@@ -1074,7 +980,26 @@ export function ChatWing({
     // safety: close the listener if no response arrives
     setTimeout(() => window.removeEventListener('iris:cards', onCards), 4000)
   }, [sendMessage])
-  const mentionCandidates = taskProgress.cards.length > 0 ? taskProgress.cards : mentionCards
+  const refCards = useMemo(() => {
+    const have = new Set(taskProgress.cards.map(c => c.cardId))
+    return [...taskProgress.cards, ...mentionCards.filter(c => !have.has(c.cardId))]
+  }, [taskProgress.cards, mentionCards])
+
+  // Composer (2026-10-06 design): # references are ADDRESSES, picked in the
+  // composer and sent with the prompt; a running turn turns Enter into a steer
+  // and the send button into Stop.
+  const [composerRefs, setComposerRefs] = useState<ComposerRef[]>([])
+  // Who hears this: only @iris exists today; "@" adds more once people/helpers do.
+  const [composerTo, setComposerTo] = useState<string[]>(["@iris"])
+  useEffect(() => { setComposerRefs([]); setComposerTo(["@iris"]) }, [activeConversationId])
+  const isTurnRunning = liveTurns.some((t) => t.status === "running")
+  const refDocs = useMemo(
+    () => (conversations.find((c) => c.id === activeConversationId)?.documents ?? []).map((d) => ({
+      id: d.cardId || d.documentId || d.id,
+      title: d.title || d.format,
+    })),
+    [conversations, activeConversationId],
+  )
 
   // ── Gate 3 T9 (REQ-3/D5): DE-UNIFIED. Shell lines no longer merge into
   // the chat stream — they render in the terminal panel only (scrollback
@@ -1087,9 +1012,41 @@ export function ChatWing({
   // whose response scrolled away) fall back to the bottom in creation order.
   // Conversation-reply cards (settled, tool-less — isConversationReplyCard)
   // are suppressed entirely: cards are for artifacts, not conversation.
+  // Phase 3: a turn that streams before its final message lands (or that
+  // ends in an error / cancel and never gets one) renders as a placeholder
+  // anchored by its turn id — the same anchor live messages use.
+  const timelineMessages = useMemo(
+    () =>
+      mergeLiveTurns(messages, liveTurns, (t: TurnRecord): Message => ({
+        id: t.id,
+        text: t.text,
+        sender: "assistant",
+        timestamp: new Date(t.startedAt),
+        turn_id: t.id,
+        feedback: null,
+      })),
+    [messages, liveTurns],
+  )
+  // Phase 4: developer `>cmd` runs, drawn in the thread they were typed in.
+  // A one-second tick runs ONLY while the newest run is still running (its
+  // state is time-based: the shell prints no marker on success).
+  const [shellNow, setShellNow] = useState(() => Date.now())
+  const shellRuns = useMemo(
+    () =>
+      isDeveloper
+        ? buildShellRuns(terminalSnapshot.lines, shellNow).filter((r) => r.conversationId === activeConversationId)
+        : [],
+    [isDeveloper, terminalSnapshot.lines, shellNow, activeConversationId],
+  )
+  const shellRunning = shellRuns.some((r) => r.state === "running")
+  useEffect(() => {
+    if (!shellRunning) return
+    const t = setInterval(() => setShellNow(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [shellRunning])
   const renderTimeline = useMemo(
-    () => buildChatTimeline(messages, taskProgress.cards),
-    [messages, taskProgress.cards],
+    () => buildChatTimeline(timelineMessages, taskProgress.cards, shellRuns),
+    [timelineMessages, taskProgress.cards, shellRuns],
   )
 
   // REQ-3 AC2: elapsed running timer for the active Blueprint Matrix. Ticks
@@ -1284,10 +1241,10 @@ export function ChatWing({
       // (doc.turnId === message.id) can never match and the card falls to
       // the orphan bottom pile. Never return before the anchor is created.
       // The render branch decides bubble visibility, not ingest.
-      if (isTextRenderedAsDocument(turnId, text)) {
-        seenTurnIds.current.add(turnId)
-        // fall through — anchor creation below keeps the card inline
-      }
+      // (Audit bug, fixed in Phase 3: this branch used to add turnId to
+      // seenTurnIds, and the dedupe just below then RETURNED before the anchor
+      // existed — the card fell to the orphan pile. The render branch decides
+      // bubble visibility; ingest always creates the anchor.)
 
       // Deduplicate by turn_id — skip if we've already finalized this turn.
       if (turnId && seenTurnIds.current.has(turnId)) {
@@ -1324,7 +1281,10 @@ export function ChatWing({
       // (chat-view.tsx:3463) — see SESSION-2026-08-27-STATE.md "Duplicate React
       // keys" for the full root cause.
       const messageId = turnId ?? newMessageId()
-      const currentActiveId = activeConversationIdRef.current
+      // Audit bug: the final text was written to whatever conversation was on
+      // screen. The turn store knows the conversation the turn ran in.
+      const turnConvId = turnId ? getTurnsState().byId[turnId]?.conversationId : undefined
+      const currentActiveId = turnConvId || activeConversationIdRef.current
       if (currentActiveId) {
         setConversations(prev => prev.map(conv =>
           conv.id === currentActiveId
@@ -1433,47 +1393,10 @@ export function ChatWing({
     }
   }, [])
 
-  // Handle streaming chat chunks (iris:chat_chunk) from the WebSocket path.
-  // The backend streams these during generation so the UI shows live progress
-  // instead of hanging on a 120s REST timeout. Keyed by turn_id so concurrent
-  // turns (different conversations) don't collide, and so the final
-  // text_response can update the same message (no duplicate).
-  useEffect(() => {
-    function handleChatChunk(e: Event) {
-      const detail = (e as CustomEvent).detail as { chunk?: string; turn_id?: string }
-      const chunk = detail.chunk
-      if (!chunk) return
-      const turnId = detail.turn_id
-      if (!turnId) return
-      const convId = activeConversationIdRef.current
-      if (!convId) return
-      setConversations(prev => prev.map(conv => {
-        if (conv.id !== convId) return conv
-        const messages = [...conv.messages]
-        const idx = messages.findIndex(m => m.id === turnId)
-        if (idx >= 0) {
-          const updated = messages[idx].text + chunk
-          messages[idx] = {
-            ...messages[idx],
-            text: updated,
-            words: updated.split(' '),
-          }
-        } else {
-          messages.push({
-            id: turnId,
-            text: chunk,
-            sender: 'assistant',
-            timestamp: new Date(),
-            words: chunk.split(' '),
-            feedback: null,
-          })
-        }
-        return { ...conv, messages }
-      }))
-    }
-    window.addEventListener('iris:chat_chunk', handleChatChunk)
-    return () => window.removeEventListener('iris:chat_chunk', handleChatChunk)
-  }, [])
+  // Streaming text (formerly iris:chat_chunk -> active conversation) now
+  // renders from the turn store: every WS turn streams as turn.part text
+  // deltas filed under the turn's own conversation (Phase 3; audit bug:
+  // chunks were written to whatever conversation was on screen).
 
   // Handle document:render — agent pushed a rich document (plan Issue D.3).
   // Appended inline with format pills; reformat updates the same doc by turn_id.
@@ -1538,6 +1461,7 @@ export function ChatWing({
             .find((l) => l.trim().length >= 3)
           return first ? first.trim().slice(0, 60) : "Document"
         })(),
+        createdAt: Date.now(),
         reformatted: detail.reformatted || false,
         // Partial emits are a stream, not a revision — suppress the badge.
         updated: detail.partial ? false : (detail.updated || false),
@@ -2064,7 +1988,7 @@ export function ChatWing({
     }
   }, [voiceState, isSpeaking]);
 
-  const handleSendMessage = async () => {
+  const handleSendMessage = async (overrideText?: string) => {
     // Send guards (REQ-1 AC3, Phase 5, amended per long-horizon-der-execution):
     // the backend per-session message lock QUEUES messages in order, so a
     // send during a running turn is safe — the message is processed after the
@@ -2072,8 +1996,13 @@ export function ChatWing({
     // sends during long websearch turns (observed: user could not send
     // anything for 23 minutes). Blocking is now limited to genuinely
     // impossible states: empty input and an actively-listening mic.
-    if (!inputText.trim() || voiceState === 'listening') return
-    const text = inputText.trim()
+    // A string override comes from a suggestion pill; anything else (a click
+    // event) means "send what is typed".
+    const fromInput = typeof overrideText !== "string"
+    const text = (fromInput ? inputText : overrideText).trim()
+    if (!text || voiceState === 'listening') return
+    // Clear the box only for a typed send: a pill must not wipe a draft.
+    const setInputText = (v: string) => { if (fromInput) setInputTextState(v) }
 
     if (text === '/help' || text.toLowerCase().startsWith('/help ')) {
       setInputText('')
@@ -2149,7 +2078,7 @@ export function ChatWing({
         setInputText('')
         setJustSent(true)
         setTimeout(() => setJustSent(false), 300)
-        appendCommand(text)
+        appendCommand(text, activeConversationId)
         appendSystem('[shell] → terminal_input')
         logStructured('cli_dispatch', { command: text, kind: 'shell', conversation_id: activeConversationId })
         // Gate 3 T10: active tab's directory rides as workdir (REQ-4 AC1).
@@ -2302,7 +2231,7 @@ export function ChatWing({
     // boundary, never mid-step, and revises the remaining plan.
     // Mode-independent: steering carries no capability gate, so it works the
     // same in personal and developer mode.
-    if (anyCardWorking && sendMessage) {
+    if ((isTurnRunning || anyCardWorking) && sendMessage) {
       sendMessage('steer', {
         text,
         message_id: `steer-${Date.now()}`,
@@ -2310,7 +2239,8 @@ export function ChatWing({
       })
       const steerNotice: Message = {
         id: `steer-note-${newMessageId()}`,
-        text: 'Steering the running task. The agent applies this at its next step.',
+        // Shown as one line under the running turn (TurnView, steer-note-).
+        text: isDeveloper ? `↳ you steered: ${text} · noted` : `↳ you said: ${text} · IRIS noted it`,
         sender: 'system',
         timestamp: new Date(),
       }
@@ -2332,6 +2262,8 @@ export function ChatWing({
     // live progress instead of hanging on a fixed REST timeout. REST is kept
     // as a fallback for when the WebSocket is unavailable (sendMessage unset).
     setLocalTyping(true)
+    setComposerRefs([]) // the refs and the "to" ride in this send's payload below
+    setComposerTo(["@iris"])
     if (sendMessage) {
       // Send `threadId`, NOT `activeConversationId`. setActiveConversationId
       // was called a few lines up for a new conversation, but a React state
@@ -2347,10 +2279,20 @@ export function ChatWing({
       sendMessage("text_message", {
         text: userMessage.text,
         conversation_id: threadId,
+        // Phase 3: turn.start echoes client_ref, so the live turn renders right
+        // under this prompt; mode lets the backend tag the turn.
+        client_ref: userMessage.id,
+        mode: isDeveloper ? "developer" : "personal",
         // Session 246 (@-card-mentions): @taskcard:<id> tokens in the text are
         // resolved to persisted card snapshots so the agent can reason over
         // a PREVIOUS conversation's task results.
-        referenced_cards: extractReferencedCards(userMessage.text),
+        // Task cards picked through "#" resolve the same way (card_id +
+        // conversation_id); an @taskcard:<id> typed in an old draft still parses.
+        referenced_cards: referencedCardsOf(userMessage.text, composerRefs),
+        // Composer: who hears this ("@") and the # references (task cards,
+        // artifacts, strands, project files). Addresses only.
+        to: composerTo,
+        refs: composerRefs.map((r) => r.address),
         // Developer chat runs its tools in the open project tab's folder, the
         // same workdir `/run` and `>` already send (Gate 3 T10).
         ...(isDeveloper && activeTabPath ? { workdir: activeTabPath } : {}),
@@ -2365,7 +2307,7 @@ export function ChatWing({
         body: JSON.stringify({
           text: userMessage.text,
           thread_id: threadId,
-          referenced_cards: extractReferencedCards(userMessage.text),
+          referenced_cards: referencedCardsOf(userMessage.text, composerRefs),
         }),
         signal: controller.signal,
       })
@@ -2406,7 +2348,6 @@ export function ChatWing({
     const oldId = activeConversationId;
     setActiveConversationId(conversationId);
     setCurrentConversationId(conversationId);
-    setShowHistory(false);
     // Notify backend of conversation switch for context persistence
     if (sendMessage && oldId && oldId !== conversationId) {
       sendMessage('switch_conversation', {
@@ -2562,76 +2503,19 @@ export function ChatWing({
   }
 
   const handleRetryPrompt = (errorMessageIndex: number, convId: string) => {
-    // Debounce rapid retries
+    // Audit bug: this used to call fetch INSIDE a setConversations updater
+    // (React may run an updater twice -> two requests) and left a "Retrying..."
+    // message that nothing removed. A retry IS a resend of the prompt above the
+    // error, so it takes the one resend path (pure updater, fetch outside).
     if (retryingMessageId) return
-
-    setConversations(prev =>
-      prev.map(conv => {
-        if (conv.id !== convId) return conv
-        const msgs = conv.messages
-        // Find the last user message before the error
-        let lastUserMsg: (typeof msgs)[0] | null = null
-        for (let i = errorMessageIndex - 1; i >= 0; i--) {
-          if (msgs[i].sender === "user") {
-            lastUserMsg = msgs[i]
-            break
-          }
-        }
-        if (!lastUserMsg) return conv // no user message found
-
-        // Remove the error message and show loading state
-        const errorMsg = msgs[errorMessageIndex]
-        const newMsgs = msgs.filter((_, i) => i !== errorMessageIndex)
-        setRetryingMessageId(lastUserMsg.id)
-
-        // Re-send to /api/chat
-        fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: lastUserMsg.text, thread_id: convId }),
-        })
-          .then((res) => {
-            if (!res.ok) throw new Error(`Chat returned ${res.status}`)
-            return res.json()
-          })
-          .then((data) => {
-            setRetryingMessageId(null)
-            // Unify through iris:text_response — same as the primary handler.
-            window.dispatchEvent(new CustomEvent('iris:text_response', {
-              detail: {
-                text: data.content || "",
-                sender: 'assistant',
-                thinking: data.thinking || "",
-                turn_id: data.turn_id,
-              }
-            }))
-          })
-          .catch(() => {
-            setRetryingMessageId(null)
-            // Restore the error message
-            setConversations((innerPrev) =>
-              innerPrev.map((ic) => {
-                if (ic.id !== convId) return ic
-                return { ...ic, messages: [...ic.messages, errorMsg] }
-              })
-            )
-          })
-
-        return {
-          ...conv,
-          messages: [
-            ...newMsgs,
-            {
-              id: newMessageId(),
-              text: "Retrying...",
-              sender: "assistant",
-              timestamp: new Date(),
-              thinking: "",
-            },
-          ],
-        }
-      })
-    )
+    const conv = conversations.find((c) => c.id === convId)
+    if (!conv) return
+    for (let i = errorMessageIndex - 1; i >= 0; i--) {
+      if (conv.messages[i].sender === "user") {
+        handleResendUserMessage(i, convId)
+        return
+      }
+    }
   }
 
   const handleNewConversation = () => {
@@ -2906,7 +2790,7 @@ ${message.text}`;
           return;
         }
         // Close any open dropdowns next
-        if (showNotifications || showHistory) {
+        if (showNotifications) {
           closeDropdowns();
           return;
         }
@@ -2917,46 +2801,26 @@ ${message.text}`;
     
     window.addEventListener("keydown", handleEscape);
     return () => window.removeEventListener("keydown", handleEscape);
-  }, [isOpen, showNotifications, showHistory, onClose, documentModalMessage]);
+  }, [isOpen, showNotifications, onClose, documentModalMessage]);
 
   // Dropdown exclusivity handlers
   const openNotifications = () => {
     setShowNotifications(true);
-    setShowHistory(false);
   };
 
-  const openHistory = () => {
-    setShowHistory(true);
-    setShowNotifications(false);
-    // Session 246: the thread list used to be mount-only — threads created
-    // after load (other window/client) never appeared. Re-fetch on every
-    // panel open; do NOT touch activeConversationId here (never yank the
-    // thread the user is reading just because they opened the list).
-    //
-    // Session 296: fetchConversations maps REST rows that carry NO renders,
-    // so it builds every Conversation with documents: [] — a blind replace
-    // here wiped every prism card in every thread. Cards only exist in
-    // memory (iris:document_render; get_documents rehydration is
-    // metadata-only by contract CT-DOC-1 and cannot restore a body), so the
-    // wipe was permanent for the session. Preserve the documents we already
-    // hold; fetched threads we have never seen keep their (empty) list.
-    fetchConversations()
-      .then((convs) => {
-        setConversations((prev) =>
-          convs.map((c) => {
-            const existing = prev.find((p) => p.id === c.id)
-            return existing && existing.documents.length > 0
-              ? { ...c, documents: existing.documents }
-              : c
-          }),
-        )
-      })
-      .catch(() => {})
-  };
+  // Open a strand or thread chosen in the header (a strand IS a conversation id).
+  // One that chat-view has not loaded yet (made after the mount-time list) is
+  // fetched first so its messages show and new messages are kept.
+  const openStrand = async (conversationId: string) => {
+    if (!conversations.some((c) => c.id === conversationId)) {
+      const row = await loadConversationRow(conversationId)
+      if (row) setConversations((prev) => (prev.some((c) => c.id === conversationId) ? prev : [row, ...prev]))
+    }
+    handleSelectConversation(conversationId)
+  }
 
   const closeDropdowns = () => {
     setShowNotifications(false);
-    setShowHistory(false);
   };
 
   // Render message text with clickable URL links
@@ -3130,7 +2994,9 @@ ${message.text}`;
             width: getSpotlightWidth(),
             height: getOuterHeight(),
             maxHeight: getOuterMaxHeight(),
-            overflow: 'hidden',
+            // Clipped on three sides; the top reaches 14 px up so the aperture set
+            // into the top edge (ChatEdge) is whole, not cut in half.
+            clipPath: 'inset(-14px 0 0 0)',
             perspective: getOuterPerspective(),
             zIndex: getSpotlightZIndex(),
             filter: getSpotlightFilter(),
@@ -3168,6 +3034,8 @@ ${message.text}`;
               `,
               borderRadius: getInnerBorderRadius(),
               border: isRemoteView ? `1px solid ${glowColor}20` : `1px solid ${glowColor}20`,
+              // The top border is the EdgeLight hairline (ChatEdge), so it is transparent here.
+              borderTopColor: onSpotlightToggle ? 'transparent' : undefined,
               touchAction: 'manipulation',
               willChange: 'auto',
             }}
@@ -3203,484 +3071,46 @@ ${message.text}`;
             />
 
             {/* 48px Header (60px on mobile for larger touch targets) */}
-            <div 
-              ref={chatHeaderRef}
-              onMouseDown={handleHeaderDragStart}
-              className={isRemoteView ? "h-[60px] px-4 flex items-center flex-shrink-0 border-b relative z-30" : "h-12 px-3 flex items-center flex-shrink-0 border-b relative z-30"}
-              style={{ borderColor: `${glowColor}15`, position: 'relative', cursor: isRemoteView ? undefined : 'grab' }}
-            >
-              {/* Global error line */}
-              {globalError && (
-                <motion.div
-                  className="absolute top-0 left-0 right-0 h-[1px] z-40"
-                  style={{ background: 'rgba(239,68,68,0.8)' }}
-                  animate={{ opacity: [1, 0.3, 1] }}
-                  transition={{ duration: 2, repeat: Infinity }}
-                />
-              )}
-              
-              {/* Left section: Pulse + Title + Dashboard */}
-              <div className="flex items-center gap-2 flex-1">
-                <motion.div
-                  className="w-1.5 h-1.5 rounded-full"
-                  style={{ backgroundColor: glowColor }}
-                  animate={{
-                    scale: voiceState === 'listening' ? [1, 1.4, 1] : 1,
-                    opacity: voiceState === 'listening' ? [1, 0.6, 1] : 1
-                  }}
-                  transition={{ duration: 1.2, repeat: Infinity }}
-                />
-                <span
-                  className="text-[13px] font-semibold tracking-wide"
-                  style={{ color: fontColor, opacity: 0.9 }}
-                >
-                  IRIS
-                </span>
-                {/* Dashboard - positioned next to IRIS text - toggles open/close */}
-                <button
-                  onClick={() => {
-                    if (isDashboardOpen && onDashboardClose) {
-                      onDashboardClose();
-                    } else {
-                      onDashboardClick();
-                    }
-                    closeDropdowns();
-                  }}
-                  className={isRemoteView ? "p-2.5 rounded-lg transition-all duration-150 min-h-[44px] min-w-[44px] flex items-center justify-center" : "p-1.5 rounded-lg transition-all duration-150"}
-                  style={{
-                    color: isDashboardOpen ? glowColor : 'rgba(255,255,255,0.75)',
-                    backgroundColor: isDashboardOpen ? `${glowColor}15` : 'transparent'
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.color = isDashboardOpen ? glowColor : 'rgba(255,255,255,0.95)';
-                    e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)';
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.color = isDashboardOpen ? glowColor : 'rgba(255,255,255,0.75)';
-                    e.currentTarget.style.backgroundColor = isDashboardOpen ? `${glowColor}15` : 'transparent';
-                  }}
-                  title={isDashboardOpen ? "Close Dashboard" : "Open Dashboard"}
-                >
-                  <BarChart3 size={isRemoteView ? 20 : 14} />
-                </button>
-                {/* Detach / reattach. The chat wing becomes its own OS window
-                    so it can live on a second monitor — the widget window is
-                    transparent, borderless and always-on-top, and cannot span
-                    two screens. Detaching closes the wing here so it is never
-                    drawn twice; closing the detached window puts it back. */}
-                {!isRemoteView && (
-                  <button
-                    onClick={async () => {
-                      if (isDetached) {
-                        await reattachWing('chat')
-                      } else if (await detachWing('chat')) {
-                        onClose()
-                      }
-                    }}
-                    className="p-1.5 rounded-lg transition-all duration-150"
-                    style={{ color: 'rgba(255,255,255,0.75)' }}
-                    onMouseEnter={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.95)'; e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)'; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.75)'; e.currentTarget.style.backgroundColor = 'transparent'; }}
-                    title={isDetached ? "Put chat back in the widget" : "Move chat to its own window"}
-                    aria-label={isDetached ? "Reattach chat" : "Detach chat"}
-                  >
-                    {isDetached ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
-                  </button>
-                )}
-                {/* Open IRIS Launcher — re-open the separate launcher app if closed */}
-                <button
-                  onClick={() => openIrisLauncher()}
-                  className={isRemoteView ? "p-2.5 rounded-lg transition-all duration-150 min-h-[44px] min-w-[44px] flex items-center justify-center" : "p-1.5 rounded-lg transition-all duration-150"}
-                  style={{ color: 'rgba(255,255,255,0.75)' }}
-                  onMouseEnter={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.95)'; e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)'; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.75)'; e.currentTarget.style.backgroundColor = 'transparent'; }}
-                  title="Open IRIS Launcher"
-                >
-                  <ExternalLink size={isRemoteView ? 20 : 14} />
-                </button>
-              </div>
-
-              {/* Center: Spotlight Iris Aperture Button — embedded on top border line */}
-              {onSpotlightToggle && (
-                <div className="absolute left-1/2 -translate-x-1/2 top-0 -translate-y-1/2 z-40">
-                  <button
-                    onClick={() => {
-                      onSpotlightToggle();
-                      closeDropdowns();
-                    }}
-                    className={isRemoteView ? "p-2.5 rounded-full transition-all duration-150 border min-h-[44px] min-w-[44px] flex items-center justify-center" : "p-1.5 rounded-full transition-all duration-150 border"}
-                    style={{
-                      color: isInChatSpotlight ? glowColor : 'rgba(255,255,255,0.7)',
-                      backgroundColor: isInChatSpotlight ? `${glowColor}20` : 'transparent',
-                      borderColor: isInChatSpotlight ? `${glowColor}50` : 'rgba(255,255,255,0.2)',
-                      boxShadow: isInChatSpotlight ? `0 0 8px ${glowColor}40` : 'none',
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.color = glowColor;
-                      e.currentTarget.style.borderColor = `${glowColor}50`;
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.color = isInChatSpotlight ? glowColor : 'rgba(255,255,255,0.7)';
-                      e.currentTarget.style.borderColor = isInChatSpotlight ? `${glowColor}50` : 'rgba(255,255,255,0.2)';
-                    }}
-                    title={isInChatSpotlight ? "Restore balanced view" : "Maximize chat"}
-                  >
-                    <IrisApertureIcon
-                      isActive={isInChatSpotlight}
-                      glowColor={glowColor}
-                      fontColor={fontColor}
-                      size={isRemoteView ? 18 : 14}
-                    />
-                  </button>
-                </div>
-              )}
-
-              {/* Right section: Notifications + History + Close */}
-              <div className="flex items-center gap-1 flex-1 justify-end">
-                {/* Notifications */}
-                <button
-                  onClick={() => showNotifications ? closeDropdowns() : openNotifications()}
-                  className={isRemoteView ? "p-2.5 rounded-lg transition-all duration-150 relative min-h-[44px] min-w-[44px] flex items-center justify-center" : "p-2 rounded-lg transition-all duration-150 relative"}
-                  style={{
-                    color: showNotifications ? glowColor : unreadCount > 0 ? glowColor : 'rgba(255,255,255,0.75)',
-                    backgroundColor: showNotifications ? `${glowColor}15` : 'transparent'
-                  }}
-                  onMouseEnter={(e) => {
-                    if (!showNotifications) e.currentTarget.style.color = unreadCount > 0 ? glowColor : 'rgba(255,255,255,0.95)';
-                    e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)';
-                  }}
-                  onMouseLeave={(e) => {
-                    if (!showNotifications) e.currentTarget.style.color = unreadCount > 0 ? glowColor : 'rgba(255,255,255,0.75)';
-                    e.currentTarget.style.backgroundColor = 'transparent';
-                  }}
-                  title="Notifications"
-                >
-                  <Bell size={16} />
-                  {unreadCount > 0 && (
-                    <motion.span
-                      initial={{ scale: 0 }}
-                      animate={{ scale: 1 }}
-                      className="absolute top-1 right-1 w-2 h-2 rounded-full"
-                      style={{ backgroundColor: glowColor }}
-                    />
-                  )}
-                </button>
-
-                {/* History */}
-                <button
-                  onClick={() => showHistory ? closeDropdowns() : openHistory()}
-                  className={isRemoteView ? "p-2.5 rounded-lg transition-all duration-150 min-h-[44px] min-w-[44px] flex items-center justify-center" : "p-2 rounded-lg transition-all duration-150"}
-                  style={{
-                    color: showHistory ? glowColor : 'rgba(255,255,255,0.75)',
-                    backgroundColor: showHistory ? `${glowColor}15` : 'transparent'
-                  }}
-                  onMouseEnter={(e) => {
-                    if (!showHistory) e.currentTarget.style.color = 'rgba(255,255,255,0.95)';
-                    e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)';
-                  }}
-                  onMouseLeave={(e) => {
-                    if (!showHistory) e.currentTarget.style.color = 'rgba(255,255,255,0.75)';
-                    e.currentTarget.style.backgroundColor = 'transparent';
-                  }}
-                  title="Conversation History"
-                >
-                  <History size={isRemoteView ? 20 : 16} />
-                </button>
-
-                {/* Close */}
-                <button
-                  onClick={() => {
-                    onClose();
-                    closeDropdowns();
-                  }}
-                  className={isRemoteView ? "p-2.5 rounded-lg transition-all duration-150 min-h-[44px] min-w-[44px] flex items-center justify-center" : "p-2 rounded-lg transition-all duration-150"}
-                  style={{ color: 'rgba(255,255,255,0.75)' }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.color = 'rgba(255,255,255,0.95)';
-                    e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)';
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.color = 'rgba(255,255,255,0.75)';
-                    e.currentTarget.style.backgroundColor = 'transparent';
-                  }}
-                  title="Close Chat"
-                >
-                  <X size={isRemoteView ? 20 : 16} />
-                </button>
-              </div>
-            </div>
+            <ChatHeader
+              isRemoteView={isRemoteView}
+              isDetached={isDetached}
+              glowColor={glowColor}
+              fontColor={fontColor}
+              voiceState={voiceState}
+              globalError={globalError}
+              chatHeaderRef={chatHeaderRef}
+              handleHeaderDragStart={handleHeaderDragStart}
+              isDashboardOpen={isDashboardOpen}
+              onDashboardClose={onDashboardClose}
+              onDashboardClick={onDashboardClick}
+              onClose={onClose}
+              showNotifications={showNotifications}
+              openNotifications={openNotifications}
+              unreadCount={unreadCount}
+              closeDropdowns={closeDropdowns}
+              activeConversationId={activeConversationId}
+              fallbackTitle={activeConversation?.title}
+              onNewThread={handleNewConversation}
+              onOpenConversation={openStrand}
+            />
 
             {/* Notification Dropdown Panel */}
-            <AnimatePresence>
-              {showNotifications && (
-                <motion.div
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: 'auto', opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-                  className="overflow-hidden border-b flex-shrink-0 z-20"
-                  style={{
-                    borderColor: `${glowColor}10`,
-                    background: 'linear-gradient(180deg, rgba(10,10,20,0.98) 0%, rgba(10,10,20,0.9) 100%)',
-                    backdropFilter: 'blur(20px)',
-                    // REQ-3/T5: same latent bug the history dropdown had — a
-                    // percentage max-height against an indefinite `height:auto`
-                    // parent never constrains, so the list grows past the panel
-                    // and the wheel chains to the timeline instead. Viewport
-                    // unit resolves against the window, which is definite.
-                    maxHeight: 'min(46vh, 520px)'
-                  }}
-                >
-                  {/* REQ-4 AC1: trap the wheel so scrolling notifications never
-                      scrolls the conversation behind it. */}
-                  <div
-                    className="p-3 space-y-2 overflow-y-auto"
-                    style={{ maxHeight: 'inherit', overscrollBehavior: 'contain' }}
-                  >
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-[10px] font-semibold tracking-widest uppercase text-white/50">
-                        Notifications
-                      </span>
-                      {notifications.length > 0 && (
-                        <button
-                          onClick={() => setNotifications([])}
-                          className="text-[9px] px-2 py-1 rounded transition-colors text-white/40 hover:text-white/70 hover:bg-white/5"
-                        >
-                          Clear all
-                        </button>
-                      )}
-                    </div>
-                    
-                    {notifications.length === 0 ? (
-                      <div className="text-center py-6 text-[11px] text-white/40">
-                        No notifications
-                      </div>
-                    ) : (
-                      notifications.map((notif) => (
-                        <motion.div
-                          key={notif.id}
-                          initial={{ x: unreadCount > 0 && !notif.read ? -10 : 0, opacity: 0 }}
-                          animate={{ x: 0, opacity: 1 }}
-                          className="p-2.5 rounded-lg transition-all duration-150 group relative overflow-hidden"
-                          style={{
-                            backgroundColor: !notif.read ? `${glowColor}08` : 'rgba(255,255,255,0.03)',
-                            borderLeft: `2px solid ${getNotificationColor(notif.type, glowColor)}`
-                          }}
-                        >
-                          {/* Type indicator glow */}
-                          <div 
-                            className="absolute top-0 right-0 w-16 h-16 opacity-10 blur-xl rounded-full -translate-y-1/2 translate-x-1/2"
-                            style={{ backgroundColor: getNotificationColor(notif.type, glowColor) }}
-                          />
-                          
-                          <div className="flex items-start justify-between relative">
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-1.5 mb-1">
-                                {getNotificationIcon(notif.type, glowColor)}
-                                <span 
-                                  className="text-[9px] font-semibold tracking-wide uppercase"
-                                  style={{ color: getNotificationColor(notif.type, glowColor) }}
-                                >
-                                  {notif.type}
-                                </span>
-                                <span className="text-[8px] text-white/30 tabular-nums ml-auto">
-                                  {notif.timestamp.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-                                </span>
-                              </div>
-                              <p className="text-[11px] font-medium text-white/90 leading-snug">
-                                {notif.title}
-                              </p>
-                              <p className="text-[10px] text-white/60 mt-0.5 line-clamp-2">
-                                {notif.message}
-                              </p>
-                            </div>
-                          </div>
-                          
-                          {/* Action buttons based on type */}
-                          {notif.type === 'permission' && (
-                            <div className="flex gap-2 mt-2">
-                              <button
-                                onClick={() => handlePermissionGrant(notif.id)}
-                                className="flex-1 py-1 rounded text-[9px] font-medium transition-colors"
-                                style={{ 
-                                  background: `${glowColor}20`,
-                                  color: glowColor
-                                }}
-                              >
-                                Allow
-                              </button>
-                              <button
-                                onClick={() => handlePermissionDeny(notif.id)}
-                                className="flex-1 py-1 rounded text-[9px] font-medium transition-colors bg-white/10 text-white/70 hover:bg-white/15"
-                              >
-                                Deny
-                              </button>
-                            </div>
-                          )}
-                          
-                          {notif.type === 'task' && (
-                            <div className="mt-2">
-                              <div className="h-1 bg-white/10 rounded-full overflow-hidden">
-                                <motion.div 
-                                  className="h-full rounded-full"
-                                  style={{ backgroundColor: glowColor }}
-                                  initial={{ width: 0 }}
-                                  animate={{ width: `${notif.progress || 0}%` }}
-                                />
-                              </div>
-                              <span className="text-[8px] text-white/40 mt-1 block">
-                                {notif.progress || 0}% complete
-                              </span>
-                            </div>
-                          )}
-                        </motion.div>
-                      ))
-                    )}
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
+            <NotificationsPanel
+              showNotifications={showNotifications}
+              glowColor={glowColor}
+              notifications={notifications}
+              setNotifications={setNotifications}
+              unreadCount={unreadCount}
+              handlePermissionGrant={handlePermissionGrant}
+              handlePermissionDeny={handlePermissionDeny}
+            />
 
-            {/* History Dropdown Panel - Thread-Based */}
-            <AnimatePresence>
-              {showHistory && (
-                <motion.div
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: 'auto', opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  transition={{ duration: prefersReducedMotion ? 0 : 0.2, ease: [0.22, 1, 0.36, 1] }}
-                  className="overflow-hidden border-b flex-shrink-0 z-20"
-                  style={{
-                    borderColor: `${glowColor}10`,
-                    background: 'linear-gradient(180deg, rgba(10,10,20,0.98) 0%, rgba(10,10,20,0.9) 100%)',
-                    backdropFilter: 'blur(20px)',
-                    // Live fix 2026-09-04: maxHeight '50%' never constrained —
-                    // a percentage resolves against an indefinite flex parent
-                    // (height animates to auto), so 778 rows grew past the panel,
-                    // clipped under overflow-hidden ancestors, and the wheel
-                    // chained to the main timeline. A viewport-relative cap always
-                    // resolves, so the inner list below can actually scroll.
-                    maxHeight: 'min(46vh, 520px)',
-                  }}
-                >
-                  <div
-                    className="p-3 space-y-2 overflow-y-auto"
-                    style={{
-                      // Inherit the panel cap so this box is bounded even when its
-                      // content is 778 rows tall; containment stops the wheel from
-                      // scrolling the conversation thread behind the dropdown.
-                      maxHeight: 'inherit',
-                      overscrollBehavior: 'contain',
-                    }}
-                  >
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-[10px] font-semibold tracking-widest uppercase text-white/50">
-                        Conversation Threads
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[9px] text-white/30">
-                          {conversations.length} total
-                        </span>
-                        <button
-                          onClick={handleNewConversation}
-                          className="p-1.5 rounded transition-all duration-150 flex items-center gap-1"
-                          style={{ color: `${fontColor}50` }}
-                          onMouseEnter={(e) => {
-                            e.currentTarget.style.color = glowColor;
-                            e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)';
-                          }}
-                          onMouseLeave={(e) => {
-                            e.currentTarget.style.color = `${fontColor}50`;
-                            e.currentTarget.style.backgroundColor = 'transparent';
-                          }}
-                          title="Start new conversation"
-                          aria-label="New conversation"
-                        >
-                          <Plus size={12} />
-                        </button>
-                      </div>
-                    </div>
-                    
-                    {conversations.length === 0 ? (
-                      <div className="text-center py-6 text-[11px] text-white/40">
-                        No conversations yet
-                      </div>
-                    ) : (
-                      conversations.map((conv) => (
-                        <motion.div
-                          key={conv.id}
-                          initial={{ opacity: 0, x: -10 }}
-                          animate={{ opacity: 1, x: 0 }}
-                          onClick={() => handleSelectConversation(conv.id)}
-                          className="group relative p-2.5 rounded-lg cursor-pointer transition-all duration-150 hover:bg-white/5"
-                          style={{
-                            backgroundColor: activeConversationId === conv.id ? `${glowColor}15` : 'rgba(255,255,255,0.03)',
-                            borderLeft: `2px solid ${activeConversationId === conv.id ? glowColor : 'transparent'}`,
-                            // 778 rows: skip off-screen row rendering work. The
-                            // intrinsic size keeps the scrollbar stable while rows
-                            // are skipped; highlight + buttons unaffected.
-                            contentVisibility: 'auto',
-                            containIntrinsicSize: 'auto 76px',
-                          }}
-                        >
-                          <div className="flex items-center gap-2">
-                            {/* Content */}
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-1.5 mb-1">
-                                {conv.isPinned && (
-                                  <Pin size={10} style={{ color: glowColor }} className="fill-current flex-shrink-0" />
-                                )}
-                                <span className="text-[10px] font-medium text-white/90 truncate">
-                                  {conv.title}
-                                </span>
-                                <span className="text-[8px] text-white/30 tabular-nums flex-shrink-0">
-                                  {conv.timestamp.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-                                </span>
-                              </div>
-                              <p className="text-[9px] text-white/50 truncate leading-snug">
-                                {conv.lastMessagePreview}
-                                {conv.lastMessagePreview.length >= 60 ? '...' : ''}
-                              </p>
-                              <span className="text-[8px] text-white/30 mt-1 block">
-                                {conv.messages.length} message{conv.messages.length !== 1 ? 's' : ''}
-                              </span>
-                            </div>
-                            
-                            {/* Action buttons - centered on right */}
-                            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 self-center">
-                              <button
-                                onClick={(e) => handlePinConversation(e, conv.id)}
-                                className="p-1.5 rounded transition-colors hover:bg-white/10"
-                                style={{ color: conv.isPinned ? glowColor : 'rgba(255,255,255,0.5)' }}
-                                title={conv.isPinned ? 'Unpin' : 'Pin to top'}
-                              >
-                                <Pin size={12} className={conv.isPinned ? 'fill-current' : ''} />
-                              </button>
-                              <button
-                                onClick={(e) => handleDeleteConversation(e, conv.id)}
-                                className="p-1.5 rounded transition-colors hover:bg-white/10 text-white/50 hover:text-red-400"
-                                title="Delete conversation"
-                              >
-                                <Trash2 size={12} />
-                              </button>
-                            </div>
-                          </div>
-                        </motion.div>
-                      ))
-                    )}
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {/* T5 (REQ-4 AC1/AC2): compact 30px project folder bar — active
-                folder pill + file tabs + [+] opening FilePickerModal. Dev
-                mode only; personal mode never sees it. */}
+            {/* Top strip, dev mode only: the archive count (T6). The T5 project
+                folder bar (folder pill, file tabs, [+]) moved to the composer. */}
             {isDeveloper && !isRemoteView && (
               <div className="h-[30px] shrink-0 flex items-center justify-between overflow-hidden relative z-20" style={{ borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                <div className="flex items-center h-full min-w-0 flex-1">
-                  <WorkspaceTabBar />
-                </div>
+                {/* The folder and open files moved to the composer's project bar (both modes). */}
+                <div className="flex items-center h-full min-w-0 flex-1" />
                 {/* T6: archive item count badge in the top bar */}
                 <div
                   className="flex items-center gap-1 px-2 py-0.5 mr-1 rounded-full flex-shrink-0"
@@ -3697,1128 +3127,64 @@ ${message.text}`;
                 Developer mode no longer replaces this body with the workspace:
                 chat messages, shell output and Blueprint matrices all interleave
                 in this ONE overflow-y-auto (pin_c86a41fa673b). */}
-            <div
-              ref={messagesContainerRef}
-              className="flex-1 overflow-y-auto px-3 py-3 relative z-10"
-              // REQ-6 AC3/AC4 (T7): re-evaluate "pinned to bottom" on every
-              // user scroll. The threshold absorbs sub-pixel rounding and the
-              // drift of a rounding-error scrollHeight, so a user resting at
-              // the bottom is never treated as scrolled up.
-              onScroll={(e) => {
-                const el = e.currentTarget
-                const distance = el.scrollHeight - el.scrollTop - el.clientHeight
-                const atBottom = distance <= PINNED_THRESHOLD_PX
-                pinnedToBottomRef.current = atBottom
-                // Identical values are bailed out by React, so this does not
-                // re-render on every wheel tick.
-                setShowJumpToLatest(!atBottom)
-              }}
-              // DIAGNOSTIC (2026-08-17): surfaces the exact values that decide
-              // whether the thinking indicator renders, so the blind window
-              // between "steps finished" and "answer arrives" can be measured
-              // instead of inferred from page text. Remove once the indicator
-              // and the task-card counter are confirmed in sync.
-              data-dbg-typing={String(isTyping)}
-              data-dbg-steps-running={String(taskProgressStillRunning)}
-              data-dbg-steps={`${taskProgress.currentStep}/${taskProgress.totalSteps}`}
-              data-dbg-statuses={taskProgress.steps.map((s) => s.status).join(",")}
-              data-dbg-working={String(taskProgress.isWorking)}
-            >
-              {/* Session 246: the empty-state placeholder must NOT hide task
-                  cards. A thread can hold a card with no rendered messages —
-                  a simulation, or a rehydrated card whose messages are still
-                  loading (conv-40 evidence). Cards count as content. */}
-              {(messages.length === 0 && renderTimeline.length === 0) && !isTyping ? (
-                <div 
-                  className="flex-1 flex items-center justify-center h-full"
-                  style={{ color: `${fontColor}50` }}
-                >
-                  <p className="text-center text-[11px]">
-                    {conversations.length === 0 ? (
-                      <>
-                        Start a conversation
-                        <br />
-                        <span className="text-[10px] opacity-70">How can I help you today?</span>
-                      </>
-                    ) : (
-                      <>
-                        Select a conversation
-                        <br />
-                        <span className="text-[10px] opacity-70">or start a new one</span>
-                      </>
-                    )}
-                  </p>
-                </div>
-              ) : (
-                <div className="space-y-0">
-                  {renderTimeline.map((entry) => {
-                    // Gate 3 T9: shell lines render in the terminal panel
-                    // only (D5) — the chat stream carries messages + cards.
-                    // Session 244: task cards render INLINE — after the
-                    // assistant message they belong to (responseTurnId join),
-                    // or at the bottom for unmatched/legacy cards. Dev mode
-                    // renders the Blueprint Matrix; personal the GUI card.
-                    if (entry.kind === "card") {
-                      const card = entry.card
-                      return isDeveloper ? (
-                        <div key={`card-${card.cardId}`} className="py-1">
-                          <pre
-                            className="font-mono text-[9px] leading-[1.35] overflow-x-auto whitespace-pre"
-                            style={{ color: 'rgba(255,255,255,0.85)' }}
-                          >
-                            {renderBlueprintCellMatrixCLI(taskCardToMatrixProps(card), false)
-                              .split("\n")
-                              .map((ln, i) =>
-                                ln.includes("TASK :") ? (
-                                  <span key={i} style={{ color: glowColor }}>{ln}{"\n"}</span>
-                                ) : (
-                                  <span key={i}>{ln}{"\n"}</span>
-                                )
-                              )}
-                          </pre>
-                          {/* REQ-3 AC2: elapsed running timer while live */}
-                          {card.isWorking && (
-                            <div className="font-mono text-[9px] mt-0.5" style={{ color: glowColor }}>
-                              ⏱ {String(Math.floor(matrixElapsedSec / 60)).padStart(2, "0")}:
-                              {String(matrixElapsedSec % 60).padStart(2, "0")}
-                            </div>
-                          )}
-                        </div>
-                      ) : (
-                        <TaskListCard
-                          key={card.cardId}
-                          cardId={card.cardId}
-                          steps={card.steps}
-                          turnId={card.turnId}
-                          mode={card.mode}
-                          planTitle={card.planTitle}
-                          learningSignal={card.learningSignal}
-                          memoryEvents={card.memoryEvents}
-                          currentAction={card.currentAction}
-                          /* Session 245 (pin_07b780e7ce21): structured crawl
-                             phase rotates the working step's verb.
-                           * Session 246: the THK stream comes from the card's
-                             own bounded action history (real progress frames,
-                             REQ-10 AC4). NOTE: the previous expression read
-                             `entry.message?.thinking` here, but `entry` is
-                             narrowed to the card kind in this branch — a
-                             latent TS error from session 245's parse-check-
-                             only pass. Streamed reasoning stays visible on
-                             the assistant message itself. */
-                          phase={card.phase}
-                          durationSec={card.durationSec}
-                          cardActive={card.isWorking}
-                          // T21 (REQ-22, wave 4): goal-directed enrichment —
-                          // the card's reduced goal/snippet/schema/verification
-                          // aggregate fields. All optional; the card renders
-                          // nothing for absent payloads.
-                          goalSnippet={card.goalSnippet}
-                          extractedSchema={card.extractedSchema}
-                          batchMetrics={card.batchMetrics}
-                          temporalDelta={card.temporalDelta}
-                          verifiedFields={card.verifiedFields}
-                          thoughtStream={card.isWorking ? (card.actionStream ?? undefined) : undefined}
-                        />
-                      )
-                    }
-                    const message = entry.message
-                    const index = entry.index
-                    // Smart message length handling
-                    const charCount = message.text.length;
-                    const contentType = getContentType(message);
-                    const isExpanded = isMessageExpanded(message.id);
-                    const shouldTruncate = charCount > MESSAGE_THRESHOLDS.TRUNCATE_AT;
-                    // Artifact card rules:
-                    //   - Media, email, explicit file uploads → artifact at DOCUMENT_MODE_AT (400 chars)
-                    //   - Long markdown from assistant (code blocks, headers) → artifact at MARKDOWN_ARTIFACT_AT (800 chars)
-                    //     This keeps voice-first UX clean: the full response is always readable,
-                    //     but the chat thread stays concise — tap to expand if needed.
-                    //   - Plain conversational text → always flows as chat (truncate/expand only)
-                    // Is TTS saying something OTHER than this body? For a long
-                    // answer the backend speaks a short summary briefing, and
-                    // its tts_word indices count THAT string's words — so the
-                    // body must not be highlighted against them (user rule
-                    // 2026-08-17: long content is read, not spoken along to).
-                    //
-                    // The briefing itself is deliberately NOT rendered: it is a
-                    // summary of text already fully visible right here, and
-                    // showing both duplicates content. It exists as data only,
-                    // to answer this one question.
-                    const spokenLineForMsg = (message.spoken || '').trim();
-                    const spokenDiffersFromBody =
-                      message.sender === 'assistant' &&
-                      spokenLineForMsg.length > 0 &&
-                      spokenLineForMsg !== message.text.trim() &&
-                      spokenLineForMsg.length < message.text.trim().length;
-                    const isExplicitFile = message.text.startsWith('[File:') || message.text.startsWith('[IMAGE:') || message.text.startsWith('[VIDEO:');
-                    // REMOVED 2026-08-17: isAssistantMarkdown — a long assistant answer
-                    // was turned into a "document" purely by LENGTH + markdown syntax
-                    // (contentType==='markdown' && charCount > 800), with no backend
-                    // involvement at all.
-                    //
-                    // That produced a FAKE document: no document_id, nothing in the
-                    // document store, no format alternatives, no reformat, no prism
-                    // card — just a 3-line clip, a char count, and a modal rendering
-                    // the raw markdown in <pre> monospace. Strictly worse than leaving
-                    // it in the thread, and it is the same error the backend carried
-                    // until today: LENGTH used as a proxy for "this is a document".
-                    //
-                    // A document is what the AGENT stored via a `show` payload. Those
-                    // arrive as DOCUMENT_RENDER, are keyed by documentId, and render
-                    // through <RichDocument> (the prism card) further down. Everything
-                    // else is conversation and stays in the thread, in full, with
-                    // truncate/expand for length.
-                    const isDocumentMode = (isExplicitFile || contentType === 'email' || contentType === 'picture' || contentType === 'video') && charCount > MESSAGE_THRESHOLDS.DOCUMENT_MODE_AT;
-
-                    // Per-bubble content-type icon+label REMOVED 2026-09-21
-                    // (reply-surface-contract T14 / REQ-5): the badge was chrome
-                    // the owner does not want. `getContentType` stays — it still
-                    // drives isDocumentMode and other routing.
-                    
-                    // T15 (reply-surface-contract REQ-3 AC3): suppress the
-                    // supportive bubble when the agent's line literally repeats
-                    // the card's opening — the card then already carries it.
-                    // Guards: only when a turn-joined doc EXISTS and its body
-                    // starts with the bubble text, and never when they are
-                    // equal (equality means the emit failed and the bubble is
-                    // the only copy — see backend seam emit-failure fallback).
-                    const _bubbleText = (message.text || '').trim()
-                    const bubbleDuplicatesCard =
-                      message.sender === 'assistant' &&
-                      _bubbleText.length > 0 &&
-                      (activeConversation?.documents || []).some(
-                        (d) =>
-                          d.turnId &&
-                          (d.turnId === message.id || d.turnId === message.turn_id) &&
-                          (d.content || '').trim().length > _bubbleText.length &&
-                          (d.content || '').trim().startsWith(_bubbleText),
-                      )
-
-                    return (
-                    <div key={message.id} id={`msg-${message.id}`}>
-                      {/* Horizontal separator */}
-                      {index > 0 && (
-                        <div
-                          className="h-px w-full my-3"
-                          style={{ backgroundColor: `${glowColor}10` }}
-                        />
-                      )}
-
-                      {/* Inline RichDocument cards for this turn. T15
-                          (reply-surface-contract REQ-3 AC3): cards render ABOVE
-                          the supportive bubble so the artifact leads and the
-                          conversational line follows. Joined on
-                          doc.turnId === message.id (same key the message itself
-                          carries — see handleTextResponse chat-view.tsx:1033).
-                          Sources-carrier logic is identical to the previous
-                          bottom-stacked block; only the placement changed.
-                          A websearch turn emits multiple `show` payloads (one
-                          per crawler_query step as a JSON card, then the final
-                          markdown synthesis), and only the markdown card carries
-                          the merged sources for the turn — same-turn siblings
-                          contribute to that carrier's source list. Bodyless
-                          entries (a store miss or a truncated row) degrade to
-                          "no card" rather than an empty glass rectangle. */}
-                      {(() => {
-                        const _allDocs = activeConversation?.documents || []
-                        if (message.sender !== 'assistant') return null
-                        // Join on turn: live messages carry id === turn_id
-                        // (anchor rule in handleTextResponse), rehydrated
-                        // ones carry the DB row id and expose the turn via
-                        // message.turn_id. Matching BOTH keeps a prism card
-                        // attached to its turn after a history reload —
-                        // without this the card fell to the orphan pile the
-                        // moment openHistory() replaced the messages
-                        // (session 296: "cards vanish when I switch threads").
-                        const _myTurnDocs = _allDocs.filter(
-                          (d) =>
-                            d.turnId &&
-                            (d.turnId === message.id || d.turnId === message.turn_id) &&
-                            // REQ-17 T28: a rehydrated card may have NO in-memory
-                            // body (metadata-only hydration) but its document_id
-                            // is resolvable — admit it so the card renders and the
-                            // body fetches on expand. Truly empty docs still drop.
-                            ((d.content || '').trim().length > 0 || !!d.documentId),
-                        )
-                        if (_myTurnDocs.length === 0) return null
-                        // Empty-result websearch should NOT be a prism card — it is
-                        // conversational plain text. The agent sometimes wraps a
-                        // "no usable results" synthesis as markdown with an empty
-                        // source list (observed live 2026-08-27: "I wasn't able to
-                        // pull any direct image URLs..." rendered as MARKDOWN|WEB).
-                        // That is the "plain text renders as prism" report. Detect
-                        // it structurally (no sources + failure phrasing) and
-                        // downgrade to an inline MarkdownMessage so it scrolls as
-                        // text, not as a glass artifact.
-                        const _isEmptyResultDoc = (doc: (typeof _myTurnDocs)[number], sources: unknown): boolean => {
-                          const srcLen = Array.isArray(sources) ? sources.length : 0
-                          if (srcLen > 0) return false
-                          const lc = (doc.content || '').toLowerCase()
-                          // Fast structural signal: the card claims "0 URLs
-                          // retrieved" or explicitly says it pulled nothing.
-                          // Checked case-insensitively; kept narrow so a legit
-                          // empty-source markdown (e.g. a generated table) does
-                          // NOT match.
-                          return (
-                            // Audit 2026-09-22 (F10): aligned with the backend
-                            // _is_empty_websearch_synthesis verdict list — the
-                            // "what was attempted + what failed" pair was missing
-                            // here, so a stale card shaped that way slipped
-                            // through this second-tier guard.
-                            (lc.includes("what was attempted") && lc.includes("what failed")) ||
-                            lc.includes("wasn't able to pull") ||
-                            lc.includes("wasn't able to retrieve") ||
-                            lc.includes("no usable direct image") ||
-                            lc.includes("no usable content") ||
-                            lc.includes("no candidate urls") ||
-                            lc.includes("retry produced no usable content") ||
-                            (lc.includes("image urls retrieved") && lc.includes(" 0")) ||
-                            (lc.includes("what failed") && lc.includes("no usable"))
-                          )
-                        }
-                        // Build the per-turn source map once (markdown carrier
-                        // merges sources from same-turn siblings).
-                        const _turnSources = new Map<string, { url: string; title: string }[]>()
-                        for (const d of _allDocs) {
-                          if (!d.turnId) continue
-                          const cur = _turnSources.get(d.turnId) || []
-                          const merged = [...cur]
-                          for (const s of d.sources || []) {
-                            if (!merged.some((m) => m.url === s.url)) merged.push(s)
-                          }
-                          _turnSources.set(d.turnId, merged)
-                        }
-                        const carrierId =
-                          _myTurnDocs.find((d) => d.format === 'markdown')?.id ??
-                          _myTurnDocs.find(
-                            (d) =>
-                              (d.sources && d.sources.length > 0) ||
-                              (d.turnId && d.turnId === taskProgress.turnId),
-                          )?.id ??
-                          null
-                        return _myTurnDocs.map((doc) => {
-                          const isMarkdown = doc.format === 'markdown'
-                          const isSourcesCarrier = doc.id === carrierId
-                          const docSources: {
-                            url: string
-                            title: string
-                            status?: "planned" | "reading" | "read" | "blocked" | "parked"
-                            discovered?: boolean
-                            reason?: string
-                            jobId?: string
-                            capturePage?: number
-                          }[] | undefined =
-                            isSourcesCarrier
-                              ? doc.turnId && doc.turnId === taskProgress.turnId &&
-                                crawlState.sources.length > 0
-                                ? crawlState.sources.map((s) => ({
-                                    url: s.url,
-                                    title: s.title || s.host || s.url,
-                                    status: s.status,
-                                    discovered: s.discovered,
-                                    reason: s.reason,
-                                    jobId: s.jobId ?? undefined,
-                                    capturePage: s.capturePage ?? undefined,
-                                  }))
-                                : isMarkdown
-                                  ? _turnSources.get(doc.turnId || '') || doc.sources
-                                  : doc.sources
-                              : undefined
-                          // Empty-result websearch → plain text, not a prism.
-                          // Keeps the "no information" answer in the bubble
-                          // stream where it scrolls inline, instead of a
-                          // glass card at the bottom.
-                          if (_isEmptyResultDoc(doc, docSources)) {
-                            return (
-                              <div key={`doc-${doc.id}`} className="my-2 max-w-[90%]">
-                                <MarkdownMessage
-                                  text={doc.content}
-                                  variant={isDeveloper ? 'cli' : 'markdown'}
-                                />
-                                {doc.error && (
-                                  <p className="text-[9px] mt-1" style={{ color: '#ef4444' }}>{doc.error}</p>
-                                )}
-                              </div>
-                            )
-                          }
-                          return (
-                            <div key={`doc-${doc.id}`} className="my-3 relative">
-                              {doc.updated && (
-                                <span
-                                  className="absolute -top-2 right-2 z-10 rounded-full px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider"
-                                  style={{
-                                    color: glowColor,
-                                    border: `1px solid ${glowColor}55`,
-                                    background: "rgba(10,11,22,0.75)",
-                                  }}
-                                >
-                                  Updated
-                                </span>
-                              )}
-                              <RichDocument
-                                content={doc.content}
-                                format={doc.format as "markdown" | "html" | "table" | "diagram" | "text" | "json" | "image"}
-                                title={doc.title}
-                                glowColor={glowColor}
-                                alternatives={doc.alternatives}
-                                trust={doc.trust}
-                                partial={doc.partial}
-                                onFormatChange={(newFormat) =>
-                                  sendMessage?.('reformat_document', {
-                                    document_id: doc.documentId,
-                                    format: newFormat,
-                                    turn_id: doc.turnId,
-                                    original_format: doc.format,
-                                    trust: doc.trust,
-                                  })
-                                }
-                                onExpand={() => setExpandedDocId(doc.id)}
-                                expandable={
-                                  (doc.content || '').trim().length === 0 &&
-                                  !!doc.documentId
-                                }
-                                // Peek on a bodyless rehydrated card triggers
-                                // the same lazy body fetch the panel does (F11).
-                                onPeek={
-                                  doc.documentId
-                                    ? () => requestDocumentBody(doc.documentId!)
-                                    : undefined
-                                }
-                                sources={docSources}
-                                harPath={doc.harPath}
-                              />
-                              {doc.error && (
-                                <p className="text-[9px] mt-1" style={{ color: '#ef4444' }}>{doc.error}</p>
-                              )}
-                            </div>
-                          )
-                        })
-                      })()}
-
-                      {/* T21 (reply-surface-contract REQ-11 AC1/AC3): question
-                          cards asked in THIS turn anchor here — in the thread,
-                          at their turn, not pinned at the bottom block. */}
-                      {message.sender === 'assistant' &&
-                        Array.from(pendingQuestions.values())
-                          .filter(
-                            (q) =>
-                              q.turnId &&
-                              anchoredQuestionIds.has(q.questionId) &&
-                              (q.turnId === message.id || q.turnId === message.turn_id)
-                          )
-                          .map((q) => questionCardFor(q))}
-
-                      <div
-                        className={`flex justify-start`}
-                      >
-                        {message.sender === 'user' ? (
-                          // User message - no bubble container
-                          <motion.div
-                            initial={{ opacity: prefersReducedMotion ? 1 : 0, y: prefersReducedMotion ? 0 : 5 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ duration: prefersReducedMotion ? 0 : 0.15 }}
-                            className="max-w-[90%] py-2"
-                          >
-                            <div className="flex items-center gap-2 mb-1">
-                              <span className="text-[9px] font-medium text-white/40">You</span>
-                              <span className="text-[8px] text-white/30 tabular-nums">
-                                {message.timestamp.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-                              </span>
-                            </div>
-                            
-                            {/* Smart message length handling for user messages */}
-                            {isDocumentMode ? (
-                              // Document mode for long messages
-                              <div className="mt-1">
-                                <p className="text-[13px] leading-relaxed text-white/85 line-clamp-3">
-                                  {message.text.slice(0, MESSAGE_THRESHOLDS.TRUNCATE_AT)}...
-                                </p>
-                                <p className="text-[9px] text-white/40 mt-1">
-                                  {charCount.toLocaleString()} characters
-                                </p>
-                                <div className="flex gap-2 mt-3">
-                                  <button
-                                    onClick={() => setDocumentModalMessage(message)}
-                                    className="flex-1 py-1.5 px-3 rounded text-[10px] font-medium transition-all"
-                                    style={{ backgroundColor: `${glowColor}20`, color: glowColor }}
-                                    onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = `${glowColor}30`; }}
-                                    onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = `${glowColor}20`; }}
-                                  >
-                                    View full document
-                                  </button>
-                                  {onOpenBrowserUrl && (
-                                    <button
-                                      onClick={() => {
-                                        const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{font-family:system-ui,sans-serif;padding:2rem;max-width:800px;margin:0 auto;line-height:1.6;white-space:pre-wrap;word-break:break-word}</style></head><body>${message.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</body></html>`;
-                                        onOpenBrowserUrl(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
-                                      }}
-                                      className="p-1.5 rounded transition-colors"
-                                      style={{ color: `${fontColor}60` }}
-                                      onMouseEnter={(e) => { e.currentTarget.style.color = fontColor; e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)'; }}
-                                      onMouseLeave={(e) => { e.currentTarget.style.color = `${fontColor}60`; e.currentTarget.style.backgroundColor = 'transparent'; }}
-                                      title="Open in browser tab"
-                                    >
-                                      <ExternalLink size={14} />
-                                    </button>
-                                  )}
-                                  <button
-                                    onClick={() => handleShareMessage(message)}
-                                    className="p-1.5 rounded transition-colors"
-                                    style={{ color: `${fontColor}60` }}
-                                    onMouseEnter={(e) => { e.currentTarget.style.color = fontColor; e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)'; }}
-                                    onMouseLeave={(e) => { e.currentTarget.style.color = `${fontColor}60`; e.currentTarget.style.backgroundColor = 'transparent'; }}
-                                    title="Share"
-                                  >
-                                    <Share size={14} />
-                                  </button>
-                                  <button
-                                    onClick={() => handleDownloadMessage(message)}
-                                    className="p-1.5 rounded transition-colors"
-                                    style={{ color: `${fontColor}60` }}
-                                    onMouseEnter={(e) => { e.currentTarget.style.color = fontColor; e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)'; }}
-                                    onMouseLeave={(e) => { e.currentTarget.style.color = `${fontColor}60`; e.currentTarget.style.backgroundColor = 'transparent'; }}
-                                    title="Download"
-                                  >
-                                    <Download size={14} />
-                                  </button>
-                                </div>
-                              </div>
-                            ) : shouldTruncate ? (
-                              // Truncated message with expand option. The
-                              // content-type badge (icon + label) was removed
-                              // 2026-09-21 (reply-surface-contract REQ-5 /
-                              // T14): type is conveyed by the rendering itself,
-                              // not by chrome.
-                              <div className="mt-1">
-                                <div className="relative">
-                                  {isDeveloper ? (
-                                    <pre className="font-mono text-[11px] leading-[1.5] whitespace-pre-wrap break-words" style={{ color: 'rgba(255,255,255,0.88)' }}>
-                                      <span style={{ color: glowColor }}>❯ </span>
-                                      {isExpanded ? message.text : message.text.slice(0, MESSAGE_THRESHOLDS.TRUNCATE_AT) + '...'}
-                                    </pre>
-                                  ) : (
-                                    <p className="text-[13px] leading-relaxed text-white/90">
-                                      {isExpanded ? message.text : message.text.slice(0, MESSAGE_THRESHOLDS.TRUNCATE_AT) + '...'}
-                                    </p>
-                                  )}
-                                  {!isExpanded && (
-                                    <div 
-                                      className="absolute bottom-0 left-0 right-0 h-6 pointer-events-none"
-                                      style={{ background: 'linear-gradient(to bottom, transparent, rgba(10,10,20,0.95))' }}
-                                    />
-                                  )}
-                                </div>
-                                <button
-                                  onClick={() => toggleMessageExpanded(message.id)}
-                                  className="mt-1 flex items-center gap-1 text-[10px] font-medium transition-colors"
-                                  style={{ color: glowColor }}
-                                  aria-expanded={isExpanded}
-                                >
-                                  {isExpanded ? (
-                                    <>Show less <ChevronUp size={12} /></>
-                                  ) : (
-                                    <>Show more <ChevronDown size={12} /></>
-                                  )}
-                                </button>
-                                {isExpanded && (
-                                  <div className="flex gap-2 mt-2 pt-2 border-t border-white/10">
-                                    <button
-                                      onClick={() => handleShareMessage(message)}
-                                      className="p-1.5 rounded transition-colors hover:bg-white/5"
-                                      style={{ color: `${fontColor}70` }}
-                                      title="Share"
-                                    >
-                                      <Share size={14} />
-                                    </button>
-                                    <button
-                                      onClick={() => handleDownloadMessage(message)}
-                                      className="p-1.5 rounded transition-colors hover:bg-white/5"
-                                      style={{ color: `${fontColor}70` }}
-                                      title="Download"
-                                    >
-                                      <Download size={14} />
-                                    </button>
-                                  </div>
-                                )}
-                              </div>
-                            ) : isDeveloper ? (
-                              /* Developer mode echoes YOUR turn the way a shell
-                                 does: monospaced, preformatted, behind a prompt
-                                 glyph. The assistant's replies were already
-                                 rendering as CLI, but your own messages are half
-                                 the transcript — leaving them as proportional
-                                 GUI text is why the view still read as personal
-                                 mode. renderWithLinks is dropped here on
-                                 purpose: a shell echo shows what you typed. */
-                              <pre className="font-mono text-[11px] leading-[1.5] whitespace-pre-wrap break-words" style={{ color: 'rgba(255,255,255,0.88)' }}>
-                                <span style={{ color: glowColor }}>❯ </span>{message.text}
-                              </pre>
-                            ) : (
-                              // Short message - display fully
-                              <p className="text-[13px] leading-relaxed text-white/90">{renderWithLinks(message.text)}</p>
-                            )}
-
-                            {/* Prompt actions. Retry and Edit act on the PROMPT,
-                                so they live on the user's turn — re-running the
-                                agent's reply was never the thing being retried. */}
-                            {editingMessageId === message.id ? (
-                              <div className="mt-2 pt-2 border-t border-white/5">
-                                <textarea
-                                  value={editingText}
-                                  onChange={(e) => setEditingText(e.target.value)}
-                                  onKeyDown={(e) => {
-                                    if (e.key === "Enter" && !e.shiftKey) {
-                                      e.preventDefault()
-                                      handleResendUserMessage(index, activeConversationId!, editingText)
-                                    }
-                                    if (e.key === "Escape") setEditingMessageId(null)
-                                  }}
-                                  autoFocus
-                                  rows={Math.min(6, Math.max(2, editingText.split("\n").length))}
-                                  className="w-full resize-y rounded px-2 py-1.5 text-[13px] leading-relaxed bg-white/5 text-white/90 outline-none"
-                                  style={{ border: `1px solid ${glowColor}40` }}
-                                  aria-label="Edit your prompt"
-                                />
-                                <div className="flex items-center gap-2 mt-1.5">
-                                  <button
-                                    onClick={() => handleResendUserMessage(index, activeConversationId!, editingText)}
-                                    disabled={!editingText.trim() || !!retryingMessageId}
-                                    className="px-2 py-1 rounded text-[10px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                                    style={{ backgroundColor: `${glowColor}20`, color: glowColor }}
-                                  >
-                                    Send revised
-                                  </button>
-                                  <button
-                                    onClick={() => setEditingMessageId(null)}
-                                    className="px-2 py-1 rounded text-[10px] text-white/40 hover:text-white/70 hover:bg-white/5 transition-colors"
-                                  >
-                                    Cancel
-                                  </button>
-                                  <span className="text-[9px] text-white/25 ml-auto">
-                                    Enter to send · Esc to cancel
-                                  </span>
-                                </div>
-                              </div>
-                            ) : (
-                              <div className="flex items-center gap-1 mt-1.5">
-                                <button
-                                  onClick={() => handleResendUserMessage(index, activeConversationId!)}
-                                  disabled={!!retryingMessageId}
-                                  className="p-1 rounded transition-colors text-white/25 hover:text-white/70 hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed"
-                                  title="Retry — send this prompt again"
-                                >
-                                  <RefreshCw
-                                    size={11}
-                                    className={retryingMessageId === message.id ? "animate-spin" : ""}
-                                  />
-                                </button>
-                                <button
-                                  onClick={() => {
-                                    setEditingText(message.text)
-                                    setEditingMessageId(message.id)
-                                  }}
-                                  disabled={!!retryingMessageId}
-                                  className="p-1 rounded transition-colors text-white/25 hover:text-white/70 hover:bg-white/5 disabled:opacity-30 disabled:cursor-not-allowed"
-                                  title="Edit — revise this prompt and send it again"
-                                >
-                                  <Pencil size={11} />
-                                </button>
-                              </div>
-                            )}
-                          </motion.div>
-                        ) : message.sender === 'assistant' ? (
-                          // AI message - no bubble container with feedback bar
-                          <motion.div
-                            initial={{ opacity: prefersReducedMotion ? 1 : 0, y: prefersReducedMotion ? 0 : 5 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ duration: prefersReducedMotion ? 0 : 0.15 }}
-                            className="max-w-[90%] py-2"
-                          >
-                            <div className="flex items-center gap-2 mb-1.5">
-                              <span 
-                                className="text-[9px] font-semibold tracking-wide"
-                                style={{ color: glowColor }}
-                              >
-                                IRIS
-                              </span>
-                              {isSpeaking && message.id === currentTtsMessageId && (
-                                <Xur size={14} color={glowColor} speed={1.5} />
-                              )}
-                              <span className="text-[8px] text-white/30 tabular-nums ml-auto">
-                                {message.timestamp.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-                              </span>
-                            </div>
-                            
-                            {/* Collapsible thinking block — only shown when model produced reasoning */}
-                            {message.thinking && (
-                              <div className="mb-2">
-                                <button
-                                  onClick={() => setExpandedThinking(prev => {
-                                    const next = new Set(prev);
-                                    next.has(message.id) ? next.delete(message.id) : next.add(message.id);
-                                    return next;
-                                  })}
-                                  className="flex items-center gap-1.5 text-[9px] font-medium tracking-wide uppercase transition-colors"
-                                  style={{ color: 'rgba(255,255,255,0.3)' }}
-                                  aria-expanded={expandedThinking.has(message.id)}
-                                >
-                                  {expandedThinking.has(message.id)
-                                    ? <><ChevronUp size={10} /> Hide thinking</>
-                                    : <><ChevronDown size={10} /> Show thinking</>}
-                                </button>
-                                <AnimatePresence>
-                                  {expandedThinking.has(message.id) && (
-                                    <motion.div
-                                      initial={{ height: 0, opacity: 0 }}
-                                      animate={{ height: 'auto', opacity: 1 }}
-                                      exit={{ height: 0, opacity: 0 }}
-                                      transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-                                      className="overflow-hidden"
-                                    >
-                                      <div
-                                        className="mt-1.5 p-2.5 rounded text-[11px] leading-relaxed whitespace-pre-wrap font-mono"
-                                        style={{
-                                          color: 'rgba(255,255,255,0.35)',
-                                          background: 'rgba(255,255,255,0.03)',
-                                          borderLeft: '2px solid rgba(255,255,255,0.08)',
-                                        }}
-                                      >
-                                        {message.thinking}
-                                      </div>
-                                    </motion.div>
-                                  )}
-                                </AnimatePresence>
-                              </div>
-                            )}
-
-                            {/* Message content with smart length handling and TTS highlighting.
-                                T15 (REQ-3 AC3): suppressed when it duplicates the card opening —
-                                the card above already carries those words. */}
-                            {!bubbleDuplicatesCard && (isDocumentMode ? (
-                              // Document mode for long messages
-                              <div className="mt-1">
-                                <p className="text-[13px] leading-relaxed text-white/85 line-clamp-3">
-                                  {message.text.slice(0, MESSAGE_THRESHOLDS.TRUNCATE_AT)}...
-                                </p>
-                                <p className="text-[9px] text-white/40 mt-1">
-                                  {charCount.toLocaleString()} characters
-                                </p>
-                                <div className="flex gap-2 mt-3">
-                                  <button
-                                    onClick={() => setDocumentModalMessage(message)}
-                                    className="flex-1 py-1.5 px-3 rounded text-[10px] font-medium transition-all"
-                                    style={{ backgroundColor: `${glowColor}20`, color: glowColor }}
-                                    onMouseEnter={(e) => { e.currentTarget.style.backgroundColor = `${glowColor}30`; }}
-                                    onMouseLeave={(e) => { e.currentTarget.style.backgroundColor = `${glowColor}20`; }}
-                                  >
-                                    View full document
-                                  </button>
-                                  {onOpenBrowserUrl && (
-                                    <button
-                                      onClick={() => {
-                                        const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>body{font-family:system-ui,sans-serif;padding:2rem;max-width:800px;margin:0 auto;line-height:1.6;white-space:pre-wrap;word-break:break-word}</style></head><body>${message.text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</body></html>`;
-                                        onOpenBrowserUrl(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
-                                      }}
-                                      className="p-1.5 rounded transition-colors"
-                                      style={{ color: `${fontColor}60` }}
-                                      onMouseEnter={(e) => { e.currentTarget.style.color = fontColor; e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)'; }}
-                                      onMouseLeave={(e) => { e.currentTarget.style.color = `${fontColor}60`; e.currentTarget.style.backgroundColor = 'transparent'; }}
-                                      title="Open in browser tab"
-                                    >
-                                      <ExternalLink size={14} />
-                                    </button>
-                                  )}
-                                  <button
-                                    onClick={() => handleShareMessage(message)}
-                                    className="p-1.5 rounded transition-colors"
-                                    style={{ color: `${fontColor}60` }}
-                                    onMouseEnter={(e) => { e.currentTarget.style.color = fontColor; e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)'; }}
-                                    onMouseLeave={(e) => { e.currentTarget.style.color = `${fontColor}60`; e.currentTarget.style.backgroundColor = 'transparent'; }}
-                                    title="Share"
-                                  >
-                                    <Share size={14} />
-                                  </button>
-                                  <button
-                                    onClick={() => handleDownloadMessage(message)}
-                                    className="p-1.5 rounded transition-colors"
-                                    style={{ color: `${fontColor}60` }}
-                                    onMouseEnter={(e) => { e.currentTarget.style.color = fontColor; e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)'; }}
-                                    onMouseLeave={(e) => { e.currentTarget.style.color = `${fontColor}60`; e.currentTarget.style.backgroundColor = 'transparent'; }}
-                                    title="Download"
-                                  >
-                                    <Download size={14} />
-                                  </button>
-                                </div>
-                              </div>
-                            ) : shouldTruncate ? (
-                              // Truncated message with expand option
-                              <div className="mt-1">
-                                <div className="relative">
-                                  {/* Body: markdown, never word-highlighted.
-                                      A long answer is READ, not spoken — the
-                                      spoken briefing below is what TTS says and
-                                      what the highlight tracks (user rule
-                                      2026-08-17). Collapsed state clamps the
-                                      RENDERED output with CSS instead of slicing
-                                      the source, which would cut markdown
-                                      mid-syntax and break the render. */}
-                                  <MarkdownMessage
-                                    text={message.text}
-                                    className={isExpanded ? '' : 'line-clamp-6'}
-                                    variant={isDeveloper ? 'cli' : 'markdown'}
-                                  />
-                                  {!isExpanded && (
-                                    <div 
-                                      className="absolute bottom-0 left-0 right-0 h-6 pointer-events-none"
-                                      style={{ background: 'linear-gradient(to bottom, transparent, rgba(10,10,20,0.95))' }}
-                                    />
-                                  )}
-                                </div>
-                                <button
-                                  onClick={() => toggleMessageExpanded(message.id)}
-                                  className="mt-1 flex items-center gap-1 text-[10px] font-medium transition-colors"
-                                  style={{ color: glowColor }}
-                                  aria-expanded={isExpanded}
-                                >
-                                  {isExpanded ? (
-                                    <>Show less <ChevronUp size={12} /></>
-                                  ) : (
-                                    <>Show more <ChevronDown size={12} /></>
-                                  )}
-                                </button>
-                                {isExpanded && (
-                                  <div className="flex gap-2 mt-2 pt-2 border-t border-white/10">
-                                    <button
-                                      onClick={() => handleShareMessage(message)}
-                                      className="p-1.5 rounded transition-colors hover:bg-white/5"
-                                      style={{ color: `${fontColor}70` }}
-                                      title="Share"
-                                    >
-                                      <Share size={14} />
-                                    </button>
-                                    <button
-                                      onClick={() => handleDownloadMessage(message)}
-                                      className="p-1.5 rounded transition-colors hover:bg-white/5"
-                                      style={{ color: `${fontColor}70` }}
-                                      title="Download"
-                                    >
-                                      <Download size={14} />
-                                    </button>
-                                  </div>
-                                )}
-                              </div>
-                            ) : (
-                              // Short message — displayed in full. When the
-                              // spoken line IS this text (the usual short case),
-                              // the highlight rides directly on the rendered
-                              // markdown via the overlay. When TTS is saying a
-                              // different (summary) line, the body stays plain
-                              // and the briefing below carries the highlight.
-                              <MarkdownMessage
-                                text={message.text}
-                                highlightActive={
-                                  message.id === currentTtsMessageId && !spokenDiffersFromBody
-                                }
-                                highlightIndex={ttsWordIndex}
-                                variant={isDeveloper ? 'cli' : 'markdown'}
-                              />
-                            ))}
-                            
-                            {/* Feedback action bar */}
-                            <div className="flex items-center gap-2 mt-2 pt-2 border-t border-white/5">
-                              {/* Icon-only, like every other action here. The
-                                  "Copy"/"Copied!" label was the one text button
-                                  in the row; confirmation is the colour flash. */}
-                              <button
-                                onClick={() => handleCopyMessage(message.text, message.id)}
-                                className={`p-1.5 rounded transition-colors hover:bg-white/5 ${
-                                  copiedMessageId === message.id
-                                    ? "text-green-400"
-                                    : "text-white/40 hover:text-white/70"
-                                }`}
-                                title={copiedMessageId === message.id ? "Copied" : "Copy to clipboard"}
-                              >
-                                <Copy size={12} />
-                              </button>
-
-                              <button
-                                onClick={() => handlePlayTTSClick(message.text)}
-                                className="p-1.5 rounded transition-colors hover:bg-white/5 text-white/40 hover:text-white/70"
-                                title="Play text-to-speech"
-                              >
-                                <Volume2 size={12} />
-                              </button>
-
-                              <div className="flex items-center gap-1 ml-auto">
-                                <button
-                                  onClick={() => handleFeedback(message.id, 'positive')}
-                                  className={`p-1.5 rounded transition-colors ${
-                                    message.feedback === 'positive' 
-                                      ? 'text-green-400 bg-green-400/10' 
-                                      : 'text-white/40 hover:text-white/70 hover:bg-white/5'
-                                  }`}
-                                  title="Helpful response"
-                                >
-                                  <ThumbsUp size={12} className={message.feedback === 'positive' ? 'fill-current' : ''} />
-                                </button>
-                                <button
-                                  onClick={() => handleFeedback(message.id, 'negative')}
-                                  className={`p-1.5 rounded transition-colors ${
-                                    message.feedback === 'negative' 
-                                      ? 'text-red-400 bg-red-400/10' 
-                                      : 'text-white/40 hover:text-white/70 hover:bg-white/5'
-                                  }`}
-                                  title="Not helpful"
-                                >
-                                  <ThumbsDown size={12} className={message.feedback === 'negative' ? 'fill-current' : ''} />
-                                </button>
-                              </div>
-                            </div>
-                          </motion.div>
-                        ) : message.sender === 'system' ? (
-                          // System message (plan events: validation/recovery/budget/topology)
-                          <motion.div
-                            initial={{ opacity: prefersReducedMotion ? 1 : 0 }}
-                            animate={{ opacity: 1 }}
-                            transition={{ duration: prefersReducedMotion ? 0 : 0.15 }}
-                            className="max-w-[90%] py-2"
-                          >
-                            <div className="flex items-center gap-1.5 mb-1">
-                              <Info size={10} className="text-amber-400" />
-                              <span className="text-[9px] font-semibold text-amber-400">
-                                System
-                              </span>
-                              <span className="text-[8px] text-white/30 tabular-nums ml-auto">
-                                {message.timestamp.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-                              </span>
-                            </div>
-                            <p className="text-[12px] text-amber-100/90 leading-relaxed">{message.text}</p>
-                          </motion.div>
-                        ) : (
-                          // Error message
-                          <motion.div
-                            initial={{ opacity: prefersReducedMotion ? 1 : 0 }}
-                            animate={{ opacity: 1 }}
-                            transition={{ duration: prefersReducedMotion ? 0 : 0.15 }}
-                            className="max-w-[90%] py-2"
-                          >
-                            <div className="flex items-center gap-1.5 mb-1">
-                              <AlertCircle size={10} className="text-red-400" />
-                              <span className="text-[9px] font-semibold text-red-400">
-                                {message.errorType === 'voice' ? 'Voice Error' : 
-                                 message.errorType === 'validation' ? 'Validation' : 'Error'}
-                              </span>
-                              <span className="text-[8px] text-white/30 tabular-nums ml-auto">
-                                {message.timestamp.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-                              </span>
-                            </div>
-                            <p className="text-[12px] text-red-200/90 leading-relaxed">{message.text}</p>
-                            <button
-                              onClick={() => handleRetryPrompt(index, activeConversationId!)}
-                              className="mt-1.5 flex items-center gap-1 text-[10px] font-medium text-red-300/70 hover:text-red-200 transition-colors"
-                              title="Retry — re-send the last user message"
-                            >
-                              <RefreshCw size={10} />
-                              Retry
-                            </button>
-                          </motion.div>
-                        )}
-                      </div>
-                      {/* Prism cards for this turn now render ABOVE the bubble
-                          (T15, reply-surface-contract REQ-3 AC3): the card is the
-                          artifact, the bubble that follows is the supportive
-                          speak line. The doc-join block itself lives directly
-                          after the separator at the top of this message row. */}
-                    </div>
-                  );
-                })}
-
-                  {/* Orphan fallback — hydration safety net. If a document's
-                      turnId has no matching message (store miss, old data,
-                      or a render that arrived before its message), it would
-                      otherwise vanish after the inline move. This keeps the
-                      previous bottom-stacked behaviour ONLY for orphans, so a
-                      reload never loses a card. Inline-matched docs are
-                      already rendered above and are excluded here. */}
-                  {(() => {
-                    const _all = activeConversation?.documents || []
-                    if (_all.length === 0) return null
-                    // Orphan = no message in this timeline owns its turn.
-                    // A turn can be owned via message.id (live anchor) OR
-                    // message.turn_id (rehydrated row) — both count, or an
-                    // inline-matched card would ALSO render here as a
-                    // duplicate.
-                    const _msgIds = new Set(renderTimeline.filter((e) => e.kind === 'message').flatMap((e) => {
-                      const m = (e as Extract<(typeof renderTimeline)[number], { kind: 'message' }>).message
-                      return m.turn_id ? [m.id, m.turn_id] : [m.id]
-                    }))
-                    const _orphans = _all.filter((d) => (((d.content || '').trim().length > 0) || !!d.documentId) && d.turnId && !_msgIds.has(d.turnId))
-                    if (_orphans.length === 0) return null
-                    return _orphans.map((doc) => (
-                      <div key={`orphan-${doc.id}`} className="my-3 relative">
-                        <RichDocument
-                          content={doc.content}
-                          format={doc.format as "markdown" | "html" | "table" | "diagram" | "text" | "json" | "image"}
-                          glowColor={glowColor}
-                          alternatives={doc.alternatives}
-                          trust={doc.trust}
-                          onFormatChange={(newFormat) =>
-                            sendMessage?.('reformat_document', {
-                              document_id: doc.documentId,
-                              format: newFormat,
-                              turn_id: doc.turnId,
-                              original_format: doc.format,
-                              trust: doc.trust,
-                            })
-                          }
-                          onExpand={() => setExpandedDocId(doc.id)}
-                          expandable={
-                            (doc.content || '').trim().length === 0 &&
-                            !!doc.documentId
-                          }
-                          sources={doc.sources}
-                          harPath={doc.harPath}
-                        />
-                      </div>
-                    ))
-                  })()}
-
-                  {/* Rich documents now render INLINE with their parent
-                      message (see the injection above, inside the
-                      renderTimeline.map). The previous bottom-stacked block
-                      made every document card float below the conversation
-                      and broke scroll order — measured live 2026-08-27: two
-                      MD cards piled at the bottom of the thread while the
-                      short assistant text repeated at the top. Joining on
-                      doc.turnId === message.id restores conversation order
-                      and matches the pattern the task cards already use. */}
-
-
-                  {/* Typing Indicator — suppressed while a TaskListCard is
-                      ACTIVELY working (it renders its own working-step Xur, so
-                      showing this one too doubles the indicator).
-
-                      BUT NOT AFTER THE LAST STEP RESOLVES (2026-08-17). The old
-                      condition was `steps.length === 0`, so once a plan existed
-                      the indicator stayed suppressed for the REST of the turn —
-                      including the synthesis phase that runs after the final
-                      step. Measured live: last step finished 12:16:00, answer
-                      arrived 12:17:19. For that 79 s the card showed every step
-                      done, the orb's radial progress was gone, and nothing
-                      anywhere said the agent was still working — it read as
-                      finished-but-broken.
-
-                      So: hide it while steps are still running, show it again
-                      once they have all resolved and we are waiting on the
-                      answer. */}
-                  {isDeveloper ? (
-                    /* REQ-10 (T4a): branded loading glyph — mounted ONLY
-                       between prompt submit and the first streamed block
-                       (last timeline item is still the user's message), so at
-                       most one instance lives in the stream and it unmounts
-                       the moment any content (message, shell output, matrix)
-                       arrives. No orphaned rAF loops. */
-                    awaitingFirstBlock && (
-                      <div className="flex justify-start py-2">
-                        <Xur size={32} color={glowColor} speed={1.5} />
-                      </div>
-                    )
-                  ) : isTyping && !taskProgressStillRunning && (
-                    <div>
-                      <div 
-                        className="h-px w-full my-3"
-                        style={{ backgroundColor: `${glowColor}10` }}
-                      />
-                      <div className="flex justify-start">
-                        <motion.div
-                          initial={{ opacity: 0 }}
-                          animate={{ opacity: 1 }}
-                          className="py-2"
-                        >
-                          <div className="flex items-center gap-1.5">
-                            <Xur size={18} color={glowColor} speed={1.5} />
-                            <span className="text-[9px] font-semibold" style={{ color: glowColor }}>
-                              IRIS
-                            </span>
-                            {/* REQ-1 AC3: no-step tasks present a minimal same-card state — nothing extra. */}
-                          </div>
-                        </motion.div>
-                      </div>
-                    </div>
-                  )}
-
-                  <div ref={messagesEndRef} />
-
-                  {/* Agent task cards now render INLINE via renderTimeline
-                      (session 244): matched cards sit after their assistant
-                      message (responseTurnId === message.id), unmatched ones
-                      fall back to the bottom, and settled conversation-reply
-                      cards are suppressed entirely (cards are for artifacts,
-                      not conversation). The old bottom-stacked block is
-                      superseded — see the `entry.kind === "card"` branch in
-                      the render loop above. */}
-
-
-                  {/* Permission Cards — inline tool approval UI */}
-                  <AnimatePresence>
-                    {Array.from(pendingPermissions.values()).map((perm) => (
-                      <PermissionCard
-                        key={perm.requestId}
-                        requestId={perm.requestId}
-                        toolName={perm.toolName}
-                        tier={perm.tier}
-                        params={perm.params}
-                        description={perm.description}
-                        timeoutSeconds={perm.timeoutSeconds}
-                        requiresConfirmation={perm.requiresConfirmation}
-                        onApprove={(id) => {
-                          sendMessage?.('notification_response', {
-                            notification_id: id,
-                            action: 'grant',
-                          })
-                          // Session-331: remove the card OPTIMISTICALLY. The
-                          // card only disappeared when the backend's
-                          // permission:granted broadcast arrived — and that
-                          // broadcast is routed by session/conversation, so a
-                          // missing or mis-routed frame left the card rendered
-                          // forever after the user clicked Allow (live report:
-                          // permission cards never disappear after answering,
-                          // unlike AskUserQuestion cards). Removing it here
-                          // makes the click always land; a duplicate
-                          // permission_granted event is a harmless no-op.
-                          removePendingPermission(id)
-                        }}
-                        onDeny={(id) => {
-                          sendMessage?.('notification_response', {
-                            notification_id: id,
-                            action: 'deny',
-                          })
-                          removePendingPermission(id)
-                        }}
-                        onConfirm={(id) => {
-                          sendMessage?.('notification_response', {
-                            notification_id: id,
-                            action: 'confirm',
-                          })
-                          removePendingPermission(id)
-                        }}
-                      />
-                    ))}
-                  </AnimatePresence>
-
-                  {/* Agent Question Cards — UNANCHORED fallback only (T21).
-                      A question whose asking turn already has a message renders
-                      INLINE at that turn (see the doc-join join above); this
-                      block covers the live pre-answer window (REQ-11 AC3) and
-                      hides nothing the thread has already anchored. */}
-                  <AnimatePresence>
-                    {Array.from(pendingQuestions.values())
-                      .filter((q) => !anchoredQuestionIds.has(q.questionId))
-                      .map((q) => questionCardFor(q))}
-                   </AnimatePresence>
-                  </div>
-               )}
-             </div>
+            <Timeline
+              renderTimeline={renderTimeline}
+              messages={messages}
+              messagesContainerRef={messagesContainerRef}
+              messagesEndRef={messagesEndRef}
+              pinnedToBottomRef={pinnedToBottomRef}
+              setShowJumpToLatest={setShowJumpToLatest}
+              isTyping={isTyping}
+              taskProgressStillRunning={taskProgressStillRunning}
+              awaitingFirstBlock={awaitingFirstBlock}
+              matrixElapsedSec={matrixElapsedSec}
+              pendingPermissions={pendingPermissions}
+              removePendingPermission={removePendingPermission}
+              isDeveloper={isDeveloper}
+              glowColor={glowColor}
+              fontColor={fontColor}
+              prefersReducedMotion={prefersReducedMotion}
+              sendMessage={sendMessage}
+              onOpenBrowserUrl={onOpenBrowserUrl}
+              conversations={conversations}
+              activeConversation={activeConversation}
+              activeConversationId={activeConversationId}
+              anchoredQuestionIds={anchoredQuestionIds}
+              pendingQuestions={pendingQuestions}
+              questionCardFor={questionCardFor}
+              liveTurnById={liveTurnById}
+              taskProgress={taskProgress}
+              crawlState={crawlState}
+              copiedMessageId={copiedMessageId}
+              currentTtsMessageId={currentTtsMessageId}
+              ttsWordIndex={ttsWordIndex}
+              isSpeaking={isSpeaking}
+              editingMessageId={editingMessageId}
+              setEditingMessageId={setEditingMessageId}
+              editingText={editingText}
+              setEditingText={setEditingText}
+              retryingMessageId={retryingMessageId}
+              expandedThinking={expandedThinking}
+              setExpandedThinking={setExpandedThinking}
+              setDocumentModalMessage={setDocumentModalMessage}
+              setExpandedDocId={setExpandedDocId}
+              getContentType={getContentType}
+              isMessageExpanded={isMessageExpanded}
+              toggleMessageExpanded={toggleMessageExpanded}
+              handleCopyMessage={handleCopyMessage}
+              handleFeedback={handleFeedback}
+              handlePlayTTSClick={handlePlayTTSClick}
+              handleShareMessage={handleShareMessage}
+              handleDownloadMessage={handleDownloadMessage}
+              handleResendUserMessage={handleResendUserMessage}
+              handleRetryPrompt={handleRetryPrompt}
+              renderWithLinks={renderWithLinks}
+              requestDocumentBody={requestDocumentBody}
+              conversationChips={conversationChips}
+              handleChipClick={handleChipClick}
+              removePendingQuestion={removePendingQuestion}
+              onOpenStrand={openStrand}
+            />
 
              {/* Document View Modal */}
             <AnimatePresence>
@@ -5008,633 +3374,63 @@ ${message.text}`;
                 2px glow line when empty. Dev mode only. */}
             {isDeveloper && !isRemoteView && <ArchiveDock />}
 
-            {/* Input Area — single fused input for chat + shell.
-                T2 (REQ-1 AC3): TerminalSlideOver / TerminalWidget are removed
-                from developer mode ENTIRELY (decision locked 2026-08-21) —
-                all shell output streams into the unified scroll above via
-                terminalScrollback subscriptions, which are preserved. */}
-            <div
-              className={isRemoteView ? "px-4 pb-4 pt-4 flex-shrink-0 relative z-30 bg-black/60 border-t" : "px-3 pb-3 pt-4 flex-shrink-0 relative z-30 bg-black/60 border-t"}
-              style={{ borderColor: 'rgba(255,255,255,0.05)' }}
-              onDragOver={handleDragOver}
-              onDragLeave={handleDragLeave}
-              onDrop={handleDrop}
-            >
-              {/* Suggestion pills — float left side above input, fade out on new user message */}
-              <div className="absolute left-0 right-0 top-0 -translate-y-full z-30">
-                <SuggestionPills
-                  suggestions={currentSuggestions}
-                  onSelect={(s: Suggestion) => {
-                    if (!s.message) return
-                    setCurrentSuggestions([])
-                    // Add as a user message and send via WS — same flow as handleSendMessage
-                    const userMsg = {
-                      id: newMessageId(),
-                      text: s.message,
-                      sender: 'user' as const,
-                      timestamp: new Date(),
-                    }
-                    setConversations(prev =>
-                      activeConversationId
-                        ? prev.map(c => c.id === activeConversationId
-                            ? { ...c, messages: [...c.messages, userMsg], lastMessagePreview: s.message.substring(0, 60), timestamp: new Date() }
-                            : c)
-                        : (() => {
-                            // See the note on the other newId site — conversation ids
-                            // are React keys and must not collide either.
-                            const newId = newMessageId()
-                            activeConversationIdRef.current = newId
-                            setActiveConversationId(newId)
-                            return [...prev, { id: newId, title: (s.message || 'New conversation').replace(/\s+/g, ' ').trim().slice(0, 60) || 'New conversation', preview: s.message.substring(0, 60), messages: [userMsg], documents: [], timestamp: new Date(), isPinned: false, lastMessagePreview: s.message.substring(0, 60) }]
-                          })()
-                    )
-                    sendMessage?.('text_message', { text: s.message })
-                  }}
-                  onDismiss={() => setCurrentSuggestions([])}
-                  mode={isDeveloper ? 'developer' : 'personal'}
-                  glowColor={glowColor}
-                  fontColor={fontColor}
-                />
-              </div>
-
-              {/* Drag overlay with smile/file icon */}
-              <AnimatePresence>
-                {isDraggingFile && (
-                  <motion.div
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    className="absolute bottom-12 left-3 flex items-center gap-1.5 pointer-events-none z-40"
-                  >
-                    {draggedFileType === 'image' ? (
-                      <Image size={14} style={{ color: glowColor }} />
-                    ) : draggedFileType === 'video' ? (
-                      <Video size={14} style={{ color: glowColor }} />
-                    ) : (
-                      <Smile size={14} style={{ color: glowColor }} />
-                    )}
-                    <span className="text-[10px]" style={{ color: fontColor }}>
-                      Drop file here
-                    </span>
-                  </motion.div>
-                )}
-              </AnimatePresence>
-
-                {/* Mode-split input area (cli-workspace-unification scope fix):
-                    DEVELOPER gets the REQ-1/REQ-2 attached two-row footer;
-                    PERSONAL keeps the ORIGINAL single-row layout (Web toggle
-                    LEFT of the textarea, pill cluster RIGHT of it on the same
-                    row, aligned to the textarea glow line). REQ-2's user story
-                    is developer-scoped — the restructured footer must not leak
-                    into personal mode. */}
-                <div className={isDeveloper ? "relative" : (isRemoteView ? "relative flex items-end gap-2 px-1" : "relative flex items-end gap-2")} style={{ marginRight: '4px' }}>
-
-                {/* REQ-6 AC3 (T7): the counterpart to pinned-only auto-scroll.
-                    Once the user scrolls up they are no longer auto-followed,
-                    so they need one control to get back. Sits above the
-                    composer (same `absolute bottom-full` slot the slash menu
-                    uses) and disappears the moment they are pinned again. */}
-                {showJumpToLatest && (
-                  <button
-                    type="button"
-                    onClick={jumpToLatest}
-                    data-testid="jump-to-latest"
-                    className="absolute bottom-full right-0 mb-1.5 z-40 flex items-center gap-1 px-2 py-1 rounded-full text-[10px] transition-opacity hover:opacity-90"
-                    style={{
-                      background: 'linear-gradient(135deg, rgba(5,5,12,0.97) 0%, rgba(12,12,20,0.95) 100%)',
-                      border: `1px solid ${glowColor}40`,
-                      color: fontColor,
-                      boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
-                    }}
-                    title="Jump to latest"
-                  >
-                    <ChevronDown size={12} style={{ color: glowColor }} />
-                    Jump to latest
-                  </button>
-                )}
-
-                {/* PERSONAL MODE ONLY — original Web toggle LEFT of the textarea
-                    (restored from pre-spec HEAD). Developer mode keeps its Web
-                    toggle inside the REQ-2 toolbar row below. */}
-                {!isDeveloper && (
-                  <div className="flex-shrink-0" style={{ transform: 'translateY(-6.5px)' }}>
-                    <motion.button
-                      type="button"
-                      onClick={() => setWebMode(v => !v)}
-                      disabled={voiceState === 'listening'}
-                      className="flex items-center justify-center w-[32px] h-[32px] transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
-                      style={{
-                        color: webMode ? glowColor : 'rgba(255,255,255,0.5)',
-                        background: 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
-                        border: `1px solid ${webMode ? glowColor : `${fontColor}80`}`,
-                        borderRadius: '9999px',
-                        boxShadow: webMode ? `0 0 12px ${glowColor}40, inset 0 1px 0 rgba(255,255,255,0.03)` : '0 1px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.03)',
-                      }}
-                      whileHover={{ scale: 1.08 }}
-                      whileTap={{ scale: 0.92 }}
-                      title={webMode ? 'Web mode ON — next send researches on the web' : 'Web mode OFF — chat with the agent'}
-                      aria-pressed={webMode}
-                      aria-label="Toggle web research mode"
-                    >
-                      <Icon icon={webMode ? 'mdi:web' : 'mdi:web-off'} width={14} height={14} />
-                    </motion.button>
-                  </div>
-                )}
-
-                {/* Row 1 — prompt textarea. DEVELOPER: full-width (the ONE input,
-                    REQ-1). PERSONAL: flex-1 between the Web toggle and the pill
-                    cluster, per the original layout. */}
-                <div className={isDeveloper ? "relative" : "flex-1 relative"}>
-                  {/* Session 246 (@-card-mentions): typing a bare '@' opens a
-                      picker of this session's task cards; selecting one
-                      inserts an @taskcard:<id> token the backend resolves into
-                      per-turn context. */}
-                  {cardMentionOpen && mentionCandidates.length > 0 && (
-                    <div
-                      className="absolute bottom-full left-0 right-0 mb-1 z-50 rounded-md overflow-hidden"
-                      style={{
-                        background: 'linear-gradient(160deg, rgba(14,14,24,0.97), rgba(8,8,16,0.96))',
-                        border: `1px solid ${glowColor}35`,
-                        boxShadow: '0 -4px 20px rgba(0,0,0,0.6)',
-                        maxHeight: 180,
-                        overflowY: 'auto',
-                      }}
-                    >
-                      <div className="px-2 py-1 text-[9px] font-mono uppercase tracking-wider text-white/40">
-                        Reference a task card
-                      </div>
-                      {mentionCandidates.map(c => (
-                        <button
-                          key={c.cardId}
-                          className="w-full text-left px-2.5 py-1.5 text-[11px] truncate hover:bg-white/[0.06] transition-colors"
-                          style={{ color: 'rgba(255,255,255,0.8)' }}
-                          onMouseDown={(e) => {
-                            e.preventDefault(); // keep textarea focus
-                            setInputText(t => t.replace(/@$/, `@taskcard:${c.cardId} `));
-                            setCardMentionOpen(false);
-                          }}
-                        >
-                          <span style={{ color: glowColor }}>@</span>{' '}
-                          {c.planTitle || c.cardId}
-                          <span className="text-white/35 ml-1.5">
-                            {c.isWorking ? '· running' : c.terminalState ? `· ${c.terminalState}` : ''}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                  {/* Gate 3 T12 (REQ-7): slash-command menu — filtered from
-                      GET /api/dev/cli-tools; Tab/Enter accept, Escape dismiss.
-                      Rendered above the input; never intercepts '@'. */}
-                  {isDeveloper && slashMenuOpen && slashMatches.length > 0 && (
-                    <div className="absolute bottom-full left-0 right-0 mb-1 z-50"
-                      style={{
-                        background: 'linear-gradient(135deg, rgba(5,5,12,0.97) 0%, rgba(12,12,20,0.95) 100%)',
-                        border: `1px solid ${glowColor}40`,
-                        borderRadius: '8px',
-                        boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
-                        // REQ-4 AC1: this menu was `overflow-hidden`, so it was
-                        // never a scroll container and the wheel passed straight
-                        // through it to the timeline. Cap it and let it scroll
-                        // itself, then trap the gesture at its edges.
-                        maxHeight: 'min(30vh, 260px)',
-                        overflowY: 'auto',
-                        overscrollBehavior: 'contain',
-                      }}>
-                      {slashMatches.map((c) => (
-                        <button key={c.name} type="button"
-                          onMouseDown={(ev) => { ev.preventDefault(); acceptSlash(c.name) }}
-                          className="w-full text-left px-3 py-1.5 flex items-baseline gap-2 hover:bg-white/5 transition-colors">
-                          <span className="font-mono text-[11px]" style={{ color: glowColor }}>{c.display_name}</span>
-                          <span className="text-[10px] opacity-60 truncate">{c.when_to_use}</span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                  {/* Gate 3 T12 AC2: '>' hint row — workdir + shell mode,
-                      non-blocking. */}
-                  {isDeveloper && inputText.startsWith('>') && (
-                    <div className="absolute bottom-full left-0 mb-1 px-2 py-0.5 font-mono text-[9px] opacity-60 pointer-events-none"
-                      style={{ color: fontColor }}>
-                      {'{'}shell mode{'}'} {activeTabPath ?? '(default repo)'}
-                    </div>
-                  )}
-                  <textarea
-                    ref={inputRef as any}
-                    value={inputText}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      setInputText(v);
-                      const opening = /(^|\s)@$/.test(v);
-                      if (opening && !cardMentionOpen) openCardMentionPicker();
-                      setCardMentionOpen(opening);
-                      // ── Gate 3 T12 (REQ-7): '/' opens the command menu;
-                      // '@' picker precedence is untouched (CONTRACT LOCK).
-                      if (isDeveloper && voiceState !== 'listening') {
-                        setSlashMenuOpen(v.startsWith('/'))
-                      } else if (slashMenuOpen) {
-                        setSlashMenuOpen(false)
-                      }
-                      // Auto-expand height
-                      e.target.style.height = 'auto';
-                      e.target.style.height = `${e.target.scrollHeight}px`;
-                    }}
-                    onKeyDown={(e) => {
-                      // ── Gate 3 T12 (REQ-7): slash menu keys ──────────
-                      if (slashMenuOpen && slashMatches.length > 0) {
-                        if (e.key === 'Escape') {
-                          e.preventDefault()
-                          setSlashMenuOpen(false) // close without clearing input
-                          return
-                        }
-                        if ((e.key === 'Tab' || e.key === 'Enter') && !e.shiftKey) {
-                          e.preventDefault() // accept beats send while menu is open
-                          acceptSlash(slashMatches[0].name)
-                          return
-                        }
-                      } else if (slashMenuOpen && e.key === 'Escape') {
-                        e.preventDefault()
-                        setSlashMenuOpen(false)
-                        return
-                      }
-                      // ── Gate 3 T11 (REQ-6): ↑/↓ command history ──────
-                      if (isDeveloper && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
-                        const el = e.currentTarget
-                        // multi-line draft: arrows must move the caret (REQ-6 edge)
-                        if (inputText.includes('\n')) return
-                        const atStart = el.selectionStart === 0 && el.selectionEnd === 0
-                        const atEnd = el.selectionStart === el.value.length
-                        if (e.key === 'ArrowUp' && !atStart) return
-                        if (e.key === 'ArrowDown' && !atEnd) return
-                        e.preventDefault()
-                        const { line } = recallHistory(e.key === 'ArrowUp' ? 'up' : 'down', inputText)
-                        if (line !== null) {
-                          setInputText(line)
-                          requestAnimationFrame(() => {
-                            el.selectionStart = el.selectionEnd = el.value.length
-                          })
-                        }
-                        return
-                      }
-                      // ── Gate 3 T13 (REQ-8): Ctrl+C abort ─────────────
-                      if (isDeveloper && e.key === 'c' && (e.ctrlKey || e.metaKey) && !e.shiftKey) {
-                        // Only when text is NOT selected (copy keeps working).
-                        const el = inputRef.current
-                        const hasSelection = !!el && el.selectionStart !== el.selectionEnd
-                        if (hasSelection) return
-                        e.preventDefault()
-                        if (terminalSnapshot.sessionState === 'working') {
-                          sendMessage?.('dev_abort', {})
-                          appendSystem('^C — abort sent')
-                        } else {
-                          setInputText('') // nothing running: clear line (AC3)
-                        }
-                        return
-                      }
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault();
-                        handleSendMessage();
-                        // Reset height
-                        if (inputRef.current) inputRef.current.style.height = 'auto';
-                      }
-                    }}
-                    onFocus={() => setIsInputFocused(true)}
-                    onBlur={() => setIsInputFocused(false)}
-                    placeholder={
-                      voiceState === 'listening'
-                        ? 'Listening...'
-                        : isDeveloper
-                          ? 'command  ·  / tools  ·  > shell  ·  @ card'
-                          : 'Type command or drop file...'
-                    }
-                    disabled={voiceState === 'listening'}
-                    className={
-                      isRemoteView
-                        ? "w-full bg-transparent border-0 py-3 pr-2 text-[16px] focus:outline-none transition-all placeholder:text-white/30 disabled:opacity-50 resize-none min-h-[44px] max-h-[120px] scrollbar-hide"
-                        : isDeveloper
-                          /* pl-5 clears the prompt glyph rendered below. */
-                          ? "w-full bg-transparent border-0 py-2 pl-5 pr-2 font-mono text-[12px] focus:outline-none transition-all placeholder:text-white/25 disabled:opacity-50 resize-none min-h-[36px] max-h-[120px] scrollbar-hide"
-                          : "w-full bg-transparent border-0 py-2 pr-2 text-[13px] focus:outline-none transition-all placeholder:text-white/30 disabled:opacity-50 resize-none min-h-[36px] max-h-[120px] scrollbar-hide"
-                    }
-                    rows={1}
-                    style={{
-                      borderColor: isDraggingFile ? glowColor : inputText ? glowColor : `${glowColor}30`,
-                      color: fontColor,
-                      borderBottomWidth: '1px',
-                      boxShadow: isDraggingFile ? `0 0 8px ${glowColor}40` : inputText ? `0 1px 0 0 ${glowColor}` : 'none',
-                      // The caret is the one part of a CLI the user watches
-                      // constantly, so it carries the brand colour rather than
-                      // the browser default.
-                      caretColor: isDeveloper ? glowColor : undefined,
-                    }}
-                  />
-
-                  {/* Prompt glyph. Developer mode only, and hidden while the
-                      mic is open — the line is not yours to type on then. */}
-                  {isDeveloper && !isRemoteView && voiceState !== 'listening' && (
-                    <span
-                      aria-hidden
-                      className="absolute left-0 font-mono text-[12px] pointer-events-none select-none"
-                      style={{ top: '0.5rem', lineHeight: '1.25rem', color: glowColor, opacity: 0.75 }}
-                    >
-                      ❯
-                    </span>
-                  )}
-                  
-                  {/* Voice indicator */}
-                  {voiceState === 'listening' && (
-                    <motion.div
-                      className="absolute left-0 bottom-0 h-[1px]"
-                      style={{ backgroundColor: glowColor }}
-                      animate={{ width: [`${audioLevel * 100}%`, `${Math.min(100, audioLevel * 150)}%`] }}
-                      transition={{ duration: 0.1 }}
-                    />
-                  )}
-
-                </div>
-
-                {/* REQ-7 (T8) — explicit send control. PERSONAL MODE ONLY.
-                    Developer mode is a CLI surface with its own affordances,
-                    and its REQ-2 footer toolbar measures 454px against 486px
-                    usable at the balanced wing; a 44px control would overflow
-                    it (measured 2026-09-04). Personal mode's textarea is
-                    flex-1 with no min-width, so it absorbs the 40px: 292→252
-                    at the 360px wing, 442→402 at 510, 612→572 at 680.
-                    Guards mirror the send path (handleSendMessage :1844):
-                    empty input, or an actively-listening mic. isTyping
-                    deliberately does NOT disable — the backend per-session
-                    lock queues messages (long-horizon-der-execution).
-                    AC3: onClick is handleSendMessage itself; no second path.
-
-                    SUPERSEDES specs/phase-5-switcher REQ-1 AC1 (which removed
-                    the Send pill). That decision's load-bearing half — AC3,
-                    moving the button's disabled conditions into the send path —
-                    is preserved and still locked by its own tests; only the
-                    visibility half is reversed. Signed off 2026-09-04. */}
-                {!isDeveloper && (
-                  <div className="flex-shrink-0" style={{ transform: 'translateY(-6.5px)' }}>
-                    <motion.button
-                      type="button"
-                      onClick={handleSendMessage}
-                      disabled={!inputText.trim() || voiceState === 'listening'}
-                      className="flex items-center justify-center w-[32px] h-[32px] transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
-                      style={{
-                        color: inputText.trim() ? glowColor : 'rgba(255,255,255,0.5)',
-                        background: 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
-                        border: `1px solid ${inputText.trim() ? glowColor : `${fontColor}80`}`,
-                        borderRadius: '9999px',
-                        boxShadow: inputText.trim()
-                          ? `0 0 12px ${glowColor}40, inset 0 1px 0 rgba(255,255,255,0.03)`
-                          : '0 1px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.03)',
-                      }}
-                      whileHover={{ scale: 1.08 }}
-                      whileTap={{ scale: 0.92 }}
-                      title="Send message"
-                      aria-label="Send message"
-                      data-testid="send-message"
-                    >
-                      <Send size={14} />
-                    </motion.button>
-                  </div>
-                )}
-
-                {/* DEVELOPER MODE ONLY — attached horizontal footer toolbar (REQ-2).
-                    Exact sequence: [Web 32] →8px→ [Upload 32] →12px→ |1px| →12px→
-                    [Model 116] →12px→ |1px| →12px→ [Chips 32] →10px→ [ContextPill 174]
-                    = 454px explicit width, centered in the 486px usable width
-                    (balanced ≈16px distribution margin). The ⏎ enter icon stays
-                    removed (AC4); its width is allocated to ContextPill (174px).
-
-                    THE SPACING IS EXPLICIT, PER PAIR — do not replace it with a
-                    uniform `gap` and a justify rule. That substitution is what
-                    broke this row, and it was then "fixed" four times by
-                    changing the justification (ml-auto, justify-center,
-                    justify-evenly, justify-between) and once by making the pill
-                    flex-1. None could work: a single gap value cannot express
-                    8/12/12/12/12/10, and the pill caps itself at max-w-[200px]
-                    so it can never absorb slack handed to it.
-                    justify-center keeps the 454px cluster centred, so whatever
-                    width the wing happens to be (510 balanced / 680 spotlight /
-                    360 background) the margins stay equal on both sides. */}
-                {isDeveloper ? (
-                 <div className="flex items-center justify-start w-full px-2 mt-2 h-[32px] flex-shrink-0">
-
-                  {/* Web toggle — internet-access capability gate (plan Issue E).
-                      OFF by default: agent has no web tools. ON: agent is granted
-                      web tools and decides when to use them. Every message still
-                      goes to the agent — this only flips the global internet-access
-                      flag via the set_web_mode WS message. Exact original glass
-                      styling preserved (REQ-2 AC3). */}
-                  <motion.button
-                    type="button"
-                    onClick={() => setWebMode(v => !v)}
-                    disabled={voiceState === 'listening'}
-                    className="flex items-center justify-center w-[32px] h-[32px] transition-all disabled:opacity-40 disabled:cursor-not-allowed flex-shrink-0"
-                    style={{
-                      color: webMode ? glowColor : 'rgba(255,255,255,0.5)',
-                      background: 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
-                      border: `1px solid ${webMode ? glowColor : `${fontColor}80`}`,
-                      borderRadius: '9999px',
-                      boxShadow: webMode ? `0 0 12px ${glowColor}40, inset 0 1px 0 rgba(255,255,255,0.03)` : '0 1px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.03)',
-                    }}
-                    whileHover={{ scale: 1.08 }}
-                    whileTap={{ scale: 0.92 }}
-                    title={webMode ? 'Web mode ON — next send researches on the web' : 'Web mode OFF — chat with the agent'}
-                    aria-pressed={webMode}
-                    aria-label="Toggle web research mode"
-                  >
-                    <Icon icon={webMode ? 'mdi:web' : 'mdi:web-off'} width={14} height={14} />
-                  </motion.button>
-
-                  {/* Send pill removed (Phase 5 REQ-1 AC1) — Enter already sends
-                      and the ⏎ icon is permanently removed by cli-workspace-unification
-                      REQ-2 AC4; its width is allocated to ContextPill. */}
-
-                  {/* Upload pill — glows on hover. Exact original glass styling (AC3). */}
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    onChange={handleFileInputChange}
-                    className="hidden"
-                    accept="*/*"
-                  />
-                  <motion.button
-                    onClick={() => fileInputRef.current?.click()}
-                    onMouseEnter={() => setUploadHovered(true)}
-                    onMouseLeave={() => setUploadHovered(false)}
-                    disabled={voiceState === 'listening'}
-                    className="flex items-center justify-center w-[32px] h-[32px] ml-[8px] transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
-                    style={{
-                      color: uploadHovered ? glowColor : 'rgba(255,255,255,0.7)',
-                      background: 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
-                      border: `1px solid ${fontColor}80`,
-                      borderRadius: '9999px',
-                      boxShadow: uploadHovered ? `0 0 12px ${glowColor}30, inset 0 1px 0 rgba(255,255,255,0.03)` : '0 1px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.03)',
-                    }}
-                    whileHover={{ scale: 1.08 }}
-                    whileTap={{ scale: 0.92 }}
-                    title="Upload file"
-                  >
-                    <Icon icon="material-symbols:arrow-upload-progress" width={18} />
-                  </motion.button>
-
-                  {/* Divider 1 */}
-                  <div className="flex-shrink-0 rounded-full ml-[12px]" style={{ width: '1px', height: '20px', background: glowColor, opacity: 0.3 }} />
-
-                  {/* Model switcher — Phase 5 REQ-2. Sibling of ContextPill
-                      (D-2), never a new ContextPill prop (CT-S1). Reads
-                      useInferenceState and writes through its existing
-                      sendRoleBinding — no new backend surface (D-3). */}
-                  <div className="flex-shrink-0 ml-[12px]">
-                    <ModelSwitcher glowColor={glowColor} fontColor={fontColor} />
-                  </div>
-
-                  {/* Divider 2 — the REQ-2 sequence has a rule on BOTH sides of
-                      the model switcher. It was lost when the row was converted
-                      to a uniform gap, which is part of why the spacing stopped
-                      reading as a designed rhythm. */}
-                  <div className="flex-shrink-0 rounded-full ml-[12px]" style={{ width: '1px', height: '20px', background: glowColor, opacity: 0.3 }} />
-
-                  {/* Model switcher — Phase 5 REQ-2. Sibling of ContextPill
-                      (D-2), never a new ContextPill prop (CT-S1). Reads
-                      useInferenceState and writes through its existing
-                      sendRoleBinding — no new backend surface (D-3).
-                      Rendered on the LEFT per layout order. */}
-                  <ModelSwitcher glowColor={glowColor} fontColor={fontColor} />
-
-                  {/* Conversation chips pill — its own fixed 32x32 icon
-                      button, sits BETWEEN the ModelSwitcher and ContextPill
-                      per the REQ-2 sequence. Opens its popover drawer to the
-                      LEFT of ContextPill (REQ-2 AC5). */}
-                  <div
-                    /* ml-auto, not a fixed gap: this is where the row's leftover
-                       width goes. It keeps the web/upload/model group on the
-                       left and slides the chips + context pill to the right,
-                       instead of stretching one element across the whole band
-                       or scattering the slack into equal gaps. */
-                    className="flex items-center justify-center w-[32px] h-[32px] ml-auto flex-shrink-0"
-                    style={{
-                      background: 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
-                      border: `1px solid ${fontColor}80`,
-                      borderRadius: '6px',
-                      boxShadow: '0 1px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.03)',
-                    }}
-                  >
-                    <ConversationChips
-                      chips={conversationChips}
-                      glowColor={glowColor}
-                      onChipClick={handleChipClick}
-                      containerRef={messagesContainerRef}
-                    />
-                  </div>
-
-                  {/* ContextPill — declares its own dark-glass panel; the ⏎
-                      enter icon's freed width gives it the full 174px REQ-2
-                      allocation. Rendered LAST in the sequence (far right).
-                      Internal order is phase label then token numbers
-                      (e.g. "IDLE  0 / 128.0k"). */}
-                  {/* The pill CANNOT absorb the row's slack, whatever the
-                      wrapper says: ContextPill caps itself at max-w-[200px], so
-                      a flex-1 wrapper just grows an empty box around a 200px
-                      pill and leaves the gap exactly where it was. That is the
-                      mistake behind every previous attempt at this footer —
-                      ml-auto, justify-center, justify-evenly and flex-1 all
-                      tried to hand the slack to a child that is not allowed to
-                      take it.
-                      The row distributes the slack BETWEEN the controls instead
-                      (justify-between on the container), which puts the web
-                      toggle on the left edge and this pill on the right edge and
-                      spreads the rest across the middle. min-w-0 stays so the
-                      pill can still shrink when the row is genuinely tight —
-                      REQ-3's rule that the SWITCHER collapses first. */}
-                  {/* No flex-1: the pill sizes to its content now, and mr-3
-                      keeps it off the footer's right edge so the conversation
-                      chips' dropdown — which opens beside it — has somewhere to
-                      land instead of being clipped by the panel border. */}
-                  <div className="min-w-0 ml-[10px] mr-3">
-                    <ContextPill
-                      usedTokens={contextUsage.used}
-                      maxTokens={contextUsage.max}
-                      phase={voiceState}
-                      currentAction={taskProgress.currentAction}
-                    />
-                  </div>
-                </div>
-                ) : (
-                <>
-                  {/* PERSONAL MODE — original single-row pill cluster, restored
-                      from pre-spec HEAD. Pills sit RIGHT of the textarea on the
-                      SAME row; bottom border matches the textarea glow line.
-                      The send/⏎ pill was already removed in Phase 5 (pre-spec),
-                      so its absence here is original behavior, not REQ-2 AC4. */}
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    onChange={handleFileInputChange}
-                    className="hidden"
-                    accept="*/*"
-                  />
-                  <div
-                    className="flex items-center gap-2 flex-shrink-0"
-                    style={{
-                      borderBottom: `1px solid ${inputText ? glowColor : `${glowColor}30`}`,
-                      transform: 'translateY(-6.5px)',
-                    }}
-                  >
-                    <motion.button
-                      onClick={() => fileInputRef.current?.click()}
-                      onMouseEnter={() => setUploadHovered(true)}
-                      onMouseLeave={() => setUploadHovered(false)}
-                      disabled={voiceState === 'listening'}
-                      className="flex items-center justify-center w-[32px] h-[32px] transition-all disabled:opacity-30 disabled:cursor-not-allowed flex-shrink-0"
-                      style={{
-                        color: uploadHovered ? glowColor : 'rgba(255,255,255,0.7)',
-                        background: 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
-                        border: `1px solid ${fontColor}80`,
-                        borderRadius: '9999px',
-                        boxShadow: uploadHovered ? `0 0 12px ${glowColor}30, inset 0 1px 0 rgba(255,255,255,0.03)` : '0 1px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.03)',
-                      }}
-                      whileHover={{ scale: 1.08 }}
-                      whileTap={{ scale: 0.92 }}
-                      title="Upload file"
-                    >
-                      <Icon icon="material-symbols:arrow-upload-progress" width={18} />
-                    </motion.button>
-
-                    {/* Divider */}
-                    <div className="flex-shrink-0 rounded-full" style={{ width: '1px', height: '20px', background: glowColor, opacity: 0.3 }} />
-
-                    <ModelSwitcher glowColor={glowColor} fontColor={fontColor} />
-
-                    <div
-                      className="flex items-center justify-center w-[32px] h-[32px] flex-shrink-0 ml-1.5"
-                      style={{
-                        background: 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
-                        border: `1px solid ${fontColor}80`,
-                        borderRadius: '6px',
-                        boxShadow: '0 1px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.03)',
-                      }}
-                    >
-                      <ConversationChips
-                        chips={conversationChips}
-                        glowColor={glowColor}
-                        onChipClick={handleChipClick}
-                        containerRef={messagesContainerRef}
-                      />
-                    </div>
-
-                    <ContextPill
-                      usedTokens={contextUsage.used}
-                      maxTokens={contextUsage.max}
-                      phase={voiceState}
-                      currentAction={taskProgress.currentAction}
-                    />
-                  </div>
-                </>
-                )}
-              </div>
-            </div>
+            <Composer
+              isRemoteView={isRemoteView}
+              isDeveloper={isDeveloper}
+              glowColor={glowColor}
+              fontColor={fontColor}
+              voiceState={voiceState}
+              audioLevel={audioLevel}
+              sendMessage={sendMessage}
+              handleDragOver={handleDragOver}
+              handleDragLeave={handleDragLeave}
+              handleDrop={handleDrop}
+              isDraggingFile={isDraggingFile}
+              draggedFileType={draggedFileType}
+              fileInputRef={fileInputRef}
+              handleFileInputChange={handleFileInputChange}
+              currentSuggestions={currentSuggestions}
+              setCurrentSuggestions={setCurrentSuggestions}
+              handleSendMessage={handleSendMessage}
+              inputText={inputText}
+              setInputText={setInputText}
+              inputRef={inputRef}
+              setIsInputFocused={setIsInputFocused}
+              showJumpToLatest={showJumpToLatest}
+              jumpToLatest={jumpToLatest}
+              webMode={webMode}
+              setWebMode={setWebMode}
+              refCards={refCards}
+              loadRefCards={loadRefCards}
+              composerTo={composerTo}
+              setComposerTo={setComposerTo}
+              slashMenuOpen={slashMenuOpen}
+              setSlashMenuOpen={setSlashMenuOpen}
+              slashMatches={slashMatches}
+              acceptSlash={acceptSlash}
+              terminalSnapshot={terminalSnapshot}
+              activeTabPath={activeTabPath}
+              contextUsage={contextUsage}
+              taskProgress={taskProgress}
+              conversationId={activeConversationId}
+              isRunning={isTurnRunning}
+              composerRefs={composerRefs}
+              setComposerRefs={setComposerRefs}
+              refDocs={refDocs}
+            />
           </motion.div>
+
+          {/* Edge light: the top edge as one hairline with the spotlight aperture set into it. */}
+          {onSpotlightToggle && (
+            <ChatEdge
+              glowColor={glowColor}
+              isFlat={isFlat}
+              transform={getSpotlightTransform()}
+              isInChatSpotlight={isInChatSpotlight}
+              onSpotlightToggle={onSpotlightToggle}
+              activeConversationId={activeConversationId}
+            />
+          )}
         </motion.div>
       )}
     </AnimatePresence>

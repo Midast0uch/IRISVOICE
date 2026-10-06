@@ -1,4 +1,5 @@
 import { isConversationReplyCard, type TaskCard } from "@/hooks/useTaskProgress"
+import type { ShellRun } from "@/lib/cli/shellRuns"
 
 export interface ChatTimelineMessage {
   id: string
@@ -8,6 +9,8 @@ export interface ChatTimelineMessage {
 export type ChatTimelineEntry<TMessage extends ChatTimelineMessage = ChatTimelineMessage> =
   | { kind: "message"; ts: number; message: TMessage; index: number }
   | { kind: "card"; ts: number; card: TaskCard }
+  // Phase 4: a developer-mode `>cmd` and its output (lib/cli/shellRuns).
+  | { kind: "shell"; ts: number; run: ShellRun }
 
 /**
  * Build the message/card render order used by ChatView.
@@ -20,6 +23,7 @@ export type ChatTimelineEntry<TMessage extends ChatTimelineMessage = ChatTimelin
 export function buildChatTimeline<TMessage extends ChatTimelineMessage>(
   messages: TMessage[],
   cards: TaskCard[],
+  shells: ShellRun[] = [],
 ): ChatTimelineEntry<TMessage>[] {
   const base: ChatTimelineEntry<TMessage>[] = messages.map((message, index) => ({
     kind: "message" as const,
@@ -63,6 +67,19 @@ export function buildChatTimeline<TMessage extends ChatTimelineMessage>(
     const entry: ChatTimelineEntry<TMessage> = { kind: "card", ts: cardTs, card }
     if (insertAt >= 0) out.splice(insertAt, 0, entry)
     else out.push(entry)
+  }
+
+  // Phase 4: each shell run sits after the last entry not newer than it.
+  for (const run of shells) {
+    let insertAt = out.length
+    for (let i = out.length - 1; i >= 0; i--) {
+      if (out[i].ts <= run.ts) {
+        insertAt = i + 1
+        break
+      }
+      if (i === 0) insertAt = 0
+    }
+    out.splice(insertAt, 0, { kind: "shell", ts: run.ts, run })
   }
 
   return out

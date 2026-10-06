@@ -705,3 +705,105 @@ async def fork_thread(thread_id: str, body: ForkRequest) -> ForkResponse:
         forked_from_message=body.message_id,
         title=new_conv["title"],
     )
+
+
+# ── Threads and strands ────────────────────────────────────────────────
+# A thread is the whole; each chat under it is a strand (a conversation row with
+# parent_id = the thread root). Summary reads only - never message bodies.
+
+
+class StrandCreate(BaseModel):
+    name: str
+    tags: list[str] = []
+    reports_to: Optional[str] = None
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, v: str) -> str:
+        v = v.strip()
+        if not v or len(v) > 120:
+            raise ValueError("name must be 1-120 characters")
+        return v
+
+
+class StrandPatch(BaseModel):
+    name: Optional[str] = None
+    tags: Optional[list[str]] = None
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v = v.strip()
+        if not v or len(v) > 120:
+            raise ValueError("name must be 1-120 characters")
+        return v
+
+
+class ThreadPatch(BaseModel):
+    title: Optional[str] = None
+    pinned: Optional[bool] = None
+
+    @field_validator("title")
+    @classmethod
+    def _title(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v = v.strip()
+        if not v or len(v) > 120:
+            raise ValueError("title must be 1-120 characters")
+        return v
+
+
+@router.get("/threads")
+async def list_thread_summaries() -> list[dict[str, Any]]:
+    """Thread summaries: id, title, pinned, updated_at, strand_count,
+    message_count, last_preview. Pinned first, then newest."""
+    from backend.conversation_store import list_threads
+
+    return list_threads()
+
+
+@router.get("/threads/{thread_id}/strands")
+async def list_thread_strands(thread_id: str) -> list[dict[str, Any]]:
+    from backend.conversation_store import list_strands
+
+    strands = list_strands(thread_id)
+    if strands is None:
+        raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
+    return strands
+
+
+@router.post("/threads/{thread_id}/strands", status_code=201)
+async def create_thread_strand(thread_id: str, body: StrandCreate) -> dict[str, Any]:
+    from backend.conversation_store import create_strand, is_thread_root
+
+    if not is_thread_root(thread_id):
+        raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
+    try:
+        return create_strand(thread_id, body.name, body.tags, body.reports_to)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@router.patch("/strands/{strand_id}")
+async def patch_strand(strand_id: str, body: StrandPatch) -> dict[str, Any]:
+    from backend.conversation_store import update_strand
+
+    try:
+        strand = update_strand(strand_id, name=body.name, tags=body.tags)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    if strand is None:
+        raise HTTPException(status_code=404, detail=f"Strand {strand_id} not found")
+    return strand
+
+
+@router.patch("/threads/{thread_id}")
+async def patch_thread(thread_id: str, body: ThreadPatch) -> dict[str, Any]:
+    from backend.conversation_store import list_threads, update_thread
+
+    if not update_thread(thread_id, title=body.title, pinned=body.pinned):
+        raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
+    return next(t for t in list_threads() if t["id"] == thread_id)

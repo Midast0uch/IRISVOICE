@@ -1,4 +1,8 @@
 import { useState, useEffect, useRef, useCallback, useSyncExternalStore } from "react"
+import { applyTurnMessage, getTurnsState, isTurnMessageType } from "@/lib/turns/turnStore"
+import { applyDiffUndoResult } from "@/lib/diffs/undoStore"
+import type { TurnMessage } from "@/lib/turns/protocol"
+import type { DiffUndoResult } from "@/lib/diffs/api"
 // Side-effect import: the agent command store installs its window listeners
 // from app start, so a command that runs before the workspace opens is kept.
 import "@/stores/agentCommandStore"
@@ -745,6 +749,7 @@ export function useIRISWebSocket(
     if (
       type === "chat_message" ||
       type === "text_response" ||
+      type === "turn.end" ||
       type === "error" ||
       type === "task:done" ||
       type === "task:fail"
@@ -763,7 +768,20 @@ export function useIRISWebSocket(
       ? (message.payload as Record<string, unknown>)
       : (() => { const { type: _t, payload: _p, ...rest } = message; return rest; })()
 
+    // Phase 3 (turn protocol): turn.start / turn.part / turn.end go straight
+    // into the turn store (lib/turns/turnStore.ts), which files them by the
+    // turn and conversation the EVENT names. No CustomEvent hop, no guessing.
+    if (isTurnMessageType(type)) {
+      applyTurnMessage({ type, payload } as unknown as TurnMessage)
+      return
+    }
+
     switch (type) {
+      // Edit diffs: the answer to a `diff_undo` (the lens marks a hunk "undone" only on ok).
+      case "diff_undo_result": {
+        applyDiffUndoResult(payload as unknown as DiffUndoResult)
+        break
+      }
       case "full_state": {
         // Legacy message type from old main.py - redirect to initial_state handler
         if (process.env.NODE_ENV !== 'production') {
@@ -1022,6 +1040,12 @@ export function useIRISWebSocket(
           seenTurnIdsRef.current.add(_turnId)
         }
         const content = typeof payload.content === 'string' ? payload.content : null
+        // Phase 3: an error of a live turn shows as that turn's error part
+        // (TurnParts). The legacy error message would show it a second time,
+        // dressed as an assistant reply.
+        if (payload.role === 'error' && _turnId && getTurnsState().byId[_turnId]) {
+          break
+        }
         if (content) {
           const thinking = typeof payload.thinking === 'string' ? payload.thinking : undefined
           // `spoken` is the line TTS actually says — a short briefing when the
@@ -1489,7 +1513,7 @@ export function useIRISWebSocket(
       case "inference_event":
       case "model_load_event":
       // ── Local model / hardware events ── forwarded to iris:ws_message so
-      // ModelsScreen and InferenceConsolePanel receive them without prop-drilling.
+      // ModelsScreen and the Monitor page (useMonitorData) receive them without prop-drilling.
       case "local_models_list":
       case "hardware_info":
       case "local_model_status": {
