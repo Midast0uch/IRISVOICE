@@ -173,3 +173,19 @@ def test_thread_list_query_uses_the_parent_index(env):
     )
     assert "idx_conversations_parent" in plan, plan
     assert "idx_messages_conv" in plan, plan
+
+
+def test_deleting_a_thread_deletes_its_strands_and_their_messages(env):
+    cs, client = env
+    root = _thread(cs, "Router fix", "hello")
+    sid = client.post(f"/api/threads/{root}/strands", json={"name": "build"}).json()["id"]
+    cs.add_message(sid, role="user", text="in the strand")
+    assert cs.delete_conversation(root) is True
+    assert cs.get_conversation(sid) is None
+    assert client.get("/api/threads").json() == []
+    conn = sqlite3.connect(cs._DB_PATH)
+    try:
+        left = conn.execute("SELECT COUNT(*) FROM messages WHERE conversation_id = ?", (sid,)).fetchone()[0]
+    finally:
+        conn.close()
+    assert left == 0

@@ -342,7 +342,17 @@ def delete_conversation(conversation_id: str) -> bool:
             return False
         del _conversations[conversation_id]
         conn = _get_conn()
-        conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+        # Deleting a thread root deletes its strands too (no orphan strands that
+        # /api/threads can no longer reach).
+        children = [r[0] for r in conn.execute(
+            "SELECT id FROM conversations WHERE parent_id = ?", (conversation_id,)
+        )]
+        for cid in children:
+            _conversations.pop(cid, None)
+        conn.execute(
+            "DELETE FROM conversations WHERE id = ? OR parent_id = ?",
+            (conversation_id, conversation_id),
+        )
         # CASCADE in the schema deletes messages too
         return True
 
