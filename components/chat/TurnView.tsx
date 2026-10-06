@@ -74,6 +74,8 @@ export interface TurnViewProps {
   /** IRIS asks of this turn that have no task card to sit in: drawn here, in the turn. */
   turnAsks?: AskItem[]
   askActions?: AskActions
+  /** A task card (matrix / personal card) is on screen for this turn: it carries the live reasoning line. */
+  hasCard?: boolean
 }
 
 export function TurnView({
@@ -121,6 +123,7 @@ export function TurnView({
   requestDocumentBody,
   turnAsks,
   askActions,
+  hasCard,
 }: TurnViewProps) {
   // Smart message length handling
   const charCount = message.text.length;
@@ -812,6 +815,7 @@ export function TurnView({
               turn={liveTurn}
               isDeveloper={isDeveloper}
               glowColor={glowColor}
+              hasCard={hasCard}
               onRetry={
                 liveTurn.status === "error" && activeConversationId
                   ? () => {

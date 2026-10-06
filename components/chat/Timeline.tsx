@@ -8,9 +8,10 @@ import { PermissionCard } from "@/components/chat/PermissionCard"
 import { TurnView } from "@/components/chat/TurnView"
 import { TaskCardEntry } from "@/components/chat/TaskCardEntry"
 import { ShellRunEntry } from "@/components/chat/matrix/ShellRunEntry"
-import { Spine } from "@/components/chat/spine/Spine"
+import { Spine, type KnotRefTarget } from "@/components/chat/spine/Spine"
 import { turnKnots } from "@/components/chat/spine/spineModel"
 import { LensHost } from "@/components/chat/lens/LensHost"
+import { openLens } from "@/lib/lens/lensStore"
 import { madeItemsFor } from "@/components/chat/matrix/madeRows"
 import type { AskActions } from "@/components/chat/turn/AskPrompt"
 import { asksOfTurn, useLocalAsks, type AskItem } from "@/lib/turns/asks"
@@ -86,6 +87,8 @@ export interface TimelineProps {
   handleChipClick: (messageId: string) => void
   /** Drops a pending question from the legacy list (an answer given in the turn clears it too). */
   removePendingQuestion?: (id: string) => void
+  /** Opens a strand (a conversation of this thread); a strand ref in a knot card calls it. */
+  onOpenStrand?: (conversationId: string) => void
 }
 
 export function Timeline({
@@ -144,6 +147,7 @@ export function Timeline({
   conversationChips,
   handleChipClick,
   removePendingQuestion,
+  onOpenStrand,
 }: TimelineProps) {
   // The living spine: the running live turn (the agent rides to its reply when no row runs)
   // and the turns that brought something in from outside (refs / another author) -> knots.
@@ -153,6 +157,26 @@ export function Timeline({
     return null
   }, [liveTurnList])
   const knotTurns = React.useMemo(() => turnKnots(liveTurnList), [liveTurnList])
+  // A ref address in a knot card ("#<id>") -> what opens it: a task card scrolls into view,
+  // an artifact opens in the lens, a strand opens as the active conversation.
+  const resolveRef = (address: string): KnotRefTarget | null => {
+    const id = address.replace(/^#/, "")
+    if (renderTimeline.some((e) => e.kind === "card" && e.card.cardId === id)) {
+      return {
+        kind: "card",
+        open: () => {
+          const el = Array.from(messagesContainerRef.current?.querySelectorAll("[data-card-id]") ?? []).find((n) => (n as HTMLElement).dataset.cardId === id)
+          if (!el) return
+          el.scrollIntoView?.({ behavior: prefersReducedMotion ? "auto" : "smooth", block: "center" })
+          el.classList.add("chip-highlight")
+          setTimeout(() => el.classList.remove("chip-highlight"), 2000)
+        },
+      }
+    }
+    if (activeConversation?.documents?.some((d) => d.id === id)) return { kind: "artifact", open: () => openLens({ kind: "artifact", docId: id }) }
+    if (onOpenStrand && conversations.some((c) => c.id === id)) return { kind: "strand", open: () => onOpenStrand(id) }
+    return null
+  }
   const spineRunning = isTyping || taskProgressStillRunning || awaitingFirstBlock || streamingId !== null
 
   // In-turn asks (IRIS needs a permission or an answer). They come from the turn's own
@@ -189,6 +213,11 @@ export function Timeline({
     }
     return m
   }, [renderTimeline])
+  // A message "has a card" when a task card of its turn is in the timeline (matrix / personal card).
+  const hasCardFor = (m: Message) => {
+    const lt = liveTurnById.get(m.id) ?? (m.turn_id ? liveTurnById.get(m.turn_id) : undefined)
+    return askCardOf.has(m.id) || (!!m.turn_id && askCardOf.has(m.turn_id)) || (!!lt && askCardOf.has(lt.id))
+  }
   const messageTurnIds = React.useMemo(
     () => new Set(messages.flatMap((m) => (m.turn_id ? [m.id, m.turn_id] : [m.id]))),
     [messages],
@@ -290,6 +319,7 @@ export function Timeline({
                   made={isDeveloper ? madeItemsFor(activeConversation?.documents, [card.turnId, card.responseTurnId], card.steps) : undefined}
                   asks={askCardOf.get(card.turnId ?? '') === card.cardId || askCardOf.get(card.responseTurnId ?? '') === card.cardId ? asksByTurn.get(card.turnId ?? '') ?? asksByTurn.get(card.responseTurnId ?? '') : undefined}
                   askActions={askActions}
+                  turn={liveTurnById.get(card.responseTurnId ?? '') ?? liveTurnById.get(card.turnId ?? '')}
                 />
               )
             }
@@ -342,6 +372,7 @@ export function Timeline({
                 requestDocumentBody={requestDocumentBody}
                 turnAsks={askCardOf.has(message.id) || (message.turn_id ? askCardOf.has(message.turn_id) : false) ? undefined : asksByTurn.get(message.id) ?? (message.turn_id ? asksByTurn.get(message.turn_id) : undefined)}
                 askActions={askActions}
+                hasCard={hasCardFor(message)}
               />
             );
           })}
@@ -543,6 +574,8 @@ export function Timeline({
       conversationChips={conversationChips}
       onChipClick={handleChipClick}
       knotTurns={knotTurns}
+      turns={liveTurnList}
+      resolveRef={resolveRef}
     />
     {/* The lens: an artifact or an edit review, opened over the timeline (inside the wing). */}
     <LensHost

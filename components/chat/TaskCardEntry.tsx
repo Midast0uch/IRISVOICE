@@ -9,6 +9,8 @@ import type { AskItem } from "@/lib/turns/asks"
 import type { AskActions } from "@/components/chat/turn/AskPrompt"
 import type { RowDetailData } from "@/components/chat/matrix/matrixModel"
 import type { TaskCard } from "@/hooks/useTaskProgress"
+import type { TurnRecord } from "@/lib/turns/turnStore"
+import { latestSentence } from "@/components/chat/turn/TurnParts"
 
 // ── cli-workspace-unification T4 (REQ-3): TaskCard → Blueprint Matrix ──────
 // The GUI card (TaskListCard) and the ASCII renderer must describe the SAME
@@ -90,6 +92,8 @@ export interface TaskCardEntryProps {
   /** IRIS asks of this turn: shown inside the running card (matrix: ASK rows; personal: in the card). */
   asks?: AskItem[]
   askActions?: AskActions
+  /** The live turn of this card (the turn store's record): its reasoning is the card's one thinking line. */
+  turn?: TurnRecord
 }
 
 export function TaskCardEntry({
@@ -100,12 +104,15 @@ export function TaskCardEntry({
   made,
   asks,
   askActions,
+  turn,
 }: TaskCardEntryProps) {
+    // The model's live reasoning: the latest sentence of this card's turn, while the turn runs.
+    const thinking = card.isWorking && turn?.status === "running" ? latestSentence(turn.reasoning) : ""
     return isDeveloper ? (
       // Phase 4: the live execution matrix (components, not a printed string).
       // The ANSI renderer (renderBlueprintCellMatrixCLI) stays for terminal
       // export and logs; both render the same taskCardToMatrixProps.
-      <div key={`card-${card.cardId}`} className="py-1">
+      <div key={`card-${card.cardId}`} className="py-1" data-card-id={card.cardId}>
         <MatrixFrame
           matrix={taskCardToMatrixProps(card)}
           details={matrixDetails(card)}
@@ -113,7 +120,7 @@ export function TaskCardEntry({
           working={card.isWorking}
           stopped={card.terminalState === "terminated_unknown"}
           elapsedSec={card.isWorking ? matrixElapsedSec : card.durationSec ?? matrixElapsedSec}
-          thought={card.isWorking ? card.actionStream?.[card.actionStream.length - 1] ?? card.currentAction : undefined}
+          thought={card.isWorking ? thinking || (card.actionStream?.[card.actionStream.length - 1] ?? card.currentAction) : undefined}
           liveAction={card.currentAction}
           made={made}
           asks={asks}
@@ -121,6 +128,7 @@ export function TaskCardEntry({
         />
       </div>
     ) : (
+      <div data-card-id={card.cardId}>
       <TaskListCard
         key={card.cardId}
         cardId={card.cardId}
@@ -154,8 +162,10 @@ export function TaskCardEntry({
         temporalDelta={card.temporalDelta}
         verifiedFields={card.verifiedFields}
         thoughtStream={card.isWorking ? (card.actionStream ?? undefined) : undefined}
+        thinking={thinking || undefined}
         asks={asks}
         askActions={askActions}
       />
+      </div>
     )
 }

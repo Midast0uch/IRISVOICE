@@ -17,6 +17,9 @@ import { FilePickerModal, type PickedItem } from "@/components/workspace/FilePic
 
 const NO_TABS: WorkspaceTab[] = []
 
+/** A lens tab is a dropped artifact or diff (lib/workspace/addLensItem.ts): a view in the Hub, not a project file. */
+const isLensTab = (t: WorkspaceTab) => /^(artifact|diff):/.test(t.path ?? "")
+
 export function ProjectBar() {
   const tabs = useWorkspaceStore((s) => s.tabs) ?? NO_TABS
   const activeTabId = useWorkspaceStore((s) => s.activeTabId)
@@ -26,7 +29,7 @@ export function ProjectBar() {
 
   const active = tabs.find((t) => t.id === activeTabId)
   const folder = active?.type === "folder" ? active : [...tabs].reverse().find((t) => t.type === "folder")
-  const files = tabs.filter((t) => t.type === "file" || t.type === "document")
+  const files = tabs.filter((t) => (t.type === "file" || t.type === "document") && !isLensTab(t))
 
   const onPick = (items: PickedItem[]) =>
     items.forEach((i) =>

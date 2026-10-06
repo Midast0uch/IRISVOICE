@@ -52,6 +52,9 @@ export interface TaskListCardProps {
   /** Live agent thinking stream (newest last) — the THK section's expandable
    * trace. Rendered ONLY when real reasoning arrived; never fabricated. */
   thoughtStream?: string[]
+  /** The model's live reasoning, latest sentence (the turn's reasoning while it runs). When set it is the card's ONE
+   * thinking line, under the running step ("thinking · …"), and the action-based THK strip steps aside. */
+  thinking?: string
   /** Session 246: total wall-clock seconds the completed run took
    * (rehydrated cards). Renders a frozen duration pill in the footer. */
   durationSec?: number
@@ -201,6 +204,7 @@ export default function TaskListCard({
   currentAction,
   phase,
   thoughtStream,
+  thinking,
   durationSec,
   cardActive,
   cardId,
@@ -368,7 +372,7 @@ export default function TaskListCard({
   // real reasoning entries exist; "Reflecting..." fills the gap while
   // thinking with nothing said yet (variant behavior).
   const hasThoughts = (thoughtStream?.length ?? 0) > 0
-  const showThk = Boolean(currentAction || isWorking || hasThoughts)
+  const showThk = !thinking && Boolean(currentAction || isWorking || hasThoughts)
   const latestThought = hasThoughts ? thoughtStream![thoughtStream!.length - 1] : currentAction
   const streamRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
@@ -381,6 +385,8 @@ export default function TaskListCard({
   // registry (AC2) and ONLY when a real event has been received (AC4).
   const memoryKind = learningSignal === "crystallized" ? "crystallized" : learningSignal ? "learning" : null
   const memoryEntry = memoryKind ? formatMemoryEntry(memoryKind, { signal: learningSignal }) : null
+  // On screen the engine word "crystallized" reads "Learned" (owner, 2026-10-06); the internal value stays.
+  const learnedSummary = memoryEntry ? (learningSignal === "crystallized" ? "Learned" : memoryEntry.summary) : ""
 
   const signalTint: Record<string, string> = {
     avoided: "#f59e0b", // amber — a step was avoided (AVOID)
@@ -540,9 +546,9 @@ export default function TaskListCard({
                 color: signalTint[learningSignal] ?? veinColor,
                 textShadow: `0 0 8px ${signalTint[learningSignal] ?? veinColor}55`,
               }}
-              title={`Learning signal: ${memoryEntry.summary}`}
+              title={`Learning signal: ${learnedSummary}`}
             >
-              {memoryEntry.glyph} {memoryEntry.summary}
+              {memoryEntry.glyph} {learnedSummary}
             </span>
           ) : (
             <span
@@ -840,6 +846,12 @@ export default function TaskListCard({
                 and bends into this line; data-task-step carries the displayed status. */}
             <div className="flex flex-col gap-1" data-task-steps>
               {displaySteps.map((step, i) => {
+                // The ONE thinking line sits under the running step (else under the last one).
+                const showThinking =
+                  !!thinking &&
+                  (displaySteps.some((x) => x.status === "working")
+                    ? displaySteps.findIndex((x) => x.status === "working") === i
+                    : i === displaySteps.length - 1)
                 // Session 246: guard against backend-native statuses that
                 // slip through hydration ("running") — never crash the card.
                 const meta = STATUS_META[step.status] ?? STATUS_META.unknown
@@ -1031,6 +1043,16 @@ export default function TaskListCard({
                             {step.url}
                           </span>
                         ) : null}
+                      </span>
+                    ) : null}
+                    {showThinking ? (
+                      <span
+                        className="pl-[88px] pb-1 min-w-0 truncate italic text-[10px] leading-snug"
+                        style={{ color: "rgba(255,255,255,0.45)" }}
+                        data-thinking-line
+                        title={thinking}
+                      >
+                        thinking · {thinking}
                       </span>
                     ) : null}
                     {/* T21 (REQ-22/REQ-14): temporal-diff pills for THIS step —

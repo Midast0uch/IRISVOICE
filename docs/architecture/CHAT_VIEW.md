@@ -258,6 +258,19 @@ from outside this strand. Landmarks are never knots. Two sources:
    (`ref`), or an `author` other than `user` / `iris` (`author`). The knot sits on the user's
    prompt (`turn.start.client_ref`), else on the turn's own message.
 
+**Knots are hit targets (2026-10-06).** Each knot has a real `<button data-testid="spine-knot">` over the
+canvas (placed with a transform on scroll, hidden when out of view; the canvas stays pointer-events
+none). Hover or focus shows a card: `ref` = the ref addresses (each a link when `resolveRef` knows it:
+task card scrolls to `[data-card-id]`, artifact opens the lens, strand calls `onOpenStrand`),
+`author` = "From <author>", `helper` = "Reported back from <strand>" (`data-knot-from`), plus the
+turn's first words and time. Click = `onChipClick` (the chips' scroll + highlight). Tab reaches
+knots, Enter jumps, Esc closes. Guard: `__tests__/fixes/knotHover.test.tsx`.
+
+**One thinking line (2026-10-06).** The turn's reasoning shows once: developer = the matrix THK line
+(card action only when the turn has no reasoning); personal = `thinking · <sentence>` under the running
+step of the card. `TurnParts` skips its own line when the turn has a card (`hasCard`); a turn without a
+card keeps it. Guard: `__tests__/fixes/thinkingPlacement.test.tsx`.
+
 **Chips on the spine.** The conversation chips (`ConversationChips`, composer footer) moved to
 the gutter, the left 30 px of the timeline: hover (or keyboard focus) lists the turns, the
 turns in view are highlighted, a knot shows "from outside", click calls `handleChipClick`

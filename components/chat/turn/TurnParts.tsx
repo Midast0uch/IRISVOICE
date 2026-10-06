@@ -30,6 +30,8 @@ export interface TurnPartsProps {
   glowColor: string
   /** Re-send the prompt of an errored turn. Omitted -> no Retry button. */
   onRetry?: () => void
+  /** The turn shows a task card (the matrix, or the personal card): the reasoning line lives THERE, once. */
+  hasCard?: boolean
 }
 
 /** The last sentence of the streamed reasoning (what the model thinks NOW). */
@@ -57,7 +59,7 @@ export function ReasoningLine({ turn, isDeveloper }: { turn: TurnRecord; isDevel
   )
 }
 
-export function TurnParts({ turn, isDeveloper, glowColor, onRetry }: TurnPartsProps) {
+export function TurnParts({ turn, isDeveloper, glowColor, onRetry, hasCard }: TurnPartsProps) {
   const notices = partsOf(turn, "notice")
   const errors = partsOf(turn, "error")
   // An errored turn whose backend sent no error part still shows why.
@@ -65,7 +67,7 @@ export function TurnParts({ turn, isDeveloper, glowColor, onRetry }: TurnPartsPr
   const mono = isDeveloper ? "font-mono" : ""
   return (
     <div className="flex flex-col gap-1 mt-1" data-turn-parts={turn.id}>
-      <ReasoningLine turn={turn} isDeveloper={isDeveloper} />
+      {!hasCard && <ReasoningLine turn={turn} isDeveloper={isDeveloper} />}
       {notices.map((n, i) => (
         <div key={`n${i}`} className={`${mono} text-[11px] leading-snug text-white/45`} data-part="notice">
           {n.message}

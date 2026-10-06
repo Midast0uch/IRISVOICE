@@ -3166,6 +3166,7 @@ ${message.text}`;
               conversationChips={conversationChips}
               handleChipClick={handleChipClick}
               removePendingQuestion={removePendingQuestion}
+              onOpenStrand={openStrand}
             />
 
              {/* Document View Modal */}

@@ -22,13 +22,15 @@
  * paused while the page is hidden; under prefers-reduced-motion one static frame is drawn
  * on demand (scroll, new measurement) and nothing animates.
  */
-import React, { useEffect, useMemo, useRef, useState } from "react"
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { SpineGutter } from "./SpineGutter"
 import {
   SPINE_X0,
   brandFromPalette,
   dominantDetour,
+  brandColors,
   hash01,
+  knotCardInfo,
   knotColor,
   normKnotKind,
   pickTarget,
@@ -44,6 +46,7 @@ import {
   type SpineChip,
 } from "./spineModel"
 import type { ConversationChip } from "@/types/iris"
+import type { TurnRecord } from "@/lib/turns/turnStore"
 import { useBrandPalette } from "@/hooks/useBrandPalette"
 
 const RUN_LIGHT = "rgba(242,193,78,0.55)"
@@ -57,6 +60,18 @@ interface Knot {
   id: string
   y: number
   kind: KnotKind
+  /** The entry the knot sits on (id without the "msg-" prefix); the jump goes there. */
+  msgId?: string
+  /** Optional `data-knot-from` of the entry (the strand / author a helper or author knot names). */
+  from?: string
+  /** First words of the entry when no turn record is known. */
+  text: string
+}
+
+/** What a ref address in a knot card opens. */
+export interface KnotRefTarget {
+  kind: "card" | "artifact" | "strand"
+  open: () => void
 }
 
 interface Scene {
@@ -86,6 +101,10 @@ export interface SpineProps {
   onChipClick: (messageId: string) => void
   /** Turns that brought something in from outside (see turnKnots). */
   knotTurns: KnotTurn[]
+  /** The live turns: the knot card reads the turn's author, refs, first words and time. */
+  turns?: TurnRecord[]
+  /** A ref address ("#T-38") -> what opens it; null (or no resolver) -> the card shows the address only. */
+  resolveRef?: (address: string) => KnotRefTarget | null
 }
 
 function drawXur(c: CanvasRenderingContext2D, brand: Brand, cx: number, cy: number, R: number, now: number, o: { s: number; n?: number; speed?: number; alpha?: number; rot?: number }) {
@@ -113,6 +132,8 @@ export function Spine({
   conversationChips,
   onChipClick,
   knotTurns,
+  turns,
+  resolveRef,
 }: SpineProps) {
   const palette = useBrandPalette()
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -133,6 +154,12 @@ export function Spine({
   const measureRef = useRef<() => void>(() => {})
   const [chips, setChips] = useState<SpineChip[]>(() => conversationChips.map((c) => ({ messageId: c.messageId, label: c.label })))
   const chipSig = useRef("")
+  // Knots as real hit targets: one button per knot, placed (not re-rendered) as the timeline scrolls.
+  const [hits, setHits] = useState<Knot[]>([])
+  const hitSig = useRef("")
+  const hitEls = useRef(new Map<string, HTMLElement>())
+  const [openKnot, setOpenKnot] = useState<string | null>(null)
+  const placeRef = useRef<() => void>(() => {})
 
   // Latest inputs for the measure pass (read by the observers, which are set up once).
   const inputs = useRef({ isDeveloper, streamingId, running, conversationChips, knotTurns })
@@ -193,8 +220,22 @@ export function Spine({
         const id = `${kind}:${anchor ? anchor.id : idx}`
         idx++
         s.born.set(id, prevBorn.get(id) ?? performance.now())
-        s.knots.push({ id, y: topOf(el) + 11, kind })
+        s.knots.push({
+          id,
+          y: topOf(el) + 11,
+          kind,
+          msgId: anchor ? anchor.id.slice(4) : undefined,
+          from: (el as HTMLElement).dataset.knotFrom,
+          text: (el.textContent || "").trim().slice(0, 160),
+        })
       })
+      const knotSig = s.knots.map((k) => `${k.id}|${k.kind}|${k.msgId ?? ""}|${k.from ?? ""}|${k.text}`).join("\n")
+      if (knotSig !== hitSig.current) {
+        hitSig.current = knotSig
+        const seen = new Set<string>()
+        setHits(s.knots.filter((k) => (seen.has(k.id) ? false : (seen.add(k.id), true))))
+      }
+      placeRef.current()
 
       // chips: where each turn sits, and whether a knot is on it
       const nextChips: SpineChip[] = inp.conversationChips.map((c) => {
@@ -270,6 +311,25 @@ export function Spine({
     }
   }, [containerRef])
 
+  // Place each knot's hit target at its knot (no React render per scroll); a knot out of view is hidden,
+  // so it cannot take focus.
+  const place = () => {
+    const cont = containerRef.current
+    if (!cont) return
+    const sc = sceneRef.current
+    const top = cont.scrollTop
+    const h = cont.clientHeight
+    for (const k of sc.knots) {
+      const el = hitEls.current.get(k.id)
+      if (!el) continue
+      const y = k.y - top
+      el.style.transform = `translate(${Math.round(xAt(k.y, sc.detours) - 10)}px, ${Math.round(y - 10)}px)`
+      el.style.visibility = h <= 0 || (y > -12 && y < h + 12) ? "visible" : "hidden"
+    }
+  }
+  placeRef.current = place
+  useLayoutEffect(() => place(), [hits]) // eslint-disable-line react-hooks/exhaustive-deps
+
   // ── the frame loop ───────────────────────────────────────────────────────────
   useEffect(() => {
     const cv = canvasRef.current
@@ -301,6 +361,7 @@ export function Spine({
     function draw(now: number) {
       const size = fit()
       if (!size) return
+      placeRef.current()
       const [w, h] = size
       const s = sceneRef.current
       const b = s.brand
@@ -482,6 +543,17 @@ export function Spine({
     el.style.scrollBehavior = prev
   }
 
+  const jumpTo = (k: Knot) => {
+    setOpenKnot(null)
+    if (k.msgId) {
+      onChipClick(k.msgId)
+      return
+    }
+    const el = containerRef.current
+    if (el) el.scrollTo?.({ top: Math.max(0, k.y - 60), behavior: prefersReducedMotion ? "auto" : "smooth" })
+  }
+  const [c1] = brandColors(brand)
+
   return (
     <div
       ref={rootRef}
@@ -490,6 +562,112 @@ export function Spine({
     >
       <canvas ref={canvasRef} aria-hidden data-spine-canvas style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }} />
       <SpineGutter chips={chips} glowColor={glowColor} containerRef={containerRef} onChipClick={onChipClick} onScrub={onScrub} />
+      {hits.map((k) => {
+        const turn = turns?.find((t) => t.id === k.msgId || t.clientRef === k.msgId)
+        const info = knotCardInfo(k.kind, turn, { from: k.from, fallbackText: k.text })
+        const col = knotColor(brand, k.kind)
+        const open = openKnot === k.id
+        const cont = containerRef.current
+        const flip = !!cont && k.y - cont.scrollTop > cont.clientHeight - 170 && cont.clientHeight > 0
+        const cardId = `knot-card-${k.id}`
+        return (
+          <div
+            key={k.id}
+            ref={(el) => {
+              if (el) hitEls.current.set(k.id, el)
+              else hitEls.current.delete(k.id)
+            }}
+            data-knot-hit={k.id}
+            onMouseEnter={() => setOpenKnot(k.id)}
+            onMouseLeave={() => setOpenKnot((cur) => (cur === k.id ? null : cur))}
+            onFocus={() => setOpenKnot(k.id)}
+            onBlur={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOpenKnot((cur) => (cur === k.id ? null : cur))
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Escape" && open) {
+                e.stopPropagation()
+                setOpenKnot(null)
+              }
+            }}
+            style={{ position: "absolute", left: 0, top: 0, width: 20, height: 20, pointerEvents: "none", zIndex: open ? 40 : 12 }}
+          >
+            <button
+              type="button"
+              data-testid="spine-knot"
+              data-knot-kind={k.kind}
+              aria-label={`${info.title}${info.first ? `: ${info.first}` : ""}. Jump to it.`}
+              aria-describedby={open ? cardId : undefined}
+              onClick={() => jumpTo(k)}
+              style={{ position: "absolute", inset: 0, width: 20, height: 20, padding: 0, border: 0, borderRadius: "50%", background: "transparent", cursor: "pointer", pointerEvents: "auto" }}
+            />
+            {open && (
+              <div
+                id={cardId}
+                role="group"
+                aria-label="Where this came from"
+                data-testid="spine-knot-card"
+                style={{
+                  position: "absolute",
+                  left: 30,
+                  ...(flip ? { bottom: -4 } : { top: -6 }),
+                  width: 236,
+                  padding: "8px 10px",
+                  borderRadius: 10,
+                  background: "rgba(8,9,18,0.96)",
+                  border: `1px solid ${col.replace(/,[\d.]+\)$/, ",0.35)")}`,
+                  boxShadow: "0 16px 40px rgba(0,0,0,0.6)",
+                  backdropFilter: "blur(8px)",
+                  WebkitBackdropFilter: "blur(8px)",
+                  pointerEvents: "auto",
+                }}
+              >
+                <div className="font-mono text-[11px] leading-snug flex gap-1.5 items-baseline" style={{ color: col }}>
+                  <span aria-hidden style={{ opacity: 0.8 }}>⟜</span>
+                  <span data-knot-title>{info.title}</span>
+                </div>
+                {info.refs.length > 0 && (
+                  <ul className="mt-1 flex flex-col gap-0.5" style={{ listStyle: "none", margin: "4px 0 0", padding: 0 }}>
+                    {info.refs.map((addr) => {
+                      const target = resolveRef?.(addr) ?? null
+                      return (
+                        <li key={addr} className="font-mono text-[11px] min-w-0">
+                          {target ? (
+                            <button
+                              type="button"
+                              data-knot-ref={addr}
+                              onClick={() => {
+                                setOpenKnot(null)
+                                target.open()
+                              }}
+                              className="truncate max-w-full text-left"
+                              style={{ background: "none", border: 0, padding: 0, color: c1, cursor: "pointer", textDecoration: "underline", textUnderlineOffset: 2 }}
+                              title={`Open ${target.kind}`}
+                            >
+                              {addr}
+                              <span style={{ opacity: 0.55 }}> · {target.kind}</span>
+                            </button>
+                          ) : (
+                            <span data-knot-ref={addr} style={{ color: "rgba(255,255,255,0.7)" }}>
+                              {addr}
+                            </span>
+                          )}
+                        </li>
+                      )
+                    })}
+                  </ul>
+                )}
+                {(info.first || info.time) && (
+                  <div className="mt-1.5 text-[11px] leading-snug flex gap-2 min-w-0" style={{ color: "rgba(255,255,255,0.6)" }}>
+                    <span className="flex-1 min-w-0 truncate italic" data-knot-first>{info.first}</span>
+                    {info.time && <span className="flex-none tabular-nums" style={{ color: "rgba(255,255,255,0.4)" }}>{info.time}</span>}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }

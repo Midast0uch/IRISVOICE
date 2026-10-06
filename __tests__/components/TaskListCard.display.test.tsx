@@ -190,8 +190,8 @@ describe("TaskListCard â€” honest display (REQ-8 / T17a)", () => {
     );
     // Same single-render contract as the Retried variant (footer only,
     // session 246 user-directed change — see above).
-    expect(screen.getAllByText(/Crystallized/i)).toHaveLength(1);
-    const badges = screen.getAllByTitle(/Learning signal: Crystallized/i);
+    expect(screen.getAllByText(/Learned/i)).toHaveLength(1);
+    const badges = screen.getAllByTitle(/Learning signal: Learned/i);
     expect(badges.length).toBe(1); // footer entry only
     const badge = badges[0];
     expect(badge).toBeInTheDocument();

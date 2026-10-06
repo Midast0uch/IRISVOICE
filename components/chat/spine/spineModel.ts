@@ -204,6 +204,46 @@ export function turnKnots(turns: KnotTurnInput[]): KnotTurn[] {
   return out
 }
 
+// ── the card a knot shows on hover / focus ─────────────────────────────────────
+/** The part of a turn record the knot card reads. */
+export interface KnotCardTurn {
+  author?: string
+  refs?: string[]
+  prompt?: string
+  text?: string
+  startedAt?: number
+  strandId?: string
+}
+
+export interface KnotCardInfo {
+  /** What came in: "Pulled in" (refs follow), "From <author>", "Reported back from <strand>". */
+  title: string
+  /** The ref addresses of the turn, each one a link when it resolves. */
+  refs: string[]
+  /** The turn's first words. */
+  first: string
+  /** Clock time of the turn, "" when unknown. */
+  time: string
+}
+
+export function firstWords(text: string | undefined | null, n = 8): string {
+  const w = (text || "").trim().split(/\s+/).filter(Boolean)
+  return w.length > n ? `${w.slice(0, n).join(" ")}…` : w.join(" ")
+}
+
+export function knotCardInfo(kind: KnotKind, turn: KnotCardTurn | undefined, o: { from?: string; fallbackText?: string } = {}): KnotCardInfo {
+  const refs = (turn?.refs ?? []).filter(Boolean)
+  const title =
+    kind === "author"
+      ? `From ${turn?.author || o.from || "another author"}`
+      : kind === "helper"
+        ? `Reported back from ${o.from || turn?.strandId || "a helper strand"}`
+        : "Pulled in"
+  const first = firstWords(turn?.prompt || turn?.text || o.fallbackText)
+  const time = turn?.startedAt ? new Date(turn.startedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""
+  return { title, refs, first, time }
+}
+
 // ── chips ─────────────────────────────────────────────────────────────────────
 export interface SpineChip {
   messageId: string
