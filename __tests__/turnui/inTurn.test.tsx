@@ -160,12 +160,14 @@ describe.each(MODES)("artifacts open in the lens — %s mode", (_m, isDeveloper)
 
   it("To dashboard puts the artifact in the dashboard workspace and says so", () => {
     const { useWorkspaceStore } = require("@/stores/workspaceStore")
-    useWorkspaceStore.setState({ tabs: [], sections: [], archived: [] })
+    useWorkspaceStore.setState({ tabs: [], sections: [], archived: [], views: [] })
     const { container } = mount()
     fireEvent.click(container.querySelector('[data-artifact-chip="doc-1"]') as HTMLElement)
     fireEvent.click(screen.getByRole("button", { name: "To dashboard" }))
     expect(screen.getByRole("status")).toHaveTextContent("Opened in the dashboard workspace.")
-    expect(useWorkspaceStore.getState().tabs[0]).toMatchObject({ label: "Router budget plan", type: "document" })
+    // Owner-approved requirement change (rev 4): the artifact becomes a Views-lane view, not a tab.
+    expect(useWorkspaceStore.getState().views[0]).toMatchObject({ title: "Router budget plan", kind: "artifact" })
+    expect(useWorkspaceStore.getState().tabs).toHaveLength(0)
   })
 
   it("the card is draggable and carries the artifact for the dashboard workspace", () => {

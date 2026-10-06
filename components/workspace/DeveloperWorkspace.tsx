@@ -9,6 +9,7 @@ import { useWorkspacePersistence } from '@/hooks/useWorkspacePersistence'
 import { WorkspaceTabBar } from './WorkspaceTabBar'
 import { KanbanCanvas } from './KanbanCanvas'
 import { ArchiveDock } from './ArchiveDock'
+import { ViewsLane } from './ViewsLane'
 import { Xur } from '@/components/Xur'
 import { HelpPanel } from '@/components/terminal/HelpPanel'
 import { FloatingPanel } from './FloatingPanel'
@@ -209,7 +210,7 @@ export function DeveloperWorkspace({ conversationId }: { conversationId?: string
   const canRedo = (useWorkspaceStore as any).canRedo ?? false
   const [draggedTabId, setDraggedTabId] = React.useState<string | null>(null)
   const [helpOpen, setHelpOpen] = React.useState(false)
-  // An artifact or a ± diff dragged from the chat lands here as a document card.
+  // An artifact or a ± diff dragged from the chat lands in the Views lane (never a tab).
   const [lensOver, setLensOver] = React.useState(false)
   const [cliTools, setCliTools] = React.useState<{ name: string; display_name: string; when_to_use: string; available: boolean; reason: string | null }[]>([])
   const handleHelp = React.useCallback(async () => {
@@ -384,20 +385,26 @@ export function DeveloperWorkspace({ conversationId }: { conversationId?: string
           )}
         </AnimatePresence>
 
-        <AnimatePresence initial={false}>
-          {showKanban && (
-            <motion.div
-              key="kanban"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.2 }}
-              className="flex-1 min-h-0"
-            >
-              <KanbanCanvas onPopOut={handlePopOut} />
-            </motion.div>
-          )}
-        </AnimatePresence>
+        {/* The tools keep their place; the Views lane sits beside them and is always there. */}
+        <div className="flex-1 min-h-0 flex">
+          <div className="flex-1 min-w-0 min-h-0 flex flex-col">
+            <AnimatePresence initial={false}>
+              {showKanban && (
+                <motion.div
+                  key="kanban"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.2 }}
+                  className="flex-1 min-h-0"
+                >
+                  <KanbanCanvas onPopOut={handlePopOut} />
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+          <ViewsLane over={lensOver} />
+        </div>
 
       </div>
     </DndContext>

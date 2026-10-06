@@ -153,6 +153,34 @@ _TTS_FIRST_CHUNK_BUDGET_S = 180.0
 logger = logging.getLogger(__name__)
 
 
+# The composer's "#" can point at project files (address "file:<path>"). The agent gets the
+# ADDRESSES as one per-turn system line and reads the files with its own file tools; the
+# content never rides the message. Bounded: count and path length.
+_MAX_FILE_REFS = 16
+_MAX_FILE_REF_PATH = 260
+
+
+def _referenced_files_block(refs: Any) -> Optional[str]:
+    """The "[Referenced files]" system block for the `file:<path>` entries of `refs`, or None."""
+    if not isinstance(refs, list):
+        return None
+    paths: List[str] = []
+    for r in refs:
+        if not (isinstance(r, str) and r.startswith("file:")):
+            continue
+        path = r[len("file:"):].strip()
+        if not path or len(path) > _MAX_FILE_REF_PATH or "\n" in path or path in paths:
+            continue
+        paths.append(path)
+        if len(paths) >= _MAX_FILE_REFS:
+            break
+    if not paths:
+        return None
+    return "[Referenced files] (addresses: read them with your file tools)\n" + "\n".join(
+        f"file:{p}" for p in paths
+    )
+
+
 class IRISGateway:
     """
     Central gateway for routing WebSocket messages to appropriate handlers.
@@ -5923,6 +5951,17 @@ class IRISGateway:
                         )
                 except Exception as exc:
                     self._logger.warning(f"[Chat] @-card context failed: {exc}")
+
+            # The composer's "#" file picks ("file:<path>" in `refs`): the agent
+            # gets the addresses as a per-turn system line (same channel as the
+            # task-card block), never the file content.
+            _files_block = _referenced_files_block(payload.get("refs"))
+            if _files_block:
+                card_context_block = (
+                    f"{card_context_block}\n\n{_files_block}"
+                    if card_context_block
+                    else _files_block
+                )
 
             # Get AgentKernel for this session
             try:

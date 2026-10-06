@@ -1,6 +1,7 @@
 /**
- * Owner fix 4 (2026-10-06): a dropped artifact or diff is a TAB in the Workspace Hub (a view area
- * among the Hub's tools), but the composer's project bar lists only real project folders and files.
+ * Owner fix 4 (2026-10-06): the composer's project bar lists only real project folders and files.
+ * (Owner-approved requirement change, rev 4: a dropped artifact or diff is a VIEW in the Hub's Views
+ * lane, never a tab.)
  */
 import React from "react"
 import { render, screen } from "@testing-library/react"
@@ -11,7 +12,7 @@ import { addLensToWorkspace } from "@/lib/workspace/addLensItem"
 import { oneHunkDiff } from "../turnui/harness"
 
 beforeEach(() => {
-  useWorkspaceStore.setState({ tabs: [], sections: [], archived: [], activeTabId: null, showKanban: true })
+  useWorkspaceStore.setState({ tabs: [], sections: [], archived: [], activeTabId: null, showKanban: true, views: [] })
 })
 
 describe("the project bar ignores lens tabs", () => {
@@ -31,12 +32,14 @@ describe("the project bar ignores lens tabs", () => {
     expect(screen.getAllByRole("tab")).toHaveLength(1)
   })
 
-  it("the Hub keeps the lens tabs and their cards (nothing removed from the Hub)", () => {
+  it("the Hub keeps the dropped artifact as a view, not a tab or a card", () => {
     addLensToWorkspace({ v: 1, kind: "artifact", id: "doc-1", title: "Plan.md", format: "markdown", content: "hello" })
     render(<ProjectBar />)
     const s = useWorkspaceStore.getState()
-    expect(s.tabs.some((t) => t.path === "artifact:doc-1")).toBe(true)
-    expect(s.sections.flatMap((x) => x.cards)).toHaveLength(1)
+    // Owner-approved requirement change (rev 4): a view, no tab and no section card.
+    expect(s.views.some((v) => v.kind === "artifact" && v.title === "Plan.md")).toBe(true)
+    expect(s.tabs).toHaveLength(0)
+    expect(s.sections.flatMap((x) => x.cards)).toHaveLength(0)
     expect(screen.queryAllByRole("tab")).toHaveLength(0)
   })
 })

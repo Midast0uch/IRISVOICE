@@ -19,6 +19,23 @@ export interface WorkspaceTab {
   diffs?: EditDiff[]
 }
 
+/**
+ * A dropped artifact or diff, shown in the hub's Views lane. A view is NOT a tab: it never
+ * shows in the tab bar or the composer's project bar, and it never becomes a project file.
+ */
+export interface WorkspaceView {
+  id: string
+  kind: 'artifact' | 'diff'
+  title: string
+  /** Artifact: markdown / html / json / text, as dropped. */
+  format?: string
+  content?: string
+  diffs?: EditDiff[]
+}
+
+/** The Views lane keeps this many; the oldest is dropped. */
+export const MAX_VIEWS = 24
+
 export type CardState = 'maximized' | 'minimized' | 'archived'
 export type ViewMode = 'preview' | 'mindmap' | 'rendered' | 'raw' | 'code'
 
@@ -108,6 +125,12 @@ interface WorkspaceStore extends WorkspaceState {
   removeTab: (tabId: string) => void
   setActiveTab: (tabId: string | null) => void
 
+  // Views lane (dropped artifacts and diffs). In-session only: not part of the persisted
+  // workspace (WorkspaceState), so a reload starts with an empty lane.
+  views: WorkspaceView[]
+  addView: (view: WorkspaceView) => void
+  removeView: (viewId: string) => void
+
   // Section actions
   addSection: (section: KanbanSection) => void
   removeSection: (sectionId: string) => void
@@ -156,6 +179,7 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
   temporal(
     (set, get) => ({
       tabs: [],
+      views: [],
       sections: [],
       archived: [],
       activeTabId: null,
@@ -183,6 +207,12 @@ export const useWorkspaceStore = create<WorkspaceStore>()(
     })),
 
   setActiveTab: (tabId: string | null) => set({ activeTabId: tabId }),
+
+  addView: (view: WorkspaceView) =>
+    set((state: WorkspaceStore) => ({ views: [...state.views, view].slice(-MAX_VIEWS) })),
+
+  removeView: (viewId: string) =>
+    set((state: WorkspaceStore) => ({ views: state.views.filter((v: WorkspaceView) => v.id !== viewId) })),
 
   addSection: (section: KanbanSection) =>
     set((state: WorkspaceStore) => ({

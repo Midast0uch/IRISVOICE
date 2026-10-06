@@ -1,6 +1,7 @@
 /**
  * DONE line (lens): an artifact or a ± diff dragged out of the chat lands in the dashboard
- * workspace (the Workspace Hub, DeveloperWorkspace) as a document card that keeps its content.
+ * workspace (the Workspace Hub, DeveloperWorkspace) as a card in the Views lane that keeps its content
+ * (owner-approved requirement change, rev 4: a view, never a tab).
  * The payload travels in the drag itself, so a dashboard in another window needs no copy of
  * the chat's store.
  */
@@ -36,7 +37,7 @@ const dnd = () => {
 }
 
 beforeEach(() => {
-  useWorkspaceStore.setState({ tabs: [], sections: [], archived: [], activeTabId: null, showKanban: true })
+  useWorkspaceStore.setState({ tabs: [], sections: [], archived: [], activeTabId: null, showKanban: true, views: [] })
 })
 
 describe("the drag payload", () => {
@@ -65,7 +66,7 @@ describe("the Workspace Hub takes a drop", () => {
     return render(<DeveloperWorkspace />)
   }
 
-  it("an artifact dropped on the hub becomes a document card that shows its content", () => {
+  it("an artifact dropped on the hub becomes a view card that shows its content", () => {
     const { container } = mountHub()
     const dt = dnd()
     setLensDrag(dt, { v: 1, kind: "artifact", id: "doc-1", title: "Router budget plan", format: "markdown", content: "# Plan\n\nreserve stays at 256" })
@@ -74,15 +75,17 @@ describe("the Workspace Hub takes a drop", () => {
     expect(zone).toHaveAttribute("data-drop-over", "true")
     fireEvent.drop(zone, { dataTransfer: dt })
     expect(zone).toHaveAttribute("data-drop-over", "false")
+    // Owner-approved requirement change (rev 4): the drop adds a VIEW, not a tab and not a section card.
     const st = useWorkspaceStore.getState()
-    expect(st.tabs).toHaveLength(1)
-    expect(st.tabs[0]).toMatchObject({ type: "document", label: "Router budget plan", isVirtual: true, content: "# Plan\n\nreserve stays at 256" })
-    expect(st.sections[0].cards).toHaveLength(1)
+    expect(st.views).toHaveLength(1)
+    expect(st.views[0]).toMatchObject({ kind: "artifact", title: "Router budget plan", content: "# Plan\n\nreserve stays at 256" })
+    expect(st.tabs).toHaveLength(0)
+    expect(st.sections).toHaveLength(0)
     expect(screen.getAllByText("Router budget plan").length).toBeGreaterThan(0)
     expect(container).toHaveTextContent("reserve stays at 256")
   })
 
-  it("a ± diff dropped on the hub becomes a card with the changed lines", () => {
+  it("a ± diff dropped on the hub becomes a view card with the changed lines", () => {
     const { container } = mountHub()
     const dt = dnd()
     setLensDrag(dt, { v: 1, kind: "diff", title: "± router.py", diffs: [oneHunkDiff()] })
@@ -92,7 +95,7 @@ describe("the Workspace Hub takes a drop", () => {
     expect(container.querySelector("[data-workspace-diff]")).toHaveTextContent("-three")
   })
 
-  it("a second drop reuses the section; a drag that is not ours is ignored", () => {
+  it("a second drop adds a second view; a drag that is not ours is ignored", () => {
     const { container } = mountHub()
     const zone = container.querySelector("[data-workspace-drop]") as HTMLElement
     for (const id of ["a", "b"]) {
@@ -100,18 +103,22 @@ describe("the Workspace Hub takes a drop", () => {
       setLensDrag(dt, { v: 1, kind: "artifact", id, title: id, format: "text", content: id })
       fireEvent.drop(zone, { dataTransfer: dt })
     }
+    // Owner-approved requirement change (rev 4): two drops = two views; tabs and sections stay as they were.
     const st = useWorkspaceStore.getState()
-    expect(st.sections).toHaveLength(1)
-    expect(st.sections[0].cards).toHaveLength(2)
+    expect(st.views).toHaveLength(2)
+    expect(st.tabs).toHaveLength(0)
+    expect(st.sections).toHaveLength(0)
     fireEvent.drop(zone, { dataTransfer: dnd() })
-    expect(useWorkspaceStore.getState().tabs).toHaveLength(2)
+    expect(useWorkspaceStore.getState().views).toHaveLength(2)
   })
 
-  it("'To dashboard' from the lens uses the same path (a card appears without a drag)", () => {
+  it("'To dashboard' from the lens uses the same path (a view appears without a drag)", () => {
     act(() => {
       addLensToWorkspace({ v: 1, kind: "artifact", id: "doc-2", title: "Notes", format: "markdown", content: "n" })
     })
-    expect(useWorkspaceStore.getState().tabs[0].label).toBe("Notes")
-    expect(useWorkspaceStore.getState().showKanban).toBe(true)
+    // Owner-approved requirement change (rev 4): a view labelled Notes; showKanban is not toggled.
+    expect(useWorkspaceStore.getState().views[0].title).toBe("Notes")
+    expect(useWorkspaceStore.getState().tabs).toHaveLength(0)
+    expect(useWorkspaceStore.getState().showKanban).toBe(true) // unchanged from the beforeEach value
   })
 })
