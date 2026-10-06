@@ -810,7 +810,9 @@ export default function TaskListCard({
                 ) : null}
               </div>
             )}
-            <div className="flex flex-col gap-1">
+            {/* data-task-steps / data-task-step: the timeline spine measures the step dots
+                and bends into this line; data-task-step carries the displayed status. */}
+            <div className="flex flex-col gap-1" data-task-steps>
               {displaySteps.map((step, i) => {
                 // Session 246: guard against backend-native statuses that
                 // slip through hydration ("running") — never crash the card.
@@ -832,6 +834,7 @@ export default function TaskListCard({
                      the hierarchy shift the preview shows. */
                   <div
                     key={step.id ?? i}
+                    data-task-step={step.status}
                     className={`flex flex-col ${branchLabel || isPhaseRow ? "pl-4" : ""}`}
                     style={{
                       opacity: settled ? 0.75 : 1,

@@ -8,12 +8,15 @@ import { PermissionCard } from "@/components/chat/PermissionCard"
 import { TurnView } from "@/components/chat/TurnView"
 import { TaskCardEntry } from "@/components/chat/TaskCardEntry"
 import { ShellRunEntry } from "@/components/chat/matrix/ShellRunEntry"
+import { Spine } from "@/components/chat/spine/Spine"
+import { turnKnots } from "@/components/chat/spine/spineModel"
 import type { ChatTimelineEntry } from "@/lib/chatview-turn-timeline"
 import type { TurnRecord } from "@/lib/turns/turnStore"
 import type { TaskProgress } from "@/hooks/useTaskProgress"
 import type { SendMessageFunction } from "@/hooks/useIRISWebSocket"
 import type { CrawlState } from "@/hooks/useCrawl"
 import type { Message, Conversation, ContentType } from "@/components/chat-view"
+import type { ConversationChip } from "@/types/iris"
 
 // REQ-6 AC3/AC4 (T7): how far from the bottom still counts as "pinned".
 // Absorbs sub-pixel rounding between scrollHeight and clientHeight so a user
@@ -73,6 +76,10 @@ export interface TimelineProps {
   handleRetryPrompt: (errorMessageIndex: number, convId: string) => void
   renderWithLinks: (text: string) => React.ReactNode
   requestDocumentBody: (documentId: string) => void
+  /** The turns of this strand, listed on the spine's gutter (they used to live in the composer footer). */
+  conversationChips: ConversationChip[]
+  /** Scrolls to a turn (chat-view's handleChipClick). */
+  handleChipClick: (messageId: string) => void
 }
 
 export function Timeline({
@@ -128,11 +135,27 @@ export function Timeline({
   handleRetryPrompt,
   renderWithLinks,
   requestDocumentBody,
+  conversationChips,
+  handleChipClick,
 }: TimelineProps) {
+  // The living spine: the running live turn (the agent rides to its reply when no row runs)
+  // and the turns that brought something in from outside (refs / another author) -> knots.
+  const liveTurnList = React.useMemo(() => Array.from(liveTurnById.values()), [liveTurnById])
+  const streamingId = React.useMemo(() => {
+    for (let i = liveTurnList.length - 1; i >= 0; i--) if (liveTurnList[i].status === "running") return liveTurnList[i].id
+    return null
+  }, [liveTurnList])
+  const knotTurns = React.useMemo(() => turnKnots(liveTurnList), [liveTurnList])
+  const spineRunning = isTyping || taskProgressStillRunning || awaitingFirstBlock || streamingId !== null
+
   return (
+    // The wrapper holds the scroll area and the spine overlay side by side: the overlay never scrolls the content.
+    <div className="relative flex-1 min-h-0 flex flex-col" data-timeline-wrap>
     <div
       ref={messagesContainerRef}
       className="flex-1 overflow-y-auto px-3 py-3 relative z-10"
+      // The spine runs down the left 30 px: keep the content clear of it.
+      style={{ paddingLeft: 34 }}
       // REQ-6 AC3/AC4 (T7): re-evaluate "pinned to bottom" on every
       // user scroll. The threshold absorbs sub-pixel rounding and the
       // drift of a rounding-error scrollHeight, so a user resting at
@@ -444,5 +467,17 @@ export function Timeline({
           </div>
        )}
      </div>
+    <Spine
+      containerRef={messagesContainerRef}
+      glowColor={glowColor}
+      isDeveloper={isDeveloper}
+      prefersReducedMotion={prefersReducedMotion}
+      running={spineRunning}
+      streamingId={streamingId}
+      conversationChips={conversationChips}
+      onChipClick={handleChipClick}
+      knotTurns={knotTurns}
+    />
+    </div>
   )
 }

@@ -7,7 +7,8 @@
  * Built from components, not a printed string: rows are BORN as nodes start,
  * RUN (scan shimmer, breathing orb, live chip), and FOLD; a split child opens a
  * "looked closer" chamber that shrinks to one line when it settles; a finished
- * run folds to one line. The agent's Xur rides the rail to the running row.
+ * run folds to one line. The agent's Xur is NOT drawn here: the timeline's spine
+ * (components/chat/spine) draws the one agent Xur at the row marked data-state="running".
  * It fits any wing width (ellipsis, no sideways scroll) at a readable 12.5 px.
  *
  *   MatrixFrame   header (TASK, progress, time, fold), THK line, rail, rows, memory line
@@ -18,8 +19,7 @@
  * Data: the SAME TaskCardProps the ANSI export renders (renderBlueprintCellMatrixCLI
  * stays for terminal export and logs); per-row details come from the task card.
  */
-import React, { useLayoutEffect, useMemo, useRef, useState } from "react"
-import { Xur } from "@/components/Xur"
+import React, { useMemo, useState } from "react"
 import type { TaskCardProps } from "@/lib/cli/CLITaskProgressRenderer"
 import {
   buildMatrix,
@@ -186,24 +186,6 @@ export function MatrixFrame({
   const elapsed = formatElapsed(elapsedSec)
   const mem = memoryLine(matrix)
 
-  // The agent's Xur rides the rail to the running row(s).
-  const bodyRef = useRef<HTMLDivElement>(null)
-  const [xurTop, setXurTop] = useState<number | null>(null)
-  useLayoutEffect(() => {
-    const body = bodyRef.current
-    if (!body || folded || !working) {
-      setXurTop(null)
-      return
-    }
-    const running = Array.from(body.querySelectorAll<HTMLElement>('[data-state="running"]'))
-    if (!running.length) {
-      setXurTop(null)
-      return
-    }
-    const avg = running.reduce((a, el) => a + el.offsetTop + el.offsetHeight / 2, 0) / running.length
-    setXurTop(avg - 9)
-  })
-
   if (folded) {
     const f = foldLine(m, stopped, elapsed)
     const color = f.word === "DONE" ? OK : f.word === "FAILED" ? BAD : "rgba(255,255,255,0.5)"
@@ -247,14 +229,9 @@ export function MatrixFrame({
           <span className="flex-1 min-w-0 truncate italic">{thought}</span>
         </div>
       )}
-      <div ref={bodyRef} className="relative mt-0.5 pt-1 pl-5" style={{ borderTop: `1px solid ${glowColor}1f` }} data-matrix-body>
-        {/* The rail: a quiet line the rows hang from; the Xur rides it. */}
+      <div className="relative mt-0.5 pt-1 pl-5" style={{ borderTop: `1px solid ${glowColor}1f` }} data-matrix-body>
+        {/* The rail: a quiet line the rows hang from (the spine's Xur rides to the running row). */}
         <span aria-hidden className="absolute w-px" style={{ left: 7, top: 4, bottom: 4, background: `linear-gradient(${glowColor}55, ${glowColor}10)` }} />
-        {xurTop !== null && (
-          <span aria-hidden className="absolute" style={{ left: -2, top: xurTop, transition: "top 0.5s ease-out" }} data-matrix-xur>
-            <Xur size={18} color={glowColor} speed={m.running > 1 ? 2.4 : 1.6} />
-          </span>
-        )}
         {m.items.map((it) =>
           it.kind === "row" ? (
             <MatrixRow key={it.row.id} row={it.row} glowColor={glowColor} live={liveAction} />

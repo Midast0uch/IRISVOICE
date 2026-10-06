@@ -222,3 +222,46 @@ parallel-row light lines.
   message on each open — `openHistory()` → `fetchConversations()`).
 - Live gate on the owner's machine (a real text turn, a voice turn, an error turn; record
   them with `IRIS_TURN_RECORD_DIR` and add them as fixtures).
+
+## 9. The living spine (built 2026-10-06)
+
+One canvas overlay per timeline (`components/chat/spine/Spine.tsx`, pure model in
+`spineModel.ts`, gutter in `SpineGutter.tsx`), mounted by `Timeline` as a sibling of the scroll
+area (`pointer-events: none`; it never scrolls the content). Look: `iris-strands.html`
+(`measure`, `xAt`, `drawSpine`, `showChips`). The DOM is measured on change (observers,
+coalesced to one pass per 80 ms), never per frame; a frame reads `scrollTop` and draws only the
+visible range. The rAF loop stops while the page is hidden. Under `prefers-reduced-motion` one
+static frame is drawn on demand (scroll, new measurement); nothing animates.
+
+**Where the agent Xur rides** (there is ONE agent Xur; the matrix rail has none):
+
+| Mode | Target | Marker the spine reads |
+|---|---|---|
+| developer | the matrix row(s) that run | `[data-state="running"]` (`LiveMatrix.tsx`) |
+| personal | the task card's running step dot; the spine bends into each card's step line | `[data-task-step="working"]` inside `[data-task-steps]` (`TaskListCard.tsx`; the value is the displayed step status) |
+| either, no row runs | the streaming reply (`#msg-<running turn id>`), else the newest entry while a turn runs | turn store `status === "running"` |
+
+Several running rows: a wider loop and a faint light line to each row.
+
+**Knot data contract.** A knot is a small Xur loop on the spine ONLY where something entered
+from outside this strand. Landmarks are never knots. Two sources:
+
+1. A DOM entry carries `data-knot="<kind>"`. `kind` is `ref` (pulled in from another strand,
+   a task card or an artifact), `author` (another author: a person or another agent) or
+   `helper` (a helper strand reporting back); an unknown kind is drawn as `ref`. Put it on the
+   entry's outer element; the knot sits at the entry's top. Nothing sets `author` / `helper`
+   from data yet; a view that gets that data adds the attribute.
+2. `Timeline` derives knots from the turn store (`turnKnots`): a turn with non-empty `refs`
+   (`ref`), or an `author` other than `user` / `iris` (`author`). The knot sits on the user's
+   prompt (`turn.start.client_ref`), else on the turn's own message.
+
+**Chips on the spine.** The conversation chips (`ConversationChips`, composer footer) moved to
+the gutter, the left 30 px of the timeline: hover (or keyboard focus) lists the turns, the
+turns in view are highlighted, a knot shows "from outside", click calls `handleChipClick`
+(scroll to the turn), a drag on the gutter scrubs the scroll. `Composer` no longer takes
+`conversationChips`, `handleChipClick` or `messagesContainerRef`. `ConversationChips.tsx` is
+no longer rendered (kept in the CT-10 allowlist).
+
+Guards: `__tests__/spine/spineModel.test.ts` (detour math, knot rules, chips in view, scrub),
+`__tests__/spine/spineGutter.test.tsx` (hover list, click, drag, canvas frame, reduced motion,
+structure: no chips in the composer, no second Xur in the matrix).

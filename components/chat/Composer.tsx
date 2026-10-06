@@ -7,12 +7,11 @@ import { Icon } from '@iconify/react'
 import { SuggestionPills } from "@/components/chat/SuggestionPills"
 import ContextPill from "@/components/chat/ContextPill"
 import ModelSwitcher from "@/components/ModelSwitcher"
-import { ConversationChips } from "@/components/chat/ConversationChips"
 import { recallHistory, appendSystem } from "@/components/terminal/terminalScrollback"
 import type { TerminalSnapshot } from "@/components/terminal/terminalScrollback"
 import type { TaskProgress, TaskCard } from "@/hooks/useTaskProgress"
 import type { SendMessageFunction } from "@/hooks/useIRISWebSocket"
-import type { ConversationChip, Suggestion } from "@/types/iris"
+import type { Suggestion } from "@/types/iris"
 
 export interface ComposerProps {
   isRemoteView?: boolean
@@ -60,9 +59,6 @@ export interface ComposerProps {
   terminalSnapshot: TerminalSnapshot
   activeTabPath: string | null
   // Footer toolbar
-  conversationChips: ConversationChip[]
-  handleChipClick: (messageId: string) => void
-  messagesContainerRef: React.RefObject<HTMLDivElement | null>
   contextUsage: { used: number; max: number }
   taskProgress: TaskProgress
 }
@@ -103,9 +99,6 @@ export function Composer({
   acceptSlash,
   terminalSnapshot,
   activeTabPath,
-  conversationChips,
-  handleChipClick,
-  messagesContainerRef,
   contextUsage,
   taskProgress,
 }: ComposerProps) {
@@ -589,31 +582,8 @@ export function Composer({
                 Rendered on the LEFT per layout order. */}
             <ModelSwitcher glowColor={glowColor} fontColor={fontColor} />
 
-            {/* Conversation chips pill — its own fixed 32x32 icon
-                button, sits BETWEEN the ModelSwitcher and ContextPill
-                per the REQ-2 sequence. Opens its popover drawer to the
-                LEFT of ContextPill (REQ-2 AC5). */}
-            <div
-              /* ml-auto, not a fixed gap: this is where the row's leftover
-                 width goes. It keeps the web/upload/model group on the
-                 left and slides the chips + context pill to the right,
-                 instead of stretching one element across the whole band
-                 or scattering the slack into equal gaps. */
-              className="flex items-center justify-center w-[32px] h-[32px] ml-auto flex-shrink-0"
-              style={{
-                background: 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
-                border: `1px solid ${fontColor}80`,
-                borderRadius: '6px',
-                boxShadow: '0 1px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.03)',
-              }}
-            >
-              <ConversationChips
-                chips={conversationChips}
-                glowColor={glowColor}
-                onChipClick={handleChipClick}
-                containerRef={messagesContainerRef}
-              />
-            </div>
+            {/* The conversation chips moved onto the timeline's spine gutter
+                (components/chat/spine): hover the left edge for the turns. */}
 
             {/* ContextPill — declares its own dark-glass panel; the ⏎
                 enter icon's freed width gives it the full 174px REQ-2
@@ -638,7 +608,7 @@ export function Composer({
                 keeps it off the footer's right edge so the conversation
                 chips' dropdown — which opens beside it — has somewhere to
                 land instead of being clipped by the panel border. */}
-            <div className="min-w-0 ml-[10px] mr-3">
+            <div className="min-w-0 mr-3" style={{ marginLeft: 'auto' }}>
               <ContextPill
                 usedTokens={contextUsage.used}
                 maxTokens={contextUsage.max}
@@ -692,23 +662,6 @@ export function Composer({
               <div className="flex-shrink-0 rounded-full" style={{ width: '1px', height: '20px', background: glowColor, opacity: 0.3 }} />
 
               <ModelSwitcher glowColor={glowColor} fontColor={fontColor} />
-
-              <div
-                className="flex items-center justify-center w-[32px] h-[32px] flex-shrink-0 ml-1.5"
-                style={{
-                  background: 'linear-gradient(135deg, rgba(5,5,12,0.9) 0%, rgba(12,12,20,0.85) 100%)',
-                  border: `1px solid ${fontColor}80`,
-                  borderRadius: '6px',
-                  boxShadow: '0 1px 8px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.03)',
-                }}
-              >
-                <ConversationChips
-                  chips={conversationChips}
-                  glowColor={glowColor}
-                  onChipClick={handleChipClick}
-                  containerRef={messagesContainerRef}
-                />
-              </div>
 
               <ContextPill
                 usedTokens={contextUsage.used}

@@ -3172,6 +3172,8 @@ ${message.text}`;
               handleRetryPrompt={handleRetryPrompt}
               renderWithLinks={renderWithLinks}
               requestDocumentBody={requestDocumentBody}
+              conversationChips={conversationChips}
+              handleChipClick={handleChipClick}
             />
 
              {/* Document View Modal */}
@@ -3398,9 +3400,6 @@ ${message.text}`;
               acceptSlash={acceptSlash}
               terminalSnapshot={terminalSnapshot}
               activeTabPath={activeTabPath}
-              conversationChips={conversationChips}
-              handleChipClick={handleChipClick}
-              messagesContainerRef={messagesContainerRef}
               contextUsage={contextUsage}
               taskProgress={taskProgress}
             />
