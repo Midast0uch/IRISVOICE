@@ -708,7 +708,7 @@ body {
   border: 1px solid color-mix(in oklab, #5fcf98 45%, transparent);
   background: rgba(95, 207, 152, 0.08);
   color: #5fcf98;
-  font: 700 11px/1 ui-monospace, "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+  font: 700 11px/1 "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
   cursor: pointer;
 }
 .iris-dfx:hover { background: rgba(95, 207, 152, 0.18); }
@@ -720,13 +720,30 @@ body {
 /* Developer mode answer (execution audit Phase 4): the same markdown, in the
    mono family, sized like the matrix above it. */
 .iris-md.iris-md-cli {
-  font-family: ui-monospace, "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+  font-family: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
   font-size: 12.5px;
   line-height: 1.55;
   letter-spacing: 0;
 }
 .iris-md.iris-md-cli h1, .iris-md.iris-md-cli h2, .iris-md.iris-md-cli h3 { font-size: 13px; }
 .iris-md.iris-md-cli h4, .iris-md.iris-md-cli h5, .iris-md.iris-md-cli h6 { font-size: 12.5px; }
+/* Concept 2 (iris-strands.html .ans): inline code in a developer answer is
+   coloured text, not a chip. */
+.iris-md.iris-md-cli code { background: none; padding: 0; font-size: inherit; color: hsl(190 100% 64%); }
+.iris-md.iris-md-cli pre code { color: rgba(255, 255, 255, 0.9); }
+
+/* Personal-mode answer (concept 2 .voice): IRIS's voice is a reading serif,
+   larger than the UI around it. Code keeps the mono chip of .iris-md. */
+.iris-md.iris-md-voice {
+  font-family: "Newsreader", Georgia, "Times New Roman", serif;
+  font-size: 16px;
+  line-height: 1.55;
+  letter-spacing: 0;
+  color: #e9ecf4;
+}
+.iris-md.iris-md-voice p { margin: 0 0 8px; }
+.iris-md.iris-md-voice strong { font-weight: 500; color: #fff; }
+.iris-md.iris-md-voice h1, .iris-md.iris-md-voice h2, .iris-md.iris-md-voice h3 { font-weight: 500; }
 
 /* Edge light aperture (components/chrome/EdgeLight): set into the wing's top
    hairline, no box. The ink disc hides the line behind it. */
@@ -763,7 +780,7 @@ body {
   --iris-hair: rgba(160, 190, 255, 0.09);
   --iris-muted: #8a92a8;
   --iris-faint: rgba(230, 233, 242, 0.38);
-  --iris-mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --iris-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
 }
 .iris-tray { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; min-height: 22px; margin-bottom: 6px; }
 .iris-to { font: 600 11px/1 var(--iris-mono); padding: 4px 7px; border-radius: 999px; border: 1px solid var(--b1); color: var(--b1); }
@@ -817,7 +834,7 @@ body {
 .iris-hd-strandbtn {
   align-self: flex-start; max-width: 100%; display: flex; gap: 6px; align-items: center;
   background: none; border: 0; padding: 1px 2px; cursor: pointer; min-width: 0; border-radius: 4px;
-  font: 11px/1.3 ui-monospace, "JetBrains Mono", "Cascadia Mono", Consolas, monospace; color: #8a92a8;
+  font: 11px/1.3 "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace; color: #8a92a8;
 }
 .iris-hd-strandbtn b { color: #e6e9f2; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .iris-hd-strandbtn span { white-space: nowrap; }
@@ -825,7 +842,7 @@ body {
 .iris-hd-iconbtn {
   position: relative; flex: none; width: 30px; height: 30px; margin-top: 6px; border-radius: 8px;
   border: 1px solid rgba(160, 190, 255, 0.09); background: #080a16; cursor: pointer; display: grid;
-  place-items: center; color: #cdd6ea; font: 14px/1 ui-monospace, "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+  place-items: center; color: #cdd6ea; font: 14px/1 "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
 }
 .iris-hd-iconbtn:hover:not(:disabled) { color: #fff; background: #0e1122; }
 .iris-hd-iconbtn:disabled { opacity: 0.4; cursor: default; }
@@ -844,9 +861,9 @@ body {
   border-radius: 6px; cursor: pointer; font-size: 12.5px; text-align: left; color: #e6e9f2;
 }
 .iris-hd-menu button:hover { background: #0e1122; }
-.iris-hd-menu .k { margin-left: auto; font: 10.5px/1 ui-monospace, "JetBrains Mono", "Cascadia Mono", Consolas, monospace; color: #8a92a8; }
+.iris-hd-menu .k { margin-left: auto; font: 10.5px/1 "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace; color: #8a92a8; }
 .iris-hd-small {
-  font: 600 10.5px/1 ui-monospace, "JetBrains Mono", "Cascadia Mono", Consolas, monospace; color: #cdd6ea;
+  font: 600 10.5px/1 "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace; color: #cdd6ea;
   background: #080a16; border: 1px solid rgba(160, 190, 255, 0.16); border-radius: 6px; padding: 6px 8px; cursor: pointer;
 }
 .iris-hd-small:hover:not(:disabled) { color: #fff; background: #0e1122; }
@@ -867,7 +884,7 @@ body {
 }
 .iris-hd-oopen:hover { color: #fff; background: rgba(255, 255, 255, 0.05); }
 .iris-hd-otitle { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.iris-hd-olbl small { display: block; font: 10px/1.2 ui-monospace, "JetBrains Mono", "Cascadia Mono", Consolas, monospace; color: #8a92a8; }
+.iris-hd-olbl small { display: block; font: 10px/1.2 "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace; color: #8a92a8; }
 .iris-hd-olbl.front { color: #fff; font-weight: 600; }
 .iris-hd-olbl.front small { color: var(--b1, #5cd6ff); }
 .iris-hd-olbl.pinned { color: #fff; }
@@ -882,7 +899,7 @@ body {
 .iris-hd-pin[aria-pressed="true"] { color: var(--b2, #6b9bff); }
 .iris-hd-ocap {
   position: absolute; left: 0; right: 0; top: 14px; text-align: center; color: #8a92a8;
-  font: 600 10px/1 ui-monospace, "JetBrains Mono", "Cascadia Mono", Consolas, monospace; letter-spacing: 0.12em; text-transform: uppercase;
+  font: 600 10px/1 "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace; letter-spacing: 0.12em; text-transform: uppercase;
 }
 .iris-hd-ofoot { position: absolute; left: 12px; right: 12px; bottom: 12px; display: flex; gap: 8px; align-items: center; }
 .iris-hd-ofoot input {
@@ -891,7 +908,9 @@ body {
 }
 
 /* strand map */
-.iris-hd-map { position: absolute; left: 0; right: 0; bottom: 0; z-index: 30; background: #04050c; animation: iris-hd-lensin 0.35s ease-out; }
+/* z 40 like the orbit: at 30 the composer (.iris-comp z-30, later in the DOM)
+   covered the new-strand form, so a strand could not be made (live 2026-10-06). */
+.iris-hd-map { position: absolute; left: 0; right: 0; bottom: 0; z-index: 40; background: #04050c; animation: iris-hd-lensin 0.35s ease-out; }
 .iris-hd-mapscroll { position: absolute; inset: 0; overflow-x: auto; overflow-y: hidden; }
 .iris-hd-slbl {
   position: absolute; top: 10px; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 3px;
@@ -899,10 +918,10 @@ body {
   max-width: 110px; text-align: center; color: #e6e9f2;
 }
 .iris-hd-slbl b { font-weight: 600; font-size: 11.5px; line-height: 1.2; font-family: inherit; color: var(--c, #e6e9f2); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.iris-hd-slbl span { font: 9.5px/1.25 ui-monospace, "JetBrains Mono", "Cascadia Mono", Consolas, monospace; color: #8a92a8; }
+.iris-hd-slbl span { font: 9.5px/1.25 "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace; color: #8a92a8; }
 .iris-hd-slbl[aria-current="true"] { border-color: var(--c, #e6e9f2); }
 .iris-hd-mapfoot { position: absolute; left: 10px; right: 10px; bottom: 10px; display: flex; flex-direction: column; gap: 6px; background: #04050c; }
-.iris-hd-cap { font: 11px/1.4 ui-monospace, "JetBrains Mono", "Cascadia Mono", Consolas, monospace; color: #8a92a8; }
+.iris-hd-cap { font: 11px/1.4 "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace; color: #8a92a8; }
 .iris-hd-newrow { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .iris-hd-newrow input {
   flex: 1; min-width: 120px; background: #080a16; color: #e6e9f2; font-size: 12px; line-height: 1; font-family: inherit; padding: 7px 10px;
@@ -910,10 +929,10 @@ body {
 }
 .iris-hd-newrow input.own {
   flex: 0 1 110px; min-width: 90px; border-color: rgba(160, 190, 255, 0.09); border-radius: 4px; padding: 5px 7px;
-  font: 10.5px/1 ui-monospace, "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+  font: 10.5px/1 "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
 }
 .iris-hd-tagpick {
-  font: 600 10px/1 ui-monospace, "JetBrains Mono", "Cascadia Mono", Consolas, monospace; padding: 5px 7px; border-radius: 4px;
+  font: 600 10px/1 "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace; padding: 5px 7px; border-radius: 4px;
   border: 1px solid rgba(160, 190, 255, 0.09); background: none; color: #8a92a8; cursor: pointer;
 }
 .iris-hd-tagpick[aria-pressed="true"] { color: var(--b1, #5cd6ff); border-color: var(--b1, #5cd6ff); }
@@ -928,7 +947,7 @@ body {
    dashboard gives it. --mon-acc is set inline from the brand glow colour. */
 .iris-mon { --mon-acc: hsl(215 92% 68%); --mon-hair: rgba(160, 190, 255, 0.09); --mon-muted: #8a92a8; --mon-faint: rgba(230, 233, 242, 0.38); --mon-run: #f2c14e; --mon-ok: #5fcf98; --mon-bad: #ff7a6e;
   --mon-ink2: #080a16; --mon-ink3: #0e1122; --mon-fg: #e6e9f2;
-  --mon-mono: ui-monospace, "JetBrains Mono", "Cascadia Mono", Consolas, monospace; width: 100%; color: var(--mon-fg); container-type: inline-size; }
+  --mon-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace; width: 100%; color: var(--mon-fg); container-type: inline-size; }
 .iris-mon-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 10px; align-content: start; }
 .iris-mon button:focus-visible, .iris-mon input:focus-visible { outline: 2px solid var(--mon-acc); outline-offset: 2px; }
 .iris-mon-tiles { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--mon-hair); border-radius: 10px; background: var(--mon-ink2); }
@@ -985,10 +1004,10 @@ body {
    It opens under the wing header (a positioned box). Concept: iris-dashboard.html `.menu`. */
 .iris-hd-menu { top: 100%; cursor: default; }
 .iris-hd-menu .iris-mh {
-  font: 600 10px/1 ui-monospace, "JetBrains Mono", "Cascadia Mono", Consolas, monospace; letter-spacing: 0.12em;
+  font: 600 10px/1 "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace; letter-spacing: 0.12em;
   text-transform: uppercase; color: #8a92a8; padding: 6px 8px 4px;
 }
-.iris-hd-menu .g { width: 16px; display: grid; place-items: center; font: 13px/1 ui-monospace, "JetBrains Mono", "Cascadia Mono", Consolas, monospace; color: var(--b2, #6b9bff); }
+.iris-hd-menu .g { width: 16px; display: grid; place-items: center; font: 13px/1 "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace; color: var(--b2, #6b9bff); }
 .iris-hd-menu .iris-mdot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
 
 /* Dashboard wing (components/dark-glass-dashboard.tsx, components/dashboard/*).
@@ -997,7 +1016,7 @@ body {
 .iris-dash {
   --iris-ink: #04050c; --iris-ink-2: #080a16; --iris-ink-3: #0e1122;
   --iris-hair: rgba(160, 190, 255, 0.09); --iris-muted: #8a92a8; --iris-run: #f2c14e;
-  --iris-mono: ui-monospace, "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+  --iris-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
   color: #e6e9f2;
 }
 .iris-dash button:focus-visible, .iris-dash input:focus-visible { outline: 2px solid var(--b2, #6b9bff); outline-offset: 2px; }
@@ -1156,3 +1175,95 @@ body {
 .iris-mon-stats > div { display: flex; gap: 6px; align-items: baseline; }
 .iris-mon-stats b { font: 600 12px/1 var(--mon-mono); color: var(--mon-fg); font-variant-numeric: tabular-nums; }
 @media (prefers-reduced-motion: reduce) { .iris-mon-calls tr { animation: none; } }
+
+/* ── Personal task card (components/chat/TaskListCard.tsx) ──
+   Look: docs/design/chatview-2026-10-06/iris-strands.html, concept 2 rev 3
+   (.card .top .state .rail .goal .steps .st .foot). --b1/--b2 are set inline on .iris-tc from the
+   brand palette. The card still renders through CardChassis (tests, the spine reads its dots), so
+   the !important rules restyle the chassis's inline surface: concept border/gradient, no vein,
+   no halo; its bracketed counter stays in the DOM and the goal line shows "N of M steps".
+   Verb text is lower/upper-cased here (sentence case), never in the markup. */
+.iris-tc {
+  --b1: hsl(190 100% 64%);
+  --b2: hsl(215 92% 68%);
+  --tc-ink-2: #080a16;
+  --tc-hair: rgba(160, 190, 255, 0.09);
+  --tc-muted: #8a92a8;
+  --tc-run: #f2c14e;
+  --tc-ok: #5fcf98;
+  --tc-bad: #ff7a6e;
+  --tc-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+.iris-tc [data-testid="chassis-surface"] {
+  border: 1px solid color-mix(in oklab, var(--b1) 22%, transparent) !important;
+  border-radius: 12px !important;
+  background: linear-gradient(180deg, color-mix(in oklab, var(--b1) 5%, transparent), transparent 40%), var(--tc-ink-2) !important;
+  box-shadow: none !important;
+}
+.iris-tc [data-testid="chassis-surface"] > :not([data-testid="chassis-padding"]),
+.iris-tc [data-testid="chassis-padding"] > div:first-child > :last-child { display: none !important; }
+.iris-tc [data-testid="chassis-padding"] { padding: 10px 12px 8px !important; }
+.iris-tc [data-testid="chassis-padding"] > .border-t { border-top: 1px solid var(--tc-hair) !important; }
+.iris-tc [data-testid="chassis-padding"] > .border-t:last-child { margin-top: 8px !important; padding-top: 6px !important; }
+.iris-tc-head { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.iris-tc-top { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.iris-tc-mark { flex: none; display: flex; }
+.iris-tc-state {
+  flex: none; margin-left: auto; padding: 3px 6px; border-radius: 4px; border: 1px solid currentColor;
+  font: 600 10px/1 var(--tc-mono); letter-spacing: 0.04em; text-transform: uppercase; color: var(--tc-muted);
+}
+.iris-tc-state[data-state="working"], .iris-tc-state[data-state="needs"] { color: var(--tc-run); }
+.iris-tc-state[data-state="done"] { color: var(--tc-ok); }
+.iris-tc-chev { flex: none; background: none; border: 0; padding: 2px 4px; color: var(--b1); cursor: pointer; font: 13px/1 var(--tc-mono); }
+.iris-tc-rail { display: flex; gap: 2px; margin: 8px 0 6px; }
+.iris-tc-rail i { flex: 1; height: 3px; border-radius: 2px; background: rgba(255, 255, 255, 0.1); transition: background 0.3s; }
+.iris-tc-rail i.done { background: var(--b1); }
+.iris-tc-rail i.running { background: var(--tc-run); animation: iris-mx-breathe 1.2s ease-in-out infinite; }
+.iris-tc-rail i.failed { background: var(--tc-bad); }
+.iris-tc-goal { margin: 0 0 6px; font: 11px/1.4 var(--tc-mono); color: var(--tc-muted); }
+.iris-tc-goal b { color: var(--b1); font-weight: 600; }
+.iris-tc-steps { display: flex; flex-direction: column; gap: 3px; padding: 0 0 0 2px; }
+.iris-tc-st { position: relative; display: flex; flex-direction: column; min-width: 0; }
+.iris-tc-st.sub { margin-left: 14px; }
+.iris-tc-ln {
+  display: flex; gap: 8px; align-items: center; min-width: 0; width: 100%; padding: 1px 0;
+  background: none; border: 0; text-align: left; font-family: var(--tc-mono);
+}
+.iris-tc-ln.click { cursor: pointer; }
+.iris-tc-v { flex: none; width: 9.5ch; font: 600 10.5px/1.4 var(--tc-mono); color: var(--tc-muted); text-transform: lowercase; }
+.iris-tc-v::first-letter { text-transform: uppercase; }
+[data-task-step="working"] .iris-tc-v { color: var(--tc-run); }
+[data-task-step="fail"] .iris-tc-v, [data-task-step="error"] .iris-tc-v, [data-task-step="vetoed"] .iris-tc-v { color: var(--tc-bad); }
+.iris-tc-tg {
+  flex: 1; min-width: 0; font: 10.5px/1.4 var(--tc-mono); color: rgba(255, 255, 255, 0.85);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+[data-task-step="pending"] .iris-tc-tg, [data-task-step="unknown"] .iris-tc-tg { color: rgba(255, 255, 255, 0.45); }
+.iris-tc-sm { flex: none; max-width: 36%; font: 10px/1.4 var(--tc-mono); color: var(--tc-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.iris-tc-ok { flex: none; font: 600 10px/1 var(--tc-mono); color: var(--tc-ok); }
+.iris-tc-br { flex: none; font: 10.5px/1.4 var(--tc-mono); color: var(--b2); }
+.iris-tc-rb { flex: none; font: 10px/1.4 var(--tc-mono); color: var(--tc-muted); }
+.iris-tc-live {
+  margin: 2px 0 2px 24px; padding-left: 8px; font: 10.5px/1.5 var(--tc-mono);
+  color: rgba(242, 193, 78, 0.85); border-left: 1px solid rgba(242, 193, 78, 0.3);
+}
+.iris-tc-live > * { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.iris-tc-live > *:last-child::after { content: "\258D"; animation: iris-tc-blink 1s steps(2) infinite; }
+@keyframes iris-tc-blink { to { visibility: hidden; } }
+.iris-tc-think { display: block; margin: 2px 0 2px 24px; font: italic 10.5px/1.5 var(--tc-mono); color: rgba(255, 255, 255, 0.45); }
+.iris-tc-why { margin: 2px 0 2px 24px; font: 10.5px/1.5 var(--tc-mono); color: #ffb3aa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.iris-tc-pills { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; margin: 0 0 4px 24px; }
+.iris-tc-box {
+  margin: 4px 0 4px 24px; padding: 6px 8px; border: 1px solid var(--tc-hair); border-radius: 6px; background: rgba(0, 0, 0, 0.25);
+  font: 10.5px/1.5 var(--tc-mono); color: #c4cad6; white-space: pre-wrap; word-break: break-word;
+}
+.iris-tc-foot { display: flex; gap: 8px; align-items: center; min-width: 0; width: 100%; font: 10px/1.4 var(--tc-mono); color: var(--tc-muted); }
+.iris-tc-mem { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--b2); }
+.iris-tc-time { flex: none; font-variant-numeric: tabular-nums; }
+.iris-tc-idbox { flex: none; display: flex; gap: 4px; align-items: center; }
+.iris-tc-id { flex: none; color: var(--b1); }
+.iris-tc-copy { flex: none; display: flex; padding: 1px; background: none; border: 0; line-height: 0; color: var(--tc-muted); cursor: pointer; }
+.iris-tc-copy:hover { color: var(--b1); }
+@media (prefers-reduced-motion: reduce) {
+  .iris-tc-rail i.running, .iris-tc-live > *:last-child::after { animation: none; }
+}

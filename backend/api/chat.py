@@ -767,9 +767,13 @@ async def list_thread_summaries() -> list[dict[str, Any]]:
 
 @router.get("/threads/{thread_id}/strands")
 async def list_thread_strands(thread_id: str) -> list[dict[str, Any]]:
-    from backend.conversation_store import list_strands
+    from backend.conversation_store import list_strands, thread_root_of
 
-    strands = list_strands(thread_id)
+    # Any strand of a thread lists the whole thread: the composer's `#` list asks
+    # with the conversation on screen, which is a child strand as often as the
+    # root (it got 404 there and listed no strands). thread_root_of is the one
+    # resolver; an unknown id resolves to itself and still answers 404.
+    strands = list_strands(thread_root_of(thread_id))
     if strands is None:
         raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
     return strands

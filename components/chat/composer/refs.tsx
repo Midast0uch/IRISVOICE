@@ -35,7 +35,10 @@ export interface RefDoc {
   title: string
 }
 
-/** Who can hear a message. Data-driven: people and helpers are added here later. */
+/** Who can hear a message. Data-driven: people and helpers are added here later.
+ *  The list is the SAME in every strand (owner, 2026-10-06): an `@person` or
+ *  another agent can be addressed from any strand of any thread. Never filter it
+ *  by strand, strand tag ("people" is only a label) or thread root. */
 export interface Hearer {
   address: string
   label: string

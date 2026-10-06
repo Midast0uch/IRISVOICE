@@ -620,8 +620,11 @@ export function TurnView({
           transition={{ duration: prefersReducedMotion ? 0 : 0.15 }}
           className="max-w-[90%] py-2"
         >
+          {/* Developer mode (owner 2026-10-06, concept 2 devTurn): the answer
+              sits under its matrix with no "IRIS" header and no action bar. */}
+          {!isDeveloper && (
           <div className="flex items-center gap-2 mb-1.5">
-            <span 
+            <span
               className="text-[9px] font-semibold tracking-wide"
               style={{ color: glowColor }}
             >
@@ -634,6 +637,7 @@ export function TurnView({
               {message.timestamp.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
             </span>
           </div>
+          )}
                             
           {/* Collapsible thinking block — only shown when model produced reasoning */}
           {message.thinking && (
@@ -751,7 +755,7 @@ export function TurnView({
                 <MarkdownMessage
                   text={message.text}
                   className={isExpanded ? '' : 'line-clamp-6'}
-                  variant={isDeveloper ? 'cli' : 'markdown'}
+                  variant={isDeveloper ? 'cli' : 'voice'}
                 />
                 {!isExpanded && (
                   <div 
@@ -806,7 +810,7 @@ export function TurnView({
                 message.id === currentTtsMessageId && !spokenDiffersFromBody
               }
               highlightIndex={ttsWordIndex}
-              variant={isDeveloper ? 'cli' : 'markdown'}
+              variant={isDeveloper ? 'cli' : 'voice'}
             />
           ))}
 
@@ -852,7 +856,8 @@ export function TurnView({
             </div>
           )}
 
-          {/* Feedback action bar */}
+          {/* Feedback action bar (personal mode only; see the header note above) */}
+          {!isDeveloper && (
           <div className="flex items-center gap-2 mt-2 pt-2 border-t border-white/5">
             {/* Icon-only, like every other action here. The
                 "Copy"/"Copied!" label was the one text button
@@ -902,6 +907,7 @@ export function TurnView({
               </button>
             </div>
           </div>
+          )}
         </motion.div>
       ) : message.sender === 'system' && message.id.startsWith('steer-note-') ? (
         // A steer sent while a turn runs: one line, "↳ you steered: … · noted".

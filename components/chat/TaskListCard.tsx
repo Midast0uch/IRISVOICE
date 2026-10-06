@@ -2,9 +2,10 @@
 
 import React, { useState, useEffect, useMemo, useRef, useCallback } from "react"
 import { AnimatePresence, motion } from "framer-motion"
-import { ChevronDown, Copy, Check, Sparkles } from "lucide-react"
+import { ChevronDown, Copy, Check } from "lucide-react"
 import { Xur } from "@/components/Xur"
 import { useBrandColor } from "@/contexts/BrandColorContext"
+import { useBrandPalette } from "@/hooks/useBrandPalette"
 import { deriveCurrentStep } from "@/hooks/useTaskProgress"
 import type {
   TaskStep,
@@ -19,8 +20,6 @@ import { resolveVerb } from "@/lib/cards/verbRegistry"
 import {
   CardChassis,
   ChassisBadge,
-  ChassisBranchBadge,
-  ChassisChromeLabel,
   ChassisStepNode,
   VEIN_COLOR_BY_STATE,
   type ChassisVeinState,
@@ -175,6 +174,58 @@ function intentVerb(description: string): string | null {
   return null
 }
 
+// Plain past-tense verbs for the personal card (concept 2: "Remembered / Searched / Ran ...").
+// The registry verb stays the source; this only words it for the screen. READ is left out on
+// purpose: its past tense is the same word, and the display test pins the registry text "READ"
+// in the DOM — the card's CSS shows it as "Read" (sentence case, see .iris-tc-v).
+const PAST_VERB: Record<string, string> = {
+  WRITE: "Wrote",
+  PATCH: "Edited",
+  LIST: "Listed",
+  ERASE: "Erased",
+  EXEC: "Ran",
+  DIFF: "Compared",
+  COMMIT: "Committed",
+  PUSH: "Pushed",
+  BRANCH: "Branched",
+  LOG: "Checked",
+  FORGE: "GitHub",
+  SEARCH: "Searched",
+  FETCH: "Fetched",
+  SEE: "Looked",
+  SNAP: "Captured",
+  CLICK: "Clicked",
+  TYPE: "Typed",
+  KEY: "Pressed",
+  CLIP: "Clipped",
+  SCRIBE: "Wrote up",
+  MERGE: "Merged",
+  RECALL: "Remembered",
+  LEARN: "Learned",
+  PACK: "Combined",
+  ASK: "Asked",
+  SPEAK: "Said",
+  PLAN: "Planned",
+  EXTRACT: "Extracted",
+  CITE: "Cited",
+  ANALYZE: "Analyzed",
+  SYNTH: "Summed up",
+  WORK: "Worked",
+  DONE: "Done",
+  FAILED: "Failed",
+}
+
+// A step that has not run yet keeps the plain verb ("Search"); one that ran or is running reads
+// in the past tense. A tool with no known verb never leaks its compacted engine name.
+function plainVerb(verb: string | null, status: TaskStepStatus): string | null {
+  if (!verb) return null
+  const waiting = status === "pending" || status === "unknown" || status === "skipped"
+  if (waiting) return verb in PAST_VERB || verb === "READ" ? verb : "Queued"
+  if (verb === "READ") return verb
+  if (verb === "QUEUED") return "Worked"
+  return PAST_VERB[verb] ?? "Worked"
+}
+
 /**
  * TaskListCard — inline agent plan/progress in the chat stream.
  * Renders through the shared `CardChassis` (T8) — the ink background, accent
@@ -219,6 +270,8 @@ export default function TaskListCard({
   const { getThemeConfig } = useBrandColor()
   const theme = getThemeConfig()
   const glowColor = theme.glow.color
+  // Concept 2 colours: --b1 (accents) and --b2 (memory line) come from the brand palette.
+  const [b1, b2] = useBrandPalette()
 
   const [collapsed, setCollapsed] = useState(defaultCollapsed && steps.length > 4)
   const [expandedStep, setExpandedStep] = useState<string | null>(null)
@@ -249,13 +302,9 @@ export default function TaskListCard({
     )
   }, [cardId])
 
-  const doneCount = steps.filter((s) => s.status === "done").length
-  const failCount = steps.filter((s) => s.status === "fail").length
-  // The COUNTER shows the step being worked on; the BAR shows real completion.
-  // One numeric counter on this card — the chassis's bracketed one — agreeing
-  // with the orb via deriveCurrentStep (a running step is the step you are
-  // on). The progress BAR deliberately stays on doneCount, because a step in
-  // flight is not finished work.
+  // The chassis's bracketed counter keeps agreeing with the orb via deriveCurrentStep (a running
+  // step is the step you are on); it stays in the DOM, and the card's goal line shows the one
+  // visible "N of M steps" (finished steps only — a step in flight is not finished work).
   const displayStep = deriveCurrentStep(steps)
   // Objective-first header (pin_07b780e7ce21): the OBJECTIVE TITLE is the
   // dominant header element — VariantLiquidInk renders it at text-[12px]
@@ -308,13 +357,35 @@ export default function TaskListCard({
   const verifiedEntries = verifiedFields ? Object.entries(verifiedFields) : []
   const verifiedOk = verifiedEntries.filter(([, v]) => v?.verified)
   const discrepancies = verifiedEntries.filter(([, v]) => v?.discrepancy)
+  // The goal itself reads on the card's goal line; the strip keeps the rest.
   const hasEnrichment =
-    !!goalSnippet ||
     schemaKeys.length > 0 ||
     !!batchMetrics ||
     !!temporalDelta?.statements.length ||
     verifiedOk.length > 0 ||
     discrepancies.length > 0
+
+  // Concept 2 goal line + rail: one segment per top-level step (a "looked closer" child is
+  // not a step of its own), the pill says in one word where the run is.
+  const isChildStep = (s: TaskStep) => parentOf(s.id ?? "") !== null || !!(s as StepWithBranch).branchLabel
+  const topSteps = displaySteps.filter((s) => !isChildStep(s))
+  const finishedTop = topSteps.filter((s) => s.status !== "pending" && s.status !== "unknown" && s.status !== "working").length
+  const retriedTop = topSteps.filter(
+    (s) =>
+      (s.status === "fail" || s.status === "error") &&
+      displaySteps.some((c) => isChildStep(c) && parentOf(c.id ?? "") === s.id),
+  ).length
+  const failedOnly = Math.max(0, topSteps.filter((s) => s.status === "fail" || s.status === "error").length - retriedTop)
+  const needsYou = !!asks?.some((a) => a.state === "waiting")
+  const cardState: { key: string; label: string } | null = needsYou
+    ? { key: "needs", label: "needs you" }
+    : isWorking
+      ? { key: "working", label: "working" }
+      : runComplete
+        ? { key: "done", label: "✓ done" }
+        : steps.length > 0
+          ? { key: "stopped", label: "stopped" }
+          : null
 
   // Elapsed running timer — ticks ONLY while a step is working and freezes
   // when the run settles. Rendered in the FOOTER (variant anatomy), never
@@ -394,11 +465,6 @@ export default function TaskListCard({
     crystallized: "#22c55e", // green — skill captured
   }
 
-  const MEMORY_TINT: Record<string, string> = {
-    recall: "#a78bfa",
-    compress: "#38bdf8",
-    episodic: "#fbbf24",
-  }
   // Session 246 (user-directed): memory events are FOOTER content, not
   // header badges. Learning/crystallized signals style the footer line
   // (glyph + signal tint, below); episodic activity feeds footnoteText.
@@ -439,13 +505,6 @@ export default function TaskListCard({
     return "Idle"
   }, [memoryEvents, isWorking, steps])
 
-  // Session 246: the footer memory line takes the KIND's tint so episodic
-  // activity is visibly alive (amber) vs recall (violet) vs compress (cyan).
-  const lastMemoryTint = useMemo(() => {
-    const last = memoryEvents?.[memoryEvents.length - 1]
-    return last ? MEMORY_TINT[last.kind] ?? null : null
-  }, [memoryEvents])
-
   // Asks live in the subheader, so a waiting ask shows even when the plan is folded.
   const asksNode =
     askActions && asks && asks.length > 0 ? (
@@ -457,125 +516,100 @@ export default function TaskListCard({
     ) : null
 
   return (
-    <CardChassis
-      veinColor={veinColor}
-      isActive={isWorking}
-      collapsible={false}
-      counter={{ done: displayStep, total: steps.length }}
-      aria-label="Task progress"
-      subheader={
-        showThk || asksNode ? (
-          <div className="flex flex-col gap-1.5 min-w-0">
-        {showThk ? (
-          /* THK section — own divided strip (variant anatomy). Clickable
-             when a real stream exists; italic whisper otherwise. */
-          <div className="flex flex-col min-w-0">
-            <button
-              type="button"
-              onClick={() => hasThoughts && setThkOpen((o) => !o)}
-              className="flex items-center gap-1.5 min-w-0 text-left"
-              aria-expanded={thkOpen}
-              aria-label={hasThoughts ? "Toggle thinking stream" : undefined}
-            >
-              <ChassisBadge color="#fbbf24">THK</ChassisBadge>
-              <span className="italic truncate text-[10px]" style={{ color: "rgba(251,191,36,0.7)" }}>
-                {latestThought ?? (isWorking ? "Reflecting..." : "")}
-              </span>
-              {hasThoughts && (
-                <ChevronDown
-                  size={10}
-                  className="shrink-0 opacity-50"
-                  style={{ transform: thkOpen ? "rotate(180deg)" : "none", transition: "transform 0.2s" }}
-                />
-              )}
-            </button>
-            {thkOpen && hasThoughts && (
-              <div
-                ref={streamRef}
-                className="mt-1.5 max-h-[120px] overflow-y-auto rounded-md bg-black/40 border border-white/6 p-2 font-mono text-[9px] leading-relaxed"
-                style={{ color: "rgba(251,191,36,0.55)" }}
-                data-testid="thk-stream"
+    <div className="iris-tc" style={{ ["--b1" as string]: b1, ["--b2" as string]: b2 }}>
+      <CardChassis
+        veinColor={veinColor}
+        isActive={isWorking}
+        collapsible={false}
+        counter={{ done: displayStep, total: steps.length }}
+        aria-label="Task progress"
+        subheader={
+          showThk || asksNode ? (
+            <div className="flex flex-col gap-1.5 min-w-0">
+          {showThk ? (
+            /* THK section — own divided strip (variant anatomy). Clickable
+               when a real stream exists; italic whisper otherwise. */
+            <div className="flex flex-col min-w-0">
+              <button
+                type="button"
+                onClick={() => hasThoughts && setThkOpen((o) => !o)}
+                className="flex items-center gap-1.5 min-w-0 text-left"
+                aria-expanded={thkOpen}
+                aria-label={hasThoughts ? "Toggle thinking stream" : undefined}
               >
-                {thoughtStream!.map((line, i) => (
-                  <div key={i} className="whitespace-pre-wrap break-words">
-                    {line}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        ) : null}
-        {asksNode}
-          </div>
-        ) : undefined
-      }
-      footer={
-        /* Footer (variant anatomy): memory dot + status on the left;
-           TIMER + data/memory.db chrome label on the right.
-         * Session 246: this app has an UN-LAYERED global margin/padding
-           reset that overrides Tailwind v4's layered utilities — synthetic
-           probes show ml-auto/mr-auto/pl-* all compute 0. So the two sides
-           are separated with justify-between (verified working), NOT
-           margin-auto, and each side is its own flex group. */
-        <span className="flex items-center justify-between gap-2 min-w-0 w-full">
-          <span className="flex items-center gap-1.5 min-w-0">
-          <span
-            aria-hidden
-            key={dotFlashKey}
-            style={{
-              /* Session 246: margin puts the dot's centre on the shared left
-                 rail (34px axis: pl-3 + body pl-2 + row px-1.5 + half node). */
-              marginLeft: 19.5,
-              width: 5,
-              height: 5,
-              borderRadius: "50%",
-              background: veinColor,
-              boxShadow: `0 0 6px ${veinColor}`,
-              flexShrink: 0,
-              animation: dotFlashKey > 0 ? "memoryDotFlash 0.8s ease-out" : undefined,
-            }}
-          />
-          {/* Session 245: the memory footer goes LIVE — learning signals get
-              their own glyph + signal-tinted font effect; regular memory
-              events render their registry summary; only a run with zero
-              memory activity keeps the quiet "Active Execution". */}
-          {learningSignal && memoryEntry ? (
-            <span
-              className="truncate text-[9px] font-mono font-bold uppercase tracking-wider"
-              style={{
-                color: signalTint[learningSignal] ?? veinColor,
-                textShadow: `0 0 8px ${signalTint[learningSignal] ?? veinColor}55`,
-              }}
-              title={`Learning signal: ${learnedSummary}`}
-            >
-              {memoryEntry.glyph} {learnedSummary}
+                <ChassisBadge color="#fbbf24">THK</ChassisBadge>
+                <span className="italic truncate text-[10px]" style={{ color: "rgba(251,191,36,0.7)" }}>
+                  {latestThought ?? (isWorking ? "Reflecting..." : "")}
+                </span>
+                {hasThoughts && (
+                  <ChevronDown
+                    size={10}
+                    className="shrink-0 opacity-50"
+                    style={{ transform: thkOpen ? "rotate(180deg)" : "none", transition: "transform 0.2s" }}
+                  />
+                )}
+              </button>
+              {thkOpen && hasThoughts && (
+                <div
+                  ref={streamRef}
+                  className="mt-1.5 max-h-[120px] overflow-y-auto rounded-md bg-black/40 border border-white/6 p-2 font-mono text-[9px] leading-relaxed"
+                  style={{ color: "rgba(251,191,36,0.55)" }}
+                  data-testid="thk-stream"
+                >
+                  {thoughtStream!.map((line, i) => (
+                    <div key={i} className="whitespace-pre-wrap break-words">
+                      {line}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ) : null}
+          {asksNode}
+            </div>
+          ) : undefined
+        }
+        footer={
+          /* Footer (concept 2 .foot): memory line (brand b2, truncates) · time · card id (b1).
+           * Session 246: this app has an UN-LAYERED global margin/padding
+             reset that overrides Tailwind v4's layered utilities, so the footer
+             is laid out by the .iris-tc-* classes (css-src/globals.css), which
+             set their own margins. */
+          <span className="iris-tc-foot">
+            {/* Session 245: the memory footer goes LIVE — learning signals get
+                their own glyph + signal tint; regular memory events render their
+                registry summary; only a run with zero memory activity keeps the
+                quiet run-state label. The glyph flashes when a memory event lands
+                (Session 246, memoryDotFlash; key re-mounts it per event). */}
+            <span className="iris-tc-mem">
+              <span
+                aria-hidden
+                key={dotFlashKey}
+                style={{
+                  display: "inline-block",
+                  marginRight: 5,
+                  animation: dotFlashKey > 0 ? "memoryDotFlash 0.8s ease-out" : undefined,
+                }}
+              >
+                ◈
+              </span>
+              {learningSignal && memoryEntry ? (
+                <span
+                  style={{ color: signalTint[learningSignal] ?? veinColor, fontWeight: 600 }}
+                  title={`Learning signal: ${learnedSummary}`}
+                >
+                  {memoryEntry.glyph} {learnedSummary}
+                </span>
+              ) : (
+                <span title={footnoteText}>{footnoteText}</span>
+              )}
             </span>
-          ) : (
-            <span
-              className="truncate text-[9px] font-mono"
-              style={{
-                color: lastMemoryTint ?? "rgba(255,255,255,0.35)",
-                textShadow: lastMemoryTint ? `0 0 8px ${lastMemoryTint}44` : undefined,
-              }}
-              title={footnoteText}
-            >
-              {footnoteText}
-            </span>
-          )}
-          </span>
-          {/* Right group — justify-between on the parent pins this to the
-              FAR RIGHT edge of the footer. */}
-          <span className="flex items-center gap-2 shrink-0">
             {/* Session-331: the live ⏱ pill is gated on isWorking ONLY, so a
                 settled run can never show a frozen live timer (the old
                 `|| elapsedSec > 0` kept it after settle). The frozen-duration
                 pill below covers completed/rehydrated runs. */}
             {isWorking && (
-              <span
-                className="px-1.5 py-0.5 rounded text-[9px] font-mono tabular-nums"
-                style={{ color: `${veinColor}cc`, border: `1px solid ${veinColor}20`, background: `${veinColor}10` }}
-                title="Elapsed execution time"
-              >
+              <span className="iris-tc-time" title="Elapsed execution time">
                 ⏱ {timerLabel}
               </span>
             )}
@@ -583,534 +617,441 @@ export default function TaskListCard({
                 task took — frozen duration from the persisted record, instead
                 of no timer at all. */}
             {!isWorking && elapsedSec === 0 && typeof durationSec === "number" && durationSec > 0 && (
-              <span
-                className="px-1.5 py-0.5 rounded text-[9px] font-mono tabular-nums"
-                style={{ color: "rgba(255,255,255,0.45)", border: "1px solid rgba(255,255,255,0.10)", background: "rgba(255,255,255,0.04)" }}
-                title="Total task duration"
-              >
+              <span className="iris-tc-time" title="Total task duration">
                 ⏱ {durationSec >= 3600
                   ? `${Math.floor(durationSec / 3600)}:${String(Math.floor((durationSec % 3600) / 60)).padStart(2, "0")}:${String(durationSec % 60).padStart(2, "0")}`
                   : `${Math.floor(durationSec / 60)}:${String(durationSec % 60).padStart(2, "0")}`}
               </span>
             )}
-            {/* Session 246 (@taskcard): the card's ID lives in the footer
-                chrome — `<short-id>/memory.db` — with a one-click copy to its
-                left, so it can be referenced as @taskcard:<id> from ANY
-                conversation thread. */}
-            {/* Copy + ID hug each other (gap-1); the timer stays a full
-                gap-2 away so the pairs read as separate clusters. */}
-            <span className="flex items-center gap-1 shrink-0">
+            {/* Session 246 (@taskcard): the card's ID lives in the footer —
+                `<short-id>/memory.db` — with a one-click copy beside it, so it
+                can be referenced as @taskcard:<id> from ANY conversation thread. */}
+            <span className="iris-tc-idbox">
               {cardId && (
                 <button
                   type="button"
                   onClick={copyCardId}
-                  className="flex items-center justify-center rounded transition-all duration-150 hover:brightness-150"
-                  style={{ color: idCopied ? "#34d399" : "rgba(255,255,255,0.4)", padding: 1, lineHeight: 0 }}
+                  className="iris-tc-copy"
+                  style={idCopied ? { color: "#34d399" } : undefined}
                   title={`Copy task-card ID: ${cardId}`}
                   aria-label="Copy task-card ID"
                 >
                   {idCopied ? <Check size={9} /> : <Copy size={9} />}
                 </button>
               )}
-              <ChassisChromeLabel>
+              <span className="iris-tc-id">
                 {cardId ? `${cardId.replace(/^card_/, "")}/memory.db` : "taskcard/memory.db"}
-              </ChassisChromeLabel>
+              </span>
             </span>
           </span>
-        </span>
-      }
-      header={
-        <>
-          {/* REQ-8: subtle Pacman OrbCanvas-style border particles on live
-              learning signal. */}
-          {learningSignal && (
-            <span
-              aria-hidden
-              className="pointer-events-none absolute inset-0 rounded-lg"
-              style={{
-                border: `1px solid ${signalTint[learningSignal]}55`,
-                boxShadow: `0 0 14px ${signalTint[learningSignal]}33, inset 0 0 6px ${signalTint[learningSignal]}22`,
-                animation: "irisSignalPulse 2.4s ease-in-out infinite",
-              }}
-            />
-          )}
-          {/* Animated identity marker — variant tokens: Xur 14,
-              vein-coloured, 0.6 while idle/finished and 1.8 while working —
-              the header goes static when the run settles (Session 312 UX
-              lock). The websearch Search icon
-              is gone: the objective itself carries the context now.
-           * Session 246: marginLeft keeps the marker's centre on the SAME
-              vertical axis as the body step nodes and the footer dot — one
-              continuous left rail (user-requested symmetry). Axis math:
-              pl-3(12) + body pl-2(8) + row px-1.5(6) + half node box(8) = 34;
-              34 - 12 - 7 = 15. */}
-          <span style={{ display: "flex", marginLeft: 15 }}>
-            {/* Session 312 (UX lock): 1.8 while working; 0 when the run
-                settles — Xur renders one static frame at speed<=0, so the
-                header marker STOPS when the card's activity is done
-                (user-directed 2026-09-09). */}
-            <Xur size={14} color={veinColor} speed={isWorking ? 1.8 : 0} />
-          </span>
-          {/* OBJECTIVE leads the header (12px mono semibold white/95
-              tracking-tight truncate, full text on tooltip). No badge in
-              front of it. Legacy payloads without planTitle fall back to a
-              short mode badge. */}
-          {objective ? (
-            <span
-              className="min-w-0 flex-1 truncate text-[12px] font-mono font-semibold tracking-tight"
-              style={{ color: "rgba(255,255,255,0.95)" }}
-              title={objective}
-            >
-              {objective}
-            </span>
-          ) : (
-            mode && <ChassisBadge color={glowColor}>{mode.toUpperCase()}</ChassisBadge>
-          )}
-          {/* Variant anatomy: the crystallized/done badge beside the
-              objective — a run that finished clean shows it, not just
-              learning-signal runs. */}
-          {runComplete && (
-            <ChassisBadge color="#34d399" icon={<Sparkles size={8} />}>
-              done
-            </ChassisBadge>
-          )}
-
-          {/* Progress rail — failures take their share in red. */}
-          {steps.length > 0 && (
-            <span
-              className="ml-auto h-[3px] rounded-full overflow-hidden flex shrink-0"
-              style={{ width: 56, background: "rgba(255,255,255,0.08)" }}
-              aria-hidden
-            >
+        }
+        header={
+          <>
+            {/* REQ-8: subtle Pacman OrbCanvas-style border particles on live
+                learning signal. */}
+            {learningSignal && (
               <span
+                aria-hidden
+                className="pointer-events-none absolute inset-0 rounded-lg"
                 style={{
-                  width: `${(doneCount / steps.length) * 100}%`,
-                  background: glowColor,
-                  transition: "width 0.35s cubic-bezier(0.22,1,0.36,1)",
-                }}
-              />
-              <span
-                style={{
-                  width: `${(failCount / steps.length) * 100}%`,
-                  background: "#f87171",
-                  transition: "width 0.35s cubic-bezier(0.22,1,0.36,1)",
-                }}
-              />
-            </span>
-          )}
-          {failCount > 0 && (
-            <span
-              className={`text-[10px] font-mono tabular-nums shrink-0${steps.length > 0 ? "" : " ml-auto"}`}
-              style={{ color: "#f87171" }}
-              title={`${failCount} step${failCount === 1 ? "" : "s"} failed`}
-            >
-              {failCount}✕
-            </span>
-          )}
-
-          {/* Session 246: memory badges REMOVED from the header — memory
-              activity is footer content (learning signal styles the footer
-              line; episodic events feed footnoteText). */}
-
-          <button
-            type="button"
-            onClick={() => setCollapsed((c) => !c)}
-            className="shrink-0 p-1 rounded transition-all duration-150 hover:brightness-125 flex items-center justify-center"
-            style={{ color: glowColor, border: `1px solid ${glowColor}30` }}
-            aria-label={collapsed ? "Expand plan" : "Collapse plan"}
-          >
-            <ChevronDown
-              size={10}
-              style={{
-                transform: collapsed ? "rotate(-90deg)" : "none",
-                transition: "transform 0.2s",
-              }}
-            />
-          </button>
-        </>
-      }
-      children={
-        !collapsed ? (
-          <div className="relative pl-2">
-            {/* Continuous vertical hairline through all step nodes. */}
-            {steps.length > 1 && (
-              <div
-                style={{
-                  position: "absolute",
-                  left: 7.5,
-                  top: 10,
-                  bottom: 10,
-                  width: 1,
-                  background: `linear-gradient(to bottom, transparent, ${glowColor}30 4px, ${glowColor}20 calc(100% - 4px), transparent)`,
+                  border: `1px solid ${signalTint[learningSignal]}55`,
+                  boxShadow: `0 0 14px ${signalTint[learningSignal]}33, inset 0 0 6px ${signalTint[learningSignal]}22`,
+                  animation: "irisSignalPulse 2.4s ease-in-out infinite",
                 }}
               />
             )}
-            {/* T21 (REQ-22): goal-directed enrichment strip — the goal this
-                card serves, its extraction contract (schema field chips),
-                aggregate batch progress, cross-source verification tally and
-                temporal-diff pills. Renders ONLY when the backend emitted the
-                fields; nothing here is synthesized client-side. */}
-            {hasEnrichment && (
-              <div className="flex flex-col gap-1 mb-1.5 px-1.5" data-testid="taskcard-enrichment">
-                {goalSnippet ? (
-                  <div
-                    className="text-[9.5px] font-mono truncate"
-                    style={{ color: "rgba(255,255,255,0.45)" }}
-                    title={goalSnippet}
+            <div className="iris-tc-head">
+              {/* Concept 2 top row: title · state pill · fold chevron. */}
+              <div className="iris-tc-top">
+                {/* Animated identity marker — variant tokens: Xur 14,
+                    vein-coloured. Session 312 (UX lock): 1.8 while working; 0
+                    when the run settles — Xur renders one static frame at
+                    speed<=0, so the header marker STOPS when the card's
+                    activity is done (user-directed 2026-09-09). */}
+                <span className="iris-tc-mark">
+                  <Xur size={14} color={veinColor} speed={isWorking ? 1.8 : 0} />
+                </span>
+                {/* OBJECTIVE leads the header (12px mono semibold white/95
+                    tracking-tight truncate, full text on tooltip). No badge in
+                    front of it. Legacy payloads without planTitle fall back to a
+                    short mode badge. */}
+                {objective ? (
+                  <span
+                    className="min-w-0 flex-1 truncate text-[12px] font-mono font-semibold tracking-tight"
+                    style={{ color: "rgba(255,255,255,0.95)" }}
+                    title={objective}
                   >
-                    {goalSnippet}
-                  </div>
-                ) : null}
-                {schemaKeys.length > 0 ? (
-                  <div className="flex flex-wrap gap-1">
-                    {schemaKeys.map((k) => (
-                      <span
-                        key={k}
-                        className="px-1 rounded text-[8px] font-mono leading-[14px]"
-                        style={{
-                          border: "1px solid rgba(255,255,255,0.10)",
-                          color: "rgba(255,255,255,0.5)",
-                          background: "rgba(255,255,255,0.03)",
-                        }}
-                      >
-                        {k}
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
-                {batchMetrics?.total ? (
-                  <div className="text-[9px] font-mono tabular-nums" style={{ color: "rgba(255,255,255,0.5)" }}>
-                    batch {Math.min(batchMetrics.done ?? 0, batchMetrics.total)}/{batchMetrics.total}
-                    {batchMetrics.inFlight ? ` · ${batchMetrics.inFlight} in flight` : ""}
-                    {batchMetrics.rateLimited ? (
-                      <span style={{ color: "#fbbf24" }}> · {batchMetrics.rateLimited} rate-limited</span>
-                    ) : null}
-                  </div>
-                ) : null}
-                {verifiedOk.length > 0 || discrepancies.length > 0 ? (
-                  <div className="flex flex-wrap items-center gap-1" aria-label="cross-source verification">
-                    {verifiedOk.map(([field, v]) => (
-                      <span
-                        key={field}
-                        className="inline-flex items-center gap-0.5 px-1 rounded text-[8px] font-mono leading-[14px]"
-                        style={{
-                          border: "1px solid rgba(52,211,153,0.25)",
-                          color: "#34d399",
-                          background: "rgba(52,211,153,0.06)",
-                        }}
-                        title={`${field}: corroborated across ${v.corroborations ?? "≥2"} sources`}
-                      >
-                        <Check size={7} aria-hidden /> {field}
-                      </span>
-                    ))}
-                    {/* REQ-11 AC4: irreconcilable numbers stay visible with
-                        their source context — a discrepancy is a FINDING, not
-                        a state to hide. */}
-                    {discrepancies.map(([field, v]) => (
-                      <span
-                        key={field}
-                        className="inline-flex items-center gap-0.5 px-1 rounded text-[8px] font-mono leading-[14px]"
-                        style={{
-                          border: "1px solid rgba(251,191,36,0.30)",
-                          color: "#fbbf24",
-                          background: "rgba(251,191,36,0.06)",
-                        }}
-                        title={`${field}: sources disagree${v.note ? ` — ${v.note}` : ""}`}
-                      >
-                        ⚠ {field}
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
-                {temporalDelta?.statements.length ? (
-                  <div className="flex flex-wrap gap-1" aria-label="temporal changes">
-                    {temporalDelta.statements.map((s, i) => (
-                      <span
-                        key={`${i}-${s.slice(0, 16)}`}
-                        className="px-1 rounded text-[8px] font-mono leading-[14px]"
-                        style={{
-                          border: `1px solid ${glowColor}38`,
-                          color: glowColor,
-                          background: `${glowColor}0d`,
-                        }}
-                        title={s}
-                      >
-                        {s}
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
+                    {objective}
+                  </span>
+                ) : (
+                  mode && <ChassisBadge color={glowColor}>{mode.toUpperCase()}</ChassisBadge>
+                )}
+                {/* Where the run is, in one word (WORKING / NEEDS YOU / ✓ DONE /
+                    STOPPED — upper-cased by CSS, the text stays lower case). */}
+                {cardState && (
+                  <span className="iris-tc-state" data-state={cardState.key}>
+                    {cardState.label}
+                  </span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setCollapsed((c) => !c)}
+                  className="iris-tc-chev"
+                  aria-label={collapsed ? "Expand plan" : "Collapse plan"}
+                >
+                  {collapsed ? "⌄" : "⌃"}
+                </button>
               </div>
-            )}
-            {/* data-task-steps / data-task-step: the timeline spine measures the step dots
-                and bends into this line; data-task-step carries the displayed status. */}
-            <div className="flex flex-col gap-1" data-task-steps>
-              {displaySteps.map((step, i) => {
-                // The ONE thinking line sits under the running step (else under the last one).
-                const showThinking =
-                  !!thinking &&
-                  (displaySteps.some((x) => x.status === "working")
-                    ? displaySteps.findIndex((x) => x.status === "working") === i
-                    : i === displaySteps.length - 1)
-                // Session 246: guard against backend-native statuses that
-                // slip through hydration ("running") — never crash the card.
-                const meta = STATUS_META[step.status] ?? STATUS_META.unknown
-                const isOpen = expandedStep === step.id
-                // A split child (<parent>_s<n>) or a backend-labelled branch row "looked closer";
-                // when it is done it has "reported back" to its parent.
-                const isSplitChild = parentOf(step.id ?? "") !== null
-                const rawBranch = (step as StepWithBranch).branchLabel
-                const branchLabel = rawBranch ? plainWords(rawBranch) : isSplitChild ? LOOKED_CLOSER : undefined
-                const reportedBack = (isSplitChild || !!rawBranch) && step.status === "done"
-                // Session 312 (user-approved): activity rows (phase nodes)
-                // indent under the plan like branch rows — same chronology,
-                // clearer parentage. Settled rows dim slightly so the eye
-                // lands on the working row first (colors unchanged).
-                const isPhaseRow = step.id?.startsWith("phase-") ?? false
-                const settled =
-                  step.status === "done" ||
-                  step.status === "fail" ||
-                  step.status === "error" ||
-                  step.status === "skipped"
-                return (
-                  /* Variant anatomy: branch rows indent pl-4 as a WHOLE —
-                     the hierarchy shift the preview shows. */
-                  <div
-                    key={step.id ?? i}
-                    data-task-step={step.status}
-                    className={`flex flex-col ${branchLabel || isPhaseRow ? "pl-4" : ""}`}
-                    style={{
-                      opacity: settled ? 0.75 : 1,
-                      transition: "opacity 0.4s ease",
-                      position: "relative",
-                    }}
-                  >
-                    <button
-                      type="button"
-                      onClick={() =>
-                        step.resultPreview || (step.history?.length ?? 0) > 0
-                          ? setExpandedStep(isOpen ? null : step.id)
-                          : undefined
+              {/* Segmented progress rail — one bar per step, coloured by state;
+                  a failure takes its own red segment. */}
+              {topSteps.length > 0 && (
+                <div className="iris-tc-rail" aria-hidden="true">
+                  {topSteps.map((s, i) => (
+                    <i
+                      key={s.id ?? i}
+                      className={
+                        s.status === "done" || s.status === "skipped"
+                          ? "done"
+                          : s.status === "working"
+                            ? "running"
+                            : s.status === "fail" || s.status === "error" || s.status === "vetoed"
+                              ? "failed"
+                              : ""
                       }
-                      className={`flex items-center gap-2 w-full text-left px-1.5 py-1 rounded-md transition-colors ${
-                        step.resultPreview || (step.history?.length ?? 0) > 0
-                          ? "cursor-pointer hover:bg-white/[0.03]"
-                          : ""
-                      }`}
-                      // room for the ± that sits at the end of an editing step's row
-                      style={step.diffs?.length ? { paddingRight: 30 } : undefined}
-                    >
-                      <ChassisStepNode
-                        status={
-                          step.status === "working" ? "running"
-                          : step.status === "done" || step.status === "fail" || step.status === "error" || step.status === "vetoed" ? "done"
-                          : "pending"
-                        }
-                        color={meta.color}
-                      />
-                      {/* Session 312 (wave glyph): faint marker on the row
-                          whose activity IRIS is narrating RIGHT NOW. Amber
-                          (the working palette) at half opacity — faint by
-                          design, tooltip names it. Only on working rows. */}
-                      {narrating && step.status === "working" ? (
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          </>
+        }
+        children={
+          !collapsed ? (
+            <div>
+              {/* Concept 2 goal line: "Goal · <goal> · N of M steps". The goal
+                  renders ONLY from a real goalSnippet; the count is the card's one
+                  visible counter. */}
+              {(goalSnippet || topSteps.length > 0) && (
+                <div className="iris-tc-goal">
+                  {goalSnippet ? (
+                    <>
+                      <b>Goal</b> · <span title={goalSnippet}>{goalSnippet}</span> ·{" "}
+                    </>
+                  ) : null}
+                  {finishedTop} of {topSteps.length} steps
+                  {retriedTop > 0 ? ` · ${retriedTop} tried again` : ""}
+                  {failedOnly > 0 ? <span style={{ color: "#ff7a6e" }}> · {failedOnly} failed</span> : null}
+                </div>
+              )}
+              {/* T21 (REQ-22): goal-directed enrichment strip — the goal this
+                  card serves, its extraction contract (schema field chips),
+                  aggregate batch progress, cross-source verification tally and
+                  temporal-diff pills. Renders ONLY when the backend emitted the
+                  fields; nothing here is synthesized client-side. (The goal
+                  itself reads on the goal line above.) */}
+              {hasEnrichment && (
+                <div className="flex flex-col gap-1 mb-1.5 px-1.5" data-testid="taskcard-enrichment">
+                  {schemaKeys.length > 0 ? (
+                    <div className="flex flex-wrap gap-1">
+                      {schemaKeys.map((k) => (
                         <span
-                          aria-label="IRIS is narrating this step"
-                          title="IRIS is narrating this step"
+                          key={k}
+                          className="px-1 rounded text-[8px] font-mono leading-[14px]"
                           style={{
-                            fontSize: 10,
-                            lineHeight: 1,
-                            color: "#fbbf24",
-                            opacity: 0.5,
-                            flexShrink: 0,
+                            border: "1px solid rgba(255,255,255,0.10)",
+                            color: "rgba(255,255,255,0.5)",
+                            background: "rgba(255,255,255,0.03)",
                           }}
                         >
-                          〰
+                          {k}
                         </span>
+                      ))}
+                    </div>
+                  ) : null}
+                  {batchMetrics?.total ? (
+                    <div className="text-[9px] font-mono tabular-nums" style={{ color: "rgba(255,255,255,0.5)" }}>
+                      batch {Math.min(batchMetrics.done ?? 0, batchMetrics.total)}/{batchMetrics.total}
+                      {batchMetrics.inFlight ? ` · ${batchMetrics.inFlight} in flight` : ""}
+                      {batchMetrics.rateLimited ? (
+                        <span style={{ color: "#fbbf24" }}> · {batchMetrics.rateLimited} rate-limited</span>
                       ) : null}
-                      {/* Verb column — fixed width so targets align;
-                          phase-driven while working (PHASE_VERB), registry
-                          verb otherwise, em-dash when no real tool. */}
-                      <span
-                        className="w-12 shrink-0 text-left font-mono font-bold uppercase tracking-wider text-[10px] leading-snug"
-                        style={{ color: stepVerb(step) ? veinColor : "rgba(255,255,255,0.2)" }}
-                        title={step.toolName || undefined}
-                      >
-                        {stepVerb(step) ?? "—"}
-                      </span>
-                      {branchLabel && <ChassisBranchBadge branchLabel={branchLabel} />}
-                      {reportedBack && (
-                        <span className="shrink-0 text-[9px] font-mono" style={{ color: "rgba(255,255,255,0.4)" }} data-reported-back>
-                          · {REPORTED_BACK}
-                        </span>
-                      )}
-                      {/* Target — variant tokens: 10.5px mono, white/85,
-                          ONE truncated line. Session 246: max-w caps long-
-                          winded planner descriptions even when the row has
-                          room — the full text stays on hover (title). */}
-                      <span
-                        className="text-[10.5px] font-mono text-white/85 truncate leading-tight flex-1 min-w-0 max-w-[52ch]"
-                        style={{
-                          color: step.status === "pending" ? "rgba(255,255,255,0.45)" : undefined,
-                        }}
-                        title={step.description}
-                      >
-                        {step.description}
-                      </span>
-                      {/* Inline summary back on the ROW TAIL (variant
-                          anatomy): 9px mono white/25, max-w-[170px],
-                          prefixed ·. Click opens the boxed view below. */}
-                      {step.resultPreview && !isOpen ? (
+                    </div>
+                  ) : null}
+                  {verifiedOk.length > 0 || discrepancies.length > 0 ? (
+                    <div className="flex flex-wrap items-center gap-1" aria-label="cross-source verification">
+                      {verifiedOk.map(([field, v]) => (
                         <span
-                          className="text-[9px] font-mono text-white/25 truncate max-w-[170px] shrink-0"
-                          title={step.resultPreview}
+                          key={field}
+                          className="inline-flex items-center gap-0.5 px-1 rounded text-[8px] font-mono leading-[14px]"
+                          style={{
+                            border: "1px solid rgba(52,211,153,0.25)",
+                            color: "#34d399",
+                            background: "rgba(52,211,153,0.06)",
+                          }}
+                          title={`${field}: corroborated across ${v.corroborations ?? "≥2"} sources`}
                         >
-                          · {step.resultPreview}
+                          <Check size={7} aria-hidden /> {field}
                         </span>
-                      ) : null}
-                      {/* T21 (REQ-22): per-step verification state — ✓ the
-                          count of cross-source-verified fields this step
-                          produced; ⚠ the fields whose sources disagree. */}
-                      {step.verifiedFields && Object.values(step.verifiedFields).some((v) => v?.verified) ? (
+                      ))}
+                      {/* REQ-11 AC4: irreconcilable numbers stay visible with
+                          their source context — a discrepancy is a FINDING, not
+                          a state to hide. */}
+                      {discrepancies.map(([field, v]) => (
                         <span
-                          className="shrink-0 text-[9px] font-mono"
-                          style={{ color: "#34d399" }}
-                          title={Object.entries(step.verifiedFields)
-                            .filter(([, v]) => v?.verified)
-                            .map(([f]) => f)
-                            .join(", ")}
+                          key={field}
+                          className="inline-flex items-center gap-0.5 px-1 rounded text-[8px] font-mono leading-[14px]"
+                          style={{
+                            border: "1px solid rgba(251,191,36,0.30)",
+                            color: "#fbbf24",
+                            background: "rgba(251,191,36,0.06)",
+                          }}
+                          title={`${field}: sources disagree${v.note ? ` — ${v.note}` : ""}`}
                         >
-                          ✓{Object.values(step.verifiedFields).filter((v) => v?.verified).length}
+                          ⚠ {field}
                         </span>
-                      ) : null}
-                      {step.verifiedFields && Object.values(step.verifiedFields).some((v) => v?.discrepancy) ? (
+                      ))}
+                    </div>
+                  ) : null}
+                  {temporalDelta?.statements.length ? (
+                    <div className="flex flex-wrap gap-1" aria-label="temporal changes">
+                      {temporalDelta.statements.map((s, i) => (
                         <span
-                          className="shrink-0 text-[9px] font-mono"
-                          style={{ color: "#fbbf24" }}
-                          title={Object.entries(step.verifiedFields)
-                            .filter(([, v]) => v?.discrepancy)
-                            .map(([f]) => f)
-                            .join(", ")}
+                          key={`${i}-${s.slice(0, 16)}`}
+                          className="px-1 rounded text-[8px] font-mono leading-[14px]"
+                          style={{
+                            border: `1px solid ${glowColor}38`,
+                            color: glowColor,
+                            background: `${glowColor}0d`,
+                          }}
+                          title={s}
                         >
-                          ⚠
+                          {s}
                         </span>
-                      ) : null}
-                    </button>
-                    {/* ± where this step edited a file: opens the review in the lens. */}
-                    {step.diffs && step.diffs.length > 0 ? (
-                      <span style={{ position: "absolute", right: 4, top: 4 }}>
-                        <DiffMark diffs={step.diffs} />
-                      </span>
-                    ) : null}
-                    {/* Live-crawl under-row: ONLY while this step is
-                        working — rotating host detail + source URL stream
-                        beside the plan text. Once done, the summary lives
-                        on the row tail above. */}
-                    {step.status === "working" && (step.activeDetail || step.url) ? (
-                      <span
-                        className="flex flex-col gap-[3px] pl-[88px] min-w-0 pb-1"
-                        style={{ color: glowColor }}
-                        title={
-                          step.activeDetail
-                            ? `${toolLabel(step)} — ${step.activeDetail}${
-                                step.activeProgress ? ` (${step.activeProgress})` : ""
-                              }${step.url ? ` — ${step.url}` : ""}`
-                            : toolLabel(step)
-                        }
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              )}
+              {/* data-task-steps / data-task-step: the timeline spine measures the step dots
+                  (the first child of each row's button) and bends into this line;
+                  data-task-step carries the displayed status. The FULL step list shows. */}
+              <div className="iris-tc-steps" data-task-steps>
+                {displaySteps.map((step, i) => {
+                  // The ONE thinking line sits under the running step (else under the last one).
+                  const showThinking =
+                    !!thinking &&
+                    (displaySteps.some((x) => x.status === "working")
+                      ? displaySteps.findIndex((x) => x.status === "working") === i
+                      : i === displaySteps.length - 1)
+                  // Session 246: guard against backend-native statuses that
+                  // slip through hydration ("running") — never crash the card.
+                  const meta = STATUS_META[step.status] ?? STATUS_META.unknown
+                  const isOpen = expandedStep === step.id
+                  const expandable = !!step.resultPreview || (step.history?.length ?? 0) > 0
+                  // A split child (<parent>_s<n>) or a backend-labelled branch row "looked closer";
+                  // when it is done it has "reported back" to its parent.
+                  const isSplitChild = parentOf(step.id ?? "") !== null
+                  const rawBranch = (step as StepWithBranch).branchLabel
+                  const branchLabel = rawBranch ? plainWords(rawBranch) : isSplitChild ? LOOKED_CLOSER : undefined
+                  const reportedBack = (isSplitChild || !!rawBranch) && step.status === "done"
+                  // Session 312 (user-approved): activity rows (phase nodes)
+                  // indent under the plan like branch rows — same chronology,
+                  // clearer parentage.
+                  const isPhaseRow = step.id?.startsWith("phase-") ?? false
+                  // A failed step says why on its own line (concept 2: "✕ <why> · tried again below");
+                  // "tried again" only when a "looked closer" child of it really follows.
+                  const failed = step.status === "fail" || step.status === "error"
+                  const triedAgain = failed && displaySteps.some((c) => parentOf(c.id ?? "") === step.id)
+                  const whyText = failed && step.resultPreview && !isOpen ? plainWords(step.resultPreview) : ""
+                  return (
+                    <div
+                      key={step.id ?? i}
+                      data-task-step={step.status}
+                      className={`iris-tc-st${branchLabel || isPhaseRow ? " sub" : ""}`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => (expandable ? setExpandedStep(isOpen ? null : step.id) : undefined)}
+                        className={`iris-tc-ln${expandable ? " click" : ""}`}
+                        // room for the ± that sits at the end of an editing step's row
+                        style={step.diffs?.length ? { paddingRight: 30 } : undefined}
                       >
-                        {step.activeDetail ? (
-                          <AnimatePresence mode="wait" initial={false}>
-                            <motion.span
-                              key={step.activeDetail}
-                              initial={{ opacity: 0, y: -3 }}
-                              animate={{ opacity: 1, y: 0 }}
-                              exit={{ opacity: 0, y: 3 }}
-                              transition={{ duration: 0.18 }}
-                              className="truncate normal-case text-[10px] leading-snug"
-                              style={{ color: "rgba(255,255,255,0.55)" }}
-                            >
-                              {step.activeDetail}
-                              {step.activeProgress ? (
-                                <span style={{ color: "rgba(255,255,255,0.35)" }}> {step.activeProgress}</span>
-                              ) : null}
-                            </motion.span>
-                          </AnimatePresence>
-                        ) : null}
-                        {step.url ? (
+                        <ChassisStepNode
+                          status={
+                            step.status === "working" ? "running"
+                            : step.status === "done" || step.status === "fail" || step.status === "error" || step.status === "vetoed" ? "done"
+                            : "pending"
+                          }
+                          color={meta.color}
+                        />
+                        {/* Session 312 (wave glyph): faint marker on the row
+                            whose activity IRIS is narrating RIGHT NOW. Amber
+                            (the working palette) at half opacity — faint by
+                            design, tooltip names it. Only on working rows. */}
+                        {narrating && step.status === "working" ? (
                           <span
-                            className="block max-w-full truncate normal-case text-[9px] leading-snug"
-                            style={{ color: "rgba(255,255,255,0.38)" }}
-                          >
-                            {step.url}
-                          </span>
-                        ) : null}
-                      </span>
-                    ) : null}
-                    {showThinking ? (
-                      <span
-                        className="pl-[88px] pb-1 min-w-0 truncate italic text-[10px] leading-snug"
-                        style={{ color: "rgba(255,255,255,0.45)" }}
-                        data-thinking-line
-                        title={thinking}
-                      >
-                        thinking · {thinking}
-                      </span>
-                    ) : null}
-                    {/* T21 (REQ-22/REQ-14): temporal-diff pills for THIS step —
-                        visible on done rows too (the change outlives the read). */}
-                    {step.temporalDelta?.statements.length ? (
-                      <span className="flex flex-wrap gap-1 pl-[88px] min-w-0 pb-1">
-                        {step.temporalDelta.statements.map((s, i) => (
-                          <span
-                            key={`${step.id}-td-${i}`}
-                            className="px-1 rounded text-[8px] font-mono leading-[14px]"
+                            aria-label="IRIS is narrating this step"
+                            title="IRIS is narrating this step"
                             style={{
-                              border: `1px solid ${glowColor}38`,
-                              color: glowColor,
-                              background: `${glowColor}0d`,
+                              fontSize: 10,
+                              lineHeight: 1,
+                              color: "#fbbf24",
+                              opacity: 0.5,
+                              flexShrink: 0,
                             }}
-                            title={s}
                           >
-                            {s}
+                            〰
                           </span>
-                        ))}
-                      </span>
-                    ) : null}
-                    {/* Session 312 (expand-on-demand history): the bounded
-                        activity trail this row accumulated while working —
-                        newest last, capped at 6 by the reducer. Renders ONLY
-                        from real streamed detail (REQ-10 AC4: no fabrication). */}
-                    {isOpen && (step.history?.length ?? 0) > 0 ? (
-                      <div
-                        className="ml-6 mt-1 p-2 rounded-md bg-black/50 border border-white/6 text-[9px] font-mono leading-relaxed break-words"
-                        style={{ borderColor: "rgba(255,255,255,0.06)" }}
-                      >
-                        {step.history!.map((h, hi) => (
-                          <div
-                            key={`${step.id}-hist-${hi}`}
-                            style={{ color: "rgba(255,255,255,0.35)" }}
+                        ) : null}
+                        {/* Verb column — fixed width so targets align; plain past
+                            tense ("Searched", "Ran") once the step ran, the plain
+                            verb while it waits. Phase-driven while working
+                            (PHASE_VERB). CSS shows it in sentence case. */}
+                        <span className="iris-tc-v" title={step.toolName || undefined}>
+                          {plainVerb(stepVerb(step), step.status) ?? "—"}
+                        </span>
+                        {branchLabel && <span className="iris-tc-br">↳ {branchLabel}</span>}
+                        {reportedBack && (
+                          <span className="iris-tc-rb" data-reported-back>
+                            · {REPORTED_BACK}
+                          </span>
+                        )}
+                        {/* Target — ONE truncated line. Session 246: the full
+                            text stays on hover (title). */}
+                        <span className="iris-tc-tg" title={step.description}>
+                          {step.description}
+                        </span>
+                        {/* Short summary at the row's right end (a failed step's
+                            text moves to its "✕" line below). Click opens the
+                            boxed view below. */}
+                        {step.resultPreview && !isOpen && !failed ? (
+                          <span className="iris-tc-sm" title={step.resultPreview}>
+                            {step.resultPreview}
+                          </span>
+                        ) : null}
+                        {/* T21 (REQ-22): per-step verification state — ✓ the
+                            count of cross-source-verified fields this step
+                            produced; ⚠ the fields whose sources disagree. */}
+                        {step.verifiedFields && Object.values(step.verifiedFields).some((v) => v?.verified) ? (
+                          <span
+                            className="iris-tc-ok"
+                            title={Object.entries(step.verifiedFields)
+                              .filter(([, v]) => v?.verified)
+                              .map(([f]) => f)
+                              .join(", ")}
                           >
-                            {h}
-                          </div>
-                        ))}
-                      </div>
-                    ) : null}
-                    {/* Expanded summary — boxed panel (variant tokens):
-                        black/50 surface, hairline border, padded. */}
-                    {isOpen && step.resultPreview ? (
-                      <div
-                        className="ml-6 mt-1 mb-1 p-2 rounded-md bg-black/50 border border-white/6 text-[9px] font-mono text-white/50 leading-relaxed break-words"
-                        style={{ borderColor: "rgba(255,255,255,0.06)" }}
-                      >
-                        {step.resultPreview}
-                      </div>
-                    ) : null}
-                  </div>
-                )
-              })}
+                            ✓{Object.values(step.verifiedFields).filter((v) => v?.verified).length}
+                          </span>
+                        ) : null}
+                        {step.verifiedFields && Object.values(step.verifiedFields).some((v) => v?.discrepancy) ? (
+                          <span
+                            className="iris-tc-ok"
+                            style={{ color: "#fbbf24" }}
+                            title={Object.entries(step.verifiedFields)
+                              .filter(([, v]) => v?.discrepancy)
+                              .map(([f]) => f)
+                              .join(", ")}
+                          >
+                            ⚠
+                          </span>
+                        ) : null}
+                      </button>
+                      {/* ± where this step edited a file: opens the review in the lens. */}
+                      {step.diffs && step.diffs.length > 0 ? (
+                        <span style={{ position: "absolute", right: 0, top: 0 }}>
+                          <DiffMark diffs={step.diffs} />
+                        </span>
+                      ) : null}
+                      {/* Live lines under the running step (amber, left rule): ONLY
+                          while this step is working — rotating host detail + source
+                          URL stream beside the plan text. Once done, the summary
+                          lives at the row's right end. */}
+                      {step.status === "working" && (step.activeDetail || step.url) ? (
+                        <div
+                          className="iris-tc-live"
+                          title={
+                            step.activeDetail
+                              ? `${toolLabel(step)} — ${step.activeDetail}${
+                                  step.activeProgress ? ` (${step.activeProgress})` : ""
+                                }${step.url ? ` — ${step.url}` : ""}`
+                              : toolLabel(step)
+                          }
+                        >
+                          {step.activeDetail ? (
+                            <AnimatePresence mode="wait" initial={false}>
+                              <motion.div
+                                key={step.activeDetail}
+                                initial={{ opacity: 0, y: -3 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, y: 3 }}
+                                transition={{ duration: 0.18 }}
+                              >
+                                {step.activeDetail}
+                                {step.activeProgress ? (
+                                  <span style={{ color: "rgba(242,193,78,0.55)" }}> {step.activeProgress}</span>
+                                ) : null}
+                              </motion.div>
+                            </AnimatePresence>
+                          ) : null}
+                          {step.url ? <div style={{ opacity: 0.7 }}>{step.url}</div> : null}
+                        </div>
+                      ) : null}
+                      {showThinking ? (
+                        <span
+                          className="iris-tc-think truncate italic"
+                          data-thinking-line
+                          title={thinking}
+                        >
+                          thinking · {thinking}
+                        </span>
+                      ) : null}
+                      {whyText ? (
+                        <div className="iris-tc-why" title={whyText}>
+                          ✕ {whyText}
+                          {triedAgain ? " · tried again below" : ""}
+                        </div>
+                      ) : null}
+                      {/* T21 (REQ-22/REQ-14): temporal-diff pills for THIS step —
+                          visible on done rows too (the change outlives the read). */}
+                      {step.temporalDelta?.statements.length ? (
+                        <span className="iris-tc-pills">
+                          {step.temporalDelta.statements.map((s, i) => (
+                            <span
+                              key={`${step.id}-td-${i}`}
+                              className="px-1 rounded text-[8px] font-mono leading-[14px]"
+                              style={{
+                                border: `1px solid ${glowColor}38`,
+                                color: glowColor,
+                                background: `${glowColor}0d`,
+                              }}
+                              title={s}
+                            >
+                              {s}
+                            </span>
+                          ))}
+                        </span>
+                      ) : null}
+                      {/* Session 312 (expand-on-demand history): the bounded
+                          activity trail this row accumulated while working —
+                          newest last, capped at 6 by the reducer. Renders ONLY
+                          from real streamed detail (REQ-10 AC4: no fabrication). */}
+                      {isOpen && (step.history?.length ?? 0) > 0 ? (
+                        <div className="iris-tc-box" style={{ color: "rgba(255,255,255,0.45)" }}>
+                          {step.history!.map((h, hi) => (
+                            <div key={`${step.id}-hist-${hi}`}>{h}</div>
+                          ))}
+                        </div>
+                      ) : null}
+                      {/* Expanded summary — boxed panel. */}
+                      {isOpen && step.resultPreview ? <div className="iris-tc-box">{step.resultPreview}</div> : null}
+                    </div>
+                  )
+                })}
+              </div>
             </div>
-          </div>
-        ) : undefined
-      }
-    />
+          ) : undefined
+        }
+      />
+    </div>
   )
 }

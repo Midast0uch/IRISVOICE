@@ -149,10 +149,14 @@ export interface MarkdownMessageProps {
    *              rendered in the same mono family"). It used to print the raw
    *              text, so ** and code fences showed as literal characters.
    *
-   * The TTS highlight works in both: it paints a Range over live text nodes and
+   * "voice"    — personal mode's answer bubble: the same markdown in IRIS's
+   *              reading serif (concept 2 `.voice`, Newsreader 16 px). Cards and
+   *              documents keep "markdown".
+   *
+   * The TTS highlight works in all: it paints a Range over live text nodes and
    * never inserts elements, so it does not care which tree it is over.
    */
-  variant?: "markdown" | "cli"
+  variant?: "markdown" | "cli" | "voice"
 }
 
 export function MarkdownMessage({
@@ -168,7 +172,7 @@ export function MarkdownMessage({
   const displayText = unwrapDocumentFences(text)
 
   return (
-    <div ref={ref} className={`iris-md ${variant === "cli" ? "iris-md-cli" : ""} ${className}`}>
+    <div ref={ref} className={`iris-md ${variant === "cli" ? "iris-md-cli" : variant === "voice" ? "iris-md-voice" : ""} ${className}`}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         components={{

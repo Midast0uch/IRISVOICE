@@ -6213,9 +6213,18 @@ class IRISGateway:
                 try:
                     from backend.conversation_store import add_message as _store_add
 
-                    _conv_for_turn = self._active_conversation_id.get(
-                        session_id
-                    ) or conversation_id
+                    # The turn's OWN conversation (the frame's id, where the
+                    # kernel ran and the user message was saved) wins over the
+                    # session's active mapping, which can be stale: live
+                    # 2026-10-06 a strand's reply was saved to its thread root
+                    # after a reconnect re-bound the session. The mapping stays
+                    # the fallback for a frame without an id (then
+                    # conversation_id is only the session id).
+                    _conv_for_turn = (
+                        payload.get("conversation_id")
+                        or self._active_conversation_id.get(session_id)
+                        or conversation_id
+                    )
                     if _conv_for_turn and response:
                         _store_add(
                             _conv_for_turn,

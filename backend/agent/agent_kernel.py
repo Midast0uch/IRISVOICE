@@ -337,6 +337,19 @@ def _step_decisive_call(item) -> Optional[dict]:
     return (failed or calls)[-1]
 
 
+def _plan_steps_open(plan, queue) -> int:
+    """How many steps of the ORIGINAL plan are still in the queue and not yet
+    settled (pending or running). A steering re-plan removes the steps it
+    replaces, so they stop counting. Module level: stand-in kernels."""
+    ids = {getattr(s, "step_id", None) for s in (getattr(plan, "steps", None) or [])}
+    ids.discard(None)
+    if not ids:
+        return 0
+    settled = set(queue.completed_ids) | set(queue.vetoed_ids) | set(queue.failed_ids)
+    present = {getattr(it, "step_id", None) for it in (getattr(queue, "items", None) or [])}
+    return len((ids & present) - settled)
+
+
 def _step_tool_name(item) -> str:
     """The tool a settled step really used, for its tool:result / tool:error.
 
@@ -10638,6 +10651,12 @@ Respond with a JSON object:
 
         _inflight: Dict[str, dict] = {}
         _finished = _queue_mod.Queue()
+        # Bound before the loop: a turn whose loop exits before its first pass
+        # (a stop latched at the first boundary, a budget already spent) reached
+        # the grading line with `item` unassigned - UnboundLocalError, and the
+        # reply became "[IRIS error: cannot access local variable 'item' ...]"
+        # (live 2026-10-06, a strand turn). The grading line handles None.
+        item = None
 
         while (
             not queue.is_complete()
@@ -12572,6 +12591,19 @@ Respond with a JSON object:
                     _gcov_stall = float(_GOAL_STALL_RATE)
                 except Exception:
                     _gcov_state = None
+            # The coverage arms judge "no progress toward the facts". While a
+            # step of the ORIGINAL plan has not settled, the plan has not had
+            # its chance: live 2026-10-06 two reads settled at C=0.667 with the
+            # planned summary step still pending, the rate arm fired, and two
+            # re-plans tripled the work (10 steps for 3 goals). The streak arms
+            # (repeat / empty / mismatch / topology) still fire at any time.
+            _plan_open = _plan_steps_open(plan, queue)
+            if _gcov_c is not None and _plan_open:
+                logger.debug(
+                    "[DER:streak-gate] coverage arms wait: %d planned step(s) "
+                    "not settled (C=%.3f)", _plan_open, _gcov_c,
+                )
+                _gcov_c = None
             fire, reason = evaluate_streak(
                 _wrappers, STUCK_STREAK_N, IDLE_STREAK_N,
                 topo_violation=_topo,
