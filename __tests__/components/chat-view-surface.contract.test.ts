@@ -18,7 +18,15 @@ import { readFileSync } from "fs"
 import path from "path"
 
 const CHAT_VIEW = path.resolve(__dirname, "..", "..", "components", "chat-view.tsx")
-const SRC = readFileSync(CHAT_VIEW, "utf8")
+// Phase 3 split (owner-approved 2026-10-06): the timeline moved out of chat-view.tsx; the shell and its timeline files are read as one source. Assertions unchanged.
+const SRC = [
+  CHAT_VIEW,
+  path.resolve(__dirname, "..", "..", "components", "chat", "Timeline.tsx"),
+  path.resolve(__dirname, "..", "..", "components", "chat", "TurnView.tsx"),
+  path.resolve(__dirname, "..", "..", "components", "chat", "TaskCardEntry.tsx"),
+]
+  .map((f) => readFileSync(f, "utf8"))
+  .join("\n")
 
 describe("CT-5 — no content-type badge chrome in chat bubbles", () => {
   it("the badge icon is gone as an element and as a component", () => {
