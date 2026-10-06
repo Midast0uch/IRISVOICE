@@ -159,13 +159,18 @@ def shadow_row(
     """
     if noul is None:
         return None
+    p = float(noul.probability)
     return {
         "consumer_id": consumer_id,
         "chosen": bool(noul.true(0.5)),
-        "confidence": round(float(noul.probability), 4),
-        # AC14.6: the Noul shape — one probability of truth, no winner, no
-        # separate confidence field.
-        "probability": round(float(noul.probability), 4),
+        # CONFIDENCE IN THE CHOSEN ANSWER, not P(true) (2026-10-05). The row's
+        # `confidence` is read as "how sure the engine is of `chosen`"; P(true)
+        # is that only when chosen is yes. For a "no" it is inverted (0.1 = a
+        # sure no), and measured on the live ledger the error-detection AUROC
+        # came out inverted: web_intent 0.218, escalate_incomplete 0.003.
+        "confidence": round(max(p, 1.0 - p), 4),
+        # AC14.6: the Noul shape — one probability of truth, kept raw beside it.
+        "probability": round(p, 4),
         "engine_latency_ms": noul.engine_latency_ms,
         "brain_bool": brain_bool,
         "shadow": True,

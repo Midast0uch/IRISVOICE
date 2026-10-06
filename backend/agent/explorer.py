@@ -251,7 +251,12 @@ def _engine_web_intent(
                 # collapsing a name to a bool would manufacture agreement.
                 "chosen": "yes" if verdict else "no",
                 "brain_choice": "yes" if bool(keyword) else "no",
-                "confidence": round(float(noul.probability), 4),
+                # Confidence in the CHOSEN answer, raw P(true) beside it (see
+                # monitor_shadow.shadow_row: P(true) as confidence inverts a "no";
+                # measured web_intent AUROC 0.218).
+                "confidence": round(max(float(noul.probability),
+                                        1.0 - float(noul.probability)), 4),
+                "probability": round(float(noul.probability), 4),
                 "engine_latency_ms": getattr(noul, "engine_latency_ms", None),
                 "shadow": True,
             })

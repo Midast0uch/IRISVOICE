@@ -40,6 +40,21 @@ MIN_PRECISION = 0.90
 # measured ECE cannot be flipped on precision alone.
 MAX_ECE = 0.05
 
+# THE HARDENED BAR (2026-10-05, Oracle Stage A). The three clauses above were
+# measured to pass on evidence that proves nothing: the same input rescored many
+# times counted as many rows (web_intent 654 distinct of 2690; presentation 2
+# distinct of 918), a reference with one class passes any precision, and ECE on
+# raw confidences says nothing about whether confidence RANKS errors. The extra
+# clauses are read from an OUT-OF-FOLD calibration (scripts/fit_oracle_calibration):
+#   * the reference needs both classes, the minority at least 5% of rows;
+#   * error-detection AUROC >= 0.65 (0.5 is chance);
+#   * a calibrated threshold exists: precision >= MIN_PRECISION there, with its
+#     Wilson 95% lower bound >= MIN_WILSON_LB, on >= MIN_ROWS_ABOVE distinct rows.
+MIN_MINORITY = 0.05
+MIN_AUROC = 0.65
+MIN_ROWS_ABOVE = 50
+MIN_WILSON_LB = 0.85
+
 
 @dataclass(frozen=True)
 class ConsumerBar:
@@ -64,13 +79,23 @@ def derive_status(
     min_rows: int = MIN_ROWS,
     min_precision: float = MIN_PRECISION,
     max_ece: float = MAX_ECE,
+    honest: Optional[Dict[str, Any]] = None,
 ) -> Tuple[str, str]:
     """``(status, gap)`` for one consumer's measurements.
 
     Returns ``("enforced", "")`` only when EVERY clause holds. Otherwise
     ``("shadow", <the first missing clause>)`` — the gap is recorded, never
     rounded up into a flip (AC22.4: no enforcement below the bar).
+
+    ``honest`` is the out-of-fold measurement (``fit_consumer`` in
+    scripts/fit_oracle_calibration.py). When given, the HARDENED bar applies and
+    ``rows`` / ``precision`` / ``ece`` are ignored in favour of its numbers. The
+    report and ``bar_rows`` always pass it. Without it only the three legacy
+    clauses run - kept because contract tests pin that shape, not because it is
+    enough to flip a consumer.
     """
+    if honest is not None:
+        return _derive_hardened(honest, min_rows, min_precision, max_ece)
     if rows < min_rows:
         return "shadow", f"rows {rows} < {min_rows}"
     if precision < min_precision:
@@ -81,6 +106,48 @@ def derive_status(
         return "shadow", "ECE not measured (precision alone cannot flip)"
     if ece > max_ece:
         return "shadow", f"ECE {ece:.3f} > {max_ece:.2f}"
+    return "enforced", ""
+
+
+def _derive_hardened(
+    h: Dict[str, Any], min_rows: int, min_precision: float, max_ece: float,
+) -> Tuple[str, str]:
+    """The hardened clauses, in order; the first one missing is the gap."""
+    n = int(h.get("rows_distinct") or 0)
+    if n < min_rows:
+        return "shadow", f"distinct rows {n} < {min_rows}"
+    cls = h.get("classes") or {}
+    a, b = int(cls.get("correct") or 0), int(cls.get("wrong") or 0)
+    if a == 0 or b == 0:
+        return "shadow", (
+            f"reference has one class only (correct {a}, wrong {b}): "
+            "precision and AUROC prove nothing"
+        )
+    minority = min(a, b) / (a + b)
+    if minority < MIN_MINORITY:
+        return "shadow", f"minority class {minority:.1%} < {MIN_MINORITY:.0%}"
+    oof = h.get("oof") or {}
+    auroc = oof.get("auroc")
+    if auroc is None or auroc < MIN_AUROC:
+        return "shadow", f"oof AUROC {auroc} < {MIN_AUROC} (confidence does not rank errors)"
+    t = h.get("threshold")
+    above = int(h.get("rows_above") or 0)
+    prec, wlb = oof.get("precision_at_t"), oof.get("wilson_lb")
+    if t is None:
+        return "shadow", (
+            f"no calibrated threshold gives precision >= {min_precision:.2f} "
+            f"(Wilson LB >= {MIN_WILSON_LB}) on >= {MIN_ROWS_ABOVE} distinct rows"
+        )
+    # A threshold in the file is not trusted on its own: re-check what it implies.
+    if above < MIN_ROWS_ABOVE:
+        return "shadow", f"rows above threshold {above} < {MIN_ROWS_ABOVE}"
+    if prec is None or prec < min_precision:
+        return "shadow", f"oof precision at threshold {prec} < {min_precision:.2f}"
+    if wlb is None or wlb < MIN_WILSON_LB:
+        return "shadow", f"Wilson lower bound {wlb} < {MIN_WILSON_LB}"
+    ece = oof.get("ece")
+    if ece is None or ece > max_ece:
+        return "shadow", f"oof calibrated ECE {ece} > {max_ece:.2f}"
     return "enforced", ""
 
 
@@ -95,7 +162,7 @@ def build_bar(
     precision = float(measured.get("precision") or 0.0)
     ece_raw = measured.get("ece")
     ece = None if ece_raw is None else float(ece_raw)
-    status, gap = derive_status(rows, precision, ece)
+    status, gap = derive_status(rows, precision, ece, honest=measured.get("honest"))
     return ConsumerBar(
         consumer_id=consumer_id, rows=rows, precision=round(precision, 4),
         ece=None if ece is None else round(ece, 4), status=status, gap=gap,

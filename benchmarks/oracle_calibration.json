@@ -1,0 +1,662 @@
+{
+  "gliner25-decide-onnx-int8": {
+    "depth_met": {
+      "classes": {
+        "correct": 398,
+        "wrong": 256
+      },
+      "fitted_at": "2026-10-06T00:06:42+00:00",
+      "knots": [
+        [
+          0.51628,
+          0.5
+        ],
+        [
+          0.575056,
+          0.626506
+        ],
+        [
+          0.639554,
+          0.666667
+        ],
+        [
+          0.747495,
+          0.722772
+        ]
+      ],
+      "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
+      "method": "isotonic",
+      "oof": {
+        "auroc": 0.5591,
+        "brier": 0.2368,
+        "ece": 0.0369,
+        "precision_at_t": null,
+        "wilson_lb": null
+      },
+      "rows_above": 0,
+      "rows_distinct": 654,
+      "rows_raw": 731,
+      "threshold": null
+    },
+    "depth_route": {
+      "classes": {
+        "correct": 37,
+        "wrong": 417
+      },
+      "fitted_at": "2026-10-06T00:06:42+00:00",
+      "knots": [
+        [
+          0.227905,
+          0.04878
+        ],
+        [
+          0.248372,
+          0.061584
+        ],
+        [
+          0.294368,
+          0.387097
+        ]
+      ],
+      "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
+      "method": "isotonic",
+      "oof": {
+        "auroc": 0.5345,
+        "brier": 0.0739,
+        "ece": 0.0411,
+        "precision_at_t": null,
+        "wilson_lb": null
+      },
+      "rows_above": 0,
+      "rows_distinct": 454,
+      "rows_raw": 590,
+      "threshold": null
+    },
+    "done": {
+      "classes": {
+        "correct": 395,
+        "wrong": 139
+      },
+      "fitted_at": "2026-10-06T00:06:42+00:00",
+      "knots": [
+        [
+          0.610647,
+          0.575758
+        ],
+        [
+          0.718686,
+          0.619048
+        ],
+        [
+          0.772551,
+          0.716216
+        ],
+        [
+          0.846145,
+          0.819277
+        ],
+        [
+          0.914913,
+          0.866667
+        ],
+        [
+          0.960776,
+          0.918919
+        ],
+        [
+          0.989407,
+          0.953488
+        ]
+      ],
+      "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
+      "method": "isotonic",
+      "oof": {
+        "auroc": 0.6705,
+        "brier": 0.1795,
+        "ece": 0.0208,
+        "precision_at_t": null,
+        "wilson_lb": null
+      },
+      "rows_above": 0,
+      "rows_distinct": 534,
+      "rows_raw": 552,
+      "threshold": null
+    },
+    "escalate_incomplete": {
+      "classes": {
+        "correct": 193,
+        "wrong": 153
+      },
+      "fitted_at": "2026-10-06T00:06:42+00:00",
+      "knots": [
+        [
+          0.503381,
+          0.548387
+        ],
+        [
+          0.555669,
+          0.559859
+        ]
+      ],
+      "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
+      "method": "isotonic",
+      "oof": {
+        "auroc": 0.4162,
+        "brier": 0.25,
+        "ece": 0.021,
+        "precision_at_t": null,
+        "wilson_lb": null
+      },
+      "rows_above": 0,
+      "rows_distinct": 346,
+      "rows_raw": 594,
+      "threshold": null
+    },
+    "event_family": {
+      "classes": {
+        "correct": 1,
+        "wrong": 13
+      },
+      "fitted_at": "2026-10-06T00:06:42+00:00",
+      "knots": [],
+      "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
+      "method": "isotonic",
+      "oof": {
+        "auroc": null,
+        "brier": null,
+        "ece": null,
+        "precision_at_t": null,
+        "wilson_lb": null
+      },
+      "rows_above": 0,
+      "rows_distinct": 14,
+      "rows_raw": 604,
+      "threshold": null
+    },
+    "event_type:control": {
+      "classes": {
+        "correct": 0,
+        "wrong": 4
+      },
+      "fitted_at": "2026-10-06T00:06:42+00:00",
+      "knots": [],
+      "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
+      "method": "isotonic",
+      "oof": {
+        "auroc": null,
+        "brier": null,
+        "ece": null,
+        "precision_at_t": null,
+        "wilson_lb": null
+      },
+      "rows_above": 0,
+      "rows_distinct": 4,
+      "rows_raw": 58,
+      "threshold": null
+    },
+    "event_type:delivery": {
+      "classes": {
+        "correct": 1,
+        "wrong": 3
+      },
+      "fitted_at": "2026-10-06T00:06:42+00:00",
+      "knots": [],
+      "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
+      "method": "isotonic",
+      "oof": {
+        "auroc": null,
+        "brier": null,
+        "ece": null,
+        "precision_at_t": null,
+        "wilson_lb": null
+      },
+      "rows_above": 0,
+      "rows_distinct": 4,
+      "rows_raw": 248,
+      "threshold": null
+    },
+    "event_type:knowledge": {
+      "classes": {
+        "correct": 1,
+        "wrong": 5
+      },
+      "fitted_at": "2026-10-06T00:06:42+00:00",
+      "knots": [],
+      "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
+      "method": "isotonic",
+      "oof": {
+        "auroc": null,
+        "brier": null,
+        "ece": null,
+        "precision_at_t": null,
+        "wilson_lb": null
+      },
+      "rows_above": 0,
+      "rows_distinct": 6,
+      "rows_raw": 57,
+      "threshold": null
+    },
+    "event_type:memory": {
+      "classes": {
+        "correct": 0,
+        "wrong": 6
+      },
+      "fitted_at": "2026-10-06T00:06:42+00:00",
+      "knots": [],
+      "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
+      "method": "isotonic",
+      "oof": {
+        "auroc": null,
+        "brier": null,
+        "ece": null,
+        "precision_at_t": null,
+        "wilson_lb": null
+      },
+      "rows_above": 0,
+      "rows_distinct": 6,
+      "rows_raw": 241,
+      "threshold": null
+    },
+    "mode": {
+      "classes": {
+        "correct": 354,
+        "wrong": 191
+      },
+      "fitted_at": "2026-10-06T00:06:42+00:00",
+      "knots": [
+        [
+          0.204578,
+          0.362069
+        ],
+        [
+          0.466424,
+          0.659292
+        ],
+        [
+          0.93504,
+          1.0
+        ]
+      ],
+      "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
+      "method": "isotonic",
+      "oof": {
+        "auroc": 0.4913,
+        "brier": 0.2744,
+        "ece": 0.2358,
+        "precision_at_t": null,
+        "wilson_lb": null
+      },
+      "rows_above": 0,
+      "rows_distinct": 545,
+      "rows_raw": 1102,
+      "threshold": null
+    },
+    "narration": {
+      "classes": {
+        "correct": 333,
+        "wrong": 200
+      },
+      "fitted_at": "2026-10-06T00:06:42+00:00",
+      "knots": [
+        [
+          0.344346,
+          0.214286
+        ],
+        [
+          0.364008,
+          0.389706
+        ],
+        [
+          0.380385,
+          0.487805
+        ],
+        [
+          0.390577,
+          0.576087
+        ],
+        [
+          0.409091,
+          0.59375
+        ],
+        [
+          0.428686,
+          0.809524
+        ],
+        [
+          0.439909,
+          0.9375
+        ],
+        [
+          0.47055,
+          0.946429
+        ],
+        [
+          0.602076,
+          1.0
+        ]
+      ],
+      "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
+      "method": "isotonic",
+      "oof": {
+        "auroc": 0.7752,
+        "brier": 0.1813,
+        "ece": 0.0414,
+        "precision_at_t": 0.9048,
+        "wilson_lb": 0.8545
+      },
+      "rows_above": 189,
+      "rows_distinct": 533,
+      "rows_raw": 916,
+      "threshold": 0.6935
+    },
+    "on_track": {
+      "classes": {
+        "correct": 243,
+        "wrong": 175
+      },
+      "fitted_at": "2026-10-06T00:06:42+00:00",
+      "knots": [
+        [
+          0.572307,
+          0.293413
+        ],
+        [
+          0.647719,
+          0.594203
+        ],
+        [
+          0.674411,
+          0.666667
+        ],
+        [
+          0.704217,
+          0.703704
+        ],
+        [
+          0.755477,
+          0.946667
+        ],
+        [
+          0.862412,
+          1.0
+        ]
+      ],
+      "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
+      "method": "isotonic",
+      "oof": {
+        "auroc": 0.776,
+        "brier": 0.1855,
+        "ece": 0.0718,
+        "precision_at_t": 0.918,
+        "wilson_lb": 0.8557
+      },
+      "rows_above": 122,
+      "rows_distinct": 418,
+      "rows_raw": 428,
+      "threshold": 0.7398
+    },
+    "presentation": {
+      "classes": {
+        "correct": 2,
+        "wrong": 0
+      },
+      "fitted_at": "2026-10-06T00:06:42+00:00",
+      "knots": [],
+      "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
+      "method": "isotonic",
+      "oof": {
+        "auroc": null,
+        "brier": null,
+        "ece": null,
+        "precision_at_t": null,
+        "wilson_lb": null
+      },
+      "rows_above": 0,
+      "rows_distinct": 2,
+      "rows_raw": 918,
+      "threshold": null
+    },
+    "recovery_strategy": {
+      "classes": {
+        "correct": 0,
+        "wrong": 72
+      },
+      "fitted_at": "2026-10-06T00:06:42+00:00",
+      "knots": [],
+      "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
+      "method": "isotonic",
+      "oof": {
+        "auroc": null,
+        "brier": null,
+        "ece": null,
+        "precision_at_t": null,
+        "wilson_lb": null
+      },
+      "rows_above": 0,
+      "rows_distinct": 72,
+      "rows_raw": 159,
+      "threshold": null
+    },
+    "review_verdict": {
+      "classes": {
+        "correct": 404,
+        "wrong": 1133
+      },
+      "fitted_at": "2026-10-06T00:06:42+00:00",
+      "knots": [
+        [
+          0.360346,
+          0.156627
+        ],
+        [
+          0.376876,
+          0.198529
+        ],
+        [
+          0.387116,
+          0.2
+        ],
+        [
+          0.395646,
+          0.221374
+        ],
+        [
+          0.404614,
+          0.241667
+        ],
+        [
+          0.412737,
+          0.255814
+        ],
+        [
+          0.45046,
+          0.263505
+        ],
+        [
+          0.504368,
+          0.322581
+        ],
+        [
+          0.522358,
+          0.342105
+        ],
+        [
+          0.574952,
+          0.575
+        ],
+        [
+          0.754093,
+          0.75
+        ]
+      ],
+      "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
+      "method": "isotonic",
+      "oof": {
+        "auroc": 0.5498,
+        "brier": 0.1889,
+        "ece": 0.0164,
+        "precision_at_t": null,
+        "wilson_lb": null
+      },
+      "rows_above": 0,
+      "rows_distinct": 1537,
+      "rows_raw": 2630,
+      "threshold": null
+    },
+    "sufficient": {
+      "classes": {
+        "correct": 0,
+        "wrong": 4
+      },
+      "fitted_at": "2026-10-06T00:06:42+00:00",
+      "knots": [],
+      "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
+      "method": "isotonic",
+      "oof": {
+        "auroc": null,
+        "brier": null,
+        "ece": null,
+        "precision_at_t": null,
+        "wilson_lb": null
+      },
+      "rows_above": 0,
+      "rows_distinct": 4,
+      "rows_raw": 5,
+      "threshold": null
+    },
+    "tool_choice": {
+      "classes": {
+        "correct": 751,
+        "wrong": 1371
+      },
+      "fitted_at": "2026-10-06T00:06:42+00:00",
+      "knots": [
+        [
+          0.2067,
+          0.079208
+        ],
+        [
+          0.221448,
+          0.142857
+        ],
+        [
+          0.251394,
+          0.208333
+        ],
+        [
+          0.291128,
+          0.22716
+        ],
+        [
+          0.327717,
+          0.267081
+        ],
+        [
+          0.354814,
+          0.321168
+        ],
+        [
+          0.374815,
+          0.322034
+        ],
+        [
+          0.392094,
+          0.38806
+        ],
+        [
+          0.418522,
+          0.519608
+        ],
+        [
+          0.582355,
+          0.571861
+        ]
+      ],
+      "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
+      "method": "isotonic",
+      "oof": {
+        "auroc": 0.684,
+        "brier": 0.2037,
+        "ece": 0.0279,
+        "precision_at_t": null,
+        "wilson_lb": null
+      },
+      "rows_above": 0,
+      "rows_distinct": 2122,
+      "rows_raw": 5616,
+      "threshold": null
+    },
+    "user_feedback": {
+      "classes": {
+        "correct": 6,
+        "wrong": 244
+      },
+      "fitted_at": "2026-10-06T00:06:42+00:00",
+      "knots": [
+        [
+          0.24812,
+          0.0
+        ],
+        [
+          0.291799,
+          0.028571
+        ]
+      ],
+      "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
+      "method": "isotonic",
+      "oof": {
+        "auroc": 0.3098,
+        "brier": 0.0238,
+        "ece": 0.0037,
+        "precision_at_t": null,
+        "wilson_lb": null
+      },
+      "rows_above": 0,
+      "rows_distinct": 250,
+      "rows_raw": 328,
+      "threshold": null
+    },
+    "web_intent": {
+      "classes": {
+        "correct": 323,
+        "wrong": 331
+      },
+      "fitted_at": "2026-10-06T00:06:42+00:00",
+      "knots": [
+        [
+          0.508136,
+          0.359375
+        ],
+        [
+          0.518513,
+          0.466667
+        ],
+        [
+          0.554881,
+          0.480519
+        ],
+        [
+          0.615224,
+          0.52459
+        ],
+        [
+          0.729454,
+          0.569231
+        ]
+      ],
+      "label_source": "agreement with the incumbent (brain_choice/brain_bool)",
+      "method": "isotonic",
+      "oof": {
+        "auroc": 0.5349,
+        "brier": 0.2507,
+        "ece": 0.0231,
+        "precision_at_t": null,
+        "wilson_lb": null
+      },
+      "rows_above": 0,
+      "rows_distinct": 654,
+      "rows_raw": 2690,
+      "threshold": null
+    }
+  }
+}

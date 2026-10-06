@@ -7300,7 +7300,11 @@ class AgentKernel:
                 _depth_conf = None
                 if isinstance(_depth_row, dict):
                     try:
-                        _depth_conf = float(_depth_row.get("confidence"))
+                        # P(true): the push log prints it as `p=`. The row's
+                        # `confidence` is now the confidence in the chosen answer.
+                        _depth_conf = float(
+                            _depth_row.get("probability", _depth_row.get("confidence"))
+                        )
                     except (TypeError, ValueError):
                         _depth_conf = None
                 self._der_last_depth = {

@@ -6,12 +6,19 @@ WHAT IT DOES
     (`system_events.event_type='tool_execution'`, the `decision` block), groups
     them BY CONSUMER, and reports for each one:
 
-        rows, rows above threshold, precision, ECE, Brier
+        rows (raw and distinct), rows above threshold, precision, ECE, Brier,
+        and the HONEST out-of-fold numbers (AUROC, calibrated ECE, calibrated
+        threshold, rows above it)
 
-    then derives the enforcement status against TG-7's bar (>= 100 rows AND
-    precision >= 0.90 AND ECE <= bound) and, with `--write`, persists the
-    result to `benchmarks/consumer_bar_record.json` via
+    then derives the enforcement status against the hardened bar
+    (`consumer_bar.derive_status`, Oracle Stage A 2026-10-05) and, with
+    `--write`, persists the result to `benchmarks/consumer_bar_record.json` via
     `backend.agent.consumer_bar.record_bars`.
+
+    The honest numbers come from `scripts/fit_oracle_calibration.fit_consumer`
+    on the DISTINCT rows: a repeated input counts once (web_intent had 654
+    distinct of 2690 rows) and a yes/no consumer's confidence is its confidence
+    in the CHOSEN answer, not P(true) (which inverted the AUROC of every "no").
 
 WHY IT EXISTS
     Wave 7 flips a consumer to enforced only on measured evidence. The bar
@@ -59,7 +66,7 @@ import sqlite3
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 _REPO = Path(__file__).resolve().parents[1]
 if str(_REPO) not in sys.path:
@@ -67,11 +74,16 @@ if str(_REPO) not in sys.path:
 
 from backend.agent.consumer_bar import (  # noqa: E402
     MAX_ECE,
+    MIN_AUROC,
+    MIN_MINORITY,
     MIN_PRECISION,
     MIN_ROWS,
+    MIN_ROWS_ABOVE,
+    MIN_WILSON_LB,
     derive_status,
     record_bars,
 )
+from backend.agent.oracle_calibration import binary_consumers  # noqa: E402
 
 # REQ-18 AC18.1: reuse the project's ONE calibration implementation rather than
 # writing a second one that could disagree with it.
@@ -80,12 +92,31 @@ from scripts.calibrate_decision_threshold import (  # noqa: E402
     _ece_brier,
     decision_label,
 )
+from scripts.fit_oracle_calibration import fit_consumer  # noqa: E402
 
 
 def load_rows(
-    db: str, backend_id: Optional[str] = None
+    db: str, backend_id: Optional[str] = None,
+    *, binary: Optional[frozenset] = None, dedupe: bool = True,
 ) -> Tuple[List[Dict[str, Any]], Dict[str, int]]:
-    """Every labelled decision row, plus the skip counters.
+    """Every labelled DISTINCT decision row, plus the skip counters.
+
+    Two corrections to what the ledger holds (Oracle Stage A, 2026-10-05):
+
+    * CONFIDENCE IS IN THE CHOSEN ANSWER. A yes/no consumer (``binary`` = the
+      consumers whose engine spec is a ("yes", "no") Noul; read from the specs
+      when not given) used to write P(true) as its confidence, so a "no" with
+      0.1 was a SURE no and every rank metric came out inverted (web_intent
+      AUROC 0.218, escalate_incomplete 0.003). Old rows carry P(true) in
+      ``confidence`` whatever they chose, so P(true) = confidence and the
+      confidence becomes max(p, 1-p); a new row carries ``probability`` and the
+      same rule applies (idempotent on a row already normalised).
+    * ONE ROW PER INPUT. The same input is rescored many times (web_intent: 654
+      distinct of 2690 rows; presentation: 2 of 918) and a repeat is not new
+      evidence for precision, ECE or the bar. Rows with the same (consumer,
+      engine, confidence, chosen, reference, label) collapse into one that
+      carries ``repeats``; the ledger holds no turn or goal key to use instead.
+      Counted under ``skipped["duplicates"]``. ``dedupe=False`` keeps them all.
 
     Skips are counted, never hidden: a row without a label cannot produce a
     precision number and must not be silently read as a success.
@@ -100,7 +131,10 @@ def load_rows(
     """
     rows: List[Dict[str, Any]] = []
     skipped = {"unreadable": 0, "no_confidence": 0, "no_label": 0,
-               "other_backend": 0}
+               "other_backend": 0, "duplicates": 0}
+    if binary is None:
+        binary = binary_consumers()
+    seen: Dict[tuple, Dict[str, Any]] = {}
     c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     c.row_factory = sqlite3.Row
     try:
@@ -135,27 +169,55 @@ def load_rows(
             if correct is None:
                 skipped["no_label"] += 1
                 continue
-            rows.append({
+            conf = float(conf)
+            prob = None
+            if str(cid) in binary:
+                prob = (float(d["probability"]) if d.get("probability") is not None
+                        else conf)
+                conf = max(prob, 1.0 - prob)
+            ref = d.get("brain_choice")
+            if ref is None:
+                ref = d.get("brain_bool")
+            engine = str(d.get("engine") or "")
+            key = (str(cid), engine, round(conf, 4), str(d.get("chosen")),
+                   str(ref), bool(correct))
+            if dedupe and key in seen:
+                seen[key]["repeats"] += 1
+                skipped["duplicates"] += 1
+                continue
+            row = {
                 "consumer_id": str(cid),
-                "engine": str(d.get("engine") or ""),
+                "engine": engine,
                 "route": str(d.get("route") or ""),
                 "shadow": shadow,
-                "confidence": float(conf),
+                "confidence": conf,
+                "probability": prob,
+                "chosen": d.get("chosen"),
+                "reference": ref,
                 "correct": bool(correct),
-            })
+                "repeats": 1,
+            }
+            seen[key] = row
+            rows.append(row)
     finally:
         c.close()
     return rows, skipped
 
 
-def thresholds_by_consumer() -> Tuple[Dict[str, Optional[float]], Dict[str, Any]]:
+def thresholds_by_consumer(
+    extra: Sequence[str] = (),
+) -> Tuple[Dict[str, Optional[float]], Dict[str, Any]]:
     """The RESOLVED threshold per consumer for the ACTIVE backend.
 
     AC25.8: a threshold belongs to the backend it was measured on. A consumer
     with no entry for the active backend resolves to None and is fail-closed
     (never enforced) — the report shows that rather than guessing a number.
+
+    Looked up for EVERY consumer in ``decision_engine.CONSUMERS`` (a hard-coded
+    list of 15 omitted ``depth_met``, so it showed "no threshold") plus
+    ``extra``: consumers that registered themselves and appear only in the ledger.
     """
-    from backend.agent.decision_engine import load_engine_config
+    from backend.agent.decision_engine import CONSUMERS, load_engine_config
 
     cfg = load_engine_config()
     backend_id = ""
@@ -178,13 +240,7 @@ def thresholds_by_consumer() -> Tuple[Dict[str, Optional[float]], Dict[str, Any]
         pass
     # AC25.8: resolve the thresholds BY that identity.
     cfg.backend_id = backend_id or None
-    consumers = (
-        "tool_choice", "presentation", "narration", "recovery_strategy",
-        "review_verdict", "sufficient", "done", "on_track",
-        "mode", "web_intent", "retry_same",
-        "has_gaps", "use_thinking", "escalate_incomplete", "needs_action",
-    )
-    out = {cid: cfg.threshold_for(cid) for cid in consumers}
+    out = {cid: cfg.threshold_for(cid) for cid in (*CONSUMERS, *extra)}
     config = {
         "backend_id": backend_id,
         "backend_identity_source": identity_source,
@@ -207,6 +263,10 @@ def measure(
     by_consumer: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for r in rows:
         by_consumer[r["consumer_id"]].append(r)
+    # A consumer with a threshold lookup but no rows still gets a line: zero
+    # evidence is a result, and a missing line reads as "not checked".
+    for cid in thresholds:
+        by_consumer.setdefault(cid, [])
 
     measured: Dict[str, Dict[str, Any]] = {}
     for cid, grp in by_consumer.items():
@@ -217,7 +277,12 @@ def measure(
         )
         ece, brier = _ece_brier(grp)
         measured[cid] = {
+            # DISTINCT rows: `rows_raw` is what the ledger holds, and the gap
+            # between them is how often the same input was rescored.
             "rows": len(grp),
+            "rows_raw": sum(int(r.get("repeats", 1)) for r in grp),
+            # The out-of-fold numbers the hardened bar reads (fit_consumer).
+            "honest": fit_consumer(grp),
             "rows_above_threshold": len(above),
             "precision": round(precision, 4),
             "ece": ece,
@@ -225,10 +290,9 @@ def measure(
             # oracle-addendum 25.4: does CONFIDENCE RANK errors? Precision and
             # ECE describe the operating point; AUROC describes whether the
             # confidence signal is usable at all - which is what the JEV cascade
-            # depends on, since it accepts/escalates ON confidence. Reported, NOT
-            # gated: adding a clause to derive_status would change enforcement
-            # semantics, and that is the owner's call, not a side effect of
-            # adding a metric.
+            # depends on, since it accepts/escalates ON confidence. This is the
+            # RAW (in-sample) AUROC; the bar gates on the out-of-fold one in
+            # `honest` (owner-approved 2026-10-05, Oracle Stage A).
             "auroc": _auroc(grp),
             "threshold": th,
             "shadow_rows": sum(1 for r in grp if r["shadow"]),
@@ -249,6 +313,10 @@ def bar_rows(measured: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
             "rows": m["rows"],
             "precision": m["precision"],
             "ece": None if m["threshold"] is None else m["ece"],
+            # The hardened bar travels into the record too, so `--write` cannot
+            # persist a flip the report would refuse. No backend threshold = no
+            # honest block: the legacy clauses then fail on the missing ECE.
+            "honest": None if m["threshold"] is None else m.get("honest"),
         }
         for cid, m in measured.items()
     }
@@ -266,7 +334,9 @@ def build_report(
             status = "shadow"
             gap = "no threshold for the active backend (fail-closed)"
         else:
-            status, gap = derive_status(m["rows"], m["precision"], m["ece"])
+            status, gap = derive_status(
+                m["rows"], m["precision"], m["ece"], honest=m.get("honest"),
+            )
         consumers[cid] = {**m, "status": status, "gap": gap}
     return {
         "config": config,
@@ -274,6 +344,10 @@ def build_report(
             "min_rows": MIN_ROWS,
             "min_precision": MIN_PRECISION,
             "max_ece": MAX_ECE,
+            "min_minority": MIN_MINORITY,
+            "min_auroc": MIN_AUROC,
+            "min_rows_above": MIN_ROWS_ABOVE,
+            "min_wilson_lb": MIN_WILSON_LB,
         },
         "skipped": skipped,
         "n_consumers": len(consumers),
@@ -283,35 +357,46 @@ def build_report(
 
 
 def _print_report(rep: Dict[str, Any]) -> None:
+    b = rep["bar"]
     print(f"deployed config: backend={rep['config']['backend_id']} "
           f"cap={rep['config']['candidate_cap']}")
-    print(f"bar: rows >= {rep['bar']['min_rows']}, "
-          f"precision >= {rep['bar']['min_precision']}, "
-          f"ECE <= {rep['bar']['max_ece']}")
+    print(f"HARDENED BAR (all required): distinct rows >= {b['min_rows']}; "
+          f"reference has 2 classes, minority >= {b['min_minority']:.0%}; "
+          f"out-of-fold AUROC >= {b['min_auroc']}; a calibrated threshold with "
+          f"precision >= {b['min_precision']} (Wilson LB >= {b['min_wilson_lb']}) "
+          f"on >= {b['min_rows_above']} distinct rows; "
+          f"out-of-fold calibrated ECE <= {b['max_ece']}")
     print("label: a DISPATCHED row judges on the event outcome; a SHADOW row "
           "judges on engine-vs-Brain agreement (parity)")
+    print("rows: DISTINCT inputs (a repeat counts once); a yes/no consumer's "
+          "confidence is its confidence in the CHOSEN answer")
     sk = rep["skipped"]
     print(f"skipped rows: no_label={sk.get('no_label', 0)} "
           f"no_confidence={sk.get('no_confidence', 0)} "
           f"unreadable={sk.get('unreadable', 0)} "
           f"other_backend={sk.get('other_backend', 0)} "
-          f"(measured on a different engine; this report scores the active one)")
-    print(f"consumers measured: {rep['n_consumers']}")
+          f"(measured on a different engine; this report scores the active one) "
+          f"duplicates={sk.get('duplicates', 0)} (repeats collapsed into distinct rows)")
+    print(f"consumers: {rep['n_consumers']} (every CONSUMERS entry plus any "
+          f"consumer seen in the ledger)")
     for cid, m in rep["consumers"].items():
-        print(f"\n[{cid}] rows={m['rows']} above_threshold={m['rows_above_threshold']} "
-              f"shadow_rows={m['shadow_rows']}")
-        print(f"  threshold={m['threshold']} precision={m['precision']} "
-              f"ece={m['ece']} brier={m['brier']}")
-        # oracle-addendum 25.4: AUROC belongs on the report line. A consumer can
-        # show healthy precision@threshold while its confidence ranks nothing -
-        # and the cascade's accept/escalate split is built entirely on that
-        # ranking. Reported, never gated here.
-        print(f"  auroc={m.get('auroc')}  (error-detection; None = one class "
-              f"only / no confidences)")
+        h = m.get("honest") or {}
+        o = h.get("oof") or {}
+        print(f"\n[{cid}] distinct={m['rows']} raw={m.get('rows_raw', m['rows'])} "
+              f"classes={h.get('classes')} shadow_rows={m['shadow_rows']}")
+        print(f"  raw (in-sample, legacy threshold {m['threshold']}): "
+              f"above={m['rows_above_threshold']} precision={m['precision']} "
+              f"ece={m['ece']} brier={m['brier']} auroc={m.get('auroc')}")
+        print(f"  honest (5-fold out-of-fold): auroc={o.get('auroc')} "
+              f"ece={o.get('ece')} brier={o.get('brier')} "
+              f"calibrated_threshold={h.get('threshold')} "
+              f"above={h.get('rows_above')} precision@t={o.get('precision_at_t')} "
+              f"wilson_lb={o.get('wilson_lb')}")
         print(f"  engines={m['engines']}")
         print(f"  status={m['status']}"
               + (f"  gap: {m['gap']}" if m["gap"] else "  (flip allowed)"))
-    print("\nFLIPPED: " + (", ".join(rep["flipped"]) or "(none)"))
+    print("\nWOULD EARN THE BAR: " + (", ".join(rep["flipped"]) or "(none)")
+          + "   (nothing is switched on: no bar record is written without --write)")
     shy = [f"{c} ({v['gap']})" for c, v in rep["consumers"].items()
            if v["status"] != "enforced"]
     print("SHADOW : " + ("; ".join(shy) or "(none)"))
@@ -331,7 +416,7 @@ def main() -> int:
     if not db.is_file():
         print(f"UNVERIFIED: db not found: {db}")
         return 4
-    thresholds, config = thresholds_by_consumer()
+    _, config = thresholds_by_consumer()
     try:
         # Scoped to the ACTIVE backend: rows from a retired engine cannot speak
         # for the model actually deployed (AC25.8).
@@ -339,6 +424,8 @@ def main() -> int:
     except sqlite3.Error as e:
         print(f"UNVERIFIED: cannot read ledger ({e})")
         return 4
+    # A threshold lookup for every CONSUMERS entry and every consumer in the ledger.
+    thresholds, config = thresholds_by_consumer(sorted({r["consumer_id"] for r in rows}))
 
     measured = measure(rows, thresholds)
     rep = build_report(measured, skipped, config)

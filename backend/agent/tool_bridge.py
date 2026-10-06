@@ -72,6 +72,12 @@ _DECISION_META_KEYS = (
     # job (2026-10-01): the Oracle job (decision_engine.ORACLE_JOBS) the row was
     # scored under - its input recipe and budget. Off this list it is dropped.
     "job",
+    # probability (2026-10-05): a Noul row's raw P(statement true). `confidence`
+    # on that row is the confidence in the CHOSEN answer (max(p, 1-p)); the raw
+    # value is what lets a reader tell a sure "no" from a sure "yes". Measured:
+    # shadow_row already emitted it and this whitelist dropped it, so no ledger
+    # row ever carried it.
+    "probability",
 )
 
 # How long a ledger write may run before it is reported as stuck. A write that

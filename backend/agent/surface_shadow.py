@@ -178,11 +178,14 @@ def shadow_row(
     """
     if noul is None:
         return None
+    p = float(noul.probability)
     return {
         "consumer_id": consumer_id,
         "chosen": bool(noul.true(0.5)),
-        "confidence": round(float(noul.probability), 4),
-        "probability": round(float(noul.probability), 4),
+        # Confidence in the CHOSEN answer, raw P(true) beside it (see
+        # monitor_shadow.shadow_row: P(true) read as confidence inverts a "no").
+        "confidence": round(max(p, 1.0 - p), 4),
+        "probability": round(p, 4),
         "engine_latency_ms": noul.engine_latency_ms,
         "brain_bool": brain_bool,
         "shadow": True,
