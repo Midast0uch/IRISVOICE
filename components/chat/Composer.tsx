@@ -8,13 +8,17 @@ import { SuggestionPills } from "@/components/chat/SuggestionPills"
 import ContextPill from "@/components/chat/ContextPill"
 import ModelSwitcher from "@/components/ModelSwitcher"
 import { ProjectBar } from "@/components/chat/composer/ProjectBar"
+import { useWorkspaceStore, type WorkspaceTab } from "@/stores/workspaceStore"
 import {
   RefTray,
   RefPicker,
+  WhoPicker,
   useRefCandidates,
-  hashQueryOf,
-  withoutHashQuery,
+  refTriggerOf,
+  withoutTrigger,
   matchRefs,
+  matchHearers,
+  type Hearer,
   type ComposerRef,
   type RefDoc,
 } from "@/components/chat/composer/refs"
@@ -57,11 +61,10 @@ export interface ComposerProps {
   // Web mode
   webMode: boolean
   setWebMode: React.Dispatch<React.SetStateAction<boolean>>
-  // @-card mention menu
-  cardMentionOpen: boolean
-  setCardMentionOpen: React.Dispatch<React.SetStateAction<boolean>>
-  mentionCandidates: TaskCard[]
-  openCardMentionPicker: () => void
+  // Task cards the "#" list offers (task cards are referenced only through "#");
+  // loadRefCards asks the backend for the cards of other threads, once per thread.
+  refCards: TaskCard[]
+  loadRefCards: () => void
   // Slash-command menu
   slashMenuOpen: boolean
   setSlashMenuOpen: React.Dispatch<React.SetStateAction<boolean>>
@@ -73,17 +76,22 @@ export interface ComposerProps {
   // Footer toolbar
   contextUsage: { used: number; max: number }
   taskProgress: TaskProgress
-  // Composer design 2026-10-06: steer/stop, # references.
+  // Composer design 2026-10-06: steer/stop, @ who hears, # references.
   /** The conversation on screen; # candidates and the stop message name it. */
   conversationId: string | null
   /** A turn is running in this conversation: Enter steers, the button stops. */
   isRunning: boolean
+  /** Who hears this ("to" chips). "@" fills it; chat-view puts it in the send payload. */
+  composerTo: string[]
+  setComposerTo: React.Dispatch<React.SetStateAction<string[]>>
   /** Picked # references (addresses). chat-view puts them in the send payload. */
   composerRefs: ComposerRef[]
   setComposerRefs: React.Dispatch<React.SetStateAction<ComposerRef[]>>
   /** Documents and artifacts shown in this conversation. */
   refDocs: RefDoc[]
 }
+
+const NO_TABS: WorkspaceTab[] = []
 
 export function Composer({
   isRemoteView,
@@ -111,10 +119,8 @@ export function Composer({
   jumpToLatest,
   webMode,
   setWebMode,
-  cardMentionOpen,
-  setCardMentionOpen,
-  mentionCandidates,
-  openCardMentionPicker,
+  refCards,
+  loadRefCards,
   slashMenuOpen,
   setSlashMenuOpen,
   slashMatches,
@@ -125,6 +131,8 @@ export function Composer({
   taskProgress,
   conversationId,
   isRunning,
+  composerTo,
+  setComposerTo,
   composerRefs,
   setComposerRefs,
   refDocs,
@@ -132,25 +140,51 @@ export function Composer({
   // Hover state for the upload pill — only the composer reads it.
   const [uploadHovered, setUploadHovered] = React.useState(false)
 
-  // ── # references: a picker of ADDRESSES (never content) ──────────────────
+  // ── @ who hears, # what you point at: lists of ADDRESSES (never content) ──
   const [b1, b2] = useBrandPalette()
-  const hashQuery = hashQueryOf(inputText)
-  const [hashDismissedFor, setHashDismissedFor] = React.useState<string | null>(null)
-  const pickerWanted = hashQuery !== null && hashDismissedFor !== inputText
+  const tabs = useWorkspaceStore((st) => st.tabs) ?? NO_TABS
+  // The caret belongs to the text it was read from; a text set from outside puts it at the end.
+  const [caretAt, setCaretAt] = React.useState<{ text: string; pos: number }>({ text: '', pos: 0 })
+  const caret = caretAt.text === inputText ? caretAt.pos : inputText.length
+  const trig = refTriggerOf(inputText, caret)
+  const [dismissedFor, setDismissedFor] = React.useState<string | null>(null)
+  const open = trig && dismissedFor !== inputText ? trig : null
+  const hashOpen = open?.sign === '#'
   const refCandidates = useRefCandidates({
     conversationId,
-    cards: mentionCandidates,
+    cards: refCards,
     docs: refDocs,
-    wanted: pickerWanted,
+    tabs,
+    wanted: hashOpen,
   })
-  const refMatches = pickerWanted ? matchRefs(refCandidates, composerRefs, hashQuery ?? '') : []
+  const cardsAskedFor = React.useRef<string | null>(null)
+  React.useEffect(() => {
+    if (!hashOpen || cardsAskedFor.current === conversationId) return
+    cardsAskedFor.current = conversationId
+    loadRefCards()
+  }, [hashOpen, conversationId, loadRefCards])
+  const refMatches = hashOpen ? matchRefs(refCandidates, composerRefs, open!.query) : null
+  const whoMatches = open?.sign === '@' ? matchHearers(open.query) : []
+  const listSize = open?.sign === '@' ? whoMatches.length : (refMatches?.flat.length ?? 0)
   const [refSel, setRefSel] = React.useState(0)
-  const refSelIdx = Math.min(refSel, Math.max(0, refMatches.length - 1))
+  const refSelIdx = Math.min(refSel, Math.max(0, listSize - 1))
+  const folder = (tabs.find((t) => t.type === 'folder')?.label) ?? 'no folder'
+  const afterPick = () => {
+    // The sign and its query leave the draft; the caret goes where the sign was.
+    const at = open!.at
+    setInputText(t => withoutTrigger(t, open!, caret))
+    setRefSel(0)
+    const el = inputRef.current as unknown as HTMLTextAreaElement | null
+    el?.focus()
+    requestAnimationFrame(() => { if (el) el.selectionStart = el.selectionEnd = at })
+  }
   const pickRef = (r: ComposerRef) => {
     setComposerRefs(prev => (prev.some(p => p.address === r.address) ? prev : [...prev, r]))
-    setInputText(t => withoutHashQuery(t))
-    setRefSel(0)
-    inputRef.current?.focus()
+    afterPick()
+  }
+  const pickWho = (h: Hearer) => {
+    setComposerTo(prev => (prev.includes(h.address) ? prev : [...prev, h.address]))
+    afterPick()
   }
 
   // ── One send/stop button. A turn runs here: it stops it. ────────────────
@@ -240,10 +274,18 @@ export function Composer({
         {/* Composer design 2026-10-06, both modes: who hears this and the
             picked # references, then the project folder and open files, then
             the message box. */}
-        <RefTray refs={composerRefs} onRemove={(a) => setComposerRefs(prev => prev.filter(r => r.address !== a))} />
+        <RefTray
+          to={composerTo}
+          onRemoveTo={(a) => setComposerTo(prev => (prev.length > 1 ? prev.filter(w => w !== a) : prev))}
+          refs={composerRefs}
+          onRemove={(a) => setComposerRefs(prev => prev.filter(r => r.address !== a))}
+        />
         <ProjectBar />
-        {refMatches.length > 0 && (
-          <RefPicker items={refMatches} selected={refSelIdx} onPick={pickRef} />
+        {refMatches && refMatches.flat.length > 0 && (
+          <RefPicker matches={refMatches} folder={folder} selected={refSelIdx} onPick={pickRef} />
+        )}
+        {whoMatches.length > 0 && (
+          <WhoPicker items={whoMatches} selected={refSelIdx} onPick={pickWho} />
         )}
 
           {/* Mode-split input area (cli-workspace-unification scope fix):
@@ -311,47 +353,9 @@ export function Composer({
               REQ-1). PERSONAL: flex-1 between the Web toggle and the pill
               cluster, per the original layout. */}
           <div className={isDeveloper ? "relative" : "flex-1 relative"}>
-            {/* Session 246 (@-card-mentions): typing a bare '@' opens a
-                picker of this session's task cards; selecting one
-                inserts an @taskcard:<id> token the backend resolves into
-                per-turn context. */}
-            {cardMentionOpen && mentionCandidates.length > 0 && (
-              <div
-                className="absolute bottom-full left-0 right-0 mb-1 z-50 rounded-md overflow-hidden"
-                style={{
-                  background: 'linear-gradient(160deg, rgba(14,14,24,0.97), rgba(8,8,16,0.96))',
-                  border: `1px solid ${glowColor}35`,
-                  boxShadow: '0 -4px 20px rgba(0,0,0,0.6)',
-                  maxHeight: 180,
-                  overflowY: 'auto',
-                }}
-              >
-                <div className="px-2 py-1 text-[9px] font-mono uppercase tracking-wider text-white/40">
-                  Reference a task card
-                </div>
-                {mentionCandidates.map(c => (
-                  <button
-                    key={c.cardId}
-                    className="w-full text-left px-2.5 py-1.5 text-[11px] truncate hover:bg-white/[0.06] transition-colors"
-                    style={{ color: 'rgba(255,255,255,0.8)' }}
-                    onMouseDown={(e) => {
-                      e.preventDefault(); // keep textarea focus
-                      setInputText(t => t.replace(/@$/, `@taskcard:${c.cardId} `));
-                      setCardMentionOpen(false);
-                    }}
-                  >
-                    <span style={{ color: glowColor }}>@</span>{' '}
-                    {c.planTitle || c.cardId}
-                    <span className="text-white/35 ml-1.5">
-                      {c.isWorking ? '· running' : c.terminalState ? `· ${c.terminalState}` : ''}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            )}
             {/* Gate 3 T12 (REQ-7): slash-command menu — filtered from
                 GET /api/dev/cli-tools; Tab/Enter accept, Escape dismiss.
-                Rendered above the input; never intercepts '@'. */}
+                Rendered above the input; never intercepts '@' or '#'. */}
             {isDeveloper && slashMenuOpen && slashMatches.length > 0 && (
               <div className="absolute bottom-full left-0 right-0 mb-1 z-50"
                 style={{
@@ -391,12 +395,10 @@ export function Composer({
               onChange={(e) => {
                 const v = e.target.value;
                 setInputText(v);
+                setCaretAt({ text: v, pos: e.target.selectionStart ?? v.length });
                 setRefSel(0);
-                const opening = /(^|\s)@$/.test(v);
-                if (opening && !cardMentionOpen) openCardMentionPicker();
-                setCardMentionOpen(opening);
                 // ── Gate 3 T12 (REQ-7): '/' opens the command menu;
-                // '@' picker precedence is untouched (CONTRACT LOCK).
+                // '@' / '#' picker precedence is untouched (CONTRACT LOCK).
                 if (isDeveloper && voiceState !== 'listening') {
                   setSlashMenuOpen(v.startsWith('/'))
                 } else if (slashMenuOpen) {
@@ -406,22 +408,25 @@ export function Composer({
                 e.target.style.height = 'auto';
                 e.target.style.height = `${e.target.scrollHeight}px`;
               }}
+              onSelect={(e) => setCaretAt({ text: e.currentTarget.value, pos: e.currentTarget.selectionStart ?? e.currentTarget.value.length })}
               onKeyDown={(e) => {
-                // ── # reference picker keys (accept beats send, like the slash menu)
-                if (refMatches.length > 0) {
+                // ── @ / # list keys (accept beats send, like the slash menu).
+                // Esc closes the list and keeps the sign as typed.
+                if (listSize > 0) {
                   if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
                     e.preventDefault()
-                    setRefSel((refSelIdx + (e.key === 'ArrowDown' ? 1 : refMatches.length - 1)) % refMatches.length)
+                    setRefSel((refSelIdx + (e.key === 'ArrowDown' ? 1 : listSize - 1)) % listSize)
                     return
                   }
                   if ((e.key === 'Enter' || e.key === 'Tab') && !e.shiftKey) {
                     e.preventDefault()
-                    pickRef(refMatches[refSelIdx])
+                    if (open!.sign === '@') pickWho(whoMatches[refSelIdx])
+                    else pickRef(refMatches!.flat[refSelIdx])
                     return
                   }
                   if (e.key === 'Escape') {
                     e.preventDefault()
-                    setHashDismissedFor(inputText)
+                    setDismissedFor(inputText)
                     return
                   }
                 }
@@ -489,7 +494,7 @@ export function Composer({
                 voiceState === 'listening'
                   ? 'Listening...'
                   : isDeveloper
-                    ? 'command  ·  / tools  ·  > shell  ·  @ card'
+                    ? 'command  ·  / tools  ·  > shell  ·  @ who  ·  # refs'
                     : 'Type command or drop file...'
               }
               disabled={voiceState === 'listening'}

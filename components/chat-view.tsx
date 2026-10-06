@@ -943,14 +943,23 @@ export function ChatWing({
       .map(c => ({ card_id: c.cardId, conversation_id: c.conversationId }))
   }, [taskProgress.cards])
 
-  // @-mention picker state: opens when the composer text ends with a bare '@'.
-  // Session 246: on a NEW thread the hook holds no cards (get_cards is
-  // per-conversation), so opening the picker requests a cross-thread scan
+  // The cards a message points at: "#" picks (they carry card_id + conversation_id)
+  // plus any @taskcard:<id> token in the text (old drafts keep working).
+  const referencedCardsOf = useCallback((text: string, picked: ComposerRef[]) => {
+    const out = new Map<string, { card_id: string; conversation_id: string }>()
+    for (const r of picked) {
+      if (r.card) out.set(r.card.cardId, { card_id: r.card.cardId, conversation_id: r.card.conversationId })
+    }
+    for (const c of extractReferencedCards(text)) if (!out.has(c.card_id)) out.set(c.card_id, c)
+    return [...out.values()]
+  }, [extractReferencedCards])
+
+  // Task cards are referenced through "#" (the "@" list is who hears). The hook
+  // holds the cards of this conversation only (get_cards is per-conversation),
+  // so the first "#" list of a conversation requests a cross-thread scan
   // (payload.all) and keeps the candidates in local state.
-  const [cardMentionOpen, setCardMentionOpen] = useState(false)
   const [mentionCards, setMentionCards] = useState<TaskCard[]>([])
-  const openCardMentionPicker = useCallback(() => {
-    setCardMentionOpen(true)
+  const loadRefCards = useCallback(() => {
     const onCards = (e: Event) => {
       const wire = (e as CustomEvent).detail?.cards || []
       const mapped: TaskCard[] = wire.map((p: any) => ({
@@ -971,13 +980,18 @@ export function ChatWing({
     // safety: close the listener if no response arrives
     setTimeout(() => window.removeEventListener('iris:cards', onCards), 4000)
   }, [sendMessage])
-  const mentionCandidates = taskProgress.cards.length > 0 ? taskProgress.cards : mentionCards
+  const refCards = useMemo(() => {
+    const have = new Set(taskProgress.cards.map(c => c.cardId))
+    return [...taskProgress.cards, ...mentionCards.filter(c => !have.has(c.cardId))]
+  }, [taskProgress.cards, mentionCards])
 
   // Composer (2026-10-06 design): # references are ADDRESSES, picked in the
   // composer and sent with the prompt; a running turn turns Enter into a steer
   // and the send button into Stop.
   const [composerRefs, setComposerRefs] = useState<ComposerRef[]>([])
-  useEffect(() => { setComposerRefs([]) }, [activeConversationId])
+  // Who hears this: only @iris exists today; "@" adds more once people/helpers do.
+  const [composerTo, setComposerTo] = useState<string[]>(["@iris"])
+  useEffect(() => { setComposerRefs([]); setComposerTo(["@iris"]) }, [activeConversationId])
   const isTurnRunning = liveTurns.some((t) => t.status === "running")
   const refDocs = useMemo(
     () => (conversations.find((c) => c.id === activeConversationId)?.documents ?? []).map((d) => ({
@@ -2248,7 +2262,8 @@ export function ChatWing({
     // live progress instead of hanging on a fixed REST timeout. REST is kept
     // as a fallback for when the WebSocket is unavailable (sendMessage unset).
     setLocalTyping(true)
-    setComposerRefs([]) // the refs ride in this send's payload below
+    setComposerRefs([]) // the refs and the "to" ride in this send's payload below
+    setComposerTo(["@iris"])
     if (sendMessage) {
       // Send `threadId`, NOT `activeConversationId`. setActiveConversationId
       // was called a few lines up for a new conversation, but a React state
@@ -2271,10 +2286,12 @@ export function ChatWing({
         // Session 246 (@-card-mentions): @taskcard:<id> tokens in the text are
         // resolved to persisted card snapshots so the agent can reason over
         // a PREVIOUS conversation's task results.
-        referenced_cards: extractReferencedCards(userMessage.text),
-        // Composer: who hears this (only IRIS for now) and the # references.
-        // Addresses only; IRIS loads the content by address.
-        to: ["@iris"],
+        // Task cards picked through "#" resolve the same way (card_id +
+        // conversation_id); an @taskcard:<id> typed in an old draft still parses.
+        referenced_cards: referencedCardsOf(userMessage.text, composerRefs),
+        // Composer: who hears this ("@") and the # references (task cards,
+        // artifacts, strands, project files). Addresses only.
+        to: composerTo,
         refs: composerRefs.map((r) => r.address),
         // Developer chat runs its tools in the open project tab's folder, the
         // same workdir `/run` and `>` already send (Gate 3 T10).
@@ -2290,7 +2307,7 @@ export function ChatWing({
         body: JSON.stringify({
           text: userMessage.text,
           thread_id: threadId,
-          referenced_cards: extractReferencedCards(userMessage.text),
+          referenced_cards: referencedCardsOf(userMessage.text, composerRefs),
         }),
         signal: controller.signal,
       })
@@ -3383,10 +3400,10 @@ ${message.text}`;
               jumpToLatest={jumpToLatest}
               webMode={webMode}
               setWebMode={setWebMode}
-              cardMentionOpen={cardMentionOpen}
-              setCardMentionOpen={setCardMentionOpen}
-              mentionCandidates={mentionCandidates}
-              openCardMentionPicker={openCardMentionPicker}
+              refCards={refCards}
+              loadRefCards={loadRefCards}
+              composerTo={composerTo}
+              setComposerTo={setComposerTo}
               slashMenuOpen={slashMenuOpen}
               setSlashMenuOpen={setSlashMenuOpen}
               slashMatches={slashMatches}

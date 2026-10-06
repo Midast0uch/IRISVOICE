@@ -10298,6 +10298,13 @@ body {
 .iris-pop button:hover, .iris-pop button.sel { background: var(--iris-ink-3); }
 .iris-pop button b { color: var(--b2); font: 600 12px var(--iris-mono); }
 .iris-pop button span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.iris-chip.path { color: #e6e9f2; border-style: dashed; border-color: rgba(255, 255, 255, 0.18); }
+.iris-chip.path::before { content: "\25B8"; color: var(--b1); }
+.iris-chip.who2 { color: #c69bff; border-radius: 999px; }
+.iris-pop .iris-ph { font: 600 10px/1 var(--iris-mono); letter-spacing: 0.12em; text-transform: uppercase; color: var(--iris-muted); padding: 7px 8px 4px; display: flex; justify-content: space-between; }
+.iris-pop .iris-ph small { letter-spacing: 0; text-transform: none; font-weight: 400; }
+.iris-pop button b.p { color: #e6e9f2; }
+.iris-pop button b.w { color: #c69bff; }
 .iris-steer { font: 11.5px/1.4 ui-monospace, "Cascadia Mono", Consolas, monospace; color: hsl(215 92% 68%); }
 /* Chat header, thread orbit and strand map (components/chat/header). Concept:
    docs/design/chatview-2026-10-06/iris-strands.html. --b1..--b3 are set inline

@@ -291,11 +291,20 @@ Both modes: a tray (`RefTray`: the `to @iris` chip, the picked `#` chips, a hint
   `FilePickerModal`. The old developer-only `WorkspaceTabBar` strip in `chat-view.tsx` is gone (the
   archive badge stays). No branch: the app knows the branch of its own repo (`/api/git/status`), not
   of the folder the user opened.
-- **`to`.** Only `@iris` exists (no people yet); the payload carries `to: ["@iris"]`.
-- **`#` refs.** Typing `#` opens a picker of ADDRESSES: this conversation's task cards, its
-  artifacts, the strands of its thread (`fetchStrands`, loaded when the picker first opens). A pick
-  becomes a removable chip; `text_message` carries `refs: ["#<id>", ...]`. The gateway adds them to
-  `turn.start.refs`. Never content.
+- **`@` = who hears.** Typing `@` opens ONE list, "Who hears this" (`WHO_HEARS` in `refs.tsx`; only
+  `@iris` today, data-driven so people and helpers can be added). A pick fills the `to` chip; the
+  payload carries `to: [...]`. `@` no longer lists task cards.
+- **`#` = what you point at.** Typing `#` opens ONE list with two labelled groups of ADDRESSES.
+  *IRIS made*: task cards (any thread: the first `#` list of a conversation asks `get_cards {all}`),
+  the artifacts shown in the conversation, the strands of its thread (`fetchStrands`). *This project*:
+  the project folder and the open file tabs of `workspaceStore` (the app has no folder listing
+  source, so files not open in a tab do not list). IRIS picks keep `#T-38` chips; project picks are
+  dashed path chips (`.iris-chip.path`) with address `file:<path>`. `text_message` carries
+  `refs: [...]` (both kinds) and, for picked task cards, `referenced_cards` (card_id +
+  conversation_id), which the gateway resolves exactly as it did for `@taskcard:<id>` (a typed
+  `@taskcard:<id>` token still parses in `chat-view.tsx`). The gateway adds `refs` to `turn.start.refs`.
+- **A sign stays text** (`refTriggerOf`): inside inline code or a fenced block, as a line-start `#`
+  heading, and after a letter or digit (`a@b.com`, `C#`). Esc closes the list and keeps the sign.
 - **Steer.** A turn running in this conversation (turn store) or a working card: Enter sends
   `steer`, not a prompt. The timeline shows `↳ you steered: ... · noted` (developer) or
   `↳ you said: ... · IRIS noted it` (personal) as a `steer-note-` system message (`TurnView`).
@@ -306,7 +315,7 @@ Both modes: a tray (`RefTray`: the `to @iris` chip, the picked `#` chips, a hint
   `backend/tests/contract/test_stop_turn_contract.py`.
 - **No mic button.** Voice stays wake-word.
 
-Guards: `__tests__/composer/composer.test.tsx` (both modes, whole `ChatWing`).
+Guards: `__tests__/composer/composer.test.tsx` (both modes, whole `ChatWing`), `__tests__/refs/composerSigns.test.tsx` (`@` / `#` lists, chips, payload, stays-text rules).
 
 ## 10. In-turn interactions: ±, the lens, asks (built 2026-10-06)
 
