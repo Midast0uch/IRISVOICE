@@ -3,7 +3,7 @@
 | File | What | Status |
 |---|---|---|
 | `iris-strands.html` | **Concept 2 "IRIS Living Spine", revision 3 — APPROVED by the owner 2026-10-06.** The target look and behaviour for the chat view in both modes. | approved (https://claude.ai/artifact/CDss9BFHkf4QdqMS7ZsSwD) |
-| `iris-dashboard.html` | **Concept 2 rev 4 "Dashboard Spine"** — the dashboard built from the chat's parts: one `◉` menu, a spine rail, settings rows with value summaries, the Apply bar, the Workspace hub with a Views lane, and the `#` / `@` reference rules. | proposed 2026-10-06, waiting for the owner (https://claude.ai/artifact/1vMLK38PPrNDJGiJaNJ8jR) |
+| `iris-dashboard.html` | **Concept 2 rev 4 "Dashboard Spine"** — the dashboard built from the chat's parts: one `◉` menu, a spine rail, settings rows with value summaries, the Apply bar, the Workspace hub with a Views lane, and the `#` / `@` reference rules. | **APPROVED by the owner 2026-10-06** with two changes (built into the page): the rail keeps two views, Settings and Surfaces (Workspace hub, Browser, Models, Marketplace); Monitor and the Inference console are ONE Monitor page in Settings, with no content twice (https://claude.ai/artifact/1vMLK38PPrNDJGiJaNJ8jR) |
 | `iris-braid.html` | Concept 1 "IRIS Braid and Spine". Kept as a reference at the owner's request. | reference |
 | `chatview-split.html` | The first glimpse: one turn stream drawn in both modes, the file split map, the part types. | reference |
 
@@ -24,3 +24,14 @@ Open the HTML files in a browser (self-contained; fonts from Google Fonts).
 - **Composer.** `to:` chip (who hears this; with people only `@iris` sends a prompt) · `#` references (task card, artifact, strand turn — addresses, never content) · project bar above the message box in both modes (folder, open files, `+` folder/repo, branch) · steer while IRIS works · stop button. No mic button (voice stays wake-word).
 - **Lens.** Artifacts open inside the wing; pop out or drag to the dashboard workspace.
 - **Dashboard** restyled in the same ink with the same edge and trail.
+
+## What the owner approved (concept 2 rev 4, the dashboard)
+
+- **One `◉` menu** component in both wings (chat: Dashboard, Detach, Alerts, Launcher, Close; dashboard: Chat, …). The dashboard's four header icons move into it.
+- **Rail = a spine with two views**, Settings and Surfaces, switched at the top of the rail as before. Settings: Voice, Agent, Automate, System, Customize, Monitor. Surfaces: Workspace hub, Browser, Models, Marketplace. The Xur rides to the current place; the Xur button folds the rail to orbs.
+- **Monitor + Inference console = one Monitor page** in Settings: Now (loaded models, speed), Inference stream (every call and load; filter all / calls / loads), Usage, Logs (app lines only; model calls stay in the stream), Diagnostics. Nothing shown twice.
+- **Settings rows** replace the bordered boxes with chevrons: orb · name · one-line summary of current values; open = lit hairline; changed value = amber dot; the row counts changes. "Find a setting" searches every place.
+- **Apply bar** where the chat composer sits; it names what changed; Discard + Apply.
+- **Workspace hub** keeps every tool; dropped artifacts / diffs go to a **Views** lane beside them, never into project files.
+- **`@` = who hears; `#` = what you point at**, one list with two groups (IRIS made; This project: folders and files, path-looking chips). The old `@taskcard` list moves to `#`. A sign stays text inside code, as a line-start heading, and after a letter or digit; Esc keeps it.
+

@@ -130,6 +130,14 @@ textarea{flex:1;min-width:0;resize:none;height:38px;background:var(--ink-2);bord
 #railCv{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none}
 .rail .rh{position:relative;font:600 9.5px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--muted);padding:10px 12px 6px 30px}
 .dw.narrow .rail .rh{visibility:hidden;height:14px;padding:0}
+/* two views on one spine, like the old rail: Settings and Surfaces */
+.rsw{position:relative;z-index:1;display:flex;margin:0 8px 4px 24px;border:1px solid var(--hair);border-radius:999px;padding:2px;background:var(--ink)}
+.rsw button{flex:1;padding:5px 4px!important;justify-content:center;border-radius:999px;font:600 9.5px/1 var(--mono)!important;letter-spacing:.1em;text-transform:uppercase}
+.rsw button[aria-pressed="true"]{background:color-mix(in oklab,var(--b2) 16%,transparent);color:var(--fg)}
+.rsw button .gl{display:none}
+.dw.narrow .rsw{flex-direction:column;margin:0 4px 6px 6px;border-radius:10px}
+.dw.narrow .rsw button span{display:none}
+.dw.narrow .rsw button .gl{display:inline;font-size:12px}
 .rail button{position:relative;display:flex;width:100%;gap:9px;align-items:center;background:none;border:0;padding:7px 10px 7px 30px;cursor:pointer;font:500 12.5px/1.2 var(--sans);color:var(--muted);text-align:left;white-space:nowrap}
 .rail button:hover{color:var(--fg)}
 .rail button[aria-current="true"]{color:var(--fg)}
@@ -225,12 +233,12 @@ input[type=range]{width:120px;accent-color:var(--b2)}
 <div class="wrap">
   <section class="hero">
     <div class="col">
-      <div class="eyebrow">IRIS · concept 2 rev 4 · the dashboard</div>
+      <div class="eyebrow">IRIS · concept 2 rev 4 · the dashboard · approved 2026-10-06</div>
       <h1>The dashboard joins the spine</h1>
       <p class="lede">Your chat now has a Xur, a spine, an edge light and one ◉ menu. Until now the dashboard only borrowed the ink. In this revision it is built from the same parts, so the two wings read as one instrument.</p>
       <ul class="changes">
         <li><b>One ◉ menu</b>The same button and the same menu in both wings. The first item swaps: the chat menu offers the dashboard, the dashboard menu offers the chat.</li>
-        <li><b>The rail is a spine</b>The six settings places and the tools sit on one particle line. The Xur rides it to where you are.</li>
+        <li><b>The rail is a spine with two views</b>Settings and Surfaces, as in the old rail. Each view puts its places on one particle line, and the Xur rides it to where you are.</li>
         <li><b>Settings read before you open them</b>Each settings box becomes a row that shows its current values in one line. Open it and the line lights.</li>
         <li><b>Calm controls</b>Dropdowns, switches and sliders use the composer's ink, hairlines and mono numbers. A changed value gets the amber dot that IRIS uses for work in progress.</li>
         <li><b>Apply where you type</b>The Apply bar sits where the chat's message box sits, and it names what you changed.</li>
@@ -316,12 +324,13 @@ input[type=range]{width:120px;accent-color:var(--b2)}
     <li><i>STAYS</i><span>Every setting, its saved value and its handler. Apply still commits all changes at once.</span></li>
     <li><i>STAYS</i><span>Spotlight: the spotlit wing is 680 px; the other is 360 px at opacity 0.3 with saturate(0.6) blur(2px), and it takes no clicks. The aperture keeps its place on the top edge.</span></li>
     <li><i>STAYS</i><span>The Workspace hub keeps its terminal, task lanes, archive and file tabs. Dropped items never become project files and never hide a lane.</span></li>
-    <li><i>STAYS</i><span>Browser, Models, Marketplace and the Inference console keep their own content. They get the new header and rail only.</span></li>
+    <li><i>STAYS</i><span>The surfaces (Workspace hub, Browser, Models, Marketplace) keep their own content. They get the new header and rail only.</span></li>
+    <li><i class="ch">CHANGES</i><span>Monitor and the Inference console become ONE Monitor page in Settings: Now, Inference stream, Usage, Logs, Diagnostics. Model calls and loads appear only in the stream; Logs keeps the app's own lines.</span></li>
     <li><i class="ch">CHANGES</i><span>Header: the row of four icon buttons (open chat, detach, launcher, alerts) moves into the ◉ menu. It is the same menu component as the chat.</span></li>
-    <li><i class="ch">CHANGES</i><span>The rail: icon circles become places on a spine with names; the Xur button folds it to orbs only.</span></li>
+    <li><i class="ch">CHANGES</i><span>The rail: a Settings / Surfaces switch at the top, as before; icon circles become places on a spine with names; the Xur button folds it to orbs only.</span></li>
     <li><i class="ch">CHANGES</i><span>Settings boxes: a row with a one-line summary replaces the bordered box with a chevron. Open rows light their hairline; changed values get an amber dot and the row counts them.</span></li>
     <li><i class="ch">CHANGES</i><span>A "find a setting" field at the top searches every place, the same way the thread orbit finds threads.</span></li>
-    <li><i class="q">TO DECIDE</i><span>Files under <code>#</code> (this page) or under a sign of their own. I recommend <code>#</code> with two groups, because one sign for "point at something" is easier to remember.</span></li>
+    <li><i class="ch">CHANGES</i><span>Files sit under <code>#</code> in their own "This project" group. The old <code>@taskcard</code> list moves to <code>#</code>, so <code>@</code> only picks who hears.</span></li>
   </ul>
 </div>
 
@@ -436,9 +445,8 @@ input[type=range]{width:120px;accent-color:var(--b2)}
     { grp: "Settings", id: "voice", name: "Voice" }, { grp: "Settings", id: "agent", name: "Agent" },
     { grp: "Settings", id: "automate", name: "Automate" }, { grp: "Settings", id: "system", name: "System" },
     { grp: "Settings", id: "customize", name: "Customize" }, { grp: "Settings", id: "monitor", name: "Monitor" },
-    { grp: "Tools", id: "hub", name: "Workspace hub" }, { grp: "Tools", id: "browser", name: "Browser" },
-    { grp: "Tools", id: "models", name: "Models" }, { grp: "Tools", id: "market", name: "Marketplace" },
-    { grp: "Tools", id: "console", name: "Inference console" },
+    { grp: "Surfaces", id: "hub", name: "Workspace hub" }, { grp: "Surfaces", id: "browser", name: "Browser" },
+    { grp: "Surfaces", id: "models", name: "Models" }, { grp: "Surfaces", id: "market", name: "Marketplace" },
   ];
   const SECTIONS = {
     voice: [
@@ -478,25 +486,57 @@ input[type=range]{width:120px;accent-color:var(--b2)}
     ],
     automate: [{ id: "routines", name: "Routines", fields: [{ id: "morning", l: "Morning brief", h: "weekdays 08:45", t: "tg", v: false }, { id: "watch", l: "Watch my PRs", h: "", t: "tg", v: true }] }],
     system: [{ id: "startup", name: "Startup", fields: [{ id: "boot", l: "Start with Windows", h: "", t: "tg", v: true }, { id: "warm", l: "Pre-read voice models", h: "idle, low priority", t: "tg", v: true }] }, { id: "keys", name: "Keys and accounts", fields: [{ id: "key", l: "API key", h: "kept in the OS keyring", t: "sel", v: "saved", o: ["saved", "replace…"] }] }],
+    // Monitor = the old Monitor tab AND the Inference console, one page, nothing twice.
+    monitor: [
+      { id: "now", name: "Now", fields: [
+        { id: "brain", l: "Reasoning model", h: "loaded · profile balanced", t: "info", v: "qwen3-30b-a3b" },
+        { id: "tool", l: "Tool model", h: "loaded · profile fast", t: "info", v: "qwen3-4b" },
+        { id: "speed", l: "Speed", h: "last call", t: "info", v: "41 tok/s · 1.6 s" },
+      ] },
+      { id: "stream", name: "Inference stream", fields: [
+        { id: "show", l: "Show", h: "every call and every model load, newest first", t: "seg", v: "all", o: ["all", "calls", "loads"] },
+        { id: "l1", l: "08:41:07 · qwen3-4b", h: "call", t: "info", v: "612 → 88 tok · 0.9 s" },
+        { id: "l2", l: "08:41:05 · qwen3-30b-a3b", h: "call", t: "info", v: "2,140 → 310 tok · 1.6 s" },
+        { id: "l3", l: "08:40:52 · qwen3-4b", h: "load", t: "info", v: "loaded · fast" },
+      ] },
+      { id: "usage", name: "Usage", fields: [
+        { id: "tok", l: "Tokens today", h: "all models", t: "info", v: "182,400" },
+        { id: "turns", l: "Turns today", h: "", t: "info", v: "37 · 2 failed" },
+        { id: "p50", l: "Reply time", h: "median, without speech", t: "info", v: "6.1 s" },
+      ] },
+      { id: "logs", name: "Logs", fields: [
+        { id: "lvl", l: "Level", h: "app logs; model calls stay in the stream", t: "seg", v: "warn", o: ["info", "warn", "error"] },
+        { id: "w1", l: "08:39:12", h: "router", t: "info", v: "hedge sent at 10.2 s" },
+      ] },
+      { id: "diag", name: "Diagnostics", fields: [
+        { id: "health", l: "Health", h: "backend, voice, models, store", t: "info", v: "6 of 6 pass" },
+        { id: "store", l: "App memory", h: "data/memory.db", t: "info", v: "412 MB" },
+      ] },
+    ],
     customize: [{ id: "look", name: "Look", fields: [{ id: "theme", l: "Brand", h: "the Xur takes three neighbouring hues", t: "seg", v: "Aether", o: ["Aether", "Ember", "Aurum", "Verdant"] }, { id: "motion", l: "Motion", h: "follows the system setting too", t: "seg", v: "full", o: ["full", "calm", "off"] }] }],
   };
   const VAL = {}; const SAVED = {};
   for (const p in SECTIONS) for (const s of SECTIONS[p]) for (const f of s.fields) { VAL[p + "." + s.id + "." + f.id] = f.v; SAVED[p + "." + s.id + "." + f.id] = f.v; }
-  const D = { place: "voice", open: new Set(["voice.input"]), q: "", views: [], railNarrow: false };
+  const D = { view: "Settings", last: { Settings: "voice", Surfaces: "hub" }, place: "voice", open: new Set(["voice.input"]), q: "", views: [], railNarrow: false };
   const fmt = (f, v) => f.t === "tg" ? (v ? "on" : "off") : f.t === "rng" ? (Number.isInteger(f.step) ? String(v) : Number(v).toFixed(f.step < 0.1 ? 2 : 1)) : String(v);
-  const changed = () => Object.keys(VAL).filter((k) => VAL[k] !== SAVED[k]);
+  // Monitor's filters are views, not settings: they never count as a change to apply.
+  const changed = () => Object.keys(VAL).filter((k) => !k.startsWith("monitor.") && VAL[k] !== SAVED[k]);
 
   // the rail
   function renderRail() {
-    const r = $("rail"); r.querySelectorAll(".rh,button").forEach((x) => x.remove());
-    let grp = "";
+    const r = $("rail"); r.querySelectorAll(".rh,button,.rsw").forEach((x) => x.remove());
+    r.insertAdjacentHTML("beforeend", '<div class="rsw" role="group" aria-label="Rail view">' + [["Settings", "⚙"], ["Surfaces", "▦"]].map(([v, g]) => '<button data-view="' + v + '" aria-pressed="' + (D.view === v) + '" title="' + v + '"><span>' + v + '</span><b class="gl">' + g + "</b></button>").join("") + "</div>");
     for (const p of PLACES) {
-      if (p.grp !== grp) { grp = p.grp; r.insertAdjacentHTML("beforeend", '<div class="rh">' + grp + "</div>"); }
+      if (p.grp !== D.view) continue;
       const n = changed().filter((k) => k.startsWith(p.id + ".")).length;
       r.insertAdjacentHTML("beforeend", '<button data-place="' + p.id + '" aria-current="' + (D.place === p.id) + '" title="' + esc(p.name) + '"><span>' + esc(p.name) + "</span>" + (n ? '<em class="n" style="font-style:normal">' + n + "</em>" : "") + "</button>");
     }
   }
-  $("rail").addEventListener("click", (e) => { const b = e.target.closest("[data-place]"); if (!b) return; D.place = b.dataset.place; D.q = ""; render(); });
+  $("rail").addEventListener("click", (e) => {
+    const v = e.target.closest("[data-view]");
+    if (v) { D.view = v.dataset.view; D.place = D.last[D.view]; D.q = ""; railY = null; render(); return; }
+    const b = e.target.closest("[data-place]"); if (!b) return; D.place = b.dataset.place; D.last[D.view] = D.place; D.q = ""; render();
+  });
   $("railToggle").addEventListener("click", () => { D.railNarrow = !D.railNarrow; $("dwrap").classList.toggle("narrow", D.railNarrow); });
 
   // the content
@@ -505,13 +545,14 @@ input[type=range]{width:120px;accent-color:var(--b2)}
     if (f.t === "sel") return '<button class="vbtn" data-sel="' + path + '" aria-haspopup="listbox"><span>' + esc(v) + "</span><em>⌄</em></button>";
     if (f.t === "tg") return '<span class="tgw">' + (v ? "on" : "off") + '</span><button class="tg" role="switch" aria-checked="' + v + '" data-tg="' + path + '" aria-label="' + esc(f.l) + '"></button>';
     if (f.t === "rng") return '<input type="range" id="r-' + path.replace(/\./g, "-") + '" min="' + f.min + '" max="' + f.max + '" step="' + f.step + '" value="' + v + '" data-rng="' + path + '" aria-label="' + esc(f.l) + '"><span class="num">' + fmt(f, v) + "</span>";
+    if (f.t === "info") return '<span class="num" style="width:auto;white-space:nowrap">' + esc(v) + "</span>";
     if (f.t === "seg") return '<div class="sg" role="group" aria-label="' + esc(f.l) + '">' + f.o.map((o) => '<button data-seg="' + path + '" data-v="' + esc(o) + '" aria-pressed="' + (o === v) + '">' + esc(o) + "</button>").join("") + "</div>";
     return "";
   }
   function sectionHTML(place, s, forceOpen) {
     const key = place + "." + s.id, open = forceOpen || D.open.has(key);
     const n = s.fields.filter((f) => VAL[key + "." + f.id] !== SAVED[key + "." + f.id]).length;
-    const summary = s.fields.map((f) => (f.t === "tg" ? f.l.split(" ")[0].toLowerCase() + " " : "") + fmt(f, VAL[key + "." + f.id])).join(" · ");
+    const summary = place === "monitor" ? s.fields.filter((f) => f.t === "info").slice(0, 2).map((f) => f.v).join(" · ") : s.fields.map((f) => (f.t === "tg" ? f.l.split(" ")[0].toLowerCase() + " " : "") + fmt(f, VAL[key + "." + f.id])).join(" · ");
     let h = '<div class="sec' + (open ? " open" : "") + '"><button class="srow" data-sec="' + key + '" aria-expanded="' + open + '"><span class="o">' + (open ? "●" : "○") + "</span><b>" + esc(s.name) + "</b><small>" + esc(summary) + "</small>" + (n ? '<span class="chg">' + n + " changed</span>" : "") + "</button>";
     if (open) h += '<div class="fields">' + s.fields.map((f) => { const p = key + "." + f.id, ch = VAL[p] !== SAVED[p]; return '<div class="f"><div class="l"><b>' + (ch ? "<i title=\"changed, not applied\"></i>" : "") + esc(f.l) + "</b>" + (f.h ? "<small>" + esc(f.h) + "</small>" : "") + '</div><div class="c">' + control(p, f) + "</div></div>"; }).join("") + "</div>";
     return h + "</div>";
@@ -522,7 +563,7 @@ input[type=range]{width:120px;accent-color:var(--b2)}
     const P = PLACES.find((p) => p.id === D.place), c = $("content");
     $("dTitle").textContent = P.name;
     const ch = changed();
-    $("dSub").innerHTML = P.grp === "Settings" ? "settings" + (ch.length ? ' · <em>' + ch.length + " not applied</em>" : "") : "tool";
+    $("dSub").innerHTML = P.grp === "Settings" ? (D.place === "monitor" ? "settings · live" : "settings") + (ch.length ? ' · <em>' + ch.length + " not applied</em>" : "") : "surface";
     if (D.place === "hub") return renderHub(c);
     if (!SECTIONS[D.place]) { c.innerHTML = '<div class="tool"><b>' + esc(P.name) + "</b>Its content stays as it is today. This concept gives it the new header, the rail and the edge light only.</div>"; return; }
     const keep = document.activeElement && document.activeElement.id === "findIn";
@@ -591,7 +632,7 @@ input[type=range]{width:120px;accent-color:var(--b2)}
     if (k === "art") return '<div class="vcard"><div class="t"><span style="color:var(--b1)">▤</span><span>Router budget plan</span><button data-unview="' + i + '" aria-label="Close view">×</button></div><pre>1. Keep 256 tokens for the system frame.\n2. Never trim the newest user turn.</pre></div>';
     return '<div class="vcard"><div class="t"><span style="color:var(--ok)">±</span><span>router.py · +4 −1</span><button data-unview="' + i + '" aria-label="Close view">×</button></div><pre><span class="del">- budget = window - max_tokens</span>\n<span class="add">+ budget = window - max_tokens - _RESERVE</span></pre></div>';
   }
-  document.addEventListener("dragstart", (e) => { const d = e.target.closest && e.target.closest("[data-drag]"); if (d) { e.dataTransfer.setData("text/plain", d.dataset.drag); if (D.place !== "hub") { D.place = "hub"; render(); } } });
+  document.addEventListener("dragstart", (e) => { const d = e.target.closest && e.target.closest("[data-drag]"); if (d) { e.dataTransfer.setData("text/plain", d.dataset.drag); if (D.place !== "hub") { D.view = "Surfaces"; D.place = D.last.Surfaces = "hub"; railY = null; render(); } } });
 
   // ── composer: # (what) and @ (who), with the "stays text" rules ──
   const REFS_IRIS = [{ k: "#T-38", t: "task card · router window test" }, { k: "#A-12", t: "artifact · router budget plan" }, { k: "#rules/3", t: "strand turn · budget rules" }, { k: "#strand:rules", t: "strand · budget rules" }];
