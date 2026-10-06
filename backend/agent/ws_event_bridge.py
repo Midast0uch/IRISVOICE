@@ -227,6 +227,17 @@ class WSEventBridge:
                     logger.debug(
                         "[WSEventBridge] %s withheld (card-free turn)", evt.value
                     )
+                    # An edit's diff is not a card: a card-free turn still shows
+                    # the ± of its edit. It goes into the turn only (the legacy
+                    # frame stays withheld, so no phantom card is rebuilt).
+                    _wd = getattr(payload, "data", None)
+                    if evt is IRISStreamEvent.TOOL_RESULT and isinstance(_wd, dict) and _wd.get("diff"):
+                        route_bus_event(
+                            evt.value, _wd,
+                            turn_id=getattr(payload, "turn_id", None),
+                            conversation_id=getattr(payload, "conversation_id", None)
+                            or _wd.get("conversation_id"),
+                        )
                     return
                 session_id = getattr(payload, "session_id", None)
                 data = getattr(payload, "data", None) or {}

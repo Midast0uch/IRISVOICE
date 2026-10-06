@@ -3131,7 +3131,11 @@ _CONTROL_FRAMES |= {"notification_response", "question_response"}
 # shell => serialized commands"), so two commands from one session still run in
 # the order they arrived. The lock was ordering the shell against the AGENT's
 # turn, which is exactly the coupling that has to go.
-_UNLOCKED_FRAMES = {"terminal_input"}
+#
+# diff_undo (edit diffs): the user reviews an edit while the agent may still be
+# working; the undo must not wait for the turn to end. It does file I/O (off the
+# loop, in the handler), so it is a background task, not an inline control frame.
+_UNLOCKED_FRAMES = {"terminal_input", "diff_undo"}
 
 # REQ-15 (T25/T26): steer / pause / stop / resume ride a dedicated channel so
 # they reach the RUNNING DER loop at its next step boundary instead of

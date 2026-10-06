@@ -737,6 +737,10 @@ class IRISGateway:
             ]:
                 await self._handle_chat(session_id, client_id, message)
 
+            elif msg_type == "diff_undo":
+                # Undo an agent file edit (whole file or one hunk) and tell IRIS.
+                await self._handle_diff_undo(session_id, client_id, message)
+
             elif msg_type == "sync_state":
                 # Phase 4.3: frontend sends this on WS reconnect (and on thread
                 # resume) so the backend re-attaches the correct per-thread
@@ -5565,6 +5569,56 @@ class IRISGateway:
                 )
             except Exception:
                 pass
+
+    async def _handle_diff_undo(
+        self, session_id: str, client_id: str, message: dict
+    ) -> None:
+        """Undo an agent file edit (whole file, or one hunk) and tell IRIS.
+
+        payload: {diff_id, hunk_index?: int}. Replies ``diff_undo_result``
+        {diff_id, hunk_index, ok, reason?}. Refuses (ok false + reason) when the
+        file changed since the edit; it never overwrites newer work. On success
+        the "user did not want this" note goes where the agent reads it on its
+        next turn (edit_diffs.tell_iris). Arrives on the unlocked lane (main.py),
+        so it works while a turn runs.
+        """
+        payload = message.get("payload", {}) or {}
+        diff_id = str(payload.get("diff_id") or "")
+        hunk_index = payload.get("hunk_index")
+        if hunk_index is not None and (isinstance(hunk_index, bool) or not isinstance(hunk_index, int)):
+            result = {"ok": False, "reason": "hunk_index must be a whole number"}
+        elif not diff_id:
+            result = {"ok": False, "reason": "diff_id is required"}
+        else:
+            from backend.agent import edit_diffs
+
+            result = await asyncio.to_thread(edit_diffs.undo, diff_id, hunk_index)
+            if result.get("ok"):
+                self._logger.info(
+                    "[EditDiff] session=%s undid %s hunk=%s of %s",
+                    session_id, diff_id, hunk_index, result.get("path"),
+                )
+                told = await asyncio.to_thread(
+                    edit_diffs.tell_iris, result, session_id,
+                    str(payload.get("conversation_id") or result.get("conversation_id") or ""),
+                )
+                result["told_iris"] = told
+            else:
+                self._logger.info(
+                    "[EditDiff] session=%s undo %s hunk=%s refused: %s",
+                    session_id, diff_id, hunk_index, result.get("reason"),
+                )
+        reply = {"diff_id": diff_id, "hunk_index": hunk_index, "ok": bool(result.get("ok"))}
+        if not result.get("ok"):
+            reply["reason"] = result.get("reason") or "undo failed"
+        else:
+            reply["told_iris"] = bool(result.get("told_iris"))
+        try:
+            await self._ws_manager.send_to_client(
+                client_id, {"type": "diff_undo_result", "payload": reply}
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning("[EditDiff] diff_undo_result send failed: %s", exc)
 
     async def _handle_chat(
         self, session_id: str, client_id: str, message: dict
