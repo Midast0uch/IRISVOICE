@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useSyncExternalStore } from "react"
+import { applyTurnMessage, isTurnMessageType } from "@/lib/turns/turnStore"
+import type { TurnMessage } from "@/lib/turns/protocol"
 // Side-effect import: the agent command store installs its window listeners
 // from app start, so a command that runs before the workspace opens is kept.
 import "@/stores/agentCommandStore"
@@ -745,6 +747,7 @@ export function useIRISWebSocket(
     if (
       type === "chat_message" ||
       type === "text_response" ||
+      type === "turn.end" ||
       type === "error" ||
       type === "task:done" ||
       type === "task:fail"
@@ -762,6 +765,14 @@ export function useIRISWebSocket(
     const payload: Record<string, unknown> = (message.payload && typeof message.payload === 'object')
       ? (message.payload as Record<string, unknown>)
       : (() => { const { type: _t, payload: _p, ...rest } = message; return rest; })()
+
+    // Phase 3 (turn protocol): turn.start / turn.part / turn.end go straight
+    // into the turn store (lib/turns/turnStore.ts), which files them by the
+    // turn and conversation the EVENT names. No CustomEvent hop, no guessing.
+    if (isTurnMessageType(type)) {
+      applyTurnMessage({ type, payload } as TurnMessage)
+      return
+    }
 
     switch (type) {
       case "full_state": {

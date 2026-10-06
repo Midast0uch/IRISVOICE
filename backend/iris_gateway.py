@@ -3201,6 +3201,14 @@ class IRISGateway:
             dt = self._voice_timing[label] - t0
             self._logger.info(f"[VOICE_TIMING] {label}: +{dt:.3f}s")
 
+        # Phase 3 (turn protocol): None until the turn starts (a transcript
+        # that answers a question card is not a turn). The finally block below
+        # guarantees exactly one turn.end once it is set.
+        _turn = None
+        # Read by the except/finally below; bound here so the pending-question
+        # early return (before STTPROC setup) cannot raise UnboundLocalError.
+        _sttproc_stop = None
+
         try:
             # ── T15 (REQ-14): pending-question awareness — a completed voice
             # transcript is a candidate answer to a pending question card. When
@@ -3216,6 +3224,42 @@ class IRISGateway:
                     return  # question answered by voice; nothing to process
             except Exception as _voice_q_err:
                 self._logger.warning(f"[AskUser] voice resolve failed: {_voice_q_err}")
+
+            # Stable turn_id for this turn: shared by the TurnEmitter, the
+            # kernel call (process_text_message turn_id=), tts_started and the
+            # assistant text_response, so the event bridge files tool / task /
+            # card events into THIS turn. Minted once, here.
+            from uuid import uuid4 as _uuid4
+            _turn_id = str(_uuid4())
+
+            # Phase 3 (turn protocol): turn.start, numbered turn.part events,
+            # exactly one turn.end (backend/agent/turn_protocol.py). The legacy
+            # text_response / chat_* messages below are unchanged. The send is
+            # thread-safe: parts come from the executor thread (chunks,
+            # reasoning) and the event bridge.
+            from backend.agent.turn_protocol import TurnEmitter
+
+            def _turn_send(msg: dict) -> None:
+                try:
+                    _fut = asyncio.run_coroutine_threadsafe(
+                        self._ws_manager.send_to_client(client_id, msg), loop
+                    )
+                    _fut.add_done_callback(
+                        lambda f: None
+                        if (not f.cancelled() and f.exception() is None and f.result() is not False)
+                        else self._ws_manager.buffer_message(session_id, msg)
+                    )
+                except Exception:  # noqa: BLE001 — buffer for the reconnect replay
+                    self._ws_manager.buffer_message(session_id, msg)
+
+            _turn = TurnEmitter(
+                _turn_send,
+                turn_id=_turn_id,
+                conversation_id=conversation_id or session_id,
+                mode="personal",
+                prompt=transcript,
+            )
+            _turn.start()
 
             # ── Pillar 1A: user bubble ─────────────────────────────────────
             await self._ws_manager.send_to_client(
@@ -3341,8 +3385,7 @@ class IRISGateway:
             # Shared between tts_started (sent immediately) and text_response
             # (sent later), so the frontend can set currentTtsMessageId early
             # and capture all tts_word events instead of missing the first N.
-            from uuid import uuid4 as _uuid4
-            _turn_id = str(_uuid4())
+            # (_turn_id was minted above, before the turn started.)
 
             def _execute_agent():
                 _log_timing("llm_start")
@@ -3364,6 +3407,9 @@ class IRISGateway:
                     # parsing at final flush) and `show` via document:render.
                     if _text.lstrip().startswith("{"):
                         return
+                    # Turn protocol: the same chunks the UI shows (JSON guard
+                    # above already applied).
+                    _turn.text(chunk)
                     if loop and loop.is_running():
                         asyncio.run_coroutine_threadsafe(
                             self._ws_manager.send_to_client(
@@ -3416,6 +3462,7 @@ class IRISGateway:
                         _sentence_buf_words = 0
 
                 def reasoning_callback(chunk: str):
+                    _turn.reasoning(chunk)
                     if loop and loop.is_running():
                         asyncio.run_coroutine_threadsafe(
                             self._ws_manager.send_to_client(
@@ -3630,6 +3677,8 @@ class IRISGateway:
                     self._logger.warning(
                         f"[Voice] Friendly fallback display failed: {_disp_exc}"
                     )
+                _turn.error(_friendly, code="agent_error")
+                _turn.end("error", text=_friendly, speak=_friendly, error=str(_agent_exc))
                 try:
                     # Shadow-mode speech intent (REQ-9 AC9.3): logs would-lane,
                     # changes nothing. Removable in one task.
@@ -3670,11 +3719,19 @@ class IRISGateway:
                     },
                 },
             )
+            _turn.end("ok", text=response or "", speak=spoken or "")
 
+        except asyncio.CancelledError:
+            if _turn is not None:
+                _turn.end("cancelled")
+            raise
         except Exception as e:
             self._logger.error(
                 f"[Voice] Pipeline error for session {session_id}: {e}", exc_info=True
             )
+            if _turn is not None and not _turn.ended:
+                _turn.error(f"{type(e).__name__}: {e}", code="agent_error")
+                _turn.end("error", error=f"{type(e).__name__}: {e}")
             if _sttproc_stop is not None:
                 _sttproc_stop.set()  # stop STTPROC immediately on error
             await self._broadcast_voice_state(
@@ -3686,6 +3743,14 @@ class IRISGateway:
             )
 
         finally:
+            # Turn protocol guard: exactly one turn.end on every path.
+            if _turn is not None and not _turn.ended:
+                self._logger.warning(
+                    "[Voice] turn %s left open at pipeline exit — ending as error",
+                    _turn.turn_id,
+                )
+                _turn.error("voice turn ended without a result", code="agent_error")
+                _turn.end("error", error="voice turn ended without a result")
             # ALWAYS stop STTPROC — the inner _speak_response also sets this
             # in its finally block, but this is the outer safety net.
             if _sttproc_stop is not None and not _sttproc_stop.is_set():
@@ -5707,6 +5772,46 @@ class IRISGateway:
                 )
                 return
 
+            # Phase 3 (turn protocol): this turn reaches the chat as ONE
+            # envelope — turn.start, numbered turn.part events, exactly one
+            # turn.end (backend/agent/turn_protocol.py). The legacy chat_chunk /
+            # chat_message messages below still go out until the chat view
+            # reads turns only. The send is thread-safe: parts come from the
+            # executor thread (chunks, reasoning) and the event bridge.
+            from backend.agent.turn_protocol import TurnEmitter
+
+            _turn_loop = asyncio.get_running_loop()
+
+            def _turn_send(msg: dict) -> None:
+                try:
+                    _fut = asyncio.run_coroutine_threadsafe(
+                        self._ws_manager.send_to_client(client_id, msg), _turn_loop
+                    )
+                    _fut.add_done_callback(
+                        lambda f: None
+                        if (not f.cancelled() and f.exception() is None and f.result() is not False)
+                        else self._ws_manager.buffer_message(session_id, msg)
+                    )
+                except Exception:  # noqa: BLE001 — buffer for the reconnect replay
+                    self._ws_manager.buffer_message(session_id, msg)
+
+            _turn = TurnEmitter(
+                _turn_send,
+                turn_id=turn_id,
+                conversation_id=conversation_id,
+                strand_id=payload.get("strand_id") or conversation_id,
+                to=payload.get("to") or None,
+                refs=[
+                    str((_r or {}).get("card_id"))
+                    for _r in (payload.get("referenced_cards") or [])
+                    if isinstance(_r, dict) and (_r or {}).get("card_id")
+                ],
+                mode=payload.get("mode") or "personal",
+                prompt=text,
+                client_ref=payload.get("client_ref"),
+            )
+            _turn.start()
+
             # Developer chat runs its tools in the project folder the user has
             # open, exactly like /run does (the tab path rides as `workdir`).
             if payload.get("workdir"):
@@ -5815,6 +5920,7 @@ class IRISGateway:
                                 _chunk_json[0] = _joined.startswith("{")
                         if _chunk_json[0]:
                             return
+                        _turn.text(chunk)
                         _loop = self._main_loop
                         if _loop and _loop.is_running():
                             try:
@@ -5854,6 +5960,7 @@ class IRISGateway:
                                 )
 
                     def _reasoning_cb(chunk: str):
+                        _turn.reasoning(chunk)
                         _loop = self._main_loop
                         if _loop and _loop.is_running():
                             try:
@@ -5990,6 +6097,10 @@ class IRISGateway:
                 if not _delivered:
                     # Client disconnected mid-inference — buffer for replay on reconnect
                     self._ws_manager.buffer_message(session_id, _final_msg)
+                # The final text is authoritative on turn.end (it replaces the
+                # streamed deltas: a JSON envelope streamed nothing, a DER turn
+                # streamed the whole reply at once).
+                _turn.end("ok", text=response or "", speak=_spoken_line or "")
 
                 # ── Persist the assistant turn to conversations.db ────────────
                 # The WS text_message path ran the DER turn and delivered the
@@ -6325,6 +6436,21 @@ class IRISGateway:
                     },
                 )
                 await self._send_error(client_id, friendly)
+                _turn.error(friendly, code="agent_error")
+                _turn.end("error", error=friendly)
+            except asyncio.CancelledError:
+                _turn.end("cancelled", error="cancelled")
+                raise
+            finally:
+                # Exactly one turn.end, on every path (a path that returned
+                # early without a result still closes the turn — and says so).
+                if not _turn.ended:
+                    self._logger.warning(
+                        "[Turn %s] text turn left without turn.end; closing as error",
+                        turn_id,
+                    )
+                    _turn.error("The turn ended without a reply.", code="no_reply")
+                    _turn.end("error", error="no reply")
 
             # Flush any buffered chunks/messages that failed to send mid-inference.
             # This ensures reconnecting clients get the full response replay.

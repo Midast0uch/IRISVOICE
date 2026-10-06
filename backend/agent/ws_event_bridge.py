@@ -26,6 +26,7 @@ import logging
 from typing import Any, List, Tuple
 
 from .event_bus import get_event_bus, IRISStreamEvent
+from .turn_protocol import route_bus_event
 
 logger = logging.getLogger(__name__)
 
@@ -265,6 +266,17 @@ class WSEventBridge:
                     # the one connected client; the conversation_id carried on
                     # the wire lets the frontend drop stale events.
                     asyncio.run_coroutine_threadsafe(self._ws.broadcast(msg), loop)
+                # Phase 3 (turn protocol): the same event, filed as a numbered
+                # part of its live turn. Runs AFTER the card-free-turn gate
+                # above, so a withheld card stays withheld in the turn too.
+                # The legacy message above stays until the chat view reads
+                # turns only. Never raises.
+                route_bus_event(
+                    evt.value,
+                    data,
+                    turn_id=getattr(payload, "turn_id", None),
+                    conversation_id=conv_id,
+                )
             except Exception as e:  # one bad payload never breaks others
                 logger.warning("[WSEventBridge] %s forward failed: %s", evt.value, e)
 

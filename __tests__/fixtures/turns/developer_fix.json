@@ -1,0 +1,290 @@
+{
+  "name": "developer_fix",
+  "source": "scripted through the real TurnEmitter + route_bus_event",
+  "messages": [
+    {
+      "type": "turn.start",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-dev-1",
+        "conversation_id": "conv-dev",
+        "strand_id": "conv-dev",
+        "author": "user",
+        "to": [
+          "@iris"
+        ],
+        "refs": [],
+        "mode": "developer",
+        "prompt": "the router test fails after the window change, fix it",
+        "ts": 1790000000.0
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-dev-1",
+        "conversation_id": "conv-dev",
+        "seq": 1,
+        "ts": 1790000000.25,
+        "part": {
+          "type": "reasoning",
+          "delta": "The cap subtracts max_tokens but not the reserve. "
+        }
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-dev-1",
+        "conversation_id": "conv-dev",
+        "seq": 2,
+        "ts": 1790000000.5,
+        "part": {
+          "type": "todo",
+          "event": "task:start",
+          "data": {
+            "card_id": "card-d",
+            "turn_id": "turn-dev-1",
+            "plan_title": "Fix the router window test"
+          }
+        }
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-dev-1",
+        "conversation_id": "conv-dev",
+        "seq": 3,
+        "ts": 1790000000.75,
+        "part": {
+          "type": "tool_call",
+          "name": "read_file",
+          "call_id": "r1",
+          "data": {
+            "tool": "read_file",
+            "call_id": "r1",
+            "turn_id": "turn-dev-1",
+            "path": "backend/agent/inference/router.py"
+          }
+        }
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-dev-1",
+        "conversation_id": "conv-dev",
+        "seq": 4,
+        "ts": 1790000001.0,
+        "part": {
+          "type": "tool_result",
+          "name": "read_file",
+          "call_id": "r1",
+          "ok": true,
+          "data": {
+            "tool": "read_file",
+            "call_id": "r1",
+            "success": true,
+            "turn_id": "turn-dev-1"
+          }
+        }
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-dev-1",
+        "conversation_id": "conv-dev",
+        "seq": 5,
+        "ts": 1790000001.25,
+        "part": {
+          "type": "tool_call",
+          "name": "run_command",
+          "call_id": "x1",
+          "data": {
+            "tool": "run_command",
+            "call_id": "x1",
+            "turn_id": "turn-dev-1",
+            "command": "pytest tests/unit/test_router.py -q"
+          }
+        }
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-dev-1",
+        "conversation_id": "conv-dev",
+        "seq": 6,
+        "ts": 1790000001.5,
+        "part": {
+          "type": "tool_result",
+          "name": "run_command",
+          "call_id": "x1",
+          "ok": false,
+          "data": {
+            "tool": "run_command",
+            "call_id": "x1",
+            "turn_id": "turn-dev-1",
+            "error": "exit 1: 1 failed, 11 passed"
+          }
+        }
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-dev-1",
+        "conversation_id": "conv-dev",
+        "seq": 7,
+        "ts": 1790000001.75,
+        "part": {
+          "type": "error",
+          "code": "node_error",
+          "message": "pytest exited 1: NameError: _RESERVE is not defined",
+          "recoverable": true
+        }
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-dev-1",
+        "conversation_id": "conv-dev",
+        "seq": 8,
+        "ts": 1790000002.0,
+        "part": {
+          "type": "tool_call",
+          "name": "edit_file",
+          "call_id": "e1",
+          "data": {
+            "tool": "edit_file",
+            "call_id": "e1",
+            "turn_id": "turn-dev-1",
+            "path": "router.py"
+          }
+        }
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-dev-1",
+        "conversation_id": "conv-dev",
+        "seq": 9,
+        "ts": 1790000002.25,
+        "part": {
+          "type": "tool_result",
+          "name": "edit_file",
+          "call_id": "e1",
+          "ok": true,
+          "data": {
+            "tool": "edit_file",
+            "call_id": "e1",
+            "success": true,
+            "turn_id": "turn-dev-1"
+          }
+        }
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-dev-1",
+        "conversation_id": "conv-dev",
+        "seq": 10,
+        "ts": 1790000002.5,
+        "part": {
+          "type": "tool_call",
+          "name": "run_command",
+          "call_id": "x2",
+          "data": {
+            "tool": "run_command",
+            "call_id": "x2",
+            "turn_id": "turn-dev-1",
+            "command": "pytest tests/unit/test_router.py -q"
+          }
+        }
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-dev-1",
+        "conversation_id": "conv-dev",
+        "seq": 11,
+        "ts": 1790000002.75,
+        "part": {
+          "type": "tool_result",
+          "name": "run_command",
+          "call_id": "x2",
+          "ok": true,
+          "data": {
+            "tool": "run_command",
+            "call_id": "x2",
+            "success": true,
+            "turn_id": "turn-dev-1",
+            "summary": "12 passed"
+          }
+        }
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-dev-1",
+        "conversation_id": "conv-dev",
+        "seq": 12,
+        "ts": 1790000003.0,
+        "part": {
+          "type": "todo",
+          "event": "task:done",
+          "data": {
+            "card_id": "card-d",
+            "turn_id": "turn-dev-1"
+          }
+        }
+      }
+    },
+    {
+      "type": "turn.part",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-dev-1",
+        "conversation_id": "conv-dev",
+        "seq": 13,
+        "ts": 1790000003.25,
+        "part": {
+          "type": "text",
+          "delta": "Fixed. The cap now subtracts the 256-token reserve; 12 router tests pass."
+        }
+      }
+    },
+    {
+      "type": "turn.end",
+      "payload": {
+        "v": 1,
+        "turn_id": "turn-dev-1",
+        "conversation_id": "conv-dev",
+        "status": "ok",
+        "parts": 13,
+        "text": "Fixed. The cap now subtracts the 256-token reserve; 12 router tests pass.",
+        "speak": "Fixed. The router tests pass.",
+        "ts": 1790000003.5
+      }
+    }
+  ]
+}
