@@ -127,3 +127,16 @@ describe("drag on the gutter scrubs the scroll", () => {
     expect(scrubTop(0.5, 300, 500)).toBe(0) // content shorter than the view
   })
 })
+
+describe("brandFromPalette: the spine shares the brand palette rule", () => {
+  it("takes the head hue and the signed offsets of body and tail", () => {
+    const { paletteFromHue } = require("@/lib/brandPalette")
+    const { brandFromPalette } = require("@/components/chat/spine/spineModel")
+    expect(brandFromPalette(paletteFromHue(30, -35, -55))).toEqual({ h: 30, d2: -35, d3: -55 })
+    expect(brandFromPalette(paletteFromHue(350, 25, -40))).toEqual({ h: 350, d2: 25, d3: -40 })
+  })
+  it("falls back to the glow colour when the palette has no readable hue", () => {
+    const { brandFromPalette, brandFrom } = require("@/components/chat/spine/spineModel")
+    expect(brandFromPalette(["x", "y", "z"], "#ff0000")).toEqual(brandFrom("#ff0000"))
+  })
+})

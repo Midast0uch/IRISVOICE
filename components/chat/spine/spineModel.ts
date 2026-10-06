@@ -70,6 +70,16 @@ export function brandFrom(glowColor: string | undefined | null): Brand {
   return h === null ? DEFAULT_BRAND : { ...DEFAULT_BRAND, h }
 }
 
+/** The spine's hues from the shared brand palette (lib/brandPalette: head, body,
+ *  tail), so the spine, the edge light and the Xur share one theme rule.
+ *  Falls back to `brandFrom(glowColor)` when the palette has no readable hue. */
+export function brandFromPalette(palette: readonly [string, string, string], glowColor?: string | null): Brand {
+  const [h1, h2, h3] = palette.map(parseHue)
+  if (h1 === null || h2 === null || h3 === null) return brandFrom(glowColor)
+  const off = (h: number) => ((h - h1 + 540) % 360) - 180
+  return { h: h1, d2: off(h2), d3: off(h3) }
+}
+
 export function hsla(h: number, s: number, l: number, a = 1): string {
   return `hsla(${((Math.round(h) % 360) + 360) % 360},${s}%,${l}%,${a})`
 }

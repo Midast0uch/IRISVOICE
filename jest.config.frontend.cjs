@@ -8,7 +8,7 @@ module.exports = {
   // Never sweep stale worktree copies (.iris-worktree) or vendored C++ trees:
   // their __tests__ duplicates reference moved modules (temp/ -> lib/cli) and
   // their duplicate manual mocks poison jest-haste-map.
-  testPathIgnorePatterns: ["/node_modules/", "/.iris-worktree/", "/llama\\.cpp", "/llama\\.cpp-prismml/", "/llama\\.cpp-turboquant/"],
+  testPathIgnorePatterns: ["/node_modules/", "/.iris-worktree/", "/.claude/worktrees/", "/llama\\.cpp", "/llama\\.cpp-prismml/", "/llama\\.cpp-turboquant/"],
   transform: {
     "^.+\\.(ts|tsx|js|jsx|mjs)$": [
       "babel-jest",

@@ -26,7 +26,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react"
 import { SpineGutter } from "./SpineGutter"
 import {
   SPINE_X0,
-  brandFrom,
+  brandFromPalette,
   dominantDetour,
   hash01,
   knotColor,
@@ -44,6 +44,7 @@ import {
   type SpineChip,
 } from "./spineModel"
 import type { ConversationChip } from "@/types/iris"
+import { useBrandPalette } from "@/hooks/useBrandPalette"
 
 const RUN_LIGHT = "rgba(242,193,78,0.55)"
 const MEASURE_MIN_MS = 80
@@ -113,10 +114,11 @@ export function Spine({
   onChipClick,
   knotTurns,
 }: SpineProps) {
+  const palette = useBrandPalette()
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const rootRef = useRef<HTMLDivElement>(null)
   const sceneRef = useRef<Scene>({
-    brand: brandFrom(glowColor),
+    brand: brandFromPalette(palette, glowColor),
     running,
     reduced: prefersReducedMotion,
     detours: [],
@@ -136,7 +138,7 @@ export function Spine({
   const inputs = useRef({ isDeveloper, streamingId, running, conversationChips, knotTurns })
   inputs.current = { isDeveloper, streamingId, running, conversationChips, knotTurns }
 
-  const brand = useMemo(() => brandFrom(glowColor), [glowColor])
+  const brand = useMemo(() => brandFromPalette(palette, glowColor), [palette, glowColor])
 
   // ── props -> scene, then redraw (static frame under reduced motion) ──────────
   useEffect(() => {
