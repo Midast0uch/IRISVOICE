@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo, useSyncExternalStore } from "react"
 import { sortRows, deriveProgress } from "@/lib/cards/rowOrder";
 import { motion, AnimatePresence } from "framer-motion"
-import { X, BarChart3, Plus, Trash2, AlertCircle, Bell, AlertTriangle, Shield, Loader, CheckCircle, Info, History, Pin, Copy, ThumbsUp, ThumbsDown, Volume2, ChevronDown, ChevronUp, Download, Share, FileText, Mail, Video, Image, File, ExternalLink, RefreshCw, Pencil, Archive, Maximize2, Minimize2 } from 'lucide-react';
+import { X, AlertCircle, Info, Copy, ThumbsUp, ThumbsDown, Volume2, ChevronDown, ChevronUp, Download, Share, FileText, Mail, Video, Image, File, ExternalLink, RefreshCw, Pencil, Archive } from 'lucide-react';
 import { Icon } from '@iconify/react';
 import { Xur } from "@/components/Xur";
 import { useNavigation } from "@/contexts/NavigationContext";
@@ -12,7 +12,6 @@ import { SendMessageFunction } from "@/hooks/useIRISWebSocket";
 import { mergeRenderedDocuments } from "@/lib/documentMerge";
 import { formatPlanEventMessage } from "@/components/chat/planEventMessage";
 import { useReducedMotion } from "@/hooks/useReducedMotion";
-import { IrisApertureIcon } from "@/components/ui/IrisApertureIcon";
 import { SpotlightState, SpotlightStateType } from "@/hooks/useUILayoutState";
 import { useLauncherMode } from "@/hooks/useLauncherMode";
 import {
@@ -33,6 +32,9 @@ import { TurnParts } from "@/components/chat/turn/TurnParts";
 // workspace in dev mode — the unified scroll IS the dev-mode body. The Visual
 // Workspace Hub lives in the Dashboard Wing, not here.)
 import { Composer } from "@/components/chat/Composer";
+import { ChatHeader } from "@/components/chat/ChatHeader";
+import { NotificationsPanel } from "@/components/chat/NotificationsPanel";
+import { HistoryPanel } from "@/components/chat/HistoryPanel";
 import { PermissionCard } from "@/components/chat/PermissionCard";
 import { QuestionCard } from "@/components/chat/QuestionCard";
 // cli-workspace-unification T5/T6 (REQ-4): project folder bar + archive dock
@@ -71,20 +73,9 @@ import { useManualDragWindow } from "@/hooks/useManualDragWindow"
 import { useTaskProgress } from "@/hooks/useTaskProgress";
 import { useCrawlContext } from "@/hooks/CrawlProvider";
 import type { ConversationChip, Suggestion } from "@/types/iris";
-import { invoke } from "@tauri-apps/api/core";
-import { detachWing, reattachWing } from "@/hooks/useDetachedWing";
-
-// Launch the separate IRIS Launcher Tauri app (bidirectional launcher⇄widget).
-const openIrisLauncher = async () => {
-  try {
-    await invoke("launch_launcher");
-  } catch (e) {
-    console.warn("[ChatView] launch_launcher failed:", e);
-  }
-};
 
 // Notification types for the universal notification system
-interface Notification {
+export interface Notification {
   id: string;
   type: 'alert' | 'permission' | 'error' | 'task' | 'completion';
   title: string;
@@ -191,30 +182,6 @@ const ContentTypeLabels: Record<ContentType, string> = {
   text: 'Text Document'
 };
 
-// Helper functions for notification styling
-const getNotificationColor = (type: string, glowColor: string): string => {
-  switch (type) {
-    case 'alert': return '#fbbf24'; // amber
-    case 'permission': return '#3b82f6'; // blue
-    case 'error': return '#ef4444'; // red
-    case 'task': return '#a855f7'; // purple
-    case 'completion': return '#22c55e'; // green
-    default: return glowColor;
-  }
-};
-
-const getNotificationIcon = (type: string, glowColor: string) => {
-  const iconProps = { size: 10, style: { color: getNotificationColor(type, glowColor) } };
-  switch (type) {
-    case 'alert': return <AlertTriangle {...iconProps} />;
-    case 'permission': return <Shield {...iconProps} />;
-    case 'error': return <AlertCircle {...iconProps} />;
-    case 'task': return <Loader {...iconProps} className="animate-spin" />;
-    case 'completion': return <CheckCircle {...iconProps} />;
-    default: return <Info {...iconProps} />;
-  }
-};
-
 interface Message {
   id: string
   text: string
@@ -241,7 +208,7 @@ interface Message {
 }
 
 // Thread-based conversation structure
-interface Conversation {
+export interface Conversation {
   id: string;
   title: string;
   preview: string;
@@ -3142,475 +3109,53 @@ ${message.text}`;
             />
 
             {/* 48px Header (60px on mobile for larger touch targets) */}
-            <div 
-              ref={chatHeaderRef}
-              onMouseDown={handleHeaderDragStart}
-              className={isRemoteView ? "h-[60px] px-4 flex items-center flex-shrink-0 border-b relative z-30" : "h-12 px-3 flex items-center flex-shrink-0 border-b relative z-30"}
-              style={{ borderColor: `${glowColor}15`, position: 'relative', cursor: isRemoteView ? undefined : 'grab' }}
-            >
-              {/* Global error line */}
-              {globalError && (
-                <motion.div
-                  className="absolute top-0 left-0 right-0 h-[1px] z-40"
-                  style={{ background: 'rgba(239,68,68,0.8)' }}
-                  animate={{ opacity: [1, 0.3, 1] }}
-                  transition={{ duration: 2, repeat: Infinity }}
-                />
-              )}
-              
-              {/* Left section: Pulse + Title + Dashboard */}
-              <div className="flex items-center gap-2 flex-1">
-                <motion.div
-                  className="w-1.5 h-1.5 rounded-full"
-                  style={{ backgroundColor: glowColor }}
-                  animate={{
-                    scale: voiceState === 'listening' ? [1, 1.4, 1] : 1,
-                    opacity: voiceState === 'listening' ? [1, 0.6, 1] : 1
-                  }}
-                  transition={{ duration: 1.2, repeat: Infinity }}
-                />
-                <span
-                  className="text-[13px] font-semibold tracking-wide"
-                  style={{ color: fontColor, opacity: 0.9 }}
-                >
-                  IRIS
-                </span>
-                {/* Dashboard - positioned next to IRIS text - toggles open/close */}
-                <button
-                  onClick={() => {
-                    if (isDashboardOpen && onDashboardClose) {
-                      onDashboardClose();
-                    } else {
-                      onDashboardClick();
-                    }
-                    closeDropdowns();
-                  }}
-                  className={isRemoteView ? "p-2.5 rounded-lg transition-all duration-150 min-h-[44px] min-w-[44px] flex items-center justify-center" : "p-1.5 rounded-lg transition-all duration-150"}
-                  style={{
-                    color: isDashboardOpen ? glowColor : 'rgba(255,255,255,0.75)',
-                    backgroundColor: isDashboardOpen ? `${glowColor}15` : 'transparent'
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.color = isDashboardOpen ? glowColor : 'rgba(255,255,255,0.95)';
-                    e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)';
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.color = isDashboardOpen ? glowColor : 'rgba(255,255,255,0.75)';
-                    e.currentTarget.style.backgroundColor = isDashboardOpen ? `${glowColor}15` : 'transparent';
-                  }}
-                  title={isDashboardOpen ? "Close Dashboard" : "Open Dashboard"}
-                >
-                  <BarChart3 size={isRemoteView ? 20 : 14} />
-                </button>
-                {/* Detach / reattach. The chat wing becomes its own OS window
-                    so it can live on a second monitor — the widget window is
-                    transparent, borderless and always-on-top, and cannot span
-                    two screens. Detaching closes the wing here so it is never
-                    drawn twice; closing the detached window puts it back. */}
-                {!isRemoteView && (
-                  <button
-                    onClick={async () => {
-                      if (isDetached) {
-                        await reattachWing('chat')
-                      } else if (await detachWing('chat')) {
-                        onClose()
-                      }
-                    }}
-                    className="p-1.5 rounded-lg transition-all duration-150"
-                    style={{ color: 'rgba(255,255,255,0.75)' }}
-                    onMouseEnter={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.95)'; e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)'; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.75)'; e.currentTarget.style.backgroundColor = 'transparent'; }}
-                    title={isDetached ? "Put chat back in the widget" : "Move chat to its own window"}
-                    aria-label={isDetached ? "Reattach chat" : "Detach chat"}
-                  >
-                    {isDetached ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
-                  </button>
-                )}
-                {/* Open IRIS Launcher — re-open the separate launcher app if closed */}
-                <button
-                  onClick={() => openIrisLauncher()}
-                  className={isRemoteView ? "p-2.5 rounded-lg transition-all duration-150 min-h-[44px] min-w-[44px] flex items-center justify-center" : "p-1.5 rounded-lg transition-all duration-150"}
-                  style={{ color: 'rgba(255,255,255,0.75)' }}
-                  onMouseEnter={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.95)'; e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)'; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.color = 'rgba(255,255,255,0.75)'; e.currentTarget.style.backgroundColor = 'transparent'; }}
-                  title="Open IRIS Launcher"
-                >
-                  <ExternalLink size={isRemoteView ? 20 : 14} />
-                </button>
-              </div>
-
-              {/* Center: Spotlight Iris Aperture Button — embedded on top border line */}
-              {onSpotlightToggle && (
-                <div className="absolute left-1/2 -translate-x-1/2 top-0 -translate-y-1/2 z-40">
-                  <button
-                    onClick={() => {
-                      onSpotlightToggle();
-                      closeDropdowns();
-                    }}
-                    className={isRemoteView ? "p-2.5 rounded-full transition-all duration-150 border min-h-[44px] min-w-[44px] flex items-center justify-center" : "p-1.5 rounded-full transition-all duration-150 border"}
-                    style={{
-                      color: isInChatSpotlight ? glowColor : 'rgba(255,255,255,0.7)',
-                      backgroundColor: isInChatSpotlight ? `${glowColor}20` : 'transparent',
-                      borderColor: isInChatSpotlight ? `${glowColor}50` : 'rgba(255,255,255,0.2)',
-                      boxShadow: isInChatSpotlight ? `0 0 8px ${glowColor}40` : 'none',
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.color = glowColor;
-                      e.currentTarget.style.borderColor = `${glowColor}50`;
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.color = isInChatSpotlight ? glowColor : 'rgba(255,255,255,0.7)';
-                      e.currentTarget.style.borderColor = isInChatSpotlight ? `${glowColor}50` : 'rgba(255,255,255,0.2)';
-                    }}
-                    title={isInChatSpotlight ? "Restore balanced view" : "Maximize chat"}
-                  >
-                    <IrisApertureIcon
-                      isActive={isInChatSpotlight}
-                      glowColor={glowColor}
-                      fontColor={fontColor}
-                      size={isRemoteView ? 18 : 14}
-                    />
-                  </button>
-                </div>
-              )}
-
-              {/* Right section: Notifications + History + Close */}
-              <div className="flex items-center gap-1 flex-1 justify-end">
-                {/* Notifications */}
-                <button
-                  onClick={() => showNotifications ? closeDropdowns() : openNotifications()}
-                  className={isRemoteView ? "p-2.5 rounded-lg transition-all duration-150 relative min-h-[44px] min-w-[44px] flex items-center justify-center" : "p-2 rounded-lg transition-all duration-150 relative"}
-                  style={{
-                    color: showNotifications ? glowColor : unreadCount > 0 ? glowColor : 'rgba(255,255,255,0.75)',
-                    backgroundColor: showNotifications ? `${glowColor}15` : 'transparent'
-                  }}
-                  onMouseEnter={(e) => {
-                    if (!showNotifications) e.currentTarget.style.color = unreadCount > 0 ? glowColor : 'rgba(255,255,255,0.95)';
-                    e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)';
-                  }}
-                  onMouseLeave={(e) => {
-                    if (!showNotifications) e.currentTarget.style.color = unreadCount > 0 ? glowColor : 'rgba(255,255,255,0.75)';
-                    e.currentTarget.style.backgroundColor = 'transparent';
-                  }}
-                  title="Notifications"
-                >
-                  <Bell size={16} />
-                  {unreadCount > 0 && (
-                    <motion.span
-                      initial={{ scale: 0 }}
-                      animate={{ scale: 1 }}
-                      className="absolute top-1 right-1 w-2 h-2 rounded-full"
-                      style={{ backgroundColor: glowColor }}
-                    />
-                  )}
-                </button>
-
-                {/* History */}
-                <button
-                  onClick={() => showHistory ? closeDropdowns() : openHistory()}
-                  className={isRemoteView ? "p-2.5 rounded-lg transition-all duration-150 min-h-[44px] min-w-[44px] flex items-center justify-center" : "p-2 rounded-lg transition-all duration-150"}
-                  style={{
-                    color: showHistory ? glowColor : 'rgba(255,255,255,0.75)',
-                    backgroundColor: showHistory ? `${glowColor}15` : 'transparent'
-                  }}
-                  onMouseEnter={(e) => {
-                    if (!showHistory) e.currentTarget.style.color = 'rgba(255,255,255,0.95)';
-                    e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)';
-                  }}
-                  onMouseLeave={(e) => {
-                    if (!showHistory) e.currentTarget.style.color = 'rgba(255,255,255,0.75)';
-                    e.currentTarget.style.backgroundColor = 'transparent';
-                  }}
-                  title="Conversation History"
-                >
-                  <History size={isRemoteView ? 20 : 16} />
-                </button>
-
-                {/* Close */}
-                <button
-                  onClick={() => {
-                    onClose();
-                    closeDropdowns();
-                  }}
-                  className={isRemoteView ? "p-2.5 rounded-lg transition-all duration-150 min-h-[44px] min-w-[44px] flex items-center justify-center" : "p-2 rounded-lg transition-all duration-150"}
-                  style={{ color: 'rgba(255,255,255,0.75)' }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.color = 'rgba(255,255,255,0.95)';
-                    e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)';
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.color = 'rgba(255,255,255,0.75)';
-                    e.currentTarget.style.backgroundColor = 'transparent';
-                  }}
-                  title="Close Chat"
-                >
-                  <X size={isRemoteView ? 20 : 16} />
-                </button>
-              </div>
-            </div>
+            <ChatHeader
+              isRemoteView={isRemoteView}
+              isDetached={isDetached}
+              glowColor={glowColor}
+              fontColor={fontColor}
+              voiceState={voiceState}
+              globalError={globalError}
+              chatHeaderRef={chatHeaderRef}
+              handleHeaderDragStart={handleHeaderDragStart}
+              isDashboardOpen={isDashboardOpen}
+              onDashboardClose={onDashboardClose}
+              onDashboardClick={onDashboardClick}
+              onSpotlightToggle={onSpotlightToggle}
+              isInChatSpotlight={isInChatSpotlight}
+              onClose={onClose}
+              showNotifications={showNotifications}
+              openNotifications={openNotifications}
+              unreadCount={unreadCount}
+              showHistory={showHistory}
+              openHistory={openHistory}
+              closeDropdowns={closeDropdowns}
+            />
 
             {/* Notification Dropdown Panel */}
-            <AnimatePresence>
-              {showNotifications && (
-                <motion.div
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: 'auto', opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-                  className="overflow-hidden border-b flex-shrink-0 z-20"
-                  style={{
-                    borderColor: `${glowColor}10`,
-                    background: 'linear-gradient(180deg, rgba(10,10,20,0.98) 0%, rgba(10,10,20,0.9) 100%)',
-                    backdropFilter: 'blur(20px)',
-                    // REQ-3/T5: same latent bug the history dropdown had — a
-                    // percentage max-height against an indefinite `height:auto`
-                    // parent never constrains, so the list grows past the panel
-                    // and the wheel chains to the timeline instead. Viewport
-                    // unit resolves against the window, which is definite.
-                    maxHeight: 'min(46vh, 520px)'
-                  }}
-                >
-                  {/* REQ-4 AC1: trap the wheel so scrolling notifications never
-                      scrolls the conversation behind it. */}
-                  <div
-                    className="p-3 space-y-2 overflow-y-auto"
-                    style={{ maxHeight: 'inherit', overscrollBehavior: 'contain' }}
-                  >
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-[10px] font-semibold tracking-widest uppercase text-white/50">
-                        Notifications
-                      </span>
-                      {notifications.length > 0 && (
-                        <button
-                          onClick={() => setNotifications([])}
-                          className="text-[9px] px-2 py-1 rounded transition-colors text-white/40 hover:text-white/70 hover:bg-white/5"
-                        >
-                          Clear all
-                        </button>
-                      )}
-                    </div>
-                    
-                    {notifications.length === 0 ? (
-                      <div className="text-center py-6 text-[11px] text-white/40">
-                        No notifications
-                      </div>
-                    ) : (
-                      notifications.map((notif) => (
-                        <motion.div
-                          key={notif.id}
-                          initial={{ x: unreadCount > 0 && !notif.read ? -10 : 0, opacity: 0 }}
-                          animate={{ x: 0, opacity: 1 }}
-                          className="p-2.5 rounded-lg transition-all duration-150 group relative overflow-hidden"
-                          style={{
-                            backgroundColor: !notif.read ? `${glowColor}08` : 'rgba(255,255,255,0.03)',
-                            borderLeft: `2px solid ${getNotificationColor(notif.type, glowColor)}`
-                          }}
-                        >
-                          {/* Type indicator glow */}
-                          <div 
-                            className="absolute top-0 right-0 w-16 h-16 opacity-10 blur-xl rounded-full -translate-y-1/2 translate-x-1/2"
-                            style={{ backgroundColor: getNotificationColor(notif.type, glowColor) }}
-                          />
-                          
-                          <div className="flex items-start justify-between relative">
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-1.5 mb-1">
-                                {getNotificationIcon(notif.type, glowColor)}
-                                <span 
-                                  className="text-[9px] font-semibold tracking-wide uppercase"
-                                  style={{ color: getNotificationColor(notif.type, glowColor) }}
-                                >
-                                  {notif.type}
-                                </span>
-                                <span className="text-[8px] text-white/30 tabular-nums ml-auto">
-                                  {notif.timestamp.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-                                </span>
-                              </div>
-                              <p className="text-[11px] font-medium text-white/90 leading-snug">
-                                {notif.title}
-                              </p>
-                              <p className="text-[10px] text-white/60 mt-0.5 line-clamp-2">
-                                {notif.message}
-                              </p>
-                            </div>
-                          </div>
-                          
-                          {/* Action buttons based on type */}
-                          {notif.type === 'permission' && (
-                            <div className="flex gap-2 mt-2">
-                              <button
-                                onClick={() => handlePermissionGrant(notif.id)}
-                                className="flex-1 py-1 rounded text-[9px] font-medium transition-colors"
-                                style={{ 
-                                  background: `${glowColor}20`,
-                                  color: glowColor
-                                }}
-                              >
-                                Allow
-                              </button>
-                              <button
-                                onClick={() => handlePermissionDeny(notif.id)}
-                                className="flex-1 py-1 rounded text-[9px] font-medium transition-colors bg-white/10 text-white/70 hover:bg-white/15"
-                              >
-                                Deny
-                              </button>
-                            </div>
-                          )}
-                          
-                          {notif.type === 'task' && (
-                            <div className="mt-2">
-                              <div className="h-1 bg-white/10 rounded-full overflow-hidden">
-                                <motion.div 
-                                  className="h-full rounded-full"
-                                  style={{ backgroundColor: glowColor }}
-                                  initial={{ width: 0 }}
-                                  animate={{ width: `${notif.progress || 0}%` }}
-                                />
-                              </div>
-                              <span className="text-[8px] text-white/40 mt-1 block">
-                                {notif.progress || 0}% complete
-                              </span>
-                            </div>
-                          )}
-                        </motion.div>
-                      ))
-                    )}
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
+            <NotificationsPanel
+              showNotifications={showNotifications}
+              glowColor={glowColor}
+              notifications={notifications}
+              setNotifications={setNotifications}
+              unreadCount={unreadCount}
+              handlePermissionGrant={handlePermissionGrant}
+              handlePermissionDeny={handlePermissionDeny}
+            />
 
             {/* History Dropdown Panel - Thread-Based */}
-            <AnimatePresence>
-              {showHistory && (
-                <motion.div
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: 'auto', opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  transition={{ duration: prefersReducedMotion ? 0 : 0.2, ease: [0.22, 1, 0.36, 1] }}
-                  className="overflow-hidden border-b flex-shrink-0 z-20"
-                  style={{
-                    borderColor: `${glowColor}10`,
-                    background: 'linear-gradient(180deg, rgba(10,10,20,0.98) 0%, rgba(10,10,20,0.9) 100%)',
-                    backdropFilter: 'blur(20px)',
-                    // Live fix 2026-09-04: maxHeight '50%' never constrained —
-                    // a percentage resolves against an indefinite flex parent
-                    // (height animates to auto), so 778 rows grew past the panel,
-                    // clipped under overflow-hidden ancestors, and the wheel
-                    // chained to the main timeline. A viewport-relative cap always
-                    // resolves, so the inner list below can actually scroll.
-                    maxHeight: 'min(46vh, 520px)',
-                  }}
-                >
-                  <div
-                    className="p-3 space-y-2 overflow-y-auto"
-                    style={{
-                      // Inherit the panel cap so this box is bounded even when its
-                      // content is 778 rows tall; containment stops the wheel from
-                      // scrolling the conversation thread behind the dropdown.
-                      maxHeight: 'inherit',
-                      overscrollBehavior: 'contain',
-                    }}
-                  >
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-[10px] font-semibold tracking-widest uppercase text-white/50">
-                        Conversation Threads
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[9px] text-white/30">
-                          {conversations.length} total
-                        </span>
-                        <button
-                          onClick={handleNewConversation}
-                          className="p-1.5 rounded transition-all duration-150 flex items-center gap-1"
-                          style={{ color: `${fontColor}50` }}
-                          onMouseEnter={(e) => {
-                            e.currentTarget.style.color = glowColor;
-                            e.currentTarget.style.backgroundColor = 'rgba(255,255,255,0.05)';
-                          }}
-                          onMouseLeave={(e) => {
-                            e.currentTarget.style.color = `${fontColor}50`;
-                            e.currentTarget.style.backgroundColor = 'transparent';
-                          }}
-                          title="Start new conversation"
-                          aria-label="New conversation"
-                        >
-                          <Plus size={12} />
-                        </button>
-                      </div>
-                    </div>
-                    
-                    {conversations.length === 0 ? (
-                      <div className="text-center py-6 text-[11px] text-white/40">
-                        No conversations yet
-                      </div>
-                    ) : (
-                      conversations.map((conv) => (
-                        <motion.div
-                          key={conv.id}
-                          initial={{ opacity: 0, x: -10 }}
-                          animate={{ opacity: 1, x: 0 }}
-                          onClick={() => handleSelectConversation(conv.id)}
-                          className="group relative p-2.5 rounded-lg cursor-pointer transition-all duration-150 hover:bg-white/5"
-                          style={{
-                            backgroundColor: activeConversationId === conv.id ? `${glowColor}15` : 'rgba(255,255,255,0.03)',
-                            borderLeft: `2px solid ${activeConversationId === conv.id ? glowColor : 'transparent'}`,
-                            // 778 rows: skip off-screen row rendering work. The
-                            // intrinsic size keeps the scrollbar stable while rows
-                            // are skipped; highlight + buttons unaffected.
-                            contentVisibility: 'auto',
-                            containIntrinsicSize: 'auto 76px',
-                          }}
-                        >
-                          <div className="flex items-center gap-2">
-                            {/* Content */}
-                            <div className="flex-1 min-w-0">
-                              <div className="flex items-center gap-1.5 mb-1">
-                                {conv.isPinned && (
-                                  <Pin size={10} style={{ color: glowColor }} className="fill-current flex-shrink-0" />
-                                )}
-                                <span className="text-[10px] font-medium text-white/90 truncate">
-                                  {conv.title}
-                                </span>
-                                <span className="text-[8px] text-white/30 tabular-nums flex-shrink-0">
-                                  {conv.timestamp.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
-                                </span>
-                              </div>
-                              <p className="text-[9px] text-white/50 truncate leading-snug">
-                                {conv.lastMessagePreview}
-                                {conv.lastMessagePreview.length >= 60 ? '...' : ''}
-                              </p>
-                              <span className="text-[8px] text-white/30 mt-1 block">
-                                {conv.messages.length} message{conv.messages.length !== 1 ? 's' : ''}
-                              </span>
-                            </div>
-                            
-                            {/* Action buttons - centered on right */}
-                            <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 self-center">
-                              <button
-                                onClick={(e) => handlePinConversation(e, conv.id)}
-                                className="p-1.5 rounded transition-colors hover:bg-white/10"
-                                style={{ color: conv.isPinned ? glowColor : 'rgba(255,255,255,0.5)' }}
-                                title={conv.isPinned ? 'Unpin' : 'Pin to top'}
-                              >
-                                <Pin size={12} className={conv.isPinned ? 'fill-current' : ''} />
-                              </button>
-                              <button
-                                onClick={(e) => handleDeleteConversation(e, conv.id)}
-                                className="p-1.5 rounded transition-colors hover:bg-white/10 text-white/50 hover:text-red-400"
-                                title="Delete conversation"
-                              >
-                                <Trash2 size={12} />
-                              </button>
-                            </div>
-                          </div>
-                        </motion.div>
-                      ))
-                    )}
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
+            <HistoryPanel
+              showHistory={showHistory}
+              prefersReducedMotion={prefersReducedMotion}
+              glowColor={glowColor}
+              fontColor={fontColor}
+              conversations={conversations}
+              activeConversationId={activeConversationId}
+              handleNewConversation={handleNewConversation}
+              handleSelectConversation={handleSelectConversation}
+              handlePinConversation={handlePinConversation}
+              handleDeleteConversation={handleDeleteConversation}
+            />
 
             {/* T5 (REQ-4 AC1/AC2): compact 30px project folder bar — active
                 folder pill + file tabs + [+] opening FilePickerModal. Dev

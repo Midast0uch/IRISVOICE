@@ -86,6 +86,12 @@ const NON_CARD_ALLOWLIST: string[] = [
   // Phase 3 (2026-10-06): the input area moved out of chat-view.tsx into its
   // own file. Message path: the composer never renders a card.
   "components/chat/Composer.tsx",
+  // Phase 3 (2026-10-06): the wing header moved out of chat-view.tsx. Chrome: the header bar never renders a card.
+  "components/chat/ChatHeader.tsx",
+  // Phase 3 (2026-10-06): the notifications dropdown moved out of chat-view.tsx. Chrome: a notification list is not a card.
+  "components/chat/NotificationsPanel.tsx",
+  // Phase 3 (2026-10-06): the history dropdown moved out of chat-view.tsx. Chrome: a thread list is not a card.
+  "components/chat/HistoryPanel.tsx",
 ]
 
 /** The chassis implementation itself — neither a card surface (nothing to
